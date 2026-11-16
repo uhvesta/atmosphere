@@ -162,6 +162,25 @@ async fn recover_sessions(
             Ok((Ok(Some(session)), Ok(agent))) => (session, agent),
             _ => continue,
         };
+        let id = session.id.clone();
+        let this = starter.clone();
+        let forked = blocking(move || this.store.fork_origin(&id)).await;
+        if agent.is_none() && matches!(forked, Ok(Ok(Some(_)))) {
+            // A fork's code is a copy of its parent's, so cloning the rest
+            // from main would make something else: take it back.
+            let reason = "its fork was cut short before its agent started".to_owned();
+            done.push(match starter.undo(&session).await {
+                Ok(()) => Recovery::SessionUndone {
+                    session: session.id,
+                    reason,
+                },
+                Err(undo) => Recovery::SessionStuck {
+                    session: session.id,
+                    reason: format!("{reason}; and removing it failed: {undo}"),
+                },
+            });
+            continue;
+        }
         let outcome = if agent.is_some() {
             // The launch was recorded, and revive has brought it back.
             let mut detail = detail;

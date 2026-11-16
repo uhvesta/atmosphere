@@ -303,3 +303,27 @@ pub enum RemoteError {
         source: serde_json::Error,
     },
 }
+
+/// Why the window's picture couldn't be saved into a report.
+#[derive(Debug, thiserror::Error)]
+pub enum PictureError {
+    #[error(
+        "couldn't encode the window's picture as a PNG; the report's text files are fine, so \
+         copy the report without the picture, or take a new snapshot"
+    )]
+    Encode {
+        #[source]
+        source: image::ImageError,
+    },
+
+    #[error(
+        "couldn't write window.png into {}; check that the disk has free space and the report's \
+         folder is writable. The report's text files are unchanged",
+        path.display()
+    )]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}

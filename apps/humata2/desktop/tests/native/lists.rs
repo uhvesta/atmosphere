@@ -114,7 +114,6 @@ fn home_review_and_resume_act_on_their_own_rows() {
 /// Frame 34: with no channel yet, Home and the sidebar open the same forms.
 #[test]
 fn empty_home_and_sidebar_actions_open_their_forms() {
-    use humata2_hosts::HostsAction as H;
     let mut app = App::new(fixture::empty());
     app.cx
         .update(|cx| Theme::change(ThemeMode::Light, None, cx));
@@ -130,14 +129,24 @@ fn empty_home_and_sidebar_actions_open_their_forms() {
         assert!(app.contains("new-channel-create"));
         app.send(AppAction::Escape);
     }
+    // The Desk needs no channel: Home starts a session on it and opens it.
+    app.click("home-new-desk-session");
+    assert!(app.contains("new-desk"));
+    app.send(AppAction::Escape);
+    assert!(!app.contains("new-desk"));
+    app.click("first-desk-open");
+    assert!(app.ui.read(|s| s.route == Route::Desk));
+    app.click("rail-home");
     app.click("first-machine-add");
-    assert!(app.contains("host-add-connect"));
-    app.click("host-add-cancel");
-    assert!(!app.contains("host-add-connect"));
+    assert!(app.contains("add-machine-start"));
+    app.click("add-machine-cancel");
+    assert!(!app.contains("add-machine-start"));
     app.click("sidebar-add-machine");
-    assert!(app.contains("host-add-connect"));
-    app.send(AppAction::Hosts(H::Address("dev@newbox".into())));
-    app.click("host-add-connect");
+    assert!(app.contains("add-machine-start"));
+    app.send(AppAction::AddMachine(humata2_hosts::AddMachineAction::SelectHost(
+        "dev@newbox".into(),
+    )));
+    app.click("add-machine-start");
     assert!(app.ui.read(|s| {
         s.workspace
             .machines

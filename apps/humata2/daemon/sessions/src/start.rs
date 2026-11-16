@@ -45,6 +45,8 @@ pub struct Starter {
 /// A session to start.
 #[derive(Clone, Debug)]
 pub struct StartRequest {
+    /// The session's id when the host chose it (D150); a fresh one when None.
+    pub id: Option<String>,
     pub channel: String,
     pub machine: String,
     pub title: String,
@@ -99,7 +101,7 @@ impl Starter {
         Ok(repos.into_iter().map(|r| (r, branch.clone())).collect())
     }
 
-    fn channel_record(&self, id: &str) -> Result<ChannelRecord, StartError> {
+    pub(crate) fn channel_record(&self, id: &str) -> Result<ChannelRecord, StartError> {
         self.store
             .channel(id)
             .map_err(store_err("read the channel"))?
@@ -109,7 +111,7 @@ impl Starter {
     /// One branch for all `repos`: the first free name, given what the
     /// main clones, the remotes and the channel's other sessions use
     /// (FC-14), and no session folder already there.
-    fn pick(
+    pub(crate) fn pick(
         &self,
         channel: &ChannelRecord,
         repos: &[RepoName],
@@ -232,7 +234,10 @@ impl Starter {
         };
         let folder = self.layout.session(&channel.folder, &branch.folder);
         let session = SessionRecord {
-            id: format!("se_{}", uuid::Uuid::new_v4().simple()),
+            id: request
+                .id
+                .clone()
+                .unwrap_or_else(|| format!("se_{}", uuid::Uuid::new_v4().simple())),
             channel: channel.id.clone(),
             machine: request.machine.clone(),
             title: request.title.clone(),
@@ -274,6 +279,129 @@ impl Starter {
             detail,
             agent,
         })
+    }
+
+    /// Writes the row and start of a session that lives on another machine
+    /// (SL-1, PER-11, D139): the host records it under the id it chose, then asks
+    /// that machine to start it. Nothing is cloned or launched here. The start is
+    /// saved as done, so [`crate::recover`] after a restart never launches it on
+    /// this machine; the other machine's own start does the work. The repositories
+    /// are the ones named (or all the channel's), whether or not this machine has
+    /// cloned them: the other machine checks its own clones.
+    pub async fn place_session(&self, request: &StartRequest) -> Result<SessionRecord, StartError> {
+        let this = self.clone();
+        let channel_id = request.channel.clone();
+        let channel = blocking(move || this.channel_record(&channel_id)).await??;
+        let agent_name = request
+            .agent
+            .clone()
+            .unwrap_or_else(|| channel.default_agent.clone());
+        let chosen: Vec<RepoName> = match request.repos.as_deref() {
+            Some(list) => {
+                for (owner, name) in list {
+                    if !channel
+                        .repos
+                        .iter()
+                        .any(|r| &r.owner == owner && &r.name == name)
+                    {
+                        return Err(StartError::UnknownRepo {
+                            channel: channel.id.clone(),
+                            owner: owner.clone(),
+                            name: name.clone(),
+                        });
+                    }
+                }
+                list.to_vec()
+            }
+            None => channel
+                .repos
+                .iter()
+                .map(|r| (r.owner.clone(), r.name.clone()))
+                .collect(),
+        };
+        if chosen.is_empty() {
+            return Err(StartError::NoRepos {
+                channel: channel.id.clone(),
+            });
+        }
+        let this = self.clone();
+        let (picked, repos, title) = (channel.clone(), chosen.clone(), request.title.clone());
+        let branch = blocking(move || match this.pick(&picked, &repos, &title) {
+            // This machine may not have the clones (or not reach the remote): the names
+            // this channel's sessions use are all it can know.
+            Err(StartError::Git { .. }) => this.pick_unseen(&picked, &title),
+            other => other,
+        })
+        .await??;
+        let folder = self.layout.session(&channel.folder, &branch.folder);
+        let session = SessionRecord {
+            id: request
+                .id
+                .clone()
+                .unwrap_or_else(|| format!("se_{}", uuid::Uuid::new_v4().simple())),
+            channel: channel.id.clone(),
+            machine: request.machine.clone(),
+            title: request.title.clone(),
+            agent: agent_name,
+            folder: folder.clone(),
+            created_unix_ms: unix_ms(),
+        };
+        let detail = SessionDetail {
+            session: session.id.clone(),
+            repos: chosen
+                .iter()
+                .map(|(owner, name)| SessionRepo {
+                    owner: owner.clone(),
+                    name: name.clone(),
+                    branch: branch.name.clone(),
+                    path: folder.join(name),
+                })
+                .collect(),
+            model: request.model.clone(),
+            first_message: request.first_message.clone(),
+            start: StartStep::Done,
+            operation: request.operation.clone(),
+            revision: 1,
+        };
+        let (store, saved, saved_detail) = (self.store.clone(), session.clone(), detail);
+        blocking(move || -> Result<(), StartError> {
+            store
+                .put_session(&saved)
+                .map_err(store_err("save the session"))?;
+            store
+                .put_session_detail(&saved_detail)
+                .map_err(store_err("save the session's start"))
+        })
+        .await??;
+        point("sessions.start.recorded");
+        Ok(session)
+    }
+
+    /// The branch for `title` given only the names this channel's sessions use.
+    fn pick_unseen(&self, channel: &ChannelRecord, title: &str) -> Result<Branch, StartError> {
+        let in_channel: HashSet<String> = self
+            .store
+            .sessions()
+            .map_err(store_err("list the sessions"))?
+            .into_iter()
+            .filter(|s| s.channel == channel.id)
+            .map(|s| s.id)
+            .collect();
+        let mut taken: HashSet<String> = HashSet::new();
+        for detail in self
+            .store
+            .session_details()
+            .map_err(store_err("list the sessions"))?
+        {
+            if in_channel.contains(&detail.session) {
+                taken.extend(detail.repos.into_iter().map(|r| r.branch));
+            }
+        }
+        Ok(pick_branch(
+            channel.branch_prefix.as_str(),
+            &branch_slug(title),
+            |name| taken.contains(name),
+        ))
     }
 
     async fn record_and_clone(
@@ -352,17 +480,35 @@ impl Starter {
     pub(crate) async fn launch_session(
         &self,
         session: &SessionRecord,
-        mut detail: SessionDetail,
+        detail: SessionDetail,
         cols: u16,
         rows: u16,
         env: Env<'_>,
         progress: &mut (dyn FnMut(&str) + Send),
     ) -> Result<(SessionDetail, AgentRecord), StartError> {
+        let conversation = uuid::Uuid::new_v4().hyphenated().to_string();
+        self.launch_with(session, detail, cols, rows, env, progress, conversation, false)
+            .await
+    }
+
+    /// [`Self::launch_session`] on the given `conversation`; with `resume`
+    /// the agent starts by resuming it (a fork's copied conversation).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn launch_with(
+        &self,
+        session: &SessionRecord,
+        mut detail: SessionDetail,
+        cols: u16,
+        rows: u16,
+        env: Env<'_>,
+        progress: &mut (dyn FnMut(&str) + Send),
+        conversation: String,
+        resume: bool,
+    ) -> Result<(SessionDetail, AgentRecord), StartError> {
         self.set_step(&mut detail, StartStep::Launching).await?;
         point("sessions.start.launching");
         progress("launch");
         let kind = self.agents.get(&session.agent)?;
-        let conversation = uuid::Uuid::new_v4().hyphenated().to_string();
         let plan = kind.launch(&self.home, &session.folder, &conversation);
         let tab = format!("tb_{}", uuid::Uuid::new_v4().simple());
         let socket = self.holders.join(format!("{tab}.sock"));
@@ -382,7 +528,11 @@ impl Starter {
         let launch = AgentLaunch {
             agent: session.agent.clone(),
             folder: session.folder.clone(),
-            argv: plan.argv,
+            argv: if resume {
+                plan.resume_argv.clone()
+            } else {
+                plan.argv
+            },
             resume_argv: plan.resume_argv,
             variable_names,
             conversation_id: conversation,
@@ -392,7 +542,7 @@ impl Starter {
             rows,
         };
         let agent =
-            humata2_revive::launch_agent(&self.store, &self.revive, session, &tab, launch, env)
+            humata2_revive::launch_agent(&self.store, &self.revive, session, &tab, launch, None, env)
                 .await
                 .map_err(|source| StartError::Revive { source })?;
         if let Some(message) = detail.first_message.clone() {

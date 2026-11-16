@@ -111,6 +111,7 @@ none, only `humata whoami` and `humata login` run.
 | `humata session push <session> [--repo r]… [--pr] [--from-view v]` | `session.push` | PlanPush, PushAndOpenPullRequests | user (no rule, IN-24); agent: GIT_PUSH. `--from-view` opens a prepared PR view's fields (VW-13) | host (GitHub goes through the Mac) |
 | `humata session note\|ask <session> <text>` | `session.note`, `session.ask` | SendNote, AskSession | user; agent: SESSION_NOTE | per away rule here; waits elsewhere |
 | `humata session type <session> <text> [--at-turn-end]` | `session.type` | TerminalService.Type | user; agent: SESSION_TYPE. With the output fallback or in a shell, `--at-turn-end` queues it as "waiting: turn end not certain" (SE-23) | as note |
+| `humata turn working\|idle\|needs-input` | `session.report_turn` | ReportTurn | the session's own agent only: it is what its Claude Code hooks run (D169); user, script and peer callers are refused. Prints nothing and exits 0 whatever happens, so a hook can't fail or wait on it | the session's machine |
 | `humata shell <machine>` | `machine.shell` | OpenMachineShell | user-only (TERMINAL_INPUT) | local on that machine |
 | `humata conversation <session>` | `session.conversation` | ReadConversation | user; agent: FILES_READ_OTHER_SESSION for others | stale |
 
@@ -119,8 +120,8 @@ none, only `humata whoami` and `humata login` run.
 | Command | Operation | gRPC | Who | Host away |
 | --- | --- | --- | --- | --- |
 | `humata board [--global\|--channel c\|--session s] [--column c]` | `board.items_list` | ListItems | user; agent per MCP.md | stale |
-| `humata board add <title> [--column c] [--assign s]` | `board.item_create` | CreateItem | user; agent per MCP.md | journal |
-| `humata board edit <item> [--title] [--description] [--assign]` | `board.item_update` | UpdateItem | as add | journal |
+| `humata board add <title> [--column c] [--assign s]… [--depends-on item]…` | `board.item_create` | CreateItem | user; agent per MCP.md | journal |
+| `humata board edit <item> [--title] [--description] [--assign s]… [--unassign s]… [--depends-on item]… [--drop-depends-on item]…` | `board.item_update` | UpdateItem | as add | journal |
 | `humata board move <item> <column> [--after item]` | `board.item_move` | MoveItem | as add | journal |
 | `humata board rm <item>` | `board.item_delete` | DeleteItem | as add | journal |
 | `humata board history <item>` | `board.item_history` | GetItemHistory | as list | stale |

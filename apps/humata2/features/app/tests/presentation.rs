@@ -189,3 +189,35 @@ fn selected_host_and_layout_preferences_restore_without_closing_saved_groups() {
     );
     store.finish();
 }
+
+/// Flow 26.14 steps 3–5, ST-8: Long lines is kept across a restart, and the
+/// diff and the editor take the restored choice at launch.
+#[test]
+fn long_lines_survive_a_restart_both_ways() {
+    use humata2_settings::SettingsAction as T;
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let state = AppState::launch(&clients);
+    let first = state.review.wrap;
+    let mut store = TestStore::new(state, App::new(clients.clone()));
+    store.send(AppAction::Settings(T::ToggleWrap), |s| {
+        s.settings.preferences.wrap_diffs = !first;
+        s.review.wrap = !first;
+    });
+    saved::Saver::new(clients.storage.clone())
+        .save(1, &store.state().saved())
+        .expect("save preferences");
+    let restored = AppState::launch(&clients);
+    assert_eq!(restored.settings.preferences.wrap_diffs, !first);
+    assert_eq!(restored.review.wrap, !first);
+
+    store.send(AppAction::Settings(T::ToggleWrap), |s| {
+        s.settings.preferences.wrap_diffs = first;
+        s.review.wrap = first;
+    });
+    saved::Saver::new(clients.storage.clone())
+        .save(2, &store.state().saved())
+        .expect("save preferences");
+    let restored = AppState::launch(&clients);
+    assert_eq!(restored.review.wrap, first);
+    store.finish();
+}

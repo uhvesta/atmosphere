@@ -118,7 +118,11 @@ pub(crate) fn target(target: &GrantTarget) -> pb::GrantTarget {
 fn path_scope(scope: &PathScope) -> pb::PathScope {
     let session = match &scope.root {
         Root::Clone(owner) => Some(session_id(&owner.id)),
-        Root::Shared(_) | Root::ChannelFolder(_) | Root::MainClone { .. } | Root::Outside => None,
+        Root::Shared(_)
+        | Root::ChannelFolder(_)
+        | Root::MainClone { .. }
+        | Root::Home
+        | Root::Outside => None,
     };
     let prefix = scope.prefix.as_str();
     let mut parts = prefix.splitn(3, '/');
@@ -316,7 +320,9 @@ pub(crate) fn ask_ahead_call(
             let act = match capability {
                 Capability::ChannelBoardAdd => BoardAct::Add,
                 // Items someone else made.
-                Capability::ChannelBoardEditOthers => BoardAct::Edit { created_by: None },
+                Capability::ChannelBoardEditOthers | Capability::GlobalBoardWrite => {
+                    BoardAct::Edit { created_by: None }
+                }
                 _ => return Err(not_for("target.board")),
             };
             Ok(Call::Board { board, act })

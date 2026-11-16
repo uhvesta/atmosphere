@@ -12,7 +12,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    AnyWindowHandle, Bounds, HeadlessAppContext, Role, WindowBounds, WindowOptions, point, px, size,
+    AnyWindowHandle, Bounds, HeadlessAppContext, InputEvent as _, MouseButton, MouseDownEvent,
+    MouseUpEvent, Role, WindowBounds, WindowOptions, point, px, size,
 };
 use humata2_app::{AppAction, ReportAction, ReportForm, ReportKind, ToastAction};
 use humata2_clients::{Clients, Fakes, fixture};
@@ -21,7 +22,7 @@ use humata2_flow::{Action, Driver as _, FrameMode, GpuiDriver, GpuiDriverError, 
 use humata2_report::remote::{self, RefusalKind, Request};
 use humata2_report::{Compare, Event, FlowAction, FlowTarget, Gesture, Player, Trees, read_events};
 use humata2_ui::bridge::Ui;
-use humata2_ui::record::{Recorder, state_text};
+use humata2_ui::record::{Recorder, RpcCall, state_text};
 use tca::TestClock;
 use tokio::runtime::Runtime;
 
@@ -150,6 +151,84 @@ impl App {
         self.form().expect("stopping from the keyboard opens the form")
     }
 
+    /// Draws `count` more frames, for what acts a couple of frames later.
+    fn frames(&mut self, count: usize) {
+        for _ in 0..count {
+            self.settle();
+        }
+    }
+
+    /// Opens the palette, types `query` and presses Enter, then lets the
+    /// frames pass that a report command waits for.
+    fn palette(&mut self, query: &str) {
+        self.press("secondary-k");
+        self.type_text(query);
+        self.press("enter");
+        self.frames(4);
+    }
+
+    /// Draws one stroke through `points` (window points): the pointer goes
+    /// to the first, the left button goes down, moves through the rest and
+    /// goes up at the last, a natural frame after each event.
+    fn stroke(&mut self, points: &[(f32, f32)]) {
+        let at = |(x, y): (f32, f32)| point(px(x), px(y));
+        let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
+            return;
+        };
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                let modifiers = window.modifiers();
+                humata2_engine::frame::move_pointer(window, at(first), None, cx);
+                window.dispatch_event(
+                    MouseDownEvent {
+                        button: MouseButton::Left,
+                        position: at(first),
+                        modifiers,
+                        click_count: 1,
+                        first_mouse: false,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                humata2_engine::frame::natural_frame(window, cx);
+                for &next in &points[1..] {
+                    humata2_engine::frame::move_pointer(window, at(next), Some(MouseButton::Left), cx);
+                }
+                window.dispatch_event(
+                    MouseUpEvent {
+                        button: MouseButton::Left,
+                        position: at(last),
+                        modifiers,
+                        click_count: 1,
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                humata2_engine::frame::natural_frame(window, cx);
+            })
+            .expect("the window stays open");
+        self.settle();
+    }
+
+    /// Where the form saw the element called `label` with `role` when it
+    /// was taken: (x, y, width, height) in window points.
+    fn place(&self, role: &str, label: &str) -> (f32, f32, f32, f32) {
+        let form = self.form().expect("the form is open");
+        let at = form
+            .elements
+            .iter()
+            .position(|e| e.role == role && e.label == label)
+            .unwrap_or_else(|| panic!("the form offers {role} {label:?}"));
+        let rect = form
+            .places
+            .get(at)
+            .copied()
+            .flatten()
+            .expect("the element has a place on the window");
+        #[allow(clippy::cast_precision_loss)]
+        (rect.x as f32, rect.y as f32, rect.width as f32, rect.height as f32)
+    }
+
     /// Clicks Copy report and gives what it put on the clipboard.
     fn copy(&mut self) -> String {
         self.click(Role::Button, "Copy report");
@@ -158,8 +237,9 @@ impl App {
 }
 
 /// Every file under `dir`, by relative name, with its text.
-fn folder_text(dir: &Path) -> Vec<(String, String)> {
-    fn walk(root: &Path, dir: &Path, found: &mut Vec<(String, String)>) {
+/// Every file in the report folder, by its path in the folder.
+fn folder_files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(root: &Path, dir: &Path, found: &mut Vec<(String, Vec<u8>)>) {
         for entry in fs::read_dir(dir).expect("the report folder can be read") {
             let path = entry.expect("a folder entry").path();
             if path.is_dir() {
@@ -170,8 +250,8 @@ fn folder_text(dir: &Path) -> Vec<(String, String)> {
                     .unwrap_or(&path)
                     .display()
                     .to_string();
-                let text = fs::read_to_string(&path).expect("report files are text");
-                found.push((name, text));
+                let bytes = fs::read(&path).expect("report files can be read");
+                found.push((name, bytes));
             }
         }
     }
@@ -179,6 +259,14 @@ fn folder_text(dir: &Path) -> Vec<(String, String)> {
     walk(dir, dir, &mut found);
     found.sort();
     found
+}
+
+/// The report folder's text files (the pictures and video are left out).
+fn folder_text(dir: &Path) -> Vec<(String, String)> {
+    folder_files(dir)
+        .into_iter()
+        .filter_map(|(name, bytes)| String::from_utf8(bytes).ok().map(|text| (name, text)))
+        .collect()
 }
 
 fn reports_folder() -> tempfile::TempDir {
@@ -204,6 +292,11 @@ fn a_recording_becomes_a_form_a_pinned_comment_and_a_copied_report() {
     for file in ["report.md", "events.jsonl", "state.txt", "view.txt", "layout.txt"] {
         assert!(has_file(&form.folder, file), "{file} is saved the moment recording stops");
     }
+    for file in ["window.png", "video.png", "video.jsonl"] {
+        assert!(has_file(&form.folder, file), "{file} is saved with a recording (D160)");
+    }
+    let png = fs::read(form.folder.join("window.png")).expect("window.png can be read");
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"), "window.png is a PNG");
     assert!(!form.elements.is_empty(), "the form offers the controls on screen to pin");
 
     app.send(ReportAction::Happened("the inbox looked wrong".to_owned()));
@@ -370,8 +463,24 @@ fn a_secret_typed_while_recording_is_in_no_file_of_the_report() {
         .iter()
         .any(|event| matches!(event, Event::Interaction(i) if matches!(i.gesture, Gesture::Type { .. })));
     assert!(typed, "the typing was recorded, so the check below is not vacuous");
-    for (name, text) in folder_text(&form.folder) {
-        assert!(!text.contains(SECRET), "{name} holds the secret");
+    let files = folder_files(&form.folder);
+    assert!(
+        files.iter().any(|(name, _)| name == "window.png"),
+        "the picture is saved, so the byte check below covers it"
+    );
+    for (name, bytes) in &files {
+        assert!(
+            !bytes.windows(SECRET.len()).any(|window| window == SECRET.as_bytes()),
+            "{name} holds the secret"
+        );
+        if name.ends_with(".png") {
+            for chunk in [b"tEXt", b"zTXt", b"iTXt"] {
+                assert!(
+                    !bytes.windows(4).any(|window| window == chunk),
+                    "{name} carries a text chunk, which could hold the secret compressed"
+                );
+            }
+        }
     }
     assert!(!prompt.contains(SECRET), "the copied prompt holds the secret");
 }
@@ -467,4 +576,239 @@ fn the_socket_records_and_stops_without_opening_the_form() {
         })
         .expect("a toast offers to open the report");
     assert_eq!(offered.folder, folder);
+}
+
+/// The events a saved recording holds.
+fn saved_events(folder: &Path) -> Vec<Event> {
+    let text = fs::read_to_string(folder.join("events.jsonl")).expect("events.jsonl is saved");
+    read_events(&text)
+        .expect("the saved events read back")
+        .events()
+        .to_vec()
+}
+
+/// Replays the saved recording in `folder` on a fresh app and expects the
+/// same end state.
+fn assert_replays(folder: &Path) {
+    let text = fs::read_to_string(folder.join("events.jsonl")).expect("events.jsonl is saved");
+    let script = read_events(&text)
+        .expect("the saved events read back")
+        .flow_script();
+    assert!(!script.steps.is_empty(), "there are steps to replay: {:?}", script.skipped);
+    let mut fresh = App::new(Recorder::new());
+    let replayed = script.replay(&mut Replay(&mut fresh), Compare::default());
+    assert!(replayed.is_ok(), "{replayed:?}");
+}
+
+#[test]
+fn palette_snapshot_opens_the_form() {
+    let reports = reports_folder();
+    let mut app = App::saving_to(reports.path());
+
+    app.palette("snapshot");
+
+    let form = app.form().expect("the palette's snapshot opens the form");
+    assert_eq!(form.kind, ReportKind::Snapshot);
+    assert!(form.folder.is_dir());
+    assert!(form.folder.starts_with(reports.path()));
+    let view = fs::read_to_string(form.folder.join("view.txt")).expect("view.txt is saved");
+    assert!(
+        !view.contains("snapshot for a bug report"),
+        "the palette was gone when the snapshot was taken"
+    );
+}
+
+#[test]
+fn palette_records_and_stops() {
+    let reports = reports_folder();
+    let mut app = App::saving_to(reports.path());
+
+    app.palette("start recording");
+    assert!(app.recording(), "the palette starts a recording");
+    assert!(app.ui.recorder().is_recording());
+    app.click(Role::Link, "Inbox");
+    app.press("secondary-k");
+    app.type_text("hello");
+    app.press("escape");
+    app.palette("stop recording");
+
+    assert!(!app.recording());
+    assert!(!app.ui.recorder().is_recording());
+    let form = app.form().expect("stopping from the palette opens the form");
+    assert_eq!(form.kind, ReportKind::Recording);
+    let events = saved_events(&form.folder);
+    for event in &events {
+        match event {
+            Event::Action(step) => assert!(
+                !step.action.contains("Request"),
+                "the stop command's own step is cut: {}",
+                step.action
+            ),
+            Event::Interaction(i) => {
+                if let Gesture::Type { text, .. } = &i.gesture {
+                    assert!(!text.contains("stop"), "the palette typing for the stop is cut");
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        events.iter().any(|event| matches!(event, Event::Interaction(_))),
+        "the steps before the stop were kept"
+    );
+    // Typing may be saved a key at a time, so read it joined up.
+    let typed: String = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Interaction(i) => match &i.gesture {
+                Gesture::Type { text, .. } => Some(text.as_str()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert!(typed.contains("hello"), "the palette typing before the stop is kept: {typed:?}");
+    assert!(!typed.contains("stop"), "the palette typing for the stop is cut: {typed:?}");
+    let opens = events
+        .iter()
+        .filter(|event| {
+            matches!(event, Event::Interaction(i)
+                if matches!(&i.gesture, Gesture::Key { key, .. } if key == "secondary-k"))
+        })
+        .count();
+    assert_eq!(opens, 1, "only the palette opened in the middle is kept, not the stop's");
+    assert_replays(&form.folder);
+}
+
+#[test]
+fn open_last_report_reopens_the_edited_form() {
+    let reports = reports_folder();
+    let mut app = App::saving_to(reports.path());
+    app.palette("snapshot");
+    let folder = app.form().expect("the snapshot opens the form").folder;
+    app.send(ReportAction::Happened("the sidebar flickers".to_owned()));
+    app.press("escape");
+    if app.form().is_some() {
+        app.send(ReportAction::Close);
+    }
+    assert!(app.form().is_none(), "the form is closed");
+
+    app.palette("open the last");
+
+    let form = app.form().expect("the last report opens again");
+    assert_eq!(form.folder, folder);
+    assert_eq!(form.happened, "the sidebar flickers");
+}
+
+#[test]
+fn draw_circle_names_the_element() {
+    let reports = reports_folder();
+    let mut app = App::saving_to(reports.path());
+    app.press(SNAPSHOT);
+    let folder = app.form().expect("the snapshot opens the form").folder;
+    let (x, y, width, height) = app.place("Link", "Inbox");
+
+    app.click(Role::Button, "Draw on the window");
+    assert!(app.form().is_some_and(|form| form.drawing), "draw mode is on");
+
+    // A loop round the row, 16 steps, back where it began.
+    let (cx, cy) = (x + width / 2., y + height / 2.);
+    let (rx, ry) = (width / 2. + 4., height / 2. + 4.);
+    let ring: Vec<(f32, f32)> = (0..=16)
+        .map(|step| {
+            #[allow(clippy::cast_precision_loss)]
+            let angle = step as f32 / 16. * std::f32::consts::TAU;
+            (cx + rx * angle.cos(), cy + ry * angle.sin())
+        })
+        .collect();
+    app.stroke(&ring);
+    let strokes = app.form().expect("the form is open").strokes;
+    assert_eq!(strokes.len(), 1, "the loop is one stroke");
+    assert!(strokes[0].points.len() >= 12, "the stroke keeps its path");
+    assert!(
+        strokes[0].covers.iter().any(|c| c.label == "Inbox"),
+        "the loop covers the row: {:?}",
+        strokes[0].covers
+    );
+
+    // A second mark, away from the tools, then undo takes it back.
+    app.stroke(&[(500., 400.), (560., 420.), (620., 400.), (680., 430.)]);
+    assert_eq!(app.form().expect("the form is open").strokes.len(), 2);
+    app.click(Role::Button, "Undo last mark");
+    let after_undo = app.form().expect("the form is open").strokes;
+    assert_eq!(after_undo.len(), 1, "Undo removes the last mark");
+    assert!(after_undo[0].covers.iter().any(|c| c.label == "Inbox"));
+
+    app.click(Role::Button, "Finish drawing");
+    assert!(app.form().is_some_and(|form| !form.drawing), "Done leaves draw mode");
+    let prompt = app.copy();
+
+    assert!(prompt.contains("Inbox"), "the prompt names the row: {prompt}");
+    assert!(prompt.contains("circle around"), "the prompt names the mark: {prompt}");
+    let drawing = fs::read_to_string(folder.join("drawing.json")).expect("drawing.json is saved");
+    let text = drawing.trim();
+    assert!(text.starts_with('{') && text.ends_with('}'), "drawing.json is a JSON object");
+    assert_eq!(drawing.matches("\"shape\"").count(), 1, "one stroke is saved");
+    assert!(drawing.contains("loop"));
+    assert!(drawing.contains("Inbox"), "the stroke's covers name the row");
+    assert!(has_file(&folder, "window.png"), "a snapshot saves a picture of the window");
+    let marks = fs::read_to_string(folder.join("marks.svg")).expect("marks.svg is saved with a mark");
+    assert!(marks.contains("window.png"), "the marks are drawn over the picture");
+    assert_eq!(marks.matches("<polyline").count(), 1, "the one kept stroke is drawn");
+}
+
+fn rpc(method: &str) -> RpcCall {
+    RpcCall {
+        method: method.to_owned(),
+        started: Instant::now(),
+        duration: Duration::from_millis(7),
+        status: "ok".to_owned(),
+    }
+}
+
+#[test]
+fn rpc_calls_are_recorded_and_replay_still_matches() {
+    let reports = reports_folder();
+    let mut app = App::saving_to(reports.path());
+    let feed = app.ui.recorder().rpc_feed();
+
+    feed.push(rpc("humata.v1.Test/BeforeRecording"));
+    app.press(RECORD);
+    assert!(app.recording());
+    feed.push(rpc("humata.v1.Test/First"));
+    app.click(Role::Link, "Inbox");
+    feed.push(rpc("humata.v1.Test/Second"));
+    app.press(RECORD);
+    let form = app.form().expect("stopping opens the form");
+    feed.push(rpc("humata.v1.Test/AfterStop"));
+
+    let events = saved_events(&form.folder);
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            Event::Rpc(call) => Some(call),
+            _ => None,
+        })
+        .collect();
+    let methods: Vec<&str> = calls.iter().map(|call| call.method.as_str()).collect();
+    assert_eq!(methods, ["humata.v1.Test/First", "humata.v1.Test/Second"]);
+    for call in &calls {
+        assert_eq!(call.machine, "local");
+        assert_eq!(call.status, "ok");
+        assert!(call.request.is_none() && call.response.is_none(), "no bodies are kept");
+    }
+    assert_replays(&form.folder);
+
+    // The call after the stop belongs to no recording: a later one has none.
+    app.send(ReportAction::Close);
+    app.press(RECORD);
+    app.click(Role::Link, "Inbox");
+    app.press(RECORD);
+    let later = app.form().expect("the second stop opens the form");
+    assert!(
+        !saved_events(&later.folder)
+            .iter()
+            .any(|event| matches!(event, Event::Rpc(_))),
+        "a call made between recordings is in neither"
+    );
 }

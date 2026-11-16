@@ -267,6 +267,124 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (session_id, conversation_id)
     ) STRICT;
 ",
+    "
+    -- A start fresh's first message until it is typed into the conversation
+    -- it was made for (PER-15, D153): one per session, the newest.
+    CREATE TABLE fresh_seeds (
+        session_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        seed TEXT NOT NULL,
+        created_unix_ms INTEGER NOT NULL
+    ) STRICT;
+",
+    "
+    -- Board items (BD-1..BD-16, SL-6..SL-8). No foreign keys: items outlive
+    -- the sessions and channels they name.
+    CREATE TABLE board_prefixes (
+        owner TEXT PRIMARY KEY,
+        prefix TEXT NOT NULL UNIQUE
+    ) STRICT;
+    CREATE TABLE board_counters (
+        prefix TEXT PRIMARY KEY,
+        last INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE board_items (
+        key TEXT PRIMARY KEY,
+        board_kind INTEGER NOT NULL,
+        board_id TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        col INTEGER NOT NULL,
+        rank TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_unix_ms INTEGER NOT NULL,
+        updated_unix_ms INTEGER NOT NULL,
+        revision INTEGER NOT NULL,
+        done_unix_ms INTEGER,
+        deleted INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE INDEX board_items_by_board ON board_items (board_kind, board_id, deleted);
+    CREATE INDEX board_items_by_channel ON board_items (channel, deleted);
+    CREATE TABLE board_item_sessions (
+        item TEXT NOT NULL REFERENCES board_items (key),
+        session TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        PRIMARY KEY (item, session)
+    ) STRICT;
+    CREATE TABLE board_item_deps (
+        item TEXT NOT NULL REFERENCES board_items (key),
+        depends_on TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        PRIMARY KEY (item, depends_on)
+    ) STRICT;
+    CREATE TABLE board_history (
+        item TEXT NOT NULL REFERENCES board_items (key),
+        n INTEGER NOT NULL,
+        at_unix_ms INTEGER NOT NULL,
+        actor TEXT NOT NULL,
+        kind INTEGER NOT NULL,
+        field TEXT NOT NULL,
+        old_value TEXT NOT NULL,
+        new_value TEXT NOT NULL,
+        lost INTEGER NOT NULL,
+        revision INTEGER NOT NULL,
+        cause TEXT NOT NULL,
+        PRIMARY KEY (item, n)
+    ) STRICT;
+",
+    "
+    -- The last status and pointers each machine reported for each session that
+    -- lives on it (SL-3, PER-27), kept on the host so a restart still shows
+    -- them. No foreign key: the host's session row may be gone while a report
+    -- for it is still on its way. `reported` is the API's SessionStatus;
+    -- `problem` and `pointers` are the messages the daemon encodes.
+    CREATE TABLE remote_session_reports (
+        machine TEXT NOT NULL,
+        session TEXT NOT NULL,
+        reported INTEGER NOT NULL,
+        exit_code INTEGER NOT NULL,
+        problem BLOB,
+        pointers BLOB NOT NULL,
+        pointers_at_ms INTEGER,
+        reported_unix_ms INTEGER NOT NULL,
+        last_seen_unix_ms INTEGER,
+        PRIMARY KEY (machine, session)
+    ) STRICT;
+",
+    "
+    -- Where each fork came from (FK-1..FK-3). Never rewritten: a session shows
+    -- under its nearest ancestor that isn't archived (FK-13). No foreign key: a
+    -- parent may be deleted while its forks live on. `kind` is the API's
+    -- ForkKind; `before_turn` 0 means from now.
+    CREATE TABLE fork_origins (
+        session_id TEXT PRIMARY KEY,
+        parent TEXT NOT NULL,
+        kind INTEGER NOT NULL,
+        before_turn INTEGER NOT NULL,
+        created_unix_ms INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX fork_origins_by_parent ON fork_origins (parent);
+    -- Archived sessions (MV-7, LD-2, MV-15, D110, D170). Written before the
+    -- agent stops, so a restart finishes an archive cut short. `state` 0
+    -- archiving, 1 archived (clones wait for the undo window), 2 freed.
+    -- `summary` is the API's ArchiveSummary as the daemon encodes it.
+    CREATE TABLE archives (
+        session_id TEXT PRIMARY KEY,
+        archived_unix_ms INTEGER NOT NULL,
+        state INTEGER NOT NULL,
+        summary BLOB NOT NULL,
+        free_after_unix_ms INTEGER NOT NULL
+    ) STRICT;
+",
+    "
+    -- What the agent's own hooks last said about its turn (D169): the API's
+    -- TurnState and when the hook's report was made (unix ns), or NULL when
+    -- none was heard since the agent launched or resumed (the upsert clears
+    -- both then).
+    ALTER TABLE agents ADD COLUMN hook_turn INTEGER;
+    ALTER TABLE agents ADD COLUMN hook_turn_at INTEGER;
+",
 ];
 
 /// The schema this build writes and reads.

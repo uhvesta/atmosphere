@@ -16,13 +16,20 @@ mod board;
 mod channel;
 mod chrome;
 mod code_wrap;
+mod comment_cards;
 mod desk;
 mod desk_bar;
+mod desk_board;
+mod desk_files;
+mod desk_info;
+mod document_tab;
 mod file_manager;
 mod hosts;
 mod lists;
+mod machine_page;
 mod overlays;
 mod pages;
+mod record_video;
 mod panels;
 mod request_card;
 mod restart_report;
@@ -30,6 +37,7 @@ mod resume_failed;
 mod session_tabs;
 mod settings;
 mod shell;
+mod starting;
 mod sidebar;
 mod sidebar_desk;
 mod storage_view;
@@ -45,6 +53,7 @@ use gpui_kit::component::theme::{Theme, ThemeMode};
 use gpui_kit::{prelude::*, *};
 
 pub use shell::Shell;
+pub use starting::{STARTING_WINDOW, Starting};
 
 use crate::bridge::Ui;
 

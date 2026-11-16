@@ -12,15 +12,20 @@ use std::cmp::Reverse;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use gpui_kit::base::test_support::snapshots;
+use gpui_kit::base::test_support::{snapshots, texts};
 use gpui_kit::test::ElementSnapshot;
 use gpui_kit::{ElementId, Pixels, Point, Window};
-use humata2_app::{AppAction, AppState, PinTarget, PinnedComment, ReportForm, ReportKind};
+use humata2_app::{
+    AppAction, AppState, Overlay, PinTarget, PinnedComment, Rect, ReportForm, ReportKind,
+};
+use crate::record_video::{Sampler, SamplerError};
 use humata2_report::{
-    Captured, Comment, Context, Element, Form, FormError, Gesture, Limits, Pasted, PromptError,
-    Recorder as Reports, RecorderError, ScrubError, Secrets, Trees, WindowSize, WriteError,
+    Bounds, Captured, Comment, Context, Drawing, Element, Form, FormError, Gesture, Limits, Mark,
+    Pasted, PictureError, PixelBox, PromptError, Recorder as Reports, RecorderError, Rpc, ScrubError, Secrets, Trees, WindowSize,
+    WriteError,
 };
 
 /// The accessible label of the dot that stops a recording; a click on it
@@ -71,31 +76,139 @@ pub enum ReportError {
     /// The prompt couldn't be made from the saved report.
     #[error("The report couldn't be copied. {0}")]
     Prompt(#[source] PromptError),
+    /// The window couldn't be drawn to a picture. The report's text files
+    /// were saved without `window.png`.
+    #[error(
+        "The report was saved without a picture of the window: it couldn't be drawn ({message}). \
+         The text files are complete; take a new snapshot if you need the picture."
+    )]
+    Render {
+        /// What the renderer said.
+        message: String,
+    },
+    /// The window's picture couldn't be saved. The report's text files
+    /// were saved without it.
+    #[error("The report was saved without a picture of the window. {0}")]
+    Picture(#[source] PictureError),
+    /// The recording's video couldn't be saved. The report's text files
+    /// and picture were saved without it.
+    #[error("{0}")]
+    Video(#[source] SamplerError),
 }
 
 /// The longest action name kept; longer ones (a whole workspace loading)
 /// are cut after their variant.
 const NAME: usize = 160;
 
+/// The most daemon calls held between two drains.
+const MAX_CALLS: usize = 20_000;
+
+/// A daemon call the app made: its method, when it began, how long it took
+/// to answer and how it ended (`ok`, or the status code's name).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcCall {
+    /// The full method, such as `humata.v1.SessionService/List`.
+    pub method: String,
+    /// When the call began.
+    pub started: Instant,
+    /// How long it took to answer.
+    pub duration: Duration,
+    /// `ok`, or the status code's name, such as `unavailable`.
+    pub status: String,
+}
+
+#[derive(Default)]
+struct Feed {
+    /// When the running recording began; `None` when none runs.
+    since: Option<Instant>,
+    calls: Vec<RpcCall>,
+}
+
+/// Where daemon calls are told to the recorder, from any thread. Cheap to
+/// clone; every clone is the same feed.
+#[derive(Clone, Default)]
+pub struct RpcFeed {
+    inner: Arc<Mutex<Feed>>,
+}
+
+impl RpcFeed {
+    fn lock(&self) -> MutexGuard<'_, Feed> {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Tells of a call. It is kept only while a recording runs, and only
+    /// when it began after the recording did.
+    pub fn push(&self, call: RpcCall) {
+        let mut feed = self.lock();
+        if feed
+            .since
+            .is_some_and(|since| call.started >= since && feed.calls.len() < MAX_CALLS)
+        {
+            feed.calls.push(call);
+        }
+    }
+
+    fn begin(&self, at: Instant) {
+        let mut feed = self.lock();
+        feed.since = Some(at);
+        feed.calls.clear();
+    }
+
+    fn end(&self) {
+        let mut feed = self.lock();
+        feed.since = None;
+        feed.calls.clear();
+    }
+
+    fn take(&self) -> Vec<RpcCall> {
+        std::mem::take(&mut self.lock().calls)
+    }
+}
+
 struct Inner {
     reports: Reports,
+    feed: RpcFeed,
+    /// Where the recording stood when the palette opened.
+    mark: Option<Mark>,
     started: Option<Instant>,
     folder: Option<PathBuf>,
     title: Option<String>,
     seeded: Vec<(String, String)>,
     /// A run of typing or scrolling that more of the same may extend.
     pending: Option<(u64, Gesture)>,
+    /// What went wrong with the last report's picture, until the caller
+    /// takes it to tell the person.
+    warning: Option<ReportError>,
+    /// The running recording's video, when its thread started.
+    video: Option<Sampler>,
+    /// The view and layout last offered to the video, so a frame that
+    /// changed nothing isn't drawn again.
+    sampled: Option<u64>,
+    /// Whether the palette was open after the last action.
+    palette_open: bool,
+    /// A palette command was just rewound out: the key that ran it,
+    /// told after the app handled it, is left out too.
+    drop_enter: bool,
 }
 
 impl Default for Inner {
     fn default() -> Self {
         Self {
             reports: Reports::new(Limits::default()),
+            feed: RpcFeed::default(),
+            mark: None,
             started: None,
             folder: None,
             title: None,
             seeded: Vec::new(),
             pending: None,
+            warning: None,
+            video: None,
+            sampled: None,
+            palette_open: false,
+            drop_enter: false,
         }
     }
 }
@@ -145,6 +258,23 @@ impl Recorder {
         secrets
     }
 
+    /// The values of every secret, for covering them in pictures.
+    pub(crate) fn secret_values(&self) -> Vec<String> {
+        let mut values: Vec<String> = env_secrets(std::env::vars())
+            .into_iter()
+            .map(|(_, value)| value)
+            .collect();
+        values.extend(self.inner.borrow().seeded.iter().map(|(_, value)| value.clone()));
+        values
+    }
+
+    /// What went wrong with the picture of the last report saved, if
+    /// anything: the report itself was saved, only `window.png` is missing.
+    /// Taking it clears it; the caller toasts it.
+    pub fn take_warning(&self) -> Option<ReportError> {
+        self.inner.borrow_mut().warning.take()
+    }
+
     fn folder(&self) -> Result<PathBuf, ReportError> {
         self.inner.borrow().folder.clone().ok_or(ReportError::NoFolder)
     }
@@ -163,7 +293,10 @@ impl Recorder {
     ) -> Result<(), ReportError> {
         self.start(window_size(window), trees(window, state))
             .map_err(ReportError::Recorder)?;
-        self.inner.borrow_mut().title = title;
+        let mut inner = self.inner.borrow_mut();
+        inner.title = title;
+        inner.sampled = None;
+        inner.video = Sampler::start(window.scale_factor());
         Ok(())
     }
 
@@ -180,15 +313,26 @@ impl Recorder {
     ) -> Result<ReportForm, ReportError> {
         let folder = self.folder()?;
         self.frame(window);
+        let picture = render_masked(window, &self.secret_values());
         let kept = self.inner.borrow_mut().title.take();
+        let video = self.inner.borrow_mut().video.take();
         let captured = self.stop().map_err(ReportError::Recorder)?;
-        self.save(
+        let form = self.save(
             &folder,
             captured,
             title.or(kept).unwrap_or_default(),
             ReportKind::Recording,
             window,
-        )
+            picture,
+        )?;
+        // A video that can't be saved never loses the report.
+        if let Some(Err(error)) = video.map(|video| video.finish(&form.folder)) {
+            let mut inner = self.inner.borrow_mut();
+            if inner.warning.is_none() {
+                inner.warning = Some(ReportError::Video(error));
+            }
+        }
+        Ok(form)
     }
 
     /// Saves one moment as a report and gives the form to fill in.
@@ -206,12 +350,14 @@ impl Recorder {
         let mut context = context(window_size(window));
         context.started_unix_ms = now_ms();
         let captured = humata2_report::snapshot(context, trees(window, state));
+        let picture = render_masked(window, &self.secret_values());
         self.save(
             &folder,
             captured,
             title.unwrap_or_default(),
             ReportKind::Snapshot,
             window,
+            picture,
         )
     }
 
@@ -222,6 +368,7 @@ impl Recorder {
         title: String,
         kind: ReportKind,
         window: &Window,
+        picture: Result<image::RgbaImage, ReportError>,
     ) -> Result<ReportForm, ReportError> {
         let form = Form {
             happened: title.clone(),
@@ -230,7 +377,15 @@ impl Recorder {
         let scrubbed = humata2_report::scrub(captured, form, &self.secrets())
             .map_err(ReportError::Scrub)?;
         let dir = humata2_report::write(folder, &scrubbed).map_err(ReportError::Write)?;
-        Ok(ReportForm::new(dir, kind, title, pins(&snapshots(window))))
+        // A missing picture never loses the text files.
+        let warning = picture.and_then(|image| {
+            humata2_report::write_window(&dir, &image).map_err(ReportError::Picture)
+        });
+        self.inner.borrow_mut().warning = warning.err();
+        let (targets, places) = pins_placed(&snapshots(window));
+        let size = window_size(window);
+        Ok(ReportForm::new(dir, kind, title, targets)
+            .with_places(places, (size.width, size.height)))
     }
 
     /// Adds `form`'s details to its saved report and gives the prompt to put
@@ -244,11 +399,28 @@ impl Recorder {
         let details = Form {
             happened: form.happened.clone(),
             expected: form.expected.clone(),
-            comments: form.comments.iter().map(comment).collect(),
+            comments: form
+                .comments
+                .iter()
+                .map(|pinned| comment(pinned, form))
+                .collect(),
+            drawing: Drawing {
+                window: humata2_report::Size {
+                    width: form.window.0,
+                    height: form.window.1,
+                },
+                strokes: form.strokes.iter().map(stroke).collect(),
+            },
         };
         humata2_report::fill_form(&form.folder, details, &self.secrets())
             .map_err(ReportError::Form)?;
         humata2_report::copy_prompt(&form.folder).map_err(ReportError::Prompt)
+    }
+
+    /// Where daemon calls are told to this recorder, from any thread.
+    #[must_use]
+    pub fn rpc_feed(&self) -> RpcFeed {
+        self.inner.borrow().feed.clone()
     }
 
     /// Whether a recording runs.
@@ -269,7 +441,11 @@ impl Recorder {
         };
         let mut inner = self.inner.borrow_mut();
         inner.reports.start(context, now)?;
-        inner.started = Some(Instant::now());
+        let at = Instant::now();
+        inner.started = Some(at);
+        inner.mark = None;
+        inner.drop_enter = false;
+        inner.feed.begin(at);
         Ok(())
     }
 
@@ -282,15 +458,41 @@ impl Recorder {
         let mut inner = self.inner.borrow_mut();
         let at = elapsed(inner.started);
         inner.flush();
+        inner.drain();
         inner.started = None;
+        inner.mark = None;
+        inner.video = None;
+        inner.feed.end();
         inner.reports.stop(at)
     }
 
     /// Records the action the store just reduced and the state after it.
     pub fn action(&self, name: &str, state: &AppState) {
         let text = state_text(state);
+        let palette = state
+            .overlays
+            .iter()
+            .any(|overlay| matches!(overlay, Overlay::Palette));
+        let requested = state.report.request.is_some();
         let mut inner = self.inner.borrow_mut();
         inner.flush();
+        inner.drain();
+        let opened = palette && !inner.palette_open;
+        inner.palette_open = palette;
+        if requested && let Some(mark) = inner.mark.take() {
+            // A report command run from the palette: the steps that led to
+            // it, and this action, stay out of the recording.
+            if inner
+                .reports
+                .recording_mut()
+                .is_some_and(|recording| recording.rewind(mark))
+            {
+                inner.drop_enter = true;
+                return;
+            }
+        } else if opened && !requested {
+            inner.mark = inner.reports.recording_mut().map(|recording| recording.mark());
+        }
         let at = elapsed(inner.started);
         if let Some(recording) = inner.reports.recording_mut() {
             recording.action(at, name, &text);
@@ -305,6 +507,15 @@ impl Recorder {
         let mut inner = self.inner.borrow_mut();
         if !inner.reports.is_recording() {
             return;
+        }
+        if std::mem::take(&mut inner.drop_enter)
+            && matches!(&gesture, Gesture::Key { key, .. } if key == "enter")
+        {
+            return;
+        }
+        if !inner.palette_open {
+            // Done with the palette closed: what came before stays.
+            inner.mark = None;
         }
         let at = elapsed(inner.started);
         let joined = match (&mut inner.pending, &gesture) {
@@ -355,15 +566,71 @@ impl Recorder {
         let elements = snapshots(window);
         let (view, layout) = (view_text(&elements), layout_text(&elements));
         let mut inner = self.inner.borrow_mut();
+        inner.drain();
         let at = elapsed(inner.started);
         if let Some(recording) = inner.reports.recording_mut() {
             recording.view(at, &view);
             recording.layout(at, &layout);
         }
+        drop(inner);
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&(&view, &layout), &mut hasher);
+        self.sample(window, std::hash::Hasher::finish(&hasher));
+    }
+
+    /// Offers the window to the recording's video when a sample is due
+    /// (at most 5 a second, D160) and the frame's view or layout (`key`)
+    /// changed since the last sample; a still screen costs nothing. A
+    /// picture that can't be drawn is skipped.
+    fn sample(&self, window: &Window, key: u64) {
+        let at_ms = {
+            let inner = self.inner.borrow();
+            let (Some(video), Some(started)) = (inner.video.as_ref(), inner.started) else {
+                return;
+            };
+            if inner.sampled == Some(key) {
+                return;
+            }
+            let now = Instant::now();
+            if !video.due(now) {
+                return;
+            }
+            u64::try_from(now.saturating_duration_since(started).as_millis())
+                .unwrap_or(u64::MAX)
+        };
+        let Ok(image) = render_masked(window, &self.secret_values()) else {
+            return;
+        };
+        let mut inner = self.inner.borrow_mut();
+        inner.sampled = Some(key);
+        if let Some(video) = inner.video.as_ref() {
+            video.offer(at_ms, image);
+        }
     }
 }
 
 impl Inner {
+    /// Moves the daemon calls told since the last time into the recording.
+    fn drain(&mut self) {
+        let calls = self.feed.take();
+        let (Some(start), Some(recording)) = (self.started, self.reports.recording_mut()) else {
+            return;
+        };
+        let millis = |length: Duration| u64::try_from(length.as_millis()).unwrap_or(u64::MAX);
+        for call in calls {
+            recording.rpc(Rpc {
+                at_ms: millis(call.started.saturating_duration_since(start)),
+                machine: "local".to_owned(),
+                method: call.method,
+                status: call.status,
+                duration_ms: millis(call.duration),
+                request: None,
+                response: None,
+                holds: humata2_report::Holds::default(),
+            });
+        }
+    }
+
     /// Writes the joined typing or scrolling, if any.
     fn flush(&mut self) {
         if let Some((at, gesture)) = self.pending.take()
@@ -411,17 +678,121 @@ fn trees(window: &Window, state: &AppState) -> Trees {
 }
 
 /// A form's comment as the report names it.
-fn comment(comment: &PinnedComment) -> Comment {
-    let target = &comment.target;
-    let element = target
+fn comment(comment: &PinnedComment, form: &ReportForm) -> Comment {
+    let place = form
+        .elements
+        .iter()
+        .position(|target| *target == comment.target)
+        .and_then(|at| form.places.get(at).copied().flatten())
+        .map(|rect| Bounds {
+            x: rect.x,
+            y: rect.y,
+            width: u32::try_from(rect.width).unwrap_or(0),
+            height: u32::try_from(rect.height).unwrap_or(0),
+        });
+    Comment {
+        element: pinned(&comment.target),
+        text: comment.text.clone(),
+        place,
+    }
+}
+
+/// `window` as the engine draws it, with the boxes of everything that
+/// shows a secret (and of terminals, whose text is scrubbed from reports)
+/// filled in. No OS capture is involved. Used for `window.png` and for each
+/// video frame.
+///
+/// # Errors
+///
+/// [`ReportError::Render`] when the window can't be drawn to an image.
+pub(crate) fn render_masked(
+    window: &Window,
+    secrets: &[String],
+) -> Result<image::RgbaImage, ReportError> {
+    let mut picture = window
+        .render_to_image()
+        .map_err(|error| ReportError::Render {
+            message: error.to_string(),
+        })?;
+    let scale = window.scale_factor();
+    let mut boxes: Vec<PixelBox> = Vec::new();
+    for element in snapshots(window).iter().filter(|element| element.visible()) {
+        let terminal = element
+            .role()
+            .is_some_and(|role| matches!(role, gpui_kit::Role::Terminal | gpui_kit::Role::Log));
+        let shows = [
+            element.label(),
+            element.value(),
+            element.description(),
+            element.placeholder(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|text| shows_secret(text, secrets));
+        if terminal || shows {
+            boxes.push(pixel_box(element.bounds(), scale));
+        }
+    }
+    for text in texts(window).iter().filter(|text| text.visible()) {
+        if shows_secret(text.text(), secrets) {
+            boxes.push(pixel_box(text.bounds(), scale));
+        }
+    }
+    humata2_report::mask(&mut picture, &boxes);
+    Ok(picture)
+}
+
+/// Whether `text` holds any of `secrets`.
+fn shows_secret(text: &str, secrets: &[String]) -> bool {
+    secrets
+        .iter()
+        .any(|secret| !secret.is_empty() && text.contains(secret.as_str()))
+}
+
+/// `bounds` in window points as a box in picture pixels at `scale`,
+/// rounded outwards so a box never under-covers.
+fn pixel_box(bounds: gpui_kit::Bounds<Pixels>, scale: f32) -> PixelBox {
+    let left = f32::from(bounds.origin.x) * scale;
+    let top = f32::from(bounds.origin.y) * scale;
+    let right = (f32::from(bounds.origin.x) + f32::from(bounds.size.width)) * scale;
+    let bottom = (f32::from(bounds.origin.y) + f32::from(bounds.size.height)) * scale;
+    PixelBox {
+        x: left.floor() as i32,
+        y: top.floor() as i32,
+        width: (right.ceil() - left.floor()).max(0.) as u32,
+        height: (bottom.ceil() - top.floor()).max(0.) as u32,
+    }
+}
+
+/// A pin target as the report names an element.
+fn pinned(target: &PinTarget) -> Element {
+    target
         .within
         .iter()
         .fold(Element::new(&target.role, &target.label), |element, (role, label)| {
             element.inside(role, label)
-        });
-    Comment {
-        element,
-        text: comment.text.clone(),
+        })
+}
+
+/// A form's mark as the report keeps it.
+fn stroke(stroke: &humata2_app::Stroke) -> humata2_report::Stroke {
+    let shape = match stroke.shape {
+        humata2_app::Shape::Loop => humata2_report::Shape::Loop,
+        humata2_app::Shape::Line => humata2_report::Shape::Line,
+        humata2_app::Shape::Dot => humata2_report::Shape::Dot,
+    };
+    humata2_report::Stroke {
+        shape,
+        points: stroke
+            .points
+            .iter()
+            .map(|point| humata2_report::Point {
+                x: point.x,
+                y: point.y,
+            })
+            .collect(),
+        covers: stroke.covers.iter().map(pinned).collect(),
+        more: stroke.more,
     }
 }
 
@@ -479,7 +850,9 @@ pub fn state_text(state: &AppState) -> String {
     let toasts: Vec<&str> = state.toasts.iter().map(|toast| toast.text.as_str()).collect();
     let _ = writeln!(text, "toasts: {toasts:#?}");
     let _ = writeln!(text, "sidebar cursor: {:?}", state.sidebar.cursor);
-    let _ = writeln!(text, "palette: {:?} {:?}", state.palette.query, state.palette.cursor);
+    if state.overlays.iter().any(|overlay| matches!(overlay, Overlay::Palette)) {
+        let _ = writeln!(text, "palette: {:?} {:?}", state.palette.query, state.palette.cursor);
+    }
     let _ = writeln!(text, "saved: {:#?}", state.saved());
     text
 }
@@ -611,7 +984,15 @@ pub fn focused(elements: &[ElementSnapshot]) -> Option<Element> {
 /// view, each once, outside the bug-report sheet itself.
 #[must_use]
 pub fn pins(elements: &[ElementSnapshot]) -> Vec<PinTarget> {
+    pins_placed(elements).0
+}
+
+/// [`pins`], and where each is drawn in window points (the first one drawn
+/// when a target is on screen more than once).
+#[must_use]
+pub fn pins_placed(elements: &[ElementSnapshot]) -> (Vec<PinTarget>, Vec<Option<Rect>>) {
     let mut targets: Vec<PinTarget> = Vec::new();
+    let mut places: Vec<Option<Rect>> = Vec::new();
     for found in elements.iter().filter(|element| element.visible()) {
         let Some((role, label)) = named(found) else {
             continue;
@@ -631,12 +1012,26 @@ pub fn pins(elements: &[ElementSnapshot]) -> Vec<PinTarget> {
         };
         if !targets.contains(&target) {
             targets.push(target);
+            places.push(Some(rect(found)));
         }
         if targets.len() >= MAX_PINS {
             break;
         }
     }
-    targets
+    (targets, places)
+}
+
+/// Where `snapshot` is drawn, in whole window points.
+#[allow(clippy::cast_possible_truncation)]
+fn rect(snapshot: &ElementSnapshot) -> Rect {
+    let whole = |length: Pixels| f32::from(length).round() as i32;
+    let bounds = snapshot.bounds();
+    Rect {
+        x: whole(bounds.origin.x),
+        y: whole(bounds.origin.y),
+        width: whole(bounds.size.width),
+        height: whole(bounds.size.height),
+    }
 }
 
 /// A keystroke as a flow spells it: `enter`, `secondary-k`, `shift-tab`.
@@ -710,6 +1105,120 @@ mod tests {
     }
 
     #[test]
+    fn text_with_a_secret_in_it_is_covered_and_other_text_is_not() {
+        let secrets = vec!["ghp_Zx81Qm2Lp0Vb7Rt4".to_owned(), String::new()];
+        assert!(shows_secret("token ghp_Zx81Qm2Lp0Vb7Rt4 set", &secrets));
+        assert!(!shows_secret("nothing to hide", &secrets));
+        assert!(!shows_secret("anything", &[String::new()]));
+    }
+
+    #[test]
+    fn a_covering_box_scales_with_the_window_and_rounds_outwards() {
+        let bounds = gpui_kit::Bounds {
+            origin: gpui_kit::point(gpui_kit::px(10.5), gpui_kit::px(20.)),
+            size: gpui_kit::size(gpui_kit::px(30.), gpui_kit::px(10.25)),
+        };
+        let covering = pixel_box(bounds, 2.);
+        assert_eq!(
+            covering,
+            PixelBox {
+                x: 21,
+                y: 40,
+                width: 60,
+                height: 21,
+            }
+        );
+    }
+
+    fn recording() -> Recorder {
+        let recorder = Recorder::new();
+        let started = recorder.start(WindowSize::default(), Trees::default());
+        assert!(started.is_ok());
+        recorder
+    }
+
+    fn call(started: Instant, method: &str) -> RpcCall {
+        RpcCall {
+            method: method.to_owned(),
+            started,
+            duration: Duration::from_millis(7),
+            status: "ok".to_owned(),
+        }
+    }
+
+    fn rpcs(recorder: &Recorder) -> Vec<Rpc> {
+        let Ok(captured) = recorder.stop() else {
+            return Vec::new();
+        };
+        captured
+            .events()
+            .iter()
+            .filter_map(|event| match event {
+                humata2_report::Event::Rpc(rpc) => Some(rpc.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn calls_outside_a_recording_are_dropped() {
+        let recorder = Recorder::new();
+        let feed = recorder.rpc_feed();
+        feed.push(call(Instant::now(), "a/B"));
+        let started = recorder.start(WindowSize::default(), Trees::default());
+        assert!(started.is_ok());
+        assert!(rpcs(&recorder).is_empty());
+    }
+
+    #[test]
+    fn calls_that_began_before_the_recording_are_dropped() {
+        let before = Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        let recorder = recording();
+        let feed = recorder.rpc_feed();
+        feed.push(call(before, "old/Call"));
+        feed.push(call(Instant::now(), "new/Call"));
+        let kept = rpcs(&recorder);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].method, "new/Call");
+        assert_eq!(kept[0].machine, "local");
+        assert_eq!(kept[0].duration_ms, 7);
+        assert_eq!(kept[0].request, None);
+    }
+
+    #[test]
+    fn a_call_is_told_at_its_offset_into_the_recording() {
+        let recorder = recording();
+        std::thread::sleep(Duration::from_millis(30));
+        recorder
+            .rpc_feed()
+            .push(call(Instant::now(), "later/Call"));
+        let kept = rpcs(&recorder);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].at_ms >= 30);
+    }
+
+    #[test]
+    fn a_stroke_covers_the_elements_it_names() {
+        let target = PinTarget {
+            role: "Button".to_owned(),
+            label: "Save".to_owned(),
+            within: vec![("Dialog".to_owned(), "Edit".to_owned())],
+        };
+        let mark = humata2_app::Stroke {
+            shape: humata2_app::Shape::Loop,
+            points: vec![humata2_app::Point { x: 3, y: 4 }],
+            covers: vec![target.clone()],
+            more: 2,
+        };
+        let made = stroke(&mark);
+        assert_eq!(made.shape, humata2_report::Shape::Loop);
+        assert_eq!(made.points, vec![humata2_report::Point { x: 3, y: 4 }]);
+        assert_eq!(made.covers, vec![pinned(&target)]);
+        assert_eq!(made.more, 2);
+    }
+
+    #[test]
     fn well_known_tokens_are_secrets_at_any_length() {
         let found = env_secrets(vars(&[("GH_TOKEN", "abc"), ("HOME", "/Users/x")]));
         assert_eq!(found, vars(&[("GH_TOKEN", "abc")]));
@@ -774,7 +1283,7 @@ mod tests {
         assert_eq!(found, vec![("Region".to_owned(), "web".to_owned())]);
     }
 
-    fn stroke(modifiers: gpui_kit::Modifiers, key: &str, key_char: Option<&str>) -> gpui_kit::Keystroke {
+    fn key_stroke(modifiers: gpui_kit::Modifiers, key: &str, key_char: Option<&str>) -> gpui_kit::Keystroke {
         gpui_kit::Keystroke {
             modifiers,
             key: key.to_owned(),
@@ -789,14 +1298,14 @@ mod tests {
             shift: true,
             ..gpui_kit::Modifiers::default()
         };
-        assert_eq!(keystroke_gesture(&stroke(held, "r", None), None, None), None);
-        assert_eq!(keystroke_gesture(&stroke(held, "s", None), None, None), None);
+        assert_eq!(keystroke_gesture(&key_stroke(held, "r", None), None, None), None);
+        assert_eq!(keystroke_gesture(&key_stroke(held, "s", None), None, None), None);
     }
 
     #[test]
     fn printable_keys_are_typing_and_others_are_keys() {
         let typed = keystroke_gesture(
-            &stroke(gpui_kit::Modifiers::default(), "a", Some("a")),
+            &key_stroke(gpui_kit::Modifiers::default(), "a", Some("a")),
             None,
             None,
         );
@@ -811,7 +1320,7 @@ mod tests {
             platform: true,
             ..gpui_kit::Modifiers::default()
         };
-        let key = keystroke_gesture(&stroke(command, "k", Some("k")), None, None);
+        let key = keystroke_gesture(&key_stroke(command, "k", Some("k")), None, None);
         assert_eq!(
             key,
             Some(Gesture::Key {
@@ -820,7 +1329,7 @@ mod tests {
             })
         );
         let enter = keystroke_gesture(
-            &stroke(gpui_kit::Modifiers::default(), "enter", Some("\n")),
+            &key_stroke(gpui_kit::Modifiers::default(), "enter", Some("\n")),
             None,
             None,
         );
@@ -839,7 +1348,7 @@ mod tests {
             platform: true,
             ..gpui_kit::Modifiers::default()
         };
-        let pasted = keystroke_gesture(&stroke(command, "v", None), None, Some("hi".to_owned()));
+        let pasted = keystroke_gesture(&key_stroke(command, "v", None), None, Some("hi".to_owned()));
         assert_eq!(
             pasted,
             Some(Gesture::Paste {

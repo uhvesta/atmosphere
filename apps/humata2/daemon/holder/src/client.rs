@@ -1,6 +1,6 @@
 //! Starting a holder and attaching to one.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::OpenOptions;
 use std::io::BufRead;
 use std::os::unix::fs::OpenOptionsExt;
@@ -49,7 +49,24 @@ pub struct Spawned {
 
 /// Starts a holder in a session of its own, so it outlives the caller,
 /// and returns once it's listening. Blocks for up to ten seconds.
-pub fn spawn(spec: &HolderSpec) -> Result<Spawned, HolderError> {
+pub fn spawn(spec: &HolderSpec) -> Result<Spawned, HolderError> {spawn_with_persistence(spec,false,None)}
+
+/// Starts a holder with memory replay only. The explicit flag makes older
+/// binaries fail closed instead of silently writing a raw output transcript.
+pub fn spawn_memory_only(spec:&HolderSpec)->Result<Spawned,HolderError>{spawn_with_persistence(spec,true,None)}
+
+/// Starts a holder as [`spawn`] does that shows `banner` before the
+/// program's first output. A holder from an older build refuses the
+/// option and doesn't start.
+pub fn spawn_with_banner(spec: &HolderSpec, banner: &str) -> Result<Spawned, HolderError> {
+    spawn_with_persistence(spec, false, Some(banner))
+}
+
+fn spawn_with_persistence(
+    spec: &HolderSpec,
+    memory_only: bool,
+    banner: Option<&str>,
+) -> Result<Spawned, HolderError> {
     check_socket_path(&spec.socket)?;
     let launch_failed = |source| HolderError::Launch {
         holder: spec.holder.clone(),
@@ -72,6 +89,13 @@ pub fn spawn(spec: &HolderSpec) -> Result<Spawned, HolderError> {
         .arg(spec.rows.to_string())
         .arg("--scrollback-bytes")
         .arg(spec.scrollback_bytes.to_string())
+        .args(if memory_only {&["--memory-only"][..]}else{&[][..]})
+        .args(
+            banner
+                .map(|banner| [OsStr::new("--banner"), OsStr::new(banner)])
+                .into_iter()
+                .flatten(),
+        )
         .arg("--")
         .arg(&spec.program)
         .args(&spec.args)

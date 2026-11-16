@@ -5,9 +5,10 @@ use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use humata2_clients::comments::CommentsClient;
 use humata2_clients::model::Agent;
 use humata2_clients::{Daemon, Terminals};
-use humata2_clients_live::{LiveDaemon, LiveOptions};
+use humata2_clients_live::{LiveComments, LiveDaemon, LiveOptions};
 use tempfile::TempDir;
 
 use super::cases::World;
@@ -98,7 +99,7 @@ impl Drop for RealWorld {
     }
 }
 
-pub async fn start() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn Terminals>) {
+async fn start_live() -> (RealWorld, LiveDaemon) {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::Builder::new()
         .prefix("h2p")
@@ -161,8 +162,20 @@ pub async fn start() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn Terminals>) {
     let live = LiveDaemon::connect(LiveOptions::new(socket).with_agent(Agent::Claude, AGENT_NAME))
         .await
         .expect("connect to humatad2");
+    (world, live)
+}
+
+pub async fn start() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn Terminals>) {
+    let (world, live) = start_live().await;
     let live = Arc::new(live);
     let daemon: Arc<dyn Daemon> = live.clone();
     let terminals: Arc<dyn Terminals> = live;
     (world, daemon, terminals)
+}
+
+pub async fn start_comments() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn CommentsClient>) {
+    let (world, live) = start_live().await;
+    let comments: Arc<dyn CommentsClient> = Arc::new(LiveComments::new(&live));
+    let daemon: Arc<dyn Daemon> = Arc::new(live);
+    (world, daemon, comments)
 }

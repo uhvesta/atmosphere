@@ -425,6 +425,91 @@ async fn a_session_with_two_clones_names_the_repo() {
     attach.wait_for("[comment on web/refund.rs:2]").await;
 }
 
+/// A request to comment on a file with no repository named.
+fn unnamed_repo_draft(path: &str, first: u32, last: u32, text: &str) -> pb::CreateCommentRequest {
+    let mut request = draft_in("api", path, first, last, text);
+    if let Some(file) = request.anchor.as_mut().and_then(|anchor| anchor.file.as_mut()) {
+        file.repo = None;
+    }
+    request
+}
+
+fn named_repo(comment: &pb::Comment) -> Option<String> {
+    comment
+        .anchor
+        .as_ref()
+        .and_then(|anchor| anchor.file.as_ref())
+        .and_then(|file| file.repo.as_ref())
+        .map(|repo| repo.name.clone())
+        .filter(|name| !name.is_empty())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_comment_on_a_session_folder_file_needs_no_repo_even_with_two_clones() {
+    let (daemon, folder) = daemon_with_repos(&["ledger", "api"]).await;
+    std::fs::write(folder.join("rfc-brin.md"), lines()).unwrap();
+    std::fs::create_dir(folder.join("notes")).unwrap();
+    std::fs::write(folder.join("notes").join("bench-results.md"), lines()).unwrap();
+    let (_token, _tab, mut attach) = shell_with_token(&daemon).await;
+
+    let document = create(&daemon, unnamed_repo_draft("rfc-brin.md", 7, 7, "tighten this")).await;
+    assert_eq!(named_repo(&document), None, "a folder file has no repository");
+    assert_eq!(document.anchor.as_ref().unwrap().quoted, "line seven");
+    let nested = create(&daemon, unnamed_repo_draft("notes/bench-results.md", 2, 2, "units?")).await;
+    assert_eq!(named_repo(&nested), None);
+
+    // A file that is in a clone, not named, still needs the repo.
+    let refused = comments(&daemon)
+        .await
+        .create_comment(unnamed_repo_draft("refund.rs", 3, 3, "which one?"))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::InvalidArgument);
+    // So does a path that climbs out of the folder, or isn't a file.
+    for path in ["../rfc-brin.md", "notes", "missing.md"] {
+        let refused = comments(&daemon).await.create_comment(unnamed_repo_draft(path, 1, 1, "no")).await;
+        assert!(refused.is_err(), "{path} is not a folder file");
+    }
+
+    send(&daemon, &[&document]).await.unwrap();
+    attach.wait_for("[comment on rfc-brin.md:7]").await;
+    let screen = String::from_utf8_lossy(&attach.screen).into_owned();
+    assert!(!screen.contains("/rfc-brin.md") && !screen.contains(":rfc-brin.md"));
+
+    let back = find(&daemon, &document).await;
+    assert_eq!(named_repo(&back), None);
+    assert_eq!(back.anchor.as_ref().unwrap().file.as_ref().unwrap().path, "rfc-brin.md");
+
+    // Listing and resolving by that file see only it.
+    let by_file = comments(&daemon)
+        .await
+        .list_comments(pb::ListCommentsRequest {
+            session: Some(session()),
+            statuses: Vec::new(),
+            file: Some(pb::RepoPath {
+                repo: None,
+                path: "rfc-brin.md".to_owned(),
+            }),
+            page: None,
+            archived: false,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(texts(&by_file), vec!["tighten this".to_owned()]);
+
+    // Rewriting the line addresses the comment, as in a clone.
+    let text: String = NAMES
+        .iter()
+        .enumerate()
+        .map(|(i, name)| if i == 6 { "line seven rewritten\n".to_owned() } else { format!("line {name}\n") })
+        .collect();
+    std::fs::write(folder.join("rfc-brin.md"), text).unwrap();
+    let after = find(&daemon, &document).await;
+    assert_eq!(status_of(&after), pb::CommentStatus::Addressed);
+    assert_eq!(after.addressed_text, "line seven rewritten");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn drafts_sent_and_archived_comments_survive_a_restart_and_nothing_is_typed_again() {
     let (mut daemon, _clone) = daemon_with_clone().await;
@@ -681,6 +766,113 @@ async fn the_feed_tells_of_a_comment_made_changed_and_dropped() {
         .await
         .unwrap();
     assert_eq!(next(&mut events).await.0, pb::Change::Deleted as i32);
+}
+
+type Watch = tonic::Streaming<pb::CommentFeedEvent>;
+
+async fn watch(daemon: &Daemon) -> Watch {
+    comments(daemon)
+        .await
+        .watch_comments(pb::WatchCommentsRequest { session: Some(session()) })
+        .await
+        .unwrap()
+        .into_inner()
+}
+
+async fn next_event(watch: &mut Watch) -> pb::comment_feed_event::Event {
+    tokio::time::timeout(WAIT, watch.message())
+        .await
+        .expect("the feed told nothing in time")
+        .unwrap()
+        .expect("the feed ended")
+        .event
+        .expect("an event with nothing in it")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watching_comments_starts_with_a_resync_then_tells_each_change_in_order() {
+    let (daemon, _clone) = daemon_with_clone().await;
+    let mut feed = watch(&daemon).await;
+    assert!(matches!(next_event(&mut feed).await, pb::comment_feed_event::Event::Resync(true)));
+
+    let made = create(&daemon, draft(3, 3, "first words")).await;
+    comments(&daemon)
+        .await
+        .edit_comment(pb::EditCommentRequest {
+            idempotency_key: None,
+            id: made.id.clone(),
+            text: "better words".to_owned(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+    comments(&daemon)
+        .await
+        .drop_comment(pb::DropCommentRequest {
+            idempotency_key: None,
+            id: made.id.clone(),
+            expected_revision: None,
+        })
+        .await
+        .unwrap();
+
+    match next_event(&mut feed).await {
+        pb::comment_feed_event::Event::Changed(comment) => {
+            assert_eq!(comment.id, made.id);
+            assert_eq!(comment.text, "first words");
+        }
+        other => panic!("expected the new comment, got {other:?}"),
+    }
+    match next_event(&mut feed).await {
+        pb::comment_feed_event::Event::Changed(comment) => {
+            assert_eq!(comment.id, made.id);
+            assert_eq!(comment.text, "better words");
+        }
+        other => panic!("expected the edited comment, got {other:?}"),
+    }
+    match next_event(&mut feed).await {
+        pb::comment_feed_event::Event::Dropped(id) => assert_eq!(Some(id), made.id),
+        other => panic!("expected the dropped id, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn watching_comments_tells_of_an_archive_with_the_time_it_was_archived() {
+    let (daemon, _clone) = daemon_with_clone().await;
+    let made = create(&daemon, draft(3, 3, "to keep")).await;
+    let mut feed = watch(&daemon).await;
+    assert!(matches!(next_event(&mut feed).await, pb::comment_feed_event::Event::Resync(true)));
+
+    comments(&daemon)
+        .await
+        .archive_comment(pb::ArchiveCommentRequest {
+            idempotency_key: None,
+            id: made.id.clone(),
+        })
+        .await
+        .unwrap();
+    match next_event(&mut feed).await {
+        pb::comment_feed_event::Event::Changed(comment) => {
+            assert_eq!(comment.id, made.id);
+            assert!(comment.archived_at.is_some());
+        }
+        other => panic!("expected the archived comment, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sessions_agent_cannot_watch_the_users_comments() {
+    let (daemon, _clone) = daemon_with_clone().await;
+    let (token, _tab, _attach) = shell_with_token(&daemon).await;
+    let refused = comments(&daemon)
+        .await
+        .watch_comments(as_agent(pb::WatchCommentsRequest { session: Some(session()) }, &token))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error_of(&refused).kind, Some(pb::error::Kind::UserOnly(_))),
+        "only the user watches their comments: {refused:?}"
+    );
 }
 
 /// How often `needle` appears in what the program in the tab was typed, as

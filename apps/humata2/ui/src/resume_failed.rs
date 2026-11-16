@@ -7,7 +7,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, RestartAction};
-use humata2_clients::model::{ResumeFailure, Session};
+use humata2_clients::model::{ResumeFailure, Session, SummarySource};
 
 use crate::{
     bridge::Ui,
@@ -45,6 +45,16 @@ fn reason(session: &Session, failure: ResumeFailure, host: &str) -> String {
         ResumeFailure::FolderMissing => format!(
             "This session's folder is gone from {host}. Restore it there, then try again, or start fresh."
         ),
+    }
+}
+
+/// The Start fresh button's words: it says when there is nothing left of the
+/// old conversation to summarize, so the person knows what the new one starts
+/// from.
+pub(crate) fn start_fresh_label(source: Option<SummarySource>) -> &'static str {
+    match source {
+        Some(SummarySource::Nothing) => "Start fresh (nothing left to summarize)",
+        _ => "Start fresh with a summary",
     }
 }
 
@@ -132,7 +142,7 @@ pub(crate) fn note(
                         widgets::send(
                             ui,
                             "resume-start-fresh",
-                            "Start fresh with a summary",
+                            start_fresh_label(session.summary_source),
                             AppAction::Restart(RestartAction::StartFresh(id)),
                         )
                         .outline()
@@ -162,4 +172,19 @@ pub(crate) fn note(
             )
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    // Named, not `super::*`: the module's gpui glob brings in gpui's own
+    // `test` attribute, which would shadow the built-in one.
+    use super::{SummarySource, start_fresh_label};
+
+    #[test]
+    fn only_a_conversation_with_nothing_left_changes_the_button() {
+        let plain = start_fresh_label(None);
+        assert_eq!(start_fresh_label(Some(SummarySource::Transcript)), plain);
+        assert_eq!(start_fresh_label(Some(SummarySource::Scrollback)), plain);
+        assert_ne!(start_fresh_label(Some(SummarySource::Nothing)), plain);
+    }
 }

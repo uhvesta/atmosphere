@@ -354,4 +354,31 @@ mod tests {
         assert!(written.contains("Broken"), "the failing step is in the artifact");
         assert!(!written.contains("never typed"));
     }
+
+    /// Runs of one spec at once, as tests in one binary make, all pass and
+    /// leave one whole run in the spec's directory.
+    #[::std::prelude::v1::test]
+    fn runs_of_one_spec_at_once_each_write_their_run() {
+        let snapshots = humata2_snapshot::snapshots!().expect("the test file is found");
+        let out = out("at-once");
+        let flow = Flow::new(SpecFlow::new("demo", "Runs at once")).type_text("a");
+        let results: Vec<_> = std::thread::scope(|scope| {
+            let runs: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| run(&flow, &mut Fake::default(), &snapshots, &out)))
+                .collect();
+            runs.into_iter().map(|run| run.join().expect("no run panics")).collect()
+        });
+        for result in results {
+            let report = result.unwrap_or_else(|error| panic!("{error}"));
+            assert!(report.artifact().ends_with("flow.md"));
+        }
+        let entries: Vec<_> = std::fs::read_dir(&out)
+            .expect("the out directory exists")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(entries.len(), 1, "only the spec's directory is left: {entries:?}");
+        let written = std::fs::read_to_string(out.join(flow.spec().slug()).join("flow.md"));
+        assert!(written.is_ok_and(|text| text.contains("passed")));
+    }
 }

@@ -10,6 +10,9 @@ use crate::model::{
     ChannelId, FileEntry, Line, MachineId, SessionId, Speaker, Status, Trashed, Turn,
 };
 
+/// The branch the fake clones a repository on: its default branch (DK-3).
+const DEFAULT_BRANCH: &str = "main";
+
 fn call(operation: desk::Operation) -> Option<Call> {
     Some(Call::Desk(operation))
 }
@@ -196,6 +199,13 @@ fn start_now(inner: &mut Inner, new: NewDeskSession) -> Result<SessionId, Daemon
             unpushed: None,
         },
     );
+    for repo in &new.repos {
+        inner
+            .workspace
+            .desk
+            .clone_branches
+            .insert((id.clone(), repo.clone()), DEFAULT_BRANCH.to_owned());
+    }
     inner.changed(&id);
     inner.emit(Event::Resync);
     Ok(id)
@@ -316,6 +326,11 @@ fn clean_up_now(
         inner.workspace.desk.sessions.remove(id);
         inner.workspace.desk.documents.retain(|doc| &doc.session != id);
         inner.workspace.desk.folder_bytes.remove(id);
+        inner
+            .workspace
+            .desk
+            .clone_branches
+            .retain(|(session, _), _| session != id);
         inner.workspace.session_files.remove(id);
         inner
             .workspace
@@ -423,6 +438,11 @@ fn add_repo_now(inner: &mut Inner, id: &SessionId, repo: &str) -> Result<(), Dae
         ));
     }
     found.repos.push(repo.to_owned());
+    inner
+        .workspace
+        .desk
+        .clone_branches
+        .insert((id.clone(), repo.to_owned()), DEFAULT_BRANCH.to_owned());
     inner.emit(Event::Resync);
     Ok(())
 }
@@ -434,6 +454,11 @@ fn remove_repo_now(inner: &mut Inner, id: &SessionId, repo: &str) -> Result<(), 
         return Err(not_found(format!("Repository {repo} in {id}")));
     };
     found.repos.remove(at);
+    inner
+        .workspace
+        .desk
+        .clone_branches
+        .remove(&(id.clone(), repo.to_owned()));
     inner.emit(Event::Resync);
     Ok(())
 }

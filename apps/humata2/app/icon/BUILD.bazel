@@ -1,0 +1,52 @@
+load("@rules_python//python:py_binary.bzl", "py_binary")
+
+# The candidate (A, B or C) that Humata2.icns is drawn from.
+CANDIDATE = "C"
+
+# (iconset file name, pixel size) for every entry an .iconset needs.
+_ICONSET = [
+    ("icon_16x16.png", 16),
+    ("icon_16x16@2x.png", 32),
+    ("icon_32x32.png", 32),
+    ("icon_32x32@2x.png", 64),
+    ("icon_128x128.png", 128),
+    ("icon_128x128@2x.png", 256),
+    ("icon_256x256.png", 256),
+    ("icon_256x256@2x.png", 512),
+    ("icon_512x512.png", 512),
+    ("icon_512x512@2x.png", 1024),
+]
+
+py_binary(
+    name = "draw_icon",
+    srcs = ["draw_icon.py"],
+    main = "draw_icon.py",
+)
+
+# Humata2.icns for the app bundle. iconutil only exists on macOS.
+genrule(
+    name = "icns",
+    outs = ["Humata2.icns"],
+    cmd = "&&\n".join(
+        ["mkdir -p $(@D)/Humata2.iconset"] + [
+            "$(location :draw_icon) --candidate {c} --size {s} --out $(@D)/Humata2.iconset/{n}".format(
+                c = CANDIDATE,
+                n = name,
+                s = size,
+            )
+            for name, size in _ICONSET
+        ] + [
+            "/usr/bin/iconutil -c icns $(@D)/Humata2.iconset -o $@",
+        ],
+    ),
+    target_compatible_with = ["@platforms//os:macos"],
+    tools = [":draw_icon"],
+    visibility = ["//apps/humata2/app:__pkg__"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+    visibility = ["//apps/humata2/app:__pkg__"],
+)

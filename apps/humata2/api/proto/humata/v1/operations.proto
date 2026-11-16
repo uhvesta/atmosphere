@@ -86,6 +86,11 @@ message OperationStep {
   uint64 total_units = 5;
   // Kept output of a failed step (MP-20, HO-2).
   string output_tail = 6;
+  // What a step that finished read, by name (GRPC.md section 7 lists the
+  // names per step); a fact that isn't known is left out. The add's
+  // "check": os and arch (spelled as Machine.os and Machine.arch), git and
+  // gh (full version numbers), disk_free_bytes (decimal).
+  map<string, string> facts = 7;
 }
 
 message Operation {

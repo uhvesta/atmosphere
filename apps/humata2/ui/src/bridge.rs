@@ -147,6 +147,7 @@ impl Ui {
                         state.settings.clone(),
                         state.views.clone(),
                         state.desk.clone(),
+                        state.machine_page.clone(),
                     ),
                 )
             },
@@ -163,6 +164,7 @@ impl Ui {
                     state.session.forking,
                     state.session.error.clone(),
                     state.desk.clone(),
+                    state.add_machine.clone(),
                 )
             },
             move |_| changed(),

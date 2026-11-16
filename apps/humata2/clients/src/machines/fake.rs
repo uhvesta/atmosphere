@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::mpsc;
 
 use super::{
-    AddEvent, AddRequest, AddStream, Choices, ClashChoice, LoginEvent, LoginStream, LoginTarget,
-    MachineDetail, Machines, OperationId, SkillsPreview, UnattendedMethod,
+    AddEvent, AddOutcome, AddRequest, AddStream, AddTarget, Choices, ClashChoice, LoginEvent, LoginStream,
+    LoginTarget, MachineDetail, Machines, OperationId, SkillsPreview, StepKind, StepStatus, StepUpdate,
+    UnattendedMethod,
 };
-use crate::daemon::{DaemonError, Reply};
+use crate::daemon::{Daemon, DaemonError, Reply};
 use crate::model::MachineId;
 
 /// A call a test can read back.
@@ -58,15 +59,28 @@ struct LoginScript {
     after_done: Vec<LoginEvent>,
 }
 
+/// What the next add or retry does: its events, and whether its stream then stays open.
+#[derive(Clone, Debug, Default)]
+struct AddScript {
+    events: Vec<AddEvent>,
+    held: bool,
+}
+
+type AddSender = mpsc::UnboundedSender<Result<AddEvent, DaemonError>>;
+
 struct Inner {
     choices: Choices,
-    adds: VecDeque<Vec<AddEvent>>,
+    adds: VecDeque<AddScript>,
+    /// The open streams of held adds, by the operation they belong to.
+    held: Vec<(Option<OperationId>, AddSender)>,
     logins: VecDeque<LoginScript>,
     pending_login: Option<(LoginScript, mpsc::UnboundedSender<Result<LoginEvent, DaemonError>>)>,
     detail: Result<MachineDetail, DaemonError>,
     preview: Result<SkillsPreview, DaemonError>,
     failures: HashMap<&'static str, DaemonError>,
     calls: Vec<Call>,
+    /// The fake daemon an unscripted SSH add goes through, if any.
+    through: Option<Arc<dyn Daemon>>,
 }
 
 /// A machines client that does what a test scripts.
@@ -90,14 +104,26 @@ impl FakeMachines {
             shared: Arc::new(Mutex::new(Inner {
                 choices: Choices::default(),
                 adds: VecDeque::new(),
+                held: Vec::new(),
                 logins: VecDeque::new(),
                 pending_login: None,
                 detail: Err(DaemonError::NotFound { what: "this machine".to_owned() }),
                 preview: Ok(SkillsPreview::default()),
                 failures: HashMap::new(),
                 calls: Vec::new(),
+                through: None,
             })),
         }
+    }
+
+    /// Makes an SSH add that has no script go through `daemon`, the way
+    /// the app's fakes added a machine before the dialog: the machine
+    /// appears in the fake workspace and every step reports done. A
+    /// scripted add still plays its script.
+    #[must_use]
+    pub fn adding_through(self, daemon: Arc<dyn Daemon>) -> Self {
+        self.inner().through = Some(daemon);
+        self
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -112,7 +138,19 @@ impl FakeMachines {
     /// What the next add or retry reports, in order. Scripts are used one
     /// per call, oldest first; the last event should be an outcome.
     pub fn script_add(&self, events: Vec<AddEvent>) {
-        self.inner().adds.push_back(events);
+        self.inner().adds.push_back(AddScript { events, held: false });
+    }
+
+    /// Like [`Self::script_add`], but the stream stays open after its events, as a running
+    /// add's does, until [`Self::release_adds`] or `cancel` for its operation (the one in
+    /// its `Started` event, else the one a retry names).
+    pub fn script_add_held(&self, events: Vec<AddEvent>) {
+        self.inner().adds.push_back(AddScript { events, held: true });
+    }
+
+    /// Ends every stream `script_add_held` is keeping open.
+    pub fn release_adds(&self) {
+        self.inner().held.clear();
     }
 
     /// What the next login prints on opening, and what follows Done.
@@ -152,12 +190,30 @@ impl FakeMachines {
         Box::pin(std::future::ready(result))
     }
 
-    fn add_stream(&self, method: &'static str, call: Call) -> Reply<AddStream> {
-        let events = self.inner().adds.pop_front().unwrap_or_default();
+    fn add_stream(
+        &self,
+        method: &'static str,
+        call: Call,
+        retried: Option<&OperationId>,
+    ) -> Reply<AddStream> {
+        let mut inner = self.inner();
+        let script = inner.adds.pop_front().unwrap_or_default();
         let (sender, receiver) = mpsc::unbounded_channel();
-        for event in events {
+        let operation = script
+            .events
+            .iter()
+            .find_map(|event| match event {
+                AddEvent::Started { operation, .. } => Some(operation.clone()),
+                _ => None,
+            })
+            .or_else(|| retried.cloned());
+        for event in script.events {
             let _ = sender.send(Ok(event));
         }
+        if script.held {
+            inner.held.push((operation, sender));
+        }
+        drop(inner);
         self.call(method, call, receiver)
     }
 }
@@ -169,14 +225,60 @@ impl Machines for FakeMachines {
     }
 
     fn add(&self, request: AddRequest) -> Reply<AddStream> {
-        self.add_stream("add", Call::Add(request))
+        // With no script waiting, an SSH add goes through the fake daemon
+        // when one was given: the machine joins the fake workspace.
+        let through = {
+            let inner = self.inner();
+            if inner.adds.is_empty() && !inner.failures.contains_key("add") {
+                inner.through.clone()
+            } else {
+                None
+            }
+        };
+        let (Some(daemon), AddTarget::Ssh { host }) = (through, &request.target) else {
+            return self.add_stream("add", Call::Add(request), None);
+        };
+        let host = host.clone();
+        self.inner().calls.push(Call::Add(request));
+        Box::pin(async move {
+            let (sender, receiver) = mpsc::unbounded_channel();
+            let steps = vec![
+                StepKind::Connect,
+                StepKind::Check,
+                StepKind::Install,
+                StepKind::Start,
+                StepKind::FindAgents,
+            ];
+            let _ = sender.send(Ok(AddEvent::Started {
+                operation: OperationId::new(format!("add-{host}")),
+                steps: steps.clone(),
+            }));
+            match daemon.add_machine(&host).await {
+                Ok(machine) => {
+                    for step in steps {
+                        let _ = sender.send(Ok(AddEvent::Step(StepUpdate {
+                            step,
+                            status: StepStatus::Done,
+                            detail: String::new(),
+                        })));
+                    }
+                    let _ = sender.send(Ok(AddEvent::Outcome(AddOutcome::Added(machine))));
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error));
+                }
+            }
+            Ok(receiver)
+        })
     }
 
     fn retry(&self, operation: &OperationId) -> Reply<AddStream> {
-        self.add_stream("retry", Call::Retry(operation.clone()))
+        self.add_stream("retry", Call::Retry(operation.clone()), Some(operation))
     }
 
     fn cancel(&self, operation: &OperationId) -> Reply<()> {
+        // A cancelled operation's stream ends.
+        self.inner().held.retain(|(held, _)| held.as_ref() != Some(operation));
         self.call("cancel", Call::Cancel(operation.clone()), ())
     }
 

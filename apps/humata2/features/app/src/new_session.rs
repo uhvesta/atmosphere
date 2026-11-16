@@ -81,6 +81,9 @@ impl App {
     pub(super) fn start_new_session(&self, state: &mut AppState) -> Effect<AppAction> {
         let channel = match &state.route {
             Route::Channel(id) => Some(id.clone()),
+            Route::Session(id) if state.is_desk_session(id) => {
+                state.workspace.channels.first().map(|c| c.id.clone())
+            }
             Route::Session(id) => state.workspace.session(id).map(|s| s.channel.clone()),
             _ => state.workspace.channels.first().map(|c| c.id.clone()),
         };

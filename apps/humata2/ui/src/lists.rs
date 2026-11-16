@@ -7,7 +7,6 @@ use crate::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestTextExt as _;
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
@@ -15,27 +14,6 @@ use humata2_clients::model::{Answer, MachineKind, Session, Status};
 use humata2_inbox::{Bulk, History, InboxAction};
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
-
-/// The frames' 24 pt button: filled with the accent, or grey with a hairline.
-fn dress(button: Button, look: Look, primary: bool) -> Button {
-    let button = button
-        .small()
-        .h(px(24.))
-        .px(px(11.))
-        .rounded(px(6.))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .flex_shrink_0();
-    if primary {
-        button.bg(rgb(look.accent)).text_color(rgb(0xffffff))
-    } else {
-        button
-            .bg(rgb(look.fill))
-            .text_color(rgb(look.text))
-            .border_1()
-            .border_color(rgb(look.line))
-    }
-}
 
 pub(crate) fn toolbar(
     ui: &Rc<Ui>,
@@ -77,15 +55,25 @@ pub(crate) fn toolbar(
         .when(
             state.route == Route::Home && !state.workspace.channels.is_empty(),
             |bar| {
-                bar.child(dress(
-                    widgets::primary(
-                        ui,
-                        "home-new-session",
-                        "New session",
-                        AppAction::StartNewSession,
-                    ),
+                bar.child(widgets::push_primary(
+                    ui,
+                    "home-new-session",
+                    "New session",
+                    AppAction::StartNewSession,
                     look,
-                    true,
+                ))
+            },
+        )
+        // With no channel yet a session can only start on the Desk (frame 34).
+        .when(
+            state.route == Route::Home && state.workspace.channels.is_empty(),
+            |bar| {
+                bar.child(widgets::push_primary(
+                    ui,
+                    "home-new-desk-session",
+                    "New desk session",
+                    AppAction::StartNewDeskSession,
+                    look,
                 ))
             },
         )
@@ -135,10 +123,7 @@ fn home_row(
 ) -> impl IntoElement {
     let ui2 = ui.clone();
     let id = session.id.clone();
-    let channel = state
-        .workspace
-        .channel(&session.channel)
-        .map_or("", |c| c.name.as_str());
+    let place = humata2_clients::desk::place(&state.workspace, &session.channel);
     let description = if let Some(parent) = session
         .parent
         .as_ref()
@@ -149,9 +134,9 @@ fn home_row(
         // HM-1: a row names its machine when that isn't This Mac.
         match state.workspace.machine(&session.machine) {
             Some(machine) if !matches!(machine.kind, MachineKind::ThisMac) => {
-                format!("# {channel} · {}", machine.name)
+                format!("{place} · {}", machine.name)
             }
-            _ => format!("# {channel}"),
+            _ => place,
         }
     };
     let pull = state
@@ -230,12 +215,13 @@ fn home_row(
             let url = open_url.clone();
             let session = session.id.clone();
             let exited = matches!(session_status(state, &session), Some(Status::Exited { .. }));
-            dress(
-                Button::new(SharedString::from(format!("{group}-action-{index}"))).label(label),
-                look,
-                need && !exited,
-            )
-            .on_click(move |_, _, cx| {
+            let button_id = SharedString::from(format!("{group}-action-{index}"));
+            let button = if need && !exited {
+                widgets::push_primary_shape(button_id, label, look)
+            } else {
+                widgets::push_quiet_shape(button_id, label, look)
+            };
+            button.on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 if let Some(url) = &url {
                     cx.open_url(url);
@@ -351,15 +337,12 @@ fn get_set_up(ui: &Rc<Ui>, look: Look) -> Div {
                 IconName::Plus,
                 "Make a channel",
                 "A project: its repos, the machines that work on it, its board and its sessions.",
-                dress(
-                    widgets::primary(
-                        ui,
-                        "first-channel-create",
-                        "New channel…",
-                        AppAction::StartNewChannel,
-                    ),
+                widgets::push_primary(
+                    ui,
+                    "first-channel-create",
+                    "New channel…",
+                    AppAction::StartNewChannel,
                     look,
-                    true,
                 ),
             ))
             .child(step(
@@ -367,15 +350,25 @@ fn get_set_up(ui: &Rc<Ui>, look: Look) -> Div {
                 IconName::Server,
                 "Add a machine",
                 "Run sessions on another computer over SSH. This Mac works already.",
-                dress(
-                    widgets::send(
-                        ui,
-                        "first-machine-add",
-                        "Add a machine…",
-                        AppAction::Hosts(humata2_hosts::HostsAction::StartAdd),
-                    ),
+                widgets::push_quiet(
+                    ui,
+                    "first-machine-add",
+                    "Add a machine…",
+                    AppAction::Hosts(humata2_hosts::HostsAction::StartAdd),
                     look,
-                    false,
+                ),
+            ))
+            .child(step(
+                look,
+                IconName::SquareTerminal,
+                "Use the Desk",
+                "An agent or a shell in a scratch folder, no channel needed: plan, tidy the board, write.",
+                widgets::push_quiet(
+                    ui,
+                    "first-desk-open",
+                    "Open Desk",
+                    AppAction::Switch(Route::Desk),
+                    look,
                 ),
             )),
     )
@@ -469,25 +462,19 @@ fn bulk_strip(ui: &Rc<Ui>, confirm: Option<Bulk>, waiting: usize, look: Look) ->
         .border_color(rgb(look.line));
     let Some(bulk) = confirm else {
         return bar
-            .child(dress(
-                widgets::send(
-                    ui,
-                    "inbox-allow-all",
-                    format!("Allow all {waiting}"),
-                    AppAction::Inbox(InboxAction::Bulk(Bulk::ApproveAll)),
-                ),
+            .child(widgets::push_quiet(
+                ui,
+                "inbox-allow-all",
+                format!("Allow all {waiting}"),
+                AppAction::Inbox(InboxAction::Bulk(Bulk::ApproveAll)),
                 look,
-                false,
             ))
-            .child(dress(
-                widgets::send(
-                    ui,
-                    "inbox-deny-all",
-                    "Deny all",
-                    AppAction::Inbox(InboxAction::Bulk(Bulk::DenyAll)),
-                ),
+            .child(widgets::push_quiet(
+                ui,
+                "inbox-deny-all",
+                "Deny all",
+                AppAction::Inbox(InboxAction::Bulk(Bulk::DenyAll)),
                 look,
-                false,
             ));
     };
     let (question, yes) = match bulk {
@@ -504,25 +491,19 @@ fn bulk_strip(ui: &Rc<Ui>, confirm: Option<Bulk>, waiting: usize, look: Look) ->
             .text_color(rgb(look.secondary))
             .child(question),
     )
-    .child(dress(
-        widgets::primary(
-            ui,
-            "inbox-bulk-confirm",
-            yes,
-            AppAction::Inbox(InboxAction::ConfirmBulk),
-        ),
+    .child(widgets::push_primary(
+        ui,
+        "inbox-bulk-confirm",
+        yes,
+        AppAction::Inbox(InboxAction::ConfirmBulk),
         look,
-        true,
     ))
-    .child(dress(
-        widgets::send(
-            ui,
-            "inbox-bulk-cancel",
-            "Cancel",
-            AppAction::Inbox(InboxAction::CancelBulk),
-        ),
+    .child(widgets::push_quiet(
+        ui,
+        "inbox-bulk-cancel",
+        "Cancel",
+        AppAction::Inbox(InboxAction::CancelBulk),
         look,
-        false,
     ))
 }
 
@@ -567,10 +548,10 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
-        .children(state.workspace.channels.iter().filter_map(|channel| {
+        .children(state.workspace.channels.iter().map(|channel| (channel.id.clone(), format!("# {}", channel.name))).chain(std::iter::once((humata2_clients::desk::channel(), "Desk".to_owned()))).filter_map(|(channel_id, heading)| {
             let requests = shown
                 .iter()
-                .filter(|r| r.channel == channel.id)
+                .filter(|r| r.channel == channel_id)
                 .copied()
                 .collect::<Vec<_>>();
             if requests.is_empty() {
@@ -586,7 +567,7 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_size(px(11.))
                             .text_color(rgb(look.secondary))
-                            .child(format!("# {}", channel.name)),
+                            .child(heading.clone()),
                     )
                     .children(requests.into_iter().map(|request| {
                         let session = state.workspace.session(&request.session);

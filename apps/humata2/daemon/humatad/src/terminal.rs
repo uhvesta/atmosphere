@@ -24,6 +24,7 @@ use crate::guard::Guard;
 use crate::holders::{Holders, TypeFailed};
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
+use crate::remote_terminal::RemoteTerminal;
 use crate::{paste, status};
 
 /// How long a holder gets to answer a first connection before a tab is
@@ -61,6 +62,9 @@ pub(crate) struct TerminalsConfig {
     pub(crate) compression: Arc<Compression>,
     /// Where a call a rule sends to Ask me waits for the user (D38.6).
     pub(crate) inbox: Arc<Inbox>,
+    /// The host's way to the terminals of other machines (D139); none on a machine's
+    /// own daemon, where every session is here.
+    pub(crate) remote: Option<RemoteTerminal>,
 }
 
 /// The service. Its state sits behind an `Arc` so a call waiting for the
@@ -320,6 +324,35 @@ impl Core {
         Target::Session(identity::session_ref(record, &self.config.machine))
     }
 
+    /// The machine `record`'s session lives on and the way to it, when it isn't this
+    /// one and this daemon works with other machines (D139). Callers branch to it only
+    /// after their own access check: the machine checks nothing more (D144).
+    fn elsewhere(&self, record: &SessionRecord) -> Option<(String, &RemoteTerminal)> {
+        let remote = self.config.remote.as_ref()?;
+        (!record.machine.is_empty() && record.machine != self.config.machine)
+            .then(|| (record.machine.clone(), remote))
+    }
+
+    /// For the calls the machine answers whole: the machine and relay of `session` when it
+    /// lives elsewhere, once the caller may type into it. None for a session here.
+    async fn remote_input(
+        &self,
+        caller: &Caller,
+        session: Option<pb::SessionId>,
+    ) -> Result<Option<(String, RemoteTerminal)>, Status> {
+        let Some(id) = id_of(session.map(|session| session.value)) else {
+            return Ok(None);
+        };
+        let Some(record) = self.find_session(&id).await? else {
+            return Ok(None);
+        };
+        let Some((machine, remote)) = self.elsewhere(&record) else {
+            return Ok(None);
+        };
+        self.check_input(caller, self.session_target(&record))?;
+        Ok(Some((machine, remote.clone())))
+    }
+
     /// What typing into `tab` is checked against: its session, or for a
     /// machine shell (or a tab whose session is gone) the whole machine.
     async fn tab_target(&self, tab: &TabRecord) -> Result<Target, Status> {
@@ -549,13 +582,16 @@ impl Core {
         request: pb::ListTabsRequest,
         approved: bool,
     ) -> Result<Gated<pb::ListTabsResponse>, Status> {
-        let session = id_of(request.session.map(|session| session.value));
+        let session = id_of(request.session.clone().map(|session| session.value));
         match &session {
             Some(session) => {
                 let record = self.session(session).await?;
                 let read = Call::ReadSession(identity::session_ref(&record, &self.config.machine));
                 if let Some(asked) = gate(&self.config.guard, caller, &read, approved)? {
                     return Ok(Gated::Ask(asked));
+                }
+                if let Some((machine, remote)) = self.elsewhere(&record) {
+                    return Ok(Gated::Done(remote.list_tabs(&machine, request).await?.into_inner()));
                 }
             }
             None => {
@@ -579,12 +615,15 @@ impl Core {
         request: pb::OpenShellTabRequest,
         approved: bool,
     ) -> Result<Gated<pb::Tab>, Status> {
-        let key = idempotency("OpenShellTab", request.idempotency_key);
-        let session = id_of(request.session.map(|session| session.value))
+        let key = idempotency("OpenShellTab", request.idempotency_key.clone());
+        let session = id_of(request.session.clone().map(|session| session.value))
             .ok_or_else(|| status::missing("session"))?;
         let session = self.session(&session).await?;
         if let Some(asked) = self.gate_input(caller, self.session_target(&session), approved)? {
             return Ok(Gated::Ask(asked));
+        }
+        if let Some((machine, remote)) = self.elsewhere(&session) {
+            return Ok(Gated::Done(remote.open_shell_tab(&machine, request).await?.into_inner()));
         }
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
             return Ok(Gated::Done(tab));
@@ -613,7 +652,13 @@ impl Core {
         if let Some(asked) = self.gate_input(caller, Target::Global, approved)? {
             return Ok(Gated::Ask(asked));
         }
-        let key = idempotency("OpenMachineShell", request.idempotency_key);
+        let key = idempotency("OpenMachineShell", request.idempotency_key.clone());
+        if let Some(remote) = &self.config.remote
+            && let Some(machine) = id_of(request.machine.clone().map(|machine| machine.value))
+            && machine != self.config.machine
+        {
+            return Ok(Gated::Done(remote.open_machine_shell(&machine, request).await?.into_inner()));
+        }
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
             return Ok(Gated::Done(tab));
         }
@@ -640,14 +685,31 @@ impl Core {
         request: pb::CloseTabRequest,
         approved: bool,
     ) -> Result<Gated<pb::CloseTabResponse>, Status> {
-        let key = idempotency("CloseTab", request.idempotency_key);
-        let id = id_of(request.tab.map(|tab| tab.value)).ok_or_else(|| status::missing("tab"))?;
-        let target = match self.find_tab(&id).await? {
-            Some(tab) => self.tab_target(&tab).await?,
-            None => Target::Global,
+        let key = idempotency("CloseTab", request.idempotency_key.clone());
+        let id = id_of(request.tab.clone().map(|tab| tab.value)).ok_or_else(|| status::missing("tab"))?;
+        // A tab of a session on another machine is that machine's; the session is what
+        // the access check is for.
+        let remote_session = match id_of(request.session.clone().map(|session| session.value)) {
+            Some(session) => self
+                .find_session(&session)
+                .await?
+                .filter(|record| self.elsewhere(record).is_some()),
+            None => None,
+        };
+        let target = match &remote_session {
+            Some(record) => self.session_target(record),
+            None => match self.find_tab(&id).await? {
+                Some(tab) => self.tab_target(&tab).await?,
+                None => Target::Global,
+            },
         };
         if let Some(asked) = self.gate_input(caller, target, approved)? {
             return Ok(Gated::Ask(asked));
+        }
+        if let Some(record) = &remote_session
+            && let Some((machine, remote)) = self.elsewhere(record)
+        {
+            return Ok(Gated::Done(remote.close_tab(&machine, request).await?.into_inner()));
         }
         if let Some(Outcome::Closed) = self.recall(key.as_deref()) {
             return Ok(Gated::Done(pb::CloseTabResponse {}));
@@ -686,8 +748,8 @@ impl Core {
         request: pb::TypeRequest,
         approved: bool,
     ) -> Result<Gated<pb::TypeResponse>, Status> {
-        let key = idempotency("Type", request.idempotency_key);
-        let session = id_of(request.session.map(|session| session.value))
+        let key = idempotency("Type", request.idempotency_key.clone());
+        let session = id_of(request.session.clone().map(|session| session.value))
             .ok_or_else(|| status::missing("session"))?;
         let session = self.session(&session).await?;
         if let Some(asked) = gate(
@@ -700,6 +762,9 @@ impl Core {
             approved,
         )? {
             return Ok(Gated::Ask(asked));
+        }
+        if let Some((machine, remote)) = self.elsewhere(&session) {
+            return Ok(Gated::Done(remote.type_text(&machine, request).await?.into_inner()));
         }
         if let Some(Outcome::Typed(typed)) = self.recall(key.as_deref()) {
             return Ok(Gated::Done(typed));
@@ -729,12 +794,15 @@ impl Core {
         request: pb::PasteImageRequest,
         approved: bool,
     ) -> Result<Gated<pb::PasteImageResponse>, Status> {
-        let key = idempotency("PasteImage", request.idempotency_key);
-        let session = id_of(request.session.map(|session| session.value))
+        let key = idempotency("PasteImage", request.idempotency_key.clone());
+        let session = id_of(request.session.clone().map(|session| session.value))
             .ok_or_else(|| status::missing("session"))?;
         let record = self.session(&session).await?;
         if let Some(asked) = self.gate_input(caller, self.session_target(&record), approved)? {
             return Ok(Gated::Ask(asked));
+        }
+        if let Some((machine, remote)) = self.elsewhere(&record) {
+            return Ok(Gated::Done(remote.paste_image(&machine, request).await?.into_inner()));
         }
         if let Some(Outcome::Paste(pasted)) = self.recall(key.as_deref()) {
             return Ok(Gated::Done(pasted));
@@ -888,6 +956,23 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         let id = id_of(open.tab.clone().map(|tab| tab.value))
             .ok_or_else(|| status::missing("open.tab"))?;
         let session = id_of(open.session.clone().map(|session| session.value));
+        // A session on another machine: its tab record is there, not here. The host
+        // checks the same access for the session, then relays the stream untouched
+        // (TR-11); the codec is the machine's pick from what the client accepts.
+        if let Some(session) = &session
+            && let Some(record) = self.find_session(session).await?
+            && let Some((machine, remote)) = self.elsewhere(&record)
+        {
+            if open.read_only {
+                self.config.guard.require(
+                    &caller,
+                    &Call::ReadSession(identity::session_ref(&record, &self.config.machine)),
+                )?;
+            } else {
+                self.check_input(&caller, self.session_target(&record))?;
+            }
+            return Ok(Response::new(remote.attach(&machine, open, incoming).await?));
+        }
         let tab = self.tab(&id, session.as_deref()).await?;
         let target = self.tab_target(&tab).await?;
         match (&target, open.read_only) {
@@ -935,8 +1020,13 @@ impl pb::terminal_service_server::TerminalService for Terminals {
 
     async fn cancel_queued_typing(
         &self,
-        _request: Request<pb::CancelQueuedTypingRequest>,
+        request: Request<pb::CancelQueuedTypingRequest>,
     ) -> Result<Response<pb::CancelQueuedTypingResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        if let Some((machine, remote)) = self.remote_input(&caller, request.session.clone()).await? {
+            return remote.cancel_queued_typing(&machine, request).await;
+        }
         Err(status::not_built(
             "humata.v1.TerminalService.CancelQueuedTyping",
         ))
@@ -944,8 +1034,13 @@ impl pb::terminal_service_server::TerminalService for Terminals {
 
     async fn list_queued(
         &self,
-        _request: Request<pb::ListQueuedRequest>,
+        request: Request<pb::ListQueuedRequest>,
     ) -> Result<Response<pb::ListQueuedResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        if let Some((machine, remote)) = self.remote_input(&caller, request.session.clone()).await? {
+            return remote.list_queued(&machine, request).await;
+        }
         Err(status::not_built("humata.v1.TerminalService.ListQueued"))
     }
 
@@ -953,8 +1048,13 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         &self,
         request: Request<pb::SendQueuedNowRequest>,
     ) -> Result<Response<pb::SendQueuedNowResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        if let Some((machine, remote)) = self.remote_input(&caller, request.session.clone()).await? {
+            return remote.send_queued_now(&machine, request).await;
+        }
         // Not built: nothing to run once approved, so Ask stays refused.
-        self.check_input(&identity::caller(&request)?, Target::Global)?;
+        self.check_input(&caller, Target::Global)?;
         Err(status::not_built("humata.v1.TerminalService.SendQueuedNow"))
     }
 

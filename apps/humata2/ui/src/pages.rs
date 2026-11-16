@@ -44,6 +44,10 @@ pub fn title(state: &AppState) -> String {
         Route::Views => "Views".to_owned(),
         Route::Desk => "Desk".to_owned(),
         Route::Settings => "Settings".to_owned(),
+        Route::Machine(id) => state
+            .workspace
+            .machine(id)
+            .map_or_else(|| "Machine".to_owned(), |machine| machine.name.clone()),
     }
 }
 
@@ -53,9 +57,10 @@ pub fn page(
     state: &AppState,
     channel_filter: Entity<InputState>,
     board_inputs: &crate::board::Inputs,
-    host_address: Entity<InputState>,
     files_name: Entity<InputState>,
     terminals: &crate::terminals::Terminals,
+    documents: &crate::document_tab::Documents,
+    machine_inputs: &crate::machine_page::MachinePageInputs,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -64,11 +69,13 @@ pub fn page(
         Route::Desk => crate::desk::page(ui, state, Look::of(cx)).into_any_element(),
         Route::Files => crate::file_manager::page(ui, &state.files, &files_name, Look::of(cx)),
         Route::Settings => crate::settings::page(ui, state, Look::of(cx)).into_any_element(),
+        Route::Machine(id) => {
+            crate::machine_page::route(ui, state, id, machine_inputs, Look::of(cx), window, cx)
+        }
         Route::Hosts => crate::hosts::page(
             ui,
             state,
             f32::from(window.viewport_size().width) - state.layout.sidebar.width,
-            host_address,
             Look::of(cx),
         )
         .into_any_element(),
@@ -103,7 +110,7 @@ pub fn page(
                         .into_any_element()
                 },
                 |session| {
-                    session_body(ui, state, session, Look::of(cx), terminals, cx).into_any_element()
+                    session_body(ui, state, session, Look::of(cx), terminals, documents, cx).into_any_element()
                 },
             ),
         _ => widgets::empty("Nothing here yet.", "This screen is being built.").into_any_element(),
@@ -233,7 +240,9 @@ pub(crate) fn session_header(
                     .text_color(rgb(look.secondary))
                     .child(format!(
                         "{} · {}",
-                        if session.agent == Agent::Claude {
+                        if desk {
+                            crate::desk::runs(session.agent)
+                        } else if session.agent == Agent::Claude {
                             "Claude Code"
                         } else {
                             session.agent.name()
@@ -309,7 +318,8 @@ fn session_body(
     session: &Session,
     look: Look,
     terminals: &crate::terminals::Terminals,
+    documents: &crate::document_tab::Documents,
     cx: &mut App,
 ) -> Div {
-    crate::session_tabs::body(ui, state, session, look, terminals, cx)
+    crate::session_tabs::body(ui, state, session, look, terminals, documents, cx)
 }

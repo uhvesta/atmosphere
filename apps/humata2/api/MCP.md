@@ -171,7 +171,7 @@ Location   = {root: "clone", repo: "owner/name", session?: SessionId, machine?: 
            | {root: "channel_folder", path, machine?: MachineId}
            | {root: "main_clone", repo, path, machine?: MachineId}     -- read-only
              session and machine default to the caller's own
-Item       = {id, board, title, description, column, rank, assignee?, created_by, revision, pinned, vip}
+Item       = {id, board, title, description, column, rank, sessions: SessionId[], depends_on: [{id, title, done}], done_at?, created_by, revision, pinned, vip}
 Column     = "backlog" | "to_do" | "in_progress" | "in_review" | "done"
 Reason     = string shown on the Inbox card as the agent's words (IN-9)
 Wait       = wait_seconds?: int
@@ -192,8 +192,8 @@ Allow (IN-17); a user can set any of those to Ask me or Never.
 | `board_items_list` | `board.items_list` / ListItems | OWN_BOARD_WRITE rule's read (session board); CHANNEL_READ (channel board) | `{board, columns?: Column[], page_token?}` → `{items: Item[], counts, next_page_token?}` | none | stale |
 | `board_item_get` | `board.item_get` / GetItem | as list | `{id}` → `Item` | none | stale |
 | `board_item_history` | `board.item_history` / GetItemHistory | as list | `{id, page_token?}` → `{entries:[{at, by, change, lost_conflict}]}` | none | stale |
-| `board_item_create` | `board.item_create` / CreateItem | OWN_BOARD_WRITE (session board), CHANNEL_BOARD_ADD (channel board) | `{board, title, column?, description?, assignee?: SessionId, reason?}` → `Item` (journaled: `{provisional_id}`) | adds an item | journal |
-| `board_item_update` | `board.item_update` / UpdateItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, title?, description?, assignee?: SessionId \| null, expected_revision?, reason?}` → `Item` | changes fields given | journal |
+| `board_item_create` | `board.item_create` / CreateItem | OWN_BOARD_WRITE (session board), CHANNEL_BOARD_ADD (channel board) | `{board, title, column?, description?, sessions?: SessionId[], depends_on?: ItemId[], reason?}` → `Item` (journaled: `{provisional_id}`) | adds an item | journal |
+| `board_item_update` | `board.item_update` / UpdateItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, title?, description?, sessions_add?, sessions_remove?, depends_on_add?, depends_on_remove?, expected_revision?, reason?}` (a stale revision fails only when a field it sets changed since; lists never conflict, D155) → `Item` | changes fields given | journal |
 | `board_item_move` | `board.item_move` / MoveItem | as update | `{id, column, after?: ItemId, expected_revision?, reason?}` → `Item` | moves it | journal |
 | `board_item_delete` | `board.item_delete` / DeleteItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, expected_revision?, reason?}` → `{deleted: true}` | tombstone, kept in history | journal |
 | `view_prepare` | `view.prepare` / PrepareView | VIEWS_PREPARE | `{title, summary, content: {review: {steps:[{repo, path, lines, note}]}} \| {board: scope} \| {pull_request: {repos:[{repo, title, body, base_branch, draft}]}}}` → `{view_id, state: "draft"}` | a draft view; nothing opens | journal |
@@ -241,7 +241,8 @@ rule named until the user changes the rule (IN-18).
 | `channels_list` | `channel.list` / ListChannels | GLOBAL_READ (Allow by default, D127.4; Global board and other channels are one row, D21) | `{}` → `{channels:[{id, name, machines, sessions}]}` | none | stale |
 | `board_items_list` (global or another channel) | as 6.1 | GLOBAL_READ (Allow by default, D127.4) | as 6.1 | none | stale |
 | `board_item_create/update/move/delete` on another's channel item | as 6.1 | CHANNEL_BOARD_EDIT_OTHERS (Ask) | as 6.1 | as 6.1 | per away rule |
-| `board_item_*` on the Global board or another channel's board | as 6.1 | GLOBAL_READ (reads Allow by default, D127.4; writes get their own Ask-tier capability when the board is built) | as 6.1 | as 6.1 | per away rule |
+| `board_item_*` reads on the Global board or another channel's board | as 6.1 | GLOBAL_READ (Allow by default, D127.4) | as 6.1 | none | stale |
+| `board_item_create/update/move/delete` on the Global board or another channel's board | as 6.1 | GLOBAL_BOARD_WRITE (Ask, D155), whoever made the item | as 6.1 | as 6.1 | per away rule |
 | `files_list`, `file_read` in another session, same machine | as 6.1 | FILES_READ_OTHER_SESSION (Ask); also `humata attach --read-only` of another session (D21) | `location.session` set | none | per away rule (local) |
 | `files_list`, `file_read` on another machine | as 6.1 | FILES_READ_OTHER_MACHINE (Ask) | `location.machine` set | none | host |
 | `files_copy_in` | `file.copy_in` / StartTransfer | FILES_COPY_IN (Ask) | `{sources: Location[], destination: Location (own clone or shared/), on_existing?, reason?}` → `{transfer_id}` | copies into its own clone or `shared/` only (TP-4) | host (other machine) / per away rule (same machine) |

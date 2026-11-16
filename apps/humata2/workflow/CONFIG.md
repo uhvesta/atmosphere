@@ -5,7 +5,26 @@ project.
 
 - **Checkout:** `/Users/avestabarzegar/oss/atmosphere-khodr` (one worktree,
   one bazel server; no parallel worktrees).
-- **Build and test:** only the main agent, only through Bazel:
+- **TDD loop (owner, 2026-11-15: "work faster ... TDD driven fixes"):** a
+  smart agent (manager, or a Fable/Opus test writer) first writes a focused
+  e2e or boundary test that fails for the right reason and can't flake: no
+  sleeps or wall-clock asserts, wait on events or conditions with generous
+  deadlines, deterministic fakes and seeds, its own temp dirs and ports or
+  sockets, nothing shared between tests. Then a Sonnet worker implements
+  until that one target passes, running only it. Fable or Opus reviews the
+  diff and the findings before it is handed to main.
+- **Focused tests by any agent:** managers and workers may run
+  `bazel build`/`bazel test` on their own focused targets in this checkout
+  (same server; commands queue on its lock). Never `//...` or a whole app
+  tree, never `clean`, `shutdown`, `--output_base` or a new worktree, never
+  git. Main still runs the batched gates and owns git.
+- **Managers apply their own seams (2026-11-15):** a manager may run its
+  own `--check`-ed seam script on shared seam files, then build its focused
+  targets at once and fix or revert anything it broke. It logs every applied
+  script in WORKLOG › Event log. Never Codex's files (C1_HANDOFF.md lists
+  them), never MODULE.bazel or the lock files (main), never git.
+- **Don't break the shared tree:** after a live edit to a crate other lanes build, build its dependents (at least `//apps/humata2/daemon/humatad:humatad2` and `//apps/humata2/desktop:humata2`) before moving on; revert at once if they break.
+- **Build and test (batched gates):** the main agent, only through Bazel:
   `export PATH=$PWD/.tools/bin:$PATH`, then `bazel build <targets>` and
   `bazel test <targets>`, in the background. Design goldens:
   `bazel run //apps/humata2/desktop:design_test_record`. Never cargo, never
@@ -32,7 +51,7 @@ project.
 - **Approved designs:** goldens in `apps/humata2/desktop/tests/__snapshots__/design/`;
   only with the owner's OK.
 - **Screen:** headless only; no windows on the owner's screen.
-- **Lane limit:** 7 managers (2026-11-15, owner wants more parallelism):
+- **Lane limit:** 10 managers (raised 2026-11-15, owner: not fast enough); was 7 (2026-11-15, owner wants more parallelism):
   dormant lanes don't count; at most 4 edit `daemon/humatad`; drop to 6 if a
   batched gate fails twice with unclear attribution. Early lanes may open on
   a blocked milestone for the part its open deps don't block; they close only

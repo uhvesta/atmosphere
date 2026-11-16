@@ -581,7 +581,6 @@ async fn pending_other_than(daemon: &common::Daemon, seen: &pb::RequestId) -> pb
 
 /// Default Allow: the channel board takes an agent's item with no question.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "BoardService isn't built (BOARD milestone)"]
 async fn default_allow_tier_is_applied_with_nothing_in_the_inbox() {
     let world = World::start().await;
     let mut mcp = Mcp::start(&world.daemon.socket, &world.token).await;

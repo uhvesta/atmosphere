@@ -1,0 +1,42 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Finding things: search over every session's conversation, and the Pinned section's pins and VIP marks.
+# State, actions and effects only; the views are in //apps/humata2/ui.
+rust_library(
+    name = "find",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_find",
+    visibility = [
+        "//apps/humata2/desktop:__pkg__",
+        "//apps/humata2/features/app:__pkg__",
+        "//apps/humata2/ui:__pkg__",
+    ],
+    deps = [
+        "//apps/humata2/clients",
+        "//libs/tca-rust:tca",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        crate_root = src,
+        deps = [
+            ":find",
+            "//apps/humata2/clients",
+            "//libs/tca-rust:tca",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(
+        ["tests/*.rs"],
+        allow_empty = True,
+    )
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

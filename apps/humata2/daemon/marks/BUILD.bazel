@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The user's pins, the order they gave them and their VIP marks, kept on the
+# host (NV-20, NV-24 to NV-26) in one SQLite file of their own (WAL, every
+# write a transaction). User data: nothing rebuilds it. Knows nothing about
+# the network or about what a pinned thing is beyond its kind and id.
+rust_library(
+    name = "marks",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_marks",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        "@crates//:rusqlite",
+        "@crates//:thiserror",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        deps = [
+            ":marks",
+            "@crates//:rusqlite",
+            "@crates//:tempfile",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

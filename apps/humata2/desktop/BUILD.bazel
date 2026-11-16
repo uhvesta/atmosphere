@@ -9,6 +9,7 @@ rust_binary(
     # GPUI's macros find gpui-kit through it.
     compile_data = ["Cargo.toml"],
     target_compatible_with = ["@platforms//os:macos"],
+    visibility = ["//apps/humata2/app:__pkg__"],
     deps = [
         "//apps/humata2/clients",
         "//apps/humata2/clients/live",
@@ -20,7 +21,6 @@ rust_binary(
         "@crates//:thiserror",
         "@crates//:tokio",
     ],
-    visibility = ["//apps/humata2/app:__pkg__"],
 )
 
 # The window on fakes, drawn headless (nothing is shown) and kept as view
@@ -98,6 +98,7 @@ humata2_snapshot_test(
         "//apps/humata2/engine:engine_test_support",
         "//apps/humata2/features/app",
         "//apps/humata2/features/board",
+        "//apps/humata2/features/desk",
         "//apps/humata2/features/hosts",
         "//apps/humata2/features/palette",
         "//apps/humata2/features/review",
@@ -134,6 +135,27 @@ rust_test(
     ],
 )
 
+# Add machine and a machine's page as a person does them, on the fake machines
+# client (MACH; HO-1, HO-2, HO-4, HO-5, MP-12 to MP-17, SK-5).
+rust_test(
+    name = "machines_flow_test",
+    srcs = ["tests/machines_flow.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/machines_flow.rs",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/hosts",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
 # The app on a real humatad2 (FL T8b): a session made through the UI, a
 # reboot that brings it back, and a lost conversation shown as recoverable.
 rust_test(
@@ -150,18 +172,54 @@ rust_test(
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
         "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
     },
-    # Manual until the §26.2 and §26.8 flows pass (FL; the lost-conversation
-    # flow passes): run it by name.
-    tags = [
-        "exclusive",
-        "manual",
-    ],
+    # Starts real daemons and holders, so it runs alone.
+    tags = ["exclusive"],
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         "//apps/humata2/clients",
         "//apps/humata2/clients/live",
         "//apps/humata2/engine:engine_test_support",
         "//apps/humata2/features/app",
+        "//apps/humata2/features/files",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+# The Inbox in the app on a real humatad2 (ASK T5.3, SPEC flow 26.4): an
+# agent's `humata` call waits in the Inbox, the person opens the requester
+# from the card and allows there, and the waiting call returns.
+rust_test(
+    name = "live_inbox_test",
+    size = "large",
+    srcs = ["tests/live_inbox.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/live_inbox.rs",
+    data = [
+        "//apps/humata2/cli:humata",
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    # Starts a real daemon, holders and an agent, so it runs alone.
+    tags = ["exclusive"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/session",
         "//apps/humata2/testing/flow",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",

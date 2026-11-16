@@ -1,0 +1,33 @@
+load("@rules_python//python:py_test.bzl", "py_test")
+
+exports_files(
+    ["extras.txt"] + glob(["licenses/*.txt"]),
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "notices_test",
+    srcs = ["notices_test.py"],
+    args = [
+        "$(rlocationpath @humata2_notices//:THIRD_PARTY_NOTICES.txt)",
+        "$(rlocationpath @humata2_notices//:CRATES.txt)",
+        "$(rlocationpath //apps/humata2/app:linked_crates)",
+    ],
+    data = [
+        "//apps/humata2/app:linked_crates",
+        "@humata2_notices//:CRATES.txt",
+        "@humata2_notices//:THIRD_PARTY_NOTICES.txt",
+    ],
+    legacy_create_init = 0,
+    python_version = "3.14.4",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "linked.bzl",
+        "notices.bzl",
+    ],
+    tags = ["starlark"],
+)

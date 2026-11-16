@@ -8,6 +8,8 @@
 	<string>humata2</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleIconFile</key>
+	<string>Humata2</string>
 	<key>CFBundleName</key>
 	<string>Humata 2</string>
 	<key>CFBundleDisplayName</key>

@@ -105,7 +105,7 @@ pub enum Refusal {
     ParentReadOnly { fork: SessionId, parent: SessionId },
 
     #[error(
-        "the main clone of {repo} on {machine} is a read-only reference (FC-2); write in a session clone instead"
+        "the main clone of {repo} on {machine} is the read-only reference new session clones start from (FC-2), so it, what is in it and the folders that hold it can't be renamed, deleted or written to"
     )]
     MainCloneReadOnly { repo: RepoRef, machine: MachineId },
 
@@ -242,6 +242,9 @@ pub enum Fix {
     },
     /// Work in the caller's own clone or `shared/`.
     UseOwnFolders,
+    /// Make the change in a session's clone of the repository, or remove
+    /// the repository from the channel (CH-22) if its main clone should go.
+    SessionCloneOrRemoveRepo { repo: RepoRef },
     /// The user lets the review session push (PR-8).
     UserAllowsReviewPush { session: SessionId },
     /// Show presence in one of these ways.
@@ -298,8 +301,10 @@ impl Refusal {
                 channel: channel.clone(),
                 capability: *capability,
             },
+            Self::MainCloneReadOnly { repo, .. } => {
+                Fix::SessionCloneOrRemoveRepo { repo: repo.clone() }
+            }
             Self::ParentReadOnly { .. }
-            | Self::MainCloneReadOnly { .. }
             | Self::OutsideHumataFolders { .. }
             | Self::NotItsFolder { .. } => Fix::UseOwnFolders,
             Self::ReviewSessionPush { session } => Fix::UserAllowsReviewPush {

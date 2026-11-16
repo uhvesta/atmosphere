@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use humata2_clients::Clients;
 use humata2_clients::model::{Agent, MachineId};
-use humata2_clients_live::{LiveDaemon, LiveOptions};
+use humata2_clients_live::{LiveComments, LiveDaemon, LiveOptions};
 use tca::{MemoryStorage, SystemClock};
 use std::sync::Arc;
 
@@ -207,15 +207,20 @@ impl World {
         )
         .await
         .map_err(|source| WorldError::Connect { source })?;
+        // Built before `daemon` moves into the terminals client, as the app does.
+        let file_manager = humata2_clients_live::LiveFileManager::new(&daemon);
         Ok(Clients {
             daemon: Arc::new(daemon.clone()),
             desk: Arc::new(daemon.clone()),
+            comments: Arc::new(LiveComments::new(&daemon)),
             terminals: Arc::new(daemon),
             clock: Arc::new(SystemClock::new()),
             clipboard: Arc::new(humata2_clients::FakeClipboard::default()),
             files: Arc::new(humata2_clients::FakeFileSystem::default()),
-            file_manager: Arc::new(humata2_clients::FakeFileManager::default()),
+            file_manager: Arc::new(file_manager),
             keychain: Arc::new(humata2_clients::FakeKeychain::default()),
+            // The live machines client replaces this fake when it is wired in.
+            machines: Arc::new(humata2_clients::machines::FakeMachines::new()),
             storage: Arc::new(MemoryStorage::new()),
         })
     }

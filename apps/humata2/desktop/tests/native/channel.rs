@@ -44,7 +44,7 @@ fn an_empty_channel_offers_a_session_and_a_machine() {
     assert!(app.contains("new-session-create"));
     app.send(AppAction::Escape);
     app.click("channel-empty-add-machine");
-    assert!(app.contains("host-add-connect"));
+    assert!(app.contains("add-machine-start"));
 }
 
 /// CH-12/13: filters/folds retain fork context; an Inbox count opens the right session.

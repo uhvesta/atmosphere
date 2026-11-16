@@ -2,7 +2,9 @@
 //!
 //! A report is text an agent can read: a log of events and enough context
 //! to see what happened and where, with the UI as its underlying data (the
-//! state, the view tree and the layout tree), never pictures.
+//! state, the view tree and the layout tree), plus a picture of the window
+//! the app drew itself (`window.png`, with `marks.svg` over it) when it
+//! could.
 //!
 //! 1. The app takes a [`snapshot`] of one moment, or starts a
 //!    [`Recording`] and pushes each interaction, reducer action, view and
@@ -16,7 +18,7 @@
 //!    report can be written.
 //! 4. [`write`] saves it as `reports/<date>-<slug>/` with `report.md`,
 //!    `events.jsonl`, `state.txt`, `view.txt`, `layout.txt` and
-//!    `daemon.log`, all readable only by this user.
+//!    `daemon.log`, and `drawing.json` when marks were drawn, all readable only by this user.
 //!    A form filled in after the report was saved goes in with
 //!    [`fill_form`], so a report can be saved the moment it stops.
 //! 5. [`copy_prompt`] gives the text "Copy report" puts on the clipboard.
@@ -37,6 +39,7 @@ mod event;
 mod fake;
 mod form;
 mod jsonl;
+mod picture;
 mod prompt;
 mod recorder;
 mod recording;
@@ -45,10 +48,11 @@ mod scrub;
 mod write;
 
 pub mod remote;
+pub mod video;
 
 pub use change::Hunk;
 pub use error::{
-    FakeDaemonError, FormError, PromptError, ReadError, RecorderError, ReplayError, ScrubError,
+    FakeDaemonError, FormError, PictureError, PromptError, ReadError, RecorderError, ReplayError, ScrubError,
     WriteError,
 };
 pub use event::{
@@ -56,11 +60,12 @@ pub use event::{
     Kind, LogLine, Machine, Node, Pasted, Rpc, Session, TreeChange, Trees, WindowSize,
 };
 pub use fake::FakeDaemon;
-pub use form::{Comment, Form};
+pub use form::{Bounds, Comment, Drawing, Form, Point, Shape, Size, Stroke};
 pub use jsonl::read_events;
+pub use picture::{PixelBox, mask, write_window};
 pub use prompt::copy_prompt;
 pub use recorder::Recorder;
-pub use recording::{Captured, Limits, Recording, snapshot};
+pub use recording::{Captured, Limits, Mark, Recording, snapshot};
 pub use replay::{
     Compare, FlowAction, FlowScript, FlowStep, FlowTarget, Player, SkipReason, Skipped,
 };

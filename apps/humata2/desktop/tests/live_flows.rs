@@ -5,6 +5,8 @@
 //! Each test makes its own daemon in its own temp folder.
 #![cfg(target_os = "macos")]
 
+#[path = "live_flows/files.rs"]
+mod files;
 #[path = "live_flows/world.rs"]
 mod world;
 

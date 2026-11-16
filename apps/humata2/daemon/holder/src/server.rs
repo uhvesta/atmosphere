@@ -79,6 +79,9 @@ pub struct ServeOptions {
     /// killed shows it again. Removed when a client shuts the holder
     /// down; kept when it's stopped by a signal.
     pub saved: Option<PathBuf>,
+    /// A line shown before the program's first output, such as why the
+    /// terminal was started again. Plain text; written as its own lines.
+    pub banner: Option<String>,
 }
 
 struct State {
@@ -457,10 +460,31 @@ fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd), std::io::Error> 
     Ok((master, pty))
 }
 
+/// `text` as the terminal shows it: on lines of its own (after what's kept,
+/// if anything is), a blank line after it. It doesn't pass through the
+/// terminal, so its new lines are written as the terminal writes them, and
+/// other control characters are dropped.
+fn banner_bytes(text: &str, after_output: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + 6);
+    if after_output {
+        out.extend_from_slice(b"\r\n");
+    }
+    for c in text.chars() {
+        match c {
+            '\n' => out.extend_from_slice(b"\r\n"),
+            '\t' => out.push(b'\t'),
+            c if c.is_control() => {}
+            c => out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()),
+        }
+    }
+    out.extend_from_slice(b"\r\n\r\n");
+    out
+}
+
 fn start(
     options: &ServeOptions,
-    kept: Scrollback,
-    saved: Option<SaveLog>,
+    mut kept: Scrollback,
+    mut saved: Option<SaveLog>,
 ) -> Result<Arc<Shared>, HolderError> {
     let opened = |source| HolderError::OpenPty { source };
     let (master, pty) = open_pty(options.cols, options.rows).map_err(opened)?;
@@ -497,6 +521,15 @@ fn start(
     // The program holds the only copies of its side now, so reading ends
     // when it and what it started close the terminal.
     drop(command);
+    // After the program started, so a failed start leaves no banner.
+    if let Some(text) = &options.banner {
+        let line = banner_bytes(text, kept.end() > 0);
+        let offset = kept.end();
+        kept.push(&line);
+        if let Some(saved) = saved.as_mut() {
+            saved.output(offset, &line, &kept);
+        }
+    }
     let group = i32::try_from(child.id()).ok().and_then(Pid::from_raw);
 
     let reader = File::from(master.try_clone().map_err(opened)?);
@@ -806,7 +839,14 @@ mod tests {
 
     use tokio::sync::Notify;
 
-    use super::{KEYS_KEPT, Keys, sync_after_writes};
+    use super::{KEYS_KEPT, Keys, banner_bytes, sync_after_writes};
+
+    #[test]
+    fn a_banner_is_its_own_lines_as_plain_text() {
+        assert_eq!(banner_bytes("one\ntwo", false), b"one\r\ntwo\r\n\r\n");
+        assert_eq!(banner_bytes("x\x1b[2Jy", false), b"x[2Jy\r\n\r\n");
+        assert!(banner_bytes("after", true).starts_with(b"\r\n"));
+    }
 
     #[test]
     fn the_oldest_key_is_forgotten_after_256() {

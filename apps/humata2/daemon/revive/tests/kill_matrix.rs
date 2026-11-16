@@ -155,7 +155,7 @@ impl World {
 
     async fn launch_with(&self, store: &Arc<Store>, launch: AgentLaunch) -> AgentRecord {
         store.put_session(&self.session()).unwrap();
-        launch_agent(store, &self.config(), &self.session(), "tb_a", launch, &self.env())
+        launch_agent(store, &self.config(), &self.session(), "tb_a", launch, None, &self.env())
             .await
             .unwrap()
     }
@@ -202,7 +202,7 @@ fn kill_child() {
         let (config, env) = (world.config(), world.env());
         match mode.as_str() {
             "launch" => {
-                launch_agent(&store, &config, &world.session(), "tb_a", world.launch(), &env)
+                launch_agent(&store, &config, &world.session(), "tb_a", world.launch(), None, &env)
                     .await
                     .unwrap();
             }

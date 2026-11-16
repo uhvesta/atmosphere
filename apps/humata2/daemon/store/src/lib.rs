@@ -13,15 +13,19 @@
 mod agents;
 mod atomic;
 mod blob;
+mod boards;
 mod channels;
 mod comments;
 mod error;
+mod fresh_seeds;
 pub mod fault;
 mod inbox;
 mod journal;
 mod last_good;
+mod lifecycle;
 mod previous;
 mod records;
+mod remote_reports;
 mod reviews;
 mod rules;
 mod schema;
@@ -32,18 +36,25 @@ mod views;
 use humata2_store_proto::humata::store::v1 as proto;
 
 pub use atomic::write_atomic;
+pub use boards::{
+    BoardHistoryEntry, BoardHistoryKind, BoardItemChange, BoardItemRecord, BoardKey,
+    BoardWrite, NewBoardItem, PrefixClaim,
+};
 pub use comments::{
     CommentChange, CommentDeliveryRecord, CommentDeliveryState, CommentNumbers, CommentRecord, SessionComments,
 };
 pub use error::StoreError;
+pub use fresh_seeds::FreshSeed;
 pub use journal::{Journal, JournalEntry};
 pub use last_good::{Change, LastGood, Restored, RowChange};
+pub use lifecycle::{ArchiveRow, ArchiveState, ForkOrigin};
 pub use previous::PreviousConversation;
 pub use records::{
     AgentLaunch, AgentRecord, AgentState, ChannelRecord, ChannelRepo, InboxRecord, Interruption,
     MainClone, Pointers, RepoPointer, ResumeFailure, ReviewRecord, SessionDetail, SessionRecord,
     SessionRepo, StartStep, TabKind, TabRecord, Told, ViewRecord,
 };
+pub use remote_reports::RemoteReportRow;
 pub use rules::SavedRules;
 pub use schema::SCHEMA_VERSION;
 pub use script_tokens::SavedScriptToken;

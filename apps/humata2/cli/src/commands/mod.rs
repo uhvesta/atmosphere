@@ -9,6 +9,7 @@ mod looking;
 mod sessions;
 mod settings;
 mod streams;
+mod turn;
 
 use humata2_proto::humata::v1 as pb;
 use prost::Message;
@@ -158,6 +159,7 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
         Command::Unvip { thing } => hosts::mark(ctx, &thing, None, Some(false)).await,
         Command::Pinned { command } => hosts::pinned(ctx, command).await,
         Command::Report(command) => hosts::report(ctx, command).await,
+        Command::Turn { state } => turn::turn(ctx, state, std::time::SystemTime::now()).await,
     }
 }
 
@@ -354,6 +356,7 @@ pub fn operation(command: &Command) -> &'static str {
             ReportCommand::Stop => "report.stop",
             ReportCommand::Snapshot { .. } => "report.snapshot",
         },
+        Command::Turn { .. } => "session.report_turn",
     }
 }
 

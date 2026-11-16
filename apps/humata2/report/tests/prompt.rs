@@ -17,6 +17,7 @@ fn saved(reports: &Path) -> PathBuf {
         happened: "the list showed milk twice".to_owned(),
         expected: "milk once".to_owned(),
         comments: Vec::new(),
+        ..Form::default()
     };
     let scrubbed = scrub(driver.stop(), form, &Secrets::new()).expect("scrubs");
     let dir = write(reports, &scrubbed).expect("writes");

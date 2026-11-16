@@ -183,6 +183,14 @@ impl FakeMachine {
         fs::write(self.state.join("uname"), uname).unwrap();
     }
 
+    /// Puts a tool first on the machine's PATH: `name` runs `body` with
+    /// `/bin/sh`, in place of the default fake or the system's own.
+    pub fn set_tool(&self, name: &str, body: &str) {
+        let path = self.home.with_file_name("bin").join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     /// Every remote command line ssh was asked to run, one per line.
     pub fn ssh_log(&self) -> String {
         fs::read_to_string(self.state.join("ssh.log")).unwrap_or_default()

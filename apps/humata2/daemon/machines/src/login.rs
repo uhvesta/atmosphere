@@ -219,20 +219,44 @@ const SECRET_WORDS: [&str; 10] = [
     "token code",
 ];
 
+/// What a prompt asks for (MP-13, D167): the rule of [`detect_prompt`] that
+/// matched. The word "password" is a password, "passphrase" a passphrase,
+/// every other secret word (code, one-time, otp, 2fa, passcode) a code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptKind {
+    Password,
+    Passphrase,
+    Code,
+    /// A `(yes/no)?` question.
+    Confirm,
+    /// A device login: a URL and a code to enter there.
+    Device,
+}
+
+/// A prompt a command waits at: what kind, and the line that says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub line: String,
+}
+
 /// Whether `output`, what a command printed so far, ends waiting for a
 /// person (MP-13): a password, passphrase or verification-code prompt, a
 /// `(yes/no)?` question, or a device-login line (a URL and a code to
-/// enter). Returns the line that says so. Escape sequences are ignored and
-/// case doesn't matter. Conservative: a line that only mentions a password
-/// in a sentence, with output after it, is not a prompt.
-pub fn detect_prompt(output: &[u8]) -> Option<String> {
+/// enter). Returns the line that says so and the kind of rule that matched
+/// (D167). Escape sequences are ignored and case doesn't matter.
+/// Conservative: a line that only mentions a password in a sentence, with
+/// output after it, is not a prompt.
+pub fn detect_prompt(output: &[u8]) -> Option<Prompt> {
     let text = strip(output);
     // The line still being written, if the output doesn't end in a
     // newline: a prompt waits there.
     if !text.ends_with('\n') {
         let last = text.rsplit('\n').next().unwrap_or("").trim();
-        if !last.is_empty() && is_prompt_line(last) {
-            return Some(last.to_owned());
+        if !last.is_empty()
+            && let Some(kind) = line_kind(last)
+        {
+            return Some(Prompt { kind, line: last.to_owned() });
         }
     }
     // A device login prints its instructions on whole lines and waits.
@@ -252,23 +276,52 @@ pub fn detect_prompt(output: &[u8]) -> Option<String> {
                 lower.contains("code") || lower.contains("device")
             })
             .or_else(|| window.last())
-            .map(|line| (*line).to_owned());
+            .map(|line| Prompt { kind: PromptKind::Device, line: (*line).to_owned() });
     }
     None
 }
 
-fn is_prompt_line(line: &str) -> bool {
+/// What the last line of output waits for, when it is a prompt.
+fn line_kind(line: &str) -> Option<PromptKind> {
     let lower = line.to_lowercase();
     let lower = lower.trim_end();
     if lower.contains("(yes/no") && lower.ends_with('?') {
-        return true;
+        return Some(PromptKind::Confirm);
     }
     if lower.ends_with(':') || lower.ends_with("]:") || lower.ends_with("):") {
         // Short names must be whole words: "footprint:" has an "otp".
         let whole = |word: &str| lower.split(|c: char| !c.is_alphanumeric()).any(|part| part == word);
-        return SECRET_WORDS.iter().any(|word| lower.contains(word)) || whole("otp") || whole("2fa");
+        if SECRET_WORDS.iter().any(|word| lower.contains(word)) || whole("otp") || whole("2fa") {
+            return Some(secret_kind(lower));
+        }
     }
-    false
+    None
+}
+
+/// The kind of a prompt line that is already known to be a prompt: the
+/// non-interactive connect uses it for a line it found by looser words
+/// (`setup::LOGIN_PROMPTS`), where [`detect_prompt`] saw none (D167).
+pub(crate) fn kind_of_line(line: &str) -> PromptKind {
+    let lower = line.to_lowercase();
+    if lower.contains("(yes/no") {
+        PromptKind::Confirm
+    } else if ["device login", "enter the code", "enter code"].iter().any(|word| lower.contains(word)) {
+        PromptKind::Device
+    } else {
+        secret_kind(&lower)
+    }
+}
+
+/// A password is a password, a passphrase a passphrase, any other secret
+/// word (code, one-time, otp, 2fa, passcode) a code.
+fn secret_kind(lower: &str) -> PromptKind {
+    if lower.contains("password") {
+        PromptKind::Password
+    } else if lower.contains("passphrase") {
+        PromptKind::Passphrase
+    } else {
+        PromptKind::Code
+    }
 }
 
 /// `bytes` as text without escape sequences, carriage returns and other
@@ -558,8 +611,8 @@ fn open_pty(cols: u16, rows: u16) -> io::Result<(OwnedFd, OwnedFd)> {
 pub enum Observed {
     Output(Vec<u8>),
     /// The first time the output ends waiting for a person (MP-13), with
-    /// the line that says so.
-    Prompt(String),
+    /// the line that says so and what kind of prompt it is (D167).
+    Prompt(Prompt),
 }
 
 /// What a takeover needs besides the terminal.
@@ -640,9 +693,9 @@ impl LoginSession {
             match self.next(None) {
                 Next::Event(LoginEvent::Output(bytes)) => {
                     self.remember(&bytes);
-                    if !prompted && let Some(line) = detect_prompt(&self.recent) {
+                    if !prompted && let Some(prompt) = detect_prompt(&self.recent) {
                         prompted = true;
-                        if !observe(Observed::Prompt(line)) {
+                        if !observe(Observed::Prompt(prompt)) {
                             return Err(self.cancelled());
                         }
                     }
@@ -1485,7 +1538,45 @@ mod tests {
     #[test]
     fn the_matched_line_is_what_is_returned() {
         let found = detect_prompt(b"connecting...\r\n\x1b[2mVerification code: \x1b[0m").unwrap();
-        assert_eq!(found, "Verification code:");
+        assert_eq!(found.line, "Verification code:");
+        assert_eq!(found.kind, PromptKind::Code);
+    }
+
+    #[test]
+    fn each_prompt_comes_with_the_kind_of_rule_that_matched() {
+        let cases = [
+            ("Password: ", PromptKind::Password),
+            ("me@box's password: ", PromptKind::Password),
+            ("[sudo] password for me: ", PromptKind::Password),
+            ("Enter your one-time password: ", PromptKind::Password),
+            ("Enter passphrase for key '/home/me/.ssh/id_ed25519': ", PromptKind::Passphrase),
+            ("Verification code: ", PromptKind::Code),
+            ("\x1b[1mOne-time passcode:\x1b[0m ", PromptKind::Code),
+            ("Enter your OTP: ", PromptKind::Code),
+            ("Your 2FA: ", PromptKind::Code),
+            ("Are you sure you want to continue connecting (yes/no)? ", PromptKind::Confirm),
+            (
+                "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+                PromptKind::Confirm,
+            ),
+            (
+                "To sign in, open https://example.test/device and enter the code ABCD-1234\nWaiting for you...\n",
+                PromptKind::Device,
+            ),
+        ];
+        for (text, kind) in cases {
+            let found = detect_prompt(text.as_bytes()).unwrap_or_else(|| panic!("{text:?} is a prompt"));
+            assert_eq!(found.kind, kind, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_line_found_by_looser_words_gets_its_kind_from_them() {
+        assert_eq!(kind_of_line("dev@10.0.0.5's Password:"), PromptKind::Password);
+        assert_eq!(kind_of_line("Enter passphrase for key 'id':"), PromptKind::Passphrase);
+        assert_eq!(kind_of_line("Verification code:"), PromptKind::Code);
+        assert_eq!(kind_of_line("Continue connecting (yes/no)?"), PromptKind::Confirm);
+        assert_eq!(kind_of_line("Visit https://example.test and enter the code 1234"), PromptKind::Device);
     }
 
     #[test]

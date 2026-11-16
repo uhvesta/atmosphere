@@ -80,24 +80,25 @@ pub fn home_list(look: Look) -> Div {
                     look,
                     "Needs you · 3",
                     vec![
-                        session_row(look, St::NeedsYou, "Ledger schema migration", "# payments-rewrite", "Asks to move PAY-3 to Done", "2m", Some(button(look, Kind::Primary, "Review"))),
+                        session_row(look, St::NeedsYou, "Ledger schema migration", "# payments-rewrite · devbox-1", "Asks to move PAY-3 to Done", "2m", Some(button(look, Kind::Primary, "Review"))),
                         session_row(look, St::NeedsYou, "Try BRIN index", "fork of Ledger schema", "Asks to push try-brin to origin", "9m", Some(button(look, Kind::Primary, "Review"))),
-                        session_row(look, St::Exited, "Upgrade Postgres 17", "# infra", "Exited with code 1 after the dump step", "40m", Some(button(look, Kind::Secondary, "Resume"))),
+                        session_row(look, St::Exited, "Upgrade Postgres 17", "# infra · devbox-1", "Exited with code 1 after the dump step", "40m", Some(button(look, Kind::Secondary, "Resume"))),
                     ],
                 ))
                 .child(group(
                     look,
-                    "Working · 2",
+                    "Working · 3",
                     vec![
+                        session_row(look, St::Working, "Partial BRIN on posted_at", "fork of Try BRIN index", "Comparing partial BRIN on posted_at", "now", None),
                         session_row(look, St::Working, "Refund retries", "# payments-rewrite", "Running cargo test -p refunds", "now", None),
-                        session_row(look, St::Working, "Benchmark BRIN", "# infra · gpu-box", "pgbench run 2 of 4", "1m", None),
+                        session_row(look, St::Working, "Benchmark BRIN", "# infra · devbox-1", "pgbench run 2 of 4", "1m", None),
                     ],
                 ))
                 .child(group(
                     look,
                     "Recent",
                     vec![
-                        session_row(look, St::Idle, "API rate limiter", "# payments-rewrite", "Finished: pushed and opened PR #491", "1h", Some(button(look, Kind::Secondary, "Open PR"))),
+                        session_row(look, St::Idle, "API rate limiter", "# payments-rewrite · devbox-1", "Finished: pushed and opened PR #491", "1h", Some(button(look, Kind::Secondary, "Open PR"))),
                         session_row(look, St::Idle, "acme/api #482", "# pr-reviews", "3 new commits since your review", "2h", Some(button(look, Kind::Secondary, "Review"))),
                     ],
                 )),
@@ -320,9 +321,9 @@ pub fn hosts(look: Look) -> Div {
             card(look)
                 .flex_1()
                 .overflow_hidden()
-                .child(row(St::Working, "This Mac", "macOS 26.7 · arm64", "2 sessions", 0.42, "210 GB free", None, false))
-                .child(row(St::Working, "devbox-1", "Ubuntu 24.04 · ssh", "4 sessions", 0.88, "11 GB free", Some(button(look, Kind::Secondary, "Free space…")), true))
-                .child(row(St::Offline, "gpu-box", "Debian 13 · ssh", "1 session", 0.3, "last seen 14:02", Some(button(look, Kind::Secondary, "Reconnect")), false))
+                .child(row(St::Working, "This Mac", "macOS 26.7 · arm64", "3 sessions", 0.42, "210 GB free", None, false))
+                .child(row(St::Working, "devbox-1", "Ubuntu 24.04 · ssh", "6 sessions", 0.88, "11 GB free", Some(button(look, Kind::Secondary, "Free space…")), true))
+                .child(row(St::Offline, "gpu-box", "Debian 13 · ssh", "none", 0.3, "last seen 14:02", Some(button(look, Kind::Secondary, "Reconnect")), false))
                 .child(row(St::Idle, "cloud-vm-3", "Ubuntu 24.04 · provider", "none", 0.1, "stopped", Some(button(look, Kind::Secondary, "Start")), false)),
         )
         .child(

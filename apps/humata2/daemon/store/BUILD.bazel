@@ -20,7 +20,10 @@ rust_library(
     name = "store",
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_store",
-    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    visibility = [
+        "//apps/humata2/cli:__pkg__",
+        "//apps/humata2/daemon:__subpackages__",
+    ],
     deps = STORE_DEPS + ["//apps/humata2/daemon/durable"],
 )
 

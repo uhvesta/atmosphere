@@ -26,12 +26,6 @@ fn with_desk() -> Workspace {
     workspace
 }
 
-fn with_clean_up() -> Workspace {
-    let mut workspace = fixture::design();
-    fixture::clean_up(&mut workspace);
-    workspace
-}
-
 fn fake(workspace: Workspace) -> FakeDaemon {
     FakeDaemon::new(workspace, Arc::new(TestClock::new()))
 }
@@ -124,9 +118,10 @@ fn a_taken_scratch_name_gets_a_suffix() {
 #[test]
 fn starting_on_an_offline_host_is_offline() {
     let daemon = fake(with_desk());
+    let before = daemon.workspace().desk.sessions.len();
     let result = block_on(daemon.start(scratch("quarter", "gpu-box")));
     assert!(matches!(result, Err(DaemonError::Offline { .. })));
-    assert_eq!(daemon.workspace().desk.sessions.len(), 4);
+    assert_eq!(daemon.workspace().desk.sessions.len(), before);
 }
 
 #[test]
@@ -238,7 +233,7 @@ fn keeping_a_closed_scratch_folder_clears_its_days() {
 
 #[test]
 fn the_clean_up_list_is_least_recently_used_first_with_sizes() {
-    let daemon = fake(with_clean_up());
+    let daemon = fake(with_desk());
     let rows = block_on(daemon.clean_up_list()).expect("the list loads");
     let listed: Vec<_> = rows
         .iter()
@@ -259,7 +254,7 @@ fn the_clean_up_list_is_least_recently_used_first_with_sizes() {
 
 #[test]
 fn cleaning_up_trashes_the_sessions_and_reports_what_was_freed() {
-    let daemon = fake(with_clean_up());
+    let daemon = fake(with_desk());
     let before = daemon.workspace().trash.len();
     let rows = block_on(daemon.clean_up_list()).expect("the list loads");
     let delete = vec![id("desk-onboarding-doc"), id("desk-notes-cleanup")];
@@ -286,7 +281,7 @@ fn cleaning_up_trashes_the_sessions_and_reports_what_was_freed() {
 
 #[test]
 fn cleaning_up_an_unknown_session_deletes_nothing() {
-    let daemon = fake(with_clean_up());
+    let daemon = fake(with_desk());
     let rows = block_on(daemon.clean_up_list()).expect("the list loads");
     let delete = vec![id("desk-onboarding-doc"), id("desk-plan-q4")];
     let result = block_on(daemon.clean_up(rows, delete));
@@ -296,7 +291,7 @@ fn cleaning_up_an_unknown_session_deletes_nothing() {
 
 #[test]
 fn cleaning_up_from_a_stale_list_changes_nothing_and_returns_the_list() {
-    let daemon = fake(with_clean_up());
+    let daemon = fake(with_desk());
     let stale = block_on(daemon.clean_up_list()).expect("the list loads");
     block_on(daemon.close(&id("desk-plan-q4"))).expect("another window closes a session");
     let result = block_on(daemon.clean_up(stale.clone(), vec![id("desk-onboarding-doc")]))
@@ -542,4 +537,67 @@ fn no_channel_is_named_after_the_desk_folder() {
         ));
         assert_eq!(daemon.workspace().channels.len(), channels);
     }
+}
+
+#[test]
+fn a_place_reads_desk_for_the_desk_and_the_channel_name_otherwise() {
+    let workspace = with_desk();
+    assert_eq!(desk::place(&workspace, &desk::channel()), "Desk");
+    let Some(channel) = workspace.channels.first() else {
+        panic!("the design has a channel");
+    };
+    assert_eq!(
+        desk::place(&workspace, &channel.id),
+        format!("# {}", channel.name)
+    );
+    assert_eq!(desk::place(&workspace, &ChannelId::new("nowhere")), "nowhere");
+}
+
+#[test]
+fn a_clone_sits_on_its_repositorys_default_branch_until_it_is_removed() {
+    let daemon = fake(with_desk());
+    let session = id("desk-plan-q4");
+    let key = (session.clone(), "acme/web".to_owned());
+    block_on(daemon.add_repo(&session, "acme/web")).expect("it is added");
+    assert_eq!(
+        daemon.workspace().desk.clone_branches.get(&key).map(String::as_str),
+        Some("main")
+    );
+    block_on(daemon.remove_repo(&session, "acme/web")).expect("it is removed");
+    assert!(!daemon.workspace().desk.clone_branches.contains_key(&key));
+}
+
+#[test]
+fn one_waiting_request_stands_behind_plan_q4s_inbox_badge() {
+    let waiting = |workspace: &Workspace| -> Vec<(String, String, String)> {
+        workspace
+            .requests
+            .iter()
+            .filter(|request| request.answer.is_none())
+            .map(|request| {
+                (
+                    request.id.to_string(),
+                    request.session.to_string(),
+                    request.channel.to_string(),
+                )
+            })
+            .collect()
+    };
+    let before = waiting(&fixture::design());
+    let workspace = with_desk();
+    let after = waiting(&workspace);
+    let plan: Vec<_> = after
+        .iter()
+        .filter(|(_, session, _)| session == "desk-plan-q4")
+        .collect();
+    assert_eq!(plan.len(), 1, "{after:?}");
+    assert_eq!(plan[0].2, desk::channel().to_string());
+    assert_eq!(&after[..before.len()], &before[..]);
+    assert_eq!(after.len(), before.len() + 1);
+    let status = workspace
+        .sessions
+        .iter()
+        .find(|session| session.id == id("desk-plan-q4"))
+        .map(|session| session.status.clone());
+    assert_eq!(status, Some(Status::Working));
 }

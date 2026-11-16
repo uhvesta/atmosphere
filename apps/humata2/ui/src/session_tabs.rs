@@ -7,7 +7,7 @@ use gpui_kit::base::{Disableable as _, TestTextExt as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::model::{Agent, Session, Status, Turn};
-use humata2_session::{SessionAction, Tab, TabGroup};
+use humata2_session::{SessionAction, Tab, TabGroup, is_markdown};
 use humata2_views::ViewsAction;
 
 use crate::{
@@ -29,6 +29,27 @@ fn send(ui: &Rc<Ui>, id: String, label: &str, action: SessionAction, look: Look)
             cx.stop_propagation();
             ui.send(AppAction::Session(action.clone()), cx);
         })
+}
+
+/// A tab being dragged to the other group (SPEC 26.20): where it is now.
+#[derive(Clone)]
+struct TabDrag {
+    group: usize,
+    index: usize,
+    label: String,
+}
+
+impl Render for TabDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.))
+            .py(px(5.))
+            .rounded(px(6.))
+            .bg(rgb(0x323235))
+            .text_size(px(12.))
+            .text_color(rgb(0xffffff))
+            .child(self.label.clone())
+    }
 }
 
 fn tab_row(
@@ -79,7 +100,16 @@ fn tab_row(
                 ),
                 Tab::File { path, .. } => (
                     path.rsplit('/').next().unwrap_or(path).to_owned(),
-                    chrome::icon(IconName::FileCode, look.secondary, 12.).into_any_element(),
+                    chrome::icon(
+                        if is_markdown(path) {
+                            IconName::FileText
+                        } else {
+                            IconName::FileCode
+                        },
+                        look.secondary,
+                        12.,
+                    )
+                    .into_any_element(),
                     format!("file-tab-{group}-{index}"),
                 ),
                 Tab::View(title) => (
@@ -89,6 +119,11 @@ fn tab_row(
                 ),
             };
             let ui2 = ui.clone();
+            let drag = TabDrag {
+                group,
+                index,
+                label: name.clone(),
+            };
             row()
                 .id(SharedString::from(id))
                 .role(Role::Tab)
@@ -128,6 +163,7 @@ fn tab_row(
                         cx,
                     )
                 })
+                .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
                 .test_support()
         }))
         .child(
@@ -150,6 +186,7 @@ fn tab_row(
             .test_support(),
         )
         .child(div().flex_1())
+        .children(crate::document_tab::mode_switch(ui, state, look, group, tabs))
         .when(session.status != Status::Offline, |bar| {
             let peers = tabs
                 .tabs
@@ -207,6 +244,22 @@ fn tab_row(
                     .child(chrome::icon(IconName::WifiOff, look.secondary, 12.))
                     .child("disconnected"),
             )
+        })
+        .drag_over::<TabDrag>(move |style, _, _, _| style.bg(rgba(look.accent << 8 | 0x26)))
+        .on_drop({
+            let ui = ui.clone();
+            move |drag: &TabDrag, _, cx| {
+                // Dropped on its own row, a tab stays where it is.
+                if drag.group != group {
+                    ui.send(
+                        AppAction::Session(SessionAction::MoveTab {
+                            group: drag.group,
+                            index: drag.index,
+                        }),
+                        cx,
+                    );
+                }
+            }
         })
 }
 
@@ -377,12 +430,14 @@ pub(crate) fn body(
     session: &Session,
     look: Look,
     terminals: &crate::terminals::Terminals,
+    documents: &crate::document_tab::Documents,
     cx: &mut App,
 ) -> Div {
     let fallback = TabGroup {
         tabs: (0..=session.shells.len()).map(Tab::Terminal).collect(),
         selected: state.session.view().map_or(0, |v| v.tab),
     };
+    let dragging = cx.has_active_drag();
     let groups = state
         .session
         .view()
@@ -478,10 +533,40 @@ pub(crate) fn body(
                             .overflow_hidden()
                             .when(group > 0, |g| g.border_l_1().border_color(rgb(look.line)))
                             .child(tab_row(ui, state, session, group, tabs, look))
+                            // One group: while a tab is dragged, dropping it on the
+                            // right edge opens the second group beside it. The zone
+                            // exists only during a drag, so it never takes the
+                            // terminal's clicks.
+                            .when(groups.len() == 1 && tabs.tabs.len() > 1 && dragging, |g| {
+                                let ui = ui.clone();
+                                g.child(
+                                    div()
+                                        .id("tab-drop-right")
+                                        .absolute()
+                                        .top(px(32.))
+                                        .right(px(0.))
+                                        .bottom(px(0.))
+                                        .w(px(96.))
+                                        .drag_over::<TabDrag>(move |style, _, _, _| {
+                                            style.bg(rgba(look.accent << 8 | 0x26))
+                                        })
+                                        .on_drop(move |drag: &TabDrag, _, cx| {
+                                            ui.send(
+                                                AppAction::Session(SessionAction::MoveTab {
+                                                    group: drag.group,
+                                                    index: drag.index,
+                                                }),
+                                                cx,
+                                            )
+                                        })
+                                        .test_support(),
+                                )
+                            })
                             .child(match selected {
-                                Some(Tab::File { repo, path }) => {
-                                    file_body(state, session, repo, path, look)
-                                }
+                                Some(Tab::File { repo, path }) => documents
+                                    .body(ui, state, session, repo, path, look)
+                                    .filter(|_| is_markdown(path))
+                                    .unwrap_or_else(|| file_body(state, session, repo, path, look)),
                                 Some(Tab::View(title)) => {
                                     let view = state
                                         .workspace
@@ -608,24 +693,10 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
     let certain = !failed
         && matches!(session.agent, Agent::Claude | Agent::Copilot)
         && session.turn != Turn::Uncertain;
-    let comments_only = view
-        .queue
-        .iter()
-        .all(|message| matches!(message, humata2_session::QueuedMessage::Comments { .. }));
     let sending = state.session.sending;
-    let waits = certain && !comments_only;
-    let count = if comments_only {
-        view.queue
-            .iter()
-            .map(|message| match message {
-                humata2_session::QueuedMessage::Comments { comments } => comments.len(),
-                humata2_session::QueuedMessage::Text(_) => 0,
-            })
-            .sum()
-    } else {
-        view.queue.len()
-    };
-    let noun = if comments_only { "comment" } else { "message" };
+    let waits = certain;
+    let count = view.queue.len();
+    let noun = "message";
     // SE-23 and D128.3: the bar says "waiting to send"; held text that goes
     // on its own at the turn's end needs no further note.
     let status = if failed {

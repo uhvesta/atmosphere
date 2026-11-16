@@ -165,6 +165,10 @@ impl End for Disk {
 
     fn make_folder(&self, path: &Path, mode: u32) -> Result<(), EndError> {
         if fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) {
+            // Made by an earlier run, which may have died before saving it.
+            if let Some(parent) = path.parent() {
+                sync_dir(parent).map_err(fail("save", parent))?;
+            }
             return Ok(());
         }
         create_dir_all(path, mode | 0o700).map_err(fail("create the folder", path))?;
@@ -178,9 +182,18 @@ impl End for Disk {
 
     fn make_link(&self, path: &Path, target: &Path) -> Result<(), EndError> {
         if self.exists(path)? {
+            // Made by an earlier run, which may have died before saving it.
+            if let Some(parent) = path.parent() {
+                sync_dir(parent).map_err(fail("save", parent))?;
+            }
             return Ok(());
         }
-        std::os::unix::fs::symlink(target, path).map_err(fail("create the link", path))
+        std::os::unix::fs::symlink(target, path).map_err(fail("create the link", path))?;
+        // The journal soon says this entry is done; its folder must hold it.
+        if let Some(parent) = path.parent() {
+            sync_dir(parent).map_err(fail("save", parent))?;
+        }
+        Ok(())
     }
 
     fn open_write(&self, path: &Path, offset: u64) -> Result<Box<dyn Sink>, EndError> {
@@ -210,7 +223,9 @@ impl End for Disk {
         if len > offset {
             file.set_len(offset).map_err(fail("cut", path))?;
         }
-        if !existed && let Some(parent) = path.parent() {
+        // Also when the file was there: an earlier run may have made it
+        // and died before saving its folder.
+        if let Some(parent) = path.parent() {
             sync_dir(parent).map_err(fail("save", parent))?;
         }
         Ok(Box::new(DiskSink {

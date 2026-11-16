@@ -20,10 +20,13 @@ rust_library(
         "//apps/humata2/ui:__subpackages__",
     ],
     deps = [
+        "@crates//:image",
+        "@crates//:png",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",
         "@crates//:tokio",
+        "@crates//:zstd",
     ],
 )
 
@@ -45,6 +48,8 @@ rust_test(
         ),
         deps = [
             ":report",
+            "@crates//:image",
+            "@crates//:png",
             "@crates//:serde_json",
             "@crates//:tempfile",
             "@crates//:tokio",

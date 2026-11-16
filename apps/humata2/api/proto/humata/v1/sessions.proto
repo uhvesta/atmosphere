@@ -63,6 +63,10 @@ service SessionService {
   // Called by the target agent (MCP session_answer) for a question typed
   // into its terminal.
   rpc AnswerQuestion(AnswerQuestionRequest) returns (AnswerQuestionResponse);
+  // SE-21, D169: the session's own agent (its hooks, through `humata turn`)
+  // says what turn it is in. Anyone else is refused. Repeating the state it
+  // has is a no-op.
+  rpc ReportTurn(ReportTurnRequest) returns (ReportTurnResponse);
 }
 
 message SessionRepo {
@@ -161,6 +165,19 @@ message Session {
   // When a daemon restart interrupted this session's agent; unset if no
   // restart has. The app shows "Restarted at 09:12" from it (frame 46).
   google.protobuf.Timestamp interrupted_at = 30;
+  // Set only while status is RESUME_FAILED: what "Start fresh with a summary"
+  // would summarize (D143). Unspecified otherwise.
+  SummarySource summary_source = 31;
+
+  enum SummarySource {
+    SUMMARY_SOURCE_UNSPECIFIED = 0;
+    // The old conversation file exists and has something in it.
+    SUMMARY_SOURCE_TRANSCRIPT = 1;
+    // No transcript, but the terminal's saved output has text.
+    SUMMARY_SOURCE_SCROLLBACK = 2;
+    // Nothing is left: the new agent is told only the title.
+    SUMMARY_SOURCE_NONE = 3;
+  }
 }
 
 message RepoChoice {
@@ -480,3 +497,23 @@ message AnswerQuestionRequest {
 }
 
 message AnswerQuestionResponse {}
+
+// What an agent's hooks say about its turn (D169).
+enum TurnState {
+  TURN_STATE_UNSPECIFIED = 0;
+  // A turn began or goes on: a prompt was submitted, a tool batch ended.
+  TURN_STATE_WORKING = 1;
+  // The turn ended.
+  TURN_STATE_IDLE = 2;
+  // The agent waits for the user: a permission or a question.
+  TURN_STATE_NEEDS_INPUT = 3;
+}
+
+message ReportTurnRequest {
+  TurnState state = 1;
+  // When the hook's process started (unix ns). Async hooks can overtake each
+  // other, so the daemon keeps the newest report and drops an older one.
+  int64 reported_at_unix_ns = 2;
+}
+
+message ReportTurnResponse {}

@@ -1,5 +1,6 @@
 //! What a `FileLocation` names on this machine (FC-1, FM-10): a session's
-//! clone, a channel's folder, its `shared/`, or a main clone, and a path
+//! clone, a channel's folder, its `shared/`, a main clone, or (for the
+//! user only, which the policy enforces) the home folder, and a path
 //! inside it. A path never leaves its root: not by "..", not by an
 //! absolute path, and not through a symlink.
 
@@ -24,21 +25,73 @@ pub(crate) struct Roots {
     store: Arc<Store>,
     machine: String,
     layout: Layout,
+    /// The user's home folder on this machine (FM-10).
+    home: PathBuf,
 }
 
 impl Roots {
-    /// `channels` is the folder every channel's folder is in.
-    pub(crate) fn new(store: Arc<Store>, machine: String, channels: PathBuf) -> Self {
+    /// `channels` is the folder every channel's folder is in; `home` is
+    /// the user's home folder here.
+    pub(crate) fn new(
+        store: Arc<Store>,
+        machine: String,
+        channels: PathBuf,
+        home: PathBuf,
+    ) -> Self {
         Self {
             store,
             machine,
             layout: Layout { root: channels },
+            home,
         }
+    }
+
+    /// The store sessions and channels are read from.
+    pub(crate) fn store(&self) -> &Arc<Store> {
+        &self.store
     }
 
     /// This machine's id.
     pub(crate) fn machine(&self) -> &str {
         &self.machine
+    }
+
+    /// The main clone a path lands in, on or above, if any (FC-2, D165):
+    /// `path` under `folder`, with symlinks followed in the part that
+    /// exists. A main clone's own folder and everything in it always count.
+    /// A folder that holds a main clone (`main/`, a channel's folder,
+    /// Humata's root) counts only when the entry itself is acted on
+    /// (`Entry::File`: a rename, a delete, a move away), not when it is
+    /// listed or something is made in it. A location on another machine is
+    /// judged there.
+    fn main_clone_at(
+        &self,
+        machine: Option<&pb::MachineId>,
+        folder: &Path,
+        path: &RepoPath,
+        entry: Entry,
+    ) -> Result<Option<Root>, Status> {
+        if machine.is_some_and(|named| !named.value.is_empty() && named.value != self.machine) {
+            return Ok(None);
+        }
+        let landed = landing(&folder.join(path.as_str()));
+        let channels = self
+            .store
+            .channels()
+            .map_err(|error| status::store(error, &self.machine, "look up the channels"))?;
+        for channel in channels {
+            for repo in &channel.repos {
+                let main = landing(&self.layout.main_clone(&channel.folder, &repo.name));
+                let holds_it = entry == Entry::File && main.starts_with(&landed);
+                if landed.starts_with(&main) || holds_it {
+                    return Ok(Some(Root::MainClone {
+                        channel: ChannelId::new(channel.id.as_str()),
+                        repo: RepoRef::new(format!("{}/{}", repo.owner, repo.name)),
+                    }));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// The entry `location` names and the place the policy judges. `field`
@@ -182,8 +235,27 @@ impl Roots {
                     }),
                 )
             }
+            // Only the user gets past the policy with this root.
+            Some(R::Home(_)) => (
+                Root::Home,
+                self.home.clone(),
+                path.clone(),
+                true,
+                R::Home(pb::MachineHome {}),
+            ),
             None => return Err(status::missing(&format!("{field}.root"))),
         };
+        // FC-2, D165: a change is judged by where its path lands. Through
+        // the home folder or a channel's folder a path can reach a main
+        // clone; to the policy it then is that main clone, whichever root
+        // named it, so every caller is refused a change there. Reads and
+        // copies out are judged as before.
+        let through = matches!(root, Root::Home | Root::ChannelFolder(_));
+        let landed = match through {
+            true => self.main_clone_at(location.machine.as_ref(), &folder, &path, entry)?,
+            false => None,
+        };
+        let root = landed.unwrap_or(root);
         Ok(Target {
             place: Place {
                 machine: here,
@@ -219,6 +291,27 @@ impl Roots {
                 "check the channel id; `humata channels` lists the channels here",
             )),
             Err(error) => Err(status::store(error, &self.machine, "look up the channel")),
+        }
+    }
+}
+
+/// Where `path` lands on disk: symlinks are followed in the part of it
+/// that exists, and what doesn't exist yet follows as named.
+fn landing(path: &Path) -> PathBuf {
+    let mut exists = path;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(real) = fs::canonicalize(exists) {
+            let mut landed = real;
+            landed.extend(rest.iter().rev());
+            return landed;
+        }
+        match (exists.parent(), exists.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                exists = parent;
+            }
+            _ => return path.to_owned(),
         }
     }
 }

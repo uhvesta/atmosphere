@@ -42,7 +42,7 @@ pub use local::{install_local, Holders, LocalInstallError, LocalReport, RunningH
 pub use login::{
     detect_prompt, existing_link, is_interactive, make_unattended, mark_interactive, provider_link, register, unregister,
     LinkReader, LinkWriter, LoginError, LoginEvent, LoginHandle, LoginLink, LoginSession, LoginTerminal, Method, Observed,
-    Plan,
+    Plan, Prompt, PromptKind,
 };
 pub use manage::{
     AddSsh, Drive, Machines, MachinesConfig, ManageError, OpStep, PlannedAdd, PlannedCreate, Recovered, StepEvent, DEFAULT_ROOT,

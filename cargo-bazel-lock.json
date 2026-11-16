@@ -1,5 +1,5 @@
 {
-  "checksum": "90c42fd247de9b44dfcd2fa71e2c8547380b178e7ea598e0ce43df5939adafc5",
+  "checksum": "e62e199b9c396202b42bcbad332c811b56a390c341c36e2b592e233996f466a4",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -3091,6 +3091,16 @@
     "axum 0.8.9": {
       "common_attrs": {
         "crate_features": [
+          "default",
+          "form",
+          "http1",
+          "json",
+          "matched-path",
+          "original-uri",
+          "query",
+          "tokio",
+          "tower-log",
+          "tracing",
           "ws"
         ],
         "deps": [
@@ -3099,8 +3109,16 @@
             "target": "axum_core"
           },
           {
+            "id": "base64 0.22.1",
+            "target": "base64"
+          },
+          {
             "id": "bytes 1.12.1",
             "target": "bytes"
+          },
+          {
+            "id": "form_urlencoded 1.2.2",
+            "target": "form_urlencoded"
           },
           {
             "id": "futures-util 0.3.34",
@@ -3117,6 +3135,14 @@
           {
             "id": "http-body-util 0.1.5",
             "target": "http_body_util"
+          },
+          {
+            "id": "hyper 1.12.0",
+            "target": "hyper"
+          },
+          {
+            "id": "hyper-util 0.1.21",
+            "target": "hyper_util"
           },
           {
             "id": "itoa 1.0.19",
@@ -3147,8 +3173,32 @@
             "target": "serde_core"
           },
           {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "serde_path_to_error 0.1.20",
+            "target": "serde_path_to_error"
+          },
+          {
+            "id": "serde_urlencoded 0.7.1",
+            "target": "serde_urlencoded"
+          },
+          {
+            "id": "sha1 0.10.7",
+            "target": "sha1"
+          },
+          {
             "id": "sync_wrapper 1.0.2",
             "target": "sync_wrapper"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "tokio-tungstenite 0.29.0",
+            "target": "tokio_tungstenite"
           },
           {
             "id": "tower 0.5.3",
@@ -3161,6 +3211,10 @@
           {
             "id": "tower-service 0.3.3",
             "target": "tower_service"
+          },
+          {
+            "id": "tracing 0.1.44",
+            "target": "tracing"
           }
         ],
         "edition": "2021"
@@ -3191,6 +3245,9 @@
     },
     "axum-core 0.5.6": {
       "common_attrs": {
+        "crate_features": [
+          "tracing"
+        ],
         "deps": [
           {
             "id": "bytes 1.12.1",
@@ -3231,6 +3288,10 @@
           {
             "id": "tower-service 0.3.3",
             "target": "tower_service"
+          },
+          {
+            "id": "tracing 0.1.44",
+            "target": "tracing"
           }
         ],
         "edition": "2021"
@@ -8252,29 +8313,51 @@
     },
     "digest 0.10.7": {
       "common_attrs": {
-        "crate_features": [
-          "alloc",
-          "block-buffer",
-          "core-api",
-          "default",
-          "mac",
-          "std",
-          "subtle"
-        ],
-        "deps": [
-          {
-            "id": "block-buffer 0.10.4",
-            "target": "block_buffer"
-          },
-          {
-            "id": "crypto-common 0.1.7",
-            "target": "crypto_common"
-          },
-          {
-            "id": "subtle 2.6.1",
-            "target": "subtle"
+        "crate_features": {
+          "common": [
+            "alloc",
+            "block-buffer",
+            "core-api",
+            "default",
+            "std"
+          ],
+          "selects": {
+            "aarch64-unknown-linux-gnu": [
+              "mac",
+              "subtle"
+            ],
+            "x86_64-unknown-linux-gnu": [
+              "mac",
+              "subtle"
+            ]
           }
-        ],
+        },
+        "deps": {
+          "common": [
+            {
+              "id": "block-buffer 0.10.4",
+              "target": "block_buffer"
+            },
+            {
+              "id": "crypto-common 0.1.7",
+              "target": "crypto_common"
+            }
+          ],
+          "selects": {
+            "aarch64-unknown-linux-gnu": [
+              {
+                "id": "subtle 2.6.1",
+                "target": "subtle"
+              }
+            ],
+            "x86_64-unknown-linux-gnu": [
+              {
+                "id": "subtle 2.6.1",
+                "target": "subtle"
+              }
+            ]
+          }
+        },
         "edition": "2018"
       },
       "library_target_name": "digest",
@@ -11791,34 +11874,22 @@
     },
     "futures-util 0.3.34": {
       "common_attrs": {
-        "crate_features": {
-          "common": [
-            "alloc",
-            "async-await",
-            "async-await-macro",
-            "channel",
-            "futures-channel",
-            "futures-io",
-            "futures-macro",
-            "futures-sink",
-            "io",
-            "memchr",
-            "sink",
-            "slab",
-            "std"
-          ],
-          "selects": {
-            "aarch64-unknown-linux-gnu": [
-              "default"
-            ],
-            "wasm32-unknown-unknown": [
-              "default"
-            ],
-            "x86_64-unknown-linux-gnu": [
-              "default"
-            ]
-          }
-        },
+        "crate_features": [
+          "alloc",
+          "async-await",
+          "async-await-macro",
+          "channel",
+          "default",
+          "futures-channel",
+          "futures-io",
+          "futures-macro",
+          "futures-sink",
+          "io",
+          "memchr",
+          "sink",
+          "slab",
+          "std"
+        ],
         "deps": [
           {
             "id": "futures-channel 0.3.34",
@@ -12961,6 +13032,12 @@
       "package_url": "https://github.com/longbridge/gpui-kit",
       "repository": {
         "Http": {
+          "patch_args": [
+            "-p1"
+          ],
+          "patches": [
+            "@@//apps/humata2/markdown/patches:gpui-base-selection.patch"
+          ],
           "sha256": "f3e9ae5237737cfd110d0ff513fcd9c20f97d98ebabd0a73164068177f0aca4f",
           "url": "https://static.crates.io/crates/gpui-base/0.9.1/download"
         }
@@ -18653,6 +18730,10 @@
             "target": "prost"
           },
           {
+            "id": "sha2 0.11.1",
+            "target": "sha2"
+          },
+          {
             "id": "thiserror 2.0.21",
             "target": "thiserror"
           },
@@ -18876,6 +18957,29 @@
         {
           "Library": {
             "crate_name": "humata2_files",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-find 0.0.0": {
+      "common_attrs": {
+        "deps_dev": [
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_find",
+      "name": "humata2-find",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_find",
             "crate_root": "src/lib.rs"
           }
         }
@@ -19129,6 +19233,39 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-marks 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "rusqlite 0.42.0",
+            "target": "rusqlite"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_marks",
+      "name": "humata2-marks",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_marks",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-mcp 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -19164,6 +19301,47 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-mirror 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "rusqlite 0.42.0",
+            "target": "rusqlite"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_mirror",
+      "name": "humata2-mirror",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_mirror",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-palette 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -19191,6 +19369,14 @@
       "common_attrs": {
         "deps": [
           {
+            "id": "image 0.25.10",
+            "target": "image"
+          },
+          {
+            "id": "png 0.18.1",
+            "target": "png"
+          },
+          {
             "id": "serde 1.0.229",
             "target": "serde"
           },
@@ -19205,6 +19391,10 @@
           {
             "id": "tokio 1.54.1",
             "target": "tokio"
+          },
+          {
+            "id": "zstd 0.14.3",
+            "target": "zstd"
           }
         ],
         "deps_dev": [
@@ -19482,12 +19672,67 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-terminal-host 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "axum 0.8.9",
+            "target": "axum"
+          },
+          {
+            "id": "flate2 1.1.11",
+            "target": "flate2"
+          },
+          {
+            "id": "futures-util 0.3.34",
+            "target": "futures_util"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "tokio-tungstenite 0.29.0",
+            "target": "tokio_tungstenite"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_terminal_host",
+      "name": "humata2-terminal-host",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_terminal_host",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-ui 0.0.0": {
       "common_attrs": {
         "deps": [
           {
             "id": "gpui-kit 0.9.1",
             "target": "gpui_kit"
+          },
+          {
+            "id": "image 0.25.10",
+            "target": "image"
           },
           {
             "id": "thiserror 2.0.21",
@@ -32677,6 +32922,7 @@
       "common_attrs": {
         "crate_features": [
           "alloc",
+          "default",
           "os_rng",
           "small_rng",
           "std",
@@ -37231,6 +37477,55 @@
       ],
       "version": "1.0.154"
     },
+    "serde_path_to_error 0.1.20": {
+      "common_attrs": {
+        "deps": {
+          "common": [
+            {
+              "id": "itoa 1.0.19",
+              "target": "itoa"
+            },
+            {
+              "id": "serde_core 1.0.229",
+              "target": "serde_core"
+            }
+          ],
+          "selects": {
+            "cfg(any())": [
+              {
+                "id": "serde 1.0.229",
+                "target": "serde"
+              }
+            ]
+          }
+        },
+        "edition": "2021"
+      },
+      "library_target_name": "serde_path_to_error",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "serde_path_to_error",
+      "package_url": "https://github.com/dtolnay/path-to-error",
+      "repository": {
+        "Http": {
+          "sha256": "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457",
+          "url": "https://static.crates.io/crates/serde_path_to_error/0.1.20/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "serde_path_to_error",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.1.20"
+    },
     "serde_repr 0.1.21": {
       "common_attrs": {
         "deps": [
@@ -37437,6 +37732,59 @@
         }
       ],
       "version": "0.4.3"
+    },
+    "sha1 0.10.7": {
+      "common_attrs": {
+        "crate_features": [
+          "default",
+          "std"
+        ],
+        "deps": {
+          "common": [
+            {
+              "id": "cfg-if 1.0.5",
+              "target": "cfg_if"
+            },
+            {
+              "id": "digest 0.10.7",
+              "target": "digest"
+            }
+          ],
+          "selects": {
+            "cfg(any(target_arch = \"aarch64\", target_arch = \"x86\", target_arch = \"x86_64\"))": [
+              {
+                "id": "cpufeatures 0.2.17",
+                "target": "cpufeatures"
+              }
+            ]
+          }
+        },
+        "edition": "2018"
+      },
+      "library_target_name": "sha1",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "sha1",
+      "package_url": "https://github.com/RustCrypto/hashes",
+      "repository": {
+        "Http": {
+          "sha256": "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8",
+          "url": "https://static.crates.io/crates/sha1/0.10.7/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "sha1",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.10.7"
     },
     "sha1 0.11.0": {
       "common_attrs": {
@@ -41488,6 +41836,58 @@
       ],
       "version": "0.1.19"
     },
+    "tokio-tungstenite 0.29.0": {
+      "common_attrs": {
+        "crate_features": [
+          "connect",
+          "default",
+          "handshake",
+          "stream"
+        ],
+        "deps": [
+          {
+            "id": "futures-util 0.3.34",
+            "target": "futures_util"
+          },
+          {
+            "id": "log 0.4.35",
+            "target": "log"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "tungstenite 0.29.0",
+            "target": "tungstenite"
+          }
+        ],
+        "edition": "2018"
+      },
+      "library_target_name": "tokio_tungstenite",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "tokio-tungstenite",
+      "package_url": "https://github.com/snapview/tokio-tungstenite",
+      "repository": {
+        "Http": {
+          "sha256": "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c",
+          "url": "https://static.crates.io/crates/tokio-tungstenite/0.29.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "tokio_tungstenite",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.29.0"
+    },
     "tokio-util 0.7.20": {
       "common_attrs": {
         "crate_features": [
@@ -42244,6 +42644,7 @@
           "limit",
           "load",
           "load-shed",
+          "log",
           "make",
           "pin-project-lite",
           "ready-cache",
@@ -42384,48 +42785,27 @@
     },
     "tracing 0.1.44": {
       "common_attrs": {
-        "crate_features": {
-          "common": [
-            "attributes",
-            "default",
-            "std",
-            "tracing-attributes"
-          ],
-          "selects": {
-            "aarch64-unknown-linux-gnu": [
-              "log"
-            ],
-            "x86_64-unknown-linux-gnu": [
-              "log"
-            ]
+        "crate_features": [
+          "attributes",
+          "default",
+          "log",
+          "std",
+          "tracing-attributes"
+        ],
+        "deps": [
+          {
+            "id": "log 0.4.35",
+            "target": "log"
+          },
+          {
+            "id": "pin-project-lite 0.2.17",
+            "target": "pin_project_lite"
+          },
+          {
+            "id": "tracing-core 0.1.36",
+            "target": "tracing_core"
           }
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "pin-project-lite 0.2.17",
-              "target": "pin_project_lite"
-            },
-            {
-              "id": "tracing-core 0.1.36",
-              "target": "tracing_core"
-            }
-          ],
-          "selects": {
-            "aarch64-unknown-linux-gnu": [
-              {
-                "id": "log 0.4.35",
-                "target": "log"
-              }
-            ],
-            "x86_64-unknown-linux-gnu": [
-              {
-                "id": "log 0.4.35",
-                "target": "log"
-              }
-            ]
-          }
-        },
+        ],
         "edition": "2018",
         "proc_macro_deps": [
           {
@@ -42660,6 +43040,76 @@
         }
       ],
       "version": "0.25.1"
+    },
+    "tungstenite 0.29.0": {
+      "common_attrs": {
+        "crate_features": [
+          "data-encoding",
+          "handshake",
+          "http",
+          "httparse",
+          "sha1"
+        ],
+        "deps": [
+          {
+            "id": "bytes 1.12.1",
+            "target": "bytes"
+          },
+          {
+            "id": "data-encoding 2.11.1",
+            "target": "data_encoding"
+          },
+          {
+            "id": "http 1.5.0",
+            "target": "http"
+          },
+          {
+            "id": "httparse 1.10.1",
+            "target": "httparse"
+          },
+          {
+            "id": "log 0.4.35",
+            "target": "log"
+          },
+          {
+            "id": "rand 0.9.5",
+            "target": "rand"
+          },
+          {
+            "id": "sha1 0.10.7",
+            "target": "sha1"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "tungstenite",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "tungstenite",
+      "package_url": "https://github.com/snapview/tungstenite-rs",
+      "repository": {
+        "Http": {
+          "sha256": "6c01152af293afb9c7c2a57e4b559c5620b421f6d133261c60dd2d0cdb38e6b8",
+          "url": "https://static.crates.io/crates/tungstenite/0.29.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "tungstenite",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.29.0"
     },
     "two-face 0.4.5": {
       "common_attrs": {
@@ -52497,11 +52947,13 @@
     }
   },
   "direct_deps": [
+    "axum 0.8.9",
     "bzip2 0.6.1",
     "clap 4.6.7",
     "console_error_panic_hook 0.1.7",
     "crc32fast 1.5.5",
     "flate2 1.1.11",
+    "futures-util 0.3.34",
     "gpui-kit 0.9.1",
     "gpui-pre-apple 0.3.12",
     "hmac 0.13.0",
@@ -52513,6 +52965,7 @@
     "mermaid-rs-renderer 0.3.1",
     "notify 8.2.2",
     "plist 1.10.3",
+    "png 0.18.1",
     "prost 0.14.5",
     "prost-reflect 0.16.5",
     "prost-types 0.14.5",
@@ -52534,6 +52987,7 @@
     "thiserror 2.0.21",
     "tokio 1.54.1",
     "tokio-stream 0.1.19",
+    "tokio-tungstenite 0.29.0",
     "toml 1.2.1+spec-1.1.0",
     "tonic 0.14.9",
     "tonic-prost 0.14.9",
@@ -52574,6 +53028,7 @@
     "humata2-durable 0.0.0": "apps/humata2/daemon/durable",
     "humata2-engine 0.0.0": "apps/humata2/engine",
     "humata2-files 0.0.0": "apps/humata2/features/files",
+    "humata2-find 0.0.0": "apps/humata2/features/find",
     "humata2-gui-spike 0.0.0": "apps/humata2/spike/gui",
     "humata2-holder 0.0.0": "apps/humata2/daemon/holder",
     "humata2-hosts 0.0.0": "apps/humata2/features/hosts",
@@ -52581,7 +53036,9 @@
     "humata2-install 0.0.0": "apps/humata2/desktop/install",
     "humata2-machines 0.0.0": "apps/humata2/daemon/machines",
     "humata2-markdown 0.0.0": "apps/humata2/markdown",
+    "humata2-marks 0.0.0": "apps/humata2/daemon/marks",
     "humata2-mcp 0.0.0": "apps/humata2/daemon/mcp",
+    "humata2-mirror 0.0.0": "apps/humata2/daemon/mirror",
     "humata2-palette 0.0.0": "apps/humata2/features/palette",
     "humata2-report 0.0.0": "apps/humata2/report",
     "humata2-review 0.0.0": "apps/humata2/features/review",
@@ -52592,6 +53049,7 @@
     "humata2-settings 0.0.0": "apps/humata2/features/settings",
     "humata2-sidebar 0.0.0": "apps/humata2/features/sidebar",
     "humata2-store 0.0.0": "apps/humata2/daemon/store",
+    "humata2-terminal-host 0.0.0": "apps/humata2/terminal/host",
     "humata2-ui 0.0.0": "apps/humata2/ui",
     "humata2-ui-prototype 0.0.0": "apps/humata2/ui-prototype",
     "humata2-views 0.0.0": "apps/humata2/features/views",

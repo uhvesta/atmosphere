@@ -33,6 +33,14 @@ pub(crate) struct Deferred {
     pub(crate) result_type: String,
 }
 
+/// What the card of a deferred board call shows in place of the access
+/// preview (BD-15): the change field by field, or the new item, and the
+/// agent's reason.
+pub(crate) struct BoardAsk {
+    pub(crate) preview: pb::request_preview::Preview,
+    pub(crate) reason: String,
+}
+
 /// The call, to run once the user approves it.
 pub(crate) type Run =
     Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<Deferred, Status>> + Send>> + Send>;
@@ -102,6 +110,7 @@ fn card(
     agent: &crate::identity::AgentCaller,
     asked: &AccessRequest,
     decision: Option<Decision>,
+    board: Option<BoardAsk>,
 ) -> pb::InboxRequest {
     let capability = crate::guard::capability(asked.capability) as i32;
     let offered = asked.always_let.as_ref();
@@ -122,14 +131,16 @@ fn card(
             agent.title,
             lowercase_first(asked.capability.label())
         ),
+        reason: board.as_ref().map(|board| board.reason.clone()).unwrap_or_default(),
         preview: Some(pb::RequestPreview {
-            preview: Some(pb::request_preview::Preview::AccessAhead(
-                pb::AccessAheadPreview {
+            preview: Some(match board {
+                Some(board) => board.preview,
+                None => pb::request_preview::Preview::AccessAhead(pb::AccessAheadPreview {
                     capability,
                     target: target.clone(),
                     target_label: target_label.clone(),
-                },
-            )),
+                }),
+            }),
         }),
         capability,
         rule_decision: decision.map_or(pb::Decision::Unspecified, super::decision_of) as i32,
@@ -156,10 +167,72 @@ impl Inbox {
         key: Option<String>,
         run: Run,
     ) -> Status {
-        match self.deferred(caller, asked, key, run).await {
+        match self.deferred(caller, asked, key, None, run).await {
             Ok(id) => status::approval_pending(&id),
             Err(refused) => refused,
         }
+    }
+
+    /// [`Inbox::defer`] for a board call: its card shows `board`'s change
+    /// rather than the capability (BD-15).
+    pub(crate) async fn defer_board(
+        &self,
+        caller: &Caller,
+        asked: AccessRequest,
+        key: Option<String>,
+        board: BoardAsk,
+        run: Run,
+    ) -> Status {
+        match self.deferred(caller, asked, key, Some(board), run).await {
+            Ok(id) => status::approval_pending(&id),
+            Err(refused) => refused,
+        }
+    }
+
+    /// The pending requests whose card shows a board change or a new item,
+    /// as they stand, for the board to answer in place (BD-15).
+    pub(crate) async fn pending_board_asks(&self) -> Vec<pb::InboxRequest> {
+        let state = self.state.lock().await;
+        state
+            .requests
+            .iter()
+            .map(|entry| entry.request.borrow().request.clone())
+            .filter(|request| {
+                request.state == pb::RequestState::Pending as i32
+                    && matches!(
+                        request.preview.as_ref().and_then(|preview| preview.preview.as_ref()),
+                        Some(pb::request_preview::Preview::BoardChange(_))
+                    )
+            })
+            .collect()
+    }
+
+    /// Withdraws every pending request about board item `item`, as when it
+    /// is deleted or purged. Their calls never run.
+    pub(crate) async fn withdraw_about_item(&self, item: &str) -> Result<(), Status> {
+        let state = self.state.lock().await;
+        for entry in &state.requests {
+            let mut next = entry.request.borrow().clone();
+            let about = match next.request.preview.as_ref().and_then(|p| p.preview.as_ref()) {
+                Some(pb::request_preview::Preview::BoardChange(change)) => {
+                    change.item.as_ref().is_some_and(|id| id.value == item)
+                }
+                _ => false,
+            };
+            if !about || next.request.state != pb::RequestState::Pending as i32 {
+                continue;
+            }
+            super::withdraw(&mut next.request, pb::WithdrawReason::ItemDeleted);
+            let current = next.request.clone();
+            self.commit(entry, next, None, "save the withdrawal").await?;
+            entry
+                .run
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            self.tell(pb::Change::Updated, &entry.session, &current);
+        }
+        Ok(())
     }
 
     async fn deferred(
@@ -167,6 +240,7 @@ impl Inbox {
         caller: &Caller,
         asked: AccessRequest,
         key: Option<String>,
+        board: Option<BoardAsk>,
         run: Run,
     ) -> Result<pb::RequestId, Status> {
         let Caller::Agent(agent) = caller else {
@@ -186,7 +260,7 @@ impl Inbox {
         }
         let id = new_id();
         let decision = self.rule_now(&asked);
-        let mut held = Held::new(card(&id, agent, &asked, decision));
+        let mut held = Held::new(card(&id, agent, &asked, decision, board));
         held.deferred = true;
         let entry = Entry::new(id.clone(), session, Some(asked), None, key, held.clone());
         *entry.run.lock().unwrap_or_else(PoisonError::into_inner) = Some(run);

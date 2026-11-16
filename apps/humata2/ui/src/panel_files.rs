@@ -165,6 +165,11 @@ pub(super) fn files(
     input: Entity<InputState>,
     look: Look,
 ) -> Div {
+    // DK-3: a Desk session's panel lists its folder, with its clones and
+    // the note about repos (frame 38).
+    if let Some(panel) = crate::desk_files::panel(ui, state, session, look) {
+        return col().size_full().child(panel);
+    }
     // The session's own repository first, the rest in the order they arrive.
     let mut repos = Vec::<(String, FileNode)>::new();
     let mut arrived = 0_usize;
@@ -259,7 +264,8 @@ pub(super) fn files(
                     Input::new(&input)
                         .aria_label("Filter files")
                         .small()
-                        .h(px(26.))
+                        // `h` only applies to multi-line inputs in the kit.
+                        .min_h(px(26.))
                         .bg(rgb(look.card))
                         .border_color(rgb(look.line))
                         .text_color(rgb(look.text)),

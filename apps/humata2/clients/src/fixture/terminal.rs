@@ -50,6 +50,8 @@ pub(crate) fn terminal_line(line: &Line) -> Vec<u8> {
         || line.text.contains("waiting for your approval")
         || line.text.starts_with("? ")
         || line.text.contains("Working (")
+        // An agent's own progress line, whatever it says it is doing (frame 37).
+        || line.text.starts_with("✻ ")
     {
         orange
     } else {

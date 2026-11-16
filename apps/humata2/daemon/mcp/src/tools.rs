@@ -308,6 +308,7 @@ pub(crate) fn capability_name(capability: Capability) -> &'static str {
         Capability::CommentResolve => "comment_resolve",
         Capability::ChannelBoardEditOthers => "channel_board_edit_others",
         Capability::GlobalRead => "global_read",
+        Capability::GlobalBoardWrite => "global_board_write",
         Capability::FilesReadOtherSession => "files_read_other_session",
         Capability::FilesReadOtherMachine => "files_read_other_machine",
         Capability::FilesCopyIn => "files_copy_in",
@@ -671,7 +672,7 @@ fn definition(operation: Operation) -> Definition {
             object(vec![req("capability", capability()), opt("target", grant_target())]),
         ),
         Op::BoardItemsList => define(
-            "The items on a board. Your session board and your channel's board need no approval; the Global board and other channels go to the user's Inbox.",
+            "The items on a board, with each item's sessions and what it depends on.",
             Effect::Read,
             asks(vec![
                 req("board", board()),
@@ -690,29 +691,34 @@ fn definition(operation: Operation) -> Definition {
             asks(vec![req("id", item_id()), opt("page_token", page_token())]),
         ),
         Op::BoardItemCreate => define(
-            "Add an item to a board. Your session board and your channel's board need no approval; other boards go to the user's Inbox.",
+            "Add an item to a board. Your session board and your channel's board need no approval; the Global board and other channels' boards go to the user's Inbox.",
             Effect::Create,
             asks(vec![
                 req("board", board()),
                 req("title", title()),
                 opt("column", column().describe("Default: backlog")),
                 opt("description", string().max_length(20_000)),
-                opt("assignee", session().describe("A session of this channel")),
+                opt("sessions", array(session()).describe("The sessions working on it")),
+                opt(
+                    "depends_on",
+                    array(item_id()).describe("Items it depends on, on any board you can read"),
+                ),
             ]),
         ),
         Op::BoardItemUpdate => define(
-            "Change a board item's title, description or assignee. Your own items and your session board need no approval; other items go to the user's Inbox.",
+            "Change a board item's title or description, add or remove its sessions, or add or remove what it depends on. Your own items and your session board need no approval; other items go to the user's Inbox.",
             Effect::Change,
             asks(vec![
                 req("id", item_id()),
                 opt("title", title()),
                 opt("description", string().max_length(20_000)),
+                opt("sessions_add", array(session())),
+                opt("sessions_remove", array(session())),
                 opt(
-                    "assignee",
-                    string()
-                        .nullable()
-                        .describe("A session of this channel; null for nobody"),
+                    "depends_on_add",
+                    array(item_id()).describe("A loop fails with dependency_loop naming it"),
                 ),
+                opt("depends_on_remove", array(item_id())),
                 opt("expected_revision", expected_revision()),
             ]),
         ),

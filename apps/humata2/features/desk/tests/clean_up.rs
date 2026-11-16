@@ -14,7 +14,7 @@ fn id(text: &str) -> SessionId {
 
 fn store() -> (TestStore<Desk>, FakeDaemon) {
     let mut workspace = fixture::design();
-    fixture::clean_up(&mut workspace);
+    fixture::desk(&mut workspace);
     let fake = FakeDaemon::new(workspace.clone(), Arc::new(TestClock::new()));
     let state = DeskState {
         workspace: Arc::new(workspace),

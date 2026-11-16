@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::change;
 use crate::error::{FormError, WriteError};
 use crate::event::{Event, Gesture, Holds, Kind};
-use crate::form::Form;
+use crate::form::{Drawing, Form};
 use crate::jsonl;
+use crate::picture;
 use crate::recording::Captured;
 use crate::replay::describe;
 use crate::scrub::{self, Scrubbed, Secrets};
@@ -37,6 +38,39 @@ pub(crate) const FILES: [(&str, &str); 6] = [
     ),
     ("daemon.log", "the daemon calls, errors and log lines in the same period"),
 ];
+
+/// The marks drawn on the window, in the folder only when there are some.
+pub(crate) const DRAWING: (&str, &str) = (
+    "drawing.json",
+    "the marks drawn on the window: their paths in window points and the elements they cover",
+);
+
+/// The window as the engine drew it, saved by [`crate::write_window`].
+pub(crate) const WINDOW: (&str, &str) = (
+    "window.png",
+    "a picture of the window when the report was taken, drawn by the app itself, with secrets covered",
+);
+
+/// The marks and pinned comments over `window.png`, as an SVG in window
+/// points.
+pub(crate) const MARKS: (&str, &str) = (
+    "marks.svg",
+    "the drawn marks (numbered like the Drawings list) and pinned comments (C1, C2) laid over window.png",
+);
+
+/// A video of a recording, when the app made one, under the first name
+/// found.
+pub(crate) const VIDEOS: [(&str, &str); 3] = [
+    ("recording.mp4", "a video of the window during the recording, drawn by the app itself"),
+    ("recording.webm", "a video of the window during the recording, drawn by the app itself"),
+    ("recording.gif", "a video of the window during the recording, drawn by the app itself"),
+];
+
+/// The picture and video files of a report, in the order the prompt lists
+/// them.
+pub(crate) fn picture_files() -> impl Iterator<Item = (&'static str, &'static str)> {
+    [WINDOW, MARKS].into_iter().chain(VIDEOS)
+}
 
 /// Ends the name of a report folder being written.
 const PARTIAL: &str = ".partial";
@@ -74,7 +108,11 @@ pub fn write(reports: &Path, report: &Scrubbed) -> Result<PathBuf, WriteError> {
         date(captured.context.started_unix_ms),
         slug(&report.form().happened, captured.kind)
     );
-    let files = render(captured, report.form());
+    let files = render(captured, report.form()).map_err(|source| WriteError::WriteFile {
+        file: DRAWING.0,
+        path: reports.to_owned(),
+        source,
+    })?;
 
     let temp = reports.join(format!(
         ".{name}.{}-{}{PARTIAL}",
@@ -108,11 +146,62 @@ pub fn fill_form(dir: &Path, form: Form, secrets: &Secrets) -> Result<(), FormEr
     })?;
     let captured = jsonl::read_events(&text).map_err(|source| FormError::Events { path: events, source })?;
     let form = scrub::scrub_form_alone(form, secrets);
-    let text = report_md(&captured, &form);
+    let extra: Vec<(&'static str, &'static str)> = picture_files()
+        .filter(|(name, _)| dir.join(name).is_file() && *name != MARKS.0)
+        .collect();
+    let has_window = extra.iter().any(|(name, _)| *name == WINDOW.0);
 
-    let summary = dir.join("report.md");
+    // The overlay goes first: report.md lists it only when it exists.
+    let marks = dir.join(MARKS.0);
+    let overlay = picture::marks_svg(&form, has_window);
+    match &overlay {
+        None => match fs::remove_file(&marks) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(source) => return Err(FormError::Write { path: marks, source }),
+        },
+        Some(svg) => replace_file(dir, MARKS.0, svg.as_bytes())
+            .map_err(|source| FormError::Write { path: marks, source })?,
+    }
+    let mut extra = extra;
+    if overlay.is_some() {
+        extra.insert(usize::from(has_window), MARKS);
+    }
+    let text = report_md(&captured, &form, &extra);
+
+    let drawing = dir.join(DRAWING.0);
+    if form.drawing.strokes.is_empty() {
+        match fs::remove_file(&drawing) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(source) => return Err(FormError::Write { path: drawing, source }),
+        }
+    } else {
+        let json = drawing_json(&form.drawing).map_err(|source| FormError::Write {
+            path: drawing.clone(),
+            source,
+        })?;
+        replace_file(dir, DRAWING.0, json.as_bytes()).map_err(|source| FormError::Write { path: drawing, source })?;
+    }
+    replace_file(dir, "report.md", text.as_bytes()).map_err(|source| FormError::Write {
+        path: dir.join("report.md"),
+        source,
+    })
+}
+
+/// `drawing` as pretty JSON.
+fn drawing_json(drawing: &Drawing) -> std::io::Result<String> {
+    let mut json = serde_json::to_string_pretty(drawing).map_err(std::io::Error::other)?;
+    json.push('\n');
+    Ok(json)
+}
+
+/// Replaces `dir/name` whole with `text`, readable only by this user; the
+/// old file is kept when it can't be.
+pub(crate) fn replace_file(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let target = dir.join(name);
     let temp = dir.join(format!(
-        ".report.md.{}-{}{PARTIAL}",
+        ".{name}.{}-{}{PARTIAL}",
         std::process::id(),
         WRITES.fetch_add(1, Ordering::Relaxed)
     ));
@@ -123,16 +212,16 @@ pub fn fill_form(dir: &Path, form: Form, secrets: &Secrets) -> Result<(), FormEr
             .mode(0o600)
             .open(&temp)?;
         out.set_permissions(Permissions::from_mode(0o600))?;
-        out.write_all(text.as_bytes())?;
+        out.write_all(bytes)?;
         out.sync_all()?;
-        fs::rename(&temp, &summary)?;
+        fs::rename(&temp, &target)?;
         File::open(dir)?.sync_all()
     })();
     if written.is_err() {
         // Already renamed or never made are both fine.
         let _ = fs::remove_file(&temp);
     }
-    written.map_err(|source| FormError::Write { path: summary, source })
+    written
 }
 
 /// Makes `temp` and writes every file into it, each synced to disk.
@@ -232,15 +321,19 @@ fn slug(happened: &str, kind: Kind) -> String {
 }
 
 /// Every file's text.
-fn render(captured: &Captured, form: &Form) -> Vec<(&'static str, String)> {
-    vec![
-        ("report.md", report_md(captured, form)),
+fn render(captured: &Captured, form: &Form) -> std::io::Result<Vec<(&'static str, String)>> {
+    let mut files = vec![
+        ("report.md", report_md(captured, form, &[])),
         ("events.jsonl", jsonl::write(captured)),
         ("state.txt", trees_txt(captured, Tree::State)),
         ("view.txt", trees_txt(captured, Tree::View)),
         ("layout.txt", trees_txt(captured, Tree::Layout)),
         ("daemon.log", daemon_log(captured)),
-    ]
+    ];
+    if !form.drawing.strokes.is_empty() {
+        files.push((DRAWING.0, drawing_json(&form.drawing)?));
+    }
+    Ok(files)
 }
 
 fn seconds(ms: u64) -> String {
@@ -256,7 +349,7 @@ fn bullet_text(text: &str) -> String {
     text.lines().collect::<Vec<_>>().join("\n  ")
 }
 
-fn report_md(captured: &Captured, form: &Form) -> String {
+fn report_md(captured: &Captured, form: &Form, extra: &[(&str, &str)]) -> String {
     let context = &captured.context;
     let mut md = String::new();
     let title = form.happened.lines().next().map(str::trim).unwrap_or_default();
@@ -331,12 +424,25 @@ fn report_md(captured: &Captured, form: &Form) -> String {
         );
     }
     let _ = writeln!(md, "- **Comments:** {} pinned to elements", form.comments.len());
+    let strokes = &form.drawing.strokes;
+    if !strokes.is_empty() {
+        let _ = writeln!(md, "- **Drawings:** {} marks on the window", strokes.len());
+    }
     md.push('\n');
 
     if !form.comments.is_empty() {
         let _ = writeln!(md, "## Comments\n");
         for comment in &form.comments {
             let _ = writeln!(md, "- `{}`: {}", comment.element, bullet_text(&comment.text));
+        }
+        md.push('\n');
+    }
+
+    if !strokes.is_empty() {
+        let _ = writeln!(md, "## Drawings\n");
+        for (number, stroke) in strokes.iter().enumerate() {
+            let _ = writeln!(md, "{}. {}", number + 1, stroke.describe());
+            let _ = writeln!(md, "   {}", path_line(&stroke.points));
         }
         md.push('\n');
     }
@@ -376,7 +482,31 @@ fn report_md(captured: &Captured, form: &Form) -> String {
     for (file, holds) in FILES {
         let _ = writeln!(md, "- `{file}`: {holds}");
     }
+    if !strokes.is_empty() {
+        let _ = writeln!(md, "- `{}`: {}", DRAWING.0, DRAWING.1);
+    }
+    for (file, holds) in extra {
+        let _ = writeln!(md, "- `{file}`: {holds}");
+    }
     md
+}
+
+/// How many points a stroke has and the box they lie in, in window points.
+fn path_line(points: &[crate::form::Point]) -> String {
+    let Some(first) = points.first() else {
+        return "no points".to_owned();
+    };
+    let (mut left, mut top, mut right, mut bottom) = (first.x, first.y, first.x, first.y);
+    for point in points {
+        left = left.min(point.x);
+        right = right.max(point.x);
+        top = top.min(point.y);
+        bottom = bottom.max(point.y);
+    }
+    format!(
+        "{} points, within ({left}, {top}) to ({right}, {bottom}) in window points",
+        points.len()
+    )
 }
 
 #[derive(Clone, Copy)]

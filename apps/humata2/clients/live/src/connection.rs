@@ -11,7 +11,9 @@ use humata2_clients::DaemonError;
 use humata2_clients::model::{Agent, ChannelId, MachineId};
 use humata2_grpc::humata::v1 as pb;
 use humata2_grpc::humata::v1::{
-    channel_service_client::ChannelServiceClient, daemon_service_client::DaemonServiceClient,
+    access_service_client::AccessServiceClient, inbox_service_client::InboxServiceClient,
+    channel_service_client::ChannelServiceClient, comment_service_client::CommentServiceClient,
+    daemon_service_client::DaemonServiceClient,
     event_service_client::EventServiceClient, operation_service_client::OperationServiceClient,
     session_service_client::SessionServiceClient, terminal_service_client::TerminalServiceClient,
 };
@@ -26,6 +28,7 @@ use tonic::{Code, Request, Status};
 
 use crate::events::Subscriber;
 use crate::map::AgentNames;
+use crate::recorded::{Call, Observer, Recorded};
 use crate::terminals::Attach;
 
 /// Replies and requests can be large (a snapshot, a pasted image).
@@ -47,13 +50,24 @@ impl Interceptor for Credentials {
     }
 }
 
-pub(crate) type Wire = InterceptedService<Channel, Credentials>;
+pub(crate) type Wire = InterceptedService<Recorded<Channel>, Credentials>;
 
 /// Where the daemon is and which agent names it knows.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LiveOptions {
     socket: PathBuf,
     agents: AgentNames,
+    observer: Option<Observer>,
+}
+
+impl std::fmt::Debug for LiveOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveOptions")
+            .field("socket", &self.socket)
+            .field("agents", &self.agents)
+            .field("observes_calls", &self.observer.is_some())
+            .finish()
+    }
 }
 
 impl LiveOptions {
@@ -64,7 +78,16 @@ impl LiveOptions {
         Self {
             socket,
             agents: AgentNames::default(),
+            observer: None,
         }
+    }
+
+    /// Reports every gRPC call (method, time to its headers, outcome; never
+    /// bodies) to `observer`, for bug-report recordings (D159).
+    #[must_use]
+    pub fn observe_calls(mut self, observer: impl Fn(Call) + Send + Sync + 'static) -> Self {
+        self.observer = Some(Arc::new(observer));
+        self
     }
 
     /// Starts sessions of `agent` with the daemon's agent `name`, and maps
@@ -135,6 +158,8 @@ pub(crate) struct State {
     pub(crate) setup_names: BTreeMap<String, String>,
     /// The channel each setup (operation id) makes, so a retry can name it.
     pub(crate) setup_channels: BTreeMap<String, ChannelId>,
+    /// What the Inbox last showed of each request, for answering it.
+    pub(crate) inbox: crate::inbox::Seen,
 }
 
 /// How a tab's output offsets, as its holders number them, map onto the
@@ -169,7 +194,7 @@ impl Placed {
 }
 
 pub(crate) struct Shared {
-    wire: Wire,
+    pub(crate) wire: Wire,
     pub(crate) agents: AgentNames,
     /// This machine's id as the app knows it.
     pub(crate) machine: MachineId,
@@ -189,7 +214,11 @@ pub struct LiveDaemon {
 impl LiveDaemon {
     /// Connects to the daemon's socket and asks who it is.
     pub async fn connect(options: LiveOptions) -> Result<Self, ConnectError> {
-        let LiveOptions { socket, agents } = options;
+        let LiveOptions {
+            socket,
+            agents,
+            observer,
+        } = options;
         let path = socket.clone();
         let channel = Endpoint::from_static("http://[::]:50051")
             .connect_with_connector(tower::service_fn(move |_: Uri| {
@@ -203,7 +232,7 @@ impl LiveDaemon {
                 socket: socket.clone(),
                 source,
             })?;
-        let wire = InterceptedService::new(channel, Credentials::default());
+        let wire = InterceptedService::new(Recorded::new(channel, observer), Credentials::default());
         let info = DaemonServiceClient::new(wire.clone())
             .get_server_info(pb::GetServerInfoRequest {})
             .await
@@ -255,6 +284,24 @@ impl Shared {
 
     pub(crate) fn channels(&self) -> ChannelServiceClient<Wire> {
         ChannelServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
+    pub(crate) fn inbox(&self) -> InboxServiceClient<Wire> {
+        InboxServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
+    pub(crate) fn access(&self) -> AccessServiceClient<Wire> {
+        AccessServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
+    pub(crate) fn comments(&self) -> CommentServiceClient<Wire> {
+        CommentServiceClient::new(self.wire.clone())
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
             .max_encoding_message_size(MESSAGE_MAX_BYTES)
     }

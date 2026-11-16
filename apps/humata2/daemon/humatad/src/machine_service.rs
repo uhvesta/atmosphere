@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use humata2_access::{Call, MachineAction, MachineActionKind, MachineId, Refusal, Target};
+use humata2_access::{AccessRequest, Call, MachineAction, MachineActionKind, MachineId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{
     Action, ConfigError, IdentityError, Provider, SetupError,
@@ -33,20 +33,27 @@ use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
 use tonic::{Code, Request, Response, Status};
 
+use crate::channel_service::{self, Gated, answer_gated};
 use crate::events::Feed;
 use crate::guard::{self, Guard};
+use crate::host_relay::Links;
 use crate::identity::{self, Caller};
+use crate::inbox::Inbox;
 use crate::operations::{Operations, Progress, Started};
 use crate::peer_client::{self, CommandDial, Dial, LinkError, LinkEvent};
+use crate::peer_reports::PeerReports;
 use crate::status;
 
 /// How long a removal plan stays good.
 const PLAN_LIFETIME: Duration = Duration::from_secs(10 * 60);
 
+#[derive(Clone)]
 pub(crate) struct MachineSvc {
     guard: Arc<Guard>,
     work: Arc<Work>,
     operations: Arc<Operations>,
+    /// Where a call a rule sends to Ask me waits for the user (D38.6).
+    inbox: Arc<Inbox>,
 }
 
 /// The wall clock, which tests set.
@@ -79,9 +86,126 @@ pub(crate) struct Work {
     /// Skills sync, told each link that comes up or goes down (SK-3, SK-7);
     /// set once by `serve` before any link starts.
     pub(crate) skills: std::sync::OnceLock<Arc<crate::skills_service::SkillsHost>>,
+    /// Each machine's live link, for the services that relay calls to it
+    /// (D139). Told at the same hook as `skills`.
+    relay_links: Links,
+    /// What each machine last reported on its Uplink (D139, SL-3).
+    reports: PeerReports,
+    /// What each machine's last answered probe said (HO-3): shown, with its
+    /// `read_at`, while the machine can't be asked. One per machine, kept
+    /// only until the machine is removed; nothing polls (LD-14).
+    probes: Mutex<HashMap<String, (pb::MachineHealth, Vec<pb::MachineFolder>)>>,
+}
+
+/// How long GetMachine waits for a machine's probe before it shows the last
+/// one (TR-6, HO-5).
+const PROBE_DEADLINE: Duration = Duration::from_secs(6);
+
+/// The folders a probe measured under `~/Humata`, by name (LD-14). The
+/// channel is left unset: the folder's name is all the machine knows.
+fn folders_of(sizes: &HashMap<String, u64>) -> Vec<pb::MachineFolder> {
+    let mut folders: Vec<pb::MachineFolder> = sizes
+        .iter()
+        .map(|(name, bytes)| pb::MachineFolder {
+            channel: None,
+            path: format!("~/Humata/{name}/"),
+            bytes: *bytes,
+        })
+        .collect();
+    folders.sort_by(|a, b| a.path.cmp(&b.path));
+    folders
 }
 
 impl Work {
+    /// The live link of every machine, for the services that relay calls to
+    /// a machine (D139).
+    pub(crate) fn links(&self) -> Links {
+        self.relay_links.clone()
+    }
+
+    /// What each machine last reported, for whoever shows remote session
+    /// status (D139).
+    pub(crate) fn reports(&self) -> PeerReports {
+        self.reports.clone()
+    }
+
+    /// `machine`'s link is up on `channel`: the report sink expects its
+    /// snapshot, and relayed calls can go (D139).
+    fn peer_up(&self, machine: &str, channel: &tonic::transport::Channel) {
+        self.reports.link_up(machine);
+        self.relay_links.up(machine, channel.clone());
+    }
+
+    /// `machine`'s link is down: relayed calls fail as offline, and what it
+    /// reported stays readable, marked stale (HO-5).
+    fn peer_down(&self, machine: &str) {
+        let was_up = self.relay_links.channel(machine).is_ok();
+        self.relay_links.down(machine);
+        if was_up {
+            self.reports.link_down(machine, (self.clock)());
+        }
+    }
+
+    /// `machine` was removed: its watchers end and its reports go.
+    fn forget_peer(&self, machine: &str) {
+        self.relay_links.forget(machine);
+        self.reports.forget(machine);
+        lock(&self.probes).remove(machine);
+    }
+
+    /// `machine`'s health (HO-3, HO-4) and the sizes of its Humata folders
+    /// (LD-14, measured now: GetMachine is the page opening): what its link
+    /// answers to a probe now, or, when the link is down or slow, the last
+    /// answer with its `read_at`; with skills sync's part (SK-3, SK-8) on
+    /// either. No health when there is neither. Never waits past
+    /// `PROBE_DEADLINE`.
+    async fn health(&self, machine: &str) -> (Option<pb::MachineHealth>, Vec<pb::MachineFolder>) {
+        let probed = match self.relay_links.channel(machine) {
+            Ok(channel) => {
+                let mut client = pb::peer_service_client::PeerServiceClient::new(channel);
+                let call = client.probe(Request::new(pb::ProbeRequest { measure_storage: true }));
+                match tokio::time::timeout(PROBE_DEADLINE, call).await {
+                    Ok(Ok(reply)) => Some(reply.into_inner()),
+                    _ => None,
+                }
+            }
+            Err(_) => None,
+        };
+        let measured = probed.as_ref().map(|probe| folders_of(&probe.folder_bytes));
+        let fresh = probed.map(|probe| pb::MachineHealth {
+            read_at: Some(timestamp((self.clock)())),
+            git_version: probe.git_version,
+            gh_user: probe.gh_user,
+            gh_scopes: probe.gh_scopes,
+            gh_version: probe.gh_version,
+            agents_installed: probe.agents_installed,
+            agent_versions: probe.agent_versions,
+            disk_free_bytes: probe.disk_free_bytes,
+            disk_total_bytes: probe.disk_total_bytes,
+            variable_names: probe.variable_names,
+            linger_enabled: probe.linger_enabled,
+            ..pb::MachineHealth::default()
+        });
+        let (mut health, folders) = match fresh {
+            Some(fresh) => {
+                let folders = measured.unwrap_or_default();
+                lock(&self.probes).insert(machine.to_owned(), (fresh.clone(), folders.clone()));
+                (Some(fresh), folders)
+            }
+            None => match lock(&self.probes).get(machine).cloned() {
+                Some((last, folders)) => (Some(last), folders),
+                None => (None, Vec::new()),
+            },
+        };
+        if let Some(skills) = self.skills.get() {
+            let (skills_auto_sync, skills_sync_problem) = skills.health(machine);
+            let shown = health.get_or_insert_with(pb::MachineHealth::default);
+            shown.skills_auto_sync = skills_auto_sync;
+            shown.skills_sync_problem = skills_sync_problem;
+        }
+        (health, folders)
+    }
+
     /// Uses the removal plan `token` made for `machine`, once.
     pub(crate) fn use_plan(&self, token: &str, machine: &str) -> Result<(), Status> {
         let planned = lock(&self.plans)
@@ -136,6 +260,9 @@ impl Work {
             clock,
             plans: Mutex::new(HashMap::new()),
             skills: std::sync::OnceLock::new(),
+            relay_links: Links::default(),
+            reports: PeerReports::default(),
+            probes: Mutex::new(HashMap::new()),
         };
         *lock(&work.shown) = work.listed().unwrap_or_default();
         work
@@ -248,9 +375,15 @@ impl Work {
     pub(crate) fn start_link(self: &Arc<Self>, machine: &str, dial: Box<dyn Dial>, runtime: &Handle) {
         let work = Arc::downgrade(self);
         let name = machine.to_owned();
+        let (sink_work, sink_name) = (work.clone(), name.clone());
+        let sink: peer_client::Sink = Box::new(move |message| {
+            if let Some(work) = sink_work.upgrade() {
+                work.reports.accept(&sink_name, message);
+            }
+        });
         let report = Box::new(move |event: LinkEvent<'_>| tell_link(&work, &name, event));
         let key_file = self.machines.peer_key(machine);
-        let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report));
+        let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report, sink));
         if let Some(before) = lock(&self.links).insert(machine.to_owned(), task.abort_handle()) {
             before.abort();
         }
@@ -281,6 +414,7 @@ impl Work {
         if let Some(skills) = self.skills.get() {
             skills.link_down(machine);
         }
+        self.peer_down(machine);
     }
 
     pub(crate) fn machine(&self, entry: &HostEntry) -> pb::Machine {
@@ -331,6 +465,11 @@ fn tell_link(work: &Weak<Work>, machine: &str, event: LinkEvent<'_>) {
             LinkEvent::Up { channel, .. } => skills.link_up(machine, (*channel).clone()),
             LinkEvent::Down { .. } => skills.link_down(machine),
         }
+    }
+    // So do the relay registry and the report sink (D139).
+    match &event {
+        LinkEvent::Up { channel, .. } => work.peer_up(machine, channel),
+        LinkEvent::Down { .. } => work.peer_down(machine),
     }
     work.link_changed(machine, &event);
 }
@@ -390,11 +529,12 @@ pub(crate) fn recover_in_background(work: Arc<Work>) {
 }
 
 impl MachineSvc {
-    pub(crate) fn new(guard: Arc<Guard>, work: Arc<Work>, operations: Arc<Operations>) -> Self {
+    pub(crate) fn new(guard: Arc<Guard>, work: Arc<Work>, operations: Arc<Operations>, inbox: Arc<Inbox>) -> Self {
         Self {
             guard,
             work,
             operations,
+            inbox,
         }
     }
 
@@ -412,6 +552,120 @@ impl MachineSvc {
                 }),
             },
         )
+    }
+
+    /// Checks the call as [`MachineSvc::require`] does, but a rule of Ask me
+    /// answers `Some(request)` for the caller to put in the Inbox rather than
+    /// refusing (D38.6). An `approved` call goes on.
+    fn gate(
+        &self,
+        caller: &Caller,
+        machine: &str,
+        action: MachineActionKind,
+        approved: bool,
+    ) -> Result<Option<Box<AccessRequest>>, Status> {
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        channel_service::gate(
+            &self.guard,
+            caller,
+            &Call::Use {
+                capability: action.capability(),
+                target: Target::Machine(MachineAction {
+                    machine: MachineId::new(machine),
+                    action,
+                }),
+            },
+            approved,
+        )
+    }
+
+    /// The body of AddSshMachine; `approved` once the user said yes to it
+    /// in the Inbox (D38.6, TP-13).
+    async fn add_ssh(
+        &self,
+        caller: &Caller,
+        request: pb::AddSshMachineRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Operation>, Status> {
+        let add = AddSsh {
+            ssh_host: request.ssh_host,
+            name: request.name,
+            root: request.root,
+            trust_fingerprint: Some(request.trust_host_key_fingerprint).filter(|value| !value.trim().is_empty()),
+        };
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        // A retried call finds the operation it started, even after the
+        // machine's name was taken by it.
+        if let Some(operation) = self.operations.existing(caller, request.idempotency_key.as_ref())? {
+            return Ok(Gated::Done(operation));
+        }
+        let plan = self.work.machines.plan_add(&add).map_err(|error| status_of(&error))?;
+        let name = plan.machine.as_str().to_owned();
+        if let Some(asked) = self.gate(caller, &name, MachineActionKind::Add, approved)? {
+            return Ok(Gated::Ask(asked));
+        }
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Machine(machine_id(&name))),
+        };
+        let progress = match self.operations.start(
+            caller,
+            pb::OperationKind::AddMachine,
+            target,
+            &OpStep::ADD,
+            true,
+            request.idempotency_key,
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(operation) => return Ok(Gated::Done(operation)),
+        };
+        let work = self.work.clone();
+        let operation = self.run(progress, Arc::new(move |machines, drive| {
+            let added = machines.add(&add, plan.clone(), drive);
+            match &added {
+                Ok(entry) => {
+                    work.saw(&entry.name, pb::Reachability::Online);
+                    work.link_up(&entry.name, &Handle::current());
+                }
+                Err(error) => work.saw(&name, reach_after(error)),
+            }
+            added.map(|entry| Some(pb::operation::Result::Machine(machine_id(&entry.name))))
+        }));
+        Ok(Gated::Done(operation))
+    }
+
+    /// The body of ReconnectMachine; `approved` once the user said yes to it
+    /// in the Inbox (D38.6, TP-13).
+    async fn reconnect(
+        &self,
+        caller: &Caller,
+        request: pb::ReconnectMachineRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Machine>, Status> {
+        let name = machine_of(request.id)?;
+        if let Some(asked) = self.gate(caller, &name, MachineActionKind::Reconnect, approved)? {
+            return Ok(Gated::Ask(asked));
+        }
+        let work = self.work.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut ignore = |_: StepEvent| {};
+            let result = work.drive(&mut ignore, &|| false, |machines, drive| machines.reconnect(&name, drive));
+            match &result {
+                Ok(entry) => {
+                    work.saw(&entry.name, pb::Reachability::Online);
+                    work.link_up(&entry.name, &Handle::current());
+                }
+                Err(ManageError::Busy { .. } | ManageError::NotFound { .. }) => {}
+                Err(error) => work.saw(&name, reach_after(error)),
+            }
+            result.map(|entry| work.machine(&entry))
+        })
+        .await
+        .map_err(|error| status::internal(format!("the reconnect stopped: {error}"), ""))?;
+        result.map(Gated::Done).map_err(|error| status_of(&error))
     }
 
     /// Runs `work` on a blocking thread, its progress going to `progress`,
@@ -578,7 +832,7 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
             })),
         ),
         ManageError::LoginNeeded { machine, .. } => (
-            "make key login work without a password or passphrase prompt (ssh-copy-id, or load the key into ssh-agent), then try again",
+            "make key login work without a password or passphrase prompt (ssh-copy-id, or load the key into ssh-agent), then try again. If this machine needs a login each time (a code, a web sign-in), add it through its provider instead, which can open the login for you",
             Some(Kind::SshFailed(pb::SshFailed {
                 problem: pb::ssh_failed::Problem::AuthFailed as i32,
                 machine: Some(machine_id(machine)),
@@ -653,12 +907,9 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
             "remove `run_on` from the provider in Settings › Machine providers",
             None,
         ),
-        ManageError::ProviderLoginNeeded { machine, .. } => (
+        ManageError::ProviderLoginNeeded { machine, reason, .. } => (
             "log in to the machine interactively (Open interactively), or make the provider's connect command log in without a prompt",
-            Some(Kind::LoginNeedsUser(pb::LoginNeedsUser {
-                provider: None,
-                machine: Some(machine_id(machine)),
-            })),
+            Some(Kind::LoginNeedsUser(crate::login_service::login_needs_user(machine, reason))),
         ),
         ManageError::NotProviderMachine { .. } => ("pick a machine the provider made", None),
         ManageError::ActionUndefined { .. } => ("add the command to the provider in Settings › Machine providers", None),
@@ -762,8 +1013,11 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             Caller::User(_) => {}
         }
         let entry = self.work.machines.get(&name).map_err(|error| status_of(&error))?;
+        let (health, folders) = self.work.health(&name).await;
         Ok(Response::new(pb::MachineDetail {
             machine: Some(self.work.machine(&entry)),
+            health,
+            folders,
             actions: self.work.defined_actions(&entry),
             ..pb::MachineDetail::default()
         }))
@@ -771,85 +1025,48 @@ impl pb::machine_service_server::MachineService for MachineSvc {
 
     /// Checks the request and answers with the running operation; the add
     /// runs on (connect, check, install, start, find_agents) and is undone
-    /// if a step fails.
+    /// if a step fails. An agent's add waits in the Inbox when its rule says
+    /// Ask me, and runs once the user approves it (D38.6).
     async fn add_ssh_machine(
         &self,
         request: Request<pb::AddSshMachineRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let add = AddSsh {
-            ssh_host: request.ssh_host,
-            name: request.name,
-            root: request.root,
-            trust_fingerprint: Some(request.trust_host_key_fingerprint).filter(|value| !value.trim().is_empty()),
-        };
-        if matches!(caller, Caller::Peer) {
-            return Err(status::refused(&Refusal::PeerCannotCall));
-        }
-        // A retried call finds the operation it started, even after the
-        // machine's name was taken by it.
-        if let Some(operation) = self.operations.existing(&caller, request.idempotency_key.as_ref())? {
-            return Ok(Response::new(operation));
-        }
-        let plan = self.work.machines.plan_add(&add).map_err(|error| status_of(&error))?;
-        let name = plan.machine.as_str().to_owned();
-        self.require(&caller, &name, MachineActionKind::Add)?;
-        let target = pb::EntityRef {
-            entity: Some(pb::entity_ref::Entity::Machine(machine_id(&name))),
-        };
-        let progress = match self.operations.start(
+        let key = request.idempotency_key.as_ref().map(|key| key.value.clone());
+        let first = self.add_ssh(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            pb::OperationKind::AddMachine,
-            target,
-            &OpStep::ADD,
-            true,
-            request.idempotency_key,
-        )? {
-            Started::New(progress) => progress,
-            Started::Existing(operation) => return Ok(Response::new(operation)),
-        };
-        let work = self.work.clone();
-        let operation = self.run(progress, Arc::new(move |machines, drive| {
-            let added = machines.add(&add, plan.clone(), drive);
-            match &added {
-                Ok(entry) => {
-                    work.saw(&entry.name, pb::Reachability::Online);
-                    work.link_up(&entry.name, &Handle::current());
-                }
-                Err(error) => work.saw(&name, reach_after(error)),
-            }
-            added.map(|entry| Some(pb::operation::Result::Machine(machine_id(&entry.name))))
-        }));
-        Ok(Response::new(operation))
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.add_ssh(&who, request, true).await },
+        )
+        .await
     }
 
     /// Connects again now (HO-6): installs what differs and starts the
-    /// service. Answers when it is done, with the machine as it is.
+    /// service. Answers when it is done, with the machine as it is. An
+    /// agent's reconnect waits in the Inbox when its rule says Ask me.
     async fn reconnect_machine(
         &self,
         request: Request<pb::ReconnectMachineRequest>,
     ) -> Result<Response<pb::Machine>, Status> {
         let caller = identity::caller(&request)?;
-        let name = machine_of(request.into_inner().id)?;
-        self.require(&caller, &name, MachineActionKind::Reconnect)?;
-        let work = self.work.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let mut ignore = |_: StepEvent| {};
-            let result = work.drive(&mut ignore, &|| false, |machines, drive| machines.reconnect(&name, drive));
-            match &result {
-                Ok(entry) => {
-                    work.saw(&entry.name, pb::Reachability::Online);
-                    work.link_up(&entry.name, &Handle::current());
-                }
-                Err(ManageError::Busy { .. } | ManageError::NotFound { .. }) => {}
-                Err(error) => work.saw(&name, reach_after(error)),
-            }
-            result.map(|entry| work.machine(&entry))
-        })
+        let request = request.into_inner();
+        let first = self.reconnect(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            None,
+            "humata.v1.Machine",
+            first,
+            move || async move { me.reconnect(&who, request, true).await },
+        )
         .await
-        .map_err(|error| status::internal(format!("the reconnect stopped: {error}"), ""))?;
-        result.map(Response::new).map_err(|error| status_of(&error))
     }
 
     /// What removing the machine does, and the token RemoveMachine takes.
@@ -919,6 +1136,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             Started::Existing(operation) => return Ok(Response::new(operation)),
         };
         self.work.link_down(&name);
+        self.work.forget_peer(&name);
         let operation = self.run(progress, Arc::new(move |machines, drive| {
             machines.remove(&name, drive).map(|()| None)
         }));

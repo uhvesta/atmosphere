@@ -14,7 +14,7 @@ use humata2_store::{
 };
 
 use crate::agent::{
-    announced, blocking, probe, relaunch, resume, running, spawn, stop_holder, store_error, unix_ms,
+    blocking, probe, relaunch, resume, running, spawn, stop_holder, store_error, unix_ms,
 };
 use crate::report::Restart;
 use crate::{Env, ReviveConfig, ReviveError};
@@ -203,7 +203,20 @@ async fn revive_agent(
         // Started, but the daemon stopped before it saved that: no one
         // has seen it, so it starts over.
         AgentState::Launching => {
-            let _ = humata2_holder::shutdown(&socket).await;
+            // Shutting down deletes the saved output. A session that
+            // started fresh keeps it: it is the old conversation's terminal.
+            let session = record.session.clone();
+            let started_fresh = blocking({
+                let store = store.clone();
+                move || store.previous_conversations(&session)
+            })
+            .await?
+            .map(|previous| !previous.is_empty())
+            // Unreadable: keep the output rather than lose it.
+            .unwrap_or(true);
+            if !started_fresh {
+                let _ = humata2_holder::shutdown(&socket).await;
+            }
             stop_holder(&socket, None).await;
             launch_or_resume(store, config, record, created, env).await
         }
@@ -279,12 +292,11 @@ async fn revive_shell(
         "[Humata] This terminal stopped: its machine restarted or its holder was killed. Programs that were running in it are gone, and output after this point wasn't saved. This is a new shell in {}.",
         cwd.display()
     );
-    let (program, args) = announced(Some(&line), config.shell.as_os_str(), &config.shell_args);
     let spec = HolderSpec {
         holder: config.holder.clone(),
         socket: tab.holder_socket.clone(),
-        program,
-        args,
+        program: config.shell.clone(),
+        args: config.shell_args.clone(),
         cwd,
         env: env(&tab),
         cols: 80,
@@ -292,7 +304,7 @@ async fn revive_shell(
         scrollback_bytes: config.scrollback_bytes,
         log: config.logs.join(format!("{}.log", tab.id)),
     };
-    let spawned = spawn(spec, what).await?;
+    let spawned = spawn(spec, Some(&line), what).await?;
     point("revive.shell.spawned");
     tab.holder_pid = spawned.pid;
     let (saving, socket) = (tab.clone(), tab.holder_socket.clone());

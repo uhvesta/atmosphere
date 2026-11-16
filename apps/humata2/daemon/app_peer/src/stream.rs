@@ -1,5 +1,6 @@
 use std::io;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -8,6 +9,9 @@ use tokio_stream::Stream;
 use tonic::transport::server::{Connected, UdsConnectInfo};
 
 use crate::sys::{check, AuditToken, Requirement};
+
+/// The id the next accepted connection gets.
+static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
 /// What the daemon learns about a connection when it is accepted.
 #[derive(Clone, Debug)]
@@ -19,6 +23,10 @@ pub struct PeerInfo {
     /// Why the peer is not the app, for the daemon's log. `None` when it is the
     /// app, or when the build has no requirement to check against.
     pub not_app: Option<String>,
+    /// Which accepted connection this is: unique within the process, never
+    /// reused. Per-connection state (D144) is kept by it, since tonic clones
+    /// this value for every request.
+    pub conn: u64,
 }
 
 /// An accepted connection that carries its [`PeerInfo`].
@@ -94,7 +102,12 @@ impl Stream for Incoming {
         let uds = <UnixStream as Connected>::connect_info(&stream);
         Poll::Ready(Some(Ok(CheckedStream {
             inner: stream,
-            info: PeerInfo { uds, app, not_app },
+            info: PeerInfo {
+                uds,
+                app,
+                not_app,
+                conn: NEXT_CONN.fetch_add(1, Ordering::Relaxed),
+            },
         })))
     }
 }

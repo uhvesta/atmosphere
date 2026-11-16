@@ -58,7 +58,11 @@ rust_library(
     srcs = ["testing/fake_machine.rs"],
     crate_name = "humata2_fake_machine",
     crate_root = "testing/fake_machine.rs",
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    visibility = [
+        "//apps/humata2/cli:__pkg__",
+        "//apps/humata2/clients/live:__pkg__",
+        "//apps/humata2/daemon/humatad:__pkg__",
+    ],
     deps = [
         ":machines",
         "@crates//:tempfile",

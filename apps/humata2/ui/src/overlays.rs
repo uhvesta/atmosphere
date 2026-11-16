@@ -18,6 +18,8 @@ use crate::bridge::{Part, Ui};
 use crate::theme;
 use crate::widgets::{self, col};
 
+#[path = "overlay_add_machine.rs"]
+mod add_machine;
 #[path = "overlay_desk.rs"]
 mod desk;
 #[path = "overlay_fork.rs"]
@@ -36,6 +38,7 @@ mod toasts;
 /// Which overlay shows, to tell when another opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
+    AddMachine,
     Desk,
     Fork,
     Palette,
@@ -65,6 +68,7 @@ pub struct Overlays {
     repos: Entity<InputState>,
     sheet: FocusHandle,
     desk: desk::Inputs,
+    add_machine: add_machine::AddMachineDialog,
     shown: Option<Kind>,
     restore: Option<FocusHandle>,
     restore_target: Option<crate::terminals::FocusTarget>,
@@ -143,6 +147,8 @@ impl Overlays {
             },
         ));
         let desk = desk::Inputs::new(window, cx, &mut subscriptions);
+        let add_machine =
+            add_machine::AddMachineDialog::new(ui.clone(), AppAction::AddMachine, window, cx);
         Self {
             ui,
             query,
@@ -154,6 +160,7 @@ impl Overlays {
             repos,
             sheet: cx.focus_handle(),
             desk,
+            add_machine,
             shown: None,
             restore: None,
             restore_target: None,
@@ -181,6 +188,7 @@ impl Overlays {
             Some(Kind::NewChannel) => self.name.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::Shortcuts) => window.focus(&self.sheet, cx),
             Some(Kind::Desk) => self.desk_focus(window, cx),
+            Some(Kind::AddMachine) => self.add_machine.focus(window, cx),
             None => {
                 let same_target = self.restore_target.take().as_ref()
                     == Some(&self.ui.read(crate::terminals::focus_target));
@@ -248,11 +256,15 @@ impl Render for Overlays {
                     .cloned(),
             )
         });
+        let add_machine = self
+            .ui
+            .read(|state| state.add_machine.open.then(|| state.add_machine.clone()));
         let shown = top
             .as_ref()
             .map(kind)
             .or_else(|| fork.as_ref().map(|_| Kind::Fork))
-            .or_else(|| self.desk_open().then_some(Kind::Desk));
+            .or_else(|| self.desk_open().then_some(Kind::Desk))
+            .or_else(|| add_machine.is_some().then_some(Kind::AddMachine));
         self.follow_focus(shown, window, cx);
         let ui = self.ui.clone();
         let content = top.map(|top| match top {
@@ -272,6 +284,11 @@ impl Render for Overlays {
             Some(content) => Some(content),
             None => self.desk(look, &ui, window, cx),
         };
+        let content = content.or_else(|| {
+            add_machine
+                .as_ref()
+                .map(|dialog| self.add_machine.draw(dialog, look, window, cx))
+        });
         let layer = div().absolute().top_0().left_0().size_full();
         let layer = match content {
             Some(content) => {
@@ -303,6 +320,7 @@ impl Render for Overlays {
                             .pt(px(match shown {
                                 Some(Kind::Palette) => 110.,
                                 Some(Kind::NewSession | Kind::Desk) => 70.,
+                                Some(Kind::AddMachine) => 60.,
                                 _ => 96.,
                             }))
                             .child(

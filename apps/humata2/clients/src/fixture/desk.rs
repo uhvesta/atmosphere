@@ -1,7 +1,10 @@
 //! The Desk's dummy data: frames 34, 36 and 55 of the design.
 
 use crate::desk::{Access, Closed, DeskSession, Document, FOLDER, Folder, LastUsed};
-use crate::model::{Agent, Session, SessionFile, SessionId, Status};
+use crate::model::{
+    Agent, ChannelId, Item, ItemDetails, ItemId, ItemKind, ItemStatus, Line, Preview,
+    RequestKind, Scope, Session, SessionFile, SessionId, Speaker, Status,
+};
 use crate::workspace::Workspace;
 
 const MB: u64 = 1_000_000;
@@ -122,10 +125,131 @@ fn file(path: &str, folder: bool) -> SessionFile {
     }
 }
 
+/// Text lines for a terminal: `System` lines are drawn dim, `Agent` lines plain.
+fn lines(text: &[(Speaker, &str)]) -> Vec<Line> {
+    text.iter()
+        .map(|(from, text)| Line {
+            from: *from,
+            text: (*text).to_owned(),
+        })
+        .collect()
+}
+
+/// What the agent's terminal of Plan Q4 board shows (frame 37).
+fn plan_q4_terminal() -> Vec<Line> {
+    use Speaker::{Agent as A, System as S};
+    lines(&[
+        (S, "~/Humata/desk/plan-q4 $ claude"),
+        (
+            A,
+            "> Plan Q4 for payments: add the backfill follow-ups, and make a",
+        ),
+        (A, "  channel for the web revamp."),
+        (A, ""),
+        (A, "● humata board_items channel=payments-rewrite"),
+        (S, "  ⎿ 6 items · 1 in progress · 1 in review"),
+        (
+            A,
+            "● humata board_item_create PAY-13 “Drop the ledger_entries index”",
+        ),
+        (S, "  ⎿ Added to # payments-rewrite · To do"),
+        (
+            A,
+            "● humata board_item_create PAY-14 “Backfill metrics dashboard”",
+        ),
+        (
+            S,
+            "  ⎿ Added to # payments-rewrite · To do · depends on PAY-13",
+        ),
+        (A, "● humata channel_create web-revamp repos=acme/web"),
+        (S, "  ⎿ ⏳ waiting for your approval (Inbox)"),
+        (A, ""),
+        (A, "● Write(q4-plan.md)"),
+        (S, "  ⎿ Wrote 38 lines"),
+        (A, ""),
+        (A, "✻ Ordering the payments lanes… (48s · esc to interrupt)"),
+    ])
+}
+
+/// What the `zsh` tab of BRIN rollout RFC shows (frame 38): the shell
+/// transcript, ending at an empty prompt.
+fn brin_rfc_shell() -> Vec<u8> {
+    use Speaker::{Agent as A, System as S};
+    let shown = lines(&[
+        (S, "~/Humata/desk/brin-rfc $ humata desk move devbox-1"),
+        (A, "Copying 3 files to devbox-1… done"),
+        (A, "claude restarts on devbox-1 with its conversation."),
+        (
+            S,
+            "~/Humata/desk/brin-rfc $ humata desk add acme/ledger acme/api",
+        ),
+        (A, "Cloned acme/ledger (main) into ./ledger"),
+        (A, "Cloned acme/api (main) into ./api"),
+        (S, "~/Humata/desk/brin-rfc $ humata desk keep"),
+        (A, "This folder stays after the session closes."),
+        (S, "~/Humata/desk/brin-rfc $ "),
+    ]);
+    let mut bytes = Vec::new();
+    for line in &shown {
+        bytes.extend(super::terminal_line(line));
+    }
+    // The last line is the prompt: the cursor stays on it.
+    bytes.truncate(bytes.len().saturating_sub(2));
+    bytes
+}
+
+/// The two items Plan Q4 board's agent added to the payments board, as its
+/// terminal says (frame 37): both in To do and marked as `session`'s.
+/// Skipped when the workspace has no payments channel, and an item the
+/// workspace already has is left as it is.
+fn plan_q4_items(workspace: &mut Workspace, session: &SessionId) {
+    let channel = ChannelId::new("payments-rewrite");
+    if workspace.channel(&channel).is_none() {
+        return;
+    }
+    for (id, title, depends_on) in [
+        ("PAY-13", "Drop the ledger_entries index", None),
+        ("PAY-14", "Backfill metrics dashboard", Some("PAY-13")),
+    ] {
+        let id = ItemId::new(id);
+        if workspace.items.iter().any(|item| item.id == id) {
+            continue;
+        }
+        workspace.items.push(Item {
+            id: id.clone(),
+            scope: Scope::Channel(channel.clone()),
+            kind: ItemKind::Task,
+            title: title.to_owned(),
+            status: ItemStatus::Todo,
+            depends_on: depends_on.map(ItemId::new).into_iter().collect(),
+            session: None,
+            parent: None,
+        });
+        workspace.item_details.insert(
+            id,
+            ItemDetails {
+                created_by: Some(session.clone()),
+                ..ItemDetails::default()
+            },
+        );
+    }
+}
+
+/// The clones `humata desk add` made in `session`'s folder (frame 38): each
+/// sits on its repo's default branch.
+fn clones(workspace: &mut Workspace, session: &SessionId, repos: &[&str]) {
+    for repo in repos {
+        workspace
+            .desk
+            .clone_branches
+            .insert((session.clone(), (*repo).to_owned()), "main".to_owned());
+    }
+}
+
 /// Adds the Desk of frame 36 to `workspace`. Its sessions were renamed after
 /// they started ("Plan Q4", then "Plan Q4 board"), so their folders keep the
 /// names they started with (D148). The workspace needs the machines
-/// `this-mac` and `devbox-1` (such as [`super::design`]): four sessions,
+/// `this-mac` and `devbox-1` (such as [`super::design`]): seven sessions (four of them closed),
 /// two documents, and the sizes of their scratch folders.
 pub fn desk(workspace: &mut Workspace) {
     add(
@@ -202,47 +326,6 @@ pub fn desk(workspace: &mut Workspace) {
         },
     );
 
-    let brin = SessionId::new("desk-brin-rfc");
-    let plan = SessionId::new("desk-plan-q4");
-    workspace.desk.documents = vec![
-        Document {
-            session: brin.clone(),
-            path: "rfc-brin.md".to_owned(),
-        },
-        Document {
-            session: plan.clone(),
-            path: "q4-plan.md".to_owned(),
-        },
-    ];
-    for (session, path, text) in [
-        (&brin, "rfc-brin.md", RFC_BRIN),
-        (&brin, "notes/bench-results.md", BENCH_RESULTS),
-        (&plan, "q4-plan.md", Q4_PLAN),
-    ] {
-        workspace.file_contents.insert(
-            (session.clone(), String::new(), path.to_owned()),
-            text.to_owned(),
-        );
-    }
-    workspace.session_files.insert(
-        brin,
-        vec![
-            file("rfc-brin.md", false),
-            file("notes", true),
-            file("notes/bench-results.md", false),
-        ],
-    );
-    workspace
-        .session_files
-        .insert(plan, vec![file("q4-plan.md", false)]);
-}
-
-/// Adds the Desk of frame 55: [`desk`], unless the workspace has it already,
-/// and three more closed sessions, so Clean up… has something to list.
-pub fn clean_up(workspace: &mut Workspace) {
-    if workspace.desk.sessions.is_empty() {
-        desk(workspace);
-    }
     let closed = |when: &str| {
         Some(Closed {
             when: when.to_owned(),
@@ -302,6 +385,72 @@ pub fn clean_up(workspace: &mut Workspace) {
             status: Status::Exited { code: 0 },
         },
     );
+
+    let brin = SessionId::new("desk-brin-rfc");
+    let plan = SessionId::new("desk-plan-q4");
+    workspace.desk.documents = vec![
+        Document {
+            session: brin.clone(),
+            path: "rfc-brin.md".to_owned(),
+        },
+        Document {
+            session: plan.clone(),
+            path: "q4-plan.md".to_owned(),
+        },
+    ];
+    for (session, path, text) in [
+        (&brin, "rfc-brin.md", RFC_BRIN),
+        (&brin, "notes/bench-results.md", BENCH_RESULTS),
+        (&plan, "q4-plan.md", Q4_PLAN),
+    ] {
+        workspace.file_contents.insert(
+            (session.clone(), String::new(), path.to_owned()),
+            text.to_owned(),
+        );
+    }
+    // Frame 38: the shell tab of BRIN rollout RFC, and what its Files panel
+    // lists: the notes and the two clones `humata desk add` made.
+    for session in &mut workspace.sessions {
+        match session.id.as_str() {
+            "desk-plan-q4" => {
+                session.transcript = plan_q4_terminal();
+                // Frame 37 draws a zsh tab beside the agent's.
+                session.shells = vec!["zsh".to_owned()];
+            }
+            "desk-brin-rfc" => session.shells = vec!["zsh".to_owned()],
+            _ => {}
+        }
+    }
+    let mut create = super::requests::request(
+        "desk-create-web-revamp",
+        "desk-plan-q4",
+        crate::desk::channel().as_str(),
+        RequestKind::Command,
+        "Create channel web-revamp",
+    );
+    create.asked = "1m".to_owned();
+    create.rule = "channel_create".to_owned();
+    create.preview = Preview::Text("Channel  web-revamp\nRepos  acme/web".to_owned());
+    create.reason = "Make channels and add machines is off for this session, so making a channel asks you.".to_owned();
+    workspace.requests.push(create);
+    clones(workspace, &brin, &["acme/ledger", "acme/api"]);
+    plan_q4_items(workspace, &plan);
+    workspace
+        .terminal_bytes
+        .insert((brin.clone(), 1), brin_rfc_shell());
+    workspace.session_files.insert(
+        brin,
+        vec![
+            file("rfc-brin.md", false),
+            file("notes", true),
+            file("notes/bench-results.md", false),
+            file("ledger", true),
+            file("api", true),
+        ],
+    );
+    workspace
+        .session_files
+        .insert(plan, vec![file("q4-plan.md", false)]);
 }
 
 /// A fresh install (frame 34): only This Mac, no channels, no sessions.

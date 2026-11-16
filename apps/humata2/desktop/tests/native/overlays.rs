@@ -70,6 +70,9 @@ fn archiving_offers_a_working_undo() {
     currency.channel = humata2_clients::model::ChannelId::new("payments-rewrite");
     workspace.sessions.push(currency);
     let mut app = App::new(workspace);
+    app.fakes
+        .daemon
+        .set_archive_frees(&SessionId::new("currency"), "1.4 GB");
     app.fold_quiet_channels();
     app.cx
         .update(|cx| Theme::change(ThemeMode::Light, None, cx));

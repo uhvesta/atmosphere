@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_clients::model::{
-    Agent, Answer, Capability, ChannelId, Comment, ForkKind, GrantId, ItemId,
+    Agent, Answer, Archive, Capability, ChannelId, ForkKind, GrantId, ItemId,
     ItemStatus, MachineId, Recovery, RequestId, Restart, RuleSetting, Scope, SessionId,
     SessionOptions, SetupId, TransferId,
 };
@@ -137,6 +137,44 @@ impl Shared {
         done
     }
 
+    /// This machine, then the others the daemon lists (HO-3). A daemon that doesn't build the
+    /// call yet lists only this machine.
+    async fn load_machines(&self) -> Result<Vec<humata2_clients::model::Machine>, DaemonError> {
+        let mut machines = vec![map::this_machine(self.machine.clone())];
+        let mut token = String::new();
+        loop {
+            let reply = match humata2_grpc::humata::v1::machine_service_client::MachineServiceClient::new(
+                self.wire.clone(),
+            )
+            .list_machines(pb::ListMachinesRequest {
+                page: Some(pb::PageRequest {
+                    page_size: PAGE_SIZE,
+                    page_token: token,
+                }),
+            })
+            .await
+            {
+                Ok(reply) => reply.into_inner(),
+                Err(status) if status.code() == tonic::Code::Unimplemented => break,
+                Err(status) => return Err(self.error(&status, "The machines")),
+            };
+            for listed in &reply.machines {
+                let mapped = map::machine(listed);
+                if mapped.id != self.machine
+                    && mapped.kind != humata2_clients::model::MachineKind::ThisMac
+                    && !machines.iter().any(|known| known.id == mapped.id)
+                {
+                    machines.push(mapped);
+                }
+            }
+            token = reply.page.map(|page| page.next_page_token).unwrap_or_default();
+            if token.is_empty() {
+                break;
+            }
+        }
+        Ok(machines)
+    }
+
     async fn load(&self) -> Result<Workspace, DaemonError> {
         let mut channels = Vec::new();
         let mut token = String::new();
@@ -186,17 +224,23 @@ impl Shared {
                 break;
             }
         }
+        let requests = self.load_requests().await?;
+        let ids: Vec<ChannelId> = channels.iter().map(|channel| channel.id.clone()).collect();
+        let rules = self.load_rules(&ids).await?;
         let restart = self.read_restart().await;
         {
             let mut state = self.state();
             state.restart_known = restart.is_some();
         }
         let restart = restart.flatten();
+        let machines = self.load_machines().await?;
         Ok(Workspace {
-            machines: vec![map::this_machine(self.machine.clone())],
+            machines,
             channels,
             sessions,
             restarts: restart.into_iter().collect(),
+            requests,
+            rules,
             ..Workspace::default()
         })
     }
@@ -433,8 +477,10 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.send(session, text).await })
     }
 
-    fn answer(&self, _request: &RequestId, _answer: Answer) -> Reply<()> {
-        later("Answering a request")
+    fn answer(&self, request: &RequestId, answer: Answer) -> Reply<()> {
+        let shared = self.shared.clone();
+        let request = request.clone();
+        Box::pin(async move { shared.answer_request(request, answer).await })
     }
 
     fn reconnect(&self, _machine: &MachineId) -> Reply<Vec<(SessionId, Recovery)>> {
@@ -469,7 +515,7 @@ impl Daemon for LiveDaemon {
         later("Forking a session")
     }
 
-    fn archive(&self, _session: &SessionId) -> Reply<()> {
+    fn archive(&self, _session: &SessionId) -> Reply<Archive> {
         later("Archiving a session")
     }
 
@@ -533,24 +579,24 @@ impl Daemon for LiveDaemon {
         later("Adding a dependency")
     }
 
-    fn send_comments(&self, _session: &SessionId, _comments: Vec<Comment>) -> Reply<()> {
-        later("Sending review comments")
-    }
-
     fn retry_transfer(&self, _transfer: &TransferId) -> Reply<()> {
         later("Retrying a transfer")
     }
 
     fn set_rule(
         &self,
-        _channel: &ChannelId,
-        _capability: &Capability,
-        _setting: RuleSetting,
+        channel: &ChannelId,
+        capability: &Capability,
+        setting: RuleSetting,
     ) -> Reply<()> {
-        later("Changing an access rule")
+        let shared = self.shared.clone();
+        let (channel, capability) = (channel.clone(), capability.clone());
+        Box::pin(async move { shared.change_rule(channel, capability, setting).await })
     }
 
-    fn remove_grant(&self, _grant: &GrantId) -> Reply<()> {
-        later("Removing a grant")
+    fn remove_grant(&self, grant: &GrantId) -> Reply<()> {
+        let shared = self.shared.clone();
+        let grant = grant.clone();
+        Box::pin(async move { shared.revoke(grant).await })
     }
 }

@@ -1,7 +1,7 @@
 //! Clean up… (DK-11, MV-9, NV-27, frame 55): closed sessions, least recently
 //! used first, with their folders' sizes.
 
-use super::{ORANGE, Overlays, agent_label, button, check, header, primary, secondary};
+use super::{ORANGE, Overlays, runs, button, check, header, primary, secondary};
 use crate::bridge::Ui;
 use crate::theme::Look;
 use crate::widgets::{self, col, row};
@@ -120,7 +120,7 @@ impl Overlays {
                         ticked == 0 || dialog.deleting || dialog.loading,
                     )),
             )
-            .focus_trap("desk-clean-up-trap", &self.sheet)
+            .focus_trap("desk-clean-up-dialog", &self.sheet)
             .into_any_element()
     }
 }
@@ -140,7 +140,7 @@ fn clean_up_row(
         let machine = workspace
             .machine(&s.machine)
             .map_or_else(|| s.machine.to_string(), |m| m.name.clone());
-        format!("{} · {machine}", agent_label(s.agent))
+        format!("{} · {machine}", runs(s.agent))
     });
     let closed = record
         .and_then(|r| r.closed.as_ref())

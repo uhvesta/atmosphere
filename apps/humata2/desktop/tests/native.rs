@@ -99,6 +99,25 @@ impl App {
             .update_window(self.window, |_, window, cx| window.render_frame(cx))
             .expect("window stays open");
     }
+    /// Writes a review comment on a line and keeps it as a draft.
+    fn write_comment(&mut self, session: &str, repo: &str, line: u32, body: &str) {
+        use humata2_clients::comments::{Anchor, Side};
+        use humata2_review::comments::CommentsAction as C;
+        let id = SessionId::new(session);
+        let anchor = Anchor {
+            repo: repo.into(),
+            path: "src/client.rs".into(),
+            side: Side::New,
+            first: line,
+            last: line,
+            quoted: Vec::new(),
+            base: None,
+            detached: false,
+        };
+        self.send(AppAction::Comments(C::OpenBox(id.clone(), anchor)));
+        self.send(AppAction::Comments(C::Typed(id.clone(), body.into())));
+        self.send(AppAction::Comments(C::Close(id)));
+    }
     fn snapshot(&mut self, name: &str) {
         self.draw();
         let snapshots = snapshots!().expect("snapshot folder");
@@ -152,10 +171,16 @@ fn folder() -> Snapshots {
 mod board;
 #[path = "native/channel.rs"]
 mod channel;
+#[path = "native/desk.rs"]
+mod desk;
+#[path = "native/document.rs"]
+mod document;
 #[path = "native/hosts_settings.rs"]
 mod hosts_settings;
 #[path = "native/lists.rs"]
 mod lists;
+#[path = "native/machines.rs"]
+mod machines;
 #[path = "native/overlays.rs"]
 mod overlays;
 #[path = "native/queue.rs"]

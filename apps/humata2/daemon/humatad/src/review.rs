@@ -29,7 +29,7 @@ use humata2_review_diff::{
 use humata2_store::{ReviewRecord, SessionRecord, Store};
 use humata2_store_proto::humata::store::v1 as stored;
 use prost::Message;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tokio_stream::Stream;
 use tonic::{Code, Request, Response, Status};
 
@@ -129,6 +129,21 @@ struct SessionReview {
     comments_kept: Mutex<comments::Kept>,
     /// Held while the comments are saved, so saves land in order.
     comments_saving: tokio::sync::Mutex<()>,
+    /// Each change the comments' saves make, for WatchComments (D161).
+    comment_feed: CommentFeed,
+}
+
+/// The most changes a WatchComments stream can fall behind by before it is
+/// told to list again.
+const COMMENT_FEED_CAPACITY: usize = 256;
+
+/// Where saved changes to a session's comments are told, in order.
+struct CommentFeed(broadcast::Sender<pb::CommentFeedEvent>);
+
+impl Default for CommentFeed {
+    fn default() -> Self {
+        Self(broadcast::channel(COMMENT_FEED_CAPACITY).0)
+    }
 }
 
 #[derive(Default)]
@@ -552,6 +567,8 @@ impl pb::diff_service_server::DiffService for Review {
 
 type Changes = Pin<Box<dyn Stream<Item = Result<pb::ReviewChange, Status>> + Send>>;
 
+type CommentEvents = Pin<Box<dyn Stream<Item = Result<pb::CommentFeedEvent, Status>> + Send>>;
+
 #[tonic::async_trait]
 impl pb::review_chat_service_server::ReviewChatService for Review {
     async fn get_review_context(
@@ -949,6 +966,45 @@ impl pb::comment_service_server::CommentService for Review {
     ) -> Result<Response<pb::Comment>, Status> {
         let caller = identity::caller(&request)?;
         self.unarchive_user_comment(&caller, request.into_inner()).await.map(Response::new)
+    }
+
+    type WatchCommentsStream = CommentEvents;
+
+    async fn watch_comments(
+        &self,
+        request: Request<pb::WatchCommentsRequest>,
+    ) -> Result<Response<Self::WatchCommentsStream>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let (record, session) = self.session(request.session.as_ref())?;
+        self.require_use(&caller, Capability::UserReviewState, &session)?;
+        let review = self.review(&record.id)?;
+        // Subscribed before the first event goes out, so the listing the app
+        // makes after it misses no change.
+        let mut changes = review.comment_feed.0.subscribe();
+        let (sender, receiver) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(async move {
+            let resync = pb::CommentFeedEvent {
+                event: Some(pb::comment_feed_event::Event::Resync(true)),
+            };
+            if sender.send(Ok(resync.clone())).await.is_err() {
+                return;
+            }
+            loop {
+                let event = tokio::select! {
+                    () = sender.closed() => return,
+                    received = changes.recv() => match received {
+                        Ok(event) => event,
+                        Err(broadcast::error::RecvError::Lagged(_)) => resync.clone(),
+                        Err(broadcast::error::RecvError::Closed) => return,
+                    },
+                };
+                if sender.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Response::new(Box::pin(tokio_stream::wrappers::ReceiverStream::new(receiver))))
     }
 }
 

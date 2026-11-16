@@ -95,6 +95,11 @@ pub struct SidebarState {
     /// is used (D148). Each is a session row at depth 1 with no forks to fold
     /// (DK-12).
     pub desk: Arc<Vec<Row>>,
+    /// Whether the view is drawing the Desk rows right now (only while the
+    /// Desk page or a Desk session shows). The app sets it; while it is
+    /// set, ↑ and ↓ walk through `desk` too, between the pinned rows and the
+    /// channels, in the order they are drawn.
+    pub desk_shown: bool,
     /// The keyboard cursor.
     pub cursor: Option<RowKey>,
     /// The session or channel the main area shows, highlighted.
@@ -267,7 +272,37 @@ impl SidebarState {
             .collect()
     }
 
+    /// Where ↑ or ↓ goes when the Desk rows are showing and the cursor is on
+    /// a row: the neighbour in drawing order (pinned rows, the Desk rows,
+    /// then the channels). `None` leaves the move to the tree alone.
+    fn walk_with_desk(&self, movement: Move) -> Option<RowKey> {
+        if !self.desk_shown || self.desk.is_empty() {
+            return None;
+        }
+        let mut order: Vec<&RowKey> = Vec::new();
+        for row in self.rows.iter() {
+            if matches!(row.kind, RowKind::Section("Channels")) {
+                order.extend(self.desk.iter().filter_map(|desk| desk.key.as_ref()));
+            }
+            order.extend(row.key.as_ref());
+        }
+        let at = order
+            .iter()
+            .position(|key| Some(*key) == self.cursor.as_ref())?;
+        let next = match movement {
+            Move::Down => (at + 1).min(order.len() - 1),
+            _ => at.saturating_sub(1),
+        };
+        order.get(next).map(|key| (*key).clone())
+    }
+
     fn step(&mut self, movement: Move) {
+        if matches!(movement, Move::Up | Move::Down)
+            && let Some(key) = self.walk_with_desk(movement)
+        {
+            self.cursor = Some(key);
+            return;
+        }
         let selectable = self.selectable();
         let Some(&first) = selectable.first() else {
             return;

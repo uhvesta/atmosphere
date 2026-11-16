@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use crate::daemon::{Daemon, DaemonError, Event, Events, Operation, Reply, Terminals};
 use crate::fixture;
 use crate::model::{
-    Agent, Answer, Capability, ChannelId, Comment, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
+    Agent, Answer, Archive, Capability, ChannelId, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
     RequestId, RuleSetting, Scope, Session, SessionId, SetupId, Speaker, Status, TransferId,
 };
 use crate::workspace::Workspace;
@@ -45,6 +45,7 @@ struct Inner {
     calls: Vec<String>,
     next: u32,
     archived: HashMap<SessionId, (Session, Vec<SessionId>)>,
+    archive_frees: HashMap<SessionId, String>,
     terminal_input: HashMap<(SessionId, usize), Vec<u8>>,
 }
 
@@ -74,6 +75,7 @@ impl FakeDaemon {
                 calls: Vec::new(),
                 next: 1,
                 archived: HashMap::new(),
+                archive_frees: HashMap::new(),
                 terminal_input: HashMap::new(),
             })),
             clock,
@@ -99,6 +101,13 @@ impl FakeDaemon {
     /// Makes the next call of `operation` fail with `message`.
     pub fn fail_next(&self, operation: Operation, message: impl Into<String>) {
         self.inner().failures.insert(operation, message.into());
+    }
+
+    /// Says how much disk archiving `session` will free, as people read it ("1.4 GB").
+    pub fn set_archive_frees(&self, session: &SessionId, frees: impl Into<String>) {
+        self.inner()
+            .archive_frees
+            .insert(session.clone(), frees.into());
     }
 
     /// Says what reconnecting will do to `session`.
@@ -337,7 +346,7 @@ impl Daemon for FakeDaemon {
         sessions::fork(self, session, kind, title)
     }
 
-    fn archive(&self, session: &SessionId) -> Reply<()> {
+    fn archive(&self, session: &SessionId) -> Reply<Archive> {
         sessions::archive(self, session)
     }
 
@@ -399,10 +408,6 @@ impl Daemon for FakeDaemon {
 
     fn add_dependency(&self, item: &ItemId, on: &ItemId) -> Reply<()> {
         boards::add_dependency(self, item, on)
-    }
-
-    fn send_comments(&self, session: &SessionId, comments: Vec<Comment>) -> Reply<()> {
-        review::send_comments(self, session, comments)
     }
 
     fn read_file(&self, session: &SessionId, repo: &str, path: &str) -> Reply<String> {

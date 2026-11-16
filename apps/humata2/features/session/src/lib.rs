@@ -8,8 +8,10 @@
 //! daemon's event stream and is appended to [`SessionState::live`], so a
 //! line doesn't copy the workspace.
 
+mod document;
 mod message;
 mod tabs;
+pub use document::{DocumentEntry, DocumentMode, DocumentView, is_markdown};
 pub use message::QueuedMessage;
 pub use tabs::{Tab, TabGroup};
 
@@ -17,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use humata2_clients::model::{
-    Agent, Comment, ForkKind, Line, Session, SessionId, Skill, Speaker, Turn,
+    Agent, Archive, ForkKind, Line, Session, SessionId, Skill, Speaker, Turn,
 };
 use humata2_clients::{Clients, DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
@@ -98,6 +100,9 @@ pub struct SessionView {
     /// Collapsed Files directories, keyed by repository and path.
     #[serde(default)]
     pub folded_files: BTreeSet<(String, String)>,
+    /// Per-file document settings; read with `document`.
+    #[serde(default)]
+    pub documents: Vec<DocumentEntry>,
 }
 
 /// A fork being named, before it is made.
@@ -179,16 +184,13 @@ impl SessionState {
 /// What the session pages ask their parent to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delegate {
-    /// Delivered comments can be refreshed from the client.
-    CommentsSent(SessionId, usize),
-    /// Removing queued comments returns them to drafts.
-    CommentsUnqueued(SessionId, Vec<Comment>),
     /// Open this session, such as a new fork.
     OpenSession(SessionId),
     /// Say this in a toast.
     Toast(String),
-    /// An archive succeeded; the parent can offer Undo.
-    Archived(SessionId, String),
+    /// An archive succeeded; the parent can offer Undo. Last comes the disk
+    /// it frees when the undo window closes, when the machine said.
+    Archived(SessionId, String, Option<String>),
     /// The open session was archived: leave its page.
     Left,
 }
@@ -253,6 +255,10 @@ pub enum SessionAction {
     OpenView(String),
     /// Close a tab; its process keeps running.
     CloseTab { group: usize, index: usize },
+    /// Move a tab into the other group: with one group it makes the second,
+    /// beside the first; from the second it joins the first. The moved tab
+    /// is selected and its group focused. A lone tab in the only group stays.
+    MoveTab { group: usize, index: usize },
     /// Join a group's tabs into the other group.
     CloseGroup(usize),
     /// A panel tab was picked, or the open one closed with `None`.
@@ -261,6 +267,24 @@ pub enum SessionAction {
     ToggleWiden,
     /// Filter this session's repository paths.
     FilterFiles(String),
+    /// Show a document in this mode; remembered per file in this session.
+    DocumentMode {
+        /// The repository containing the file.
+        repo: String,
+        /// Its path relative to the clone.
+        path: String,
+        /// How to show it.
+        mode: DocumentMode,
+    },
+    /// Make a document's page follow its source, or stop.
+    LinkScrolling {
+        /// The repository containing the file.
+        repo: String,
+        /// Its path relative to the clone.
+        path: String,
+        /// Whether the page follows the source.
+        linked: bool,
+    },
     /// Select a file in this session's clones.
     SelectFile {
         /// The repository containing it.
@@ -288,13 +312,6 @@ pub enum SessionAction {
     SendQueued(usize),
     /// Expand or collapse the waiting-message list.
     ShowQueue(bool),
-    /// Send review comments to `session` (not necessarily the open one) as
-    /// soon as it takes input, whatever its turn (SE-23). They wait in its
-    /// outbox only while it cannot take input or an earlier send failed.
-    QueueComments {
-        session: SessionId,
-        comments: Vec<Comment>,
-    },
     /// Take a queued message back into the composer to edit it.
     EditQueued(usize),
     /// Drop a queued message.
@@ -324,7 +341,7 @@ pub enum SessionAction {
     Archived {
         session: SessionId,
         title: String,
-        result: Result<(), DaemonError>,
+        result: Result<Archive, DaemonError>,
     },
     /// Archive the open session.
     Archive,
@@ -361,12 +378,8 @@ impl Sessions {
     ) -> Effect<SessionAction> {
         let daemon = self.clients.daemon.clone();
         Effect::future(async move {
-            let result = match &message {
-                QueuedMessage::Text(text) => daemon.send(&session, text).await,
-                QueuedMessage::Comments { comments } => {
-                    daemon.send_comments(&session, comments.clone()).await
-                }
-            };
+            let QueuedMessage::Text(text) = &message;
+            let result = daemon.send(&session, text).await;
             SessionAction::Sent {
                 session,
                 index,
@@ -397,11 +410,9 @@ impl Sessions {
         Effect::future(async move { SessionAction::Done(future.await) })
     }
 
-    /// Sends the first deliverable queued message of `session`. The kind
-    /// decides: review comments are an explicit send and go as soon as the
-    /// session takes input, whatever its turn; typed text is the wait mode and
-    /// goes only when a hook-backed agent's turn ended. Never sets an error,
-    /// because it runs on every refresh.
+    /// Sends the first queued message of `session`. Typed text is the wait
+    /// mode and goes only when a hook-backed agent's turn ended. Never sets
+    /// an error, because it runs on every refresh.
     fn flush(&self, state: &mut SessionState, session: &SessionId) -> Effect<SessionAction> {
         if state.sending || state.failed_queues.contains(session) {
             return Effect::none();
@@ -414,15 +425,10 @@ impl Sessions {
         }
         let ended = workspace_session.turn == Turn::Ended
             && matches!(workspace_session.agent, Agent::Claude | Agent::Copilot);
-        let Some(index) = state.views.get(session).and_then(|view| {
-            view.queue.iter().position(|message| match message {
-                QueuedMessage::Comments { .. } => true,
-                QueuedMessage::Text(_) => ended,
-            })
-        }) else {
+        if !ended || state.views.get(session).is_none_or(|view| view.queue.is_empty()) {
             return Effect::none();
-        };
-        self.send_queued(state, session, index)
+        }
+        self.send_queued(state, session, 0)
     }
 
     fn send_queued(
@@ -714,6 +720,26 @@ impl Reducer for Sessions {
                     }
                 }
             }
+            SessionAction::MoveTab { group, index } => {
+                let shells = open_session(state).map_or(0, |s| s.shells.len());
+                if let Some(view) = state.view_mut() {
+                    view.ensure_groups(shells);
+                    let Some(tab) = view.groups.get(group).and_then(|g| g.tabs.get(index)).cloned() else {
+                        return Effect::none();
+                    };
+                    let only = view.groups.len() == 1 && view.groups[0].tabs.len() == 1;
+                    if !only {
+                        // `show_tab`'s split always targets the second group,
+                        // so the way back names the first.
+                        if group == 0 {
+                            view.show_tab(tab, 0, true);
+                        } else {
+                            view.show_tab(tab, 0, false);
+                        }
+                    }
+                }
+                state.terminal_menu = None;
+            }
             SessionAction::CloseGroup(group) => {
                 if let Some(view) = state.view_mut() {
                     view.close_group(group);
@@ -737,6 +763,18 @@ impl Reducer for Sessions {
             SessionAction::FilterFiles(filter) => {
                 if let Some(view) = state.view_mut() {
                     view.file_filter = filter;
+                }
+            }
+            SessionAction::DocumentMode { repo, path, mode } => {
+                if let Some(view) = state.view_mut() {
+                    let current = view.document(&repo, &path);
+                    view.set_document(&repo, &path, DocumentView { mode, ..current });
+                }
+            }
+            SessionAction::LinkScrolling { repo, path, linked } => {
+                if let Some(view) = state.view_mut() {
+                    let current = view.document(&repo, &path);
+                    view.set_document(&repo, &path, DocumentView { linked, ..current });
                 }
             }
             SessionAction::SelectFile { repo, path } => {
@@ -807,26 +845,6 @@ impl Reducer for Sessions {
                 return self.send_queued(state, &id, index);
             }
             SessionAction::ShowQueue(show) => state.queue_expanded = show,
-            SessionAction::QueueComments { session, comments } => {
-                if comments.is_empty() || state.workspace.session(&session).is_none() {
-                    return Effect::none();
-                }
-                state
-                    .views
-                    .entry(session.clone())
-                    .or_default()
-                    .queue
-                    .push(QueuedMessage::Comments { comments });
-                if !state
-                    .workspace
-                    .session(&session)
-                    .is_some_and(|s| s.status.accepts_input())
-                {
-                    state.error = Some("This session cannot take the comments yet. Reconnect its machine or resume the agent, then press Send now to deliver them.".into());
-                    return Effect::none();
-                }
-                return self.flush(state, &session);
-            }
             SessionAction::EditQueued(index) => {
                 if state.sending {
                     return Effect::none();
@@ -834,23 +852,8 @@ impl Reducer for Sessions {
                 if let Some(view) = state.view_mut()
                     && index < view.queue.len()
                 {
-                    let message = view.queue.remove(index);
+                    let QueuedMessage::Text(text) = view.queue.remove(index);
                     let emptied = view.queue.is_empty();
-                    let text = match message {
-                        QueuedMessage::Text(text) => text,
-                        QueuedMessage::Comments { comments } => {
-                            let Some(id) = state.open.clone() else {
-                                return Effect::none();
-                            };
-                            // Nothing failed is left: a new send goes at once.
-                            if emptied {
-                                state.failed_queues.remove(&id);
-                            }
-                            return Effect::send(SessionAction::Delegate(
-                                Delegate::CommentsUnqueued(id, comments),
-                            ));
-                        }
-                    };
                     if view.draft.trim().is_empty() {
                         view.draft = text;
                     } else {
@@ -868,20 +871,12 @@ impl Reducer for Sessions {
                 if let Some(view) = state.view_mut()
                     && index < view.queue.len()
                 {
-                    let message = view.queue.remove(index);
+                    view.queue.remove(index);
                     // Nothing failed is left: a new send goes at once.
                     if view.queue.is_empty()
                         && let Some(id) = state.open.clone()
                     {
                         state.failed_queues.remove(&id);
-                    }
-                    if let QueuedMessage::Comments { comments } = message {
-                        let Some(id) = state.open.clone() else {
-                            return Effect::none();
-                        };
-                        return Effect::send(SessionAction::Delegate(Delegate::CommentsUnqueued(
-                            id, comments,
-                        )));
                     }
                 }
             }
@@ -901,13 +896,8 @@ impl Reducer for Sessions {
                             view.queue.remove(index);
                         }
                         let waiting: Vec<_> = state.views.keys().cloned().collect();
-                        let mut effects: Vec<_> =
+                        let effects: Vec<_> =
                             waiting.iter().map(|id| self.flush(state, id)).collect();
-                        if let QueuedMessage::Comments { comments } = message {
-                            effects.push(Effect::send(SessionAction::Delegate(
-                                Delegate::CommentsSent(session, comments.len()),
-                            )));
-                        }
                         return Effect::merge(effects);
                     }
                     Err(error) => {
@@ -1001,12 +991,14 @@ impl Reducer for Sessions {
                 title,
                 result,
             } => match result {
-                Ok(()) => {
+                Ok(archive) => {
                     if state.open.as_ref() == Some(&session) {
                         state.open = None;
                     }
                     return Effect::send(SessionAction::Delegate(Delegate::Archived(
-                        session, title,
+                        session,
+                        title,
+                        archive.frees,
                     )));
                 }
                 Err(error) => state.error = Some(error.to_string()),

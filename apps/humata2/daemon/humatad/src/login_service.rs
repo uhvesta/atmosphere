@@ -215,10 +215,18 @@ impl LoginSvc {
     ) -> Result<Response<ReceiverStream<Result<pb::LoginServerMessage, Status>>>, Status> {
         use pb::login_client_message::Message;
         let caller = identity::caller(&request)?;
-        if !matches!(caller, Caller::User(_)) {
+        // Before anything else, so no path answers "isn't built" (MP-14).
+        if matches!(caller, Caller::Peer) {
             return Err(status::refused(&Refusal::UserOnly {
                 capability: Some(Capability::MachineProvision),
             }));
+        }
+        if !matches!(caller, Caller::User(_)) {
+            return Err(status::user_only_call(
+                Capability::MachineProvision,
+                "logging in to a machine by hand",
+                "ask the user with inbox_ask to log in from the app (Hosts › the machine › Log in), then retry what you wanted",
+            ));
         }
         let mut inbound = request.into_inner();
         let open = match inbound.message().await?.and_then(|message| message.message) {
@@ -291,6 +299,19 @@ impl LoginSvc {
     ) -> Result<Response<pb::Machine>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
+        // Before anything else, so no path answers "isn't built" (MP-17).
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::UserOnly {
+                capability: Some(MachineActionKind::Reconnect.capability()),
+            }));
+        }
+        if !matches!(caller, Caller::User(_)) {
+            return Err(status::user_only_call(
+                MachineActionKind::Reconnect.capability(),
+                "making a machine's login unattended",
+                "ask the user with inbox_ask to log in from the app (Hosts › the machine › Log in) and make it unattended there, then retry what you wanted",
+            ));
+        }
         let name = machine_of(request.machine)?;
         self.require(&caller, &name)?;
         let method = match pb::make_unattended_request::Method::try_from(request.method) {
@@ -341,7 +362,9 @@ fn run(
     runtime: &Handle,
 ) {
     use pb::login_server_message::Message;
-    let send = |message: Message| out.blocking_send(Ok(pb::LoginServerMessage { message: Some(message) })).is_ok();
+    let send = |message: Message| {
+        out.blocking_send(Ok(pb::LoginServerMessage { message: Some(message), ..Default::default() })).is_ok()
+    };
     let name = resolved.name.as_str().to_owned();
     let keys = work.machines.peer_key(&name);
     // A machine with no enrollment key yet gets one written over the login.
@@ -354,10 +377,16 @@ fn run(
         sync_timeout: None,
     };
     let result = session.run(&plan, &mut |observed| {
-        send(match observed {
-            Observed::Output(bytes) => Message::Output(bytes.into()),
-            Observed::Prompt(line) => Message::PromptSeen(line),
-        })
+        match observed {
+            Observed::Output(bytes) => send(Message::Output(bytes.into())),
+            // The line and its kind go in one message (D167).
+            Observed::Prompt(prompt) => out
+                .blocking_send(Ok(pb::LoginServerMessage {
+                    message: Some(Message::PromptSeen(prompt.line)),
+                    prompt_kind: prompt_kind(prompt.kind) as i32,
+                }))
+                .is_ok(),
+        }
     });
     let link = match result {
         Ok(link) => link,
@@ -471,6 +500,35 @@ pub(crate) fn needs_login(work: &Work, entry: &HostEntry, reach: pb::Reachabilit
         pb::Reachability::NeedsLogin
     } else {
         reach
+    }
+}
+
+/// The API's kind of a prompt (D167).
+fn prompt_kind(kind: humata2_machines::PromptKind) -> pb::LoginPromptKind {
+    use humata2_machines::PromptKind;
+    match kind {
+        PromptKind::Password => pb::LoginPromptKind::Password,
+        PromptKind::Passphrase => pb::LoginPromptKind::Passphrase,
+        PromptKind::Code => pb::LoginPromptKind::Code,
+        PromptKind::Confirm => pb::LoginPromptKind::Confirm,
+        PromptKind::Device => pb::LoginPromptKind::Device,
+    }
+}
+
+/// An add's "needs a login" (MP-13): which prompt the connect printed, or
+/// that it hung, so the app can say why it opened the login (D167).
+pub(crate) fn login_needs_user(machine: &str, reason: &humata2_machines::LoginReason) -> pb::LoginNeedsUser {
+    use humata2_machines::LoginReason;
+    let (kind, line, hung) = match reason {
+        LoginReason::Prompted(prompt) => (prompt_kind(prompt.kind), prompt.line.clone(), false),
+        LoginReason::Hung => (pb::LoginPromptKind::Unspecified, String::new(), true),
+    };
+    pb::LoginNeedsUser {
+        provider: None,
+        machine: Some(machine_id(machine)),
+        prompt_kind: kind as i32,
+        prompt_line: line,
+        hung,
     }
 }
 

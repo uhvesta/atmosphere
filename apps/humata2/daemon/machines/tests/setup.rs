@@ -208,7 +208,13 @@ fn a_password_prompt_asks_for_an_interactive_login() {
         panic!("{progress:?}");
     };
     assert!(delays.is_empty());
-    assert_eq!(login.reason, humata2_machines::LoginReason::Prompted);
+    assert_eq!(
+        login.reason,
+        humata2_machines::LoginReason::Prompted(humata2_machines::Prompt {
+            kind: humata2_machines::PromptKind::Password,
+            line: "dev@10.0.0.5's Password:".to_owned(),
+        })
+    );
     assert_eq!(setup.current(), Step::Connect);
 }
 

@@ -1,14 +1,11 @@
 //! Capabilities, their tiers, and the settings a channel rule can take.
 //!
 //! These mirror `humata.v1.Capability`, `Decision` and `AwayMode`; the
-//! daemon converts. The two deprecated proto values (D21) are not here:
-//! the daemon reads `GLOBAL_BOARD_WRITE` as [`Capability::GlobalRead`] and
-//! `OWN_COMMENTS_READ` as a read of the caller's own session.
+//! daemon converts. The deprecated proto value `OWN_COMMENTS_READ` (D21)
+//! is not here: the daemon reads it as a read of the caller's own session.
 //!
-//! `GlobalRead` is Default Allow (D127.4: reads are allowed by default), so
-//! reading `GLOBAL_BOARD_WRITE` as it would let global board writes run
-//! unasked. When the board is built, global board writes must get their own
-//! Ask-tier capability (D127.4).
+//! Reads of the Global board and other channels are `GlobalRead`, Default
+//! Allow (D127.4); writes there are `GlobalBoardWrite`, Ask me (D155).
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -39,6 +36,9 @@ pub enum Capability {
     GlobalRead,
     // Ask me.
     ChannelBoardEditOthers,
+    // Add, edit, move or delete on the Global board or another channel's
+    // boards, whoever made the item (BD-9, D155).
+    GlobalBoardWrite,
     FilesReadOtherSession,
     FilesReadOtherMachine,
     FilesCopyIn,
@@ -132,7 +132,7 @@ const SETTINGS_NONE: &[Decision] = &[];
 
 impl Capability {
     /// Every capability, once.
-    pub const ALL: [Capability; 48] = [
+    pub const ALL: [Capability; 49] = [
         Self::OwnBoardWrite,
         Self::ChannelRead,
         Self::ChannelBoardAdd,
@@ -149,6 +149,7 @@ impl Capability {
         Self::CommentResolve,
         Self::ChannelBoardEditOthers,
         Self::GlobalRead,
+        Self::GlobalBoardWrite,
         Self::FilesReadOtherSession,
         Self::FilesReadOtherMachine,
         Self::FilesCopyIn,
@@ -201,6 +202,7 @@ impl Capability {
             | Self::CommentResolve
             | Self::GlobalRead => Tier::DefaultAllow,
             Self::ChannelBoardEditOthers
+            | Self::GlobalBoardWrite
             | Self::FilesReadOtherSession
             | Self::FilesReadOtherMachine
             | Self::FilesCopyIn
@@ -267,6 +269,7 @@ impl Capability {
     pub fn needs_host(self) -> bool {
         match self {
             Self::GlobalRead
+            | Self::GlobalBoardWrite
             | Self::FilesReadOtherMachine
             | Self::SessionStartOtherMachine
             | Self::SessionMove
@@ -341,6 +344,7 @@ impl Capability {
                 | Self::SessionStartSameMachine
                 | Self::SessionStartOtherMachine
                 | Self::ChannelBoardEditOthers
+                | Self::GlobalBoardWrite
                 | Self::NetworkReach
                 | Self::GitPush
                 | Self::MachineProvision
@@ -367,6 +371,7 @@ impl Capability {
             Self::CommentResolve => "resolve comments you sent it, with a note on what it did",
             Self::ChannelBoardEditOthers => "edit anyone else's board items",
             Self::GlobalRead => "use the global board or other channels",
+            Self::GlobalBoardWrite => "change the global board or other channels' boards",
             Self::FilesReadOtherSession => "read another session's files",
             Self::FilesReadOtherMachine => "read files on another machine",
             Self::FilesCopyIn => "copy files in from another session or machine",

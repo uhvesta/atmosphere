@@ -321,16 +321,16 @@ impl Overlays {
                             .child(format!("Branch: {}", sheet_state.branch())),
                     )
                     .child(
-                        button(
-                            "new-session-cancel".into(),
-                            "Cancel".into(),
+                        widgets::push_quiet(
+                            ui,
+                            "new-session-cancel",
+                            "Cancel",
                             AppAction::Escape,
-                        )
-                        .border_1()
-                        .border_color(rgb(look.line)),
+                            look,
+                        ),
                     )
                     .child(
-                        widgets::primary(
+                        widgets::push_primary(
                             ui,
                             "new-session-create",
                             if sheet_state.creating {
@@ -339,13 +339,8 @@ impl Overlays {
                                 "Start session"
                             },
                             AppAction::NewSession(NewSessionAction::Create),
+                            look,
                         )
-                        .small()
-                        .h(px(24.))
-                        .px(px(11.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .bg(rgb(look.accent))
-                        .text_color(rgb(0xffffff))
                         .disabled(sheet_state.creating),
                     ),
             )

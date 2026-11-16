@@ -1038,6 +1038,20 @@ impl Transfers {
             point("transfer.commit.renamed");
         }
         end.sync_folder(&rec.destination).map_err(dst)?;
+        // A rename is on disk once both folders it touched are saved: the
+        // one a name left as well as the one it came to.
+        if rec.direct {
+            for top in &rec.tops {
+                let Some(parent) = top.source.as_deref().and_then(Path::parent) else {
+                    continue;
+                };
+                if end.exists(parent).map_err(dst)? {
+                    end.sync_folder(parent).map_err(dst)?;
+                }
+            }
+        } else if end.exists(&staging).map_err(dst)? {
+            end.sync_folder(&staging).map_err(dst)?;
+        }
         if !rec.direct {
             end.remove_tree(&staging).map_err(dst)?;
             end.sync_folder(&rec.destination).map_err(dst)?;

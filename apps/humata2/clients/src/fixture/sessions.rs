@@ -71,6 +71,7 @@ pub(super) fn session(
         recovery: None,
         resume_failed: None,
         interrupted_unix_ms: None,
+        summary_source: None,
         model: None,
         restart_detail: None,
         permissions: Vec::new(),

@@ -9,10 +9,7 @@ use crate::{
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, TestTextExt as _};
-use gpui_kit::component::{
-    Sizable as _,
-    button::{Button, ButtonVariants as _},
-};
+use gpui_kit::component::button::Button;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::desk::{DeskSession, Document, Folder};
@@ -74,28 +71,17 @@ fn button(
     look: Look,
     primary: bool,
 ) -> Button {
-    let ui = ui.clone();
-    Button::new(id)
-        .label(label)
-        .small()
-        .h(px(24.))
-        .px(px(11.))
-        .rounded(px(6.))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .flex_shrink_0()
-        .when(primary, |b| b.primary())
-        .bg(rgb(if primary { look.accent } else { look.fill }))
-        .text_color(rgb(if primary { 0xffffff } else { look.text }))
-        .when(!primary, |b| b.border_1().border_color(rgb(look.line)))
-        .on_click(move |_, _, cx| {
-            cx.stop_propagation();
-            ui.send(action.clone(), cx);
-        })
+    // The shared push buttons draw their label at the frames' 12 pt; the
+    // kit's own label is smaller, which made these narrower than frame 36.
+    if primary {
+        widgets::push_primary(ui, id, label, action, look)
+    } else {
+        widgets::push_quiet(ui, id, label, action, look)
+    }
 }
 
-/// What a Desk session runs, as the frames name it.
-fn runs(agent: Agent) -> &'static str {
+/// What a Desk session runs, as the frames and dialogs name it.
+pub(crate) fn runs(agent: Agent) -> &'static str {
     match agent {
         Agent::Claude => "Claude Code",
         Agent::Shell => "Terminal",
@@ -121,18 +107,22 @@ fn folder_text(folder: &Folder) -> String {
     }
 }
 
-/// What becomes of a closed session's folder (DK-11): the days left before
-/// it is deleted, or what keeps it.
+/// What becomes of a closed session's folder (DK-11), checked in order: the
+/// days left before it is deleted; a kept scratch folder; a picked folder's
+/// path; otherwise the unpushed work that holds the folder.
 fn closed_folder_text(desk: &DeskSession) -> String {
     match desk.closed.as_ref().and_then(|closed| closed.days_left) {
-        Some(0) => "deleted today".to_owned(),
-        Some(1) => "deleted in 1 day".to_owned(),
-        Some(days) => format!("deleted in {days} days"),
-        None => match (&desk.unpushed, &desk.folder) {
-            (Some(work), _) => work.clone(),
-            (None, Folder::Scratch { kept: true, .. }) => "folder kept".to_owned(),
-            (None, folder) => folder.path().to_owned(),
-        },
+        Some(0) => return "deleted today".to_owned(),
+        Some(1) => return "deleted in 1 day".to_owned(),
+        Some(days) => return format!("deleted in {days} days"),
+        None => {}
+    }
+    match (&desk.folder, &desk.unpushed) {
+        (Folder::Scratch { kept: true, .. } | Folder::Picked { .. }, _) => {
+            folder_text(&desk.folder)
+        }
+        (Folder::Scratch { kept: false, .. }, Some(work)) => format!("not deleted · {work}"),
+        (Folder::Scratch { kept: false, .. }, None) => folder_text(&desk.folder),
     }
 }
 
@@ -230,8 +220,12 @@ fn closed_row(
         .size(px(10.))
         .flex_shrink_0()
         .child(chrome::icon(IconName::X, 0xff453a, 10.));
+    // A slot as wide as Keep (52 pt), the gap (6 pt) and Reopen (66 pt), so a
+    // row without Keep leaves its space empty and the columns line up.
     let actions = row()
         .gap(px(6.))
+        .w(px(124.))
+        .justify_end()
         .flex_shrink_0()
         .children(expires.then(|| {
             button(
@@ -311,6 +305,23 @@ fn document_row(
             false,
         ))
         .test_support()
+}
+
+/// A transparent layer over the window behind an open pop-up: a click on
+/// it closes the pop-up and reaches nothing else, so the button that opened
+/// it does not reopen it. It overflows its small parent on purpose, and is
+/// drawn deferred so nothing on the page paints over it.
+pub(crate) fn scrim(ui: &Rc<Ui>, id: &'static str) -> impl IntoElement {
+    let ui = ui.clone();
+    div()
+        .id(id)
+        .absolute()
+        .top(px(-4000.))
+        .left(px(-4000.))
+        .w(px(8000.))
+        .h(px(8000.))
+        .occlude()
+        .on_click(move |_, _, cx| ui.send(AppAction::Desk(A::Menu(None)), cx))
 }
 
 /// The two orders under the Sort button, the current one ticked.
@@ -399,13 +410,16 @@ fn sort(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
         .flex_shrink_0()
         .child(popup)
         .when(open, |wrap| {
-            wrap.child(deferred(sort_menu(ui, state.desk.sort, look)))
+            // Deferred, so both paint over the page under the toolbar and
+            // take the clicks there; the scrim first, the menu over it.
+            wrap.child(deferred(scrim(ui, "desk-sort-scrim")))
+                .child(deferred(sort_menu(ui, state.desk.sort, look)))
         })
 }
 
 /// The Desk page's header: its title, then Sort, Clean up… and New desk
 /// session.
-pub(crate) fn toolbar(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+pub(crate) fn toolbar(ui: &Rc<Ui>, state: &AppState, hidden: bool, look: Look) -> Div {
     row()
         .h(px(52.))
         .px(px(20.))
@@ -413,6 +427,8 @@ pub(crate) fn toolbar(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
         .flex_shrink_0()
         .border_b_1()
         .border_color(rgb(look.line))
+        // With the sidebar hidden the window buttons sit over this bar.
+        .when(hidden, |bar| bar.child(crate::chrome::lights()))
         .child(
             div()
                 .id("screen-title")

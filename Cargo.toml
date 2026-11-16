@@ -23,6 +23,8 @@ members = [
     "apps/humata2/daemon/mcp",
     "apps/humata2/daemon/machines",
     "apps/humata2/daemon/review_diff",
+    "apps/humata2/daemon/mirror",
+    "apps/humata2/daemon/marks",
     "apps/humata2/cli",
     "apps/humata2/engine",
     "apps/humata2/ui-prototype",
@@ -37,6 +39,7 @@ members = [
     "apps/humata2/features/board",
     "apps/humata2/features/desk",
     "apps/humata2/features/files",
+    "apps/humata2/features/find",
     "apps/humata2/features/hosts",
     "apps/humata2/features/inbox",
     "apps/humata2/features/palette",
@@ -90,6 +93,7 @@ console_error_panic_hook = "0.1.7"
 gpui-pre-apple = { version = "=0.3.12", features = ["font-kit", "test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 # Humata 2's peer link proves both ends with the enrollment key.
+png = "0.18.1"
 hmac = "0.13.0"
 # Humata 2 tests drive the daemon over a Unix socket with these.
 hyper-util = { version = "0.1.21", features = ["tokio"] }

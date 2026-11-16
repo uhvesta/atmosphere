@@ -13,11 +13,12 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 
+use gpui_kit::assets::IconName;
 use gpui_kit::base::{
     MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, RangeHighlight, RenderedText,
     SelectionFormat, TestSupportExt as _, TestTextExt as _, TextView, TextViewState, markdown_ast,
 };
-use gpui_kit::component::Theme;
+use gpui_kit::component::{Icon, Theme};
 use gpui_kit::component::text::FrontmatterPlugin;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -108,6 +109,19 @@ pub enum Layout {
     Inline,
 }
 
+/// How the page shows where comments are.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CommentMarks {
+    /// A margin column beside the text, one chip with the comment's words per
+    /// comment.
+    #[default]
+    Notes,
+    /// No margin column: each commented block is lit with a bar on its left
+    /// and shows a count at its right end. Clicking the count reports the
+    /// block's first comment.
+    Counts,
+}
+
 /// How a view is set up.
 #[derive(Clone, Debug)]
 pub struct MarkdownOptions {
@@ -125,6 +139,8 @@ pub struct MarkdownOptions {
     /// Whether the reader can comment: the gutter's buttons and the
     /// selection's Comment action.
     pub comments: bool,
+    /// How the page shows the comments it has.
+    pub marks: CommentMarks,
     /// Drawn diagrams; share one cache between views so a diagram shown in
     /// several places is drawn once.
     pub diagrams: MermaidCache,
@@ -139,6 +155,7 @@ impl MarkdownOptions {
             base_dir: None,
             allow_remote_images: false,
             comments: true,
+            marks: CommentMarks::Notes,
             diagrams: MermaidCache::default(),
         }
     }
@@ -820,6 +837,12 @@ impl MarkdownView {
         }
     }
 
+    /// Whether a drag is selecting text now. The selection toolbar waits
+    /// for it to end.
+    pub fn is_selecting(&self, cx: &App) -> bool {
+        self.active_text().read(cx).is_selecting()
+    }
+
     /// The selection, mapped to source (SM-6). Inside one table cell it
     /// targets the cell, inside one list item the item, a whole block the
     /// block, and a diagram the diagram.
@@ -912,9 +935,10 @@ impl MarkdownView {
         }
     }
 
-    /// Ask the owner to comment on the selection (SM-6).
+    /// Ask the owner to comment on the selection (SM-6). Only the source's
+    /// lines take a comment: in the rendered page this does nothing.
     pub fn request_selection_comment(&mut self, cx: &mut Context<Self>) {
-        if !self.options.comments {
+        if !self.options.comments || self.mode != ViewMode::Source {
             return;
         }
         if let Some(selection) = self.selection(cx) {
@@ -1146,9 +1170,13 @@ impl MarkdownView {
         }
 
         // The margin: one marker per comment on a visible block (SM-8).
+        let notes = self.options.marks == CommentMarks::Notes;
         let mut margin = Vec::new();
         let mut stacked: Vec<(usize, usize)> = Vec::new();
         for (comment, status) in self.comments.iter().zip(&self.statuses) {
+            if !notes {
+                break;
+            }
             let (outdated, bytes) = match status {
                 AnchorStatus::Current { bytes, .. } => (false, bytes),
                 AnchorStatus::Outdated { bytes, .. } => (true, bytes),
@@ -1201,6 +1229,85 @@ impl MarkdownView {
             );
         }
 
+        // Counts: each visible block with comments is lit, with a bar on its
+        // left and the number of its comments at its right end. The tint is
+        // drawn under the text; the count answers a click with the block's
+        // first comment.
+        let mut lit = Vec::new();
+        let mut counts = Vec::new();
+        if self.options.marks == CommentMarks::Counts {
+            // (block, first comment's id, how many, all outdated)
+            let mut per_block: Vec<(usize, String, usize, bool)> = Vec::new();
+            for (comment, status) in self.comments.iter().zip(&self.statuses) {
+                let (outdated, bytes) = match status {
+                    AnchorStatus::Current { bytes, .. } => (false, bytes),
+                    AnchorStatus::Outdated { bytes, .. } => (true, bytes),
+                    AnchorStatus::Gone => continue,
+                };
+                let Some(block) = self.document.block_at(bytes.start) else { continue };
+                match per_block.iter_mut().find(|entry| entry.0 == block) {
+                    Some(entry) => {
+                        entry.2 += 1;
+                        entry.3 &= outdated;
+                    }
+                    None => per_block.push((block, comment.id.clone(), 1, outdated)),
+                }
+            }
+            for (block, id, count, outdated) in per_block {
+                let Some((_, bounds)) = placed.iter().find(|(index, _)| *index == block) else { continue };
+                let accent = if outdated { theme.muted } else { theme.comment_accent };
+                lit.push(
+                    div()
+                        .id(("md-comment-lit", block))
+                        .test_support()
+                        .absolute()
+                        .top(top(bounds))
+                        .left(left(bounds))
+                        .w(bounds.size.width)
+                        .h(bounds.size.height)
+                        .border_l_2()
+                        .border_color(accent)
+                        .bg(theme.comment_lit)
+                        .into_any_element(),
+                );
+                // The chip stands for the block's comments, not one of them:
+                // it reads as a count, and the cards beside carry the text.
+                let noun = if count == 1 { "comment" } else { "comments" };
+                let label = if outdated {
+                    format!("{count} outdated {noun}")
+                } else {
+                    format!("{count} {noun}")
+                };
+                let text = count.to_string();
+                counts.push(
+                    div()
+                        .id(SharedString::from(format!("md-comment-{id}")))
+                        .test_support()
+                        .role(Role::Comment)
+                        .aria_label(label)
+                        .absolute()
+                        .top(top(bounds))
+                        .right(px(4.))
+                        .flex()
+                        .items_center()
+                        .gap(px(3.))
+                        .px_1()
+                        .rounded_sm()
+                        .text_size(px(11.))
+                        .text_color(accent)
+                        .bg(theme.comment_lit)
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                            cx.emit(MarkdownEvent::CommentActivated { id: id.clone() })
+                        }))
+                        .child(Icon::new(IconName::MessageSquare).size(px(11.)).text_color(accent))
+                        .child(text.clone())
+                        .test_text(text)
+                        .into_any_element(),
+                );
+            }
+        }
+
         // Re-check after layout that the labels sat where the blocks did;
         // when scrolling or a late layout moved them, draw again.
         let entity = cx.entity().downgrade();
@@ -1238,12 +1345,14 @@ impl MarkdownView {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .children(lit)
                     .child(self.render_text(cx).size_full())
                     .children(labels)
+                    .children(counts)
                     .child(recheck)
                     .children(self.selection_toolbar(cx)),
             )
-            .when(!self.comments.is_empty(), |row| {
+            .when(notes && !self.comments.is_empty(), |row| {
                 row.child(
                     div()
                         .relative()
@@ -1261,8 +1370,7 @@ impl MarkdownView {
     /// Actions on the selection, at the top right of the text while there
     /// is one.
     fn selection_toolbar(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let state = self.active_text().read(cx);
-        if state.is_selecting() {
+        if self.is_selecting(cx) {
             self.toolbar_selection = None;
             return None;
         }
@@ -1307,12 +1415,15 @@ impl MarkdownView {
                 .border_color(theme.border)
                 .bg(theme.background)
                 .shadow_sm()
-                .when(self.options.comments, |bar| {
+                // Comments are made on source lines (SM-6): the rendered page's
+                // selection only copies.
+                .when(self.options.comments && self.mode == ViewMode::Source, |bar| {
                     bar.child(button("md-comment-selection", "Comment on selection").on_mouse_down(
                         gpui_kit::MouseButton::Left,
                         cx.listener(|view, _, _, cx| {
                             cx.stop_propagation();
                             if view.options.comments
+                                && view.mode == ViewMode::Source
                                 && let Some(selection) = view.toolbar_selection.take()
                             {
                                 cx.emit(MarkdownEvent::CommentRequested(selection));

@@ -122,7 +122,7 @@ impl Overlays {
                         busy,
                     )),
             )
-            .focus_trap("desk-copy-trap", &self.sheet)
+            .focus_trap("desk-copy-dialog", &self.sheet)
             .into_any_element()
     }
 }

@@ -14,7 +14,7 @@ pub mod saved;
 mod commands;
 mod desk;
 mod events;
-mod messages;
+mod machines;
 mod new_channel;
 mod new_session;
 mod overlay;
@@ -27,7 +27,10 @@ mod toast;
 pub use new_channel::{NewChannel, NewChannelAction};
 pub use new_session::{NewSession, NewSessionAction, NewSessionPicker};
 pub use overlay::Overlay;
-pub use report::{PinTarget, PinnedComment, ReportAction, ReportForm, ReportKind, ReportState};
+pub use report::{
+    PinTarget, PinnedComment, Point, Rect, ReportAction, ReportForm, ReportKind, ReportRequest,
+    ReportState, Shape, Stroke,
+};
 pub use restart::{RestartAction, RestartGroups, restart_groups};
 pub use route::Route;
 pub use toast::{Toast, ToastAction};
@@ -43,6 +46,7 @@ use humata2_files::{Files, FilesAction, FilesState};
 use humata2_hosts::{Hosts, HostsAction, HostsState};
 use humata2_inbox::{Inbox, InboxAction, InboxState};
 use humata2_palette::{Palette, PaletteAction, PaletteState};
+use humata2_review::comments::{Comments, CommentsAction, CommentsDelegate, CommentsState};
 use humata2_review::{Review, ReviewAction, ReviewState};
 use humata2_session::{Panel, SessionAction, SessionState, Sessions};
 use humata2_settings::{Settings, SettingsAction, SettingsState};
@@ -107,6 +111,8 @@ pub struct AppState {
     pub session: SessionState,
     /// The review panel.
     pub review: ReviewState,
+    /// The session's review comments, as the daemon keeps them.
+    pub comments: CommentsState,
     /// The Inbox.
     pub inbox: InboxState,
     /// Boards.
@@ -123,6 +129,10 @@ pub struct AppState {
     pub palette: PaletteState,
     /// Prepared views.
     pub views: ViewsState,
+    /// The Add machine dialog (frames 56 to 58).
+    pub add_machine: humata2_hosts::AddMachineState,
+    /// A machine's page (frame 59).
+    pub machine_page: humata2_hosts::MachinePageState,
     next_toast: u64,
     last_saved: SavedUi,
     save_generation: u64,
@@ -155,6 +165,7 @@ impl AppState {
             sidebar: SidebarState::default(),
             session: SessionState::default(),
             review: ReviewState::default(),
+            comments: CommentsState::default(),
             inbox: InboxState::default(),
             board: BoardState {
                 scope: match &saved.route {
@@ -174,6 +185,8 @@ impl AppState {
             settings: SettingsState::default(),
             palette: PaletteState::default(),
             views: ViewsState::default(),
+            add_machine: humata2_hosts::AddMachineState::default(),
+            machine_page: humata2_hosts::MachinePageState::default(),
             next_toast: 0,
             last_saved: saved.clone(),
             save_generation: 0,
@@ -226,6 +239,7 @@ impl AppState {
             folding: self.sidebar.folding.clone(),
             preferences: self.settings.preferences.clone(),
             review: self.review.saved.clone(),
+            comments: self.comments.saved(),
             recent: self.palette.recent.clone(),
             views: self.views.decisions.clone(),
             connected: self.hosts.connected(),
@@ -339,6 +353,8 @@ pub enum AppAction {
     Session(SessionAction),
     /// The review panel.
     Review(ReviewAction),
+    /// A session's review comments.
+    Comments(CommentsAction),
     /// The Inbox.
     Inbox(InboxAction),
     /// A board.
@@ -359,6 +375,10 @@ pub enum AppAction {
     Desk(DeskAction),
     /// After a host restarts: what the person can do about what it found.
     Restart(RestartAction),
+    /// The Add machine dialog.
+    AddMachine(humata2_hosts::AddMachineAction),
+    /// A machine's page.
+    MachinePage(humata2_hosts::MachinePageAction),
 }
 
 /// The app's reducer.
@@ -368,6 +388,7 @@ pub struct App {
     saver: Saver,
     sessions: Sessions,
     review: Review,
+    comments: Comments,
     inbox: Inbox,
     board: Board,
     desk: Desk,
@@ -384,6 +405,7 @@ impl App {
             saver: Saver::new(clients.storage.clone()),
             sessions: Sessions::new(clients.clone()),
             review: Review,
+            comments: Comments::new(clients.comments.clone(), clients.clock.clone()),
             inbox: Inbox::new(clients.clone()),
             board: Board::new(clients.clone()),
             desk: Desk::new(clients.desk.clone()),
@@ -420,6 +442,10 @@ impl App {
                 .review
                 .reduce(&mut state.review, action)
                 .map(AppAction::Review),
+            AppAction::Comments(action) => self
+                .comments
+                .reduce(&mut state.comments, action)
+                .map(AppAction::Comments),
             AppAction::Inbox(action) => self
                 .inbox
                 .reduce(&mut state.inbox, action)
@@ -471,19 +497,15 @@ impl App {
                 D::OpenSession(id) => self.switch(state, Route::Session(id.clone())),
             },
             AppAction::Session(SessionAction::Delegate(delegate)) => match delegate {
-                S::CommentsSent(_, count) => state.toast(
-                    format!(
-                        "Sent {count} comment{} to the agent.",
-                        if *count == 1 { "" } else { "s" }
-                    ),
-                    &clock,
-                ),
-                S::CommentsUnqueued(id, comments) => self.child(
-                    state,
-                    AppAction::Review(ReviewAction::Unqueued(id.clone(), comments.clone())),
-                ),
-                S::Archived(id, title) => {
-                    let notice = state.toast(format!("Archived “{title}”"), &clock);
+                S::Archived(id, title, frees) => {
+                    // MV-15: the disk is freed when the undo window closes, not now.
+                    let text = match frees {
+                        Some(size) => {
+                            format!("Archived “{title}”. Frees {size} when this closes.")
+                        }
+                        None => format!("Archived “{title}”."),
+                    };
+                    let notice = state.toast(text, &clock);
                     if let Some(toast) = state.toasts.last_mut() {
                         toast.action = Some(ToastAction::RestoreSession(id.clone()));
                     }
@@ -528,11 +550,27 @@ impl App {
                 H::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
                 H::Toast(text) => state.toast(text.clone(), &clock),
             },
-            AppAction::Review(ReviewAction::Delegate(R::QueueComments(id, comments))) => {
-                self.queue_comments(state, id.clone(), comments.clone())
+            AppAction::Review(ReviewAction::Delegate(R::HandOver(hand))) => {
+                self.child(state, AppAction::Comments(CommentsAction::HandOver(hand.clone())))
             }
-            AppAction::Review(ReviewAction::Delegate(R::Toast(text)))
-            | AppAction::Files(FilesAction::Delegate(F::Toast(text))) => {
+            AppAction::Comments(CommentsAction::Delegate(delegate)) => match delegate {
+                CommentsDelegate::Toast(text) => state.toast(text.clone(), &clock),
+                CommentsDelegate::ArchivedToast { undo, .. } => {
+                    let notice = state.toast("Comment archived".to_owned(), &clock);
+                    if let Some(toast) = state.toasts.last_mut() {
+                        toast.action = Some(ToastAction::Comments(undo.clone()));
+                    }
+                    notice
+                }
+                // What is saved is compared after every action, so the
+                // change saves by itself.
+                CommentsDelegate::Saved(_) => Effect::none(),
+                CommentsDelegate::HandedOver { session, comment } => self.child(
+                    state,
+                    AppAction::Review(ReviewAction::HandedOver(session.clone(), comment.clone())),
+                ),
+            },
+            AppAction::Files(FilesAction::Delegate(F::Toast(text))) => {
                 state.toast(text.clone(), &clock)
             }
             AppAction::Palette(PaletteAction::Delegate(delegate)) => match delegate {
@@ -573,12 +611,28 @@ impl App {
     fn handle(&self, state: &mut AppState, action: AppAction) -> Effect<AppAction> {
         let clock = self.clients.clock.clone();
         match action {
-            AppAction::Launch => Effect::merge([self.load(), self.follow()]),
+            AppAction::Launch => {
+                let saved = state.last_saved.comments.clone();
+                let restore = self.child(state, AppAction::Comments(CommentsAction::Restore(saved)));
+                Effect::merge([restore, self.load(), self.follow()])
+            }
             AppAction::StartNewDeskSession => self.start_new_desk_session(state),
+            AppAction::Session(SessionAction::Archive) => self.archive_or_close(state),
+            AppAction::Session(SessionAction::StartFork(kind)) => {
+                self.fork_unless_desk(state, kind)
+            }
             AppAction::Loaded(Ok(workspace)) => {
                 state.load = Load::Ready;
                 state.workspace = Arc::new(workspace);
                 let mut effects = vec![self.show(state)];
+                // Comments older builds saved go to the daemon once the
+                // diffs are known, which tell which repository each is in.
+                if !state.review.saved.legacy_queued.is_empty()
+                    || !state.review.saved.legacy_drafts.is_empty()
+                {
+                    let saved = state.review.saved.clone();
+                    effects.push(self.child(state, AppAction::Review(ReviewAction::Restore(saved))));
+                }
                 let gone = match &state.route {
                     Route::Session(id) => state.workspace.session(id).is_none_or(|s| s.archived),
                     Route::Channel(id) => state.workspace.channel(id).is_none(),
@@ -632,7 +686,7 @@ impl App {
                 let navigate = self.switch(state, Route::Hosts);
                 Effect::merge([
                     navigate,
-                    self.child(state, AppAction::Hosts(HostsAction::StartAdd)),
+                    self.add_machine(state, humata2_hosts::AddMachineAction::Open),
                 ])
             }
             AppAction::Hosts(HostsAction::Select(id)) => {
@@ -762,7 +816,11 @@ impl App {
                 }
                 match (panel, state.session.open.clone()) {
                     (Panel::Changes, Some(id)) => {
-                        effect.and(self.child(state, AppAction::Review(ReviewAction::Open(id))))
+                        let comments =
+                            self.child(state, AppAction::Comments(CommentsAction::Open(id.clone())));
+                        effect
+                            .and(self.child(state, AppAction::Review(ReviewAction::Open(id))))
+                            .and(comments)
                     }
                     _ => effect,
                 }
@@ -789,9 +847,12 @@ impl App {
                 }
             }
             AppAction::Restart(change) => self.change_restart(state, change),
+            AppAction::AddMachine(change) => self.add_machine(state, change),
+            AppAction::MachinePage(change) => self.machine_page(state, change),
             action @ (AppAction::Sidebar(_)
             | AppAction::Session(_)
             | AppAction::Review(_)
+            | AppAction::Comments(_)
             | AppAction::Inbox(_)
             | AppAction::Board(_)
             | AppAction::Hosts(_)

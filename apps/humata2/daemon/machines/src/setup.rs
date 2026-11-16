@@ -15,6 +15,7 @@ use crate::identity::{self, HostKey, Identity};
 use crate::install::{self, InstallProblem, Installed, InstalledFile, Payload};
 use crate::known_hosts;
 use crate::link::Link;
+use crate::login::{Prompt, detect_prompt, kind_of_line};
 use crate::name::MachineName;
 use crate::platform::{Os, Platform};
 use crate::provider::{Action, Provider, Reach};
@@ -43,6 +44,26 @@ const LOGIN_PROMPTS: [&str; 10] = [
     "enter code",
     "login code",
 ];
+
+/// The prompt a non-interactive connect stopped at (MP-13, D167): what the
+/// detector finds in its output, else the last line with one of the words
+/// above and the kind those words say.
+fn prompt_of(output: &Output) -> Prompt {
+    let text = output.text();
+    if let Some(prompt) = detect_prompt(text.as_bytes()) {
+        return prompt;
+    }
+    let line = text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| {
+            let lower = line.to_lowercase();
+            LOGIN_PROMPTS.iter().any(|prompt| lower.contains(prompt))
+        })
+        .unwrap_or_default();
+    Prompt { kind: kind_of_line(line), line: line.to_owned() }
+}
 
 /// The steps, in order. Register (hosts.json) belongs to the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -110,10 +131,11 @@ pub struct LoginNeeded {
     pub output_tail: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoginReason {
-    /// It printed a password, code, `(yes/no)?` or device-login prompt.
-    Prompted,
+    /// It printed a password, code, `(yes/no)?` or device-login prompt: this
+    /// one (D167).
+    Prompted(Prompt),
     /// It ran until its timeout without finishing.
     Hung,
 }
@@ -595,7 +617,7 @@ impl Setup {
             return Ok(Done::Login(LoginReason::Hung, output.tail(TAIL_LINES)));
         }
         if LOGIN_PROMPTS.iter().any(|prompt| lower.contains(prompt)) {
-            return Ok(Done::Login(LoginReason::Prompted, output.tail(TAIL_LINES)));
+            return Ok(Done::Login(LoginReason::Prompted(prompt_of(&output)), output.tail(TAIL_LINES)));
         }
         if output.exit == Exit::Code(127) {
             return Err(Failed::with_output(SetupError::ToolMissing { machine }, &output));
@@ -613,6 +635,11 @@ impl Setup {
             ));
         }
         Ok(Done::Retry(self.retry.delay(self.attempt)))
+    }
+
+    /// What the check read; none before it ran.
+    pub(crate) fn facts(&self) -> Option<&Facts> {
+        self.facts.as_ref()
     }
 
     fn check(&mut self, runner: &dyn Runner, builds: &dyn install::Builds) -> Result<Done, Failed> {

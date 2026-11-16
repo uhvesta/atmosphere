@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use humata2_access::{Call, MachineAction, MachineActionKind, MachineId, Refusal, Target};
+use humata2_access::{AccessRequest, Call, MachineAction, MachineActionKind, MachineId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{
     Choice, ChangeKind, ClashUse, EntryState, SkillName, SkillSet, SkillsError, SkillsManifest, SkillsPlan,
@@ -33,8 +33,10 @@ use serde_json::{Value, json};
 use tonic::transport::Channel;
 use tonic::{Code, Request, Response, Status};
 
+use crate::channel_service::{self, Gated, answer_gated};
 use crate::guard::Guard;
 use crate::identity::{self, Caller};
+use crate::inbox::Inbox;
 use crate::machine_service::{Work, lock, machine_id, machine_of, status_of};
 use crate::operations::{Operations, Started};
 use crate::peer_skills::{self, agent_sources};
@@ -539,11 +541,14 @@ impl SkillsHost {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct SkillsSvc {
     guard: Arc<Guard>,
     work: Arc<Work>,
     operations: Arc<Operations>,
     host: Arc<SkillsHost>,
+    /// Where a call a rule sends to Ask me waits for the user (D38.6).
+    inbox: Arc<Inbox>,
 }
 
 impl SkillsSvc {
@@ -552,22 +557,29 @@ impl SkillsSvc {
         work: Arc<Work>,
         operations: Arc<Operations>,
         host: Arc<SkillsHost>,
+        inbox: Arc<Inbox>,
     ) -> Self {
         Self {
             guard,
             work,
             operations,
             host,
+            inbox,
         }
     }
 
-    /// Skills sync is the user's: the peer, agents and scripts are refused
-    /// as MachineService refuses them.
-    fn require(&self, caller: &Caller, machine: &str) -> Result<(), Status> {
+    /// Previewing a sync and picking a clash are the user's review of a plan
+    /// (SK-2): the peer is refused as MachineService refuses it, and agents
+    /// and scripts are told to ask the user, before the guard is consulted.
+    /// `fix` is what the refused agent can do.
+    fn require(&self, caller: &Caller, machine: &str, what: &str, fix: &str) -> Result<(), Status> {
         if matches!(caller, Caller::Peer) {
             return Err(status::refused(&Refusal::PeerCannotCall));
         }
         let action = MachineActionKind::SyncSkills;
+        if !matches!(caller, Caller::User(_)) {
+            return Err(status::user_only_call(action.capability(), what, fix));
+        }
         self.guard.require(
             caller,
             &Call::Use {
@@ -577,13 +589,27 @@ impl SkillsSvc {
                     action,
                 }),
             },
-        )?;
-        if !matches!(caller, Caller::User(_)) {
-            return Err(status::refused(&Refusal::UserOnly {
-                capability: Some(action.capability()),
-            }));
-        }
-        Ok(())
+        )
+    }
+
+    /// Checks the sync for one machine as [`SkillsSvc::require`] would for
+    /// the user, but a rule of Ask me answers `Some(request)` for the caller
+    /// to put in the Inbox rather than refusing (D38.6). An `approved` call
+    /// goes on.
+    fn gate(&self, caller: &Caller, machine: &str, approved: bool) -> Result<Option<Box<AccessRequest>>, Status> {
+        let action = MachineActionKind::SyncSkills;
+        channel_service::gate(
+            &self.guard,
+            caller,
+            &Call::Use {
+                capability: action.capability(),
+                target: Target::Machine(MachineAction {
+                    machine: MachineId::new(machine),
+                    action,
+                }),
+            },
+            approved,
+        )
     }
 
     /// The machine's name, after checking it is one this host has and
@@ -603,6 +629,143 @@ impl SkillsSvc {
             ));
         }
         Ok(name)
+    }
+
+    /// The body of SyncSkills; `approved` once the user said yes to it in
+    /// the Inbox (D38.6, TP-13). Syncs to the named machines, or every ready
+    /// one. A first sync or a new clash needs the machine's plan token (an
+    /// agent has none: it can't preview, so a machine that needs asking
+    /// refuses the whole call naming it, as for the user); the call is
+    /// refused naming the machine without one. Offline machines are skipped
+    /// and named in their steps; they sync when their link returns.
+    async fn sync(
+        &self,
+        caller: &Caller,
+        request: pb::SyncSkillsRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Operation>, Status> {
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        if let Some(operation) = self.operations.existing(caller, request.idempotency_key.as_ref())? {
+            return Ok(Gated::Done(operation));
+        }
+        let mut names: Vec<String> = Vec::new();
+        if request.machines.is_empty() {
+            let entries = self.work.machines.list().map_err(|error| status_of(&error))?;
+            names.extend(entries.iter().filter(|entry| entry.state == EntryState::Ready).map(|entry| entry.name.clone()));
+        } else {
+            for id in request.machines {
+                let name = machine_of(Some(id))?;
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        // Each machine is checked on its own, as the user's call is. The
+        // strictest rule decides: a Never refuses the call naming that
+        // machine, else any Ask defers the whole call as one Inbox request.
+        let mut asked = None;
+        for name in &names {
+            if let Some(request) = self.gate(caller, name, approved)? {
+                asked.get_or_insert(request);
+            }
+        }
+        if let Some(request) = asked {
+            return Ok(Gated::Ask(request));
+        }
+        // Whether a machine exists is looked at only once the rules let the
+        // call through: an agent sees no machines (D61), so a call it must
+        // ask for answers the same for a machine that is there and one that
+        // isn't.
+        for name in &names {
+            self.ready(Some(machine_id(name)))?;
+        }
+        let tokens: Vec<String> = request.plans.into_iter().map(|plan| plan.value).collect();
+        let prepared = self.host.prepare(names.clone()).await.map_err(|error| error.status())?;
+        let mut spent = Vec::new();
+        for (name, _, plan) in &prepared.machines {
+            if plan.needs_asking() {
+                let token = self
+                    .host
+                    .good_plan(&tokens, name, prepared.set.set_id())
+                    .ok_or_else(|| plan_needed(name))?;
+                spent.push(token);
+            }
+        }
+        let target = pb::EntityRef {
+            entity: match names.as_slice() {
+                [only] => Some(pb::entity_ref::Entity::Machine(machine_id(only))),
+                _ => None,
+            },
+        };
+        let steps: Vec<(String, String)> = names
+            .iter()
+            .map(|name| (format!("sync:{name}"), format!("Syncing skills to {name}")))
+            .collect();
+        let progress = match self.operations.start_steps(
+            caller,
+            pb::OperationKind::SkillsSync,
+            target,
+            &steps,
+            false,
+            request.idempotency_key,
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(operation) => return Ok(Gated::Done(operation)),
+        };
+        for token in &spent {
+            self.host.spend(token);
+        }
+        let operation = progress.operation();
+        let host = self.host.clone();
+        tokio::spawn(async move {
+            let Prepared { set, machines, .. } = prepared;
+            let mut failed: Vec<(String, pb::Error)> = Vec::new();
+            for (name, _, plan) in machines {
+                let key = format!("sync:{name}");
+                progress.set_step(&key, pb::StepState::Running, None);
+                if plan.changes.is_empty() && !plan.first_sync {
+                    progress.set_step(&key, pb::StepState::Done, None);
+                    continue;
+                }
+                let gate = host.gate(&name);
+                let _one_at_a_time = gate.lock().await;
+                match host.apply_locked(&name, &set).await {
+                    Outcome::Applied => progress.set_step(&key, pb::StepState::Done, None),
+                    Outcome::Offline => {
+                        let note = match host.mark_pending(&name, set.set_id()) {
+                            Ok(()) => format!("{name} is offline, so it was skipped; it syncs when it is back"),
+                            Err(error) => format!(
+                                "{name} is offline, so it was skipped, and Humata couldn't note that it should sync when it is back: {}",
+                                status::chain(&error)
+                            ),
+                        };
+                        progress.set_step(&key, pb::StepState::Skipped, Some(note));
+                    }
+                    Outcome::Failed(error) => {
+                        progress.set_step(&key, pb::StepState::Failed, Some(error.message.clone()));
+                        failed.push((name, error));
+                    }
+                }
+            }
+            if failed.is_empty() {
+                progress.succeed(None);
+            } else {
+                let names: Vec<&str> = failed.iter().map(|(name, _)| name.as_str()).collect();
+                let reasons: Vec<String> = failed
+                    .iter()
+                    .map(|(name, error)| format!("{name}: {}", error.message))
+                    .collect();
+                progress.fail(pb::Error {
+                    message: format!("couldn't sync skills to {}; {}", names.join(", "), reasons.join("; ")),
+                    fix: "the steps say what failed on each machine; the others were synced. Fix the cause and sync again".to_owned(),
+                    retry: None,
+                    kind: None,
+                });
+            }
+        });
+        Ok(Gated::Done(operation))
     }
 }
 
@@ -676,8 +839,13 @@ impl pb::skills_service_server::SkillsService for SkillsSvc {
     ) -> Result<Response<pb::SkillsSyncPlan>, Status> {
         let caller = identity::caller(&request)?;
         let machine = machine_of(request.into_inner().machine)?;
-        self.require(&caller, &machine)?;
+        self.require(&caller, &machine, "previewing a skills sync", "ask the user with inbox_ask to preview and sync the machine's skills in the app; asking again is refused the same way")?;
         let machine = self.ready(Some(machine_id(&machine)))?;
+        // A sync to this machine that is under way finishes first: its files
+        // reach the machine before the host has recorded the set, and a
+        // plan made in between would list changes that are already applied.
+        let gate = self.host.gate(&machine);
+        let _after_any_sync = gate.lock().await;
         let prepared = self.host.prepare(vec![machine.clone()]).await.map_err(|error| error.status())?;
         let Some((_, _, plan)) = prepared.machines.first() else {
             return Err(status::internal("the skills plan came back empty", ""));
@@ -686,126 +854,25 @@ impl pb::skills_service_server::SkillsService for SkillsSvc {
         Ok(Response::new(shown_plan(&machine, plan, token)))
     }
 
-    /// Syncs to the named machines, or every ready one. A first sync or a
-    /// new clash needs the machine's plan token; the call is refused naming
-    /// the machine without one. Offline machines are skipped and named in
-    /// their steps; they sync when their link returns.
+    /// Syncs to the named machines, or every ready one. An agent's sync waits
+    /// in the Inbox when its rule says Ask me, and runs once the user
+    /// approves it (D38.6); a first sync or a new clash still needs the
+    /// plan tokens the rule requires.
     async fn sync_skills(&self, request: Request<pb::SyncSkillsRequest>) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        match caller {
-            Caller::User(_) => {}
-            Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
-            _ => {
-                return Err(status::refused(&Refusal::UserOnly {
-                    capability: Some(MachineActionKind::SyncSkills.capability()),
-                }));
-            }
-        }
-        if let Some(operation) = self.operations.existing(&caller, request.idempotency_key.as_ref())? {
-            return Ok(Response::new(operation));
-        }
-        let mut names: Vec<String> = Vec::new();
-        if request.machines.is_empty() {
-            let entries = self.work.machines.list().map_err(|error| status_of(&error))?;
-            names.extend(entries.iter().filter(|entry| entry.state == EntryState::Ready).map(|entry| entry.name.clone()));
-        } else {
-            for id in request.machines {
-                let name = machine_of(Some(id))?;
-                if !names.contains(&name) {
-                    names.push(name);
-                }
-            }
-        }
-        for name in &names {
-            self.require(&caller, name)?;
-            self.ready(Some(machine_id(name)))?;
-        }
-        let tokens: Vec<String> = request.plans.into_iter().map(|plan| plan.value).collect();
-        let prepared = self.host.prepare(names.clone()).await.map_err(|error| error.status())?;
-        let mut spent = Vec::new();
-        for (name, _, plan) in &prepared.machines {
-            if plan.needs_asking() {
-                let token = self
-                    .host
-                    .good_plan(&tokens, name, prepared.set.set_id())
-                    .ok_or_else(|| plan_needed(name))?;
-                spent.push(token);
-            }
-        }
-        let target = pb::EntityRef {
-            entity: match names.as_slice() {
-                [only] => Some(pb::entity_ref::Entity::Machine(machine_id(only))),
-                _ => None,
-            },
-        };
-        let steps: Vec<(String, String)> = names
-            .iter()
-            .map(|name| (format!("sync:{name}"), format!("Syncing skills to {name}")))
-            .collect();
-        let progress = match self.operations.start_steps(
+        let key = request.idempotency_key.as_ref().map(|key| key.value.clone());
+        let first = self.sync(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            pb::OperationKind::SkillsSync,
-            target,
-            &steps,
-            false,
-            request.idempotency_key,
-        )? {
-            Started::New(progress) => progress,
-            Started::Existing(operation) => return Ok(Response::new(operation)),
-        };
-        for token in &spent {
-            self.host.spend(token);
-        }
-        let operation = progress.operation();
-        let host = self.host.clone();
-        tokio::spawn(async move {
-            let Prepared { set, machines, .. } = prepared;
-            let mut failed: Vec<(String, pb::Error)> = Vec::new();
-            for (name, _, plan) in machines {
-                let key = format!("sync:{name}");
-                progress.set_step(&key, pb::StepState::Running, None);
-                if plan.changes.is_empty() && !plan.first_sync {
-                    progress.set_step(&key, pb::StepState::Done, None);
-                    continue;
-                }
-                let gate = host.gate(&name);
-                let _one_at_a_time = gate.lock().await;
-                match host.apply_locked(&name, &set).await {
-                    Outcome::Applied => progress.set_step(&key, pb::StepState::Done, None),
-                    Outcome::Offline => {
-                        let note = match host.mark_pending(&name, set.set_id()) {
-                            Ok(()) => format!("{name} is offline, so it was skipped; it syncs when it is back"),
-                            Err(error) => format!(
-                                "{name} is offline, so it was skipped, and Humata couldn't note that it should sync when it is back: {}",
-                                status::chain(&error)
-                            ),
-                        };
-                        progress.set_step(&key, pb::StepState::Skipped, Some(note));
-                    }
-                    Outcome::Failed(error) => {
-                        progress.set_step(&key, pb::StepState::Failed, Some(error.message.clone()));
-                        failed.push((name, error));
-                    }
-                }
-            }
-            if failed.is_empty() {
-                progress.succeed(None);
-            } else {
-                let names: Vec<&str> = failed.iter().map(|(name, _)| name.as_str()).collect();
-                let reasons: Vec<String> = failed
-                    .iter()
-                    .map(|(name, error)| format!("{name}: {}", error.message))
-                    .collect();
-                progress.fail(pb::Error {
-                    message: format!("couldn't sync skills to {}; {}", names.join(", "), reasons.join("; ")),
-                    fix: "the steps say what failed on each machine; the others were synced. Fix the cause and sync again".to_owned(),
-                    retry: None,
-                    kind: None,
-                });
-            }
-        });
-        Ok(Response::new(operation))
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.sync(&who, request, true).await },
+        )
+        .await
     }
 
     /// Saves the user's pick for a clash on this machine (SK-5). Picks stay
@@ -817,7 +884,7 @@ impl pb::skills_service_server::SkillsService for SkillsSvc {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let machine = machine_of(request.machine)?;
-        self.require(&caller, &machine)?;
+        self.require(&caller, &machine, "picking which skill wins a clash", "ask the user with inbox_ask to pick in the app, then sync with SyncSkills; asking again is refused the same way")?;
         let machine = self.ready(Some(machine_id(&machine)))?;
         plain("agent", &request.agent)?;
         plain("skill", &request.skill)?;

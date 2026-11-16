@@ -101,8 +101,10 @@ impl Ops {
         Ok(Response::new(entry))
     }
 
-    /// Makes one folder whose parent exists. A folder already there is
-    /// returned as it is.
+    /// Makes one folder whose parent exists. A name that is taken is
+    /// refused, a folder included: the person asking for a new folder is
+    /// told nothing was made. A retry is safe through its idempotency key,
+    /// which gets the first answer back.
     pub(in crate::files) async fn create_folder(
         &self,
         request: Request<pb::CreateFolderRequest>,
@@ -247,13 +249,6 @@ impl Ops {
         }
         Ok(Response::new(pb::MoveToTrashResponse { items }))
     }
-
-    pub(in crate::files) async fn find_files(
-        &self,
-        _request: Request<pb::FindFilesRequest>,
-    ) -> Result<Response<pb::FindFilesResponse>, Status> {
-        Err(status::not_built("humata.v1.FileService.FindFiles"))
-    }
 }
 
 /// What a location is judged as: the root of a folder when it has no path,
@@ -286,6 +281,8 @@ fn was(target: &Target) -> pb::EntityRef {
         Some(Root::ChannelShared(shared)) => shared.channel.clone().map(Entity::Channel),
         Some(Root::ChannelFolder(folder)) => folder.channel.clone().map(Entity::Channel),
         Some(Root::MainClone(main)) => main.channel.clone().map(Entity::Channel),
+        // The home folder belongs to no session or channel.
+        Some(Root::Home(_)) => None,
         None => None,
     };
     pb::EntityRef { entity }
@@ -450,15 +447,12 @@ fn make_folder(target: &Target) -> Result<pb::FileEntry, Status> {
     }
     let path = target.resolve(false)?;
     match fs::symlink_metadata(&path) {
-        Ok(meta) if meta.is_dir() => {}
         Ok(_) => return Err(name_taken(&target.shown, &target.shown)),
         Err(error) if error.kind() == ErrorKind::NotFound => match fs::create_dir(&path) {
             Ok(()) => {}
-            // Made by someone else a moment ago: fine if it is a folder.
+            // Made by someone else a moment ago: the name is taken.
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) {
-                    return Err(name_taken(&target.shown, &target.shown));
-                }
+                return Err(name_taken(&target.shown, &target.shown));
             }
             Err(error) => return Err(io_failure(&error, "create the folder", &path)),
         },

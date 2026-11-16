@@ -184,7 +184,8 @@ pub(crate) fn card(
     let channel_name = state
         .workspace
         .channel(&request.channel)
-        .map(|c| c.name.clone());
+        .map(|c| c.name.clone())
+        .or_else(|| (request.channel == humata2_clients::desk::channel()).then(|| "Desk".to_owned()));
     let machine_name = session
         .and_then(|s| state.workspace.machine(&s.machine))
         .map(|m| m.name.clone());
@@ -202,7 +203,8 @@ pub(crate) fn card(
 
     // 2. Who, where, and Open session.
     let by = session.map_or_else(String::new, |s| {
-        let mut line = format!("{} in {}", agent_name(s.agent), s.title);
+        let runs = if humata2_clients::desk::is_desk(s) { crate::desk::runs(s.agent) } else { agent_name(s.agent) };
+        let mut line = format!("{runs} in {}", s.title);
         if !request.operation.is_empty() {
             line.push_str(" · ");
             line.push_str(&request.operation);

@@ -446,29 +446,32 @@ async fn peer_service_is_on_the_link() {
         .unwrap_err();
     assert!(routed(&not_built));
 
-    // So is a service the Mac relays to the machine.
+    // So is a service the Mac relays to the machine. This link was given a
+    // state folder and no socket, so it relays nothing (D146): the call
+    // answers unavailable, with the API's error in the details.
     let relayed = pb::terminal_service_client::TerminalServiceClient::new(channel)
         .list_tabs(pb::ListTabsRequest { session: None })
         .await
         .unwrap_err();
-    assert!(routed(&relayed));
+    assert_eq!(relayed.code(), Code::Unavailable, "{relayed:?}");
+    assert!(!relayed.details().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn client_services_are_not_on_the_link() {
+async fn client_calls_the_host_may_not_relay_are_refused_by_name() {
     let (_dir, _child, channel) = proven_link("HUMATAD2_RELEASE").await;
 
     let inbox = pb::inbox_service_client::InboxServiceClient::new(channel.clone())
         .list_requests(pb::ListRequestsRequest::default())
         .await
         .unwrap_err();
-    assert!(!routed(&inbox));
+    assert_eq!(inbox.code(), Code::PermissionDenied, "{inbox:?}");
 
     let channels = pb::channel_service_client::ChannelServiceClient::new(channel)
         .list_channels(pb::ListChannelsRequest::default())
         .await
         .unwrap_err();
-    assert!(!routed(&channels));
+    assert_eq!(channels.code(), Code::PermissionDenied, "{channels:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -524,4 +527,76 @@ async fn the_link_ends_when_the_mac_hangs_up_after_calls() {
     daemon(&channel).who_am_i(pb::WhoAmIRequest {}).await.unwrap();
     drop(channel);
     assert!(exits(&mut child).await.success());
+}
+
+/// Writes an executable shell script `name` in `dir`.
+fn script(dir: &Path, name: &str, body: &str) {
+    let path = dir.join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proven_link_answers_a_probe_from_the_machine_it_runs_on() {
+    let dir = common::folder();
+    write_key(dir.path(), &KEY, 0o600);
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    script(&bin, "git", "echo 'git version 9.8.7'");
+    script(
+        &bin,
+        "gh",
+        "if [ \"$1\" = --version ]; then echo 'gh version 2.83.0 (2025-11-04)'; exit 0; fi; printf '%s\\n' 'github.com' '  - Logged in to github.com account fakeuser (keyring)' '  - Active account: true' \"  - Token scopes: 'repo', 'read:org'\"",
+    );
+    script(&bin, "claude", "echo '2.4.1 (Claude Code)'");
+    // An agent that prints no version still counts as installed.
+    script(&bin, "codex", "exit 0");
+    let mut child = serve_stdio("HUMATAD2_RELEASE", dir.path())
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("HOME", dir.path())
+        .spawn()
+        .unwrap();
+    let channel = channel_over(child.stdout.take().unwrap(), child.stdin.take().unwrap()).await;
+    let answer = peer(&channel).hello(hello()).await.unwrap().into_inner();
+    peer(&channel)
+        .prove_host(pb::ProveHostRequest {
+            proof: host_proof(&KEY, &answer),
+        })
+        .await
+        .unwrap();
+
+    let probed = peer(&channel)
+        .probe(pb::ProbeRequest { measure_storage: false })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!probed.os.is_empty());
+    assert!(!probed.arch.is_empty());
+    assert!(probed.disk_total_bytes > 0);
+    assert!(probed.disk_free_bytes <= probed.disk_total_bytes);
+    assert_eq!(probed.git_version, "9.8.7");
+    assert_eq!(probed.gh_user, "fakeuser");
+    assert_eq!(probed.gh_scopes, ["repo", "read:org"]);
+    assert!(probed.agents_installed.iter().any(|agent| agent.value == "claude"));
+    assert_eq!(probed.gh_version, "2.83.0");
+    assert_eq!(probed.agent_versions.len(), probed.agents_installed.len());
+    let versions: std::collections::BTreeMap<_, _> = probed
+        .agents_installed
+        .iter()
+        .map(|agent| agent.value.as_str())
+        .zip(probed.agent_versions.iter().map(String::as_str))
+        .collect();
+    assert_eq!(versions.get("claude"), Some(&"2.4.1"));
+    assert_eq!(versions.get("codex"), Some(&""));
+    assert!(probed.folder_bytes.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_probe_before_the_host_proves_itself_is_refused() {
+    let (_dir, _child, channel) = link("HUMATAD2_RELEASE").await;
+    let refused = peer(&channel)
+        .probe(pb::ProbeRequest { measure_storage: false })
+        .await
+        .unwrap_err();
+    assert_eq!(peer_unproven(&refused), Reason::HostNotProven);
 }

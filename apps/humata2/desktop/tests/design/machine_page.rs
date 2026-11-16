@@ -112,14 +112,16 @@ fn left(look: Look) -> Div {
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(label(look, "Sessions on it · 4"))
+                .child(label(look, "Sessions on it · 6"))
                 .child(
                     card(look)
                         .overflow_hidden()
                         .child(session(St::NeedsYou, "Ledger schema migration", "# payments-rewrite", "Claude Code"))
                         .child(session(St::NeedsYou, "Try BRIN index", "# payments-rewrite", "Claude Code"))
-                        .child(session(St::Working, "API rate limiter", "# payments-rewrite", "Codex"))
-                        .child(session(St::Working, "Partial BRIN on posted_at", "# payments-rewrite", "Claude Code")),
+                        .child(session(St::Idle, "API rate limiter", "# payments-rewrite", "Codex"))
+                        .child(session(St::Working, "Partial BRIN on posted_at", "# payments-rewrite", "Claude Code"))
+                        .child(session(St::Working, "Benchmark BRIN", "# infra", "Codex"))
+                        .child(session(St::Exited, "Upgrade Postgres 17", "# infra", "Claude Code")),
                 ),
         )
         .child(
@@ -131,8 +133,8 @@ fn left(look: Look) -> Div {
                 .child(
                     card(look)
                         .overflow_hidden()
-                        .child(folder("~/Humata/payments-rewrite/", "2 sessions · 3.1 GB"))
-                        .child(folder("~/Humata/infra/", "1 session · 0.8 GB"))
+                        .child(folder("~/Humata/payments-rewrite/", "4 sessions · 3.1 GB"))
+                        .child(folder("~/Humata/infra/", "2 sessions · 0.8 GB"))
                         .child(folder("~/Humata/pr-reviews/", "no sessions · 0.2 GB")),
                 ),
         )
@@ -210,7 +212,7 @@ fn right(look: Look) -> Div {
                         .child(rule("Read files on other machines", "Allow", GREEN))
                         .child(rule("Push its branch or open a pull request", "Ask me", ORANGE))
                         .child(rule("Read the global board or other channels", "Allow", GREEN))
-                        .child(rule("Change the global board or other channels", "Never", RED))
+                        .child(rule("Change the global board or other channels", "Ask me", ORANGE))
                         .child(div().px(px(12.)).h(px(30.)).flex().items_center().text_color(c(look.accent)).child("Change in Agent access")),
                 ),
         )

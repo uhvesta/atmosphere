@@ -514,4 +514,10 @@ message ProbeResponse {
   bool linger_enabled = 10;
   // Sizes by Humata folder, when measured.
   map<string, uint64> folder_bytes = 11;
+  // HO-4: the number in `gh --version`, such as "2.83.0"; empty: no gh, or it said
+  // nothing usable in time.
+  string gh_version = 12;
+  // HO-4: the number in each found agent's `--version`, such as "2.4.1", one for each
+  // entry of agents_installed and in its order; empty: it printed none in time.
+  repeated string agent_versions = 13;
 }

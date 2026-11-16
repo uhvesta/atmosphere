@@ -211,6 +211,12 @@ pub(crate) enum DaemonError {
         source: humata2_sessions::AgentError,
     },
 
+    #[error("couldn't set up the turn hooks Claude Code starts with")]
+    Hooks {
+        #[source]
+        source: crate::session_service::HooksError,
+    },
+
     #[error("the MCP server stopped")]
     Mcp {
         #[source]

@@ -190,6 +190,11 @@ plain shell where it means the same thing.
 - **AR-8** The same app runs in a browser, built for the web and served by the
   host. Serving it is off until the user turns it on. The host refuses
   requests from other sites (Origin and Host checks).
+  Browser terminal views mirror the same host-owned sessions as the desktop:
+  a locally running host serves its local terminals and terminals it connects
+  to over SSH. The browser never needs native process, SSH or host-filesystem
+  access to render either kind. Closing or reloading a view leaves those
+  server-owned terminals running. (Owner clarification, 2026-11-15.)
 - **AR-9** A new client pairs once before it can do anything. The user
   approves a short code from a client that is already paired, or from
   `humata login`. A paired client acts as the user, present, like the desktop
@@ -270,9 +275,13 @@ plain shell where it means the same thing.
   or session with unread output is shown bold. A folded channel shows the
   status mark of the session that most needs the user and its number of
   sessions (frame 36).
-  A session's dot is Needs you when that session itself has an unanswered
-  request, otherwise its run status; a fork's requests add to its ancestors'
-  ✉ badges but never recolour them (D131).
+  A session's dot is Needs you while its agent is waiting on an unanswered
+  request of its own, that is, while a call of that session is held for the
+  answer (TP-11, TP-12). Otherwise it is the run status. A request the agent
+  has stopped waiting on (it took "pending" and went on, ended its turn, or
+  exited) still counts in the ✉ badges and the Inbox but does not change the
+  dot. A fork's requests add to its ancestors' ✉ badges but never recolour
+  them (D131).
 - **CH-17** Opening a session clears its unread mark.
 
 ### Growing and shrinking a channel's repos
@@ -630,13 +639,18 @@ Frames 34–43 in `desktop/tests/__snapshots__/design/` are approved goldens
 in the sidebar. DK-6 (empty states) is in §22, and DK-7–DK-9 (markdown
 review) are in §11.
 
-- **DK-1** The sidebar has a **Desk** row under Board, with its open
-  sessions under it. A Desk session belongs to no channel. It runs an agent's
+- **DK-1** The sidebar has a **Desk** row under Board. While the Desk page
+  or a Desk session is showing, every open Desk session is listed under it,
+  in the order they were started; a row does not move when its session is
+  used. A Desk session belongs to no channel. It runs an agent's
   TUI or a plain terminal, with tabs, the two tab groups (SE-27) and the side
   panels like any session.
 - **DK-2** A Desk session works in a new scratch folder under the machine's
-  Humata root (`<root>/desk/<name>`, so `~/Humata/desk/plan-q4` by default;
-  the name is a slug of the title, as FC-13), or in a folder the user picks
+  Humata root, `<root>/desk/<name>`. The name is the FC-13 slug of the title
+  the session starts with, with FC-14's suffix when a Desk folder of that
+  name exists on that machine: a session started as "Plan Q4" works in
+  `~/Humata/desk/plan-q4`. The folder keeps its name when the session is
+  renamed. Or it works in a folder the user picks
   on that machine. This is the one place the user picks a path (FC-1).
   Humata never deletes, trashes or moves a picked folder. A scratch folder is
   deleted 7 days after its session closes (DK-11) unless the user keeps it
@@ -702,7 +716,8 @@ review) are in §11.
 - **DK-14** **New desk session** (frame 40) asks for a title; what it runs
   (an agent or **Terminal**); a machine (any online one); the folder (**A
   new scratch folder**, or **A folder on the machine**); optional repos; and
-  the two access switches of DK-4.
+  the two access switches of DK-4. Under **A new scratch folder** the
+  dialog shows the path the folder will get. It has no field for the name.
 
 ## 6. Forks
 
@@ -1741,6 +1756,7 @@ and frame 37 a Desk session's.
   | Channel board: edit, move or delete items it created | Allow |
   | Channel board: edit, move or delete anyone else's items | Ask me |
   | Global board, or other channels and their boards: read (D127.4) | Allow |
+  | Global board, or other channels' boards: change (D155) | Ask me |
   | Write into `shared/` on its machine | Allow |
   | Fetch files from `shared/`, the channel folder or a main clone on its machine into its own clone | Allow |
   | Prepare views for you (you choose whether to open them) | Allow |
@@ -3211,8 +3227,8 @@ NV-32–NV-34 keep what still holds.
    its table and ASCII diagram.
 3. They switch to Side by side, click line 7 in the source, write "Where are
    the sizes from?" and press **Comment**. The agent is mid-turn, so the
-   comment shows queued. When the turn ends it is typed as `[comment on
-   rfc-brin.md:7]` and its text, and shows as sent.
+   comment is typed at once as `[comment on rfc-brin.md:7]` and its text,
+   and shows as waiting until the agent takes it in, then as sent (D151).
 4. They write two more comments and leave them as drafts, then click **Send
    2 comments**. Both arrive as one paste.
 5. The agent answers in its terminal and rewrites the proposal. One comment

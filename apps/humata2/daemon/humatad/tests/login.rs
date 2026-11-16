@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use common::{Attach, Build, Daemon, WAIT, binary, connect, folder, open, state_folder};
+use common::{Attach, Build, Daemon, WAIT, binary, connect, error_of, folder, open, state_folder};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{SessionRecord, Store};
 use sha2::{Digest, Sha256};
@@ -39,7 +39,12 @@ fn bundle(dir: &Path) -> PathBuf {
     let mut entries = serde_json::Map::new();
     for file in FILES {
         let body = if file == "humatad2" {
-            format!("#!/bin/sh\nexec '{}' \"$@\"\n", binary("HUMATAD2_RELEASE").display())
+            // A link a test starts gets its state folder named (the default, said out
+            // loud), so it relays nothing and starts no daemon of its own (D146).
+            format!(
+                "#!/bin/sh\ncase \" $* \" in *\" --stdio \"*) exec '{real}' \"$@\" --state \"$HOME/.humata2/state\" ;; esac\nexec '{real}' \"$@\"\n",
+                real = binary("HUMATAD2_RELEASE").display()
+            )
         } else {
             format!("#!/bin/sh\n# {file}\nexit 0\n")
         };
@@ -272,6 +277,8 @@ fn client(message: pb::login_client_message::Message) -> pb::LoginClientMessage 
 struct Seen {
     output: Vec<u8>,
     prompts: Vec<String>,
+    /// The kind sent with each prompt, in order (D167).
+    kinds: Vec<i32>,
     ready: Option<pb::LoginReady>,
     failed: Option<pb::Error>,
     ended: bool,
@@ -295,7 +302,10 @@ async fn read_until(stream: &mut Streaming<pb::LoginServerMessage>, done: impl F
         match tokio::time::timeout(left, stream.message()).await {
             Ok(Ok(Some(message))) => match message.message {
                 Some(Message::Output(bytes)) => seen.output.extend_from_slice(&bytes),
-                Some(Message::PromptSeen(line)) => seen.prompts.push(line),
+                Some(Message::PromptSeen(line)) => {
+                    seen.prompts.push(line);
+                    seen.kinds.push(message.prompt_kind);
+                }
                 Some(Message::Ready(ready)) => seen.ready = Some(ready),
                 Some(Message::Failed(error)) => seen.failed = Some(error),
                 None => {}
@@ -315,16 +325,19 @@ async fn a_login_gated_provider_is_logged_in_by_hand_and_becomes_a_normal_machin
     // The non-interactive try finds the prompt, so the create stops there.
     let failed = host.create_needing_login("box-1").await;
     assert_eq!(failed.state, pb::OperationState::Failed as i32);
-    assert!(matches!(
-        failed.error.as_ref().and_then(|error| error.kind.clone()),
-        Some(pb::error::Kind::LoginNeedsUser(_))
-    ));
+    let Some(pb::error::Kind::LoginNeedsUser(needs)) = failed.error.as_ref().and_then(|error| error.kind.clone()) else {
+        panic!("expected needs-a-login, got {:?}", failed.error);
+    };
+    assert_eq!(needs.prompt_kind, pb::LoginPromptKind::Code as i32);
+    assert!(!needs.hung);
+    assert!(!needs.prompt_line.is_empty());
     assert!(host.list().await.is_empty());
 
     // The login for that operation shows the terminal and the prompt.
     let (sender, mut stream) = host.open_login(failed.id.as_ref().unwrap()).await;
     let seen = read_until(&mut stream, |seen| seen.shows("Verification code") && !seen.prompts.is_empty()).await;
     assert_eq!(seen.prompts.len(), 1, "the prompt is reported once");
+    assert_eq!(seen.kinds, vec![pb::LoginPromptKind::Code as i32]);
 
     // The code, then Done: the takeover ends in the peer link.
     sender
@@ -491,7 +504,8 @@ async fn an_agent_can_neither_open_a_login_nor_make_a_machine_unattended() {
         .interactive_login(as_agent(ReceiverStream::new(receiver), &token))
         .await
         .unwrap_err();
-    assert_ne!(refused.code(), tonic::Code::Ok);
+    assert!(matches!(error_of(&refused).kind, Some(pb::error::Kind::UserOnly(_))), "{refused:?}");
+    assert!(!error_of(&refused).fix.is_empty());
 
     let unattended = providers
         .make_unattended(as_agent(
@@ -507,5 +521,6 @@ async fn an_agent_can_neither_open_a_login_nor_make_a_machine_unattended() {
         ))
         .await
         .unwrap_err();
-    assert_ne!(unattended.code(), tonic::Code::Ok);
+    assert!(matches!(error_of(&unattended).kind, Some(pb::error::Kind::UserOnly(_))), "{unattended:?}");
+    assert!(!error_of(&unattended).fix.is_empty());
 }

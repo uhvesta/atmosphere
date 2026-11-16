@@ -13,10 +13,10 @@ use std::path::PathBuf;
 use gpui_kit::gpui;
 use gpui_kit::Focusable as _;
 use gpui_kit::prelude::*;
-use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::test::{TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{AnyWindowHandle, Entity, Role, TestAppContext, point, px};
 use humata2_flow::{Flow, GpuiDriver, SpecFlow, Target, artifact_root, run};
-use humata2_markdown::{AnchorStatus, AnchorTarget, MarkdownEvent, MarkdownOptions};
+use humata2_markdown::{AnchorStatus, AnchorTarget, MarkdownEvent, MarkdownOptions, MarkdownView, ViewMode};
 use humata2_markdown_headless::{GALLERY, Pane, gallery_options, init, open};
 use humata2_snapshot::snapshots;
 
@@ -45,20 +45,23 @@ fn frame(cx: &mut TestAppContext, window: AnyWindowHandle) {
 
 /// SM-6, SM-8, 26.20
 #[gpui_kit::test]
-fn selecting_across_blocks_and_commenting_anchors_the_comment_to_source_lines(cx: &mut TestAppContext) {
+fn selecting_source_lines_and_commenting_anchors_the_comment_to_them(cx: &mut TestAppContext) {
     init(cx);
-    let (window, pane) = open(cx, GALLERY, gallery_options(), WIDTH, HEIGHT);
+    // Every line has text, so a drag across the middle of the view lands on
+    // one wherever the lines fall.
+    let spec: String = (1..=30)
+        .map(|line| format!("Line {line} of the spec, with **strong** words.\n"))
+        .collect();
+    let (window, pane) = open(cx, &spec, MarkdownOptions::new("Spec"), WIDTH, 300.);
+    let view = pane.read_with(cx, |pane, _| pane.view.clone());
+    view.update(cx, |view, cx| view.set_mode(ViewMode::Source, cx));
+    cx.run_until_parked();
     play(
         cx,
         window,
-        Flow::new(SpecFlow::new("26.20", "Iterate on a spec with the agent, comment on a passage"))
-            .drag(
-                Target::new(Role::Paragraph, "Paragraph 2"),
-                Target::new(Role::Heading, "Heading 3, level 2"),
-            )
-            .snapshot()
-            .click(Role::Button, "Comment on selection")
-            .snapshot(),
+        Flow::new(SpecFlow::new("26.20", "Iterate on a spec with the agent, comment on source lines"))
+            .drag(Target::new(Role::Document, "Spec").at_start(), Target::new(Role::Document, "Spec"))
+            .click(Role::Button, "Comment on selection"),
     );
     let requested = events(cx, &pane)
         .into_iter()
@@ -68,13 +71,46 @@ fn selecting_across_blocks_and_commenting_anchors_the_comment_to_source_lines(cx
         })
         .expect("the view asked for a comment");
     assert_eq!(requested.target, AnchorTarget::Text);
-    // From the middle of the paragraph (lines 3-4) into the heading (line 6).
-    assert!(requested.lines.start >= 3 && requested.lines.end <= 6, "{:?}", requested.lines);
-    let source = &GALLERY[requested.bytes.clone()];
-    assert_eq!(requested.source, source);
-    assert!(!requested.quote.contains("**"), "the quote is what the reader saw");
+    assert_eq!(requested.lines.start, requested.lines.end, "a drag along one line");
+    assert!(!requested.source.is_empty());
+    assert_eq!(requested.source, spec[requested.bytes.clone()]);
     let statuses = pane.read_with(cx, |pane, cx| pane.view.read(cx).comment_statuses().to_vec());
     assert!(matches!(statuses.as_slice(), [AnchorStatus::Current { .. }]));
+}
+
+/// SM-6: the rendered page's selection copies but offers no comment.
+#[gpui_kit::test]
+fn selecting_in_the_rendered_page_offers_no_comment(cx: &mut TestAppContext) {
+    init(cx);
+    let (window, pane) = open(cx, GALLERY, gallery_options(), WIDTH, HEIGHT);
+    play(
+        cx,
+        window,
+        Flow::new(SpecFlow::new("26.20", "Iterate on a spec with the agent, select rendered text")).drag(
+            Target::new(Role::Heading, "Heading 1, level 1").at_start(),
+            Target::new(Role::Paragraph, "Paragraph 2"),
+        ),
+    );
+    let buttons: Vec<String> = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .find_all_by_role(Role::Button)
+                .into_iter()
+                .filter(|element| element.visible())
+                .filter_map(|element| element.label().map(str::to_owned))
+                .collect()
+        })
+        .expect("the window is open");
+    assert!(buttons.iter().any(|label| label == "Copy as Markdown"), "{buttons:?}");
+    assert!(!buttons.iter().any(|label| label == "Comment on selection"), "{buttons:?}");
+    pane.update(cx, |pane, cx| pane.view.update(cx, MarkdownView::request_selection_comment));
+    assert!(
+        !events(cx, &pane)
+            .iter()
+            .any(|event| matches!(event, MarkdownEvent::CommentRequested(_))),
+        "the comment shortcut does nothing in the rendered page"
+    );
 }
 
 /// SM-6, SM-8, 26.20
@@ -209,13 +245,13 @@ fn the_keyboard_switches_to_the_source_and_back(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(
         events(cx, &pane).last(),
-        Some(&MarkdownEvent::ModeChanged(humata2_markdown::ViewMode::Source))
+        Some(&MarkdownEvent::ModeChanged(ViewMode::Source))
     );
     cx.update_window(window, |_, window, cx| window.press(TOGGLE_SOURCE, cx))
         .expect("the window is open");
     cx.run_until_parked();
     assert_eq!(
         events(cx, &pane).last(),
-        Some(&MarkdownEvent::ModeChanged(humata2_markdown::ViewMode::Rendered))
+        Some(&MarkdownEvent::ModeChanged(ViewMode::Rendered))
     );
 }

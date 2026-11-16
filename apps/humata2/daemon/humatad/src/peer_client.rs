@@ -166,12 +166,13 @@ impl Up {
         &self.channel
     }
 
-    /// Resolves when the link ends, with why. What the machine sends on
-    /// the Uplink isn't acted on yet: no journal or mirror is kept.
-    pub(crate) async fn closed(mut self) -> LinkError {
+    /// Resolves when the link ends, with why. Each message the machine
+    /// sends on the Uplink goes to `sink` (D139: status and pointer
+    /// reports); no journal or mirror is kept yet.
+    pub(crate) async fn closed(mut self, sink: &Sink) -> LinkError {
         loop {
             match self.from_machine.message().await {
-                Ok(Some(_message)) => {}
+                Ok(Some(message)) => sink(message),
                 Ok(None) => return LinkError::Ended { machine: self.machine },
                 Err(source) => {
                     return LinkError::Lost {
@@ -320,11 +321,20 @@ pub(crate) enum LinkEvent<'a> {
 
 pub(crate) type Report = Box<dyn Fn(LinkEvent<'_>) + Send + Sync>;
 
+/// Takes each message a machine sends on its Uplink while a link is up.
+pub(crate) type Sink = Box<dyn Fn(pb::MachineToHost) + Send + Sync>;
+
 /// Keeps `machine`'s link up: dials, opens it, and when it drops or a dial
 /// fails, reports it and dials again after a backoff. Returns only when a
 /// failure that another dial can't fix (a wrong key, an old machine) ends
 /// it; the user's Reconnect starts it again.
-pub(crate) async fn supervise(dial: Box<dyn Dial>, key_file: PathBuf, machine: String, report: Report) -> LinkError {
+pub(crate) async fn supervise(
+    dial: Box<dyn Dial>,
+    key_file: PathBuf,
+    machine: String,
+    report: Report,
+    sink: Sink,
+) -> LinkError {
     let mut wait = RETRY_FIRST;
     loop {
         let error = match connect(&*dial, &key_file, &machine).await {
@@ -334,7 +344,7 @@ pub(crate) async fn supervise(dial: Box<dyn Dial>, key_file: PathBuf, machine: S
                     channel: up.channel(),
                 });
                 wait = RETRY_FIRST;
-                up.closed().await
+                up.closed(&sink).await
             }
             Err(error) => error,
         };
@@ -568,6 +578,7 @@ mod tests {
                 self.state.join(link_proof::KEY_FILE),
                 MACHINE.to_owned(),
                 Arc::new(Compression::new(&self.state)),
+                crate::relay::Relay::off(MACHINE.to_owned()),
             ));
             tokio::spawn(serve_link(input, output, handshake, MACHINE.to_owned(), std::future::pending()));
             let relay = Arc::new(Relay::default());
@@ -679,7 +690,7 @@ mod tests {
         let (report, mut events) = recorder();
         let ended = tokio::time::timeout(
             HOUR,
-            supervise(Box::new(InProcess(machine.clone())), host_key(dir.path(), 0xcd), MACHINE.into(), report),
+            supervise(Box::new(InProcess(machine.clone())), host_key(dir.path(), 0xcd), MACHINE.into(), report, Box::new(|_| {})),
         )
         .await
         .expect("a wrong key ends the supervisor");
@@ -713,6 +724,7 @@ mod tests {
             host_key(dir.path(), 0xab),
             MACHINE.into(),
             report,
+            Box::new(|_| {}),
         ));
         assert_eq!(events.recv().await, Some(Seen::Up));
 
@@ -735,6 +747,7 @@ mod tests {
             host_key(dir.path(), 0xab),
             MACHINE.into(),
             report,
+            Box::new(|_| {}),
         ));
         assert_eq!(events.recv().await, Some(Seen::Up));
 

@@ -3,6 +3,7 @@
 //! be written.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::change::{self, Hunk};
 use crate::event::{
@@ -143,10 +144,29 @@ pub struct Recording {
     dropped: usize,
     /// The start trees, as lines, so folding an event in is a splice.
     base: Base,
-    events: VecDeque<Event>,
+    /// Each event with the number it was pushed as, so a [`Mark`] can tell
+    /// what came after it even when a daemon event was placed among older
+    /// ones.
+    events: VecDeque<(u64, Event)>,
+    next_seq: u64,
+    /// The highest number among the events folded into the start, if any.
+    folded_seq: Option<u64>,
+    id: u64,
     bytes: usize,
     /// The trees as of the last event, which the next change is made
     /// against.
+    current: Trees,
+}
+
+static RECORDINGS: AtomicU64 = AtomicU64::new(0);
+
+/// A point in a [`Recording`] it can be rewound to, see
+/// [`Recording::mark`].
+#[derive(Clone, Debug)]
+pub struct Mark {
+    recording: u64,
+    seq: u64,
+    bytes: usize,
     current: Trees,
 }
 
@@ -172,6 +192,9 @@ impl Recording {
                 layout: change::lines(&now.layout),
             },
             events: VecDeque::new(),
+            next_seq: 0,
+            folded_seq: None,
+            id: RECORDINGS.fetch_add(1, Ordering::Relaxed),
             bytes: 0,
             current: now,
         }
@@ -191,6 +214,41 @@ impl Recording {
     /// far, so the app can say the recording is full.
     pub fn dropped(&self) -> usize {
         self.dropped
+    }
+
+    /// Remembers where the recording is now, to [`rewind`](Self::rewind)
+    /// to.
+    pub fn mark(&self) -> Mark {
+        Mark {
+            recording: self.id,
+            seq: self.next_seq,
+            bytes: self.bytes,
+            current: self.current.clone(),
+        }
+    }
+
+    /// Undoes everything pushed since `mark`: its interactions, actions,
+    /// tree changes, daemon errors and log lines, and the trees go back to
+    /// what they were. Daemon calls are kept, since they happened.
+    ///
+    /// Returns `false`, changing nothing, when `mark` is from another
+    /// recording or when the recording became full since and folded events
+    /// from after the mark into its start, which can't be undone.
+    pub fn rewind(&mut self, mark: Mark) -> bool {
+        if mark.recording != self.id || self.folded_seq.is_some_and(|folded| folded >= mark.seq) {
+            return false;
+        }
+        let mut freed = 0;
+        self.events.retain(|(seq, event)| {
+            let keep = *seq < mark.seq || matches!(event, Event::Rpc(_));
+            if !keep {
+                freed += event.weight();
+            }
+            keep
+        });
+        self.bytes = self.bytes.saturating_sub(freed);
+        self.current = mark.current;
+        true
     }
 
     /// Records what the person did.
@@ -260,7 +318,7 @@ impl Recording {
                 view: change::join(&self.base.view),
                 layout: change::join(&self.base.layout),
             },
-            events: self.events.into(),
+            events: self.events.into_iter().map(|(_, event)| event).collect(),
             end_ms: at_ms,
             end: self.current,
         }
@@ -271,7 +329,8 @@ impl Recording {
     /// change is made against the one before it.
     fn push(&mut self, event: Event) {
         self.bytes += event.weight();
-        self.events.push_back(event);
+        let seq = self.next_seq();
+        self.events.push_back((seq, event));
         self.fit();
     }
 
@@ -282,20 +341,28 @@ impl Recording {
         self.bytes += event.weight();
         let at_ms = event.at_ms();
         let mut index = self.events.len();
-        while index > 0 && self.events[index - 1].at_ms() > at_ms {
+        while index > 0 && self.events[index - 1].1.at_ms() > at_ms {
             index -= 1;
         }
-        self.events.insert(index, event);
+        let seq = self.next_seq();
+        self.events.insert(index, (seq, event));
         self.fit();
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        seq
     }
 
     /// Folds the oldest events into the start until the rest fit the
     /// limits.
     fn fit(&mut self) {
         while self.events.len() > self.limits.max_events || self.bytes > self.limits.max_bytes {
-            let Some(oldest) = self.events.pop_front() else {
+            let Some((seq, oldest)) = self.events.pop_front() else {
                 break;
             };
+            self.folded_seq = self.folded_seq.max(Some(seq));
             self.bytes -= oldest.weight();
             self.fold(oldest);
         }

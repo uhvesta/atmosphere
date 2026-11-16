@@ -457,7 +457,7 @@ impl Core {
         use tr::TransferError as E;
         match error {
             E::Unknown { id } => no_transfer(id),
-            E::TooLate { id } => precondition(
+            E::TooLate { id } => not_cancellable(
                 format!("transfer {id} can't be cancelled any more: its files are already being put in place, or it is finished"),
                 "let it finish; once it is done, delete what you don't want from the destination",
             ),
@@ -651,15 +651,31 @@ fn no_transfer(id: &str) -> Status {
     )
 }
 
+/// The transfer is in a state the call doesn't fit. Nothing is wrong with
+/// the request itself, so it carries no field problem: a client reads it
+/// as a failed precondition, not as a call to correct.
 fn precondition(message: String, fix: &str) -> Status {
+    status::failure(
+        Code::FailedPrecondition,
+        pb::Error {
+            message,
+            fix: fix.to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
+/// Too late to cancel: the files are being put in place, or it is over.
+fn not_cancellable(message: String, fix: &str) -> Status {
     status::failure(
         Code::FailedPrecondition,
         status::error(
             message,
             fix,
-            pb::error::Kind::InvalidField(pb::InvalidField {
-                field: "id".to_owned(),
-                problem: Field::NotAllowedHere as i32,
+            pb::error::Kind::NotCancellable(pb::NotCancellable {
+                operation: None,
+                step: "putting the files in place".to_owned(),
             }),
         ),
     )
@@ -935,7 +951,6 @@ impl pb::transfer_service_server::TransferService for TransferSvc {
                 return Err(status::internal("an upload lost its state", ""));
             };
             let core = core.clone();
-            let id = id.clone();
             // A write that fails drops the upload here, which pauses it.
             let (up, unpack, wrote) = blocking(move || {
                 let header = crate::compression::chunk_header(&chunk).ok_or_else(|| {

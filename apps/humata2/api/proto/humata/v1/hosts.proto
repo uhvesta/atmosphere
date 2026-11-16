@@ -212,11 +212,18 @@ message MachineHealth {
   bool linger_enabled = 8;      // PER-18
   bool skills_auto_sync = 9;    // SK-3 per-machine opt-out
   Error skills_sync_problem = 10;   // SK-8, when the last sync failed
+  string git_version = 11;      // HO-1: the number in `git --version`; empty: no git
+  string gh_version = 12;       // HO-4: the number in `gh --version`; empty: no gh
+  repeated string agent_versions = 13;  // HO-4: one for each agents_installed, in its order; empty: unknown
 }
 
 message MachineFolder {
+  // Unset when the host's records don't tie the folder to a channel: the
+  // daemon names folders by what is on disk, so the client matches the
+  // path to the channel's folder (CH-2).
   ChannelId channel = 1;
-  string path = 2;
+  string path = 2;              // such as ~/Humata/infra/
+  uint64 bytes = 3;             // LD-14: measured when GetMachine is called
 }
 
 // HO-4 "what its agents can reach through the Mac with each rule's setting".
@@ -589,6 +596,9 @@ message LoginServerMessage {
     LoginReady ready = 3;
     Error failed = 4;
   }
+  // D167: the kind of the prompt carried by prompt_seen; unspecified on every
+  // other message and for any other prompt.
+  LoginPromptKind prompt_kind = 5;
 }
 
 message LoginReady {

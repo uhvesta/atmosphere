@@ -97,7 +97,9 @@ fn a_host_variable_value_is_gone_from_calls_logs_errors_context_and_form() {
         comments: vec![Comment {
             element: add_button(),
             text: format!("this showed {value}"),
+            place: None,
         }],
+        ..Form::default()
     };
     let secrets = Secrets::new().secret("DATABASE_URL", value);
 

@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use humata2_app::{
-    App, AppAction, AppState, PinTarget, ReportAction, ReportForm, ReportKind, ToastAction,
+    App, AppAction, AppState, PinTarget, Point, Rect, ReportAction, ReportForm, ReportKind,
+    ReportRequest, Shape, ToastAction,
 };
 use humata2_clients::{Clients, fixture};
 use tca::{TestClock, TestStore};
@@ -136,4 +137,113 @@ fn escape_and_close_close_the_form() {
     send(&mut store, ReportAction::Saved { form: form(ReportKind::Snapshot), open: true });
     send(&mut store, ReportAction::Close);
     assert_eq!(store.state().report.form, None);
+}
+
+fn placed(kind: ReportKind) -> ReportForm {
+    form(kind).with_places(
+        vec![
+            Some(Rect { x: 0, y: 0, width: 100, height: 30 }),
+            Some(Rect { x: 0, y: 100, width: 100, height: 100 }),
+        ],
+        (800, 600),
+    )
+}
+
+fn click(x: i32, y: i32) -> Vec<Point> {
+    vec![Point { x, y }]
+}
+
+#[test]
+fn request_is_kept_until_handled() {
+    let mut store = store(|_| {});
+    send(&mut store, ReportAction::Request(ReportRequest::Snapshot));
+    assert_eq!(store.state().report.request, Some(ReportRequest::Snapshot));
+    send(&mut store, ReportAction::Handled);
+    assert_eq!(store.state().report.request, None);
+}
+
+#[test]
+fn open_last_without_a_report_toasts() {
+    let mut store = store(|_| {});
+    send(&mut store, ReportAction::OpenLast);
+    assert_eq!(store.state().report.form, None);
+    assert_eq!(store.state().toasts.len(), 1);
+}
+
+#[test]
+fn open_last_reopens_the_saved_report() {
+    let mut store = store(|_| {});
+    let saved = form(ReportKind::Snapshot);
+    send(&mut store, ReportAction::Saved { form: saved.clone(), open: false });
+    assert_eq!(store.state().report.last, Some(saved.clone()));
+    send(&mut store, ReportAction::OpenLast);
+    assert_eq!(store.state().report.form, Some(saved));
+}
+
+#[test]
+fn close_keeps_edits_for_open_last() {
+    let mut store = store(|s| s.report.form = Some(form(ReportKind::Snapshot)));
+    send(&mut store, ReportAction::Expected("fine".to_owned()));
+    send(&mut store, ReportAction::Close);
+    assert_eq!(store.state().report.form, None);
+    send(&mut store, ReportAction::OpenLast);
+    assert_eq!(
+        store.state().report.form.as_ref().map(|f| f.expected.clone()).as_deref(),
+        Some("fine")
+    );
+}
+
+#[test]
+fn strokes_are_drawn_undone_cleared_and_removed() {
+    let mut store = store(|s| s.report.form = Some(placed(ReportKind::Snapshot)));
+    send(&mut store, ReportAction::Stroke(click(1, 1)));
+    assert!(store.state().report.form.as_ref().is_some_and(|f| f.strokes.is_empty()));
+    send(&mut store, ReportAction::Draw);
+    assert!(store.state().report.form.as_ref().is_some_and(|f| f.drawing));
+    send(&mut store, ReportAction::Copied(Ok(())));
+    send(&mut store, ReportAction::Stroke(click(10, 10)));
+    let f = store.state().report.form.clone().expect("form");
+    assert!(!f.copied);
+    assert_eq!(f.strokes.len(), 1);
+    assert_eq!(f.strokes[0].shape, Shape::Dot);
+    assert_eq!(f.strokes[0].covers, vec![target("Button", "Add")]);
+    send(&mut store, ReportAction::Stroke(click(10, 150)));
+    send(&mut store, ReportAction::Stroke(click(500, 500)));
+    assert_eq!(store.state().report.form.as_ref().map(|f| f.strokes.len()), Some(3));
+    send(&mut store, ReportAction::UndoStroke);
+    assert_eq!(store.state().report.form.as_ref().map(|f| f.strokes.len()), Some(2));
+    send(&mut store, ReportAction::RemoveStroke(0));
+    let f = store.state().report.form.clone().expect("form");
+    assert_eq!(f.strokes.len(), 1);
+    assert_eq!(f.strokes[0].covers, vec![target("List", "Items")]);
+    send(&mut store, ReportAction::Copied(Ok(())));
+    send(&mut store, ReportAction::ClearStrokes);
+    let f = store.state().report.form.clone().expect("form");
+    assert!(f.strokes.is_empty());
+    assert!(!f.copied);
+}
+
+#[test]
+fn escape_in_draw_mode_keeps_the_form_and_strokes() {
+    let mut store = store(|s| s.report.form = Some(placed(ReportKind::Snapshot)));
+    send(&mut store, ReportAction::Draw);
+    send(&mut store, ReportAction::Stroke(click(10, 10)));
+    store.send(AppAction::Escape, |_| {});
+    let f = store.state().report.form.clone().expect("form kept");
+    assert!(!f.drawing);
+    assert_eq!(f.strokes.len(), 1);
+    store.send(AppAction::Escape, |_| {});
+    assert_eq!(store.state().report.form, None);
+}
+
+#[test]
+fn opening_the_palette_tells_it_about_the_report() {
+    let mut store = store(|s| {
+        s.report.recording = true;
+        s.report.last = Some(form(ReportKind::Snapshot));
+    });
+    store.send(AppAction::OpenPalette, |_| {});
+    let status = store.state().palette.report;
+    assert!(status.recording);
+    assert!(status.last);
 }

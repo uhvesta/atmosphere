@@ -146,7 +146,7 @@ fn keeping_a_closed_folder_toasts_and_leaves_no_days_left() {
 #[test]
 fn clean_up_deletes_the_ticked_closed_sessions() {
     let mut workspace = fixture::design();
-    fixture::clean_up(&mut workspace);
+    fixture::desk(&mut workspace);
     let (mut store, fakes) = setup(workspace, Route::Desk);
     store.send(A::Desk(D::OpenCleanUp), |_| {});
     store.receive_matching(
@@ -290,4 +290,40 @@ fn a_failed_change_on_a_session_page_says_so_in_a_toast() {
     );
     assert!(!store.state().toasts.is_empty());
     assert_eq!(store.state().route, Route::Session(id));
+}
+
+/// The app on a Desk session's page, as opening it leaves it.
+fn on_desk_session(id: &SessionId) -> (TestStore<App>, Fakes) {
+    let (mut store, fakes) = setup(desk_workspace(), Route::Session(id.clone()));
+    store.send(A::Navigate(Route::Session(id.clone())), |_| {});
+    store.skip_received();
+    (store, fakes)
+}
+
+#[test]
+fn archiving_a_desk_session_closes_it_and_returns_to_the_desk() {
+    let id = SessionId::new("desk-plan-q4");
+    let (mut store, fakes) = on_desk_session(&id);
+    store.send(A::Session(humata2_session::SessionAction::Archive), |_| {});
+    store.receive_matching(
+        "the close finished",
+        |a| matches!(a, A::Desk(D::Changed { result: Ok(()), .. })),
+        |_| {},
+    );
+    assert_eq!(store.state().route, Route::Desk);
+    assert!(fakes.daemon.workspace().desk.sessions[&id].closed.is_some());
+}
+
+#[test]
+fn a_desk_session_cannot_be_forked() {
+    let id = SessionId::new("desk-plan-q4");
+    let (mut store, _fakes) = on_desk_session(&id);
+    store.send(
+        A::Session(humata2_session::SessionAction::StartFork(
+            humata2_clients::model::ForkKind::Worktree,
+        )),
+        |_| {},
+    );
+    store.skip_received();
+    assert!(store.state().session.fork.is_none());
 }

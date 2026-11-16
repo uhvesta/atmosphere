@@ -550,6 +550,22 @@ pub(crate) fn approval_pending(request: &pb::RequestId) -> Status {
     )
 }
 
+/// A call only the user can make, at the app: an agent or script that makes
+/// it is told what was refused and the fix it can act on (MP-14, MP-17).
+/// `what` names the call ("logging in to a machine by hand").
+pub(crate) fn user_only_call(capability: Capability, what: &str, fix: &str) -> Status {
+    failure(
+        Code::PermissionDenied,
+        error(
+            format!("{what} is the user's to do, at the app; an agent or a script can't do it"),
+            fix,
+            pb::error::Kind::UserOnly(pb::UserOnly {
+                capability: guard::capability(capability) as i32,
+            }),
+        ),
+    )
+}
+
 /// The `humata.v1.Error` a status carries, if it has one.
 pub(crate) fn error_of(status: &Status) -> Option<pb::Error> {
     let details = RpcStatus::decode(status.details()).ok()?;
@@ -582,6 +598,9 @@ fn fix_text(fix: &Fix) -> String {
         Fix::UseOwnFolders => {
             "work in the session's own clone or the channel's shared/ folder".to_owned()
         }
+        Fix::SessionCloneOrRemoveRepo { repo } => format!(
+            "make the change in a session's clone of {repo}; if the main clone itself should go, remove {repo} from the channel, which deletes its main clones"
+        ),
         Fix::UserAllowsReviewPush { session } => format!(
             "the user can turn on \"Let the agent push to the PR branch\" in session {session}'s Info panel"
         ),

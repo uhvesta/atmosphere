@@ -180,10 +180,13 @@ impl Overlays {
                     .border_color(rgb(look.line))
                     .child(chrome::icon(IconName::Search, look.secondary, 14.))
                     .child(
-                        Input::new(&self.query)
-                            .aria_label("Search commands")
-                            .appearance(false)
-                            .text_size(px(16.)),
+                        // Frame 30: the text starts one gap after the icon; the input's own pad is 8 pt.
+                        div().flex_1().ml(px(-8.)).child(
+                            Input::new(&self.query)
+                                .aria_label("Search commands")
+                                .appearance(false)
+                                .text_size(px(16.)),
+                        ),
                     ),
             )
             .child(list)

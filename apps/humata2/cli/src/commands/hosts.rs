@@ -2,9 +2,11 @@
 //! bug reports (CLI.md §5.6 and §5.7).
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use humata2_proto::humata::v1 as pb;
-use serde_json::json;
+use prost::Message;
+use serde_json::{Value as Json, json};
 
 use super::{pages, parse, reply, secret, settings, streams, values};
 use crate::args::{
@@ -13,7 +15,7 @@ use crate::args::{
 };
 use crate::call::{Ctx, Done, Outcome};
 use crate::console::Console;
-use crate::daemon::{Daemon, ReportRequest, rpc};
+use crate::daemon::{Daemon, DaemonError, ReportRequest, Rpc, rpc};
 use crate::error::CliError;
 
 pub(super) async fn host<D: Daemon, C: Console>(
@@ -37,16 +39,20 @@ pub(super) async fn host<D: Daemon, C: Console>(
             ssh_host,
             name,
             root,
+            trust_host_key,
         } => {
             let request = pb::AddSshMachineRequest {
                 idempotency_key: key,
                 ssh_host,
                 name: name.unwrap_or_default(),
                 root: root.unwrap_or_default(),
-                // No flag for it yet: a first add fails naming the key.
-                trust_host_key_fingerprint: String::new(),
+                // Without it a first add stops at the host's key and names it.
+                trust_host_key_fingerprint: trust_host_key.unwrap_or_default(),
             };
-            reply(ctx, rpc::machine::ADD_SSH_MACHINE, &request).await
+            let started = ctx.raw(rpc::machine::ADD_SSH_MACHINE, &request).await?;
+            follow(ctx, rpc::machine::ADD_SSH_MACHINE, &started)
+                .await
+                .map(Done::reply)
         }
         HostCommand::Reconnect { machine } => {
             let request = pb::ReconnectMachineRequest {
@@ -61,16 +67,18 @@ pub(super) async fn host<D: Daemon, C: Console>(
                 &pb::PlanRemoveMachineRequest { id: id.clone() },
                 |plan: &pb::RemoveMachinePlan| plan.token.clone(),
                 move |plan| async move {
-                    ctx.present_json(rpc::machine::REMOVE_MACHINE, |presence| {
-                        pb::RemoveMachineRequest {
-                            idempotency_key: key.clone(),
-                            id: id.clone(),
-                            dispositions: Vec::new(),
-                            plan: plan.clone(),
-                            presence,
-                        }
-                    })
-                    .await
+                    let started = ctx
+                        .present(rpc::machine::REMOVE_MACHINE, |presence| {
+                            pb::RemoveMachineRequest {
+                                idempotency_key: key.clone(),
+                                id: id.clone(),
+                                dispositions: Vec::new(),
+                                plan: plan.clone(),
+                                presence,
+                            }
+                        })
+                        .await?;
+                    follow(ctx, rpc::machine::REMOVE_MACHINE, &started).await
                 },
             )
             .await
@@ -166,7 +174,20 @@ pub(super) async fn host<D: Daemon, C: Console>(
             };
             reply(ctx, rpc::machine::LIST_HOST_VARIABLES, &request).await
         }
-        HostCommand::Var(VarCommand::Set { machine, name }) => {
+        HostCommand::Var(VarCommand::Set {
+            machine,
+            name,
+            value_on_command_line,
+        }) => {
+            // Refused before anything else, and never repeated in what is
+            // printed: the text may be the secret itself (HO-13).
+            if !value_on_command_line.is_empty() {
+                return Err(CliError::BadValue {
+                    field: "value",
+                    value: "<not shown>".into(),
+                    expected: "no value on the command line, where it would stay in the shell's history:                                pipe it on standard input, or run the command in a terminal and type it when asked",
+                });
+            }
             let id = Some(ctx.machine(&machine).await?);
             let value = secret(ctx, &format!("Value of {name}: "))?;
             ctx.present_json(rpc::machine::SET_HOST_VARIABLE, |presence| {
@@ -303,7 +324,10 @@ pub(super) async fn provider<D: Daemon, C: Console>(
                 name,
                 params,
             };
-            reply(ctx, rpc::provider::CREATE_MACHINE, &request).await
+            let started = ctx.raw(rpc::provider::CREATE_MACHINE, &request).await?;
+            follow(ctx, rpc::provider::CREATE_MACHINE, &started)
+                .await
+                .map(Done::reply)
         }
         ProviderCommand::Start { machine } => action(ctx, &machine, pb::ProviderAction::Start).await,
         ProviderCommand::Stop { machine } => action(ctx, &machine, pb::ProviderAction::Stop).await,
@@ -326,16 +350,18 @@ pub(super) async fn provider<D: Daemon, C: Console>(
                         plan,
                         presence: None,
                     };
-                    ctx.present_json(rpc::provider::RUN_PROVIDER_ACTION, |presence| {
-                        pb::RunProviderActionRequest {
-                            idempotency_key: key.clone(),
-                            machine: id.clone(),
-                            action: pb::ProviderAction::Delete as i32,
-                            remove: Some(remove.clone()),
-                            presence,
-                        }
-                    })
-                    .await
+                    let started = ctx
+                        .present(rpc::provider::RUN_PROVIDER_ACTION, |presence| {
+                            pb::RunProviderActionRequest {
+                                idempotency_key: key.clone(),
+                                machine: id.clone(),
+                                action: pb::ProviderAction::Delete as i32,
+                                remove: Some(remove.clone()),
+                                presence,
+                            }
+                        })
+                        .await?;
+                    follow(ctx, rpc::provider::RUN_PROVIDER_ACTION, &started).await
                 },
             )
             .await
@@ -354,18 +380,84 @@ async fn action<D: Daemon, C: Console>(
 ) -> Result<Done, CliError> {
     let key = ctx.key();
     let machine = Some(ctx.machine(machine).await?);
-    ctx.present_json(rpc::provider::RUN_PROVIDER_ACTION, |presence| {
-        pb::RunProviderActionRequest {
-            idempotency_key: key.clone(),
-            machine: machine.clone(),
-            action: action as i32,
-            remove: None,
-            presence,
-        }
-    })
-    .await
-    .map(Done::reply)
+    let started = ctx
+        .present(rpc::provider::RUN_PROVIDER_ACTION, |presence| {
+            pb::RunProviderActionRequest {
+                idempotency_key: key.clone(),
+                machine: machine.clone(),
+                action: action as i32,
+                remove: None,
+                presence,
+            }
+        })
+        .await?;
+    follow(ctx, rpc::provider::RUN_PROVIDER_ACTION, &started)
+        .await
+        .map(Done::reply)
 }
+
+/// What a call that starts an operation answers with: as it was started,
+/// or, when this run waits (`--wait <seconds>`, or until done in a terminal),
+/// as it ended. An operation that failed fails the run with its error, so
+/// a script branches on the same `error.kind` and exit code as for any
+/// refusal. One still running when the wait ends is printed as it is; ask
+/// `humata ops <id>` for the rest.
+async fn follow<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    rpc: Rpc,
+    started: &[u8],
+) -> Result<Json, CliError> {
+    let seconds = match ctx.flags.wait {
+        Some(seconds) => seconds,
+        None if ctx.interactive() => u32::MAX,
+        None => 0,
+    };
+    let mut shown = crate::as_json::encoded(rpc.response, started);
+    let Ok(mut operation) = pb::Operation::decode(started) else {
+        return Ok(shown);
+    };
+    let running = pb::OperationState::Running as i32;
+    if seconds == 0 || operation.state != running || operation.id.is_none() {
+        return Ok(shown);
+    }
+    let until = Instant::now() + Duration::from_secs(u64::from(seconds.min(MAX_WAIT_SECONDS)));
+    // The daemon pushes each change of the operation (TR-7): nothing is
+    // asked again. The watch sends the operation as it is, then every
+    // change, and ends when the operation does.
+    let watch = rpc::operation::WATCH_OPERATION;
+    let request = pb::WatchOperationRequest {
+        id: operation.id.clone(),
+        from_version: 0,
+    };
+    let mut changes = ctx.daemon.server_stream(watch, request.encode_to_vec()).await?;
+    while operation.state == running {
+        let left = until.saturating_duration_since(Instant::now());
+        match tokio::time::timeout(left, changes.recv()).await {
+            Ok(Some(change)) => {
+                let bytes = change?;
+                operation = crate::call::decode(watch, &bytes)?;
+                shown = crate::as_json::encoded(watch.response, &bytes);
+            }
+            // The watch ended, or the wait ran out.
+            Ok(None) | Err(_) => break,
+        }
+    }
+    if operation.state == pb::OperationState::Failed as i32 {
+        return Err(CliError::Daemon(DaemonError::Refused {
+            rpc: rpc::operation::WATCH_OPERATION.path,
+            code: FAILED_PRECONDITION,
+            error: Box::new(operation.error.unwrap_or_default()),
+        }));
+    }
+    Ok(shown)
+}
+
+/// gRPC's FAILED_PRECONDITION: the status a failed operation's error rides
+/// on, which doesn't matter to the CLI when the error has a kind.
+const FAILED_PRECONDITION: i32 = 9;
+
+/// A wait with no end in a terminal is a year, which an `Instant` can hold.
+const MAX_WAIT_SECONDS: u32 = 31_536_000;
 
 /// Previews a sync on each machine, then syncs them all. `--plan` takes
 /// the plans' tokens, comma-separated in the order the machines are named.
@@ -441,7 +533,10 @@ pub(super) async fn skills<D: Daemon, C: Console>(
         machines,
         plans,
     };
-    reply(ctx, rpc::skills::SYNC_SKILLS, &request).await
+    let started = ctx.raw(rpc::skills::SYNC_SKILLS, &request).await?;
+    follow(ctx, rpc::skills::SYNC_SKILLS, &started)
+        .await
+        .map(Done::reply)
 }
 
 pub(super) async fn bridge<D: Daemon, C: Console>(

@@ -6,7 +6,7 @@ use tca::BoxFuture;
 use tokio::sync::mpsc;
 
 use crate::model::{
-    AccessRule, Agent, Answer, Capability, ChannelId, Comment, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
+    AccessRule, Agent, Answer, Archive, Capability, ChannelId, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
     RequestId, RuleSetting, Scope, Session, SessionId, SetupId, Transfer, TransferId,
 };
 use crate::workspace::Workspace;
@@ -84,8 +84,6 @@ pub enum Operation {
     CreateChannel,
     /// [`Daemon::move_item`].
     MoveItem,
-    /// [`Daemon::send_comments`].
-    SendComments,
     /// [`Daemon::archive`].
     Archive,
     /// [`Daemon::resume`].
@@ -171,7 +169,7 @@ pub trait Daemon: Send + Sync + 'static {
     /// Forks a session.
     fn fork(&self, session: &SessionId, kind: ForkKind, title: &str) -> Reply<SessionId>;
     /// Archives a session; its forks keep running.
-    fn archive(&self, session: &SessionId) -> Reply<()>;
+    fn archive(&self, session: &SessionId) -> Reply<Archive>;
     /// Adds a plain SSH destination to the fake workspace.
     fn add_machine(&self, address: &str) -> Reply<MachineId>;
     /// Restores a session archived by this client, including its tree and pin.
@@ -208,8 +206,6 @@ pub trait Daemon: Send + Sync + 'static {
     fn create_item(&self, scope: Scope, title: &str) -> Reply<ItemId>;
     /// Makes `item` wait for `on`; refused when that would make a cycle.
     fn add_dependency(&self, item: &ItemId, on: &ItemId) -> Reply<()>;
-    /// Sends review comments to the session's agent.
-    fn send_comments(&self, session: &SessionId, comments: Vec<Comment>) -> Reply<()>;
     /// Retries a failed transfer.
     fn retry_transfer(&self, transfer: &TransferId) -> Reply<()>;
     /// Sets what a channel's rule does; refused for a rule with no setting

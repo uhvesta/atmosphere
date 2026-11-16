@@ -1,0 +1,15 @@
+# gpui-base's text selection, patched so a drag through the blank space
+# beside lines selects the lines in between, as in a browser, and a gesture
+# that selects nothing still tells the text view it ended. Applied to
+# gpui-base in @crates and @crates_gpui_fast by a crate annotation in
+# MODULE.bazel.
+exports_files(
+    ["gpui-base-selection.patch"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

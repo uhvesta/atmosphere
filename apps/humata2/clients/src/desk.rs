@@ -38,6 +38,20 @@ pub fn is_desk(session: &Session) -> bool {
     session.channel.as_str() == FOLDER
 }
 
+/// The words for where a session lives: "Desk" for the Desk's id, `# name`
+/// for a channel, and the bare id for one the workspace doesn't know.
+#[must_use]
+pub fn place(workspace: &crate::workspace::Workspace, channel: &ChannelId) -> String {
+    if channel.as_str() == FOLDER {
+        "Desk".to_owned()
+    } else {
+        workspace.channel(channel).map_or_else(
+            || channel.as_str().to_owned(),
+            |channel| format!("# {}", channel.name),
+        )
+    }
+}
+
 /// The folder name a title gives (FC-13): lower case, letters and digits
 /// kept, everything else turned into single hyphens, cut at a word boundary
 /// to at most 40 characters. Empty when the title has no letter or digit.
@@ -195,6 +209,10 @@ pub struct DeskData {
     /// reports it. The app reads sizes only through
     /// [`DeskClient::clean_up_list`].
     pub folder_bytes: BTreeMap<SessionId, u64>,
+    /// The branch each clone in a Desk folder is on, by session and
+    /// repository: the repository's default branch, since a Desk session has
+    /// no branch of its own (DK-3).
+    pub clone_branches: BTreeMap<(SessionId, String), String>,
 }
 
 /// Which folder a new Desk session gets (DK-14).

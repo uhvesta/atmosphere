@@ -72,8 +72,28 @@ impl Repo {
         std::fs::read(self.path.join(".git/index")).unwrap_or_default()
     }
 
+    /// The status, read without refreshing the index (`git status` would
+    /// otherwise rewrite it when cached stats are stale).
     pub fn status(&self) -> String {
-        self.git(&["status", "--porcelain=v1", "-uall"])
+        self.git(&["--no-optional-locks", "status", "--porcelain=v1", "-uall"])
+    }
+
+    /// Gives each of `paths` a new mtime, a minute on from its own, without
+    /// touching its bytes, so the index's cached stat for it no longer
+    /// matches and a refresh would rewrite the index.
+    pub fn make_index_stale(&self, paths: &[&str]) {
+        for path in paths {
+            let file = std::fs::File::options()
+                .write(true)
+                .open(self.path.join(path))
+                .expect("open a tracked file");
+            let modified = file
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .expect("read its mtime");
+            file.set_modified(modified + std::time::Duration::from_secs(61))
+                .expect("set its mtime");
+        }
     }
 
     pub fn dir(&self) -> &Path {

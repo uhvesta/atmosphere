@@ -26,11 +26,14 @@ pub struct Side {
     /// Ledger schema migration's own request is waiting (Needs you). Off,
     /// that session is working and only its fork's request waits.
     pub asking: bool,
+    /// Ledger schema migration's agent has exited: its dot is the exited
+    /// mark, as in its header. Its request still counts (CH-16).
+    pub exited: bool,
 }
 
 impl Side {
     pub const fn at(selected: &'static str) -> Self {
-        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None, asking: true }
+        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None, asking: true, exited: false }
     }
 }
 
@@ -88,7 +91,7 @@ const ASKING: &str = "Ledger schema migration";
 /// Ledger schema migration's dot and inbox count (its own request and its
 /// fork's, CH-12).
 const fn ledger(side: Side) -> (St, &'static str) {
-    if side.asking { (St::NeedsYou, "2") } else { (St::Working, "1") }
+    if side.exited { (St::Exited, "2") } else if side.asking { (St::NeedsYou, "2") } else { (St::Working, "1") }
 }
 
 const PAYMENTS: &[Node] = &[
@@ -177,7 +180,8 @@ fn desk(look: Look, side: Side) -> Div {
     if side.desk && !side.empty {
         list = list
             .child(session(look, side, St::Working, "Plan Q4 board", 18., None))
-            .child(session(look, side, St::Idle, "BRIN rollout RFC", 18., None));
+            .child(session(look, side, St::Idle, "BRIN rollout RFC", 18., None))
+            .child(session(look, side, St::Idle, "Tidy infra items", 18., None));
     }
     list
 }
@@ -277,7 +281,7 @@ pub fn sidebar(look: Look, side: Side) -> Div {
         })
         .child(div().h(px(4.)))
         .child(nav(look, side, IconName::House, "Home", None))
-        .child(nav(look, side, IconName::Inbox, "Inbox", if side.empty { None } else { Some("7") }))
+        .child(nav(look, side, IconName::Inbox, "Inbox", if side.empty { None } else if side.desk { Some("8") } else { Some("7") }))
         .child(nav(look, side, IconName::SquareKanban, "Board", None))
         .child(desk(look, side))
         .child(section(look, "Channels").child(small_icon(IconName::Plus, look.secondary)))

@@ -172,6 +172,7 @@ fn pid_of(pid: u32) -> Pid {
 
 fn new_channel() -> NewChannel {
     NewChannel {
+        id: None,
         name: "Payments Rewrite".to_owned(),
         repos: vec![
             ("acme".to_owned(), "api".to_owned()),
@@ -185,6 +186,7 @@ fn new_channel() -> NewChannel {
 
 fn request(channel: &str, first_message: Option<&str>) -> StartRequest {
     StartRequest {
+        id: None,
         channel: channel.to_owned(),
         machine: "ma_1".to_owned(),
         title: "Fix the build".to_owned(),

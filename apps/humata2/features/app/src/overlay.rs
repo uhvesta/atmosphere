@@ -1,11 +1,11 @@
 use humata2_board::BoardAction;
 use humata2_inbox::InboxAction;
 use humata2_palette::PaletteAction;
-use humata2_review::ReviewAction;
+use humata2_review::comments::CommentsAction;
 use humata2_session::{Panel, SessionAction};
 use tca::Effect;
 
-use crate::{App, AppAction, AppState, NewChannel, NewSession, Route};
+use crate::{App, AppAction, AppState, NewChannel, NewSession, ReportAction, Route};
 
 /// Something over the screen. The top one takes the keyboard and Escape
 /// closes it, putting focus back where it was.
@@ -23,9 +23,12 @@ pub enum Overlay {
 
 impl App {
     pub(super) fn escape(&self, state: &mut AppState) -> Effect<AppAction> {
-        if state.report.form.is_some() {
-            state.report.form = None;
-            return Effect::none();
+        if let Some(form) = state.report.form.as_mut() {
+            if form.drawing {
+                form.drawing = false;
+                return Effect::none();
+            }
+            return self.report(state, ReportAction::Close);
         }
         if let Some(top) = state.overlays.pop() {
             if top == Overlay::Palette {
@@ -33,10 +36,19 @@ impl App {
             }
             return Effect::none();
         }
+        if state.add_machine.open {
+            return self.add_machine(state, humata2_hosts::AddMachineAction::Cancel);
+        }
         if state.desk.dialog_open() {
             return self.child(
                 state,
                 AppAction::Desk(humata2_desk::DeskAction::CancelDialog),
+            );
+        }
+        if state.settings.font_menu {
+            return self.child(
+                state,
+                AppAction::Settings(humata2_settings::SettingsAction::FontMenu),
             );
         }
         if state.navigation_overlay {
@@ -61,8 +73,15 @@ impl App {
         if state.board.drawer.is_some() && matches!(state.route, Route::Board(_)) {
             return self.child(state, AppAction::Board(BoardAction::Close));
         }
-        if state.review.draft().is_some() && state.panel() == Some(Panel::Changes) {
-            return self.child(state, AppAction::Review(ReviewAction::CancelComment));
+        if state.panel() == Some(Panel::Changes)
+            && let Some(id) = state.session.open.clone()
+            && state
+                .comments
+                .sessions
+                .get(&id)
+                .is_some_and(|held| held.editing.is_some())
+        {
+            return self.child(state, AppAction::Comments(CommentsAction::Cancel(id)));
         }
         Effect::none()
     }
@@ -72,6 +91,10 @@ impl App {
             return Effect::none();
         }
         state.overlays.push(Overlay::Palette);
+        state.palette.report = humata2_palette::ReportStatus {
+            recording: state.report.recording,
+            last: state.report.last.is_some(),
+        };
         let in_session = matches!(state.route, Route::Session(_));
         state.palette.context = match &state.route {
             Route::Session(id) => Some(id.clone()),

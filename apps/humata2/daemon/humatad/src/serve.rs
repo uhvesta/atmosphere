@@ -22,6 +22,7 @@ use tonic::transport::Server;
 use tower::util::MapRequestLayer;
 
 use crate::access_service::Access;
+use crate::board_service::BoardSvc;
 use crate::channel_service::ChannelSvc;
 use crate::cli_login::{CliAuth, CliLogins};
 use crate::compression::Compression;
@@ -39,11 +40,15 @@ use crate::not_built;
 use crate::operations::{OperationSvc, Operations};
 use crate::paste::PASTE_MAX_BYTES;
 use crate::peer_link;
+use crate::relay_auth::RelayAuth;
 use crate::restart;
-use crate::session_service::SessionSvc;
+use crate::remote_terminal::RemoteTerminal;
+use crate::remote_work::{RemoteWork, StoreMemory};
+use crate::session_service::{SessionSvc, Tell, TellSink};
 use crate::sync;
 use crate::terminal::{Terminals, TerminalsConfig};
 use crate::terminal_session::Kernel;
+use crate::transfer_end_service::TransferEndSvc;
 use crate::transfer_service::TransferSvc;
 use crate::trash_service::{Bin, TrashSvc};
 
@@ -67,15 +72,19 @@ pub(crate) enum Role {
 #[derive(clap::Args)]
 pub(crate) struct ServeArgs {
     /// The socket to serve on, made 0600 in a folder only you can open.
-    /// Default: ~/.humata2/humatad.sock.
+    /// Default: ~/.humata2/humatad.sock. With --stdio, the machine's daemon
+    /// socket the link relays the host's calls to (D139, D146).
     #[arg(long)]
     socket: Option<PathBuf>,
     /// Serve the peer link on stdin and stdout instead of a socket: what
     /// the Mac runs over SSH or a provider's connect command (MP-7). It
     /// serves PeerService and what the Mac relays, takes every call for
     /// the Mac's, and ends when stdin closes. A peer link is always a
-    /// machine's, whatever --role says.
-    #[arg(long, conflicts_with = "socket")]
+    /// machine's, whatever --role says. It relays what the host may call to
+    /// the machine's daemon on --socket, or on the default socket when
+    /// neither --socket nor --state is given; with --state and no --socket
+    /// it relays nothing (D146).
+    #[arg(long)]
     stdio: bool,
     /// With --stdio, print `HUMATA_SYNC_<nonce>` on a line of its own
     /// before the stream, so a terminal Humata took over can tell where
@@ -91,6 +100,10 @@ pub(crate) struct ServeArgs {
     /// The humata2_holder binary. Default: the one beside humatad2.
     #[arg(long)]
     holder: Option<PathBuf>,
+    /// The humata binary the agents' turn hooks run (D169). Default: the
+    /// one beside humatad2.
+    #[arg(long)]
+    humata: Option<PathBuf>,
     /// The tools bundle machines get their humatad2, humata2_holder and
     /// humata from (TS-2): a folder with a manifest.json. Default: the
     /// `tools` folder beside humatad2 when it has one, else this host's
@@ -178,6 +191,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let ready = args
         .ready_fd
         .map(|fd| File::from(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }));
+    // D146: a link given its own state folder reaches no socket unless told.
+    let state_given = args.state.is_some();
     let state = match args.state {
         Some(state) => state,
         None => home_folder()?.join("state"),
@@ -186,7 +201,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         private_folder(&state)?;
         private_folder(&state.join("logs"))?;
         let machine = machine_id(&state.join("machine-id"))?;
-        return peer_link::run(&state, machine, args.sync.as_deref()).await;
+        let socket = match (args.socket, state_given) {
+            (Some(socket), _) => Some(socket),
+            (None, false) => Some(default_socket()?),
+            // A test's state folder: never reach the real socket.
+            (None, true) => None,
+        };
+        return peer_link::run(&state, machine, args.sync.as_deref(), socket).await;
     }
     let socket = match args.socket {
         Some(socket) => socket,
@@ -306,6 +327,19 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         store.clone(),
         Arc::new(Kernel),
     );
+    // D144: a connection that completes the relay's proof is the host's.
+    // The session check inside it uses the interceptor as it is now, with
+    // no relay, so there is no cycle.
+    let relay = Arc::new(RelayAuth::new(
+        args.role,
+        state.join(crate::link_proof::KEY_FILE),
+        rustix::process::geteuid().as_raw(),
+        {
+            let plain = authenticate.clone();
+            Arc::new(move |pid| plain.in_a_session(Some(pid)))
+        },
+    ));
+    let authenticate = authenticate.with_relay(relay.clone());
     let guard = Arc::new(Guard::new(&machine, role));
     crate::rules_kept::restore(&store, &guard).map_err(DaemonError::RulesKept)?;
 
@@ -323,6 +357,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         }
         None => humata2_sessions::Agents::builtin(),
     };
+    // D169: Claude Code starts with hooks that run `humata turn`; the file is
+    // written now and again before each launch.
+    let humata = args
+        .humata
+        .clone()
+        .unwrap_or_else(|| beside_this_binary("humata"));
+    let humata = std::fs::canonicalize(&humata).unwrap_or(humata);
+    let hooks = crate::session_service::install_hooks(
+        state.join("claude-hooks.json"),
+        humata,
+        socket.clone(),
+    )
+    .map_err(|source| DaemonError::Hooks { source })?;
+    let agents = agents.with_hooks(&hooks);
+    crate::session_service::set_sources(&agents);
     let reports = state.join("restarts");
     private_folder(&reports)?;
     let revive = restart::Revive {
@@ -363,6 +412,41 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine.clone(),
         feed.clone(),
     ));
+    // The host's machine list and its links come first: the terminal, channel and
+    // session services each hold a part of them (D139). A machine's own daemon has
+    // none, so every session it knows is here and its local path is untouched.
+    let host_work = match role {
+        pb::DaemonRole::Host => Some(Arc::new(machine_work(
+            &state,
+            args.tools,
+            args.ssh_config,
+            feed.clone(),
+        )?)),
+        _ => None,
+    };
+    let remote_slot = Arc::new(std::sync::OnceLock::new());
+    let session_tell =
+        Tell::new(feed.clone(), store.clone(), machine.clone()).with_remote(remote_slot.clone());
+    let remote_work = host_work.as_ref().map(|work| {
+        let remote = RemoteWork::new(
+            work.links(),
+            work.reports(),
+            Arc::new(StoreMemory(store.clone())),
+            Arc::new(TellSink(session_tell.clone())),
+        );
+        let _ = remote_slot.set(remote.clone());
+        // What the machines report, for the daemon's life (SL-3, TR-7).
+        tokio::spawn({
+            let remote = remote.clone();
+            async move { remote.follow_reports().await }
+        });
+        remote
+    });
+    let remote_terminal = host_work
+        .as_ref()
+        .map(|work| RemoteTerminal::new(work.links()));
+    // FM-10: the home folder a file manager pane may show, for the user only.
+    let home = root.clone();
     let terminals = Terminals::new(TerminalsConfig {
         store: store.clone(),
         machine: machine.clone(),
@@ -377,11 +461,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         identities: identities.clone(),
         compression: compression.clone(),
         inbox: inbox.clone(),
+        remote: remote_terminal,
     });
     let roots = Arc::new(Roots::new(
         store.clone(),
         machine.clone(),
         channels_folder.clone(),
+        home,
     ));
     // LD-6: one trash per machine, in the folder the channels live in.
     let bin = Arc::new(Bin::new(channels_folder.join(".trash")));
@@ -393,6 +479,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Link::Local,
     );
     let trash = TrashSvc::new(bin.clone(), guard.clone(), machine.clone());
+    // FM-9: the far end of a transfer the host drives on this machine.
+    let transfer_end = TransferEndSvc::new(
+        roots.clone(),
+        guard.clone(),
+        bin.clone(),
+        machine.clone(),
+    );
     let transfers = TransferSvc::new(
         roots,
         guard.clone(),
@@ -432,6 +525,15 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine.clone(),
         args.default_agent.clone(),
         inbox.clone(),
+        remote_work.clone(),
+        host_work.clone(),
+    );
+    let board_svc = BoardSvc::new(
+        guard.clone(),
+        store.clone(),
+        feed.clone(),
+        inbox.clone(),
+        machine.clone(),
     );
     let session_svc = SessionSvc::new(
         guard.clone(),
@@ -440,15 +542,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         identities.clone(),
         machine.clone(),
         inbox.clone(),
+        remote_work,
+        session_tell,
     );
-    let machines = match role {
-        pb::DaemonRole::Host => {
-            let work = Arc::new(machine_work(
-                &state,
-                args.tools,
-                args.ssh_config,
-                feed.clone(),
-            )?);
+    let machines = match host_work {
+        Some(work) => {
             let skills_home = match args.skills_home {
                 Some(home) => home,
                 None => std::env::var_os("HOME")
@@ -460,15 +558,16 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             // Set before any link starts, so the first link-up reaches it.
             let _ = work.skills.set(skills.clone());
             machine_service::recover_in_background(work.clone());
-            let providers = ProviderSvc::new(guard.clone(), work.clone(), operations.clone());
+            let providers = ProviderSvc::new(guard.clone(), work.clone(), operations.clone(), inbox.clone());
             let skills = crate::skills_service::SkillsSvc::new(
                 guard.clone(),
                 work.clone(),
                 operations.clone(),
                 skills,
+                inbox.clone(),
             );
             Some((
-                MachineSvc::new(guard, work, operations.clone()),
+                MachineSvc::new(guard, work, operations.clone(), inbox.clone()),
                 providers,
                 skills,
             ))
@@ -485,11 +584,16 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(
             Daemon::new(machine.clone(), role)
                 .offering(compression)
-                .started(last_start),
+                .started(last_start)
+                .with_relay(relay),
         ))
         .add_service(pb::file_service_server::FileServiceServer::new(files))
         .add_service(pb::trash_service_server::TrashServiceServer::new(trash))
         .add_service(pb::transfer_service_server::TransferServiceServer::from_arc(transfers))
+        .add_service(
+            pb::transfer_end_service_server::TransferEndServiceServer::new(transfer_end)
+                .max_decoding_message_size(DECODE_MAX_BYTES),
+        )
         .add_service(
             pb::terminal_service_server::TerminalServiceServer::new(terminals)
                 .max_decoding_message_size(DECODE_MAX_BYTES),
@@ -512,6 +616,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .add_service(pb::session_service_server::SessionServiceServer::new(
             session_svc,
         ))
+        .add_service(pb::board_service_server::BoardServiceServer::new(board_svc))
         .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(
             CliAuth {
                 logins,

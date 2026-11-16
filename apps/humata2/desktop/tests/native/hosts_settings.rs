@@ -66,7 +66,10 @@ fn settings_visit_keeps_both_tab_groups_and_layout_rows_work() {
     app.click("settings-theme-Light");
     app.cx
         .update(|cx| assert!(!gpui_kit::component::ActiveTheme::theme(cx).is_dark()));
-    app.click("settings-font-plus");
+    app.click("settings-font");
+    assert!(app.contains("settings-font-13"));
+    app.click("settings-font-13");
+    assert!(!app.contains("settings-font-13"));
     assert_eq!(app.ui.read(|s| s.settings.preferences.font_size), 13);
     app.click("settings-long-lines-Wrap");
     assert!(app.ui.read(|s| s.review.wrap));

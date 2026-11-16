@@ -16,6 +16,8 @@ pub struct Facts {
     pub user: String,
     pub home: String,
     pub git: bool,
+    git_version: String,
+    gh_version: String,
     /// Free space in the home folder; none when `df` said nothing usable.
     pub disk_free_kib: Option<u64>,
     /// `systemctl --user` works now, so humatad2 can be a user service.
@@ -38,6 +40,18 @@ pub struct Facts {
 }
 
 impl Facts {
+    /// The number `git --version` printed, such as `2.47.1`; empty when git
+    /// is missing or printed none.
+    pub fn git_version(&self) -> &str {
+        &self.git_version
+    }
+
+    /// The number `gh --version` printed, such as `2.83.0`; empty when there
+    /// is no `gh` or it printed none.
+    pub fn gh_version(&self) -> &str {
+        &self.gh_version
+    }
+
     /// The SHA-256 of `file` as installed now; none when it isn't there.
     pub fn installed(&self, file: InstalledFile) -> Option<&str> {
         self.installed.get(&file).map(String::as_str)
@@ -66,6 +80,9 @@ fact arch "$(uname -m)"
 fact user "$(id -un)"
 fact home "$HOME"
 fact git "$(has git)"
+version() { "$@" 2>/dev/null | sed -n '1s/^[^0-9]*\([0-9][0-9.]*\).*/\1/p'; }
+if command -v git >/dev/null 2>&1; then fact git_version "$(version git --version)"; fi
+if command -v gh >/dev/null 2>&1; then fact gh_version "$(version gh --version)"; fi
 fact disk_free_kib "$(df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { print $4 }')"
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then fact systemd yes; else fact systemd no; fi
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then fact systemd_init yes; else fact systemd_init no; fi
@@ -114,6 +131,14 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
         }
         found
     };
+    let version = |key: &str| {
+        facts
+            .get(key)
+            .filter(|number| {
+                !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+            })
+            .map_or_else(String::new, |number| (*number).to_owned())
+    };
     let installed = shas("sha");
     let staged = shas("staged");
     Some(Facts {
@@ -124,6 +149,8 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
         user: (*user).to_owned(),
         home: (*facts.get("home")?).to_owned(),
         git: yes("git"),
+        git_version: version("git_version"),
+        gh_version: version("gh_version"),
         disk_free_kib: facts.get("disk_free_kib").and_then(|kib| kib.parse().ok()),
         systemd: yes("systemd"),
         systemd_init: yes("systemd_init"),

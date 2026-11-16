@@ -16,6 +16,8 @@ const ROWS: &[(&str, &str, Option<RuleSetting>)] = &[
     ("channel_board_edit_own", "Channel board: edit, move or delete items it created", Some(Allow)),
     ("channel_board_edit_others", "Channel board: edit, move or delete anyone else's items", Some(Ask)),
     ("global_read", "Global board, or other channels and their boards: read", Some(Allow)),
+    // D155: writes there ask by default.
+    ("global_board_write", "Global board, or other channels' boards: change", Some(Ask)),
     ("shared_write", "Write into shared/ on its machine", Some(Allow)),
     (
         "files_fetch_local",

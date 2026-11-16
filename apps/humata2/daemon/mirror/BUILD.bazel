@@ -1,0 +1,40 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The host's copy of every session's conversation (LD-8) and the full-text
+# index over it (LD-23): reads an agent's conversation file from where it
+# stopped, replaces host variable values with their names (LD-21), appends
+# the entries to the session's mirror file and indexes them. The mirror is
+# user data; the index is rebuilt from it. Knows nothing about the network.
+rust_library(
+    name = "mirror",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_mirror",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        "@crates//:rusqlite",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src] + glob(["tests/support/*.rs"]),
+        crate_root = src,
+        deps = [
+            ":mirror",
+            "@crates//:rusqlite",
+            "@crates//:serde_json",
+            "@crates//:tempfile",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -29,10 +29,7 @@ fn restart_row(
     let open = ui.clone();
     let button = ui.clone();
     let target = session.id.clone();
-    let channel = state
-        .workspace
-        .channel(&session.channel)
-        .map_or("", |c| c.name.as_str());
+    let place = humata2_clients::desk::place(&state.workspace, &session.channel);
     let host = state
         .workspace
         .machine(&session.machine)
@@ -68,7 +65,7 @@ fn restart_row(
                             div()
                                 .text_size(px(11.5))
                                 .text_color(rgb(look.secondary))
-                                .child(format!("# {channel} · {host}")),
+                                .child(format!("{place} · {host}")),
                         ),
                 )
                 .child(

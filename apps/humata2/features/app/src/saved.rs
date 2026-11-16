@@ -1,6 +1,6 @@
 //! Where the person was, saved so a restart puts them back (PER-25): the
 //! screen, the open sessions with their tabs, panels, drafts and queues,
-//! pane sizes, folding, settings, unsent review comments and which hosts
+//! pane sizes, folding, settings, which sessions show resolved review comments and which hosts
 //! were connected. Scroll positions and other fine-grained view state are
 //! left out on purpose (D52).
 //!
@@ -14,6 +14,7 @@ use humata2_clients::Storage;
 use humata2_clients::model::{ChannelId, MachineId, SessionId};
 use humata2_palette::Command;
 use humata2_review::ReviewSaved;
+use humata2_review::comments::CommentsSaved;
 use humata2_session::SessionView;
 use humata2_settings::Preferences;
 use humata2_sidebar::Folding;
@@ -48,8 +49,10 @@ pub struct SavedUi {
     pub folding: Folding,
     /// Settings.
     pub preferences: Preferences,
-    /// Review folds and unsent comments.
+    /// Review folds, and comments older builds saved until the daemon takes them.
     pub review: ReviewSaved,
+    /// Which sessions show resolved comments.
+    pub comments: CommentsSaved,
     /// Recent palette picks.
     pub recent: Vec<Command>,
     /// Prepared views decided on.
@@ -72,7 +75,7 @@ impl SavedUi {
             view.draft.clear();
             view.file_filter.clear();
         }
-        structure.review.drafts.clear();
+        structure.review.legacy_drafts.clear();
         structure
     }
 }

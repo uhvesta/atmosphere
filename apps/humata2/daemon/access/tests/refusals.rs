@@ -96,7 +96,12 @@ fn main_clones_are_read_only_for_everyone() {
             ErrorKind::MainCloneReadOnly,
             "{principal:?}"
         );
-        assert_eq!(refusal.fix(), Fix::UseOwnFolders);
+        assert_eq!(
+            refusal.fix(),
+            Fix::SessionCloneOrRemoveRepo {
+                repo: RepoRef::new("pay")
+            }
+        );
     }
     // Copying into one is a write to it.
     let refusal = refused(
@@ -485,7 +490,8 @@ fn the_capability_list_matches_the_trace_matrix() {
     let count = |tier: Tier| all.iter().filter(|c| c.tier() == tier).count();
     // TRACE.md §2's rows.
     assert_eq!(count(Tier::DefaultAllow), 15);
-    assert_eq!(count(Tier::AskMe), 16);
+    // GLOBAL_BOARD_WRITE joined Ask me with D155.
+    assert_eq!(count(Tier::AskMe), 17);
     assert_eq!(count(Tier::AskNoAllow), 1);
     assert_eq!(count(Tier::NeverByDefault), 3);
     assert_eq!(count(Tier::UserOnly), 11);

@@ -62,7 +62,7 @@ fn header(look: Look, on: Tab) -> Div {
                 .px(px(20.))
                 .text_size(px(12.5))
                 .child(tab("Sessions", Some("6"), on == Tab::Sessions))
-                .child(tab("Inbox", Some("2"), on == Tab::Inbox))
+                .child(tab("Inbox", Some("3"), on == Tab::Inbox))
                 .child(tab("Board", None, false))
                 .child(tab("Repos and machines", None, on == Tab::Repos))
                 .child(tab("Agent access", None, on == Tab::Access))
@@ -96,10 +96,10 @@ struct Row {
 
 const ROWS: &[Row] = &[
     Row { lines: "", fold: Some(true), state: St::NeedsYou, title: "Ledger schema migration", kind: None, inbox: Some("2"), agent: "Claude Code", machine: "devbox-1", status: "Needs you", started: "Today 11:40", used: "Today 12:52" },
-    Row { lines: "├─ ", fold: Some(true), state: St::NeedsYou, title: "Try BRIN index", kind: Some("⑂ code + context"), inbox: None, agent: "Claude Code", machine: "devbox-1", status: "Needs you", started: "Today 12:05", used: "Today 13:02" },
+    Row { lines: "├─ ", fold: Some(true), state: St::NeedsYou, title: "Try BRIN index", kind: Some("⑂ code + context"), inbox: Some("1"), agent: "Claude Code", machine: "devbox-1", status: "Needs you", started: "Today 12:05", used: "Today 13:02" },
     Row { lines: "│  └─ ", fold: None, state: St::Working, title: "Partial BRIN on posted_at", kind: Some("⑂ code only"), inbox: None, agent: "Claude Code", machine: "devbox-1", status: "Working", started: "Today 12:31", used: "Today 12:31" },
     Row { lines: "└─ ", fold: None, state: St::Idle, title: "Review the schema", kind: Some("⑂ context only"), inbox: None, agent: "Claude Code", machine: "This Mac", status: "Idle", started: "Today 12:50", used: "Today 12:50" },
-    Row { lines: "", fold: Some(false), state: St::Working, title: "Refund retries", kind: None, inbox: None, agent: "Copilot", machine: "This Mac", status: "Working", started: "Yesterday", used: "Today 09:15" },
+    Row { lines: "", fold: None, state: St::Working, title: "Refund retries", kind: None, inbox: Some("1"), agent: "Copilot", machine: "This Mac", status: "Working", started: "Yesterday", used: "Today 09:15" },
     Row { lines: "", fold: None, state: St::Idle, title: "API rate limiter", kind: None, inbox: None, agent: "Codex", machine: "devbox-1", status: "Idle · PR #491", started: "Mon", used: "Tue" },
 ];
 
@@ -228,7 +228,7 @@ pub fn repos(look: Look) -> Div {
     let head = |name: &'static str, note: &'static str, hex: u32| {
         div().w(px(150.)).flex().flex_col().child(div().font_weight(FontWeight::SEMIBOLD).text_color(c(look.accent)).child(name)).child(div().text_size(px(11.)).text_color(c(hex)).child(note))
     };
-    let row = |repo: &'static str, cells: [(&'static str, bool); 3]| {
+    let row = |repo: &'static str, cells: [(&'static str, bool); 2]| {
         div()
             .flex()
             .items_center()
@@ -255,12 +255,11 @@ pub fn repos(look: Look) -> Div {
                         .border_b_1()
                         .border_color(c(look.line))
                         .child(div().flex_1())
-                        .child(head("This Mac", "3 sessions", look.secondary))
-                        .child(head("devbox-1", "4 sessions", look.secondary))
-                        .child(head("gpu-box", "1 session · offline", GREY)),
+                        .child(head("This Mac", "2 sessions", look.secondary))
+                        .child(head("devbox-1", "4 sessions", look.secondary)),
                 )
-                .child(row("acme/ledger", [("3 clones", false), ("4 clones", false), ("1 clone", false)]))
-                .child(row("acme/api", [("2 clones", false), ("3 clones", false), ("—", true)])),
+                .child(row("acme/ledger", [("2 clones", false), ("4 clones", false)]))
+                .child(row("acme/api", [("2 clones", false), ("3 clones", false)])),
         )
         .child(div().flex().gap(px(8.)).child(button(look, Kind::Secondary, "Add a GitHub repo…")).child(button(look, Kind::Secondary, "Add a machine…"))),
     )

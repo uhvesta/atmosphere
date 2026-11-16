@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use humata2_access::Refusal;
 use humata2_grpc::humata::v1 as pb;
-use humata2_machines::{OpStep, StepEvent};
+use humata2_machines::{Facts, OpStep, StepEvent};
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
@@ -283,6 +283,10 @@ impl Progress {
                 (*step, pb::StepState::Failed, Some(output_tail.clone()))
             }
             StepEvent::Undone(step) => (*step, pb::StepState::Undone, None),
+            StepEvent::Checked(facts) => {
+                self.set_facts(OpStep::Check, check_facts(facts));
+                return;
+            }
         };
         self.change(|operation| {
             let index = match operation
@@ -301,6 +305,21 @@ impl Progress {
             if let Some(tail) = tail {
                 shown.output_tail = tail;
             }
+        });
+    }
+
+    /// Sets what `step` read, adding the step at the end when the
+    /// operation doesn't list it yet.
+    fn set_facts(&self, step: OpStep, facts: HashMap<String, String>) {
+        self.change(|operation| {
+            let index = match operation.steps.iter().position(|shown| shown.key == step.key()) {
+                Some(index) => index,
+                None => {
+                    operation.steps.push(waiting(step));
+                    operation.steps.len() - 1
+                }
+            };
+            operation.steps[index].facts = facts;
         });
     }
 
@@ -389,6 +408,23 @@ impl Tracked {
     }
 }
 
+/// What the check read, as the `check` step's facts (HO-1): the names
+/// GRPC.md lists; a fact that isn't known is left out.
+fn check_facts(facts: &Facts) -> HashMap<String, String> {
+    let mut named = HashMap::new();
+    named.insert("os".to_owned(), facts.platform.os.to_string());
+    named.insert("arch".to_owned(), facts.platform.arch.to_string());
+    for (name, version) in [("git", facts.git_version()), ("gh", facts.gh_version())] {
+        if !version.is_empty() {
+            named.insert(name.to_owned(), version.to_owned());
+        }
+    }
+    if let Some(kib) = facts.disk_free_kib {
+        named.insert("disk_free_bytes".to_owned(), kib.saturating_mul(1024).to_string());
+    }
+    named
+}
+
 fn waiting(step: OpStep) -> pb::OperationStep {
     waiting_named(step.key(), step.title())
 }
@@ -401,6 +437,7 @@ fn waiting_named(key: &str, title: &str) -> pb::OperationStep {
         done_units: 0,
         total_units: 0,
         output_tail: String::new(),
+        facts: HashMap::new(),
     }
 }
 

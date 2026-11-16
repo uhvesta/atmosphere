@@ -27,6 +27,6 @@ pub use image::ImageStats;
 pub use mermaid::{DiagramStats, MermaidCache};
 pub use theme::MarkdownTheme;
 pub use view::{
-    CommentOnSelection, CopyFormat, CopyOther, KEY_CONTEXT, Layout, MarkdownEvent, MarkdownOptions, MarkdownView,
+    CommentMarks, CommentOnSelection, CopyFormat, CopyOther, KEY_CONTEXT, Layout, MarkdownEvent, MarkdownOptions, MarkdownView,
     OutlineEntry, ToggleSource, ViewMode, ViewStats, key_bindings,
 };

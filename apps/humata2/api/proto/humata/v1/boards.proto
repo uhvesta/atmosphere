@@ -6,6 +6,7 @@ package humata.v1;
 
 import "google/protobuf/timestamp.proto";
 import "humata/v1/common.proto";
+import "humata/v1/inbox.proto";
 
 service BoardService {
   rpc ListItems(ListItemsRequest) returns (ListItemsResponse);
@@ -31,8 +32,8 @@ message BoardItem {
   BoardColumn column = 6;
   // Order within the column; smaller first.
   string rank = 7;
-  // Any session of its channel, or none (BD-3).
-  SessionId assigned_session = 8;
+  // Replaced by `sessions` (BD-16); refused when sent, never filled.
+  SessionId assigned_session = 8 [deprecated = true];
   // BD-3 ownership: you, or the agent session that made it.
   Actor created_by = 9;
   google.protobuf.Timestamp created_at = 10;
@@ -43,6 +44,40 @@ message BoardItem {
   Revision revision = 14;
   // Set when the item was made in a journal; id is then the final one.
   BoardItemId provisional_id = 15;
+  // The sessions working on it, in the order they were added (BD-16).
+  // An item with none is unassigned.
+  repeated SessionId sessions = 16;
+  // What it depends on, on any board (BD-14). Dependencies block nothing.
+  repeated Dependency depends_on = 17;
+  // When it last entered Done; unset outside Done (BD-13).
+  google.protobuf.Timestamp done_at = 18;
+  // Agents' pending Inbox requests about this item, answered in place
+  // (BD-15). Filled for the user only; empty for agents.
+  repeated PendingAsk pending = 19;
+}
+
+// One edge of Depends on (BD-14). title and column are empty when the
+// caller may not read the item it points to.
+message Dependency {
+  BoardItemId id = 1;
+  string title = 2;
+  // ✓ when Done.
+  BoardColumn column = 3;
+}
+
+// An agent's pending request about one item (BD-15). The app names the
+// buttons from the change: Move to <column> / Keep in <column>, Apply
+// edit / Keep as is, Delete item / Keep item. Answer it with
+// InboxService, as its Inbox card does.
+message PendingAsk {
+  RequestId request = 1;
+  // The asking session and its agent.
+  SessionId session = 2;
+  Actor asked_by = 3;
+  // Field by field, before → after, as the item stands now.
+  BoardChangePreview change = 4;
+  // The agent's reason, in its words.
+  string reason = 5;
 }
 
 // BD-5 and BD-7 scopes.
@@ -88,18 +123,31 @@ message CreateItemRequest {
   string title = 3;
   BoardColumn column = 4;
   string description = 5;
-  SessionId assigned_session = 6;
+  // Replaced by `sessions`; refused when sent.
+  SessionId assigned_session = 6 [deprecated = true];
   // Shown on the Inbox card when the rule asks.
   string reason = 7;
+  // The sessions working on it (BD-16).
+  repeated SessionId sessions = 8;
+  // What it depends on (BD-14); a missing or unreadable item is refused.
+  repeated BoardItemId depends_on = 9;
 }
 
 message ItemPatch {
   optional string title = 1;
   optional string description = 2;
-  // Set with clear_assignment false to assign; clear_assignment true for
-  // Nobody.
-  SessionId assigned_session = 3;
-  bool clear_assignment = 4;
+  // Replaced by sessions_add and sessions_remove (BD-16); refused when
+  // sent.
+  SessionId assigned_session = 3 [deprecated = true];
+  bool clear_assignment = 4 [deprecated = true];
+  // Add and remove rather than replace, so two writers adding a session
+  // at once both land. Lists never conflict on revision.
+  repeated SessionId sessions_add = 5;
+  repeated SessionId sessions_remove = 6;
+  // BD-14. An edge that would close a loop is refused with
+  // Error.dependency_loop naming it.
+  repeated BoardItemId depends_on_add = 7;
+  repeated BoardItemId depends_on_remove = 8;
 }
 
 message UpdateItemRequest {
@@ -144,6 +192,23 @@ message ItemHistoryEntry {
   bool lost_conflict = 3;
   JournalPosition journal = 4;
   Revision revision = 5;
+  // The same change, structured, for the app to word (BD-3).
+  HistoryKind kind = 6;
+  string field = 7;
+  string before = 8;
+  string after = 9;
+  // The session whose start made this change (SE-3), if any.
+  SessionId cause = 10;
+}
+
+enum HistoryKind {
+  HISTORY_KIND_UNSPECIFIED = 0;
+  HISTORY_KIND_CREATED = 1;
+  HISTORY_KIND_CHANGED = 2;
+  HISTORY_KIND_MOVED = 3;
+  HISTORY_KIND_DELETED = 4;
+  HISTORY_KIND_SESSIONS = 5;
+  HISTORY_KIND_DEPENDENCIES = 6;
 }
 
 message GetItemHistoryRequest {

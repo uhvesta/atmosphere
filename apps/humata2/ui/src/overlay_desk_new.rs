@@ -1,6 +1,9 @@
 //! New desk session (DK-14, frame 40).
 
-use super::{Overlays, agent_label, button, check, form_row, header, popup, primary, radio, secondary};
+use super::{
+    Overlays, button, check, form_row, form_row_wrapping, header, popup, primary, radio, runs,
+    secondary,
+};
 use crate::bridge::Ui;
 use crate::chrome;
 use super::super::sync;
@@ -17,6 +20,10 @@ use humata2_clients::desk::Access;
 use humata2_clients::model::Agent;
 use humata2_desk::{DeskAction, FolderPick, NewAction, NewForm};
 use std::rc::Rc;
+
+/// The longest folder caption, in characters, that fits on one line of the
+/// dialog once the key column has given way (frame 40's has 75).
+const CAPTION_FITS: usize = 78;
 
 fn new_action(action: NewAction) -> AppAction {
     AppAction::Desk(DeskAction::New(action))
@@ -62,7 +69,7 @@ impl Overlays {
             .bg(rgb(look.fill))
             .children(Agent::ALL.into_iter().map(|agent| {
                 let ui = ui.clone();
-                let name = agent_label(agent);
+                let name = runs(agent);
                 let selected = form.agent == agent;
                 div()
                     .id(SharedString::from(format!(
@@ -84,7 +91,8 @@ impl Overlays {
             }));
 
         let mut machine_value = col().gap(px(6.)).child(
-            row()
+            div()
+                .flex()
                 .gap(px(8.))
                 .child(popup(
                     ui,
@@ -109,6 +117,11 @@ impl Overlays {
             ));
         }
 
+        let caption = format!("{preview} · deleted 7 days after you close it unless kept");
+        // Frame 40 keeps the caption on one line by narrowing the key
+        // column. A longer folder name doesn't fit even then, so its caption
+        // wraps instead of running out of the dialog; the path is never cut.
+        let caption_fits = caption.chars().count() <= CAPTION_FITS;
         let mut folder = col()
             .gap(px(8.))
             .child(radio(
@@ -117,7 +130,7 @@ impl Overlays {
                 "new-desk-folder-scratch",
                 form.folder == FolderPick::Scratch,
                 "A new scratch folder",
-                format!("{preview} · deleted 7 days after you close it, unless you keep it"),
+                caption,
                 new_action(NewAction::Folder(FolderPick::Scratch)),
             ))
             .child(radio(
@@ -239,7 +252,11 @@ impl Overlays {
             .child(form_row(look, "Title", title))
             .child(form_row(look, "Runs", row().child(agents)))
             .child(form_row(look, "Machine", machine_value))
-            .child(form_row(look, "Folder", folder))
+            .child(if caption_fits {
+                form_row(look, "Folder", folder)
+            } else {
+                form_row_wrapping(look, "Folder", folder)
+            })
             .child(form_row(look, "Repos", repos))
             .child(form_row(look, "Agent access", switches))
             .children(
@@ -262,7 +279,7 @@ impl Overlays {
                         busy,
                     )),
             )
-            .focus_trap("new-desk-trap", &self.desk.title.focus_handle(cx))
+            .focus_trap("new-desk", &self.desk.title.focus_handle(cx))
             .into_any_element()
     }
 }

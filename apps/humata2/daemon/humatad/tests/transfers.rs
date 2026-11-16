@@ -141,6 +141,11 @@ fn in_main(path: &str) -> pb::FileLocation {
     )
 }
 
+/// A path under the user's home folder, which holds Humata's folders.
+fn in_home(path: &str) -> pb::FileLocation {
+    at(pb::file_location::Root::Home(pb::MachineHome {}), path)
+}
+
 fn start_request(
     sources: &[pb::FileLocation],
     destination: pb::FileLocation,
@@ -591,6 +596,55 @@ async fn a_source_outside_its_root_and_a_main_clone_destination_are_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn through_the_home_folder_a_main_clone_is_copied_out_of_but_never_into_or_away() {
+    let world = world().await;
+    let main = world.shared.parent().unwrap().join("main").join(REPO);
+    std::fs::write(main.join("README.md"), "reference").unwrap();
+    std::fs::write(world.clone.join("note.txt"), "x").unwrap();
+    let main_at_home = format!("Humata/{CHANNEL_FOLDER}/main/{REPO}");
+    let readme = format!("{main_at_home}/README.md");
+
+    // Copy out is allowed and leaves the main clone as it was.
+    let out = copy(&world.daemon, in_home(&readme), in_shared("")).await;
+    let done = settled(&world.daemon, &id(&out)).await;
+    assert_eq!(state(&done), pb::TransferState::Done, "{done:?}");
+    assert_eq!(std::fs::read_to_string(world.shared.join("README.md")).unwrap(), "reference");
+
+    // Copy into it, move out of it, move a folder that holds it: refused.
+    let request = |sources: &[pb::FileLocation], destination, mode| {
+        start_request(sources, destination, mode, pb::OnExisting::KeepBoth, None)
+    };
+    let into = start(
+        &world.daemon,
+        request(&[in_clone("note.txt")], in_home(&main_at_home), pb::TransferMode::Copy),
+    )
+    .await
+    .unwrap_err();
+    let away = start(
+        &world.daemon,
+        request(&[in_home(&readme)], in_shared(""), pb::TransferMode::Move),
+    )
+    .await
+    .unwrap_err();
+    let holder = format!("Humata/{CHANNEL_FOLDER}/main");
+    let above = start(
+        &world.daemon,
+        request(&[in_home(&holder)], in_shared(""), pb::TransferMode::Move),
+    )
+    .await
+    .unwrap_err();
+
+    for refused in [&into, &away, &above] {
+        assert!(
+            matches!(error_of(refused).kind, Some(pb::error::Kind::MainCloneReadOnly(_))),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(main.join("README.md")).unwrap(), "reference");
+    assert!(!main.join("note.txt").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_same_key_starts_one_transfer_also_after_a_restart() {
     let mut world = world().await;
     std::fs::write(world.clone.join("note.txt"), "x").unwrap();
@@ -663,6 +717,10 @@ async fn a_finished_transfer_cannot_be_cancelled() {
     let refused = control(&world.daemon, &id(&started), "cancel").await.unwrap_err();
 
     assert_eq!(refused.code(), Code::FailedPrecondition, "{refused:?}");
+    assert!(
+        matches!(error_of(&refused).kind, Some(pb::error::Kind::NotCancellable(_))),
+        "{refused:?}"
+    );
     assert!(world.shared.join("note.txt").exists());
 }
 

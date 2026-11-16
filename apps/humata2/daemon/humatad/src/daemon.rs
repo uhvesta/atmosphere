@@ -9,6 +9,8 @@ use tonic::{Request, Response, Status};
 use crate::compression::Compression;
 
 use crate::identity::{self, Caller, UserVia};
+use crate::relay_auth::RelayAuth;
+use crate::status;
 
 /// This API's version. `api_minor` grows with every addition once Humata 2
 /// ships; until then the protos change in place.
@@ -22,6 +24,9 @@ pub(crate) struct Daemon {
     compression: Option<Arc<Compression>>,
     /// What this start brought back, once it's done (PER-31).
     last_start: Option<Arc<OnceLock<pb::LastStart>>>,
+    /// The socket's relay state (D144). None on the peer link, where
+    /// BeginRelay and CompleteRelay answer "not built".
+    relay: Option<Arc<RelayAuth>>,
 }
 
 impl Daemon {
@@ -31,6 +36,7 @@ impl Daemon {
             role,
             compression: None,
             last_start: None,
+            relay: None,
         }
     }
 
@@ -46,6 +52,14 @@ impl Daemon {
     pub(crate) fn offering(self, compression: Arc<Compression>) -> Self {
         Self {
             compression: Some(compression),
+            ..self
+        }
+    }
+
+    /// Answers BeginRelay and CompleteRelay from `relay` (D144).
+    pub(crate) fn with_relay(self, relay: Arc<RelayAuth>) -> Self {
+        Self {
+            relay: Some(relay),
             ..self
         }
     }
@@ -139,5 +153,42 @@ impl pb::daemon_service_server::DaemonService for Daemon {
             presence_possible,
             contained: false,
         }))
+    }
+
+    /// D144: a fresh nonce for this connection, for the peer link to offer
+    /// the host as the machine's Hello nonce. Grants nothing.
+    async fn begin_relay(
+        &self,
+        request: Request<pb::BeginRelayRequest>,
+    ) -> Result<Response<pb::BeginRelayResponse>, Status> {
+        let (Some(relay), Some(conn)) = (&self.relay, identity::conn_id(&request)) else {
+            return Err(status::not_built("humata.v1.DaemonService.BeginRelay"));
+        };
+        Ok(Response::new(pb::BeginRelayResponse {
+            nonce: relay.begin(conn, std::time::Instant::now()).to_vec(),
+        }))
+    }
+
+    /// D144: the host's nonce and proof as the link received them. On
+    /// success this connection is the host's.
+    async fn complete_relay(
+        &self,
+        request: Request<pb::CompleteRelayRequest>,
+    ) -> Result<Response<pb::CompleteRelayResponse>, Status> {
+        let (Some(relay), Some(conn)) = (&self.relay, identity::conn_id(&request)) else {
+            return Err(status::not_built("humata.v1.DaemonService.CompleteRelay"));
+        };
+        let facts = identity::peer_facts(&request);
+        let done = request.into_inner();
+        relay
+            .complete(
+                conn,
+                &facts,
+                &done.host_nonce,
+                &done.proof,
+                std::time::Instant::now(),
+            )
+            .map_err(|refusal| refusal.status())?;
+        Ok(Response::new(pb::CompleteRelayResponse {}))
     }
 }

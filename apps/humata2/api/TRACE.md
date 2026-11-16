@@ -190,6 +190,7 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | SM-19, DK-9 | CommentService.ResolveComment (reply), ReplyToComment | comment_resolve, comment_reply | — | each under its own rule (COMMENT_RESOLVE, COMMENT_REPLY), Default Allow, own session's comments only |
 | SM-20 | CommentService.ArchiveComment | — | — | user-only |
 | SM-21 | CommentService.ListComments (archived), UnarchiveComment | — | — | user-only |
+| D161 | CommentService.WatchComments | — | — | user-only |
 
 ### FM: file manager (15)
 

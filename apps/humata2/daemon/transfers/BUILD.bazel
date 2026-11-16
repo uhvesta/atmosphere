@@ -94,6 +94,24 @@ rust_test(
     ],
 )
 
+# PER-27, PER-28 again, with every write that wasn't fsynced lost as well
+# (the durable power-cut simulation): the same points, plus a cut right
+# after each call returns.
+rust_test(
+    name = "power_cut_test",
+    size = "large",
+    srcs = ["tests/power_cut.rs"],
+    tags = [
+        "slow",
+    ],
+    deps = [
+        ":transfers_faults",
+        "//apps/humata2/daemon/durable:durable_faults",
+        "@crates//:sha2",
+        "@crates//:tempfile",
+    ],
+)
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],

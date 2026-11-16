@@ -98,6 +98,82 @@ pub fn primary(
     send(ui, id, label, action).primary()
 }
 
+/// A push button as the frames draw it: 24 pt high, radius 6, with a 12 pt
+/// medium label. The kit draws a `.label()` at its own smaller size, so the
+/// label is a child and the button carries it as its accessibility label.
+#[must_use]
+pub fn push(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    let label = label.into();
+    Button::new(id)
+        .accessibility_label(label.clone())
+        .small()
+        .h(px(24.))
+        .px(px(11.))
+        .rounded(px(6.))
+        .font_weight(FontWeight::MEDIUM)
+        .flex_shrink_0()
+        .child(div().text_size(px(12.)).child(label))
+}
+
+/// The frames' grey push button with a hairline. It has no click handler yet.
+#[must_use]
+pub(crate) fn push_quiet_shape(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    look: theme::Look,
+) -> Button {
+    push(id, label)
+        .bg(rgb(look.fill))
+        .border_color(rgb(look.line))
+        .text_color(rgb(look.text))
+}
+
+/// The frames' filled push button. It has no click handler yet.
+#[must_use]
+pub(crate) fn push_primary_shape(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    look: theme::Look,
+) -> Button {
+    push(id, label)
+        .primary()
+        .bg(rgb(look.accent))
+        .text_color(rgb(0xffffff))
+}
+
+/// The frames' grey push button, sending `action`. The click stops here, so
+/// it can sit in a row that is itself clickable.
+#[must_use]
+pub(crate) fn push_quiet(
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    action: AppAction,
+    look: theme::Look,
+) -> Button {
+    let ui = ui.clone();
+    push_quiet_shape(id, label, look).on_click(move |_, _, cx| {
+        cx.stop_propagation();
+        ui.send(action.clone(), cx);
+    })
+}
+
+/// The frames' filled push button, sending `action`. The click stops here.
+#[must_use]
+pub(crate) fn push_primary(
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    action: AppAction,
+    look: theme::Look,
+) -> Button {
+    let ui = ui.clone();
+    push_primary_shape(id, label, look).on_click(move |_, _, cx| {
+        cx.stop_propagation();
+        ui.send(action.clone(), cx);
+    })
+}
+
 /// A banner saying what went wrong, with a button to dismiss it.
 #[must_use]
 pub fn error_banner(

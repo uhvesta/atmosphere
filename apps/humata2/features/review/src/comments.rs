@@ -1,0 +1,952 @@
+//! A session's comments for its agent, as the daemon keeps them, used alike
+//! by the Diff panel, the editor and Markdown source (SM-6 to SM-21, SM-13,
+//! DK-9, D138, D151).
+//!
+//! The daemon owns drafts, statuses, threads and delivery. This reducer
+//! holds a copy per session that the daemon's watch stream keeps current,
+//! the comment box being written, and the user's moves: send, take back,
+//! resolve, reopen, archive, drop and re-attach. What a call answers is what
+//! shows; a status is never assumed.
+//!
+//! A box makes the daemon draft on its first non-blank text and saves later
+//! text after 400 ms without typing, one write per comment in flight at a
+//! time. A failed call keeps what the user wrote and asks the parent for a
+//! toast.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::time::Duration;
+
+use humata2_clients::DaemonError;
+use humata2_clients::Reply;
+use humata2_clients::comments::{
+    Anchor, Comment, CommentEvent, CommentId, CommentsClient, Listing, Sent, Side, Status, Which,
+};
+use humata2_clients::model::{Comment as LegacyComment, SessionId};
+use serde::{Deserialize, Serialize};
+use tca::{Clock, Effect, Reducer};
+
+/// How long typing pauses before a draft is saved.
+const SAVE_AFTER: Duration = Duration::from_millis(400);
+
+/// What survives a restart: which sessions show resolved comments (SM-12).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommentsSaved {
+    /// The sessions with Show resolved on.
+    #[serde(default)]
+    pub show_resolved: BTreeSet<SessionId>,
+}
+
+/// What a comment box does once its text is saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Then {
+    /// Send this comment and close the box.
+    Comment,
+    /// Close the box.
+    Close,
+    /// Drop what the box made, or give back the text it opened with.
+    Cancel,
+    /// Close the box, then archive the comment.
+    Archive(CommentId),
+    /// Close the box, then send every draft.
+    SendAll,
+}
+
+/// The box a comment is written in (SM-9).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommentBox {
+    /// Where the comment points.
+    pub anchor: Anchor,
+    /// The daemon's comment, once the first text made it.
+    pub comment: Option<CommentId>,
+    /// What is typed.
+    pub text: String,
+    /// The text the comment had when the box opened; empty for a new one.
+    opening: String,
+    /// This box made the comment.
+    created_here: bool,
+    /// Makes a retry of the create make nothing more.
+    key: String,
+    /// The text the daemon holds for it.
+    saved: String,
+    /// The text of the write in flight.
+    sending: String,
+    /// A write is in flight.
+    writing: bool,
+    /// Typing paused while a write was in flight.
+    due: bool,
+    /// What to do once saved.
+    then: Option<Then>,
+    /// A stale refusal was already retried.
+    retried: bool,
+    /// The refusal that is being retried.
+    refusal: Option<DaemonError>,
+}
+
+/// One session's comments.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionComments {
+    /// Its comments in the order they were made: not archived, resolved
+    /// ones only when Show resolved is on.
+    pub comments: Vec<Comment>,
+    /// The daemon's count of drafts that aren't archived (SM-15).
+    pub draft_count: u32,
+    /// Resolved comments show and are fetched (SM-12).
+    pub show_resolved: bool,
+    /// The archived ones, once asked for (SM-21).
+    pub archived: Option<Vec<Comment>>,
+    /// The comment being written.
+    pub editing: Option<CommentBox>,
+    /// What went wrong last, as text for the person.
+    pub error: Option<String>,
+    loaded: bool,
+    boxes_made: u64,
+}
+
+/// Every session's comments.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommentsState {
+    /// By session.
+    pub sessions: BTreeMap<SessionId, SessionComments>,
+}
+
+impl CommentsState {
+    /// What the parent should keep across restarts.
+    #[must_use]
+    pub fn saved(&self) -> CommentsSaved {
+        CommentsSaved {
+            show_resolved: self
+                .sessions
+                .iter()
+                .filter(|(_, session)| session.show_resolved)
+                .map(|(id, _)| id.clone())
+                .collect(),
+        }
+    }
+
+    /// The comments to draw on one file, under the line each ends on: none
+    /// archived, resolved ones only with Show resolved (SM-8, SM-12).
+    #[must_use]
+    pub fn on_file(
+        &self,
+        session: &SessionId,
+        repo: &str,
+        path: &str,
+    ) -> BTreeMap<u32, Vec<&Comment>> {
+        let mut rows: BTreeMap<u32, Vec<&Comment>> = BTreeMap::new();
+        let Some(held) = self.sessions.get(session) else {
+            return rows;
+        };
+        for comment in &held.comments {
+            let shown = !comment.archived
+                && (held.show_resolved || comment.status != Status::Resolved)
+                && comment.anchor.repo == repo
+                && comment.anchor.path == path;
+            if shown {
+                rows.entry(comment.anchor.last).or_default().push(comment);
+            }
+        }
+        rows
+    }
+
+    /// The drafts a Send would type, in the order they were made.
+    #[must_use]
+    pub fn sendable(&self, session: &SessionId) -> Vec<&Comment> {
+        self.sessions
+            .get(session)
+            .map(|held| held.comments.iter().filter(|c| c.counts_as_draft()).collect())
+            .unwrap_or_default()
+    }
+}
+
+/// Drafts saved by older builds, to be handed to the daemon (D151).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandOver {
+    /// Their session.
+    pub session: SessionId,
+    /// The comments, in the order they were saved.
+    pub comments: Vec<LegacyComment>,
+    /// The repository selected in the session's diff, if any.
+    pub selected_repo: Option<String>,
+    /// For each path, the repositories whose diffs have it.
+    pub repos_with_path: BTreeMap<String, Vec<String>>,
+}
+
+/// What the reducer asks its parent to do.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CommentsDelegate {
+    /// Say this in a toast.
+    Toast(String),
+    /// Say a comment was archived, with Undo that sends `undo` back.
+    ArchivedToast {
+        /// The comment archived.
+        comment: CommentId,
+        /// The action Undo sends.
+        undo: Box<CommentsAction>,
+    },
+    /// Show resolved changed; keep this.
+    Saved(CommentsSaved),
+    /// This saved draft is the daemon's now: drop it from saved state.
+    HandedOver {
+        /// Its session.
+        session: SessionId,
+        /// The saved comment.
+        comment: LegacyComment,
+    },
+}
+
+/// What happens to a session's comments.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CommentsAction {
+    /// Saved state came back at launch.
+    Restore(CommentsSaved),
+    /// Show this session's comments: list and follow them.
+    Open(SessionId),
+    /// A listing arrived.
+    Listed(SessionId, Which, Result<Listing, DaemonError>),
+    /// The daemon's stream said something.
+    Event(SessionId, CommentEvent),
+    /// A call failed.
+    Failed(SessionId, DaemonError),
+
+    /// Open a box for a new comment on an anchor.
+    OpenBox(SessionId, Anchor),
+    /// Open a box on an existing draft.
+    EditDraft(SessionId, CommentId),
+    /// The box's text changed.
+    Typed(SessionId, String),
+    /// Typing paused.
+    SaveDue(SessionId),
+    /// A save answered.
+    Written(SessionId, Result<Comment, DaemonError>),
+    /// A stale refusal made the session list again.
+    Reloaded(SessionId, Result<Listing, DaemonError>),
+    /// Save and send this comment, closing the box.
+    Comment(SessionId),
+    /// Close the box, keeping non-blank text; a blank one is cancelled.
+    Close(SessionId),
+    /// Close the box without keeping what it made.
+    Cancel(SessionId),
+
+    /// Send every draft held (Send N).
+    SendAll(SessionId),
+    /// Send an unconfirmed comment's batch again.
+    SendAgain(SessionId, CommentId),
+    /// Waiting comments go back to drafts.
+    TakeBack(SessionId, CommentId),
+    /// Comments changed by one call.
+    ManyChanged(SessionId, Result<Vec<Comment>, DaemonError>),
+    /// Resolve a comment.
+    Resolve(SessionId, CommentId),
+    /// Resolve addressed comments of a file, or of the session.
+    ResolveAddressed(SessionId, Option<(String, String)>),
+    /// Set a resolved comment back to draft.
+    Reopen(SessionId, CommentId),
+    /// A comment changed by one call.
+    Changed(SessionId, Result<Comment, DaemonError>),
+    /// Archive a comment.
+    Archive(SessionId, CommentId),
+    /// Archiving answered.
+    Archived(SessionId, Result<Comment, DaemonError>),
+    /// Bring an archived comment back (also the toast's Undo).
+    Unarchive(SessionId, CommentId),
+    /// Delete a comment for good.
+    Drop(SessionId, CommentId),
+    /// Dropping answered.
+    Dropped(SessionId, CommentId, Result<(), DaemonError>),
+    /// Point a detached draft at a new passage.
+    Reattach(SessionId, CommentId, Anchor),
+    /// Turn Show resolved on or off for the session.
+    ShowResolved(SessionId, bool),
+    /// List the archived comments.
+    ShowArchived(SessionId),
+
+    /// Hand drafts saved by older builds to the daemon.
+    HandOver(HandOver),
+    /// A handed-over draft's create answered.
+    HandedOver(SessionId, LegacyComment, Result<Comment, DaemonError>),
+    /// For the parent.
+    Delegate(CommentsDelegate),
+}
+
+/// The comments reducer.
+#[derive(Clone)]
+pub struct Comments {
+    client: Arc<dyn CommentsClient>,
+    clock: Arc<dyn Clock>,
+}
+
+impl Comments {
+    /// A reducer that asks `client` and waits on `clock`.
+    #[must_use]
+    pub fn new(client: Arc<dyn CommentsClient>, clock: Arc<dyn Clock>) -> Self {
+        Self { client, clock }
+    }
+
+    fn list(&self, session: &SessionId, which: Which) -> Reply<Listing> {
+        self.client.list(session, which)
+    }
+
+    fn which(s: &SessionComments) -> Which {
+        if s.show_resolved { Which::WithResolved } else { Which::Open }
+    }
+
+    fn save_key(session: &SessionId) -> String {
+        format!("comments-save/{session}")
+    }
+
+    fn watch(&self, session: &SessionId) -> Effect<CommentsAction> {
+        let call = self.client.watch(session);
+        let session = session.clone();
+        let id = format!("comments-watch/{session}");
+        Effect::run(move |send| async move {
+            match call.await {
+                Err(error) => send.send(CommentsAction::Failed(session, error)),
+                Ok(mut events) => {
+                    while let Some(event) = events.recv().await {
+                        send.ready().await;
+                        send.send(CommentsAction::Event(session.clone(), event));
+                    }
+                }
+            }
+        })
+        .cancellable(id, true)
+    }
+
+    fn toast(text: String) -> Effect<CommentsAction> {
+        Effect::send(CommentsAction::Delegate(CommentsDelegate::Toast(text)))
+    }
+
+    /// A failed call: the text stays, the error shows and goes to a toast.
+    fn fail(s: &mut SessionComments, error: &DaemonError) -> Effect<CommentsAction> {
+        let text = error.to_string();
+        s.error = Some(text.clone());
+        Self::toast(text)
+    }
+
+    fn revision(s: &SessionComments, id: &CommentId) -> u64 {
+        s.comments.iter().find(|c| &c.id == id).map_or(0, |c| c.revision)
+    }
+
+    /// Starts the box's next write, if it has one to make.
+    fn start_write(&self, session: &SessionId, s: &mut SessionComments) -> Option<Effect<CommentsAction>> {
+        let revision = s
+            .editing
+            .as_ref()
+            .and_then(|b| b.comment.as_ref())
+            .map_or(0, |id| Self::revision(s, id));
+        let b = s.editing.as_mut()?;
+        if b.writing || is_blank(&b.text) {
+            return None;
+        }
+        let text = b.text.clone();
+        let call = match &b.comment {
+            None => {
+                b.created_here = true;
+                self.client.create(session, b.anchor.clone(), &text, &b.key)
+            }
+            Some(id) => {
+                if text == b.saved {
+                    return None;
+                }
+                self.client.edit(id, &text, revision)
+            }
+        };
+        b.writing = true;
+        b.due = false;
+        b.sending = text;
+        let session = session.clone();
+        Some(Effect::future(async move { CommentsAction::Written(session, call.await) }))
+    }
+
+    /// Does what the box is waiting to do once it has nothing in flight.
+    fn drive(&self, session: &SessionId, s: &mut SessionComments) -> Effect<CommentsAction> {
+        let Some(b) = s.editing.as_ref() else {
+            return Effect::none();
+        };
+        if b.writing {
+            return Effect::none();
+        }
+        if b.then == Some(Then::Cancel) {
+            return self.cancel_now(session, s);
+        }
+        if b.then.is_some() || b.due {
+            if let Some(effect) = self.start_write(session, s) {
+                return effect;
+            }
+        }
+        let Some(b) = s.editing.as_mut() else {
+            return Effect::none();
+        };
+        let Some(then) = b.then.take() else {
+            return Effect::none();
+        };
+        let comment = b.comment.clone();
+        s.editing = None;
+        let stop = Effect::cancel(Self::save_key(session));
+        match then {
+            Then::Close | Then::Cancel => stop,
+            Then::Comment => match comment {
+                Some(id) => stop.and(self.send(session, vec![id])),
+                None => stop,
+            },
+            Then::Archive(id) => stop.and(self.archive(session, &id)),
+            Then::SendAll => {
+                let ids = Self::draft_ids(s);
+                stop.and(self.send(session, ids))
+            }
+        }
+    }
+
+    /// Closes the box, dropping a draft it made or giving back its text.
+    fn cancel_now(&self, session: &SessionId, s: &mut SessionComments) -> Effect<CommentsAction> {
+        let Some(b) = s.editing.take() else {
+            return Effect::none();
+        };
+        let stop = Effect::cancel(Self::save_key(session));
+        let Some(id) = b.comment.clone() else {
+            return stop;
+        };
+        let session = session.clone();
+        if b.created_here {
+            let call = self.client.drop_comment(&id);
+            return stop.and(Effect::future(async move { CommentsAction::Dropped(session, id, call.await) }));
+        }
+        if b.saved != b.opening && !is_blank(&b.opening) {
+            let revision = Self::revision(s, &id);
+            let call = self.client.edit(&id, &b.opening, revision);
+            return stop.and(Effect::future(async move { CommentsAction::Changed(session, call.await) }));
+        }
+        stop
+    }
+
+    fn draft_ids(s: &SessionComments) -> Vec<CommentId> {
+        s.comments.iter().filter(|c| c.counts_as_draft()).map(|c| c.id.clone()).collect()
+    }
+
+    fn send(&self, session: &SessionId, ids: Vec<CommentId>) -> Effect<CommentsAction> {
+        if ids.is_empty() {
+            return Effect::none();
+        }
+        let call = self.client.send(session, &ids);
+        let session = session.clone();
+        Effect::future(async move {
+            CommentsAction::ManyChanged(session, call.await.map(|sent: Sent| sent.comments))
+        })
+    }
+
+    fn archive(&self, session: &SessionId, id: &CommentId) -> Effect<CommentsAction> {
+        let call = self.client.archive(id);
+        let session = session.clone();
+        Effect::future(async move { CommentsAction::Archived(session, call.await) })
+    }
+
+    fn changed(
+        &self,
+        session: &SessionId,
+        call: Reply<Comment>,
+    ) -> Effect<CommentsAction> {
+        let session = session.clone();
+        Effect::future(async move { CommentsAction::Changed(session, call.await) })
+    }
+
+    /// Opens a box, unless another is open.
+    fn open_box(&self, session: &SessionId, s: &mut SessionComments, mut b: CommentBox) {
+        if s.editing.is_some() {
+            return;
+        }
+        s.boxes_made += 1;
+        b.key = format!("{session}/box-{}-{}", self.clock.now().as_millis(), s.boxes_made);
+        s.error = None;
+        s.editing = Some(b);
+    }
+
+    fn handover_effects(&self, hand: &HandOver) -> Effect<CommentsAction> {
+        let mut seen: BTreeMap<(String, String, u32, String), u64> = BTreeMap::new();
+        let mut effects = Vec::new();
+        for comment in &hand.comments {
+            // A blank one says nothing, and a sent one was already typed:
+            // neither becomes a draft.
+            if comment.sent || is_blank(&comment.body) {
+                effects.push(Effect::send(CommentsAction::Delegate(CommentsDelegate::HandedOver {
+                    session: hand.session.clone(),
+                    comment: comment.clone(),
+                })));
+                continue;
+            }
+            let known = comment
+                .context
+                .as_ref()
+                .map(|c| c.repo.clone())
+                .or_else(|| hand.selected_repo.clone())
+                .or_else(|| match hand.repos_with_path.get(&comment.path).map(Vec::as_slice) {
+                    Some([only]) => Some(only.clone()),
+                    _ => None,
+                });
+            let repo = known.clone().unwrap_or_default();
+            let occurrence = seen
+                .entry((repo.clone(), comment.path.clone(), comment.line, comment.body.clone()))
+                .or_insert(0);
+            let key = handover_key(&hand.session, &repo, comment, *occurrence);
+            *occurrence += 1;
+            let anchor = Anchor {
+                repo,
+                path: comment.path.clone(),
+                side: Side::New,
+                first: comment.line,
+                last: comment.line,
+                quoted: comment
+                    .context
+                    .as_ref()
+                    .and_then(|c| c.quoted.clone())
+                    .into_iter()
+                    .collect(),
+                base: comment.context.as_ref().map(|c| c.base.clone()),
+                detached: known.is_none(),
+            };
+            let call = self.client.create(&hand.session, anchor, &comment.body, &key);
+            let session = hand.session.clone();
+            let saved = comment.clone();
+            effects.push(Effect::future(async move {
+                CommentsAction::HandedOver(session, saved, call.await)
+            }));
+        }
+        Effect::merge(effects)
+    }
+}
+
+impl Reducer for Comments {
+    type State = CommentsState;
+    type Action = CommentsAction;
+
+    #[allow(clippy::too_many_lines)]
+    fn reduce(&self, state: &mut CommentsState, action: CommentsAction) -> Effect<CommentsAction> {
+        use CommentsAction as A;
+        match action {
+            A::Restore(saved) => {
+                for id in saved.show_resolved {
+                    state.sessions.entry(id).or_default().show_resolved = true;
+                }
+                Effect::none()
+            }
+            A::Open(session) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                s.error = None;
+                let which = Self::which(s);
+                let watch = self.watch(&session);
+                let call = self.list(&session, which);
+                watch.and(Effect::future(async move { A::Listed(session, which, call.await) }))
+            }
+            A::Listed(session, which, result) => {
+                let s = state.sessions.entry(session).or_default();
+                match result {
+                    Ok(listing) if which == Which::Archived => {
+                        s.archived = Some(listing.comments);
+                        Effect::none()
+                    }
+                    Ok(listing) => {
+                        s.comments = listing.comments;
+                        s.draft_count = listing.draft_count;
+                        s.loaded = true;
+                        Effect::none()
+                    }
+                    Err(error) => Self::fail(s, &error),
+                }
+            }
+            A::Event(session, event) => match event {
+                CommentEvent::Changed(comment) => {
+                    upsert(state.sessions.entry(session).or_default(), comment);
+                    Effect::none()
+                }
+                CommentEvent::Dropped(id) => {
+                    let s = state.sessions.entry(session).or_default();
+                    remove(s, &id);
+                    Effect::none()
+                }
+                CommentEvent::Resync => {
+                    let s = state.sessions.entry(session.clone()).or_default();
+                    let which = Self::which(s);
+                    let call = self.list(&session, which);
+                    Effect::future(async move { A::Listed(session, which, call.await) })
+                }
+            },
+            A::Failed(session, error) => Self::fail(state.sessions.entry(session).or_default(), &error),
+
+            A::OpenBox(session, anchor) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                // A box with no daemon comment yet on the same file and side
+                // stretches or moves to the new lines and keeps its text.
+                if let Some(open) = s.editing.as_mut().filter(|b| {
+                    b.comment.is_none()
+                        && !b.writing
+                        && b.anchor.repo == anchor.repo
+                        && b.anchor.path == anchor.path
+                        && b.anchor.side == anchor.side
+                }) {
+                    open.anchor = anchor;
+                    return Effect::none();
+                }
+                self.open_box(&session, s, new_box(anchor, None, String::new()));
+                Effect::none()
+            }
+            A::EditDraft(session, id) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let Some(comment) = s.comments.iter().find(|c| c.id == id && c.counts_as_draft()) else {
+                    return Effect::none();
+                };
+                let b = new_box(comment.anchor.clone(), Some(id), comment.text.clone());
+                self.open_box(&session, s, b);
+                Effect::none()
+            }
+            A::Typed(session, text) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let Some(b) = s.editing.as_mut() else {
+                    return Effect::none();
+                };
+                b.text = text;
+                s.error = None;
+                let key = Self::save_key(&session);
+                if is_blank(&b.text) {
+                    return Effect::cancel(key);
+                }
+                if b.comment.is_none() && !b.writing {
+                    return self.start_write(&session, s).unwrap_or_else(Effect::none);
+                }
+                Effect::send(A::SaveDue(session)).debounce(key, SAVE_AFTER, self.clock.clone())
+            }
+            A::SaveDue(session) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                match s.editing.as_mut() {
+                    Some(b) if b.writing => {
+                        b.due = true;
+                        Effect::none()
+                    }
+                    Some(_) => self.start_write(&session, s).unwrap_or_else(Effect::none),
+                    None => Effect::none(),
+                }
+            }
+            A::Written(session, result) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                match result {
+                    Ok(comment) => {
+                        let id = comment.id.clone();
+                        upsert(s, comment);
+                        if let Some(b) = s.editing.as_mut() {
+                            b.writing = false;
+                            b.retried = false;
+                            b.refusal = None;
+                            b.saved = std::mem::take(&mut b.sending);
+                            b.comment = Some(id);
+                        }
+                        self.drive(&session, s)
+                    }
+                    Err(error) => {
+                        let Some(b) = s.editing.as_mut() else {
+                            return Self::fail(s, &error);
+                        };
+                        b.writing = false;
+                        let stale = matches!(error, DaemonError::Refused { .. })
+                            && b.comment.is_some()
+                            && !b.retried
+                            && b.then != Some(Then::Cancel);
+                        if stale {
+                            b.retried = true;
+                            b.refusal = Some(error);
+                            let which = Self::which(s);
+                            let call = self.list(&session, which);
+                            return Effect::future(async move { A::Reloaded(session, call.await) });
+                        }
+                        b.due = false;
+                        if b.then == Some(Then::Cancel) {
+                            s.editing = None;
+                        } else {
+                            b.then = None;
+                        }
+                        Self::fail(s, &error)
+                    }
+                }
+            }
+            A::Reloaded(session, result) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let refusal = s.editing.as_mut().and_then(|b| b.refusal.take());
+                match result {
+                    Err(error) => {
+                        if let Some(b) = s.editing.as_mut() {
+                            b.then = None;
+                        }
+                        Self::fail(s, &error)
+                    }
+                    Ok(listing) => {
+                        s.comments = listing.comments;
+                        s.draft_count = listing.draft_count;
+                        s.loaded = true;
+                        let still_draft = s
+                            .editing
+                            .as_ref()
+                            .and_then(|b| b.comment.as_ref())
+                            .is_some_and(|id| s.comments.iter().any(|c| &c.id == id && c.counts_as_draft()));
+                        if still_draft {
+                            if let Some(b) = s.editing.as_mut() {
+                                b.due = true;
+                            }
+                            return self.drive(&session, s);
+                        }
+                        if let Some(b) = s.editing.as_mut() {
+                            b.then = None;
+                            b.due = false;
+                        }
+                        match refusal {
+                            Some(error) => Self::fail(s, &error),
+                            None => Effect::none(),
+                        }
+                    }
+                }
+            }
+            A::Comment(session) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let Some(b) = s.editing.as_mut() else {
+                    return Effect::none();
+                };
+                b.then = Some(if is_blank(&b.text) { Then::Cancel } else { Then::Comment });
+                self.drive(&session, s)
+            }
+            A::Close(session) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let Some(b) = s.editing.as_mut() else {
+                    return Effect::none();
+                };
+                b.then = Some(if is_blank(&b.text) { Then::Cancel } else { Then::Close });
+                self.drive(&session, s)
+            }
+            A::Cancel(session) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let Some(b) = s.editing.as_mut() else {
+                    return Effect::none();
+                };
+                b.then = Some(Then::Cancel);
+                self.drive(&session, s)
+            }
+
+            A::SendAll(session) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                if let Some(b) = s.editing.as_mut() {
+                    b.then = Some(Then::SendAll);
+                    return self.drive(&session, s);
+                }
+                let ids = Self::draft_ids(s);
+                self.send(&session, ids)
+            }
+            A::SendAgain(session, id) => self.send(&session, vec![id]),
+            A::TakeBack(session, id) => {
+                let call = self.client.take_back(&session, &[id]);
+                Effect::future(async move { A::ManyChanged(session, call.await) })
+            }
+            A::ManyChanged(session, result) => {
+                let s = state.sessions.entry(session).or_default();
+                match result {
+                    Ok(comments) => {
+                        for comment in comments {
+                            upsert(s, comment);
+                        }
+                        Effect::none()
+                    }
+                    Err(error) => Self::fail(s, &error),
+                }
+            }
+            A::Resolve(session, id) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let call = self.client.resolve(&id, Self::revision(s, &id));
+                self.changed(&session, call)
+            }
+            A::ResolveAddressed(session, file) => {
+                let call = self
+                    .client
+                    .resolve_addressed(&session, file.as_ref().map(|(r, p)| (r.as_str(), p.as_str())));
+                Effect::future(async move { A::ManyChanged(session, call.await) })
+            }
+            A::Reopen(session, id) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let call = self.client.reopen(&id, Self::revision(s, &id));
+                self.changed(&session, call)
+            }
+            A::Reattach(session, id, anchor) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let call = self.client.reattach(&id, anchor, Self::revision(s, &id));
+                self.changed(&session, call)
+            }
+            A::Changed(session, result) => {
+                let s = state.sessions.entry(session).or_default();
+                match result {
+                    Ok(comment) => {
+                        upsert(s, comment);
+                        Effect::none()
+                    }
+                    Err(error) => Self::fail(s, &error),
+                }
+            }
+            A::Archive(session, id) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                if let Some(b) = s.editing.as_mut() {
+                    b.then = Some(Then::Archive(id));
+                    return self.drive(&session, s);
+                }
+                self.archive(&session, &id)
+            }
+            A::Archived(session, result) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                match result {
+                    Ok(comment) => {
+                        let id = comment.id.clone();
+                        upsert(s, comment);
+                        Effect::send(A::Delegate(CommentsDelegate::ArchivedToast {
+                            comment: id.clone(),
+                            undo: Box::new(A::Unarchive(session, id)),
+                        }))
+                    }
+                    Err(error) => Self::fail(s, &error),
+                }
+            }
+            A::Unarchive(session, id) => {
+                let call = self.client.unarchive(&id);
+                self.changed(&session, call)
+            }
+            A::Drop(session, id) => {
+                let call = self.client.drop_comment(&id);
+                Effect::future(async move { A::Dropped(session, id, call.await) })
+            }
+            A::Dropped(session, id, result) => {
+                let s = state.sessions.entry(session).or_default();
+                match result {
+                    Ok(()) => {
+                        remove(s, &id);
+                        Effect::none()
+                    }
+                    Err(error) => Self::fail(s, &error),
+                }
+            }
+            A::ShowResolved(session, on) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                s.show_resolved = on;
+                let which = Self::which(s);
+                let call = self.list(&session, which);
+                let saved = state.saved();
+                Effect::future(async move { A::Listed(session, which, call.await) })
+                    .and(Effect::send(A::Delegate(CommentsDelegate::Saved(saved))))
+            }
+            A::ShowArchived(session) => {
+                let call = self.list(&session, Which::Archived);
+                Effect::future(async move { A::Listed(session, Which::Archived, call.await) })
+            }
+
+            A::HandOver(hand) => self.handover_effects(&hand),
+            A::HandedOver(session, saved, result) => match result {
+                Ok(comment) => {
+                    upsert(state.sessions.entry(session.clone()).or_default(), comment);
+                    Effect::send(A::Delegate(CommentsDelegate::HandedOver { session, comment: saved }))
+                }
+                Err(DaemonError::NotFound { .. }) => {
+                    Effect::send(A::Delegate(CommentsDelegate::HandedOver { session, comment: saved }))
+                }
+                Err(error) => Self::fail(state.sessions.entry(session).or_default(), &error),
+            },
+            A::Delegate(_) => Effect::none(),
+        }
+    }
+}
+
+fn is_blank(text: &str) -> bool {
+    text.trim().is_empty()
+}
+
+fn new_box(anchor: Anchor, comment: Option<CommentId>, text: String) -> CommentBox {
+    CommentBox {
+        anchor,
+        comment,
+        opening: text.clone(),
+        saved: text.clone(),
+        text,
+        created_here: false,
+        key: String::new(),
+        sending: String::new(),
+        writing: false,
+        due: false,
+        then: None,
+        retried: false,
+        refusal: None,
+    }
+}
+
+/// The number after `c-` in an id, to keep comments in made order.
+fn made_number(id: &CommentId) -> u64 {
+    id.as_str()
+        .rsplit_once("/c-")
+        .and_then(|(_, n)| n.parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
+fn upsert_in(list: &mut Vec<Comment>, comment: Comment) {
+    match list.iter_mut().find(|held| held.id == comment.id) {
+        Some(held) => {
+            if comment.revision >= held.revision {
+                *held = comment;
+            }
+        }
+        None => {
+            list.push(comment);
+            list.sort_by_key(|held| made_number(&held.id));
+        }
+    }
+}
+
+fn recount(s: &mut SessionComments) {
+    if s.loaded {
+        s.draft_count = u32::try_from(s.comments.iter().filter(|c| c.counts_as_draft()).count())
+            .unwrap_or(u32::MAX);
+    }
+}
+
+/// Applies a changed comment: an archived one leaves the held list.
+fn upsert(s: &mut SessionComments, comment: Comment) {
+    if comment.archived {
+        s.comments.retain(|held| held.id != comment.id);
+        if let Some(list) = s.archived.as_mut() {
+            upsert_in(list, comment);
+        }
+    } else {
+        if let Some(list) = s.archived.as_mut() {
+            list.retain(|held| held.id != comment.id);
+        }
+        if comment.status == Status::Resolved && !s.show_resolved {
+            s.comments.retain(|held| held.id != comment.id);
+        } else {
+            upsert_in(&mut s.comments, comment);
+        }
+    }
+    recount(s);
+}
+
+fn remove(s: &mut SessionComments, id: &CommentId) {
+    s.comments.retain(|held| &held.id != id);
+    if let Some(list) = s.archived.as_mut() {
+        list.retain(|held| &held.id != id);
+    }
+    recount(s);
+}
+
+/// FNV-1a over the fields, so the key is the same on every run and build.
+fn handover_key(session: &SessionId, repo: &str, comment: &LegacyComment, occurrence: u64) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for byte in bytes.iter().chain(&[0xff]) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    feed(session.as_str().as_bytes());
+    feed(repo.as_bytes());
+    feed(comment.path.as_bytes());
+    feed(&comment.line.to_le_bytes());
+    feed(comment.body.as_bytes());
+    feed(&occurrence.to_le_bytes());
+    format!("handover-{hash:016x}")
+}

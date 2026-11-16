@@ -5,6 +5,7 @@ use humata2_hosts::HostsAction;
 use humata2_inbox::InboxAction;
 use humata2_palette::PaletteAction;
 use humata2_review::ReviewAction;
+use humata2_review::comments::CommentsAction;
 use humata2_session::SessionAction;
 use humata2_sidebar::{RowKey, SidebarAction};
 use humata2_views::ViewsAction;
@@ -37,6 +38,8 @@ pub enum Route {
     Desk,
     /// Settings.
     Settings,
+    /// A machine's page (HO-4).
+    Machine(humata2_clients::model::MachineId),
 }
 
 impl App {
@@ -107,6 +110,8 @@ impl App {
 
     /// Tells the features what the route now shows.
     pub(super) fn arrive(&self, state: &mut AppState) -> Effect<AppAction> {
+        // The sidebar's keyboard cursor walks the Desk rows only while they show.
+        state.sidebar.desk_shown = state.desk_in_sidebar();
         let current = match &state.route {
             Route::Session(id) => Some(RowKey::Session(id.clone())),
             Route::Channel(id) => Some(RowKey::Channel(id.clone())),
@@ -121,6 +126,9 @@ impl App {
                 effects.push(self.child(state, AppAction::Views(ViewsAction::Return(id.clone()))));
                 effects
                     .push(self.child(state, AppAction::Session(SessionAction::Open(id.clone()))));
+                effects.push(
+                    self.child(state, AppAction::Comments(CommentsAction::Open(id.clone()))),
+                );
                 effects.push(self.child(state, AppAction::Review(ReviewAction::Open(id))));
             }
             Route::Channel(id) => {
@@ -148,6 +156,13 @@ impl App {
             }
             Route::Board(scope) => {
                 effects.push(self.child(state, AppAction::Board(BoardAction::SetScope(scope))));
+            }
+            Route::Machine(id) => {
+                state.session.open = None;
+                effects.push(self.machine_page(
+                    state,
+                    humata2_hosts::MachinePageAction::Show(id),
+                ));
             }
             Route::Files => {
                 state.session.open = None;

@@ -1,0 +1,86 @@
+// Searching and reading the conversations the host keeps (LD-8, LD-23–LD-25,
+// D62, D63). Host only: the host holds every session's mirror and the
+// full-text index over it, so one call covers every machine, archived
+// sessions included, while a machine is offline. Everything returned has
+// been scrubbed of host variable values first (LD-21).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/common.proto";
+
+service HistoryService {
+  // LD-23, LD-24: `humata sessions search`, the palette and the MCP tool
+  // `sessions_search` give the same results. An agent searches its own
+  // channel; other channels need "Search other channels" (Ask).
+  rpc SearchSessions(SearchSessionsRequest) returns (SearchSessionsResponse);
+  // LD-25: a session's turns, paged (`session_read`).
+  rpc ReadTurns(ReadTurnsRequest) returns (ReadTurnsResponse);
+}
+
+message SearchSessionsRequest {
+  // Every word must match; the last also as a prefix. Not empty.
+  string query = 1;
+  // Unset: every channel the caller may search.
+  ChannelId channel = 2;
+  MachineId machine = 3;
+  // The agent kind, such as "claude". Empty: any.
+  string agent = 4;
+  google.protobuf.Timestamp since = 5;
+  google.protobuf.Timestamp until = 6;
+  PageRequest page = 7;
+}
+
+// LD-24: a hit names the channel, session, machine, agent and turn.
+message SearchHit {
+  SessionId session = 1;
+  string session_title = 2;
+  ChannelId channel = 3;
+  string channel_name = 4;
+  MachineId machine = 5;
+  string machine_name = 6;
+  string agent = 7;
+  // 1 is the first prompt; 0 is what came before it.
+  uint32 turn = 8;
+  // The matching entry's place in the session's mirror (`session#seq`).
+  uint64 seq = 9;
+  // Plain text around the match.
+  string snippet = 10;
+  google.protobuf.Timestamp at = 11;
+  // When the host last heard from this session's machine about it: for a
+  // machine that is offline, results are "as of its last sync".
+  google.protobuf.Timestamp as_of = 12;
+}
+
+message SearchSessionsResponse {
+  repeated SearchHit hits = 1;
+  PageResponse page = 2;
+}
+
+message ReadTurnsRequest {
+  SessionId session = 1;
+  // Unset: from the first turn / to the last.
+  optional uint32 first_turn = 2;
+  optional uint32 last_turn = 3;
+  PageRequest page = 4;
+}
+
+message MirrorEntry {
+  enum Role {
+    ROLE_UNSPECIFIED = 0;
+    ROLE_USER = 1;
+    ROLE_AGENT = 2;
+    ROLE_TOOL = 3;
+  }
+  uint64 seq = 1;
+  uint32 turn = 2;
+  Role role = 3;
+  string text = 4;
+  google.protobuf.Timestamp at = 5;
+}
+
+message ReadTurnsResponse {
+  repeated MirrorEntry entries = 1;
+  PageResponse page = 2;
+}

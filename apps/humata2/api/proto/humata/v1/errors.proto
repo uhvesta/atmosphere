@@ -70,6 +70,7 @@ message Error {
     PassphraseLocked passphrase_locked = 55;
     PeerUnproven peer_unproven = 56;
     ApprovalPending approval_pending = 57;
+    DependencyLoop dependency_loop = 58;
     // A bug in Humata. The only kind without a fix the person can apply;
     // it names the log to attach to a report.
     Internal internal = 99;
@@ -389,10 +390,26 @@ message ProviderIdentityInvalid {
   InvalidField.Problem problem = 3;
 }
 
+// MP-13, D167: what a login waits at. The daemon's prompt detector decides
+// it; unspecified means any other prompt.
+enum LoginPromptKind {
+  LOGIN_PROMPT_KIND_UNSPECIFIED = 0;
+  LOGIN_PROMPT_KIND_PASSWORD = 1;
+  LOGIN_PROMPT_KIND_PASSPHRASE = 2;
+  LOGIN_PROMPT_KIND_CODE = 3;     // a verification, one-time or 2FA code
+  LOGIN_PROMPT_KIND_CONFIRM = 4;  // a (yes/no) question
+  LOGIN_PROMPT_KIND_DEVICE = 5;   // a URL and a code to enter there
+}
+
 // MP-13: the connect command waits for a person.
 message LoginNeedsUser {
   ProviderId provider = 1;
   MachineId machine = 2;
+  // D167: what the command printed, when it printed a prompt.
+  LoginPromptKind prompt_kind = 3;
+  string prompt_line = 4;  // "Verification code:"; empty when none was found
+  // The command ran until its timeout without finishing (no prompt seen).
+  bool hung = 5;
 }
 
 message PeerVersionUnsupported {
@@ -408,6 +425,12 @@ message PeerVersionUnsupported {
 // request (WaitForAnswer) or ask again later with the same key.
 message ApprovalPending {
   RequestId request = 1;
+}
+
+// BD-14: the edge would close a loop. The items around it, starting and
+// ending with the item being changed; one item twice for a self edge.
+message DependencyLoop {
+  repeated BoardItemId cycle = 1;
 }
 
 message PeerUnproven {

@@ -141,13 +141,14 @@ a machine checks only calls it answers alone, using the host's last
 
 | Service (file) | Owner | Served on | Notes |
 | --- | --- | --- | --- |
-| DaemonService (daemon) | each daemon | every endpoint | `GetServerInfo.last_start` says what the start brought back (§2.2) |
+| DaemonService (daemon) | each daemon | every endpoint | `GetServerInfo.last_start` says what the start brought back (§2.2); `BeginRelay` and `CompleteRelay` let the peer link prove itself to a machine's socket daemon (§8) |
 | ChannelService, ActivityService (channels) | host | host socket; forwarded from machines | Channel records, repos, machines (SL-1) |
-| SessionService (sessions) | host for records; the session's machine for holders, clones, conversation | host socket; forwarded | The host writes the record, then drives the machine through PeerService. `ReadConversation` reads the host's mirror (LD-8) |
+| SessionService (sessions) | host for records; the session's machine for holders, clones, conversation | host socket; forwarded | The host writes the record, then drives the machine through PeerService. `ReadConversation` reads the host's mirror (LD-8). `ReportTurn` is the session's own agent saying what turn it is in, from its hooks (D169): any other caller is refused, an older report than the last one kept is dropped, and repeating the state changes nothing |
 | TerminalService (terminal) | the session's machine | machine socket for its own sessions; host socket, relayed over the peer link | One HTTP/2 stream per attached tab end to end. `PasteImage` saves a pasted image (32 MiB at most) in the session's own folder on its machine, file 0600, gone with the session, and returns the path there for the client to type as input; a text paste is plain input |
 | FileService (files) | the machine that has the files | machine socket for its own files; host socket, relayed | Every location is a Humata root plus a relative path |
 | TransferService (files) | host | host socket; forwarded | The host drives both ends; chunks pass through it |
 | TrashService (files) | each machine's trash; the host for session records | host socket; forwarded | |
+| TransferEndService (files) | the machine that has the files | machine socket; host socket, relayed whole | The far end of a transfer the host drives: one call per step the engine takes on a local disk (D156). For the user and the host's relayed calls, never an agent |
 | BoardService (boards) | host | host socket; forwarded, or journaled (§9) | |
 | InboxService (inbox) | host; a machine while its host is away, for requests it holds (§9.4) | host socket; machine socket for `humata inbox` | |
 | AccessService, AuditService, CliAuthService (access) | host | host socket; forwarded | The policy a machine applies offline is a copy (§9.2). A machine checks CLI logins and the approval passphrase itself while the host is away |
@@ -348,6 +349,12 @@ once. Its steps have stable keys, shown as the progress list the spec draws.
 | SUBMIT_PR_REVIEW | `post:<pr>`… | first `post` | Finishes; a failure after the first post returns `review_partly_posted` naming which PRs got it |
 | DELETE_CHANNEL | `stop_agents`, `withdraw_requests`, `trash:<machine>`…, `remove_record` | `stop_agents` | Before: nothing. After: finishes; offline machines' `trash:` steps wait for them; restoring the Mac's trash item undoes it within 30 days (CH-24) |
 
+A step that finished may carry `facts`, what it read, by name; a fact that
+isn't known is left out, and the app words them. The `check` step of
+ADD_MACHINE and PROVIDER_CREATE carries `os` and `arch` (spelled as
+`Machine.os` and `Machine.arch`), `git` and `gh` (full version numbers),
+and `disk_free_bytes` (a decimal number).
+
 What humatad2 builds of this so far (D61): `ADD_MACHINE` and
 `REMOVE_MACHINE` only, kept in memory (a restart forgets finished
 operations; a machine left half added or half removed is finished or
@@ -405,6 +412,20 @@ by the host over the stdio link the host started.
   snapshots, Inbox answers and withdrawals made elsewhere, push results.
   Each side acks what it has stored durably; after a reconnect both resume
   from the last ack, so nothing is lost or applied twice.
+- **Relayed calls (D139, D144, D146).** After ProveHost the link relays the
+  calls the host may make (terminal, file, trash and diff; session start,
+  stop, resume, get, list and branch-name preview; channel create and get;
+  operation get, watch and cancel; the event feed) to the machine's own socket
+  daemon, which runs them as the user's, marked as from the host. Before
+  answering Hello the link calls `DaemonService.BeginRelay` on that socket and
+  offers the nonce it gets as Hello's `machine_nonce`; when ProveHost succeeds
+  it calls `CompleteRelay` with the host's nonce and proof as received. The
+  daemon checks the host's proof itself, over that connection's nonce, and
+  only when its role is machine and the peer process runs as its user outside
+  every session's terminal. Both calls are open to any caller and grant
+  nothing alone. Until then, and for any method off the list, relayed calls
+  are refused. A link started with `--state` and no `--socket` relays nothing
+  and answers relayed calls as unavailable.
 - A forwarded call or journal entry names an `AgentPrincipal`. The host
   accepts it only for a session it placed on that machine. A machine taken
   over by an attacker can therefore act only as its own sessions, never as

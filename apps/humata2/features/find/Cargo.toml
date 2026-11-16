@@ -1,0 +1,18 @@
+[package]
+name = "humata2-find"
+description = "Finding things: search over every session's conversation, and the Pinned section's pins and VIP marks."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_find"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -614,6 +614,7 @@ fn capability_info(capability: Capability) -> pb::CapabilityInfo {
     use pb::CapabilityScope as S;
     let scope = match capability {
         C::GlobalRead
+        | C::GlobalBoardWrite
         | C::ChannelCreate
         | C::TrashRestore
         | C::InboxAnswer

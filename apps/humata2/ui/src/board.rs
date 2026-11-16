@@ -3,13 +3,13 @@ use crate::{
     bridge::Ui,
     chrome,
     theme::Look,
-    widgets::{col, row},
+    widgets::{col, push_primary, push_quiet, row},
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::component::{
     Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::Button,
     input::{Input, InputEvent, InputState},
 };
 use gpui_kit::{prelude::*, *};
@@ -90,6 +90,7 @@ fn card(look: Look) -> Div {
         .border_color(rgb(look.line))
         .bg(rgb(look.card))
 }
+/// The frames' push button, filled when `primary`, sending `action`.
 fn button(
     ui: &Rc<Ui>,
     id: impl Into<ElementId>,
@@ -98,24 +99,11 @@ fn button(
     look: Look,
     primary: bool,
 ) -> Button {
-    let ui = ui.clone();
-    Button::new(id)
-        .label(label)
-        .small()
-        .h(px(24.))
-        .px(px(11.))
-        .rounded(px(6.))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .flex_shrink_0()
-        .when(primary, |b| b.primary())
-        .bg(rgb(if primary { look.accent } else { look.fill }))
-        .text_color(rgb(if primary { 0xffffff } else { look.text }))
-        .when(!primary, |b| b.border_1().border_color(rgb(look.line)))
-        .on_click(move |_, _, cx| {
-            cx.stop_propagation();
-            ui.send(action.clone(), cx);
-        })
+    if primary {
+        push_primary(ui, id, label, action, look)
+    } else {
+        push_quiet(ui, id, label, action, look)
+    }
 }
 /// A pop-up menu button: its value, then the up-down chevrons.
 fn popup(
@@ -566,7 +554,8 @@ fn table(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                     .child(div().w(px(90.)).flex_shrink_0().when(
                         state.board.request(item).is_some(),
                         |x| {
-                            // The golden's Review fills its column, label at the left.
+                            // The golden's Review fills its column, label at the
+                            // left, so it can't be the shared centred push button.
                             let review = ui.clone();
                             let open = item.id.clone();
                             x.child(
@@ -584,7 +573,13 @@ fn table(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                                 .text_color(rgb(look.text))
                                 .border_1()
                                 .border_color(rgb(look.line))
-                                .child(div().w_full().text_left().child("Review"))
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .text_left()
+                                        .text_size(px(12.))
+                                        .child("Review"),
+                                )
                                 .on_click(move |_, _, cx| {
                                     cx.stop_propagation();
                                     review.send(AppAction::Board(A::Open(open.clone())), cx);

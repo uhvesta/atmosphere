@@ -1,7 +1,7 @@
 //! Launching an agent, and resuming one whose holder is gone.
 
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,13 +31,15 @@ const TYPE_PAUSE: Duration = Duration::from_millis(100);
 /// Saves `session`'s agent as launching, and fsyncs it (PER-11), then
 /// starts it in a holder of its own and saves it as running with its tab.
 /// `launch.argv` pins the conversation id (PER-12). A crash at any point
-/// leaves a record [`crate::reconcile`] brings back.
+/// leaves a record [`crate::reconcile`] brings back. `line`, if given, is
+/// shown in the terminal before the agent's first output.
 pub async fn launch_agent(
     store: &Arc<Store>,
     config: &ReviveConfig,
     session: &SessionRecord,
     tab: &str,
     launch: AgentLaunch,
+    line: Option<&str>,
     env: Env<'_>,
 ) -> Result<AgentRecord, ReviveError> {
     let mut record = AgentRecord {
@@ -55,7 +57,7 @@ pub async fn launch_agent(
     let created = unix_ms();
     let variables = env(&agent_tab(&record, 0, created));
     let argv = record.launch.argv.clone();
-    let spawned = match start_holder(config, &record, &argv, variables, None).await {
+    let spawned = match start_holder(config, &record, &argv, variables, line).await {
         Ok(spawned) => spawned,
         Err(error) => {
             record.state = AgentState::Stopped;
@@ -68,7 +70,9 @@ pub async fn launch_agent(
 }
 
 /// Saves `record` as running in `spawned` with its tab. If that can't be
-/// saved the holder is shut down: nothing could find it again.
+/// saved the holder is stopped, keeping its saved output: nothing could
+/// find it again, and the record still says it was starting or resuming,
+/// so the next start redoes that with the output so far.
 pub(crate) async fn running(
     store: &Arc<Store>,
     mut record: AgentRecord,
@@ -87,7 +91,7 @@ pub(crate) async fn running(
     })
     .await?;
     if let Err(source) = saved {
-        let _ = humata2_holder::shutdown(&tab.holder_socket).await;
+        stop_holder(&tab.holder_socket, Some(spawned.pid)).await;
         return Err(store_error(&record.session, "save the running agent and its tab", source));
     }
     Ok(record)
@@ -144,7 +148,11 @@ pub(crate) async fn resume(
     let spawned = start_holder(config, &record, &argv, variables, Some(&line)).await?;
     point("revive.resume.spawned");
 
-    let tell = already_told.is_none();
+    // A start fresh's first message that was kept but not typed is this
+    // conversation's first message, and says what the session is about: the
+    // agent isn't told it was interrupted ahead of it (D153).
+    let seeded = seed_pending(store, &record).await?;
+    let tell = already_told.is_none() && !seeded;
     match verify(store, config, &mut record, interruption.output_resumes_at, before, tell).await {
         Ok(Ok(())) => {
             point("revive.resume.verified");
@@ -186,6 +194,21 @@ async fn already_told(record: &AgentRecord) -> Result<Option<Told>, ReviveError>
     let file = record.launch.conversation_file.clone();
     let holds = blocking(move || holds_note(&file, told.conversation_len)).await?;
     Ok(holds.then_some(told))
+}
+
+/// Whether a start fresh kept a first message for `record`'s conversation
+/// and hasn't typed it.
+async fn seed_pending(store: &Arc<Store>, record: &AgentRecord) -> Result<bool, ReviveError> {
+    let (store, session) = (store.clone(), record.session.clone());
+    let found = blocking(move || store.fresh_seed(&session)).await?;
+    match found {
+        Ok(seed) => Ok(seed.is_some_and(|seed| seed.conversation_id == record.launch.conversation_id)),
+        Err(source) => Err(store_error(
+            &record.session,
+            "look up the first message kept for the new conversation",
+            source,
+        )),
+    }
 }
 
 /// Whether `file` holds the note after `from`, or anywhere if it's now
@@ -429,12 +452,11 @@ pub(crate) async fn start_holder(
             session: record.session.clone(),
         });
     };
-    let (program, args) = announced(line, program, args);
     let spec = HolderSpec {
         holder: config.holder.clone(),
         socket: record.launch.holder_socket.clone(),
-        program,
-        args,
+        program: PathBuf::from(program),
+        args: args.to_vec(),
         cwd: record.launch.folder.clone(),
         env,
         cols: record.launch.cols.max(1),
@@ -442,33 +464,23 @@ pub(crate) async fn start_holder(
         scrollback_bytes: config.scrollback_bytes,
         log: config.logs.join(format!("{}.log", record.tab)),
     };
-    spawn(spec, format!("session {}'s agent", record.session)).await
+    spawn(spec, line, format!("session {}'s agent", record.session)).await
 }
 
-pub(crate) async fn spawn(spec: HolderSpec, what: String) -> Result<Spawned, ReviveError> {
-    blocking(move || humata2_holder::spawn(&spec))
-        .await?
-        .map_err(|source| ReviveError::Holder { what, source })
-}
-
-/// `program` and `args`, run after the terminal prints `line`.
-pub(crate) fn announced(
-    line: Option<&str>,
-    program: &OsStr,
-    args: &[OsString],
-) -> (PathBuf, Vec<OsString>) {
-    let Some(line) = line else {
-        return (PathBuf::from(program), args.to_vec());
-    };
-    let mut wrapped: Vec<OsString> = vec![
-        "-c".into(),
-        "printf '%s\\n\\n' \"$1\"; shift; exec \"$@\"".into(),
-        "humata".into(),
-        line.into(),
-        program.to_owned(),
-    ];
-    wrapped.extend(args.iter().cloned());
-    (PathBuf::from("/bin/sh"), wrapped)
+/// Starts a holder for `spec`; with `banner`, the terminal shows it before
+/// the program's first output (D152).
+pub(crate) async fn spawn(
+    spec: HolderSpec,
+    banner: Option<&str>,
+    what: String,
+) -> Result<Spawned, ReviveError> {
+    let banner = banner.map(str::to_owned);
+    blocking(move || match &banner {
+        Some(banner) => humata2_holder::spawn_with_banner(&spec, banner),
+        None => humata2_holder::spawn(&spec),
+    })
+    .await?
+    .map_err(|source| ReviveError::Holder { what, source })
 }
 
 /// What a holder on `socket` says when attached to, if one answers.

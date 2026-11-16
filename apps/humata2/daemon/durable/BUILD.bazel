@@ -9,8 +9,8 @@ rust_library(
     visibility = [
         "//apps/humata2/daemon/holder:__pkg__",
         "//apps/humata2/daemon/sessions:__pkg__",
-        "//apps/humata2/daemon/transfers:__pkg__",
         "//apps/humata2/daemon/store:__pkg__",
+        "//apps/humata2/daemon/transfers:__pkg__",
     ],
 )
 
@@ -27,8 +27,8 @@ rust_library(
         "//apps/humata2/daemon/holder:__pkg__",
         "//apps/humata2/daemon/revive:__pkg__",
         "//apps/humata2/daemon/sessions:__pkg__",
-        "//apps/humata2/daemon/transfers:__pkg__",
         "//apps/humata2/daemon/store:__pkg__",
+        "//apps/humata2/daemon/transfers:__pkg__",
     ],
     deps = [
         "@crates//:libsqlite3-sys",

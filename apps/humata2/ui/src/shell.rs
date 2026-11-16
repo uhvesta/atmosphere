@@ -45,12 +45,12 @@ pub struct Shell {
     _channel_filter_subscription: Subscription,
     board_inputs: crate::board::Inputs,
     applied_theme: Option<humata2_settings::Theme>,
-    host_address: Entity<InputState>,
-    _host_address_subscription: Subscription,
     files_name: Entity<InputState>,
+    machine_inputs: crate::machine_page::MachinePageInputs,
     _appearance: Subscription,
     viewport: f32,
     terminals: crate::terminals::Terminals,
+    documents: crate::document_tab::Documents,
     focus_target: Option<crate::terminals::FocusTarget>,
 }
 
@@ -99,22 +99,12 @@ impl Shell {
             },
         );
         let board_inputs = crate::board::Inputs::new(&ui, window, cx);
-        let host_address =
-            cx.new(|cx| InputState::new(window, cx).placeholder("user@host or SSH alias"));
         let files_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
-        let host_ui = ui.clone();
-        let host_address_subscription = cx.subscribe(
-            &host_address,
-            move |_: &mut Self, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Change) {
-                    host_ui.send(
-                        AppAction::Hosts(humata2_hosts::HostsAction::Address(
-                            input.read(cx).value().to_string(),
-                        )),
-                        cx,
-                    );
-                }
-            },
+        let machine_inputs = crate::machine_page::MachinePageInputs::new(
+            &ui,
+            AppAction::MachinePage,
+            window,
+            cx,
         );
         let appearance_ui = ui.clone();
         let appearance = window.observe_window_appearance(move |window, cx| {
@@ -127,8 +117,10 @@ impl Shell {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let terminals = crate::terminals::Terminals::new(&ui, cx);
+        let documents = crate::document_tab::Documents::new(&ui, window, cx);
         Self {
             terminals,
+            documents,
             focus_target: None,
             ui,
             sidebar,
@@ -147,9 +139,8 @@ impl Shell {
             _channel_filter_subscription: channel_filter_subscription,
             board_inputs,
             applied_theme: None,
-            host_address,
-            _host_address_subscription: host_address_subscription,
             files_name,
+            machine_inputs,
             _appearance: appearance,
             viewport: 0.,
         }
@@ -283,6 +274,7 @@ impl Render for Shell {
         let look = Look::of(cx);
         self.ui
             .read(|state| self.terminals.sync(&self.ui, state, look, window, cx));
+        self.documents.sync(&self.ui, window, cx);
         let target = self.ui.read(|state| {
             (state.overlays.is_empty() && state.session.fork.is_none())
                 .then(|| crate::terminals::focus_target(state))
@@ -396,13 +388,6 @@ impl Render for Shell {
         }
         self.ui
             .read(|state| self.board_inputs.sync(state, window, cx));
-        let address = self
-            .ui
-            .read(|s| s.hosts.add_address.clone().unwrap_or_default());
-        if self.host_address.read(cx).value().as_ref() != address {
-            self.host_address
-                .update(cx, |input, cx| input.set_value(address, window, cx));
-        }
         let ui = self.ui.clone();
         let body = match load {
             Load::Loading => col()
@@ -437,9 +422,10 @@ impl Render for Shell {
                     state,
                     self.channel_filter.clone(),
                     &self.board_inputs,
-                    self.host_address.clone(),
                     self.files_name.clone(),
                     &self.terminals,
+                    &self.documents,
+                    &self.machine_inputs,
                     window,
                     cx,
                 )
@@ -459,10 +445,12 @@ impl Render for Shell {
                 self.ui.read(|state| {
                     if matches!(state.route, Route::Settings) {
                         crate::settings::toolbar(look).into_any_element()
+                    } else if matches!(state.route, Route::Machine(_)) {
+                        div().into_any_element()
                     } else if matches!(state.route, Route::Hosts) {
                         crate::hosts::toolbar(&ui, look).into_any_element()
                     } else if matches!(state.route, Route::Desk) {
-                        crate::desk::toolbar(&ui, state, look).into_any_element()
+                        crate::desk::toolbar(&ui, state, collapsed, look).into_any_element()
                     } else if matches!(state.route, Route::Board(_)) {
                         crate::board::toolbar(&ui, state, &self.board_inputs, look)
                             .into_any_element()
@@ -605,6 +593,7 @@ impl Render for Shell {
                                     false,
                                     self.file_filter.clone(),
                                     window,
+                                    &self.documents,
                                     cx,
                                 )
                             }))
@@ -653,6 +642,7 @@ impl Render for Shell {
                             true,
                             self.file_filter.clone(),
                             window,
+                            &self.documents,
                             cx,
                         )
                     })

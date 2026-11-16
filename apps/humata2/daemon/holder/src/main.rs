@@ -30,6 +30,12 @@ struct Args {
     /// after this one is killed. Beside the socket unless set.
     #[arg(long)]
     scrollback_file: Option<PathBuf>,
+    /// Keep replay in memory without writing terminal output to disk.
+    #[arg(long)]
+    memory_only:bool,
+    /// A line shown before the program's first output.
+    #[arg(long)]
+    banner: Option<String>,
     /// The program and its arguments.
     #[arg(last = true, required = true)]
     command: Vec<OsString>,
@@ -51,7 +57,7 @@ fn main() -> ExitCode {
         .unwrap_or_else(|| saved_scrollback_path(&args.socket));
     // The host may own bounded compressed checkpoints instead of a raw transcript.
     // Its holder still keeps the normal in-memory replay window.
-    let memory_only=std::env::var_os("HUMATA2_HOLDER_MEMORY_ONLY").is_some_and(|value|value=="1");
+    let memory_only=args.memory_only;
     let options = ServeOptions {
         saved: (!memory_only).then_some(saved),
         socket: args.socket,
@@ -61,6 +67,7 @@ fn main() -> ExitCode {
         cols: args.cols,
         rows: args.rows,
         scrollback_bytes: args.scrollback_bytes,
+        banner: args.banner,
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

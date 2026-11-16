@@ -33,6 +33,18 @@ async fn board_ref<D: Daemon, C: Console>(
     Ok(pb::BoardRef { board: Some(board) })
 }
 
+/// Session names or ids, resolved in order (BD-16).
+async fn sessions<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    names: &[String],
+) -> Result<Vec<pb::SessionId>, CliError> {
+    let mut ids = Vec::with_capacity(names.len());
+    for name in names {
+        ids.push(ctx.session(name).await?);
+    }
+    Ok(ids)
+}
+
 pub(super) async fn board<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     which: BoardWhich,
@@ -61,19 +73,18 @@ pub(super) async fn board<D: Daemon, C: Console>(
             column,
             description,
             assign,
+            depends_on,
         }) => {
-            let assigned_session = match assign {
-                Some(session) => Some(ctx.session(&session).await?),
-                None => None,
-            };
             let request = pb::CreateItemRequest {
                 idempotency_key: ctx.key(),
                 board: Some(board_ref(ctx, &which).await?),
                 title,
                 column: column.map_or(pb::BoardColumn::Unspecified, values::column) as i32,
                 description: description.unwrap_or_default(),
-                assigned_session,
                 reason: String::new(),
+                sessions: sessions(ctx, &assign).await?,
+                depends_on: depends_on.into_iter().filter_map(item).collect(),
+                ..Default::default()
             };
             reply(ctx, rpc::board::CREATE_ITEM, &request).await
         }
@@ -83,19 +94,20 @@ pub(super) async fn board<D: Daemon, C: Console>(
             description,
             assign,
             unassign,
+            depends_on,
+            drop_depends_on,
         }) => {
-            let assigned_session = match assign {
-                Some(session) => Some(ctx.session(&session).await?),
-                None => None,
-            };
             let request = pb::UpdateItemRequest {
                 idempotency_key: ctx.key(),
                 id: item(id),
                 patch: Some(pb::ItemPatch {
                     title,
                     description,
-                    assigned_session,
-                    clear_assignment: unassign,
+                    sessions_add: sessions(ctx, &assign).await?,
+                    sessions_remove: sessions(ctx, &unassign).await?,
+                    depends_on_add: depends_on.into_iter().filter_map(item).collect(),
+                    depends_on_remove: drop_depends_on.into_iter().filter_map(item).collect(),
+                    ..Default::default()
                 }),
                 expected_revision: None,
                 reason: String::new(),

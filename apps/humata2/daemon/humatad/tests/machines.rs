@@ -9,10 +9,14 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use common::{Attach, Build, Daemon, WAIT, binary, connect, error_of, folder, open, state_folder};
+use common::{
+    Attach, Build, Daemon, WAIT, approve, binary, connect, error_of, first_pending, folder, open, pending_requests,
+    state_folder,
+};
 use humata2_fake_machine::FakeMachine;
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{SessionRecord, Store};
+use prost::Message;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
@@ -31,7 +35,12 @@ fn bundle(dir: &Path) -> PathBuf {
     let mut entries = serde_json::Map::new();
     for file in FILES {
         let body = if file == "humatad2" {
-            format!("#!/bin/sh\nexec '{}' \"$@\"\n", binary("HUMATAD2_RELEASE").display())
+            // A link a test starts gets its state folder named (the default, said out
+            // loud), so it relays nothing and starts no daemon of its own (D146).
+            format!(
+                "#!/bin/sh\ncase \" $* \" in *\" --stdio \"*) exec '{real}' \"$@\" --state \"$HOME/.humata2/state\" ;; esac\nexec '{real}' \"$@\"\n",
+                real = binary("HUMATAD2_RELEASE").display()
+            )
         } else {
             format!("#!/bin/sh\n# {file}\nexit 0\n")
         };
@@ -675,6 +684,12 @@ const TOKEN_HEADER: &str = "humata-session-token";
 
 /// An admin daemon with one session, and the token its shell tab got.
 async fn daemon_with_agent() -> (Daemon, String) {
+    daemon_with_agent_on(&[]).await
+}
+
+/// [`daemon_with_agent`] with environment variables for the daemon, such as a
+/// PATH that finds a fake `ssh`.
+async fn daemon_with_agent_on(env: &[(&str, &str)]) -> (Daemon, String) {
     let dir = folder();
     let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
     store
@@ -691,7 +706,7 @@ async fn daemon_with_agent() -> (Daemon, String) {
     drop(store);
     let tools = bundle(dir.path());
     let ssh_config = dir.path().join("ssh_config");
-    let daemon = Daemon::start_with(
+    let daemon = Daemon::start_with_env(
         Build::Admin,
         dir,
         &[
@@ -700,6 +715,7 @@ async fn daemon_with_agent() -> (Daemon, String) {
             "--ssh-config",
             ssh_config.to_str().unwrap(),
         ],
+        env,
     )
     .await;
     let tab = daemon
@@ -747,8 +763,9 @@ async fn an_agent_cannot_add_or_remove_a_machine_on_its_own() {
     let (daemon, token) = daemon_with_agent().await;
     let mut machines = pb::machine_service_client::MachineServiceClient::new(daemon.channel().await);
 
-    // Adding asks the user first (MACHINE_PROVISION is Ask me).
-    machines.add_ssh_machine(as_agent(add("", "k"), &token)).await.unwrap_err();
+    // Adding asks the user first (MACHINE_PROVISION is Ask me): the call waits in the Inbox.
+    let asked = machines.add_ssh_machine(as_agent(add("", "k"), &token)).await.unwrap_err();
+    assert!(matches!(error_of(&asked).kind, Some(pb::error::Kind::ApprovalPending(_))), "{asked:?}");
 
     // Removing is never allowed by default (MACHINE_DESTROY).
     let refused = machines
@@ -772,4 +789,205 @@ async fn an_agent_cannot_add_or_remove_a_machine_on_its_own() {
         .unwrap()
         .into_inner();
     assert!(all.operations.is_empty());
+}
+
+/// The agent's wait on Inbox request `id`, to its answer.
+async fn agent_waits(daemon: &Daemon, token: &str, id: &pb::RequestId) -> pb::WaitResponse {
+    let mut stream = daemon
+        .inbox_service()
+        .await
+        .wait_for_answer(as_agent(
+            pb::WaitForAnswerRequest {
+                id: Some(id.clone()),
+                wait_seconds: 10,
+            },
+            token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    loop {
+        let message = tokio::time::timeout(WAIT, stream.message())
+            .await
+            .expect("the wait ended in time")
+            .unwrap()
+            .expect("the wait ended with an answer");
+        if !message.keepalive {
+            return message;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_add_waits_in_the_inbox_and_runs_once_the_user_approves_it() {
+    let machine = FakeMachine::new();
+    let path = format!("{}:/usr/bin:/bin", machine.ssh_dir().display());
+    let (daemon, token) = daemon_with_agent_on(&[("PATH", path.as_str())]).await;
+    let mut machines = pb::machine_service_client::MachineServiceClient::new(daemon.channel().await);
+    let mut operations = pb::operation_service_client::OperationServiceClient::new(daemon.channel().await);
+
+    // The call is put in the Inbox: nothing ran, nothing was started.
+    let waiting = machines.add_ssh_machine(as_agent(add("", "k"), &token)).await.unwrap_err();
+    assert_eq!(waiting.code(), Code::FailedPrecondition, "{waiting:?}");
+    let Some(pb::error::Kind::ApprovalPending(pending)) = error_of(&waiting).kind else {
+        panic!("expected approval_pending, got {waiting:?}");
+    };
+    let id = first_pending(&daemon).await;
+    assert_eq!(pending.request, Some(id.clone()));
+    assert_eq!(machine.ssh_calls(), 0);
+    let started = operations.list_operations(pb::ListOperationsRequest::default()).await.unwrap().into_inner();
+    assert!(started.operations.is_empty());
+
+    // The same call again with the same key is the same request.
+    let again = machines.add_ssh_machine(as_agent(add("", "k"), &token)).await.unwrap_err();
+    assert!(matches!(error_of(&again).kind, Some(pb::error::Kind::ApprovalPending(_))), "{again:?}");
+    assert_eq!(pending_requests(&daemon).await, vec![id.clone()]);
+
+    // Once the user approves, the whole call runs and its operation is the answer.
+    approve(&daemon, &id).await;
+    let answered = agent_waits(&daemon, &token, &id).await;
+    assert_eq!(answered.state(), pb::RequestState::Approved);
+    assert!(answered.error.is_none(), "{:?}", answered.error);
+    assert_eq!(answered.result_type, "humata.v1.Operation");
+    let operation = pb::Operation::decode(answered.result.as_slice()).unwrap();
+    assert_eq!(pb::OperationKind::try_from(operation.kind).unwrap(), pb::OperationKind::AddMachine);
+    let found = operations
+        .get_operation(pb::GetOperationRequest {
+            id: operation.id.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(found.id, operation.id);
+    ssh_ran(&machine, 0).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_users_own_add_is_not_sent_to_the_inbox() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+
+    let added = host.machines().await.add_ssh_machine(add("", "k")).await.unwrap().into_inner();
+    assert_eq!(pb::OperationKind::try_from(added.kind).unwrap(), pb::OperationKind::AddMachine);
+    let inbox = pb::inbox_service_client::InboxServiceClient::new(connect(&host.socket).await)
+        .list_requests(pb::ListRequestsRequest::default())
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(inbox.requests.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_linked_machines_page_shows_the_health_its_probe_read() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let fingerprint = presented_fingerprint(&host).await;
+    let added = host.machines().await.add_ssh_machine(add(&fingerprint, "k")).await.unwrap().into_inner();
+    let last = host.watch(&added).await.pop().unwrap();
+    assert_eq!(state_of(&last), pb::OperationState::Succeeded, "{:?}", last.error);
+    host.linked().await;
+
+    let detail = host
+        .machines()
+        .await
+        .get_machine(pb::GetMachineRequest { id: machine_id() })
+        .await
+        .unwrap()
+        .into_inner();
+    let health = detail.health.expect("a linked machine has health");
+    assert!(health.read_at.is_some());
+    assert!(health.disk_total_bytes > 0);
+    // The git version is the number alone, empty on a machine without git.
+    assert!(health.git_version.is_empty() || health.git_version.starts_with(|c: char| c.is_ascii_digit()));
+    // Versions are numbers alone, one for each agent found, in its order (HO-4).
+    assert!(health.gh_version.is_empty() || health.gh_version.starts_with(|c: char| c.is_ascii_digit()));
+    assert_eq!(health.agent_versions.len(), health.agents_installed.len());
+    assert!(health.agent_versions.iter().all(|version| version.is_empty() || version.starts_with(|c: char| c.is_ascii_digit())));
+    // Folders are a list, each under ~/Humata, with no channel named by the daemon.
+    assert!(detail.folders.iter().all(|folder| folder.path.starts_with("~/Humata/") && folder.channel.is_none()));
+}
+
+/// A tool that prints `output` when asked for its version, as `gh` does for
+/// `--version` and `version`, and fails for anything else (not signed in).
+/// The fake `git` prints its version whatever it is asked, as the fake
+/// machine's own does.
+fn says_its_version(output: &str) -> String {
+    format!("case \"$1\" in\n  --version|version) cat <<'VERSION'\n{output}\nVERSION\n  ;;\n  *) exit 1 ;;\nesac")
+}
+
+/// Adds box-1 with its host key confirmed; every version of the add, to the
+/// last.
+async fn versions_of_a_confirmed_add(host: &Host) -> Vec<pb::Operation> {
+    let fingerprint = presented_fingerprint(host).await;
+    let added = host
+        .machines()
+        .await
+        .add_ssh_machine(add(&fingerprint, "confirmed"))
+        .await
+        .unwrap()
+        .into_inner();
+    host.watch(&added).await
+}
+
+fn check_step(operation: &pb::Operation) -> &pb::OperationStep {
+    operation
+        .steps
+        .iter()
+        .find(|step| step.key == "check")
+        .expect("an add has a check step")
+}
+
+fn fact<'a>(step: &'a pb::OperationStep, name: &str) -> Option<&'a str> {
+    step.facts.get(name).map(String::as_str)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_check_step_of_an_add_carries_what_it_read_from_the_machine() {
+    let machine = FakeMachine::new();
+    machine.set_tool("git", "echo 'git version 2.47.1'");
+    machine.set_tool(
+        "gh",
+        &says_its_version("gh version 2.83.0 (2025-11-04)\nhttps://github.com/cli/cli/releases/tag/v2.83.0"),
+    );
+    let host = Host::start(&machine).await;
+
+    let seen = versions_of_a_confirmed_add(&host).await;
+
+    let last = seen.last().unwrap();
+    assert_eq!(state_of(last), pb::OperationState::Succeeded, "{:?}", last.error);
+    let check = check_step(last);
+    assert_eq!(fact(check, "os"), Some("linux"));
+    assert_eq!(fact(check, "arch"), Some("x86_64"));
+    assert_eq!(fact(check, "git"), Some("2.47.1"));
+    assert_eq!(fact(check, "gh"), Some("2.83.0"));
+    let free: u64 = fact(check, "disk_free_bytes")
+        .expect("the check read the free disk")
+        .parse()
+        .expect("the free disk is a whole number of bytes");
+    assert!(free > 0);
+
+    // Whoever watches sees the facts no later than the step turning done.
+    let first_done = seen
+        .iter()
+        .find(|operation| step_state(operation, "check") == pb::StepState::Done)
+        .expect("the check step finished");
+    assert_eq!(check_step(first_done).facts, check.facts);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_check_step_of_an_add_names_no_gh_version_when_gh_gives_none() {
+    let machine = FakeMachine::new();
+    machine.set_tool("git", "echo 'git version 2.47.1'");
+    // It is on PATH and fails whatever it is asked, printing nothing.
+    machine.set_tool("gh", "exit 127");
+    let host = Host::start(&machine).await;
+
+    let seen = versions_of_a_confirmed_add(&host).await;
+
+    let last = seen.last().unwrap();
+    assert_eq!(state_of(last), pb::OperationState::Succeeded, "{:?}", last.error);
+    let check = check_step(last);
+    assert_eq!(fact(check, "gh").unwrap_or_default(), "");
+    assert_eq!(fact(check, "git"), Some("2.47.1"));
+    assert_eq!(fact(check, "os"), Some("linux"));
 }

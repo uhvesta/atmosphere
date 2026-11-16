@@ -18,7 +18,7 @@ pub fn remote_url(template: &str, owner: &str, name: &str) -> Result<String, Git
     Ok(template.replace("{owner}", owner).replace("{name}", name))
 }
 
-fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, GitError> {
+pub(crate) fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, GitError> {
     let mut cmd = Command::new("git");
     cmd.args(args).env("GIT_TERMINAL_PROMPT", "0");
     if let Some(dir) = dir {
@@ -39,7 +39,7 @@ fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, GitError> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn io(path: &Path) -> impl FnOnce(std::io::Error) -> GitError + '_ {
+pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> GitError + '_ {
     move |source| GitError::Io {
         path: path.to_path_buf(),
         source,
@@ -55,7 +55,7 @@ fn clear(path: &Path) -> Result<(), GitError> {
 
 /// Runs `build` in a fresh `<dest>.partial`, then renames it to `dest`; a
 /// failure leaves nothing behind.
-fn in_partial(
+pub(crate) fn in_partial(
     dest: &Path,
     build: impl FnOnce(&Path) -> Result<(), GitError>,
 ) -> Result<(), GitError> {
@@ -72,7 +72,7 @@ fn in_partial(
     done
 }
 
-fn text(path: &Path) -> Result<&str, GitError> {
+pub(crate) fn text(path: &Path) -> Result<&str, GitError> {
     path.to_str().ok_or_else(|| GitError::Io {
         path: path.to_path_buf(),
         source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "path is not UTF-8"),

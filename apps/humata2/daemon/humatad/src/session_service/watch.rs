@@ -3,29 +3,64 @@
 //! this the store keeps a gone agent as running until the next start's
 //! reconcile.
 //!
-//! One connection per running agent, opened at the end of its output: the
-//! holder sends output it prints too, which is read and dropped. A watch
-//! ends when the holder says the agent exited or hangs up; a holder that
-//! hangs up without an exit is left to the next start's reconcile.
+//! One connection per running agent, opened at the end of its output. The
+//! output it prints is not kept, but it times the output fallback for the
+//! agent's turn (SE-21, D169): a timer is armed at attach and re-armed at
+//! each output, and when it fires the agent's status is told to the feed
+//! (see `turns.rs`). A watch ends when the holder says the agent exited or
+//! hangs up; a holder that hangs up without an exit is left to the next
+//! start's reconcile.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use humata2_holder::{Attachment, Event};
+use humata2_holder::{Attachment, Event, Events};
 use humata2_store::{AgentState, StoreError};
-use tokio::task::spawn_blocking;
+use tokio::sync::mpsc;
+use tokio::task::{JoinHandle, spawn_blocking};
+use tokio::time::Instant;
 
+use super::turns::{self, Hook, Quieting};
 use super::{Tell, now_ms};
 use crate::status;
+
+/// Events waiting for the watch to read them.
+const EVENTS_QUEUE: usize = 64;
+
+/// Where a running agent is, for its watch.
+struct Running {
+    holder_pid: u32,
+    socket: PathBuf,
+    /// What its hooks last said and when, kept across a restart.
+    hook: Option<(Hook, i64)>,
+    /// Whether its kind has turns to time (SE-21).
+    timed: bool,
+}
 
 /// Watches `session`'s agent if its record says it runs. Returns at once.
 pub(super) fn agent(tell: Tell, session: String) {
     tokio::spawn(async move {
-        let Some((holder_pid, socket)) = running(&tell, &session).await else {
+        let Some(Running {
+            holder_pid,
+            socket,
+            hook,
+            timed,
+        }) = running(&tell, &session).await
+        else {
             return;
         };
-        let Some(code) = exit_of(&socket).await else {
+        let entered = turns::enter(&session, holder_pid, hook, timed);
+        turns::save_pending(tell.store.clone(), &session, holder_pid, entered.pending).await;
+        if entered.inserted {
+            tell.session(&session, humata2_grpc::humata::v1::Change::Updated, None)
+                .await;
+        }
+        let code = follow(&tell, &session, holder_pid, &socket, timed).await;
+        // A watch that lost its holder keeps what it knew: the next one
+        // finds it, and a report in between still has an entry to change.
+        let Some(code) = code else {
             return;
         };
+        turns::forget(&session, holder_pid);
         if record_exit(&tell, &session, holder_pid, code).await {
             tell.session(&session, humata2_grpc::humata::v1::Change::Updated, None)
                 .await;
@@ -37,6 +72,8 @@ pub(super) fn agent(tell: Tell, session: String) {
 /// stands, since the app may have read it before it was brought back, and
 /// watches each agent that runs.
 pub(crate) async fn after_restart(tell: Tell) {
+    // A start fresh the stop cut short types its first message now.
+    tokio::spawn(super::start_fresh::retype_pending(tell.store.clone()));
     let store = tell.store.clone();
     let agents = match spawn_blocking(move || store.agents()).await {
         Ok(Ok(agents)) => agents,
@@ -62,19 +99,31 @@ pub(crate) async fn after_restart(tell: Tell) {
     }
 }
 
-/// The running agent's holder pid and its tab's holder socket.
-async fn running(tell: &Tell, session: &str) -> Option<(u32, PathBuf)> {
+/// The running agent's holder pid, its tab's holder socket and its saved
+/// hook state.
+async fn running(tell: &Tell, session: &str) -> Option<Running> {
     let (store, key) = (tell.store.clone(), session.to_owned());
-    let read = spawn_blocking(move || -> Result<Option<(u32, PathBuf)>, StoreError> {
+    let read = spawn_blocking(move || -> Result<Option<Running>, StoreError> {
         let Some(agent) = store.agent(&key)? else {
             return Ok(None);
         };
         let AgentState::Running { holder_pid } = agent.state else {
             return Ok(None);
         };
-        Ok(store
-            .tab(&agent.tab)?
-            .map(|tab| (holder_pid, tab.holder_socket)))
+        let hook = store
+            .hook_turn(&key)?
+            .and_then(|(code, at)| Some((Hook::from_code(code)?, at)));
+        let timed = store
+            .session(&key)?
+            .is_some_and(|record| {
+                turns::source_of(&record.agent) != humata2_grpc::humata::v1::TurnEndSource::None
+            });
+        Ok(store.tab(&agent.tab)?.map(|tab| Running {
+            holder_pid,
+            socket: tab.holder_socket,
+            hook,
+            timed,
+        }))
     })
     .await;
     match read {
@@ -90,22 +139,71 @@ async fn running(tell: &Tell, session: &str) -> Option<(u32, PathBuf)> {
     }
 }
 
-/// The agent's exit code, once its holder says it exited. `None` when the
-/// holder can't be reached or hangs up first.
-async fn exit_of(socket: &std::path::Path) -> Option<i32> {
+/// Reads the holder's events into `sender`, in a task of their own: a read
+/// can't be cancelled midway, so the watch can't select on it directly.
+fn read_events(
+    mut events: Events,
+    sender: mpsc::Sender<Result<Event, humata2_holder::HolderError>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let next = events.next().await.transpose();
+            let failed = matches!(next, Some(Err(_)));
+            let Some(next) = next else { return };
+            if sender.send(next).await.is_err() || failed {
+                return;
+            }
+        }
+    })
+}
+
+/// Ends the reader task with the watch.
+struct Reader(JoinHandle<()>);
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Follows the agent's output until its holder says it exited, timing the
+/// quiet after each output for its turn status (told to the feed when it
+/// changes). Returns the exit code; `None` when the holder can't be reached
+/// or hangs up first.
+async fn follow(
+    tell: &Tell,
+    session: &str,
+    holder_pid: u32,
+    socket: &Path,
+    timed: bool,
+) -> Option<i32> {
     let Attachment {
         welcome,
-        mut events,
+        events,
         control: _control,
     } = humata2_holder::attach(socket, u64::MAX).await.ok()?;
     if let Some(code) = welcome.exited {
         return Some(code);
     }
+    let (sender, mut received) = mpsc::channel(EVENTS_QUEUE);
+    let _reader = Reader(read_events(events, sender));
+    let mut quieting = Quieting::new(Instant::now(), timed);
     loop {
-        match events.next().await {
-            Ok(Some(Event::Exited { code })) => return Some(code),
-            Ok(Some(_)) => {}
-            Ok(None) | Err(_) => return None,
+        let level = tokio::select! {
+            event = received.recv() => match event {
+                Some(Ok(Event::Exited { code })) => return Some(code),
+                Some(Ok(Event::Output { .. })) => match quieting.output(Instant::now()) {
+                    Some(level) => level,
+                    None => continue,
+                },
+                Some(Ok(_)) => continue,
+                Some(Err(_)) | None => return None,
+            },
+            level = quieting.next_level() => level,
+        };
+        if turns::set_quiet(session, holder_pid, level) {
+            tell.session(session, humata2_grpc::humata::v1::Change::Updated, None)
+                .await;
         }
     }
 }

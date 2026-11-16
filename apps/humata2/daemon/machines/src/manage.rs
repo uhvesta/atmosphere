@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+use crate::check::Facts;
 use crate::enroll::{self, Key};
 use crate::error::{KnownHostsError, NameError, QuoteError, Remedy, RunError, SetupError, ValuesError};
 use crate::hosts::{EntryState, HostEntry, Hosts, HostsError, ProviderMachine};
@@ -148,11 +149,21 @@ pub enum StepEvent {
         delay: Duration,
     },
     Done(OpStep),
+    /// What the check step read from the machine (HO-1); pushed before the
+    /// check's `Done`.
+    Checked(Box<Facts>),
     Skipped(OpStep),
     /// With the step's kept output (MP-20).
     Failed { step: OpStep, output_tail: String },
     /// Undone after a later step failed.
     Undone(OpStep),
+}
+
+/// Tells the caller what the check read, as that step finishes.
+fn push_checked(facts: Option<&Facts>, step: OpStep, drive: &mut Drive<'_>) {
+    if let (OpStep::Check, Some(facts)) = (step, facts) {
+        (drive.events)(StepEvent::Checked(Box::new(facts.clone())));
+    }
 }
 
 /// What the daemon lends an operation: how to run commands, the builds to
@@ -271,7 +282,12 @@ pub enum ManageError {
     #[error(
         "{machine} asks for a password, passphrase or code. Make key login work without one (ssh-copy-id, or load the key into ssh-agent), then try again"
     )]
-    LoginNeeded { machine: String, output_tail: String },
+    LoginNeeded {
+        machine: String,
+        output_tail: String,
+        /// Why: the prompt it printed, or that it hung (D167).
+        reason: setup::LoginReason,
+    },
     #[error(
         "couldn't remove humatad2 from {machine} ({exit}). It is listed until that works; reconnect when the machine is back to finish, or forget it if it is gone for good"
     )]
@@ -328,7 +344,12 @@ pub enum ManageError {
     #[error(
         "{machine} needs a login only a person can give, and Create machine can't ask for one. Add the machine with its provider's key login set up, or make the provider's connect command log in without a prompt"
     )]
-    ProviderLoginNeeded { machine: String, output_tail: String },
+    ProviderLoginNeeded {
+        machine: String,
+        output_tail: String,
+        /// Why: the prompt it printed, or that it hung (D167).
+        reason: setup::LoginReason,
+    },
     #[error("{machine} isn't a machine the {provider} provider made. Pick a machine of that provider")]
     NotProviderMachine { machine: String, provider: String },
     #[error(
@@ -576,8 +597,8 @@ impl Machines {
             }
             Err(error) => {
                 let error = match error {
-                    ManageError::LoginNeeded { machine, output_tail } => {
-                        ManageError::ProviderLoginNeeded { machine, output_tail }
+                    ManageError::LoginNeeded { machine, output_tail, reason } => {
+                        ManageError::ProviderLoginNeeded { machine, output_tail, reason }
                     }
                     other => other,
                 };
@@ -953,6 +974,7 @@ impl Machines {
                     }
                     let next = OpStep::of(setup.current());
                     if next != current {
+                        push_checked(setup.facts(), current, drive);
                         (drive.events)(StepEvent::Done(current));
                         stop_if_cancelled(&name, drive)?;
                         current = next;
@@ -977,6 +999,7 @@ impl Machines {
                     return Err(ManageError::LoginNeeded {
                         machine,
                         output_tail: login.output_tail,
+                        reason: login.reason,
                     });
                 }
                 Progress::Ready(ready) => {
@@ -993,6 +1016,7 @@ impl Machines {
                             }
                         })?;
                     }
+                    push_checked(Some(&ready.facts), current, drive);
                     (drive.events)(StepEvent::Done(current));
                     return Ok(ready);
                 }

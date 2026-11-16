@@ -111,18 +111,12 @@ fn the_real_shell_in_both_appearances_and_sidebar_states() {
                 path: "src/client.rs".into(),
             },
         ));
-        app.send(AppAction::Review(
-            humata2_review::ReviewAction::StartComment(humata2_review::Anchor {
-                path: "src/client.rs".into(),
-                line: 43,
-            }),
-        ));
-        app.send(AppAction::Review(
-            humata2_review::ReviewAction::CommentText(
-                "Keep insert_legacy until the backfill ends.".into(),
-            ),
-        ));
-        app.send(AppAction::Review(humata2_review::ReviewAction::SaveComment));
+        app.write_comment(
+            "ledger",
+            "api",
+            43,
+            "Keep insert_legacy until the backfill ends.",
+        );
         app.send(AppAction::Sidebar(SidebarAction::SetCurrent(Some(
             RowKey::Session(SessionId::new(selected)),
         ))));

@@ -1,0 +1,20 @@
+[package]
+name = "humata2-mirror"
+description = "The host's copy of every Humata 2 session's conversation and the full-text index over it."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_mirror"
+path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

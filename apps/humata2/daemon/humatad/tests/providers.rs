@@ -31,7 +31,12 @@ fn bundle(dir: &Path) -> PathBuf {
     let mut entries = serde_json::Map::new();
     for file in FILES {
         let body = if file == "humatad2" {
-            format!("#!/bin/sh\nexec '{}' \"$@\"\n", binary("HUMATAD2_RELEASE").display())
+            // A link a test starts gets its state folder named (the default, said out
+            // loud), so it relays nothing and starts no daemon of its own (D146).
+            format!(
+                "#!/bin/sh\ncase \" $* \" in *\" --stdio \"*) exec '{real}' \"$@\" --state \"$HOME/.humata2/state\" ;; esac\nexec '{real}' \"$@\"\n",
+                real = binary("HUMATAD2_RELEASE").display()
+            )
         } else {
             format!("#!/bin/sh\n# {file}\nexit 0\n")
         };
@@ -584,10 +589,11 @@ async fn an_agent_sees_no_providers_and_can_neither_read_the_file_nor_create_a_m
         ))
         .await
         .unwrap_err();
-    providers
+    let asked = providers
         .create_machine(as_agent(create_request("lima", &[], "k"), &token))
         .await
         .unwrap_err();
+    assert!(matches!(error_of(&asked).kind, Some(pb::error::Kind::ApprovalPending(_))), "{asked:?}");
 
     // Nothing was saved, and the refused create started nothing.
     let config = providers.get_providers_config(pb::GetProvidersConfigRequest::default()).await.unwrap().into_inner();

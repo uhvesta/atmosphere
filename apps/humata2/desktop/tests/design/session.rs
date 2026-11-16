@@ -387,7 +387,13 @@ pub fn panel_header(look: Look, title: &'static str, full: bool, extra: Option<D
 
 /// The labelled strip down the right edge that picks the panel (SE-11).
 pub fn strip(look: Look, on: Option<Panel>) -> Div {
-    rail(look, on, Some("1"))
+    rail(look, on, Some("1"), Some("2"))
+}
+
+/// The rail beside a desk session: its Inbox counts what that session
+/// asks, and a desk has no branch, so Diff counts nothing.
+pub fn desk_strip(look: Look, on: Option<Panel>, inbox: Option<&'static str>) -> Div {
+    rail(look, on, inbox, None)
 }
 
 /// The panel rail of the Ledger schema migration session: its Inbox count is
@@ -397,16 +403,18 @@ pub fn strip(look: Look, on: Option<Panel>) -> Div {
 /// Another selected session (frame 16's fork) has nothing waiting.
 fn ledger_strip(look: Look, on: Option<Panel>, side: Side) -> Div {
     let inbox = (side.selected == "Ledger schema migration").then_some(if side.asking { "2" } else { "1" });
-    rail(look, on, inbox)
+    rail(look, on, inbox, Some("2"))
 }
 
 /// `screen`'s sidebar: in a working terminal the session's own request
-/// isn't waiting, so its row is working too (D113 item 9).
+/// isn't waiting, so its row is working too (D113 item 9); once its agent
+/// has exited, its row carries the exited mark its header does (CH-16).
 fn side(screen: Screen) -> Side {
-    Side { asking: screen.term != Term::Working, ..screen.side }
+    Side { asking: screen.term != Term::Working, exited: screen.term == Term::Exited, ..screen.side }
 }
 
-fn rail(look: Look, on: Option<Panel>, inbox: Option<&'static str>) -> Div {
+/// The rail itself, with the counts its Inbox and Diff entries carry.
+pub fn rail(look: Look, on: Option<Panel>, inbox: Option<&'static str>, diff: Option<&'static str>) -> Div {
     let item = |glyph: IconName, panel: Panel, text: &'static str, count: Option<&'static str>| {
         let lit = on == Some(panel);
         div()
@@ -436,7 +444,7 @@ fn rail(look: Look, on: Option<Panel>, inbox: Option<&'static str>) -> Div {
         .border_l_1()
         .border_color(c(look.line))
         .child(item(IconName::Inbox, Panel::Inbox, "Inbox", inbox))
-        .child(item(IconName::FileDiff, Panel::Diff, "Diff", Some("2")))
+        .child(item(IconName::FileDiff, Panel::Diff, "Diff", diff))
         .child(item(IconName::FolderTree, Panel::Files, "Files", None))
         .child(item(IconName::SquareKanban, Panel::Board, "Board", None))
         .child(item(IconName::BookOpenText, Panel::Journal, "Journal", None))

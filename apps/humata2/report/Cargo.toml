@@ -11,10 +11,14 @@ name = "humata2_report"
 path = "src/lib.rs"
 
 [dependencies]
+image = { workspace = true }
+png = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
+png = { workspace = true }
 tempfile = { workspace = true }

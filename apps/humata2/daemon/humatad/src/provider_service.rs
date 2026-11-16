@@ -26,7 +26,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use humata2_access::{Call, Capability, MachineAction, MachineActionKind, MachineId, Refusal, Target};
+use humata2_access::{AccessRequest, Call, Capability, MachineAction, MachineActionKind, MachineId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{Action, ConfigError, MachineStatus, OpStep, Provider, Reach, StepEvent, parse_status};
 use sha2::{Digest, Sha256};
@@ -34,8 +34,10 @@ use tokio::runtime::Handle;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
+use crate::channel_service::{self, Gated, answer_gated};
 use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
+use crate::inbox::Inbox;
 use crate::machine_service::{
     Job, Observer, ProvidersFileError, Work, launch_observed, lock, machine_id, machine_of, providers_path,
     read_providers, status_of,
@@ -53,6 +55,7 @@ struct Left {
     ended: bool,
 }
 
+#[derive(Clone)]
 pub(crate) struct ProviderSvc {
     guard: Arc<Guard>,
     work: Arc<Work>,
@@ -60,11 +63,13 @@ pub(crate) struct ProviderSvc {
     /// By the id of the CreateMachine operation.
     left: Arc<Mutex<HashMap<String, Left>>>,
     /// The interactive login and make-unattended (MP-12–MP-17).
-    login: crate::login_service::LoginSvc,
+    login: Arc<crate::login_service::LoginSvc>,
+    /// Where a call a rule sends to Ask me waits for the user (D38.6).
+    inbox: Arc<Inbox>,
 }
 
 impl ProviderSvc {
-    pub(crate) fn new(guard: Arc<Guard>, work: Arc<Work>, operations: Arc<Operations>) -> Self {
+    pub(crate) fn new(guard: Arc<Guard>, work: Arc<Work>, operations: Arc<Operations>, inbox: Arc<Inbox>) -> Self {
         let left: Arc<Mutex<HashMap<String, Left>>> = Arc::new(Mutex::new(HashMap::new()));
         // The login finds what a failed create made by its operation's id,
         // and forgets it once the login finished the add.
@@ -92,7 +97,8 @@ impl ProviderSvc {
             work,
             operations,
             left,
-            login,
+            login: Arc::new(login),
+            inbox,
         }
     }
 
@@ -110,6 +116,213 @@ impl ProviderSvc {
                 }),
             },
         )
+    }
+
+    /// Checks the call as [`ProviderSvc::require_machine`] does, but a rule
+    /// of Ask me answers `Some(request)` for the caller to put in the Inbox
+    /// rather than refusing (D38.6). An `approved` call goes on.
+    fn gate(
+        &self,
+        caller: &Caller,
+        machine: &str,
+        action: MachineActionKind,
+        approved: bool,
+    ) -> Result<Option<Box<AccessRequest>>, Status> {
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        channel_service::gate(
+            &self.guard,
+            caller,
+            &Call::Use {
+                capability: action.capability(),
+                target: Target::Machine(MachineAction {
+                    machine: MachineId::new(machine),
+                    action,
+                }),
+            },
+            approved,
+        )
+    }
+
+    /// The body of CreateMachine; `approved` once the user said yes to it in
+    /// the Inbox (D38.6, TP-13).
+    async fn create(
+        &self,
+        caller: &Caller,
+        request: pb::CreateMachineRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Operation>, Status> {
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        if let Some(asked) = self.gate(caller, request.name.trim(), MachineActionKind::Create, approved)? {
+            return Ok(Gated::Ask(asked));
+        }
+        if let Some(operation) = self.operations.existing(caller, request.idempotency_key.as_ref())? {
+            return Ok(Gated::Done(operation));
+        }
+        let provider_id = request
+            .provider
+            .map(|provider| provider.value)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| status::missing("provider"))?;
+        let provider = self.provider(&provider_id)?;
+        let plan = self
+            .work
+            .machines
+            .plan_create(&provider, &request.name, request.params.into_iter().collect())
+            .map_err(|error| status_of(&error))?;
+        let name = plan.machine.as_str().to_owned();
+        let progress = match self.start(
+            caller,
+            pb::OperationKind::ProviderCreate,
+            &name,
+            &OpStep::create_steps(provider.reach()),
+            true,
+            request.idempotency_key,
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(operation) => return Ok(Gated::Done(operation)),
+        };
+        let operation = progress.operation();
+        let id = operation.id.clone().map(|id| id.value).unwrap_or_default();
+
+        // From the moment `create` runs, something may exist to delete.
+        let observer: Observer = {
+            let left = self.left.clone();
+            let id = id.clone();
+            let remember = Left {
+                provider: provider_id.clone(),
+                machine: name.clone(),
+                values: plan.values.clone(),
+                ended: false,
+            };
+            Arc::new(move |event: &StepEvent| {
+                if matches!(event, StepEvent::Running(OpStep::Create)) {
+                    lock(&left).insert(
+                        id.clone(),
+                        Left {
+                            provider: remember.provider.clone(),
+                            machine: remember.machine.clone(),
+                            values: remember.values.clone(),
+                            ended: false,
+                        },
+                    );
+                }
+            })
+        };
+        let work = self.work.clone();
+        let left = self.left.clone();
+        let job: Job = Arc::new(move |machines, drive| {
+            let created = machines.create(plan.clone(), drive);
+            match &created {
+                Ok(entry) => {
+                    lock(&left).remove(&id);
+                    work.saw(&entry.name, pb::Reachability::Online);
+                    work.link_up(&entry.name, &Handle::current());
+                }
+                Err(_) => {
+                    if let Some(made) = lock(&left).get_mut(&id) {
+                        made.ended = true;
+                    }
+                }
+            }
+            created.map(|entry| Some(pb::operation::Result::Machine(machine_id(&entry.name))))
+        });
+        launch_observed(self.work.clone(), progress, job, Some(observer));
+        Ok(Gated::Done(operation))
+    }
+
+    /// The body of RunProviderAction; `approved` once the user said yes to
+    /// it in the Inbox. Delete is never asked for (D38.6, TP-13).
+    async fn run_action(
+        &self,
+        caller: &Caller,
+        request: pb::RunProviderActionRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Operation>, Status> {
+        let name = machine_of(request.machine)?;
+        let (action, kind) = match pb::ProviderAction::try_from(request.action) {
+            Ok(pb::ProviderAction::Start) => (Action::Start, MachineActionKind::Start),
+            Ok(pb::ProviderAction::Stop) => (Action::Stop, MachineActionKind::Stop),
+            // Reading a status needs no more than starting would.
+            Ok(pb::ProviderAction::Status) => (Action::Status, MachineActionKind::Start),
+            Ok(pb::ProviderAction::Delete) => (Action::Delete, MachineActionKind::Delete),
+            _ => return Err(status::missing("action")),
+        };
+        if action == Action::Delete {
+            // Delete is never asked for: the user only, present, with a plan.
+            self.require_machine(caller, &name, kind)?;
+            self.require_present(caller, MachineActionKind::Delete.capability())?;
+        } else if let Some(asked) = self.gate(caller, &name, kind, approved)? {
+            return Ok(Gated::Ask(asked));
+        }
+        if let Some(operation) = self.operations.existing(caller, request.idempotency_key.as_ref())? {
+            return Ok(Gated::Done(operation));
+        }
+        let entry = self.work.machines.get(&name).map_err(|error| status_of(&error))?;
+        let Some(record) = entry.provider else {
+            return Err(status_of(&humata2_machines::ManageError::NotProviderMachine {
+                machine: name,
+                provider: String::new(),
+            }));
+        };
+        let provider = self.provider(&record.id)?;
+        if !provider.has(action) {
+            return Err(status_of(&humata2_machines::ManageError::ActionUndefined {
+                provider: provider.id().to_owned(),
+                action,
+            }));
+        }
+        if action == Action::Delete {
+            let token = request
+                .remove
+                .and_then(|remove| remove.plan)
+                .map(|plan| plan.value)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| status::missing("remove.plan"))?;
+            self.work.use_plan(&token, &name)?;
+        }
+        let steps: &[OpStep] = if action == Action::Delete {
+            &OpStep::PROVIDER_DELETE
+        } else {
+            &OpStep::PROVIDER_ACTION
+        };
+        let progress = match self.start(
+            caller,
+            pb::OperationKind::ProviderAction,
+            &name,
+            steps,
+            false,
+            request.idempotency_key,
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(operation) => return Ok(Gated::Done(operation)),
+        };
+        let operation = progress.operation();
+        let work = self.work.clone();
+        if action == Action::Delete {
+            work.link_down(&name);
+        }
+        let job: Job = Arc::new(move |machines, drive| {
+            if action == Action::Delete {
+                machines.delete_machine(&provider, &name, drive)?;
+                return Ok(None);
+            }
+            let output = machines.run_action(&provider, &name, action, drive)?;
+            let stopped = match action {
+                Action::Stop => true,
+                Action::Status => parse_status(&output.stdout) == MachineStatus::Stopped,
+                _ => false,
+            };
+            if stopped {
+                work.saw(&name, pb::Reachability::Stopped);
+            }
+            Ok(None)
+        });
+        launch_observed(self.work.clone(), progress, job, None);
+        Ok(Gated::Done(operation))
     }
 
     /// The user only (agents and scripts are refused), for the providers
@@ -444,179 +657,50 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
 
     /// Checks the provider, the name and the params before anything runs,
     /// then answers with the running operation: create, identity (for an
-    /// identity provider), connect, check, install, start, find_agents.
+    /// identity provider), connect, check, install, start, find_agents. An
+    /// agent's create waits in the Inbox when its rule says Ask me (D38.6).
     async fn create_machine(
         &self,
         request: Request<pb::CreateMachineRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        if matches!(caller, Caller::Peer) {
-            return Err(status::refused(&Refusal::PeerCannotCall));
-        }
-        self.require_machine(&caller, request.name.trim(), MachineActionKind::Create)?;
-        if let Some(operation) = self.operations.existing(&caller, request.idempotency_key.as_ref())? {
-            return Ok(Response::new(operation));
-        }
-        let provider_id = request
-            .provider
-            .map(|provider| provider.value)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| status::missing("provider"))?;
-        let provider = self.provider(&provider_id)?;
-        let plan = self
-            .work
-            .machines
-            .plan_create(&provider, &request.name, request.params.into_iter().collect())
-            .map_err(|error| status_of(&error))?;
-        let name = plan.machine.as_str().to_owned();
-        let progress = match self.start(
+        let key = request.idempotency_key.as_ref().map(|key| key.value.clone());
+        let first = self.create(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            pb::OperationKind::ProviderCreate,
-            &name,
-            &OpStep::create_steps(provider.reach()),
-            true,
-            request.idempotency_key,
-        )? {
-            Started::New(progress) => progress,
-            Started::Existing(operation) => return Ok(Response::new(operation)),
-        };
-        let operation = progress.operation();
-        let id = operation.id.clone().map(|id| id.value).unwrap_or_default();
-
-        // From the moment `create` runs, something may exist to delete.
-        let observer: Observer = {
-            let left = self.left.clone();
-            let id = id.clone();
-            let remember = Left {
-                provider: provider_id.clone(),
-                machine: name.clone(),
-                values: plan.values.clone(),
-                ended: false,
-            };
-            Arc::new(move |event: &StepEvent| {
-                if matches!(event, StepEvent::Running(OpStep::Create)) {
-                    lock(&left).insert(
-                        id.clone(),
-                        Left {
-                            provider: remember.provider.clone(),
-                            machine: remember.machine.clone(),
-                            values: remember.values.clone(),
-                            ended: false,
-                        },
-                    );
-                }
-            })
-        };
-        let work = self.work.clone();
-        let left = self.left.clone();
-        let job: Job = Arc::new(move |machines, drive| {
-            let created = machines.create(plan.clone(), drive);
-            match &created {
-                Ok(entry) => {
-                    lock(&left).remove(&id);
-                    work.saw(&entry.name, pb::Reachability::Online);
-                    work.link_up(&entry.name, &Handle::current());
-                }
-                Err(_) => {
-                    if let Some(made) = lock(&left).get_mut(&id) {
-                        made.ended = true;
-                    }
-                }
-            }
-            created.map(|entry| Some(pb::operation::Result::Machine(machine_id(&entry.name))))
-        });
-        launch_observed(self.work.clone(), progress, job, Some(observer));
-        Ok(Response::new(operation))
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.create(&who, request, true).await },
+        )
+        .await
     }
 
     /// START, STOP, STATUS run the provider's command for a machine it
     /// made; DELETE removes the machine by its removal plan, then runs the
-    /// provider's `delete` (MP-21).
+    /// provider's `delete` (MP-21). An agent's start, stop or status waits
+    /// in the Inbox when its rule says Ask me (D38.6); delete never does.
     async fn run_provider_action(
         &self,
         request: Request<pb::RunProviderActionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let name = machine_of(request.machine)?;
-        let (action, kind) = match pb::ProviderAction::try_from(request.action) {
-            Ok(pb::ProviderAction::Start) => (Action::Start, MachineActionKind::Start),
-            Ok(pb::ProviderAction::Stop) => (Action::Stop, MachineActionKind::Stop),
-            // Reading a status needs no more than starting would.
-            Ok(pb::ProviderAction::Status) => (Action::Status, MachineActionKind::Start),
-            Ok(pb::ProviderAction::Delete) => (Action::Delete, MachineActionKind::Delete),
-            _ => return Err(status::missing("action")),
-        };
-        self.require_machine(&caller, &name, kind)?;
-        if action == Action::Delete {
-            self.require_present(&caller, MachineActionKind::Delete.capability())?;
-        }
-        if let Some(operation) = self.operations.existing(&caller, request.idempotency_key.as_ref())? {
-            return Ok(Response::new(operation));
-        }
-        let entry = self.work.machines.get(&name).map_err(|error| status_of(&error))?;
-        let Some(record) = entry.provider else {
-            return Err(status_of(&humata2_machines::ManageError::NotProviderMachine {
-                machine: name,
-                provider: String::new(),
-            }));
-        };
-        let provider = self.provider(&record.id)?;
-        if !provider.has(action) {
-            return Err(status_of(&humata2_machines::ManageError::ActionUndefined {
-                provider: provider.id().to_owned(),
-                action,
-            }));
-        }
-        if action == Action::Delete {
-            let token = request
-                .remove
-                .and_then(|remove| remove.plan)
-                .map(|plan| plan.value)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| status::missing("remove.plan"))?;
-            self.work.use_plan(&token, &name)?;
-        }
-        let steps: &[OpStep] = if action == Action::Delete {
-            &OpStep::PROVIDER_DELETE
-        } else {
-            &OpStep::PROVIDER_ACTION
-        };
-        let progress = match self.start(
+        let key = request.idempotency_key.as_ref().map(|key| key.value.clone());
+        let first = self.run_action(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            pb::OperationKind::ProviderAction,
-            &name,
-            steps,
-            false,
-            request.idempotency_key,
-        )? {
-            Started::New(progress) => progress,
-            Started::Existing(operation) => return Ok(Response::new(operation)),
-        };
-        let operation = progress.operation();
-        let work = self.work.clone();
-        if action == Action::Delete {
-            work.link_down(&name);
-        }
-        let job: Job = Arc::new(move |machines, drive| {
-            if action == Action::Delete {
-                machines.delete_machine(&provider, &name, drive)?;
-                return Ok(None);
-            }
-            let output = machines.run_action(&provider, &name, action, drive)?;
-            let stopped = match action {
-                Action::Stop => true,
-                Action::Status => parse_status(&output.stdout) == MachineStatus::Stopped,
-                _ => false,
-            };
-            if stopped {
-                work.saw(&name, pb::Reachability::Stopped);
-            }
-            Ok(None)
-        });
-        launch_observed(self.work.clone(), progress, job, None);
-        Ok(Response::new(operation))
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.run_action(&who, request, true).await },
+        )
+        .await
     }
 
     /// Runs the provider's `delete` for what a failed CreateMachine made.

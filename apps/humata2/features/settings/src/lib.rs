@@ -85,6 +85,8 @@ pub struct SettingsState {
     pub error: Option<String>,
     /// The channel Agent access tab's in-flight changes.
     pub access: AccessState,
+    /// Whether the terminal font size list is open.
+    pub font_menu: bool,
 }
 
 /// What happens on the settings page.
@@ -98,8 +100,10 @@ pub enum SettingsAction {
     Restore(Preferences),
     /// Pick colors.
     SetTheme(Theme),
-    /// Make text bigger or smaller by `delta` points.
-    FontSize(i8),
+    /// Open or close the terminal font size list.
+    FontMenu,
+    /// Pick the terminal font size and close the list.
+    SetFontSize(u8),
     /// Wrap diffs or not.
     ToggleWrap,
     /// Ask before risky bulk answers or not.
@@ -146,13 +150,17 @@ impl Reducer for Settings {
                 state.preferences = restored;
                 state.has_key = self.clients.keychain.has(KEY_NAME).unwrap_or(false);
             }
-            SettingsAction::Section(section) => state.section = section,
+            SettingsAction::Section(section) => {
+                state.section = section;
+                state.font_menu = false;
+            }
+            SettingsAction::FontMenu => state.font_menu = !state.font_menu,
+            SettingsAction::SetFontSize(size) => {
+                preferences.font_size = size.clamp(*FONT_SIZES.start(), *FONT_SIZES.end());
+                state.font_menu = false;
+            }
             SettingsAction::TogglePinned => preferences.show_pinned = !preferences.show_pinned,
             SettingsAction::SetTheme(theme) => preferences.theme = theme,
-            SettingsAction::FontSize(delta) => {
-                let size = preferences.font_size.saturating_add_signed(delta);
-                preferences.font_size = size.clamp(*FONT_SIZES.start(), *FONT_SIZES.end());
-            }
             SettingsAction::ToggleWrap => preferences.wrap_diffs = !preferences.wrap_diffs,
             SettingsAction::ToggleConfirm => {
                 preferences.confirm_destructive = !preferences.confirm_destructive;

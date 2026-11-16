@@ -7,9 +7,9 @@
 //! the service answers "not built".
 //!
 //! A session's status comes from its agent's record: launching or
-//! resuming is STARTING, running is WORKING (no turn source is wired yet,
-//! so never NEEDS_INPUT), exited is EXITED, stopped is IDLE and a failed
-//! resume is RESUME_FAILED. A session whose start hasn't reached its end
+//! resuming is STARTING, running is what its turn says (`turns.rs`:
+//! WORKING, IDLE, NEEDS_INPUT or PROBABLY_IDLE, D169), exited is EXITED,
+//! stopped is IDLE and a failed resume is RESUME_FAILED. A session whose start hasn't reached its end
 //! is STARTING whatever its agent says.
 
 use std::collections::HashMap;
@@ -33,12 +33,19 @@ use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
 use crate::operations::{Operations, Progress, Started};
+use crate::remote_work::RemoteWork;
 use crate::restart::Tokens;
 use crate::status;
 
+mod remote;
 mod start_fresh;
+mod turns;
 mod watch;
 
+pub(crate) use remote::TellSink;
+pub(crate) use turns::{
+    HooksError, changes as turn_changes, install_hooks, running as running_turn, set_sources,
+};
 pub(crate) use watch::after_restart;
 
 /// The longest session title taken.
@@ -56,6 +63,9 @@ pub(crate) struct SessionSvc {
     inbox: Arc<Inbox>,
     machine: String,
     tell: Tell,
+    /// The host's way to other machines (D139); none on a machine's own
+    /// daemon, where every session is here.
+    remote: Option<RemoteWork>,
 }
 
 /// Puts a session as the store holds it now on the event feed.
@@ -64,6 +74,9 @@ pub(crate) struct Tell {
     feed: Arc<Feed>,
     store: Arc<humata2_store::Store>,
     machine: String,
+    /// Set once the host's remote work exists: what a remote session shows is
+    /// merged with what its machine reported (SL-3).
+    remote: Arc<std::sync::OnceLock<RemoteWork>>,
 }
 
 impl Tell {
@@ -72,7 +85,14 @@ impl Tell {
             feed,
             store,
             machine,
+            remote: Arc::default(),
         }
+    }
+
+    /// The same, merging remote sessions with `remote` once it is set.
+    pub(crate) fn with_remote(mut self, remote: Arc<std::sync::OnceLock<RemoteWork>>) -> Self {
+        self.remote = remote;
+        self
     }
 
     /// The session the start operation `operation` recorded, if it got that
@@ -96,26 +116,23 @@ impl Tell {
     /// the call that changed it.
     async fn session(&self, session: &str, change: pb::Change, by: Option<pb::Actor>) {
         let (store, key) = (self.store.clone(), session.to_owned());
-        let read = blocking(move || -> Result<Option<Loaded>, StoreError> {
-            let Some(record) = store.session(&key)? else {
-                return Ok(None);
-            };
-            Ok(Some(Loaded {
-                detail: store.session_detail(&key)?,
-                agent: store.agent(&key)?,
-                record,
-            }))
-        })
+        let read = blocking(move || Loaded::read(&store, &key))
         .await;
         let Ok(Ok(Some(loaded))) = read else {
             return;
         };
-        let shown = session_pb(
+        let mut shown = session_pb(
             &loaded.record,
             loaded.detail.as_ref(),
             loaded.agent.as_ref(),
+            loaded.summary_source,
             &self.machine,
         );
+        if let Some(remote) = self.remote.get()
+            && remote::elsewhere(&loaded.record, &self.machine)
+        {
+            remote.merge(&mut shown);
+        }
         self.feed.publish_in(
             change,
             pb::event::Payload::Session(shown),
@@ -133,6 +150,25 @@ struct Loaded {
     record: SessionRecord,
     detail: Option<SessionDetail>,
     agent: Option<AgentRecord>,
+    /// What a start fresh could summarize; set only for a failed resume.
+    summary_source: pb::session::SummarySource,
+}
+
+impl Loaded {
+    /// Reads session `key`. It looks at the disk for a failed resume, so it
+    /// is blocking.
+    fn read(store: &humata2_store::Store, key: &str) -> Result<Option<Loaded>, StoreError> {
+        let Some(record) = store.session(key)? else {
+            return Ok(None);
+        };
+        let agent = store.agent(key)?;
+        Ok(Some(Loaded {
+            detail: store.session_detail(key)?,
+            summary_source: start_fresh::summary_source(agent.as_ref()),
+            agent,
+            record,
+        }))
+    }
 }
 
 impl SessionSvc {
@@ -143,9 +179,10 @@ impl SessionSvc {
         identities: Arc<Identities>,
         machine: String,
         inbox: Arc<Inbox>,
+        remote: Option<RemoteWork>,
+        tell: Tell,
     ) -> Self {
         let tokens = Arc::new(Tokens::new(starter.store.clone(), identities));
-        let tell = Tell::new(operations.feed(), starter.store.clone(), machine.clone());
         Self {
             tell,
             guard,
@@ -154,6 +191,7 @@ impl SessionSvc {
             tokens,
             inbox,
             machine,
+            remote,
         }
     }
 
@@ -219,6 +257,7 @@ impl SessionSvc {
         &self,
         caller: &Caller,
         request: pb::StartSessionRequest,
+        assigned: Option<String>,
         approved: bool,
     ) -> Result<Gated<pb::StartSessionResponse>, Status> {
         Self::refuse_peer(caller)?;
@@ -228,20 +267,31 @@ impl SessionSvc {
             .map(|channel| channel.value.clone())
             .filter(|channel| !channel.is_empty())
             .ok_or_else(|| status::missing("channel"))?;
-        self.this_machine(request.machine.as_ref())?;
+        let remote_machine = self.remote_machine(request.machine.as_ref())?;
         let channel = self.find_channel(&channel_id).await?;
         let agent = self.agent_for(request.agent.as_ref(), &channel)?;
+        // Starting on another machine is its own capability (D139); the host runs this
+        // check before it relays anything, because the machine checks nothing more.
+        let (capability, starts_on) = match &remote_machine {
+            Some((machine, _)) => (Capability::SessionStartOtherMachine, machine.as_str()),
+            None => (Capability::SessionStartSameMachine, self.machine.as_str()),
+        };
         if let Some(asked) = self.gate(
             caller,
-            Capability::SessionStartSameMachine,
+            capability,
             Target::Start {
                 channel: ChannelId::new(channel.id.as_str()),
-                machine: humata2_access::MachineId::new(self.machine.as_str()),
+                machine: humata2_access::MachineId::new(starts_on),
                 agent: AgentId::new(agent.as_str()),
             },
             approved,
         )? {
             return Ok(Gated::Ask(asked));
+        }
+        if let Some((machine, remote)) = remote_machine {
+            return self
+                .begin_remote(caller, request, channel, agent, machine, remote)
+                .await;
         }
         if let Some(operation) = self
             .operations
@@ -249,8 +299,16 @@ impl SessionSvc {
         {
             return Ok(Gated::Done(self.started_by(operation).await?));
         }
+        // A start naming a session this machine already has (the host asking again,
+        // D150) answers with it and starts nothing.
+        if let Some(id) = &assigned
+            && let Some(known) = self.known_start(id).await?
+        {
+            return Ok(Gated::Done(known));
+        }
         let title = clean_title(&request.title)?;
         let repos = choose_repos(&channel, &request.repos)?;
+        turns::refresh_hooks().await;
 
         let mut keys = vec!["write_record".to_owned()];
         let mut steps = vec![("write_record".to_owned(), "Saving the session".to_owned())];
@@ -282,6 +340,7 @@ impl SessionSvc {
         };
         let operation = progress.operation();
         let start = StartRequest {
+            id: assigned,
             channel: channel.id,
             machine: self.machine.clone(),
             title: if title.is_empty() {
@@ -512,6 +571,9 @@ impl SessionSvc {
         )? {
             return Ok(Gated::Ask(asked));
         }
+        if let Some((machine, remote)) = self.lives_elsewhere(&loaded.record) {
+            return self.stop_remote(&id, &loaded, machine, remote).await;
+        }
         let Some(agent) = loaded.agent.as_mut() else {
             return Ok(Gated::Done(self.show(&loaded)));
         };
@@ -553,7 +615,8 @@ impl SessionSvc {
         Self::refuse_peer(caller)?;
         let id = request
             .id
-            .map(|id| id.value)
+            .as_ref()
+            .map(|id| id.value.clone())
             .filter(|id| !id.is_empty())
             .ok_or_else(|| status::missing("id"))?;
         let loaded = self.load(&id).await?;
@@ -569,6 +632,12 @@ impl SessionSvc {
             approved,
         )? {
             return Ok(Gated::Ask(asked));
+        }
+        turns::refresh_hooks().await;
+        if let Some((machine, remote)) = self.lives_elsewhere(&loaded.record) {
+            return self
+                .resume_remote(caller, request, id, machine, remote)
+                .await;
         }
         if request.mode == pb::resume_session_request::Mode::StartFreshWithSummary as i32 {
             return self
@@ -675,16 +744,7 @@ impl SessionSvc {
     async fn load(&self, id: &str) -> Result<Loaded, Status> {
         let store = self.starter.store.clone();
         let key = id.to_owned();
-        let found = blocking(move || -> Result<Option<Loaded>, StoreError> {
-            let Some(record) = store.session(&key)? else {
-                return Ok(None);
-            };
-            Ok(Some(Loaded {
-                detail: store.session_detail(&key)?,
-                agent: store.agent(&key)?,
-                record,
-            }))
-        })
+        let found = blocking(move || Loaded::read(&store, &key))
         .await?;
         match found {
             Ok(Some(loaded)) => Ok(loaded),
@@ -694,12 +754,15 @@ impl SessionSvc {
     }
 
     fn show(&self, loaded: &Loaded) -> pb::Session {
-        session_pb(
+        let mut shown = session_pb(
             &loaded.record,
             loaded.detail.as_ref(),
             loaded.agent.as_ref(),
+            loaded.summary_source,
             &self.machine,
-        )
+        );
+        self.merge_remote(&loaded.record, &mut shown);
+        shown
     }
 
     /// The session an operation started: the one whose start it drives.
@@ -837,6 +900,27 @@ fn session_status(agent: Option<&AgentState>, start: Option<StartStep>) -> pb::S
     }
 }
 
+/// `session_status`, with a running agent's turn (D169) in place of the
+/// WORKING it starts as.
+fn shown_status(
+    session: &str,
+    kind: &str,
+    agent: Option<&AgentState>,
+    start: Option<StartStep>,
+) -> pb::SessionStatus {
+    match (session_status(agent, start), agent) {
+        (pb::SessionStatus::Working, Some(AgentState::Running { holder_pid })) => {
+            // An agent with no turns shows none (SE-21).
+            if turns::source_of(kind) == pb::TurnEndSource::None {
+                pb::SessionStatus::RunningUnknownTurn
+            } else {
+                running_turn(session, *holder_pid)
+            }
+        }
+        (status, _) => status,
+    }
+}
+
 fn exit_code(agent: Option<&AgentState>) -> i32 {
     match agent {
         Some(AgentState::Exited { code }) => *code,
@@ -849,6 +933,7 @@ fn session_pb(
     record: &SessionRecord,
     detail: Option<&SessionDetail>,
     agent: Option<&AgentRecord>,
+    summary_source: pb::session::SummarySource,
     here: &str,
 ) -> pb::Session {
     let state = agent.map(|agent| &agent.state);
@@ -873,7 +958,7 @@ fn session_pb(
                 record.machine.clone()
             },
         }),
-        status: session_status(state, detail.map(|detail| detail.start)) as i32,
+        status: shown_status(&record.id, &record.agent, state, detail.map(|detail| detail.start)) as i32,
         repos: detail
             .map(|detail| {
                 detail
@@ -896,6 +981,7 @@ fn session_pb(
             .unwrap_or_default(),
         started_at: Some(timestamp_ms(record.created_unix_ms)),
         exit_code: exit_code(state),
+        turn_end: turns::source_of(&record.agent) as i32,
         revision: Some(pb::Revision {
             value: detail.map_or(1, |detail| detail.revision),
         }),
@@ -913,6 +999,7 @@ fn session_pb(
         interrupted_at: agent
             .and_then(|agent| agent.interruptions.last())
             .map(|interruption| timestamp_ms(interruption.at_unix_ms)),
+        summary_source: summary_source as i32,
         ..pb::Session::default()
     }
 }
@@ -1114,6 +1201,26 @@ fn start_error(error: &StartError) -> (Code, pb::Error) {
         StartError::Remove { .. } | StartError::Background { .. } => (
             Code::Internal,
             error_of(error, "restart humatad2 and try again", None),
+        ),
+        StartError::NoSession { id } => (
+            Code::NotFound,
+            error_of(
+                error,
+                "list the sessions to see their ids",
+                Some(pb::error::Kind::NotFound(pb::NotFound {
+                    kind: pb::EntityKind::Session as i32,
+                    id: id.clone(),
+                    in_trash: false,
+                })),
+            ),
+        ),
+        StartError::NoAgent { .. } => (
+            Code::FailedPrecondition,
+            error_of(error, "fork with the code only, or start the session's agent first", None),
+        ),
+        StartError::NoConversation { .. } | StartError::Copy { .. } => (
+            Code::Unavailable,
+            error_of(error, "nothing was kept; fix the cause the message names, then fork again", None),
         ),
     }
 }
@@ -1368,12 +1475,15 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::StartSessionRequest>,
     ) -> Result<Response<pb::StartSessionResponse>, Status> {
         let caller = identity::caller(&request)?;
+        let assigned = identity::host_assigned_id(&request, &caller)?;
         let request = request.into_inner();
         let key = request
             .idempotency_key
             .as_ref()
             .map(|key| key.value.clone());
-        let first = self.begin_session(&caller, request.clone(), false).await;
+        let first = self
+            .begin_session(&caller, request.clone(), assigned.clone(), false)
+            .await;
         let (me, who) = (self.clone(), caller.clone());
         answer_gated(
             &self.inbox,
@@ -1381,7 +1491,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
             key,
             "humata.v1.StartSessionResponse",
             first,
-            move || async move { me.begin_session(&who, request, true).await },
+            move || async move { me.begin_session(&who, request, assigned, true).await },
         )
         .await
     }
@@ -1442,15 +1552,22 @@ impl pb::session_service_server::SessionService for SessionSvc {
             .machine
             .map(|machine| machine.value)
             .filter(|machine| !machine.is_empty());
-        if machine
-            .as_ref()
-            .is_some_and(|machine| machine != &self.machine)
+        if self.remote.is_none()
+            && machine
+                .as_ref()
+                .is_some_and(|machine| machine != &self.machine)
         {
             return Ok(Response::new(pb::ListSessionsResponse::default()));
         }
         let store = self.starter.store.clone();
-        let (sessions, details, agents) = blocking(move || {
-            Ok::<_, StoreError>((store.sessions()?, store.session_details()?, store.agents()?))
+        let (sessions, details, agents, sources) = blocking(move || {
+            let agents = store.agents()?;
+            // Read from the disk, so here and not in the handler.
+            let sources: HashMap<String, pb::session::SummarySource> = agents
+                .iter()
+                .map(|agent| (agent.session.clone(), start_fresh::summary_source(Some(agent))))
+                .collect();
+            Ok::<_, StoreError>((store.sessions()?, store.session_details()?, agents, sources))
         })
         .await?
         .map_err(|error| status::store(error, &self.machine, "list the sessions"))?;
@@ -1469,18 +1586,34 @@ impl pb::session_service_server::SessionService for SessionSvc {
                     .as_ref()
                     .is_none_or(|channel| &session.channel == channel)
             })
+            .filter(|session| {
+                machine.as_ref().is_none_or(|machine| {
+                    let lives_on = if session.machine.is_empty() {
+                        &self.machine
+                    } else {
+                        &session.machine
+                    };
+                    lives_on == machine
+                })
+            })
             .filter(|session| self.may_read(&caller, session))
             .collect();
         sessions.sort_by(|a, b| (a.created_unix_ms, &a.id).cmp(&(b.created_unix_ms, &b.id)));
         let sessions = sessions
             .iter()
             .map(|session| {
-                session_pb(
+                let mut shown = session_pb(
                     session,
                     details.remove(&session.id).as_ref(),
                     agents.remove(&session.id).as_ref(),
+                    sources
+                        .get(&session.id)
+                        .copied()
+                        .unwrap_or(pb::session::SummarySource::Unspecified),
                     &self.machine,
-                )
+                );
+                self.merge_remote(session, &mut shown);
+                shown
             })
             .collect();
         Ok(Response::new(pb::ListSessionsResponse {
@@ -1710,6 +1843,14 @@ impl pb::session_service_server::SessionService for SessionSvc {
         _request: Request<pb::AnswerQuestionRequest>,
     ) -> Result<Response<pb::AnswerQuestionResponse>, Status> {
         Err(status::not_built("humata.v1.SessionService.AnswerQuestion"))
+    }
+
+    /// The session's own agent says what turn it is in (SE-21, D169).
+    async fn report_turn(
+        &self,
+        request: Request<pb::ReportTurnRequest>,
+    ) -> Result<Response<pb::ReportTurnResponse>, Status> {
+        self.report_turn_of(request).await
     }
 }
 

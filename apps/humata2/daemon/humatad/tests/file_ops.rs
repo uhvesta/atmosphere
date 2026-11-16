@@ -134,6 +134,19 @@ fn in_channel(path: &str) -> pb::FileLocation {
     )
 }
 
+/// A path under the user's home folder, which holds Humata's folders.
+fn in_home(path: &str) -> pb::FileLocation {
+    at(pb::file_location::Root::Home(pb::MachineHome {}), path)
+}
+
+/// FC-2: the refusal a change to a main clone gets.
+fn main_clone_refused(status: &Status) {
+    assert!(
+        matches!(error_of(status).kind, Some(pb::error::Kind::MainCloneReadOnly(_))),
+        "{status:?}"
+    );
+}
+
 fn in_main(path: &str) -> pb::FileLocation {
     at(
         pb::file_location::Root::MainClone(pb::MainClone {
@@ -363,22 +376,52 @@ async fn a_link_itself_can_be_renamed_and_deleted_without_touching_what_it_point
     assert!(world.outside.join("elsewhere").join("secret.txt").exists());
 }
 
+/// CreateFolder with an idempotency key.
+async fn mkdir_keyed(
+    daemon: &Daemon,
+    location: pb::FileLocation,
+    key: &str,
+) -> Result<pb::FileEntry, Status> {
+    files(daemon)
+        .await
+        .create_folder(pb::CreateFolderRequest {
+            idempotency_key: Some(pb::IdempotencyKey {
+                value: key.to_owned(),
+            }),
+            location: Some(location),
+        })
+        .await
+        .map(tonic::Response::into_inner)
+}
+
 #[tokio::test]
-async fn making_a_folder_twice_gives_the_same_folder_and_a_file_blocks_it() {
+async fn a_folder_is_made_once_and_a_taken_name_is_refused() {
     let world = world().await;
     write(&world.shared.join("taken"), "a file");
 
     let first = mkdir(&world.daemon, in_shared("plans")).await.unwrap();
-    let second = mkdir(&world.daemon, in_shared("plans")).await.unwrap();
+    let again = mkdir(&world.daemon, in_shared("plans")).await.unwrap_err();
     let blocked = mkdir(&world.daemon, in_shared("taken")).await.unwrap_err();
     let no_parent = mkdir(&world.daemon, in_shared("missing/child")).await.unwrap_err();
 
     assert_eq!(first.kind, pb::file_entry::Kind::Folder as i32);
-    assert_eq!(first.location, second.location);
+    assert!(is_name_taken(&again), "a folder with the name is there already");
     assert!(world.shared.join("plans").is_dir());
     assert!(is_name_taken(&blocked));
     assert_eq!(common::not_found(&no_parent), pb::EntityKind::File);
     assert!(!world.shared.join("missing").exists());
+}
+
+#[tokio::test]
+async fn a_retry_with_the_same_key_gets_the_folder_it_made() {
+    let world = world().await;
+
+    let first = mkdir_keyed(&world.daemon, in_shared("notes"), "key-1").await.unwrap();
+    let retried = mkdir_keyed(&world.daemon, in_shared("notes"), "key-1").await.unwrap();
+    let other = mkdir_keyed(&world.daemon, in_shared("notes"), "key-2").await.unwrap_err();
+
+    assert_eq!(first.location, retried.location);
+    assert!(is_name_taken(&other));
 }
 
 #[tokio::test]
@@ -407,6 +450,52 @@ async fn rename_changes_the_name_and_never_replaces_or_moves() {
     assert_eq!(renamed.kind, pb::file_entry::Kind::Folder as i32);
     assert!(world.shared.join("folder").is_dir());
     assert!(!world.shared.join("dir").exists());
+}
+
+#[tokio::test]
+async fn a_main_clone_and_the_folders_holding_it_cannot_be_changed_through_another_root() {
+    let world = world().await;
+    write(&world.main.join("README.md"), "reference");
+    let daemon = &world.daemon;
+    let channel = format!("Humata/{CHANNEL_FOLDER}");
+    let main = format!("{channel}/main/{REPO}");
+    let readme = format!("{main}/README.md");
+
+    // Inside it, through the home folder: a rename, a delete, a new folder.
+    main_clone_refused(&rename(daemon, in_home(&readme), "x.md").await.unwrap_err());
+    main_clone_refused(&trash(daemon, vec![in_home(&readme)]).await.unwrap_err());
+    main_clone_refused(&mkdir(daemon, in_home(&format!("{main}/new"))).await.unwrap_err());
+    // The clone's own folder and every folder that holds it.
+    for holder in [main.clone(), format!("{channel}/main"), channel.clone(), "Humata".to_owned()] {
+        main_clone_refused(&rename(daemon, in_home(&holder), "gone").await.unwrap_err());
+        main_clone_refused(&trash(daemon, vec![in_home(&holder)]).await.unwrap_err());
+    }
+    // The same through the channel's folder.
+    main_clone_refused(&trash(daemon, vec![in_channel("main")]).await.unwrap_err());
+    let inside = in_channel(&format!("main/{REPO}/README.md"));
+    main_clone_refused(&rename(daemon, inside, "x.md").await.unwrap_err());
+
+    assert_eq!(std::fs::read_to_string(world.main.join("README.md")).unwrap(), "reference");
+    assert!(!world.main.join("new").exists());
+    assert!(world.channel.join("main").is_dir());
+}
+
+#[tokio::test]
+async fn through_the_home_folder_a_main_clone_is_listed_and_its_neighbours_still_change() {
+    let world = world().await;
+    write(&world.main.join("README.md"), "reference");
+    let daemon = &world.daemon;
+    let channel = format!("Humata/{CHANNEL_FOLDER}");
+
+    let listing = list(daemon, in_home(&format!("{channel}/main/{REPO}")), None).await.unwrap();
+    let made = mkdir(daemon, in_home(&format!("{channel}/notes"))).await.unwrap();
+    rename(daemon, in_home(&format!("{channel}/notes")), "kept").await.unwrap();
+
+    assert_eq!(names(&listing), ["README.md"]);
+    assert_eq!(made.kind, pb::file_entry::Kind::Folder as i32);
+    assert!(world.channel.join("kept").is_dir());
+    trash(daemon, vec![in_home(&format!("{channel}/kept"))]).await.unwrap();
+    assert!(!world.channel.join("kept").exists());
 }
 
 #[tokio::test]

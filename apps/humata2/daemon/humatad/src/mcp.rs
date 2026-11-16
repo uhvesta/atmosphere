@@ -24,6 +24,8 @@ use crate::error::DaemonError;
 use crate::identity::TOKEN_HEADER;
 use crate::{serve, status};
 
+mod boards;
+
 #[derive(clap::Args)]
 pub(crate) struct McpArgs {
     /// The daemon's socket. Default: ~/.humata2/humatad.sock.
@@ -982,6 +984,13 @@ impl Daemon for GrpcDaemon {
             Operation::InboxWithdraw => self.inbox_withdraw(call).await,
             Operation::InboxMine => self.inbox_mine(call).await,
             Operation::AccessExplain => self.access_explain(call).await,
+            Operation::BoardItemsList => self.board_items_list(call).await,
+            Operation::BoardItemGet => self.board_item_get(call).await,
+            Operation::BoardItemHistory => self.board_item_history(call).await,
+            Operation::BoardItemCreate => self.board_item_create(call).await,
+            Operation::BoardItemUpdate => self.board_item_update(call).await,
+            Operation::BoardItemMove => self.board_item_move(call).await,
+            Operation::BoardItemDelete => self.board_item_delete(call).await,
             other => Err(not_built(other)),
         };
         pending_or(reply)
@@ -1211,7 +1220,7 @@ kinds! {
     PeerVersionUnsupported, OffsetTrimmed, NotCancellable, AlreadyAnswered, RequestWithdrawn,
     UserAway, NotInChannel, PrClosed, ReviewPartlyPosted, SkillNameClash, LingerUnavailable,
     DaemonAlreadyRunning, DaemonNotRunning, JournalEntryRejected, RepoNotVisible, StepFailed,
-    PassphraseLocked, Internal,
+    PassphraseLocked, DependencyLoop, Internal,
 }
 
 /// The fields of the kinds agents most often branch on, with enum values
@@ -1235,6 +1244,9 @@ fn details_of(kind: &pb::error::Kind) -> Map<String, Value> {
         pb::error::Kind::InvalidField(field) => json!({
             "field": field.field,
             "problem": field.problem().as_str_name().strip_prefix("PROBLEM_").map(str::to_ascii_lowercase),
+        }),
+        pb::error::Kind::DependencyLoop(looped) => json!({
+            "cycle": looped.cycle.iter().map(|id| id.value.clone()).collect::<Vec<_>>(),
         }),
         pb::error::Kind::RequestWithdrawn(withdrawn) => json!({
             "request": withdrawn.request.as_ref().map(|id| id.value.clone()),

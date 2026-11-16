@@ -34,7 +34,7 @@ use crate::identity::{self, AgentCaller, Caller, UserVia};
 use crate::status;
 
 use deferred::Outcome;
-pub(crate) use deferred::{Deferred, Run};
+pub(crate) use deferred::{BoardAsk, Deferred, Run};
 
 /// How often a wait says it is still waiting (MCP.md §5).
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -1103,6 +1103,7 @@ fn kind_of(capability: Capability) -> pb::RequestKind {
         C::FilesReadOtherMachine | C::NetworkReach => pb::RequestKind::Bridge,
         C::ChannelBoardAdd
         | C::ChannelBoardEditOthers
+        | C::GlobalBoardWrite
         | C::ChannelBoardEditOwn
         | C::OwnBoardWrite => pb::RequestKind::Board,
         C::SessionNote

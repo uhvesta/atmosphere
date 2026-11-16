@@ -20,7 +20,7 @@ use humata2_chunk::{CHUNK_MAX, Chunk, ChunkError, Codec, Encoder};
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use humata2_holder::{Control, Event, Events, HolderError, Welcome};
-use humata2_store::TabRecord;
+use humata2_store::{TabKind, TabRecord};
 use pb::attach_client_message::Message as ClientMessage;
 use pb::attach_server_message::Message as ServerMessage;
 use pb::invalid_field::Problem;
@@ -99,6 +99,8 @@ pub(crate) async fn start(
         writer,
         writers: writers.watch(&tab.id),
         watching_writers: true,
+        turns: crate::session_service::turn_changes(),
+        sent_status: 0,
         link: Link::new(events, control),
         client: Client::new(incoming),
         cursor,
@@ -113,7 +115,9 @@ pub(crate) async fn start(
         encoder: Encoder::new(codec),
         pieces,
     };
-    first.push(ServerMessage::State(attached.state()));
+    let state = attached.state();
+    attached.sent_status = state.status;
+    first.push(ServerMessage::State(state));
     tokio::spawn(async move {
         if let Err(Ended::Failed(status)) = attached.run(first).await {
             let _ = attached.out.send(Err(status)).await;
@@ -136,6 +140,11 @@ struct Attached {
     writer: Option<WriterGuard>,
     writers: watch::Receiver<u32>,
     watching_writers: bool,
+    /// Counts every running agent's status change; the agent's tab shows its
+    /// session's turn (D169).
+    turns: watch::Receiver<u64>,
+    /// The status the last State this attach sent carried.
+    sent_status: i32,
     link: Link,
     client: Client,
     /// The offset after the last byte sent.
@@ -190,9 +199,14 @@ impl Attached {
                     Some(Err(_)) | None => return Err(Ended::Client),
                 },
                 changed = self.writers.changed(), if self.watching_writers => match changed {
-                    Ok(()) => self.send(ServerMessage::State(self.state())).await?,
+                    Ok(()) => self.send_state().await?,
                     Err(_) => self.watching_writers = false,
                 },
+                Ok(()) = self.turns.changed() => {
+                    if self.state().status != self.sent_status {
+                        self.send_state().await?;
+                    }
+                }
             }
         }
     }
@@ -226,7 +240,7 @@ impl Attached {
             Event::Trimmed { .. } => self.resync().await?,
             Event::Exited { code } => {
                 self.exited = Some(code);
-                self.send(ServerMessage::State(self.state())).await?;
+                self.send_state().await?;
                 self.send(ServerMessage::Notice(pb::TerminalNotice {
                     kind: pb::terminal_notice::Kind::Exited as i32,
                     text: format!("exited with code {code}"),
@@ -308,8 +322,15 @@ impl Attached {
             self.send(message).await?;
         }
         self.pending = pending.into();
-        self.send(ServerMessage::State(self.state())).await?;
+        self.send_state().await?;
         Ok(())
+    }
+
+    /// Sends the tab's state, and remembers the status it showed.
+    async fn send_state(&mut self) -> Result<(), Ended> {
+        let state = self.state();
+        self.sent_status = state.status;
+        self.send(ServerMessage::State(state)).await
     }
 
     fn state(&self) -> pb::TerminalState {
@@ -324,9 +345,14 @@ impl Attached {
             (None, true) => pb::terminal_state::Writable::ReadOnlyAttach,
             (None, false) => pb::terminal_state::Writable::Yes,
         };
-        let status = match self.exited {
-            Some(_) => pb::SessionStatus::Exited,
-            None => pb::SessionStatus::RunningUnknownTurn,
+        let status = match (self.exited, &self.tab.session) {
+            (Some(_), _) => pb::SessionStatus::Exited,
+            // The agent's tab shows the turn its session shows (D169; none
+            // for an agent with no turns); a shell has none.
+            (None, Some(session)) if matches!(self.tab.kind, TabKind::Agent) => {
+                crate::session_service::running_turn(session, self.tab.holder_pid)
+            }
+            (None, _) => pb::SessionStatus::RunningUnknownTurn,
         };
         pb::TerminalState {
             writable: writable as i32,

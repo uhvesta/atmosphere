@@ -38,8 +38,7 @@ Tab "Light"
 Tab "Dark"
 Tab "Machines"
 Tab "Layout" selected
-Button "−"
-Button "+"
+Button "Terminal font: Menlo 12"
 Tab "Agent access"
 Tab "Storage"
 Button "On" selected

@@ -9,7 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AnyWindowHandle, Entity, Role, TestAppContext};
 use humata2_markdown::{
-    Anchor, AnchorStatus, Comment, Document, MarkdownEvent, MarkdownOptions, MarkdownView, MermaidCache,
+    Anchor, AnchorStatus, Comment, CommentMarks, Document, MarkdownEvent, MarkdownOptions, MarkdownView, MermaidCache,
 };
 use humata2_markdown_headless::{GALLERY, Pane, gallery_options, init, open};
 use humata2_snapshot::{layout, view};
@@ -208,6 +208,43 @@ fn comments_are_marked_outdated_or_gone_when_their_passage_changes(cx: &mut Test
     });
     assert_eq!(ids, vec!["c1".to_owned()]);
     assert!(!present(cx, window, "md-gone-comments"));
+}
+
+/// SM-8
+#[gpui_kit::test]
+fn counts_light_each_commented_block_once_and_draw_no_margin_notes(cx: &mut TestAppContext) {
+    init(cx);
+    let mut options = MarkdownOptions::new("Plan");
+    options.marks = CommentMarks::Counts;
+    let (window, pane) = open(cx, PLAN, options, WIDTH, 600.);
+    update(cx, &pane, |view, cx| {
+        let comments = vec![
+            comment(view.document(), "c1", "Ship the parser first."),
+            comment(view.document(), "c2", "Ship the parser first."),
+            comment(view.document(), "c3", "Then the view."),
+        ];
+        view.set_comments(comments, cx);
+    });
+    frame(cx, window);
+    // Blocks: 0 heading, 1 first paragraph, 2 heading, 3 last paragraph.
+    assert!(present(cx, window, ("md-comment-lit", 1usize)));
+    assert!(present(cx, window, ("md-comment-lit", 3usize)));
+    assert!(!present(cx, window, ("md-comment-lit", 0usize)));
+    assert!(!present(cx, window, ("md-comment-lit", 2usize)));
+    // One count per block, reported through the block's first comment; the
+    // second comment of a block has no mark of its own and no note text.
+    assert_eq!(role(cx, window, "md-comment-c1"), Some(Role::Comment));
+    assert_eq!(role(cx, window, "md-comment-c3"), Some(Role::Comment));
+    assert!(!present(cx, window, "md-comment-c2"));
+    let tree = captured(cx, window).0;
+    assert!(!tree.contains("About Ship the parser first."), "{tree}");
+    assert!(!tree.contains("About Then the view."), "{tree}");
+
+    cx.update_window(window, |_, window, cx| window.click("md-comment-c1", cx))
+        .expect("the window is open");
+    frame(cx, window);
+    let events = pane.read_with(cx, |pane, _| pane.events.clone());
+    assert!(events.contains(&MarkdownEvent::CommentActivated { id: "c1".into() }), "{events:?}");
 }
 
 /// SM-7

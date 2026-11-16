@@ -7,8 +7,10 @@
 #   code, and the app's ticket is stapled;
 # - the app has the hardened runtime and no entitlements, which the daemon
 #   requires (D135);
+# - the app starts and says the release's version (`--version`, which
+#   installs nothing);
 # - the binaries on their own are the ones in the app, and they run.
-# Opens no windows: the app itself isn't launched.
+# Opens no windows.
 #
 #   apps/humata2/tools/release/check.sh humata2-v0.1.0
 #
@@ -57,6 +59,26 @@ if codesign --display --entitlements - "$app" 2>/dev/null | grep -q '<key>'; the
   fail "the app holds entitlements, and the daemon refuses an app that holds any that allow code injection. Release again without them."
 fi
 
+# `--version` loads the app as Gatekeeper and the hardened runtime let it,
+# then prints the bundle's version and stops: it installs nothing and opens
+# no window.
+echo "Starting the app once…"
+version=${tag#humata2-v}
+probe_home="$scratch/home"
+mkdir "$probe_home"
+set +e
+shown=$(HOME="$probe_home" "$app/Contents/MacOS/humata2" --version)
+started=$?
+set -e
+[ "$started" -ne 137 ] ||
+  fail "macOS killed the app as it started (exit 137): Gatekeeper or the hardened runtime refused its code. Run spctl --assess -vv on it and check the signing step's output, then release again."
+[ "$started" -eq 0 ] ||
+  fail "the signed app doesn't start (exit $started), so it would crash when opened. Unzip $zip and run \"Humata 2.app/Contents/MacOS/humata2\" --version to see why (a library refused under the hardened runtime is the usual cause), fix the build, then release again."
+[ "$shown" = "Humata 2 $version" ] ||
+  fail "the app says \"$shown\", not \"Humata 2 $version\": its Info.plist doesn't carry the release's version as XML. Release again; release.sh sets it before signing."
+[ ! -e "$probe_home/.humata2" ] ||
+  fail "\`humata2 --version\` installed tools into HOME, so opening the app to check it would change the Mac it runs on. Fix desktop/src/main.rs so --version returns before anything else, then release again."
+
 for name in humata humatad2 humata2_holder; do
   binary="$name-darwin-arm64"
   echo "Checking ${binary}…"
@@ -73,4 +95,4 @@ done
 echo "Running the downloaded binaries…"
 ./humatad2-darwin-arm64 --help >/dev/null || fail "the downloaded humatad2 doesn't run."
 ./humata-darwin-arm64 --help >/dev/null || fail "the downloaded humata doesn't run."
-echo "$tag checks out: Gatekeeper accepts it, and its binaries run."
+echo "$tag checks out: Gatekeeper accepts it, the app starts, and its binaries run."

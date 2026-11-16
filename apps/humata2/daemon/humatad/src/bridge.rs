@@ -87,7 +87,7 @@ fn nobody_listening(error: &std::io::Error) -> bool {
 }
 
 /// Connects to the daemon on `socket`, or starts one there and waits for it.
-async fn connect_or_start(socket: &Path) -> Result<UnixStream, DaemonError> {
+pub(crate) async fn connect_or_start(socket: &Path) -> Result<UnixStream, DaemonError> {
     if let Some(stream) = try_connect(socket).await? {
         return Ok(stream);
     }

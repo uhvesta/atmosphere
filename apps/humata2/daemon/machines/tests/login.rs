@@ -69,6 +69,22 @@ fn login(home: &Path, body: &str) -> Invocation {
     }
 }
 
+/// Opens the login on a pseudo-terminal. The computer has a fixed number of
+/// those, and other tests running at the same time can use them all up for
+/// a moment, so a failure to get one is tried again for a few seconds.
+fn open_login(invocation: &Invocation) -> (LoginSession, humata2_machines::LoginHandle) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match LoginSession::open(machine(), invocation, &(), 80, 24) {
+            Ok(opened) => return opened,
+            Err(LoginError::OpenPty { .. }) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => panic!("the login didn't open: {error}"),
+        }
+    }
+}
+
 /// Asks for a code, becomes a shell on the right one, ends with 3 otherwise.
 const CODE_THEN_SHELL: &str = "printf 'Verification code: '; read code; \
     if [ \"$code\" = 123456 ]; then echo 'Welcome to box-1'; exec /bin/sh; else echo 'denied'; exit 3; fi";
@@ -142,7 +158,7 @@ struct Running {
 
 fn start(home: &Path, body: &str, keys: Option<&Path>, files: Vec<Payload>) -> Running {
     let invocation = login(home, body);
-    let (session, handle) = LoginSession::open(machine(), &invocation, &(), 80, 24).unwrap();
+    let (session, handle) = open_login(&invocation);
     let (sender, shown) = mpsc::channel();
     let keys = keys.map(Path::to_owned);
     let result = std::thread::spawn(move || {
@@ -234,7 +250,7 @@ fn a_login_that_ends_at_no_shell_fails_the_takeover_and_installs_nothing() {
     // A menu-only tool: after the code it prints a menu and reads forever.
     let body = "printf 'Verification code: '; read code; echo 'Pick: 1) a 2) b'; sleep 300";
     let invocation = login(home.path(), body);
-    let (session, handle) = LoginSession::open(machine(), &invocation, &(), 80, 24).unwrap();
+    let (session, handle) = open_login(&invocation);
     let thread = std::thread::spawn(move || {
         let builds = AnyPlatform(fake_files());
         let plan = Plan {

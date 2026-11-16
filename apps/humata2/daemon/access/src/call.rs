@@ -46,6 +46,9 @@ pub enum Root {
     ChannelFolder(ChannelId),
     /// A main clone, the read-only reference new clones start from (FC-2).
     MainClone { channel: ChannelId, repo: RepoRef },
+    /// The user's home folder on the place's machine (FM-10). The user
+    /// only: no agent reaches it and no grant covers it.
+    Home,
     /// The path left Humata's folders, by `..` or a symlink. Never allowed.
     Outside,
 }
@@ -213,7 +216,7 @@ impl GrantTarget {
                     Capability::FilesReadOtherSession
                         | Capability::FilesReadOtherMachine
                         | Capability::FilesCopyIn
-                ) && scope.root != Root::Outside
+                ) && !matches!(scope.root, Root::Outside | Root::Home)
             }
             GrantTarget::Session(_) => {
                 matches!(capability, Capability::SessionNote | Capability::SessionType)
@@ -222,7 +225,10 @@ impl GrantTarget {
                 capability,
                 Capability::SessionStartSameMachine | Capability::SessionStartOtherMachine
             ),
-            GrantTarget::Board(_) => capability == Capability::ChannelBoardEditOthers,
+            GrantTarget::Board(_) => matches!(
+                capability,
+                Capability::ChannelBoardEditOthers | Capability::GlobalBoardWrite
+            ),
             GrantTarget::Network(_) => capability == Capability::NetworkReach,
             GrantTarget::RepoBranch(_) => capability == Capability::GitPush,
             GrantTarget::MachineAction(action) => action.action.capability() == capability,

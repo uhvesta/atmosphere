@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use humata2_clients::model::{Agent, Machine, MachineId, MachineKind};
+use humata2_clients::comments::{CommentsClient, FakeComments};
 use humata2_clients::{Daemon, FakeDaemon, Terminals, Workspace};
 use tca::SystemClock;
 
@@ -41,4 +42,9 @@ pub fn start() -> (FakeWorld, Arc<dyn Daemon>, Arc<dyn Terminals>) {
     let daemon: Arc<dyn Daemon> = fake.clone();
     let terminals: Arc<dyn Terminals> = fake;
     (FakeWorld, daemon, terminals)
+}
+
+pub fn start_comments() -> (FakeWorld, Arc<dyn Daemon>, Arc<dyn CommentsClient>) {
+    let (world, daemon, _terminals) = start();
+    (world, daemon, Arc::new(FakeComments::new()))
 }

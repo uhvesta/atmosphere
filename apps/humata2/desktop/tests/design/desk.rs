@@ -349,7 +349,7 @@ fn term(look: Look, lines: Vec<Div>) -> Div {
         .children(lines)
 }
 
-fn desk_screen(look: Look, side: Side, middle: Div, right: Div, panel: Panel) -> Div {
+fn desk_screen(look: Look, side: Side, middle: Div, right: Div, panel: Panel, inbox: Option<&'static str>) -> Div {
     div()
         .size_full()
         .flex()
@@ -358,7 +358,7 @@ fn desk_screen(look: Look, side: Side, middle: Div, right: Div, panel: Panel) ->
         .child(middle)
         .child(handle(look, true))
         .child(right)
-        .child(session::strip(look, Some(panel)))
+        .child(session::desk_strip(look, Some(panel), inbox))
 }
 
 /// A desk session running the board: the agent adds items across
@@ -370,7 +370,7 @@ pub fn board_session(look: Look) -> Div {
         tl(look.term_text, "  channel for the web revamp."),
         tl(look.term_text, ""),
         tl(look.term_text, "● humata board_items channel=payments-rewrite"),
-        tl(look.term_dim, "  ⎿ 12 items · 3 in progress · 2 in review"),
+        tl(look.term_dim, "  ⎿ 6 items · 1 in progress · 1 in review"),
         tl(look.term_text, "● humata board_item_create PAY-13 “Drop the ledger_entries index”"),
         tl(look.term_dim, "  ⎿ Added to # payments-rewrite · To do"),
         tl(look.term_text, "● humata board_item_create PAY-14 “Backfill metrics dashboard”"),
@@ -399,15 +399,18 @@ pub fn board_session(look: Look) -> Div {
         middle,
         board_panel(look),
         Panel::Board,
+        Some("1"),
     )
 }
 
-/// The Board panel in a desk: every channel's items, newest first.
+/// The Board panel in a desk: every channel's items, active lanes first
+/// (L14), the session's additions first in their lane.
 fn board_panel(look: Look) -> Div {
     let item = |key: &'static str, title: &'static str, channel: &'static str, new: bool| {
         div()
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .gap(px(3.))
             .p(px(9.))
             .rounded(px(7.))
@@ -417,7 +420,7 @@ fn board_panel(look: Look) -> Div {
             .child(div().flex().gap(px(6.)).child(div().text_color(c(look.secondary)).child(key)).child(div().flex_1().font_weight(FontWeight::MEDIUM).child(title)))
             .child(div().flex().gap(px(6.)).child(secondary(look, channel)).when(new, |row| row.child(div().text_size(px(11.)).text_color(c(look.accent)).child("added by this session"))))
     };
-    let lane = |title: &'static str| div().pt(px(8.)).child(label(look, title));
+    let lane = |title: &'static str| div().flex_shrink_0().pt(px(8.)).child(label(look, title));
     div()
         .w(px(session::PANEL_WIDTH))
         .flex_shrink_0()
@@ -433,14 +436,26 @@ fn board_panel(look: Look) -> Div {
                 .flex_col()
                 .gap(px(6.))
                 .p(px(12.))
+                // The list is cut at the panel's bottom; cards keep their size.
+                .flex_1()
+                .min_h_0()
+                .overflow_hidden()
+                .child(lane("In progress · 2"))
+                .child(item("PAY-3", "Ledger schema v2", "# payments-rewrite", false))
+                .child(item("INF-2", "Postgres 17 upgrade", "# infra", false))
+                .child(lane("In review · 1"))
+                .child(item("PAY-5", "API rate limiter", "# payments-rewrite", false))
                 .child(lane("To do · 4"))
                 .child(item("PAY-13", "Drop the ledger_entries index", "# payments-rewrite", true))
                 .child(item("PAY-14", "Backfill metrics dashboard", "# payments-rewrite", true))
                 .child(item("PAY-9", "Backfill progress bar", "# payments-rewrite", false))
-                .child(item("INF-4", "Rotate the backup keys", "# infra", false))
-                .child(lane("In progress · 2"))
-                .child(item("PAY-3", "Ledger schema", "# payments-rewrite", false))
-                .child(item("INF-2", "Upgrade Postgres 17", "# infra", false)),
+                .child(item("PAY-7", "Refund retry with backoff", "# payments-rewrite", false))
+                .child(lane("Backlog · 2"))
+                .child(item("PAY-12", "Multi-currency ledgers", "# payments-rewrite", false))
+                .child(item("INF-4", "Move CI to devbox runners", "# infra", false))
+                .child(lane("Done · 2"))
+                .child(item("PAY-2", "Currency codes table", "# payments-rewrite", false).opacity(0.6))
+                .child(item("INF-1", "BRIN benchmark harness", "# infra", false).opacity(0.6)),
         )
 }
 
@@ -495,7 +510,8 @@ pub fn move_session(look: Look) -> Div {
         tl(look.term_text, "Cloned acme/api (main) into ./api"),
         tl(look.term_dim, "~/Humata/desk/brin-rfc $ humata desk keep"),
         tl(look.term_text, "This folder stays after the session closes."),
-        tl(look.term_dim, "~/Humata/desk/brin-rfc $ "),
+        // The shell waits at its prompt: the block cursor the agent's input box draws.
+        div().flex().child(tl(look.term_dim, "~/Humata/desk/brin-rfc $ ")).child(div().w(px(7.)).h(px(15.)).bg(c(look.term_text))),
     ];
     let middle = div()
         .flex_1()
@@ -507,7 +523,7 @@ pub fn move_session(look: Look) -> Div {
         .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
         .child(desk_tabs(look, St::Idle, 1, Some(("rfc-brin.md", IconName::FileText))))
         .child(term(look, lines));
-    desk_screen(look, desk_side("BRIN rollout RFC"), middle, desk_files(look, "devbox-1"), Panel::Files)
+    desk_screen(look, desk_side("BRIN rollout RFC"), middle, desk_files(look, "devbox-1"), Panel::Files, None)
 }
 
 /// rfc-brin.md rendered. With `mark`, the block a comment is on is lit
@@ -581,7 +597,7 @@ pub fn doc_session(look: Look) -> Div {
         .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
         .child(desk_tabs(look, St::Idle, 2, Some(("rfc-brin.md", IconName::FileText))))
         .child(doc);
-    desk_screen(look, desk_side("BRIN rollout RFC"), middle, desk_files(look, "devbox-1"), Panel::Files)
+    desk_screen(look, desk_side("BRIN rollout RFC"), middle, desk_files(look, "devbox-1"), Panel::Files, None)
 }
 
 /// New desk session, over the Desk.
@@ -619,7 +635,7 @@ pub fn new_desk(look: Look) -> Div {
                         .flex()
                         .flex_col()
                         .gap(px(8.))
-                        .child(radio(look, true, "A new scratch folder", "~/Humata/desk/plan-q4 · deleted 7 days after you close it, unless you keep it"))
+                        .child(radio(look, true, "A new scratch folder", "~/Humata/desk/plan-q4-board · deleted 7 days after you close it unless kept"))
                         .child(radio(look, false, "A folder on the machine", "Pick one. Humata never deletes it.")),
                 ))
                 .child(row(
@@ -721,7 +737,7 @@ pub fn split_review(look: Look) -> Div {
         .child(crate::sidebar::sidebar(look, desk_side("BRIN rollout RFC")))
         .child(handle(look, true))
         .child(middle)
-        .child(session::strip(look, None))
+        .child(session::desk_strip(look, None, None))
 }
 
 /// One source line: number, comment marker in the gutter, then the text,
@@ -877,7 +893,7 @@ pub fn source_review(look: Look) -> Div {
         .child(crate::sidebar::sidebar(look, desk_side("BRIN rollout RFC")))
         .child(handle(look, true))
         .child(middle)
-        .child(session::strip(look, None))
+        .child(session::rail(look, None, None, Some("2")))
 }
 
 /// The agent's terminal, the markdown source and its rendered page, all
@@ -938,5 +954,5 @@ pub fn terminal_source_page(look: Look) -> Div {
         .child(crate::sidebar::sidebar(look, desk_side("BRIN rollout RFC")))
         .child(handle(look, true))
         .child(middle)
-        .child(session::strip(look, None))
+        .child(session::rail(look, None, None, Some("2")))
 }

@@ -653,7 +653,7 @@ fn resolve_agent(agent: &Agent, call: &Call) -> Result<Resolved, CheckError> {
 fn read_place(agent: &Agent, place: &Place) -> Resolved {
     let me = &agent.session;
     match &place.root {
-        Root::Outside => refuse(Refusal::OutsideHumataFolders {
+        Root::Outside | Root::Home => refuse(Refusal::OutsideHumataFolders {
             machine: place.machine.clone(),
         }),
         Root::Clone(owner) => {
@@ -689,7 +689,7 @@ fn write_place(agent: &Agent, place: &Place) -> Resolved {
         })
     };
     match &place.root {
-        Root::Outside => refuse(Refusal::OutsideHumataFolders {
+        Root::Outside | Root::Home => refuse(Refusal::OutsideHumataFolders {
             machine: place.machine.clone(),
         }),
         Root::MainClone { repo, .. } => refuse(Refusal::MainCloneReadOnly {
@@ -744,10 +744,17 @@ fn board_need(agent: &Agent, board: &BoardRef, act: &BoardAct) -> Resolved {
     let me = &agent.session;
     let created_it = |created_by: &Option<SessionId>| created_by.as_ref() == Some(&me.id);
     let others = || need_exactly(C::ChannelBoardEditOthers, GrantTarget::Board(board.clone()));
+    // Outside its channel: reading is GlobalRead, any write asks (D155).
+    let elsewhere = || match act {
+        BoardAct::Read => need(C::GlobalRead),
+        BoardAct::Add | BoardAct::Edit { .. } => {
+            need_exactly(C::GlobalBoardWrite, GrantTarget::Board(board.clone()))
+        }
+    };
     match board {
-        BoardRef::Global => need(C::GlobalRead),
-        BoardRef::Channel(channel) if channel != &me.channel => need(C::GlobalRead),
-        BoardRef::Session(session) if session.channel != me.channel => need(C::GlobalRead),
+        BoardRef::Global => elsewhere(),
+        BoardRef::Channel(channel) if channel != &me.channel => elsewhere(),
+        BoardRef::Session(session) if session.channel != me.channel => elsewhere(),
         BoardRef::Channel(_) => match act {
             BoardAct::Read => need(C::ChannelRead),
             BoardAct::Add => need(C::ChannelBoardAdd),
@@ -1023,7 +1030,11 @@ fn file_hard_limit(call: &Call) -> Option<Refusal> {
             repo: repo.clone(),
             machine: place.machine.clone(),
         }),
-        Root::Clone(_) | Root::Shared(_) | Root::ChannelFolder(_) | Root::Outside => None,
+        Root::Clone(_)
+        | Root::Shared(_)
+        | Root::ChannelFolder(_)
+        | Root::Home
+        | Root::Outside => None,
     };
     match call {
         Call::ReadFiles(place) => outside(place),
@@ -1106,7 +1117,8 @@ fn check_script(token: &ScriptToken, call: &Call, context: &Context) -> Verdict 
         Call::ReadSession(session) => (C::ChannelRead, Some(&session.channel)),
         Call::Board { board, act } => {
             let capability = match (board, act) {
-                (BoardRef::Global, _) => C::GlobalRead,
+                (BoardRef::Global, BoardAct::Read) => C::GlobalRead,
+                (BoardRef::Global, _) => C::GlobalBoardWrite,
                 (_, BoardAct::Read) => C::ChannelRead,
                 (BoardRef::Channel(_), BoardAct::Add) => C::ChannelBoardAdd,
                 (_, BoardAct::Add | BoardAct::Edit { .. }) => C::ChannelBoardEditOthers,

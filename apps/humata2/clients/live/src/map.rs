@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use humata2_clients::model::{
     Agent, Channel, ChannelId, ForkKind, Machine, MachineId, MachineKind, NotBroughtBack,
-    Recovery, Restart, ResumeFailure, Session, SessionId, Status, Turn,
+    Recovery, Restart, ResumeFailure, Session, SessionId, Status, SummarySource, Turn,
 };
 use humata2_grpc::humata::v1 as pb;
 
@@ -62,6 +62,10 @@ pub(crate) fn repo_text(repo: &pb::RepoRef) -> String {
 
 pub(crate) fn machine_id(id: Option<&pb::MachineId>) -> MachineId {
     MachineId::new(id.map(|id| id.value.clone()).unwrap_or_default())
+}
+
+pub(crate) fn channel_id(id: Option<&pb::ChannelId>) -> ChannelId {
+    ChannelId::new(id.map(|id| id.value.clone()).unwrap_or_default())
 }
 
 pub(crate) fn session_id(id: Option<&pb::SessionId>) -> SessionId {
@@ -180,6 +184,18 @@ fn resume_failure(failed: &pb::ResumeFailed) -> Option<ResumeFailure> {
     }
 }
 
+/// What Start fresh can summarize; `None` unless the daemon says, which it
+/// does only while the resume has failed.
+fn summary_source(session: &pb::Session) -> Option<SummarySource> {
+    use pb::session::SummarySource as S;
+    match S::try_from(session.summary_source).unwrap_or(S::Unspecified) {
+        S::Transcript => Some(SummarySource::Transcript),
+        S::Scrollback => Some(SummarySource::Scrollback),
+        S::None => Some(SummarySource::Nothing),
+        S::Unspecified => None,
+    }
+}
+
 /// What a host found when it last started, from its server info. `None`
 /// while the daemon is still bringing sessions back (no report yet).
 pub(crate) fn restart(machine: &MachineId, last: Option<&pb::LastStart>) -> Option<Restart> {
@@ -266,6 +282,7 @@ pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNam
             .interrupted_at
             .as_ref()
             .map(|at| unix_ms(at.seconds, at.nanos)),
+        summary_source: summary_source(session),
         model: (!session.model.is_empty()).then(|| session.model.clone()),
         restart_detail: None,
         permissions: Vec::new(),
@@ -397,6 +414,22 @@ mod tests {
         let plain = session(&pb_session(pb::SessionStatus::Idle), &[], &AgentNames::default());
         assert_eq!(plain.resume_failed, None);
         assert_eq!(plain.interrupted_unix_ms, None);
+    }
+
+    #[test]
+    fn what_start_fresh_can_summarize_comes_across() {
+        use pb::session::SummarySource as S;
+        let mut failed = pb_session(pb::SessionStatus::ResumeFailed);
+        for (said, wanted) in [
+            (S::Transcript, Some(SummarySource::Transcript)),
+            (S::Scrollback, Some(SummarySource::Scrollback)),
+            (S::None, Some(SummarySource::Nothing)),
+            (S::Unspecified, None),
+        ] {
+            failed.summary_source = said as i32;
+            let mapped = session(&failed, &[], &AgentNames::default());
+            assert_eq!(mapped.summary_source, wanted);
+        }
     }
 
     #[test]

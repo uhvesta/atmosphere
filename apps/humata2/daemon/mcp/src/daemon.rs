@@ -220,6 +220,7 @@ error_kinds! {
     RepoNotVisible => "repo_not_visible",
     StepFailed => "step_failed",
     PassphraseLocked => "passphrase_locked",
+    DependencyLoop => "dependency_loop",
     Internal => "internal",
 }
 

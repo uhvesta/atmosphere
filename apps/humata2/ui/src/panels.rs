@@ -15,7 +15,9 @@ use humata2_clients::model::{
     Session, SessionId, Status,
 };
 use humata2_inbox::InboxAction;
+use humata2_clients::comments::{Comment as DaemonComment, Status as CommentStatus};
 use humata2_review::ReviewAction;
+use humata2_review::comments::CommentsAction;
 use humata2_session::{Panel, SessionAction};
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -115,7 +117,15 @@ fn title(panel: Panel) -> &'static str {
         panel.name()
     }
 }
-fn header(ui: &Rc<Ui>, panel: Panel, full: bool, extra: Option<Div>, look: Look) -> Div {
+/// A panel's header: its title, what the panel puts beside it, and the
+/// expand and close buttons. The Desk session's panels draw it too.
+pub(crate) fn header(
+    ui: &Rc<Ui>,
+    panel: Panel,
+    full: bool,
+    extra: Option<Div>,
+    look: Look,
+) -> Div {
     row()
         .gap(px(10.))
         .h(px(36.))
@@ -230,6 +240,7 @@ pub(crate) fn panel(
     full: bool,
     file_filter: Entity<InputState>,
     window: &Window,
+    documents: &crate::document_tab::Documents,
     cx: &App,
 ) -> impl IntoElement + use<> {
     let look = Look::of(cx);
@@ -239,7 +250,7 @@ pub(crate) fn panel(
         .as_ref()
         .and_then(|id| state.workspace.session(id));
     let body = match (panel, session) {
-        (Panel::Changes, _) => changes(ui, state, full, look, width, window),
+        (Panel::Changes, _) => changes(ui, state, full, look, width, window, documents),
         (Panel::Inbox, _) => inbox(ui, state, full, look),
         (Panel::Board, Some(session)) => board(ui, state, session, full, look),
         (Panel::Journal, _) => journal(ui, state, full, look),
@@ -288,11 +299,8 @@ pub(crate) fn panel(
                                 secondary(
                                     look,
                                     format!(
-                                        "# {} › {}",
-                                        state
-                                            .workspace
-                                            .channel(&session.channel)
-                                            .map_or("", |channel| channel.name.as_str()),
+                                        "{} › {}",
+                                        humata2_clients::desk::place(&state.workspace, &session.channel),
                                         session.title
                                     ),
                                 )
@@ -317,20 +325,13 @@ pub(crate) fn panel(
         .child(body)
 }
 
-/// The comments the Diff panel shows for the session: sent, saved and queued.
+/// The comments the Diff panel counts for the session: the diff's sent
+/// ones and the daemon's drafts.
 fn changes_badge(state: &AppState) -> usize {
     let session = state.session.open.as_ref();
-    let queued = state.review.queued().len();
-    let pending: usize = state
-        .session
-        .view()
-        .into_iter()
-        .flat_map(|view| &view.queue)
-        .map(|message| match message {
-            humata2_session::QueuedMessage::Comments { comments } => comments.len(),
-            humata2_session::QueuedMessage::Text(_) => 0,
-        })
-        .sum();
+    let drafts = session
+        .and_then(|session| state.comments.sessions.get(session))
+        .map_or(0, |held| held.draft_count as usize);
     let sent: usize = state
         .workspace
         .diffs
@@ -338,7 +339,7 @@ fn changes_badge(state: &AppState) -> usize {
         .filter(|diff| Some(&diff.session) == session)
         .map(|diff| diff.comments.len())
         .sum();
-    sent + queued + pending
+    sent + drafts
 }
 
 pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElement + use<> {

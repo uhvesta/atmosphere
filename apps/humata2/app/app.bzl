@@ -7,7 +7,8 @@ app is a Rust executable, so this rule lays the bundle out itself:
     Humata2.app/Contents/PkgInfo
     Humata2.app/Contents/MacOS/humata2
     Humata2.app/Contents/Helpers/{humatad2,humata2_holder,humata}
-    Humata2.app/Contents/Resources/
+    Humata2.app/Contents/Resources/THIRD_PARTY_NOTICES.txt (with `notices`)
+    Humata2.app/Contents/Resources/Humata2.icns (with `icon`)
 
 The app finds its tools in Contents/Helpers (desktop/src/live.rs). The
 bundle is signed ad hoc so it runs from the build; the release daemon only
@@ -18,6 +19,7 @@ tools/release/release.sh signs it again and names the copy "Humata 2.app".
 _SCRIPT = r"""
 set -eu
 app="$1"; exe="$2"; tools="$3"; platform="$4"; plist="$5"; bundle_id="$6"
+notices="$7"; icon="$8"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Helpers" "$contents/Resources"
 cp "$exe" "$contents/MacOS/humata2"
@@ -31,6 +33,12 @@ for name in humatad2 humata2_holder humata; do
   chmod 755 "$contents/Helpers/$name"
 done
 sed "s/@BUNDLE_ID@/$bundle_id/g" "$plist" > "$contents/Info.plist"
+if [ -n "$notices" ]; then
+  cp "$notices" "$contents/Resources/THIRD_PARTY_NOTICES.txt"
+fi
+if [ -n "$icon" ]; then
+  cp "$icon" "$contents/Resources/Humata2.icns"
+fi
 printf 'APPL????' > "$contents/PkgInfo"
 /usr/bin/codesign --force --sign - "$contents/MacOS/humata2"
 /usr/bin/codesign --force --sign - "$app"
@@ -41,9 +49,12 @@ def _humata2_app_impl(ctx):
     executable = ctx.attr.executable[DefaultInfo].files_to_run.executable
     tools = ctx.file.tools
     args = ctx.actions.args()
+    optional = [f for f in [ctx.file.notices, ctx.file.icon] if f]
     args.add_all([app.path, executable, tools.path, ctx.attr.platform, ctx.file.infoplist, ctx.attr.bundle_id])
+    args.add(ctx.file.notices.path if ctx.file.notices else "")
+    args.add(ctx.file.icon.path if ctx.file.icon else "")
     ctx.actions.run_shell(
-        inputs = [executable, tools, ctx.file.infoplist],
+        inputs = [executable, tools, ctx.file.infoplist] + optional,
         outputs = [app],
         command = _SCRIPT,
         arguments = [args],
@@ -59,8 +70,13 @@ humata2_app = rule(
         "bundle_id": attr.string(mandatory = True),
         # The desktop binary, which becomes Contents/MacOS/humata2.
         "executable": attr.label(mandatory = True, executable = True, cfg = "target"),
+        # The app icon, an .icns file, copied to Contents/Resources/Humata2.icns
+        # (Info.plist names it). Optional.
+        "icon": attr.label(allow_single_file = [".icns"]),
         # Info.plist with @BUNDLE_ID@ where the bundle ID goes.
         "infoplist": attr.label(mandatory = True, allow_single_file = [".plist"]),
+        # THIRD_PARTY_NOTICES.txt, copied to Contents/Resources. Optional.
+        "notices": attr.label(allow_single_file = [".txt"]),
         # The tools folder's subfolder for this Mac, as `uname -sm` names it.
         "platform": attr.string(mandatory = True),
         # A tools_bundle folder (daemon/humatad/tools.bzl).

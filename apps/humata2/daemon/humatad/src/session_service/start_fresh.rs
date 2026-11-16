@@ -7,7 +7,6 @@
 //! The digest needs no model: every user message (each capped), the last
 //! few assistant text turns, no tool output, about 8 KiB in all.
 
-use std::ffi::OsString;
 use std::io::BufRead;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,7 +16,7 @@ use humata2_grpc::humata::v1 as pb;
 use humata2_holder::{HolderError, KeyedInput};
 use humata2_revive::{ReviveError, launch_agent};
 use humata2_sessions::{AgentError, Starter};
-use humata2_store::{AgentLaunch, AgentRecord, AgentState, StoreError, TabRecord};
+use humata2_store::{AgentLaunch, AgentRecord, AgentState, FreshSeed, Store, StoreError, TabRecord};
 use serde_json::Value;
 use tonic::{Code, Status};
 
@@ -37,6 +36,8 @@ const ASSISTANT_CAP: usize = 1200;
 const ASSISTANTS_KEPT: usize = 3;
 /// The most of the saved terminal output used when there is no transcript.
 const SCROLLBACK_MAX: usize = 4 * 1024;
+/// How much saved output is read for it: escape sequences take room.
+const SCROLLBACK_READ: usize = 64 * 1024;
 /// Between typing the seed and pressing return, so an agent that reads a
 /// paste whole doesn't take the return as part of it.
 const TYPE_PAUSE: Duration = Duration::from_millis(100);
@@ -215,31 +216,53 @@ async fn run(
         return;
     };
     progress.set_step("summarize", pb::StepState::Running, None);
-    let (source, digest) = {
-        let (file, socket) = (
-            old.launch.conversation_file.clone(),
-            old.launch.holder_socket.clone(),
-        );
-        match blocking(move || summarize(&file, &socket)).await {
-            Ok(found) => found,
-            Err(status) => {
-                progress.fail(pb::Error {
-                    message: status.message().to_owned(),
-                    fix: "check humatad2's log, then start fresh again".to_owned(),
-                    retry: None,
-                    kind: None,
-                });
-                return;
+    // A start fresh whose first message never reached this conversation:
+    // that message still says what the session was about, and this
+    // conversation has nothing to add.
+    let pending = {
+        let (store, key) = (starter.store.clone(), session.clone());
+        match blocking(move || store.fresh_seed(&key)).await {
+            Ok(Ok(found)) => found.filter(|seed| seed.conversation_id == old.launch.conversation_id),
+            Ok(Err(error)) => {
+                crate::log::say!(
+                    "humatad2: couldn't read session {session}'s untyped first message, so start fresh summarizes again: {}",
+                    status::chain(&error)
+                );
+                None
             }
+            Err(_) => None,
         }
     };
-    let seed = seed_text(
-        &record.title,
-        source,
-        digest.as_deref(),
-        &old.launch.conversation_file,
-        &old.launch.conversation_id,
-    );
+    let seed = match pending {
+        Some(pending) => pending.seed,
+        None => {
+            let (source, digest) = {
+                let (file, socket) = (
+                    old.launch.conversation_file.clone(),
+                    old.launch.holder_socket.clone(),
+                );
+                match blocking(move || summarize(&file, &socket)).await {
+                    Ok(found) => found,
+                    Err(status) => {
+                        progress.fail(pb::Error {
+                            message: status.message().to_owned(),
+                            fix: "check humatad2's log, then start fresh again".to_owned(),
+                            retry: None,
+                            kind: None,
+                        });
+                        return;
+                    }
+                }
+            };
+            seed_text(
+                &record.title,
+                source,
+                digest.as_deref(),
+                &old.launch.conversation_file,
+                &old.launch.conversation_id,
+            )
+        }
+    };
     progress.set_step("summarize", pb::StepState::Done, None);
 
     progress.set_step("launch", pb::StepState::Running, None);
@@ -277,20 +300,41 @@ async fn run(
 
     let env = |tab: &TabRecord| tokens.env(tab);
     let launched = match fresh_launch(&starter, &record.agent, &old, &session) {
-        Ok(launch) => launch_agent(&starter.store, &starter.revive, &record, &old.tab, launch, &env)
+        Ok((launch, marker)) => match keep_seed(&starter.store, &session, &launch, &seed).await {
+            Some(error) => Err(error),
+            None => launch_agent(
+                &starter.store,
+                &starter.revive,
+                &record,
+                &old.tab,
+                launch,
+                Some(&marker),
+                &env,
+            )
             .await
             .map_err(|source| StartFreshError::Launch {
                 session: session.clone(),
                 source,
             }),
+        },
         Err(error) => Err(error),
     };
     let agent = match launched {
         Ok(agent) => agent,
         Err(error) => {
-            // The new conversation id is dropped: the old one stays pinned.
+            // The new conversation id is dropped: the old one stays pinned,
+            // and a message kept for it goes too (one kept for the old
+            // conversation stays, for the next try).
             let (store, restoring) = (starter.store.clone(), old.clone());
-            let _ = blocking(move || store.put_agent(&restoring)).await;
+            let _ = blocking(move || {
+                if let Ok(Some(kept)) = store.fresh_seed(&restoring.session)
+                    && kept.conversation_id != restoring.launch.conversation_id
+                {
+                    let _ = store.typed_fresh_seed(&kept.session_id, &kept.conversation_id);
+                }
+                store.put_agent(&restoring)
+            })
+            .await;
             progress.set_step("launch", pb::StepState::Failed, Some(status::chain(&error)));
             progress.fail(error_of(
                 &error,
@@ -302,9 +346,18 @@ async fn run(
         }
     };
     progress.set_step("launch", pb::StepState::Done, None);
+    // A kill here leaves the agent running on the new conversation with its
+    // first message kept but not typed: the restart types it (D153).
+    stop_point("start_fresh.launched");
 
     progress.set_step("seed", pb::StepState::Running, None);
-    match type_seed(&agent.launch.holder_socket, &session, &agent.launch.conversation_id, &seed).await {
+    let typed = type_seed(&agent.launch.holder_socket, &session, &agent.launch.conversation_id, &seed).await;
+    // Typed, or a terminal that can't take it: either way nothing types it
+    // later. A failure to reach the terminal leaves it for the restart.
+    if !matches!(typed, Err(StartFreshError::Seed { .. })) {
+        forget_seed(&starter.store, &session, &agent.launch.conversation_id).await;
+    }
+    match typed {
         Ok(()) => {
             progress.set_step("seed", pb::StepState::Done, None);
             progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
@@ -346,15 +399,132 @@ fn store_failure(
     }
 }
 
-/// The launch for a new conversation in `old`'s folder, tab and terminal.
-/// Its first command prints a "Started fresh" line, which the terminal's
-/// kept output then holds below the old output.
+/// Keeps `seed` for `launch`'s conversation until it is typed: `Some(error)`
+/// if it couldn't be.
+async fn keep_seed(
+    store: &Arc<Store>,
+    session: &str,
+    launch: &AgentLaunch,
+    seed: &str,
+) -> Option<StartFreshError> {
+    let row = FreshSeed {
+        session_id: session.to_owned(),
+        conversation_id: launch.conversation_id.clone(),
+        seed: seed.to_owned(),
+        created_unix_ms: now_ms(),
+    };
+    let store = store.clone();
+    let kept = blocking(move || store.put_fresh_seed(&row)).await;
+    store_failure(kept, session, "save the first message for the new conversation")
+}
+
+/// Forgets the message kept for `conversation`; a failure is logged, and
+/// the next restart checks the conversation before typing it again.
+async fn forget_seed(store: &Arc<Store>, session: &str, conversation: &str) {
+    let (store, key, conversation) = (store.clone(), session.to_owned(), conversation.to_owned());
+    if let Ok(Err(error)) = blocking(move || store.typed_fresh_seed(&key, &conversation)).await {
+        crate::log::say!(
+            "humatad2: couldn't forget session {session}'s typed first message: {}",
+            status::chain(&error)
+        );
+    }
+}
+
+/// After a restart, types each first message a start fresh kept but didn't
+/// get to type, into the conversation it was for, if that conversation's
+/// agent runs and hasn't had it. One kept for a conversation the session
+/// left stays only while that conversation is the one a start fresh would
+/// replace.
+pub(super) async fn retype_pending(store: Arc<Store>) {
+    let read = {
+        let store = store.clone();
+        blocking(move || store.fresh_seeds()).await
+    };
+    let pending = match read {
+        Ok(Ok(pending)) => pending,
+        Ok(Err(error)) => {
+            crate::log::say!(
+                "humatad2: couldn't read the untyped start fresh messages, so none is typed after this restart: {}",
+                status::chain(&error)
+            );
+            return;
+        }
+        Err(_) => return,
+    };
+    for pending in pending {
+        tokio::spawn(retype(store.clone(), pending));
+    }
+}
+
+async fn retype(store: Arc<Store>, pending: FreshSeed) {
+    let session = pending.session_id.clone();
+    let agent = {
+        let (store, key) = (store.clone(), session.clone());
+        match blocking(move || store.agent(&key)).await {
+            Ok(Ok(agent)) => agent,
+            _ => return,
+        }
+    };
+    let Some(agent) = agent else {
+        forget_seed(&store, &session, &pending.conversation_id).await;
+        return;
+    };
+    if agent.launch.conversation_id != pending.conversation_id {
+        forget_seed(&store, &session, &pending.conversation_id).await;
+        return;
+    }
+    if !matches!(agent.state, AgentState::Running { .. }) {
+        // Kept for a start fresh of this conversation, or for when it runs.
+        return;
+    }
+    let had = {
+        let (file, conversation) = (agent.launch.conversation_file.clone(), pending.conversation_id.clone());
+        blocking(move || holds_seed(&file, &conversation)).await.unwrap_or(false)
+    };
+    if !had {
+        match type_seed(&agent.launch.holder_socket, &session, &pending.conversation_id, &pending.seed).await {
+            Err(StartFreshError::Seed { .. }) => {
+                crate::log::say!(
+                    "humatad2: couldn't type session {session}'s start fresh message after the restart; the next restart tries again"
+                );
+                return;
+            }
+            Err(StartFreshError::SeedUnsupported { .. }) => {
+                crate::log::say!(
+                    "humatad2: session {session}'s terminal is from an older build, so its start fresh message isn't typed after the restart; tell the agent what the old conversation was about"
+                );
+            }
+            _ => {}
+        }
+    }
+    forget_seed(&store, &session, &pending.conversation_id).await;
+}
+
+/// Whether the conversation file already holds the first message typed for
+/// `conversation`, which names it. Blocking.
+fn holds_seed(file: &Path, conversation: &str) -> bool {
+    let Ok(bytes) = std::fs::read(file) else {
+        return false;
+    };
+    let tag = seed_tag(conversation);
+    bytes.windows(tag.len()).any(|window| window == tag.as_bytes())
+}
+
+/// What the first message for `conversation` starts with: it tells a
+/// conversation that had it from one that didn't.
+fn seed_tag(conversation: &str) -> String {
+    format!("[start fresh {conversation}]")
+}
+
+/// The launch for a new conversation in `old`'s folder, tab and terminal,
+/// and the "Started fresh" line its terminal shows first, below the old
+/// output it keeps.
 fn fresh_launch(
     starter: &Starter,
     agent: &str,
     old: &AgentRecord,
     session: &str,
-) -> Result<AgentLaunch, StartFreshError> {
+) -> Result<(AgentLaunch, String), StartFreshError> {
     let kind = starter
         .agents
         .get(agent)
@@ -370,26 +540,14 @@ fn fresh_launch(
         old.launch.conversation_id,
         old.launch.conversation_file.display()
     );
-    Ok(AgentLaunch {
-        argv: marked(&marker, plan.argv),
+    let launch = AgentLaunch {
+        argv: plan.argv,
         resume_argv: plan.resume_argv,
         conversation_id: conversation,
         conversation_file: plan.conversation_file,
         ..old.launch.clone()
-    })
-}
-
-/// `argv` run after the terminal prints `line`.
-fn marked(line: &str, argv: Vec<OsString>) -> Vec<OsString> {
-    let mut wrapped: Vec<OsString> = vec![
-        "/bin/sh".into(),
-        "-c".into(),
-        "printf '%s\\n\\n' \"$1\"; shift; exec \"$@\"".into(),
-        "humata".into(),
-        line.into(),
-    ];
-    wrapped.extend(argv);
-    wrapped
+    };
+    Ok((launch, marker))
 }
 
 /// Types `seed` and presses return, each once however often this runs: the
@@ -405,8 +563,9 @@ async fn type_seed(
         source,
     };
     let key = format!("{session}/fresh-{conversation}");
+    let text = format!("{} {seed}", seed_tag(conversation));
     for (key, data) in [
-        (format!("{key}/text"), seed.as_bytes()),
+        (format!("{key}/text"), text.as_bytes()),
         (format!("{key}/return"), b"\r".as_slice()),
     ] {
         if data == b"\r" {
@@ -427,6 +586,22 @@ async fn type_seed(
     Ok(())
 }
 
+/// What a start fresh of `agent` could summarize, for the session shown to
+/// the app: unspecified unless its resume failed. It asks [`summarize`], the
+/// summarizer's own question, so the two can't disagree. Blocking.
+pub(super) fn summary_source(agent: Option<&AgentRecord>) -> pb::session::SummarySource {
+    use pb::session::SummarySource;
+    let Some(agent) = agent.filter(|agent| matches!(agent.state, AgentState::ResumeFailed { .. }))
+    else {
+        return SummarySource::Unspecified;
+    };
+    match summarize(&agent.launch.conversation_file, &agent.launch.holder_socket).0 {
+        Source::Transcript => SummarySource::Transcript,
+        Source::Scrollback => SummarySource::Scrollback,
+        Source::Nothing => SummarySource::None,
+    }
+}
+
 /// The digest of the old conversation and where it came from. Blocking.
 fn summarize(file: &Path, socket: &Path) -> (Source, Option<String>) {
     if let Ok(opened) = std::fs::File::open(file)
@@ -441,19 +616,25 @@ fn summarize(file: &Path, socket: &Path) -> (Source, Option<String>) {
 }
 
 /// The tail of the terminal output the old holder saved, as plain text.
-///
-/// Not wired yet: the holder keeps its saved output in a private format and
-/// exports only offsets, so a dead holder's text can't be read from here.
-/// Once `humata2_holder` exports a reader for it (for example
-/// `read_saved_tail(path, max_bytes) -> Result<Option<Vec<u8>>, HolderError>`),
-/// call it here, pass the bytes through [`plain_tail`] and return that.
-fn saved_tail(_socket: &Path) -> Option<String> {
-    None
+/// Blocking. Unreadable output is as good as none: the seed then says
+/// nothing of it was kept.
+fn saved_tail(socket: &Path) -> Option<String> {
+    let path = humata2_holder::saved_scrollback_path(socket);
+    match humata2_holder::read_saved_tail(&path, SCROLLBACK_READ) {
+        Ok(output) => plain_tail(&output?),
+        Err(error) => {
+            crate::log::say!(
+                "humatad2: couldn't read the saved terminal output at {} for a start fresh, so the summary leaves it out: {}",
+                path.display(),
+                status::chain(&error)
+            );
+            None
+        }
+    }
 }
 
 /// `output` as plain text for a seed: escape sequences and control
 /// characters dropped, the last `SCROLLBACK_MAX` bytes kept.
-#[allow(dead_code)]
 fn plain_tail(output: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(output);
     let mut plain = String::with_capacity(text.len());
@@ -650,7 +831,6 @@ fn cap_chars(text: &str, max: usize) -> String {
 }
 
 /// The last `max` bytes of `text`, from a character boundary.
-#[allow(dead_code)]
 fn tail_chars(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_owned();
@@ -673,6 +853,21 @@ fn cap_bytes(text: &str, max: usize) -> String {
     }
     text[..end].to_owned()
 }
+
+/// Kills the process with SIGKILL when `HUMATA2_STOP_AT` names this point, so
+/// a test can show what a crash here leaves behind. Test daemons only: a
+/// release build never reads the variable.
+#[cfg(feature = "admin")]
+fn stop_point(name: &str) {
+    if std::env::var("HUMATA2_STOP_AT").is_ok_and(|wanted| wanted == name) {
+        let _ = rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::KILL);
+        std::process::abort();
+    }
+}
+
+#[cfg(not(feature = "admin"))]
+#[inline(always)]
+fn stop_point(_name: &str) {}
 
 #[cfg(test)]
 mod tests {
@@ -763,17 +958,6 @@ mod tests {
     }
 
     #[test]
-    fn a_wrapped_command_runs_the_agent_after_the_line() {
-        let argv = marked("hello", vec!["claude".into(), "--session-id".into(), "c".into()]);
-        let words: Vec<String> = argv
-            .iter()
-            .map(|word| word.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(words[0], "/bin/sh");
-        assert_eq!(words[words.len() - 3..], ["claude", "--session-id", "c"]);
-    }
-
-    #[test]
     fn plain_tail_drops_escape_sequences() {
         let plain = plain_tail(b"\x1b[31mred\x1b[0m text\x1b]0;title\x07 done\r\n").unwrap();
         assert_eq!(plain, "red text done");
@@ -785,5 +969,63 @@ mod tests {
         assert_eq!(cap_bytes("aé", 2), "a");
         assert_eq!(cap_chars("ééé", 2), "éé…");
         assert_eq!(tail_chars("éa", 2), "a");
+    }
+
+    #[test]
+    fn a_conversation_that_had_its_first_message_is_told_from_one_that_did_not() {
+        let dir = std::env::temp_dir().join(format!("h2-seed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("c.jsonl");
+        std::fs::write(&file, user(&format!("{} pick up the build", seed_tag("c-new")))).unwrap();
+        assert!(holds_seed(&file, "c-new"));
+        assert!(!holds_seed(&file, "c-other"));
+        assert!(!holds_seed(&dir.join("missing.jsonl"), "c-new"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn failed_agent(file: &Path, socket: &Path) -> AgentRecord {
+        AgentRecord {
+            session: "se_1".to_owned(),
+            tab: "t".to_owned(),
+            launch: AgentLaunch {
+                agent: "claude".to_owned(),
+                argv: Vec::new(),
+                resume_argv: Vec::new(),
+                conversation_id: "c1".to_owned(),
+                conversation_file: file.to_owned(),
+                holder_socket: socket.to_owned(),
+                folder: std::env::temp_dir(),
+                variable_names: Vec::new(),
+                cols: 80,
+                rows: 24,
+            },
+            state: AgentState::ResumeFailed {
+                reason: humata2_store::ResumeFailure::AgentExited,
+                exit_code: None,
+            },
+            generation: 1,
+            interruptions: Vec::new(),
+            updated_unix_ms: 0,
+        }
+    }
+
+    #[test]
+    fn the_summary_source_follows_what_is_left_of_the_conversation() {
+        use pb::session::SummarySource;
+        let dir = std::env::temp_dir().join(format!("h2-source-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("c.jsonl");
+        let socket = dir.join("h.sock");
+        let mut agent = failed_agent(&file, &socket);
+
+        // Neither a conversation nor saved output.
+        assert_eq!(summary_source(Some(&agent)), SummarySource::None);
+        std::fs::write(&file, user("fix the login redirect")).unwrap();
+        assert_eq!(summary_source(Some(&agent)), SummarySource::Transcript);
+        // Only a session whose resume failed has one.
+        agent.state = AgentState::Stopped;
+        assert_eq!(summary_source(Some(&agent)), SummarySource::Unspecified);
+        assert_eq!(summary_source(None), SummarySource::Unspecified);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

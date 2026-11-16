@@ -3,16 +3,13 @@ use crate::{
     bridge::Ui,
     chrome,
     theme::Look,
-    widgets::{col, row},
+    widgets::{col, push_quiet, push_quiet_shape, row},
 };
-use gpui_kit::base::Disableable as _;
-use gpui_kit::component::{
-    Sizable as _,
-    button::Button,
-    input::{Input, InputState},
-};
+use gpui_kit::base::{Disableable as _, TestTextExt as _};
+use gpui_kit::component::button::Button;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, NewSessionAction};
+use humata2_clients::machines::tool_label;
 use humata2_clients::model::{Agent, MachineId, MachineKind, Status};
 use humata2_hosts::HostsAction as A;
 use std::rc::Rc;
@@ -36,22 +33,7 @@ fn button(
     action: AppAction,
     look: Look,
 ) -> Button {
-    let ui = ui.clone();
-    Button::new(id)
-        .small()
-        .h(px(24.))
-        .px(px(11.))
-        .label(label)
-        .bg(rgb(look.fill))
-        .text_color(rgb(look.text))
-        .text_size(px(12.))
-        .font_weight(FontWeight::MEDIUM)
-        .border_1()
-        .border_color(rgb(look.line))
-        .on_click(move |_, _, cx| {
-            cx.stop_propagation();
-            ui.send(action.clone(), cx);
-        })
+    push_quiet(ui, id, label, action, look)
 }
 fn new_session(ui: &Rc<Ui>, machine: &MachineId, shell: bool, cx: &mut App) {
     ui.send(AppAction::StartNewSession, cx);
@@ -92,7 +74,6 @@ pub(crate) fn page(
     ui: &Rc<Ui>,
     state: &AppState,
     width: f32,
-    address: Entity<InputState>,
     look: Look,
 ) -> Div {
     let narrow = width < 850.;
@@ -140,11 +121,24 @@ pub(crate) fn page(
                 col()
                     .w(px(150.))
                     .flex_shrink_0()
-                    .child(
+                    .child({
+                        let (open, target) = (ui.clone(), machine.id.clone());
                         div()
+                            .id(SharedString::from(format!("host-name {}", machine.id)))
+                            .role(Role::Link)
+                            .aria_label(machine.name.clone())
                             .font_weight(FontWeight::MEDIUM)
-                            .child(machine.name.clone()),
-                    )
+                            .child(machine.name.clone())
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                open.send(
+                                    AppAction::Navigate(humata2_app::Route::Machine(
+                                        target.clone(),
+                                    )),
+                                    cx,
+                                );
+                            })
+                    })
                     .child(dim(
                         look,
                         health.map_or_else(|| machine.detail.clone(), |h| h.system.clone()),
@@ -243,38 +237,65 @@ pub(crate) fn page(
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(machine.name.clone()),
         );
-        if let Some(health) = health {
-            let link = match &machine.kind {
-                MachineKind::ThisMac => "local",
-                MachineKind::Ssh { .. } => "ssh",
-                MachineKind::Provider { .. } => "provider",
+        let link = match &machine.kind {
+            MachineKind::ThisMac => "local",
+            MachineKind::Ssh { .. } => "ssh",
+            MachineKind::Provider { .. } => "provider",
+        };
+        // What the machine's daemon reported wins over what the workspace carries (HO-4).
+        let reported = state.hosts.health.get(&machine.id);
+        let (summary, tools, disk) = if let Some(detail) = reported {
+            let health = &detail.health;
+            let mut tools = vec![tool_label("gh", &health.gh_version)];
+            tools.extend(
+                health
+                    .agents
+                    .iter()
+                    .map(|(agent, version)| tool_label(agent.command(), version)),
+            );
+            let free_gb = health.disk_free / 1_000_000_000;
+            let used = if health.disk_total == 0 {
+                0
+            } else {
+                100 - (health.disk_free.min(health.disk_total) * 100 / health.disk_total)
             };
-            info = info
-                .child(dim(
-                    look,
-                    format!(
-                        "humatad {} · up {} · linked over {link}",
-                        health.daemon, health.uptime
-                    ),
-                ))
-                .child(
-                    row()
-                        .flex_wrap()
-                        .gap(px(6.))
-                        .children(health.tools.iter().map(|tool| {
-                            dim(look, tool.clone())
-                                .text_size(px(11.))
-                                .px(px(6.))
-                                .py(px(1.))
-                                .rounded(px(4.))
-                                .border_1()
-                                .border_color(rgb(look.line))
-                        })),
-                );
-            if health.disk_used_percent > 85 {
+            (
+                format!("humatad {} · linked over {link}", detail.daemon_version),
+                tools,
+                (used, free_gb),
+            )
+        } else if let Some(health) = health {
+            (
+                format!(
+                    "humatad {} · up {} · linked over {link}",
+                    health.daemon, health.uptime
+                ),
+                health.tools.clone(),
+                (u64::from(health.disk_used_percent), health.disk_free_gb),
+            )
+        } else {
+            (String::new(), Vec::new(), (0, 0))
+        };
+        if reported.is_some() || health.is_some() {
+            info = info.child(dim(look, summary)).child(
+                row()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .children(tools.into_iter().map(|tool| {
+                        dim(look, tool.clone())
+                            .test_text(tool)
+                            .text_size(px(11.))
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(rgb(look.line))
+                    })),
+            );
+            if disk.0 > 85 {
                 info = info.child(div().text_color(rgb(0xff9500)).child(format!(
                     "{} GB free: new clones stop at 5 GB.",
-                    health.disk_free_gb
+                    disk.1
                 )));
             }
         }
@@ -294,17 +315,7 @@ pub(crate) fn page(
                     .disabled(true),
                 )
                 .child(
-                    Button::new("host-open-shell")
-                        .small()
-                        .h(px(24.))
-                        .px(px(11.))
-                        .label("Open a shell")
-                        .bg(rgb(look.fill))
-                        .text_color(rgb(look.text))
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::MEDIUM)
-                        .border_1()
-                        .border_color(rgb(look.line))
+                    push_quiet_shape("host-open-shell", "Open a shell", look)
                         .disabled(!machine.online)
                         .on_click(move |_, _, cx| new_session(&send, &id, true, cx)),
                 ),
@@ -349,55 +360,7 @@ pub(crate) fn page(
         ));
     }
     details = details.child(bridge);
-    let form = state.hosts.add_address.as_ref().map(|value| {
-        card(look)
-            .m(px(20.))
-            .p(px(12.))
-            .gap(px(8.))
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Add a machine over SSH"),
-            )
-            .child(dim(look, "Use an SSH host or alias you can connect to."))
-            .child(Input::new(&address))
-            .children(
-                state
-                    .hosts
-                    .add_error
-                    .as_ref()
-                    .map(|error| div().text_color(rgb(0xff453a)).child(error.clone())),
-            )
-            .child(
-                row()
-                    .gap(px(8.))
-                    .child(
-                        button(
-                            ui,
-                            "host-add-connect",
-                            if state.hosts.adding {
-                                "Connecting…"
-                            } else {
-                                "Connect"
-                            },
-                            AppAction::Hosts(A::Add),
-                            look,
-                        )
-                        .disabled(value.trim().is_empty() || state.hosts.adding),
-                    )
-                    .child(
-                        button(
-                            ui,
-                            "host-add-cancel",
-                            "Cancel",
-                            AppAction::Hosts(A::CancelAdd),
-                            look,
-                        )
-                        .disabled(state.hosts.adding),
-                    ),
-            )
-    });
-    col().size_full().min_h_0().children(form).child(
+    col().size_full().min_h_0().child(
         row()
             .flex_1()
             .min_h_0()

@@ -105,6 +105,10 @@ pub enum StepKind {
     Create,
     /// Connect over SSH.
     Connect,
+    /// Log in by hand in the dialog's terminal. Only the dialog adds this step, once the
+    /// login worked (the daemon has no such step), in the place of the connect attempt
+    /// that asked for it (MP-15).
+    Login,
     /// Check the system: arch, disk, git, gh.
     Check,
     /// Install humatad.
@@ -122,6 +126,7 @@ impl StepKind {
         match self {
             Self::Create => "Create the machine",
             Self::Connect => "Connect over SSH",
+            Self::Login => "Log in",
             Self::Check => "Check the system (arch, disk, git, gh)",
             Self::Install => "Install humatad",
             Self::Start => "Start it and open the link",
@@ -190,9 +195,41 @@ pub enum AddOutcome {
     },
     /// The connect command waits for a login the person must do (MP-13).
     NeedsLogin {
-        /// What it printed or waited for, such as "Verification code:".
-        prompt: String,
+        /// Why: the prompt it printed, or that it hung (D167).
+        reason: LoginReason,
     },
+}
+
+/// What a login prompt asks for (D167). The daemon decides it; the app never
+/// reads the prompt line to guess.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptKind {
+    /// A password.
+    Password,
+    /// A key's passphrase.
+    Passphrase,
+    /// A verification, one-time or 2FA code.
+    Code,
+    /// A yes or no question.
+    Confirm,
+    /// A URL to sign in at, with a code to enter there.
+    Device,
+    /// Any other prompt, or none the daemon could name.
+    Other,
+}
+
+/// Why an add needs the person to log in (MP-13, D167).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LoginReason {
+    /// The command printed a prompt.
+    Prompted {
+        /// What kind.
+        kind: PromptKind,
+        /// The line, such as "Verification code:".
+        line: String,
+    },
+    /// The command ran until its timeout without finishing.
+    Hung,
 }
 
 /// What an add reports, in order.
@@ -228,6 +265,13 @@ pub enum LoginTarget {
 pub enum LoginEvent {
     /// Bytes the terminal printed.
     Output(Vec<u8>),
+    /// The terminal first ended waiting for the person (MP-13, D167).
+    Prompt {
+        /// What kind of prompt.
+        kind: PromptKind,
+        /// The line, such as "Verification code:".
+        line: String,
+    },
     /// A step of the add moved on after the login.
     Step(StepUpdate),
     /// Logged in and humatad is running (MP-15).
@@ -236,6 +280,8 @@ pub enum LoginEvent {
         machine: MachineId,
         /// Whether reconnects can be made to not need the person (MP-17).
         can_make_unattended: bool,
+        /// humatad's version on the machine, when the daemon knew it yet (frame 58).
+        daemon_version: Option<String>,
     },
     /// The login didn't work.
     Failed {
@@ -291,6 +337,25 @@ pub struct MachineHealth {
     pub variables: Vec<String>,
     /// Why the last skills sync failed, if it did (SK-8).
     pub skills_problem: Option<String>,
+    /// The version of `git` on the machine, such as `2.43.0`; empty without git (HO-1).
+    pub git_version: String,
+    /// The version of `gh` on the machine, such as `2.83.0`; empty without gh (HO-4).
+    pub gh_version: String,
+}
+
+/// A version as a chip shows it: major and minor, so `2.4.1` is `2.4` and `0.98.0` is
+/// `0.98` (frames 28 and 59, HO-4). A version without a dot stays as it is.
+#[must_use]
+pub fn short_version(version: &str) -> String {
+    version.trim().split('.').take(2).collect::<Vec<_>>().join(".")
+}
+
+/// What a tool's chip says: "claude 2.4", or the name alone when its version is
+/// not known (HO-4).
+#[must_use]
+pub fn tool_label(name: &str, version: &str) -> String {
+    let version = short_version(version);
+    if version.is_empty() { name.to_owned() } else { format!("{name} {version}") }
 }
 
 /// A channel's Humata folder on a machine (FM-11).
@@ -407,4 +472,24 @@ pub trait Machines: Send + Sync + 'static {
     fn set_variable(&self, machine: &MachineId, name: &str, value: &str) -> Reply<()>;
     /// Removes a host variable (HO-13).
     fn remove_variable(&self, machine: &MachineId, name: &str) -> Reply<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_chip_shows_major_and_minor() {
+        assert_eq!(tool_label("claude", "2.4.1"), "claude 2.4");
+        assert_eq!(tool_label("codex", "0.98.0"), "codex 0.98");
+        assert_eq!(tool_label("gh", "2.83"), "gh 2.83");
+        assert_eq!(tool_label("codex", "0.98.0-beta.1"), "codex 0.98");
+        assert_eq!(tool_label("copilot", "7"), "copilot 7");
+    }
+
+    #[test]
+    fn a_tool_with_no_known_version_shows_its_name_alone() {
+        assert_eq!(tool_label("claude", ""), "claude");
+        assert_eq!(tool_label("claude", "  "), "claude");
+    }
 }

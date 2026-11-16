@@ -12,9 +12,12 @@ fn selected_host_survives_refresh_and_falls_back_when_removed() {
         s.workspace = workspace.clone();
         s.selected = Some(MachineId::new("this-mac"));
     });
+    // The fake's default detail is an error, which leaves the state as it was.
+    store.receive_matching("Health", |a| matches!(a, A::Health(..)), |_| {});
     store.send(A::Select(MachineId::new("devbox-1")), |s| {
         s.selected = Some(MachineId::new("devbox-1"))
     });
+    store.receive_matching("Health", |a| matches!(a, A::Health(..)), |_| {});
     store.send(A::Select(MachineId::new("missing")), |_| {});
     store.send(A::Show(workspace.clone()), |_| {});
     let mut removed = (*workspace).clone();
@@ -24,5 +27,6 @@ fn selected_host_survives_refresh_and_falls_back_when_removed() {
         s.workspace = removed.clone();
         s.selected = Some(MachineId::new("this-mac"));
     });
+    store.receive_matching("Health", |a| matches!(a, A::Health(..)), |_| {});
     store.finish();
 }

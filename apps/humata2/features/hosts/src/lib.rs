@@ -14,6 +14,7 @@ pub use page::{MachinePage, MachinePageAction, MachinePageState};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use humata2_clients::machines::MachineDetail;
 use humata2_clients::model::{MachineId, Recovery, SessionId};
 use humata2_clients::{Clients, DaemonError, Workspace};
 use tca::{Effect, Reducer};
@@ -25,12 +26,6 @@ pub struct HostsState {
     pub workspace: Arc<Workspace>,
     /// The machine whose health is open.
     pub selected: Option<MachineId>,
-    /// An SSH host being added.
-    pub add_address: Option<String>,
-    /// A host-add request is in flight.
-    pub adding: bool,
-    /// Why adding a host failed.
-    pub add_error: Option<String>,
     /// Hosts being connected.
     pub connecting: BTreeSet<MachineId>,
     /// What a reconnect found, per host.
@@ -39,6 +34,8 @@ pub struct HostsState {
     pub previously: BTreeSet<MachineId>,
     /// Why a connect failed, per host.
     pub errors: BTreeMap<MachineId, String>,
+    /// What each machine's daemon last reported (HO-4); kept when a later read fails.
+    pub health: BTreeMap<MachineId, MachineDetail>,
 }
 
 impl HostsState {
@@ -70,22 +67,16 @@ pub enum HostsAction {
     Show(Arc<Workspace>),
     /// The hosts connected at the last run came back at launch.
     Restore(BTreeSet<MachineId>),
-    /// Open the SSH host form.
+    /// Open the Add machine dialog (the app does it).
     StartAdd,
-    /// Edit the SSH destination.
-    Address(String),
-    /// Cancel the form.
-    CancelAdd,
-    /// Connect this new SSH destination.
-    Add,
-    /// Adding the destination finished.
-    Added(Result<MachineId, DaemonError>),
     /// Inspect a particular machine.
     Select(MachineId),
     /// Connect was clicked.
     Connect(MachineId),
     /// The reconnect finished.
     Connected(MachineId, Result<Vec<(SessionId, Recovery)>, DaemonError>),
+    /// A machine's health was read.
+    Health(MachineId, Result<MachineDetail, DaemonError>),
     /// For the parent.
     Delegate(Delegate),
 }
@@ -102,6 +93,12 @@ impl Hosts {
     pub const fn new(clients: Clients) -> Self {
         Self { clients }
     }
+
+    /// Read `machine`'s health for its card (HO-4).
+    fn read_health(&self, machine: MachineId) -> Effect<HostsAction> {
+        let call = self.clients.machines.detail(&machine);
+        Effect::future(async move { HostsAction::Health(machine, call.await) })
+    }
 }
 
 impl Reducer for Hosts {
@@ -111,6 +108,7 @@ impl Reducer for Hosts {
     fn reduce(&self, state: &mut HostsState, action: HostsAction) -> Effect<HostsAction> {
         match action {
             HostsAction::Show(workspace) => {
+                let before = state.selected.clone();
                 if !state
                     .selected
                     .as_ref()
@@ -119,56 +117,28 @@ impl Reducer for Hosts {
                     state.selected = workspace.machines.first().map(|m| m.id.clone());
                 }
                 state.workspace = workspace;
+                // Only a new selection is read: Show comes on every change of the data.
+                if state.selected != before
+                    && let Some(id) = state.selected.clone()
+                {
+                    return self.read_health(id);
+                }
             }
             HostsAction::Select(id) => {
                 if state.workspace.machine(&id).is_some() {
-                    state.selected = Some(id);
+                    state.selected = Some(id.clone());
+                    return self.read_health(id);
+                }
+            }
+            // A failed read keeps what was there; it is not a connect error.
+            HostsAction::Health(machine, result) => {
+                if let Ok(detail) = result {
+                    state.health.insert(machine, detail);
                 }
             }
             HostsAction::Restore(previously) => state.previously = previously,
-            HostsAction::StartAdd => {
-                state.add_address = Some(String::new());
-                state.add_error = None;
-            }
-            HostsAction::Address(address) => {
-                if let Some(value) = &mut state.add_address {
-                    *value = address;
-                }
-            }
-            HostsAction::CancelAdd => {
-                if !state.adding {
-                    state.add_address = None;
-                    state.add_error = None;
-                }
-            }
-            HostsAction::Add => {
-                if state.adding {
-                    return Effect::none();
-                }
-                let Some(address) = state.add_address.clone() else {
-                    return Effect::none();
-                };
-                if address.trim().is_empty() {
-                    return Effect::none();
-                }
-                state.adding = true;
-                state.add_error = None;
-                let daemon = self.clients.daemon.clone();
-                return Effect::future(async move {
-                    HostsAction::Added(daemon.add_machine(&address).await)
-                });
-            }
-            HostsAction::Added(result) => {
-                state.adding = false;
-                match result {
-                    Ok(id) => {
-                        state.selected = Some(id);
-                        state.add_address = None;
-                        state.add_error = None;
-                    }
-                    Err(error) => state.add_error = Some(error.to_string()),
-                }
-            }
+            // The app opens the Add machine dialog.
+            HostsAction::StartAdd => {}
             HostsAction::Connect(machine) => {
                 if !state.connecting.insert(machine.clone()) {
                     return Effect::none();

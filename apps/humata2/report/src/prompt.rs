@@ -7,7 +7,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use crate::error::PromptError;
-use crate::write::FILES;
+use crate::write::{DRAWING, FILES, WINDOW, picture_files};
 
 /// The prompt for the report saved in `dir`: what the report is, its
 /// summary, and the absolute path of every file it holds now, each with
@@ -49,14 +49,14 @@ pub fn copy_prompt(dir: &Path) -> Result<String, PromptError> {
         }
     }
     // The known files in their order, then anything else by name.
-    let mut listed: Vec<(PathBuf, Option<&str>)> = FILES
-        .iter()
+    let known = || FILES.iter().chain(std::iter::once(&DRAWING)).copied().chain(picture_files());
+    let mut listed: Vec<(PathBuf, Option<&str>)> = known()
         .filter(|(name, _)| present.iter().any(|file| file.as_str() == *name))
-        .map(|(name, holds)| (dir.join(name), Some(*holds)))
+        .map(|(name, holds)| (dir.join(name), Some(holds)))
         .collect();
     let mut others: Vec<&String> = present
         .iter()
-        .filter(|file| !FILES.iter().any(|(name, _)| *name == file.as_str()))
+        .filter(|file| !known().any(|(name, _)| name == file.as_str()))
         .collect();
     others.sort();
     listed.extend(others.into_iter().map(|name| (dir.join(name), None)));
@@ -68,7 +68,24 @@ pub fn copy_prompt(dir: &Path) -> Result<String, PromptError> {
          app's state, view and layout as data. Read the files below to see what happened and \
          where, then find the cause.\n"
     );
-    prompt.push_str(summary(&report).trim_end());
+    if present.iter().any(|file| file == WINDOW.0) {
+        let _ = writeln!(
+            prompt,
+            "It also has a picture of the window, window.png, drawn by the app itself; marks.svg, \
+             when listed, lays the drawn marks and pinned comments over it.\n"
+        );
+    }
+    if let Some(text) = section(&report, "## Summary") {
+        prompt.push_str(text.trim_end());
+        for heading in ["## Comments", "## Drawings"] {
+            if let Some(text) = section(&report, heading) {
+                prompt.push_str("\n\n");
+                prompt.push_str(text.trim_end());
+            }
+        }
+    } else {
+        prompt.push_str(report.trim_end());
+    }
     let _ = writeln!(prompt, "\n\n## Files in {}\n", dir.display());
     for (path, holds) in listed {
         match holds {
@@ -83,13 +100,15 @@ pub fn copy_prompt(dir: &Path) -> Result<String, PromptError> {
     Ok(prompt)
 }
 
-/// The `## Summary` section of `report`, heading included, or the whole
-/// report when it has none.
-fn summary(report: &str) -> &str {
-    let Some(start) = report.find("## Summary") else {
-        return report;
+/// The section of `report` that starts with `heading`, heading included,
+/// up to the next `## ` heading.
+fn section<'a>(report: &'a str, heading: &str) -> Option<&'a str> {
+    let start = if report.starts_with(heading) {
+        0
+    } else {
+        report.find(&format!("\n{heading}\n"))? + 1
     };
     let rest = &report[start..];
     let end = rest[2..].find("\n## ").map_or(rest.len(), |at| at + 2);
-    &rest[..end]
+    Some(&rest[..end])
 }

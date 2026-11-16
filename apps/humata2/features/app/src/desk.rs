@@ -4,8 +4,9 @@
 //! Desk sessions under its Desk row.
 
 use humata2_clients::desk;
-use humata2_clients::model::SessionId;
+use humata2_clients::model::{ForkKind, SessionId};
 use humata2_desk::{Change, Delegate, DeskAction, DeskState, Sort};
+use humata2_session::SessionAction;
 use tca::Effect;
 
 use crate::{App, AppAction, AppState, Route};
@@ -72,5 +73,39 @@ impl App {
             } if state.route != Route::Desk => state.toast(error.to_string(), &clock),
             _ => Effect::none(),
         }
+    }
+}
+
+impl App {
+    /// The open session, when it is a Desk session.
+    fn open_desk_session(state: &AppState) -> Option<SessionId> {
+        state
+            .session
+            .open
+            .clone()
+            .filter(|id| state.is_desk_session(id))
+    }
+
+    /// Archive, from the palette or a shortcut. On a Desk session it is
+    /// Close session (DK-11): the folder stays and the session goes under
+    /// Closed on the Desk.
+    pub(super) fn archive_or_close(&self, state: &mut AppState) -> Effect<AppAction> {
+        match Self::open_desk_session(state) {
+            Some(id) => self.handle(state, AppAction::Desk(DeskAction::Close(id))),
+            None => self.child(state, AppAction::Session(SessionAction::Archive)),
+        }
+    }
+
+    /// Fork, from the palette or a shortcut. A Desk session has none
+    /// (DK-12).
+    pub(super) fn fork_unless_desk(
+        &self,
+        state: &mut AppState,
+        kind: ForkKind,
+    ) -> Effect<AppAction> {
+        if Self::open_desk_session(state).is_some() {
+            return Effect::none();
+        }
+        self.child(state, AppAction::Session(SessionAction::StartFork(kind)))
     }
 }

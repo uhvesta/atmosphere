@@ -160,6 +160,7 @@ pub(super) fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool,
                 .text_size(px(12.5))
                 .child(details)
                 .child(restart)
+                .children(crate::desk_info::access(ui, state, session, look))
                 .child(permissions),
         )
 }

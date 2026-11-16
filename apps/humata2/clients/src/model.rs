@@ -137,6 +137,17 @@ pub enum ResumeFailure {
     FolderMissing,
 }
 
+/// What Start fresh can summarize of a session whose resume failed (D143).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SummarySource {
+    /// The old conversation file.
+    Transcript,
+    /// The tail of the terminal's saved output; the conversation file is gone.
+    Scrollback,
+    /// Nothing is left.
+    Nothing,
+}
+
 /// What a host found when it restarted (PER-29, frame 47).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Restart {
@@ -360,6 +371,14 @@ pub enum Speaker {
     System,
 }
 
+/// What archiving a session did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Archive {
+    /// The disk its clones and folder free once the undo window closes, as
+    /// people read it ("1.4 GB"). `None` when the machine hasn't said.
+    pub frees: Option<String>,
+}
+
 /// A session and where it sits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
@@ -415,6 +434,9 @@ pub struct Session {
     pub resume_failed: Option<ResumeFailure>,
     /// When a host restart interrupted it, in Unix ms; `None` if none has.
     pub interrupted_unix_ms: Option<i64>,
+    /// What Start fresh could summarize, while its resume has failed and the
+    /// daemon says; `None` otherwise.
+    pub summary_source: Option<SummarySource>,
     /// The model its agent runs, such as "Opus", when the agent says.
     pub model: Option<String>,
     /// How it survives a restart, as its host reports it: who holds the
@@ -779,6 +801,17 @@ impl ItemStatus {
         Self::InReview,
         Self::Blocked,
         Self::Done,
+        Self::WontDo,
+    ];
+
+    /// The order of a board stacked in a side panel: active lanes first.
+    pub const COMPACT: [Self; 7] = [
+        Self::InProgress,
+        Self::InReview,
+        Self::Todo,
+        Self::Backlog,
+        Self::Done,
+        Self::Blocked,
         Self::WontDo,
     ];
 

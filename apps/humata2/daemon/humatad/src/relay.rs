@@ -47,8 +47,9 @@ use crate::status;
 
 /// The metadata key the host puts the id it assigned to a call's subject
 /// under (D139: the host mints a session's id before relaying its start).
-/// The relay passes it through as it is.
-pub(crate) const HOST_ASSIGNED_ID_HEADER: &str = "humata-host-assigned-id";
+/// The relay passes it through as it is, so only its tests name it.
+#[cfg(test)]
+const HOST_ASSIGNED_ID_HEADER: &str = "humata-host-assigned-id";
 
 /// Headers the relay removes from the host's request: every one the socket
 /// daemon's authentication reads, and its own.
@@ -59,11 +60,14 @@ const STRIPPED: [&str; 3] = [
 ];
 
 /// The services the host may call whole.
-const WHOLE_SERVICES: [&str; 4] = [
+const WHOLE_SERVICES: [&str; 5] = [
     pb::terminal_service_server::SERVICE_NAME,
     pb::file_service_server::SERVICE_NAME,
     pb::trash_service_server::SERVICE_NAME,
     pb::diff_service_server::SERVICE_NAME,
+    // A transfer's far end (FM-8, FM-13): the host's TransferService drives
+    // it; no app, CLI or agent calls it through the host.
+    pb::transfer_end_service_server::SERVICE_NAME,
 ];
 
 /// The services the host may call only by these methods.
@@ -91,14 +95,15 @@ const LISTED_METHODS: [(&str, &[&str]); 4] = [
 ];
 
 /// Every service the link answers for the host on the relay's behalf: the
-/// eight with an allowlisted method come first, then the client services
+/// nine with an allowlisted method come first, then the client services
 /// that are never relayed, so a call to one is refused by name rather than
 /// with a bare UNIMPLEMENTED. `Routed<N>` is `ROUTED[N]`.
-const ROUTED: [&str; 27] = [
+const ROUTED: [&str; 28] = [
     pb::terminal_service_server::SERVICE_NAME,
     pb::file_service_server::SERVICE_NAME,
     pb::trash_service_server::SERVICE_NAME,
     pb::diff_service_server::SERVICE_NAME,
+    pb::transfer_end_service_server::SERVICE_NAME,
     pb::session_service_server::SERVICE_NAME,
     pb::channel_service_server::SERVICE_NAME,
     pb::operation_service_server::SERVICE_NAME,
@@ -379,6 +384,18 @@ impl Relay {
         }
     }
 
+    /// The proven connection to the socket daemon, for the link's own calls
+    /// (the machine's session reports, D139). `None` unless the host's
+    /// proof was accepted: the relay is off, no daemon answered, or the
+    /// proof was refused. Never connects and never waits. The daemon treats
+    /// these calls as the host's, so they must stay on the allowlist.
+    pub(crate) fn proven_channel(&self) -> Option<Channel> {
+        if !matches!(&*lock(&self.shared.phase), Phase::Ready) {
+            return None;
+        }
+        self.shared.channel.get().cloned()
+    }
+
     fn unproven(&self) -> Status {
         status::peer_unproven(
             pb::peer_unproven::Reason::HostNotProven,
@@ -539,7 +556,7 @@ pub(crate) fn register<L>(router: Router<L>, relay: &Relay) -> Router<L> {
         router,
         Routed,
         relay,
-        0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26
+        0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27
     )
 }
 
@@ -583,6 +600,7 @@ mod tests {
             "/humata.v1.FileService/ReadFile",
             "/humata.v1.TrashService/ListTrash",
             "/humata.v1.DiffService/GetDiff",
+            "/humata.v1.TransferEndService/WriteAt",
             "/humata.v1.SessionService/StartSession",
             "/humata.v1.SessionService/StopSession",
             "/humata.v1.SessionService/ResumeSession",
@@ -605,6 +623,7 @@ mod tests {
             "/humata.v1.OperationService/RetryOperation",
             "/humata.v1.AccessService/ListRules",
             "/humata.v1.InboxService/Answer",
+            "/humata.v1.TransferService/Anything",
             "/humata.v1.PeerService/Hello",
             "/humata.v1.DaemonService/WhoAmI",
             "/humata.v1.DaemonService/BeginRelay",
@@ -690,8 +709,8 @@ mod tests {
         released_note: Arc<Notify>,
     }
 
-    /// The fake socket daemon's services: `ROUTED[..8]` and DaemonService.
-    const FAKE_NAMES: [&str; 9] = [
+    /// The fake socket daemon's services: `ROUTED[..9]` and DaemonService.
+    const FAKE_NAMES: [&str; 10] = [
         ROUTED[0],
         ROUTED[1],
         ROUTED[2],
@@ -700,6 +719,7 @@ mod tests {
         ROUTED[5],
         ROUTED[6],
         ROUTED[7],
+        ROUTED[8],
         pb::daemon_service_server::SERVICE_NAME,
     ];
 
@@ -791,7 +811,8 @@ mod tests {
         host: Channel,
         daemon: Daemon,
         relay: Relay,
-        /// The fake daemon: ending it ends the socket connection.
+        /// The wire between the relay and the fake daemon: ending this
+        /// task cuts the socket connection.
         fake: tokio::task::JoinHandle<()>,
     }
 
@@ -805,10 +826,18 @@ mod tests {
     /// begun yet.
     async fn unproven_rig() -> Rig {
         let daemon = Daemon::default();
-        let (socket_client, socket_server) = tokio::io::duplex(1 << 16);
+        // The relay's end and the daemon's end are joined by a task that
+        // copies both ways. A server keeps a connection it accepted until
+        // the other side closes it, so cutting the connection means ending
+        // that task, which closes both middle ends.
+        let (socket_client, mut relay_side) = tokio::io::duplex(1 << 16);
+        let (mut daemon_side, socket_server) = tokio::io::duplex(1 << 16);
         let fake = Server::builder().add_routes(Routes::default());
-        let fake = add_routed!(fake, Fake, daemon, 0 1 2 3 4 5 6 7 8);
-        let fake_task = tokio::spawn(serve(fake, socket_server));
+        let fake = add_routed!(fake, Fake, daemon, 0 1 2 3 4 5 6 7 8 9);
+        tokio::spawn(serve(fake, socket_server));
+        let fake_task = tokio::spawn(async move {
+            let _ = tokio::io::copy_bidirectional(&mut relay_side, &mut daemon_side).await;
+        });
 
         let relay = Relay::new(MACHINE.to_owned(), move || async move {
             Ok::<_, RelayError>(socket_client)
@@ -931,7 +960,6 @@ mod tests {
         for off in [
             "/humata.v1.SessionService/DeleteSession",
             "/humata.v1.AccessService/ListRules",
-            "/humata.v1.DaemonService/BeginRelay",
         ] {
             let refused = client(&rig)
                 .await
@@ -940,6 +968,17 @@ mod tests {
                 .unwrap_err();
             assert_eq!(refused.code(), Code::PermissionDenied, "{off}");
         }
+        // DaemonService is the link's own, never relayed: whatever the link
+        // answers for the relay's own calls, they don't reach the daemon.
+        client(&rig)
+            .await
+            .unary(
+                Request::new(Bytes::new()),
+                PathAndQuery::from_static("/humata.v1.DaemonService/BeginRelay"),
+                RawCodec,
+            )
+            .await
+            .unwrap_err();
         assert_eq!(lock(&rig.daemon.seen).len(), reached);
     }
 

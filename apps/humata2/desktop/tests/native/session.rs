@@ -136,18 +136,12 @@ fn session_lifecycle_and_full_screen_reference_images() {
         }
         // Every frame's Ledger has one sent comment and this saved draft, so
         // the Diff rail reads 2 (frames 01–13).
-        app.send(AppAction::Review(
-            humata2_review::ReviewAction::StartComment(humata2_review::Anchor {
-                path: "src/client.rs".into(),
-                line: 43,
-            }),
-        ));
-        app.send(AppAction::Review(
-            humata2_review::ReviewAction::CommentText(
-                "Keep insert_legacy until the backfill ends.".into(),
-            ),
-        ));
-        app.send(AppAction::Review(humata2_review::ReviewAction::SaveComment));
+        app.write_comment(
+            "ledger",
+            "api",
+            43,
+            "Keep insert_legacy until the backfill ends.",
+        );
         if panel == Some(Panel::Changes) {
             app.send(AppAction::Review(
                 humata2_review::ReviewAction::SelectFile {
@@ -294,16 +288,12 @@ fn the_plus_menu_splits_once_and_joining_keeps_the_program_running() {
     app.send(AppAction::Session(SessionAction::SetPanel(None)));
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
     // Golden 14's Diff rail reads 2: one sent comment and this saved draft.
-    app.send(AppAction::Review(
-        humata2_review::ReviewAction::StartComment(humata2_review::Anchor {
-            path: "src/client.rs".into(),
-            line: 43,
-        }),
-    ));
-    app.send(AppAction::Review(humata2_review::ReviewAction::CommentText(
-        "Keep insert_legacy until the backfill ends.".into(),
-    )));
-    app.send(AppAction::Review(humata2_review::ReviewAction::SaveComment));
+    app.write_comment(
+        "ledger",
+        "api",
+        43,
+        "Keep insert_legacy until the backfill ends.",
+    );
     for channel in ["pr-reviews", "web"] {
         app.send(AppAction::Sidebar(SidebarAction::Toggle(RowKey::Channel(
             humata2_clients::model::ChannelId::new(channel),

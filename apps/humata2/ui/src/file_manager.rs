@@ -388,6 +388,7 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
     }
 
     let ui2 = ui.clone();
+    let ui3 = ui.clone();
     col()
         .id(SharedString::from(format!("files-pane {tag}")))
         .relative()
@@ -404,6 +405,17 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
         .children(picker_list(ui, state, side, look))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             ui2.send(AppAction::Files(A::Activate(side)), cx);
+        })
+        // FM-4: files dragged in from Finder upload into this pane's folder.
+        // The reducer refuses a pane that is stale or has no folder.
+        .when(!stale, |pane| {
+            pane.drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(rgb(look.fill)))
+        })
+        .on_drop(move |dropped: &ExternalPaths, _, cx| {
+            ui3.send(
+                AppAction::Files(A::Dropped(side, dropped.paths().to_vec())),
+                cx,
+            );
         })
 }
 

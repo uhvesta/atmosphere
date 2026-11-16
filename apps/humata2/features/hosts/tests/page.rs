@@ -31,6 +31,8 @@ fn detail(variables: &[&str]) -> MachineDetail {
             disk_total: 500,
             variables: variables.iter().map(|v| (*v).to_owned()).collect(),
             skills_problem: None,
+            git_version: "2.43.0".to_owned(),
+            gh_version: "2.83.0".to_owned(),
         },
         folders: vec![],
         sessions: vec![SessionId::new("s1")],

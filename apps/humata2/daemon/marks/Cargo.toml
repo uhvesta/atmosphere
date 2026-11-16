@@ -1,0 +1,18 @@
+[package]
+name = "humata2-marks"
+description = "Humata 2's pins, their order and VIP marks on the host, in their own SQLite file."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_marks"
+path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

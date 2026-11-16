@@ -34,12 +34,13 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::StoreError;
+use humata2_store::{RemoteReportRow, StoreError};
+use prost::Message;
 use tokio::sync::{broadcast, mpsc};
 use tonic::transport::Channel;
 use tonic::{Code, Request, Status};
 
-use crate::host_relay::{Links, RelayError, assigned};
+use crate::host_relay::{LinkState, Links, RelayError, assigned};
 use crate::machine_service::lock;
 use crate::operations::Progress;
 use crate::peer_reports::{Freshness, PeerReports, ReportUpdate, SessionReport};
@@ -332,6 +333,7 @@ pub(crate) struct Reattached {
 
 impl Reattached {
     /// "devbox-2 is back. 3 sessions reattached."
+    #[allow(dead_code)]
     pub(crate) fn message(&self, machine: &str) -> String {
         let sessions = if self.count == 1 { "session" } else { "sessions" };
         format!("{machine} is back. {} {sessions} reattached.", self.count)
@@ -391,6 +393,33 @@ pub(crate) fn channel_steps(machine: &str, repos: &[pb::RepoRef]) -> Vec<(String
         ));
     }
     steps
+}
+
+/// Sets `machine`'s steps that hadn't ended to Skipped: it was removed from
+/// Humata while its part of the channel's setup waited, so nothing more
+/// happens there (D164).
+fn skip_machine_steps(op: &HostOp, machine: &str, repos: &[pb::RepoRef]) {
+    let ended: Vec<String> = op
+        .operation()
+        .map(|operation| {
+            operation
+                .steps
+                .into_iter()
+                .filter(|step| {
+                    matches!(
+                        pb::StepState::try_from(step.state),
+                        Ok(pb::StepState::Done | pb::StepState::Failed | pb::StepState::Skipped)
+                    )
+                })
+                .map(|step| step.key)
+                .collect()
+        })
+        .unwrap_or_default();
+    for (key, _) in channel_steps(machine, repos) {
+        if !ended.contains(&key) {
+            op.set_step(&key, pb::StepState::Skipped, None);
+        }
+    }
 }
 
 /// A work item for [`RemoteWork::follow_operation`].
@@ -455,7 +484,10 @@ impl RemoteWork {
             }
         });
         tokio::select! {
-            () = attempts => MachineOutcome::Gone,
+            () = attempts => {
+                skip_machine_steps(&op, machine, &request.repos);
+                MachineOutcome::Gone
+            }
             Some(outcome) = outcomes.recv() => outcome,
         }
     }
@@ -528,6 +560,13 @@ impl RemoteWork {
     }
 
     // -- a session on a machine ---------------------------------------------
+
+    /// Whether `machine`'s link is up now. A start checks this before it
+    /// writes any record, so an offline machine leaves nothing behind (CH-4).
+    pub(crate) fn require_link(&self, machine: &str) -> Result<(), RemoteError> {
+        self.inner.links.relayed(machine)?;
+        Ok(())
+    }
 
     /// Starts session `session` on `machine` with the id the host minted. The
     /// caller wrote the host's record first (SL-1, PER-11). Answers as the
@@ -791,7 +830,9 @@ impl RemoteWork {
         lock(&self.inner.views).views.get(&(machine.to_owned(), session.to_owned())).cloned()
     }
 
-    /// Every remote session on `machine` the host has a view of.
+    /// Every remote session on `machine` the host has a view of. Not called
+    /// yet: the machine's page will show them.
+    #[allow(dead_code)]
     pub(crate) fn views_on(&self, machine: &str) -> Vec<RemoteView> {
         lock(&self.inner.views)
             .views
@@ -810,6 +851,19 @@ impl RemoteWork {
             return;
         };
         let Some(view) = self.view(&machine.value, &id.value) else {
+            // Never reported (an old machine, or before its first report):
+            // while the machine's link is down the session can't be shown
+            // as anything but offline (HO-5). With the link up the host's
+            // own status stands until the machine reports.
+            let link_up = self
+                .inner
+                .links
+                .states()
+                .into_iter()
+                .any(|(name, state)| name == machine.value && matches!(state, LinkState::Up { .. }));
+            if !link_up {
+                session.status = pb::SessionStatus::Offline as i32;
+            }
             return;
         };
         session.status = view.shown() as i32;
@@ -817,7 +871,9 @@ impl RemoteWork {
         session.pointers = view.pointers;
     }
 
-    /// What the last reconnect of `machine` brought back (HO-6).
+    /// What the last reconnect of `machine` brought back (HO-6). Not called
+    /// yet: ReconnectMachine's answer will say it.
+    #[allow(dead_code)]
     pub(crate) fn reattached(&self, machine: &str) -> Reattached {
         let views = lock(&self.inner.views);
         Reattached {
@@ -959,6 +1015,86 @@ impl RemoteWork {
             crate::log::say!("humatad2: couldn't forget a remote session's last report: {}", status::chain(&error));
         }
     }
+}
+
+/// [`Memory`] over the store's `remote_session_reports` table (PER-27).
+pub(crate) struct StoreMemory(pub(crate) Arc<humata2_store::Store>);
+
+impl Memory for StoreMemory {
+    fn load(&self) -> Result<Vec<RemoteView>, StoreError> {
+        let mut views = Vec::new();
+        for row in self.0.remote_reports()? {
+            match view_of(&row) {
+                Some(view) => views.push(view),
+                None => crate::log::say!(
+                    "humatad2: skipped session {}'s last report from {}: it can't be read",
+                    row.session,
+                    row.machine
+                ),
+            }
+        }
+        Ok(views)
+    }
+
+    fn save(&self, view: &RemoteView) -> Result<(), StoreError> {
+        self.0.put_remote_report(&row_of(view))
+    }
+
+    fn forget(&self, machine: &str, session: &str) -> Result<(), StoreError> {
+        self.0.delete_remote_report(machine, session)
+    }
+}
+
+fn unix_ms(time: SystemTime) -> i64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
+
+fn from_unix_ms(ms: i64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(u64::try_from(ms).unwrap_or(0))
+}
+
+fn row_of(view: &RemoteView) -> RemoteReportRow {
+    let pointers = pb::PointersReport {
+        session: Some(pb::SessionId { value: view.session.clone() }),
+        pointers: view.pointers.clone(),
+        at: None,
+    };
+    RemoteReportRow {
+        machine: view.machine.clone(),
+        session: view.session.clone(),
+        reported: view.reported as i32,
+        exit_code: view.exit_code,
+        problem: view.problem.as_ref().map(Message::encode_to_vec),
+        pointers: pointers.encode_to_vec(),
+        pointers_at_ms: view
+            .pointers_at
+            .as_ref()
+            .map(|at| at.seconds.saturating_mul(1000).saturating_add(i64::from(at.nanos) / 1_000_000)),
+        reported_unix_ms: unix_ms(view.reported_at),
+        last_seen_unix_ms: view.last_seen.map(unix_ms),
+    }
+}
+
+/// The view a row holds; none when its stored messages can't be decoded.
+fn view_of(row: &RemoteReportRow) -> Option<RemoteView> {
+    let problem = match &row.problem {
+        Some(bytes) => Some(pb::Error::decode(bytes.as_slice()).ok()?),
+        None => None,
+    };
+    let pointers = pb::PointersReport::decode(row.pointers.as_slice()).ok()?;
+    Some(RemoteView {
+        machine: row.machine.clone(),
+        session: row.session.clone(),
+        reported: map_status(row.reported),
+        exit_code: row.exit_code,
+        problem,
+        pointers: pointers.pointers,
+        pointers_at: row.pointers_at_ms.map(crate::channel_service::timestamp_ms),
+        reported_at: from_unix_ms(row.reported_unix_ms),
+        live: false,
+        last_seen: row.last_seen_unix_ms.map(from_unix_ms),
+    })
 }
 
 /// The API's session status for what a machine reported (D124: the same
@@ -1477,6 +1613,10 @@ mod tests {
         async fn answer_question(&self, _: Request<pb::AnswerQuestionRequest>) -> Result<Response<pb::AnswerQuestionResponse>, Status> {
             Err(Status::unimplemented("not used"))
         }
+
+        async fn report_turn(&self, _: Request<pb::ReportTurnRequest>) -> Result<Response<pb::ReportTurnResponse>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
     }
 
     /// A new link to `machine`: its daemon answering on an in-memory pipe.
@@ -1696,6 +1836,23 @@ mod tests {
         rig.links.up("devbox", link_to(&machine).await);
         settle().await;
         assert_eq!(machine.calls().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_machine_removed_while_its_steps_wait_has_them_skipped() {
+        let rig = rig();
+        let host = rig.host_op(pb::OperationKind::AddRepo, &channel_steps("devbox", &[repo("acme", "api")]));
+        let task = tokio::spawn({
+            let (work, host) = (rig.work.clone(), host.clone());
+            async move { work.create_channel_on("devbox", "ch_1", create_request(), host).await }
+        });
+        settle().await;
+
+        rig.links.forget("devbox");
+
+        assert_eq!(task.await.unwrap(), MachineOutcome::Gone);
+        let shown = host.operation().expect("the caller ends it");
+        assert!(shown.steps.iter().all(|step| step.state == pb::StepState::Skipped as i32));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1976,6 +2133,35 @@ mod tests {
         assert_eq!(session.status, pb::SessionStatus::Offline as i32);
         assert_eq!(rig.work.reattached("devbox").waiting, 1);
         follower.abort();
+    }
+
+    fn unreported_session() -> pb::Session {
+        pb::Session {
+            id: Some(pb::SessionId { value: "se_1".to_owned() }),
+            machine: Some(pb::MachineId { value: "devbox".to_owned() }),
+            status: pb::SessionStatus::Starting as i32,
+            exit_code: 7,
+            ..pb::Session::default()
+        }
+    }
+
+    #[test]
+    fn a_session_the_machine_never_reported_shows_offline_while_its_link_is_down() {
+        let rig = rig();
+        let mut session = unreported_session();
+        rig.work.merge(&mut session);
+        assert_eq!(session.status, pb::SessionStatus::Offline as i32);
+        assert_eq!(session.exit_code, 7);
+    }
+
+    #[tokio::test]
+    async fn a_session_the_machine_never_reported_keeps_the_hosts_status_while_its_link_is_up() {
+        let rig = rig();
+        let machine = Machine::default();
+        rig.links.up("devbox", link_to(&machine).await);
+        let mut session = unreported_session();
+        rig.work.merge(&mut session);
+        assert_eq!(session.status, pb::SessionStatus::Starting as i32);
     }
 
     #[test]

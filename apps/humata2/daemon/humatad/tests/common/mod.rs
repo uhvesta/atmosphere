@@ -8,7 +8,7 @@
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use humata2_grpc::humata::v1 as pb;
@@ -24,6 +24,30 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use tonic::{Code, Status, Streaming};
 
 pub const WAIT: Duration = Duration::from_secs(15);
+
+/// Runs the daemon's binary once, to its help text, before this test
+/// process starts its first daemon. This is not slack for a loaded
+/// machine: [`WAIT`] still bounds every daemon's own start. It moves one
+/// cost that isn't the daemon's out of that bound. On macOS the first
+/// exec of a binary that was just linked and isn't signed (about 95 MB
+/// here) is assessed by the system before it runs (syspolicyd and
+/// XProtect read the whole file), once per new binary. A test process
+/// starts as many daemons at once as the machine has cores, so the whole
+/// first batch waited on that one assessment and could spend all of
+/// [`WAIT`] there before any of the daemon's code ran, while every later
+/// start was quick (gate g70: the first ten tests failed, the next eleven
+/// passed in five seconds).
+fn warm(build: Build) {
+    static ADMIN: OnceLock<()> = OnceLock::new();
+    static RELEASE: OnceLock<()> = OnceLock::new();
+    let (once, variable) = match build {
+        Build::Admin | Build::AdminForThisProcess => (&ADMIN, "HUMATAD2"),
+        Build::Release => (&RELEASE, "HUMATAD2_RELEASE"),
+    };
+    once.get_or_init(|| {
+        let _ = Command::new(binary(variable)).arg("--help").output();
+    });
+}
 
 pub fn binary(variable: &str) -> PathBuf {
     let path = std::env::var_os(variable)
@@ -108,6 +132,11 @@ impl Daemon {
         Self::launched(Build::Admin, dir, &[], env).await
     }
 
+    /// [`Self::start_with`] with environment variables for this start only.
+    pub async fn start_with_env(build: Build, dir: TempDir, extra: &[&str], env: &[(&str, &str)]) -> Self {
+        Self::launched(build, dir, extra, env).await
+    }
+
     async fn launched(build: Build, dir: TempDir, extra: &[&str], env: &[(&str, &str)]) -> Self {
         let mut daemon = Self {
             child: None,
@@ -126,6 +155,7 @@ impl Daemon {
     }
 
     async fn launch(&mut self) {
+        warm(self.build);
         let mut command = match self.build {
             Build::Admin | Build::AdminForThisProcess => Command::new(binary("HUMATAD2")),
             Build::Release => Command::new(binary("HUMATAD2_RELEASE")),
@@ -161,10 +191,15 @@ impl Daemon {
         self.child = Some(child);
         let deadline = Instant::now() + WAIT;
         while UnixStream::connect(&self.socket).await.is_err() {
-            assert!(
-                Instant::now() < deadline,
-                "humatad2 never started listening"
-            );
+            if Instant::now() >= deadline {
+                // Tells a daemon that gave up from one that is still starting.
+                let process = match self.child.as_mut().map(Child::try_wait) {
+                    Some(Ok(Some(status))) => format!("it exited with {status}"),
+                    Some(Ok(None)) => "its process is still starting".to_owned(),
+                    _ => "its process couldn't be asked".to_owned(),
+                };
+                panic!("humatad2 never started listening within {WAIT:?}: {process}");
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
@@ -191,6 +226,17 @@ impl Daemon {
 
     pub async fn restart(&mut self) {
         self.kill();
+        self.launch().await;
+    }
+
+    /// As [`Self::restart`], with environment variables such as
+    /// `HUMATA2_STOP_AT` for this start only.
+    pub async fn restart_env(&mut self, env: &[(&str, &str)]) {
+        self.kill();
+        self.env_once = env
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
         self.launch().await;
     }
 

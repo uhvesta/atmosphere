@@ -1,0 +1,118 @@
+--- a/src/text_selection.rs
++++ b/src/text_selection.rs
+@@ -823,6 +823,13 @@
+     fn set_snapshot(&mut self, snapshot: Option<TextSelectionSnapshot>, cx: &mut Context<Self>) {
+         if self.set_snapshot_quietly(snapshot) {
+             cx.emit(TextSelectionEvent::SelectionChanged(snapshot));
++        }
++    }
++
++    /// Tells subscribers a gesture ended without selecting anything here.
++    fn end_gesture(&self, cx: &mut Context<Self>) {
++        if self.snapshot.is_none() {
++            cx.emit(TextSelectionEvent::SelectionChanged(None));
+         }
+     }
+ 
+@@ -1208,6 +1215,10 @@
+     point: Point<Pixels>,
+     inside: bool,
+     inside_text: bool,
++    /// Whether the point is on one of the participant's rows of text, past
++    /// its ends included: a drag there selects the row up to the point, as
++    /// in a browser, though the point is over no glyph.
++    on_text_row: bool,
+     content_key: Option<TextSelectionContentKey>,
+     content_key_resolver: Option<(ContentKeyResolver, Point<Pixels>)>,
+ }
+@@ -1741,12 +1752,28 @@
+             return;
+         }
+         self.is_selecting = false;
++        let mut ends: Vec<WeakEntity<SelectableTextState>> = Vec::new();
++        for participant in [self.anchor.as_ref(), self.cursor.as_ref()]
++            .into_iter()
++            .flatten()
++            .filter_map(|endpoint| endpoint.participant.clone())
++        {
++            if !ends.contains(&participant) {
++                ends.push(participant);
++            }
++        }
+         if !self.did_hit_text {
+             self.anchor = None;
+             self.cursor = None;
+         }
+         self.stop_anchor_auto_scroll(cx);
+         self.publish_snapshots(cx);
++        // A gesture that selected nothing leaves every snapshot as it was, so
++        // publishing told no participant it ended; tell the ones it touched,
++        // which may have marked themselves selecting when it began.
++        for participant in ends.iter().filter_map(WeakEntity::upgrade) {
++            participant.update(cx, |state, cx| state.end_gesture(cx));
++        }
+     }
+ 
+     /// Clears both window selection and every participant's local selection.
+@@ -2100,6 +2127,7 @@
+                 point: content_point,
+                 inside: true,
+                 inside_text: true,
++                on_text_row: true,
+                 content_key: None,
+                 content_key_resolver: content_key_resolver
+                     .clone()
+@@ -2272,6 +2300,7 @@
+                 point: content_point,
+                 inside: true,
+                 inside_text: true,
++                on_text_row: true,
+                 content_key: None,
+                 content_key_resolver: content_key_resolver
+                     .clone()
+@@ -2313,7 +2342,7 @@
+             )
+         };
+         let (Some(start), Some(end)) = (start, end) else {
+-            self.did_hit_text |= endpoint.inside_text;
++            self.did_hit_text |= endpoint.on_text_row;
+             self.cursor = Some(endpoint);
+             return;
+         };
+@@ -2418,7 +2447,7 @@
+         let anchor = previous_anchor.unwrap_or_else(|| endpoint.clone());
+         self.anchor = Some(anchor.clone());
+         self.cursor = Some(endpoint.clone());
+-        self.did_hit_text = anchor.inside_text || endpoint.inside_text;
++        self.did_hit_text = anchor.on_text_row || endpoint.on_text_row;
+         self.is_selecting = true;
+         // A shift-click after a double or triple click extends by its unit.
+         if let Some(unit) = extend.then(|| self.unit.clone()).flatten() {
+@@ -2440,7 +2469,7 @@
+         match self.unit.clone() {
+             Some(unit) => self.extend_unit(&unit, position, endpoint, cx),
+             None => {
+-                self.did_hit_text |= endpoint.inside_text;
++                self.did_hit_text |= endpoint.on_text_row;
+                 self.cursor = Some(endpoint);
+             }
+         }
+@@ -2526,6 +2555,10 @@
+                             .text_bounds
+                             .iter()
+                             .any(|bounds| bounds.contains(&position)),
++                    on_text_row: inside
++                        && registration.text_bounds.iter().any(|bounds| {
++                            bounds.top() <= position.y && position.y < bounds.bottom()
++                        }),
+                     content_key: None,
+                     content_key_resolver,
+                 }
+@@ -2535,6 +2568,7 @@
+                 point: position,
+                 inside: false,
+                 inside_text: false,
++                on_text_row: false,
+                 content_key: None,
+                 content_key_resolver: None,
+             },

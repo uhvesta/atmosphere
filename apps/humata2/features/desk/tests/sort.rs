@@ -67,7 +67,15 @@ fn closed_sessions_never_show_in_open_and_come_last_used_first() {
         .iter()
         .map(|row| row.session.id.to_string())
         .collect();
-    assert_eq!(closed, ["desk-release-checklist"]);
+    assert_eq!(
+        closed,
+        [
+            "desk-release-checklist",
+            "desk-notes-cleanup",
+            "desk-port-cron",
+            "desk-onboarding-doc"
+        ]
+    );
 }
 
 #[test]

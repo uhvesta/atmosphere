@@ -1,0 +1,818 @@
+//! [`CommentsClient`] for the real daemon, over its CommentService (D151,
+//! D161). The app's comments are the daemon's terminal-bound ones; the
+//! agent's pull request drafts and the review chat's notes are other
+//! views' business and are left out of every answer and every event.
+
+use std::sync::Arc;
+
+use humata2_clients::comments::{
+    Anchor, Author, Comment, CommentEvent, CommentEvents, CommentId, CommentsClient, Listing, Sent,
+    Side, Status, ThreadReply, Which,
+};
+use humata2_clients::model::SessionId;
+use humata2_clients::{DaemonError, Reply};
+use humata2_grpc::humata::v1 as pb;
+use tokio::sync::mpsc;
+use tonic::Streaming;
+
+use crate::connection::{LiveDaemon, Shared, fresh_key};
+use crate::map;
+
+/// Comments asked for per page; the daemon may give fewer.
+const PAGE_SIZE: u32 = 200;
+
+/// Review comments on the real daemon. Cheap to clone.
+#[derive(Clone)]
+pub struct LiveComments {
+    shared: Arc<Shared>,
+}
+
+impl LiveComments {
+    /// Comments over `daemon`'s connection.
+    #[must_use]
+    pub fn new(daemon: &LiveDaemon) -> Self {
+        Self {
+            shared: daemon.shared.clone(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Daemon messages as the app's model, and back. Pure.
+// ---------------------------------------------------------------------------
+
+fn author(actor: Option<&pb::Actor>) -> Author {
+    use pb::actor::Actor;
+    match actor.and_then(|actor| actor.actor.as_ref()) {
+        Some(Actor::Agent(agent)) => {
+            let name = agent.agent.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+            Author::Agent(if name.is_empty() { "agent".to_owned() } else { name })
+        }
+        Some(Actor::Script(script)) => Author::Agent(script.name.clone()),
+        Some(Actor::System(_)) => Author::Agent("Humata".to_owned()),
+        Some(Actor::User(_)) | None => Author::User,
+    }
+}
+
+/// `text` as one entry per line; empty text is no lines.
+fn lines_of(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        text.split('\n').map(str::to_owned).collect()
+    }
+}
+
+/// `owner/name`, or just the name when the daemon gave no owner.
+fn repo_name(repo: &pb::RepoRef) -> String {
+    if repo.owner.is_empty() {
+        repo.name.clone()
+    } else {
+        map::repo_text(repo)
+    }
+}
+
+/// The daemon's repository for the app's text; text that isn't
+/// `owner/name` goes as a bare name, which the daemon refuses in its own
+/// words if it doesn't know it.
+fn pb_repo(text: &str) -> pb::RepoRef {
+    map::parse_repo(text).unwrap_or_else(|| pb::RepoRef {
+        owner: String::new(),
+        name: text.to_owned(),
+    })
+}
+
+/// The repository an app anchor names. A document of the session's own
+/// folder (a desk session's `rfc-brin.md`) has no repository, so the app's
+/// empty text goes as none, and the daemon takes the file as the folder's.
+fn pb_repo_named(text: &str) -> Option<pb::RepoRef> {
+    (!text.is_empty()).then(|| pb_repo(text))
+}
+
+fn anchor(anchor: &pb::CommentAnchor) -> Anchor {
+    let (repo, path) = match &anchor.file {
+        Some(file) => (
+            file.repo.as_ref().map(repo_name).unwrap_or_default(),
+            file.path.clone(),
+        ),
+        None => (String::new(), String::new()),
+    };
+    let lines = anchor.lines.clone().unwrap_or_default();
+    Anchor {
+        repo,
+        path,
+        side: if pb::DiffSide::try_from(anchor.side) == Ok(pb::DiffSide::Old) {
+            Side::Old
+        } else {
+            Side::New
+        },
+        first: lines.first,
+        last: lines.last,
+        quoted: lines_of(&anchor.quoted),
+        base: (!anchor.base.is_empty()).then(|| anchor.base.clone()),
+        detached: anchor.detached,
+    }
+}
+
+fn pb_anchor(anchor: &Anchor) -> pb::CommentAnchor {
+    pb::CommentAnchor {
+        file: Some(pb::RepoPath {
+            repo: pb_repo_named(&anchor.repo),
+            path: anchor.path.clone(),
+        }),
+        lines: Some(pb::LineRange {
+            first: anchor.first,
+            last: anchor.last,
+        }),
+        side: match anchor.side {
+            Side::Old => pb::DiffSide::Old,
+            Side::New => pb::DiffSide::New,
+        } as i32,
+        quoted: anchor.quoted.join("\n"),
+        detached: anchor.detached,
+        base: anchor.base.clone().unwrap_or_default(),
+        ..pb::CommentAnchor::default()
+    }
+}
+
+/// Whether the comment is one for the session's terminal. One with no
+/// destination is taken to be.
+fn for_terminal(comment: &pb::Comment) -> bool {
+    use pb::comment_destination::Destination;
+    matches!(
+        comment
+            .destination
+            .as_ref()
+            .and_then(|destination| destination.destination.as_ref()),
+        None | Some(Destination::Terminal(_))
+    )
+}
+
+/// The daemon's comment as the app's; `None` for one that isn't for the
+/// session's terminal.
+fn comment(comment: &pb::Comment) -> Option<Comment> {
+    if !for_terminal(comment) {
+        return None;
+    }
+    let status = match pb::CommentStatus::try_from(comment.status) {
+        Ok(pb::CommentStatus::Queued) => Status::Waiting,
+        // Posted is a pull request draft's end; a terminal comment is never
+        // there, so it is only shown as the nearest thing.
+        Ok(pb::CommentStatus::Sent | pb::CommentStatus::Posted) => Status::Sent,
+        Ok(pb::CommentStatus::Addressed) => Status::Addressed,
+        Ok(pb::CommentStatus::Resolved) => Status::Resolved,
+        Ok(pb::CommentStatus::Draft | pb::CommentStatus::Unspecified) | Err(_) => Status::Draft,
+    };
+    Some(Comment {
+        id: CommentId::new(comment.id.as_ref().map(|id| id.value.clone()).unwrap_or_default()),
+        session: map::session_id(comment.session.as_ref()),
+        anchor: comment.anchor.as_ref().map(anchor).unwrap_or_else(|| Anchor {
+            repo: String::new(),
+            path: String::new(),
+            side: Side::New,
+            first: 0,
+            last: 0,
+            quoted: Vec::new(),
+            base: None,
+            detached: false,
+        }),
+        text: comment.text.clone(),
+        status,
+        revision: comment.revision.as_ref().map_or(0, |revision| revision.value),
+        unconfirmed: comment.delivery_unconfirmed,
+        archived: comment.archived_at.is_some(),
+        replies: comment
+            .replies
+            .iter()
+            .map(|reply| ThreadReply {
+                id: reply.id.clone(),
+                author: author(reply.author.as_ref()),
+                text: reply.text.clone(),
+            })
+            .collect(),
+        resolved_by: (status == Status::Resolved)
+            .then(|| comment.resolved.as_ref().map(|resolved| author(resolved.by.as_ref())))
+            .flatten(),
+        addressed: (status == Status::Addressed).then(|| lines_of(&comment.addressed_text)),
+    })
+}
+
+fn comments(comments: &[pb::Comment]) -> Vec<Comment> {
+    comments.iter().filter_map(comment).collect()
+}
+
+fn event(feed: pb::CommentFeedEvent) -> Option<CommentEvent> {
+    use pb::comment_feed_event::Event;
+    match feed.event? {
+        Event::Changed(changed) => comment(&changed).map(CommentEvent::Changed),
+        Event::Dropped(id) => Some(CommentEvent::Dropped(CommentId::new(id.value))),
+        Event::Resync(_) => Some(CommentEvent::Resync),
+    }
+}
+
+/// The statuses to ask for, and whether to ask for archived comments only.
+/// No statuses means every status but resolved.
+fn which_request(which: Which) -> (Vec<i32>, bool) {
+    use pb::CommentStatus as S;
+    let live = [S::Draft, S::Queued, S::Sent, S::Addressed];
+    match which {
+        Which::Open => (Vec::new(), false),
+        Which::WithResolved => (
+            live.into_iter().chain([S::Resolved]).map(|status| status as i32).collect(),
+            false,
+        ),
+        // Archived ones of any status, resolved included.
+        Which::Archived => (
+            live.into_iter().chain([S::Resolved]).map(|status| status as i32).collect(),
+            true,
+        ),
+    }
+}
+
+fn comment_id(id: &CommentId) -> Option<pb::CommentId> {
+    Some(pb::CommentId {
+        value: id.as_str().to_owned(),
+    })
+}
+
+fn session_id(session: &SessionId) -> Option<pb::SessionId> {
+    Some(pb::SessionId {
+        value: session.as_str().to_owned(),
+    })
+}
+
+fn revision(revision: u64) -> Option<pb::Revision> {
+    Some(pb::Revision { value: revision })
+}
+
+// ---------------------------------------------------------------------------
+// Calls.
+// ---------------------------------------------------------------------------
+
+impl Shared {
+    /// The one comment a call answered with.
+    fn one(&self, answer: &pb::Comment, what: &str) -> Result<Comment, DaemonError> {
+        comment(answer).ok_or_else(|| DaemonError::Refused {
+            what: what.to_owned(),
+            reason: "the daemon answered with a comment that isn't one for the session's agent. Reload to see what is there".to_owned(),
+        })
+    }
+
+    async fn list_comments(&self, session: &SessionId, which: Which) -> Result<Listing, DaemonError> {
+        const WHAT: &str = "The comments";
+        let (statuses, archived) = which_request(which);
+        let mut found = Vec::new();
+        let mut draft_count = None;
+        let mut token = String::new();
+        loop {
+            let reply = self
+                .comments()
+                .list_comments(pb::ListCommentsRequest {
+                    session: session_id(session),
+                    statuses: statuses.clone(),
+                    file: None,
+                    page: Some(pb::PageRequest {
+                        page_size: PAGE_SIZE,
+                        page_token: token,
+                    }),
+                    archived,
+                })
+                .await
+                .map_err(|status| self.error(&status, WHAT))?
+                .into_inner();
+            // The badge is the first page's; the pages read one snapshot.
+            draft_count.get_or_insert(reply.draft_count);
+            found.extend(comments(&reply.comments));
+            token = reply.page.map(|page| page.next_page_token).unwrap_or_default();
+            if token.is_empty() {
+                break;
+            }
+        }
+        Ok(Listing {
+            comments: found,
+            draft_count: draft_count.unwrap_or_default(),
+        })
+    }
+
+    /// Opens the daemon's feed and forwards it. The stream is open before
+    /// this answers, so a change made after it is not missed.
+    async fn watch_comments(&self, session: &SessionId) -> Result<CommentEvents, DaemonError> {
+        let stream = self
+            .comments()
+            .watch_comments(pb::WatchCommentsRequest {
+                session: session_id(session),
+            })
+            .await
+            .map_err(|status| self.error(&status, "Following review comments"))?
+            .into_inner();
+        let (sender, receiver) = mpsc::unbounded_channel();
+        self.spawn(forward(stream, sender));
+        Ok(receiver)
+    }
+}
+
+/// Maps the feed until it ends, fails, or nobody listens. A feed that ends
+/// or fails tells the app to list again (it can't follow again by itself),
+/// and the listing then shows what is true or says the daemon is gone.
+async fn forward(
+    mut stream: Streaming<pb::CommentFeedEvent>,
+    sender: mpsc::UnboundedSender<CommentEvent>,
+) {
+    loop {
+        let next = tokio::select! {
+            () = sender.closed() => return,
+            next = stream.message() => next,
+        };
+        match next {
+            Ok(Some(feed)) => {
+                if let Some(event) = event(feed) {
+                    if sender.send(event).is_err() {
+                        return;
+                    }
+                }
+            }
+            Ok(None) | Err(_) => {
+                let _ = sender.send(CommentEvent::Resync);
+                return;
+            }
+        }
+    }
+}
+
+impl CommentsClient for LiveComments {
+    fn list(&self, session: &SessionId, which: Which) -> Reply<Listing> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.list_comments(&session, which).await })
+    }
+
+    fn watch(&self, session: &SessionId) -> Reply<CommentEvents> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.watch_comments(&session).await })
+    }
+
+    fn create(&self, session: &SessionId, anchor: Anchor, text: &str, key: &str) -> Reply<Comment> {
+        const WHAT: &str = "This comment";
+        let shared = self.shared.clone();
+        let (session, text, key) = (session.clone(), text.to_owned(), key.to_owned());
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .create_comment(pb::CreateCommentRequest {
+                    idempotency_key: Some(pb::IdempotencyKey { value: key }),
+                    session: session_id(&session),
+                    anchor: Some(pb_anchor(&anchor)),
+                    text,
+                    destination: Some(pb::CommentDestination {
+                        destination: Some(pb::comment_destination::Destination::Terminal(
+                            pb::SessionTerminal {},
+                        )),
+                    }),
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            shared.one(&answer, WHAT)
+        })
+    }
+
+    fn edit(&self, id: &CommentId, text: &str, revision_seen: u64) -> Reply<Comment> {
+        const WHAT: &str = "This comment";
+        let shared = self.shared.clone();
+        let (id, text) = (id.clone(), text.to_owned());
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .edit_comment(pb::EditCommentRequest {
+                    idempotency_key: fresh_key(),
+                    id: comment_id(&id),
+                    text,
+                    expected_revision: revision(revision_seen),
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            shared.one(&answer, WHAT)
+        })
+    }
+
+    fn drop_comment(&self, id: &CommentId) -> Reply<()> {
+        let shared = self.shared.clone();
+        let id = id.clone();
+        Box::pin(async move {
+            shared
+                .comments()
+                .drop_comment(pb::DropCommentRequest {
+                    idempotency_key: fresh_key(),
+                    id: comment_id(&id),
+                    // The app's drop names no revision; the daemon checks none then.
+                    expected_revision: None,
+                })
+                .await
+                .map_err(|status| shared.error(&status, "This comment"))?;
+            Ok(())
+        })
+    }
+
+    fn reattach(&self, id: &CommentId, anchor: Anchor, revision_seen: u64) -> Reply<Comment> {
+        const WHAT: &str = "This comment";
+        let shared = self.shared.clone();
+        let id = id.clone();
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .reattach_comment(pb::ReattachCommentRequest {
+                    idempotency_key: fresh_key(),
+                    id: comment_id(&id),
+                    anchor: Some(pb_anchor(&anchor)),
+                    expected_revision: revision(revision_seen),
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            shared.one(&answer, WHAT)
+        })
+    }
+
+    fn send(&self, session: &SessionId, ids: &[CommentId]) -> Reply<Sent> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        let ids: Vec<_> = ids.iter().filter_map(comment_id).collect();
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .send_comments(pb::SendCommentsRequest {
+                    idempotency_key: fresh_key(),
+                    session: session_id(&session),
+                    ids,
+                })
+                .await
+                .map_err(|status| shared.error(&status, "Sending the comments"))?
+                .into_inner();
+            Ok(Sent {
+                comments: comments(&answer.comments),
+                queued: answer.queued,
+            })
+        })
+    }
+
+    fn take_back(&self, session: &SessionId, ids: &[CommentId]) -> Reply<Vec<Comment>> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        let ids: Vec<_> = ids.iter().filter_map(comment_id).collect();
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .take_back_comments(pb::TakeBackCommentsRequest {
+                    idempotency_key: fresh_key(),
+                    session: session_id(&session),
+                    ids,
+                })
+                .await
+                .map_err(|status| shared.error(&status, "Taking the comments back"))?
+                .into_inner();
+            Ok(comments(&answer.comments))
+        })
+    }
+
+    fn resolve(&self, id: &CommentId, revision_seen: u64) -> Reply<Comment> {
+        const WHAT: &str = "This comment";
+        let shared = self.shared.clone();
+        let id = id.clone();
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .resolve_comment(pb::ResolveCommentRequest {
+                    idempotency_key: fresh_key(),
+                    id: comment_id(&id),
+                    expected_revision: revision(revision_seen),
+                    reply: String::new(),
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            shared.one(&answer, WHAT)
+        })
+    }
+
+    fn resolve_addressed(
+        &self,
+        session: &SessionId,
+        file: Option<(&str, &str)>,
+    ) -> Reply<Vec<Comment>> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        let file = file.map(|(repo, path)| pb::RepoPath {
+            repo: pb_repo_named(repo),
+            path: path.to_owned(),
+        });
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .resolve_addressed_comments(pb::ResolveAddressedCommentsRequest {
+                    idempotency_key: fresh_key(),
+                    session: session_id(&session),
+                    file,
+                })
+                .await
+                .map_err(|status| shared.error(&status, "The addressed comments"))?
+                .into_inner();
+            Ok(comments(&answer.comments))
+        })
+    }
+
+    fn reopen(&self, id: &CommentId, revision_seen: u64) -> Reply<Comment> {
+        const WHAT: &str = "This comment";
+        let shared = self.shared.clone();
+        let id = id.clone();
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .reopen_comment(pb::ReopenCommentRequest {
+                    idempotency_key: fresh_key(),
+                    id: comment_id(&id),
+                    expected_revision: revision(revision_seen),
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            shared.one(&answer, WHAT)
+        })
+    }
+
+    fn archive(&self, id: &CommentId) -> Reply<Comment> {
+        const WHAT: &str = "This comment";
+        let shared = self.shared.clone();
+        let id = id.clone();
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .archive_comment(pb::ArchiveCommentRequest {
+                    idempotency_key: fresh_key(),
+                    id: comment_id(&id),
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            shared.one(&answer, WHAT)
+        })
+    }
+
+    fn unarchive(&self, id: &CommentId) -> Reply<Comment> {
+        const WHAT: &str = "This comment";
+        let shared = self.shared.clone();
+        let id = id.clone();
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .unarchive_comment(pb::UnarchiveCommentRequest {
+                    idempotency_key: fresh_key(),
+                    id: comment_id(&id),
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            shared.one(&answer, WHAT)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn terminal() -> Option<pb::CommentDestination> {
+        Some(pb::CommentDestination {
+            destination: Some(pb::comment_destination::Destination::Terminal(
+                pb::SessionTerminal {},
+            )),
+        })
+    }
+
+    fn agent(name: &str) -> Option<pb::Actor> {
+        Some(pb::Actor {
+            actor: Some(pb::actor::Actor::Agent(pb::AgentActor {
+                agent: Some(pb::AgentId {
+                    value: name.to_owned(),
+                }),
+                ..pb::AgentActor::default()
+            })),
+        })
+    }
+
+    fn daemon_comment(status: pb::CommentStatus) -> pb::Comment {
+        pb::Comment {
+            id: Some(pb::CommentId {
+                value: "s1/c-1".to_owned(),
+            }),
+            session: Some(pb::SessionId {
+                value: "s1".to_owned(),
+            }),
+            text: "Rename this".to_owned(),
+            status: status as i32,
+            destination: terminal(),
+            revision: Some(pb::Revision { value: 3 }),
+            ..pb::Comment::default()
+        }
+    }
+
+    #[test]
+    fn a_queued_comment_waits_and_may_be_unconfirmed() {
+        let mut queued = daemon_comment(pb::CommentStatus::Queued);
+        queued.delivery_unconfirmed = true;
+        let mapped = comment(&queued).expect("a terminal comment");
+        assert_eq!(mapped.status, Status::Waiting);
+        assert!(mapped.unconfirmed);
+        assert_eq!(mapped.revision, 3);
+        assert_eq!(mapped.session, SessionId::new("s1"));
+    }
+
+    #[test]
+    fn an_archived_stamp_marks_the_comment_archived() {
+        let mut archived = daemon_comment(pb::CommentStatus::Draft);
+        assert!(!comment(&archived).expect("a comment").archived);
+        archived.archived_at = Some(Default::default());
+        let mapped = comment(&archived).expect("a comment");
+        assert!(mapped.archived);
+        assert_eq!(mapped.status, Status::Draft);
+    }
+
+    #[test]
+    fn comments_for_other_destinations_are_left_out() {
+        let mut note = daemon_comment(pb::CommentStatus::Draft);
+        note.destination = Some(pb::CommentDestination {
+            destination: Some(pb::comment_destination::Destination::Note(pb::UserNote {})),
+        });
+        assert!(comment(&note).is_none());
+        let mut pull_request = daemon_comment(pb::CommentStatus::Draft);
+        pull_request.destination = Some(pb::CommentDestination {
+            destination: Some(pb::comment_destination::Destination::PullRequest(
+                pb::PullRequestRef::default(),
+            )),
+        });
+        assert!(comment(&pull_request).is_none());
+    }
+
+    #[test]
+    fn a_resolved_comment_names_who_resolved_it() {
+        let mut resolved = daemon_comment(pb::CommentStatus::Resolved);
+        resolved.resolved = Some(pb::Timestamped {
+            at: None,
+            by: agent("claude"),
+        });
+        let mapped = comment(&resolved).expect("a comment");
+        assert_eq!(mapped.resolved_by, Some(Author::Agent("claude".to_owned())));
+
+        let mut by_user = daemon_comment(pb::CommentStatus::Resolved);
+        by_user.resolved = Some(pb::Timestamped::default());
+        assert_eq!(comment(&by_user).expect("a comment").resolved_by, Some(Author::User));
+
+        // Only a resolved comment says who resolved it.
+        let mut draft = daemon_comment(pb::CommentStatus::Draft);
+        draft.resolved = Some(pb::Timestamped::default());
+        assert_eq!(comment(&draft).expect("a comment").resolved_by, None);
+    }
+
+    #[test]
+    fn an_addressed_comment_has_its_lines_after_the_change() {
+        let mut addressed = daemon_comment(pb::CommentStatus::Addressed);
+        addressed.addressed_text = "one\ntwo".to_owned();
+        let mapped = comment(&addressed).expect("a comment");
+        assert_eq!(mapped.addressed, Some(vec!["one".to_owned(), "two".to_owned()]));
+
+        addressed.addressed_text = String::new();
+        assert_eq!(comment(&addressed).expect("a comment").addressed, Some(Vec::new()));
+
+        let sent = daemon_comment(pb::CommentStatus::Sent);
+        assert_eq!(comment(&sent).expect("a comment").addressed, None);
+    }
+
+    #[test]
+    fn replies_keep_their_authors() {
+        let mut with_replies = daemon_comment(pb::CommentStatus::Sent);
+        with_replies.replies = vec![
+            pb::CommentReply {
+                id: "r-1".to_owned(),
+                author: agent("claude"),
+                text: "Done".to_owned(),
+                at: None,
+            },
+            pb::CommentReply {
+                id: "r-2".to_owned(),
+                author: None,
+                text: "Thanks".to_owned(),
+                at: None,
+            },
+        ];
+        let replies = comment(&with_replies).expect("a comment").replies;
+        assert_eq!(replies[0].author, Author::Agent("claude".to_owned()));
+        assert_eq!(replies[1].author, Author::User);
+        assert_eq!(replies[1].text, "Thanks");
+    }
+
+    #[test]
+    fn an_anchor_survives_the_trip_to_the_daemon_and_back() {
+        let original = Anchor {
+            repo: "acme/api".to_owned(),
+            path: "src/lib.rs".to_owned(),
+            side: Side::Old,
+            first: 4,
+            last: 6,
+            quoted: vec!["fn a() {".to_owned(), "".to_owned(), "}".to_owned()],
+            base: Some("origin/main".to_owned()),
+            detached: true,
+        };
+        assert_eq!(anchor(&pb_anchor(&original)), original);
+
+        let outside_a_diff = Anchor {
+            base: None,
+            side: Side::New,
+            detached: false,
+            ..original
+        };
+        assert_eq!(anchor(&pb_anchor(&outside_a_diff)), outside_a_diff);
+    }
+
+    #[test]
+    fn an_anchor_on_a_session_folder_file_names_no_repository() {
+        let document = Anchor {
+            repo: String::new(),
+            path: "rfc-brin.md".to_owned(),
+            side: Side::New,
+            first: 7,
+            last: 7,
+            quoted: Vec::new(),
+            base: None,
+            detached: false,
+        };
+        let wire = pb_anchor(&document);
+        let named = wire
+            .file
+            .as_ref()
+            .and_then(|file| file.repo.as_ref())
+            .is_some_and(|repo| !repo.name.is_empty());
+        assert!(!named);
+        assert_eq!(anchor(&wire), document);
+
+        // The daemon may answer with an empty repository instead of none.
+        let mut empty = wire;
+        if let Some(file) = empty.file.as_mut() {
+            file.repo = Some(pb::RepoRef::default());
+        }
+        assert_eq!(anchor(&empty), document);
+    }
+
+    #[test]
+    fn open_lists_no_statuses_and_archived_lists_every_one() {
+        let (statuses, archived) = which_request(Which::Open);
+        assert!(statuses.is_empty());
+        assert!(!archived);
+
+        let (statuses, archived) = which_request(Which::WithResolved);
+        assert!(statuses.contains(&(pb::CommentStatus::Resolved as i32)));
+        assert!(!archived);
+
+        let (statuses, archived) = which_request(Which::Archived);
+        assert!(statuses.contains(&(pb::CommentStatus::Resolved as i32)));
+        assert!(statuses.contains(&(pb::CommentStatus::Draft as i32)));
+        assert!(archived);
+    }
+
+    #[test]
+    fn feed_events_become_comment_events() {
+        use pb::comment_feed_event::Event;
+        let changed = pb::CommentFeedEvent {
+            event: Some(Event::Changed(daemon_comment(pb::CommentStatus::Draft))),
+        };
+        assert!(matches!(event(changed), Some(CommentEvent::Changed(c)) if c.text == "Rename this"));
+
+        let dropped = pb::CommentFeedEvent {
+            event: Some(Event::Dropped(pb::CommentId {
+                value: "s1/c-2".to_owned(),
+            })),
+        };
+        assert_eq!(event(dropped), Some(CommentEvent::Dropped(CommentId::new("s1/c-2"))));
+
+        let resync = pb::CommentFeedEvent {
+            event: Some(Event::Resync(true)),
+        };
+        assert_eq!(event(resync), Some(CommentEvent::Resync));
+
+        assert_eq!(event(pb::CommentFeedEvent { event: None }), None);
+
+        // A pull request draft's change is not this client's.
+        let mut draft = daemon_comment(pb::CommentStatus::Draft);
+        draft.destination = Some(pb::CommentDestination {
+            destination: Some(pb::comment_destination::Destination::PullRequest(
+                pb::PullRequestRef::default(),
+            )),
+        });
+        assert_eq!(
+            event(pb::CommentFeedEvent {
+                event: Some(Event::Changed(draft)),
+            }),
+            None
+        );
+    }
+}

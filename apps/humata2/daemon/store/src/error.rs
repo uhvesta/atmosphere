@@ -169,6 +169,15 @@ pub enum StoreError {
         owner: String,
         name: String,
     },
+
+    #[error("no board item {key} is saved on this machine; it was never made here, or the key is mistyped")]
+    NoBoardItem { key: String },
+
+    #[error("{owner} has no board prefix yet; choose and claim one before making its first item")]
+    NoBoardPrefix { owner: String },
+
+    #[error("{column} is not a board column; columns are numbered 1 (Backlog) to 5 (Done)")]
+    InvalidBoardColumn { column: i32 },
 }
 
 impl StoreError {

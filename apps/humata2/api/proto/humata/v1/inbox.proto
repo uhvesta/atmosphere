@@ -112,6 +112,8 @@ enum WithdrawReason {
   // The MCP process exited with the call open and no PENDING returned.
   WITHDRAW_REASON_CALL_ENDED = 5;
   WITHDRAW_REASON_CHANNEL_DELETED = 6;  // CH-25
+  // The board item the request is about was deleted or purged (BD-15).
+  WITHDRAW_REASON_ITEM_DELETED = 7;
 }
 
 enum RequestKind {

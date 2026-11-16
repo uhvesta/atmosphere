@@ -3,7 +3,7 @@ use crate::{
     bridge::Ui,
     chrome, lists,
     theme::Look,
-    widgets::{col, row},
+    widgets::{col, push_primary_shape, push_quiet, push_quiet_shape, row},
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, TestTextExt as _};
@@ -23,37 +23,18 @@ use humata2_clients::model::{
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
 
-/// A push button at the frames' size: 24 high with a 12 pt medium label.
-fn shape(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
-    let label = label.into();
+/// A header icon at the frames' 15 pt for an action that doesn't exist yet: drawn
+/// dimmed and disabled, in a box the size of the icon so it sits where the frames put it.
+fn inert_icon(id: &'static str, glyph: IconName, label: &'static str, look: Look) -> Button {
     Button::new(id)
-        .accessibility_label(label.clone())
+        .accessibility_label(label)
+        .ghost()
         .small()
-        .h(px(24.))
-        .px(px(11.))
-        .rounded(px(6.))
-        .font_weight(FontWeight::MEDIUM)
-        .child(div().text_size(px(12.)).child(label))
-}
-/// The frames' secondary button, without a click handler.
-fn quiet(id: impl Into<ElementId>, label: impl Into<SharedString>, look: Look) -> Button {
-    shape(id, label)
-        .bg(rgb(look.fill))
-        .border_color(rgb(look.line))
-        .text_color(rgb(look.text))
-}
-fn button(
-    ui: &Rc<Ui>,
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    action: AppAction,
-    look: Look,
-) -> Button {
-    let ui = ui.clone();
-    quiet(id, label, look).on_click(move |_, _, cx| {
-        cx.stop_propagation();
-        ui.send(action.clone(), cx);
-    })
+        .w(px(15.))
+        .h(px(15.))
+        .p_0()
+        .child(chrome::icon(glyph, look.tertiary, 15.))
+        .disabled(true)
 }
 /// Accent text that acts as a button, as the frames draw table links.
 fn link(
@@ -160,31 +141,18 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
                 // (a channel can't be pinned, and there is nothing for the menu to hold), so
                 // both are drawn disabled.
                 .when(has_sessions, |bar| {
-                    bar.child(
-                        Button::new("channel-pin")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Pin)
-                            .accessibility_label("Pin this channel")
-                            .disabled(true),
-                    )
+                    bar.child(inert_icon("channel-pin", IconName::Pin, "Pin this channel", look))
                 })
+                .child(inert_icon(
+                    "channel-more",
+                    IconName::Ellipsis,
+                    "More channel actions",
+                    look,
+                ))
                 .child(
-                    Button::new("channel-more")
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Ellipsis)
-                        .accessibility_label("More channel actions")
-                        .disabled(true),
-                )
-                .child(
-                    shape("channel-new-session", "New session")
-                        .primary()
-                        .bg(rgb(look.accent))
-                        .text_color(rgb(0xffffff))
-                        .on_click(move |_, _, cx| {
-                            new_session.send(AppAction::StartNewSession, cx)
-                        }),
+                    push_primary_shape("channel-new-session", "New session", look).on_click(
+                        move |_, _, cx| new_session.send(AppAction::StartNewSession, cx),
+                    ),
                 ),
         )
         .child(
@@ -337,7 +305,7 @@ fn sessions(
                 .text_size(px(11.5))
                 .text_color(rgb(look.secondary))
                 .child(format!("Clones of {repo} on {host}"))
-                .child(button(
+                .child(push_quiet(
                     ui,
                     "channel-clear-clones",
                     "Show all sessions",
@@ -643,7 +611,7 @@ fn activity(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> Any
                                                         p.repo, p.number
                                                     )
                                                 });
-                                            quiet(
+                                            push_quiet_shape(
                                                 SharedString::from(format!("channel-event-{i}")),
                                                 match kind {
                                                     ActivityKind::Inbox => "Review",
@@ -825,11 +793,11 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
             row()
                 .gap(px(8.))
                 .child(
-                    quiet("channel-add-repo", "Add a GitHub repo…", look)
+                    push_quiet_shape("channel-add-repo", "Add a GitHub repo…", look)
                         .text_color(rgb(look.tertiary))
                         .disabled(true),
                 )
-                .child(button(
+                .child(push_quiet(
                     ui,
                     "channel-add-machine",
                     "Add a machine…",
@@ -930,18 +898,23 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                             IconName::FolderGit2,
                             "Add a repo",
                             "Sessions get their own clone of each repo you add.".to_owned(),
-                            // No action adds a repo to a channel yet (CH-6): drawn disabled.
+                            // No action adds a repo to a channel yet (CH-6): the frame's filled
+                            // button, drawn dimmed and disabled.
                             Some(
-                                quiet("channel-empty-add-repo", "Add a GitHub repo…", look)
-                                    .text_color(rgb(look.tertiary))
-                                    .disabled(true),
+                                push_primary_shape(
+                                    "channel-empty-add-repo",
+                                    "Add a GitHub repo…",
+                                    look,
+                                )
+                                .opacity(0.5)
+                                .disabled(true),
                             ),
                         ))
                         .child(step(
                             IconName::Server,
                             "Pick machines",
                             picked,
-                            Some(button(
+                            Some(push_quiet(
                                 ui,
                                 "channel-empty-add-machine",
                                 "Add a machine…",
@@ -954,7 +927,7 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                             "Start a session",
                             "An agent's TUI or a plain shell. Works without a repo, in an empty folder."
                                 .to_owned(),
-                            Some(button(
+                            Some(push_quiet(
                                 ui,
                                 "channel-empty-new-session",
                                 "New session",

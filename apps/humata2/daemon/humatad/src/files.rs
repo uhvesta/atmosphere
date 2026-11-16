@@ -2,7 +2,7 @@
 //! name (`roots`): ReadFile and WriteFile in chunks of at most 1 MiB, each
 //! compressed with the codec the two ends agree on (TR-11, D65), and the
 //! file manager's operations (`ops`): list, stat, new folder, rename and
-//! move to the trash (FM-2, FM-3). FindFiles isn't built yet.
+//! move to the trash (FM-2, FM-3), and Go to file (`find`, RV-11).
 //!
 //! Every file is read, encoded, decoded, hashed and written on a blocking
 //! thread, never on the runtime. Each finished transfer counts toward the
@@ -37,9 +37,11 @@ use crate::identity;
 use crate::status;
 use crate::trash_service::Bin;
 
+mod find;
 mod ops;
 mod roots;
 
+use find::Find;
 use ops::Ops;
 pub(crate) use roots::{Roots, Target};
 use roots::io_failure;
@@ -56,6 +58,7 @@ pub(crate) struct Files {
     roots: Arc<Roots>,
     guard: Arc<Guard>,
     ops: Ops,
+    find: Find,
     compression: Arc<Compression>,
     /// The link the callers are on: the socket's or the peer link's.
     link: Link,
@@ -113,6 +116,7 @@ impl Files {
     ) -> Self {
         Self {
             ops: Ops::new(roots.clone(), guard.clone(), bin),
+            find: Find::new(roots.clone(), guard.clone(), roots.store().clone()),
             roots,
             guard,
             compression,
@@ -359,7 +363,7 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::FindFilesRequest>,
     ) -> Result<Response<pb::FindFilesResponse>, Status> {
-        self.ops.find_files(request).await
+        self.find.find_files(request).await
     }
 }
 

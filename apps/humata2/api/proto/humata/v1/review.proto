@@ -32,7 +32,7 @@ service CommentService {
   rpc DropComment(DropCommentRequest) returns (DropCommentResponse);
   // SM-7 Re-attach.
   rpc ReattachComment(ReattachCommentRequest) returns (Comment);
-  // RV-5, SM-9, SM-10: one bracketed paste, now or at turn end. Only
+  // RV-5, SM-9, SM-10: one bracketed paste, typed at once (D151). Only
   // terminal-bound drafts; PR drafts post with SubmitReview.
   rpc SendComments(SendCommentsRequest) returns (SendCommentsResponse);
   rpc ResolveComment(ResolveCommentRequest) returns (Comment);
@@ -50,6 +50,11 @@ service CommentService {
   // marking it dealt with; its status is kept for Unarchive.
   rpc ArchiveComment(ArchiveCommentRequest) returns (Comment);
   rpc UnarchiveComment(UnarchiveCommentRequest) returns (Comment);
+  // D151, D161: the app's feed of one session's comments, every change the
+  // daemon saves, in order. The first event is `resync`, so a listing made
+  // after it misses nothing; a later `resync` means the feed fell behind
+  // and the app lists again. User only.
+  rpc WatchComments(WatchCommentsRequest) returns (stream CommentFeedEvent);
 }
 
 service PullRequestReviewService {
@@ -371,7 +376,7 @@ message ListReviewedSnapshotsResponse {
 enum CommentStatus {
   COMMENT_STATUS_UNSPECIFIED = 0;
   COMMENT_STATUS_DRAFT = 1;
-  COMMENT_STATUS_QUEUED = 2;     // SM-10, waiting for the turn end
+  COMMENT_STATUS_QUEUED = 2;     // SM-10, typed but not yet taken in by the agent (D151)
   COMMENT_STATUS_SENT = 3;       // typed into the terminal
   // SM-16: an agent change made after it was sent altered any anchored
   // line, beyond whitespace. A passage moved unchanged is re-anchored and
@@ -571,6 +576,22 @@ message ArchiveCommentRequest {
 message UnarchiveCommentRequest {
   IdempotencyKey idempotency_key = 1;
   CommentId id = 2;
+}
+
+message WatchCommentsRequest {
+  SessionId session = 1;
+}
+
+message CommentFeedEvent {
+  oneof event {
+    // Made, edited, sent, addressed, resolved, archived or brought back:
+    // the comment as it is now.
+    Comment changed = 1;
+    // Dropped for good.
+    CommentId dropped = 2;
+    // List again: first on every stream, and after the feed fell behind.
+    bool resync = 3;
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -106,7 +106,7 @@ impl Guard {
 /// Who `caller` is to the policy.
 pub(crate) fn principal(caller: &Caller) -> Principal {
     match caller {
-        Caller::User(UserVia::App) => Principal::App,
+        Caller::User(UserVia::App | UserVia::Host) => Principal::App,
         Caller::User(UserVia::CliLogin { .. }) => Principal::Cli(PresenceMethod::CliLogin),
         Caller::Agent(agent) => Principal::Agent(Agent {
             session: agent.session.clone(),
@@ -138,6 +138,7 @@ pub(crate) fn capability(capability: Capability) -> pb::Capability {
         C::CommentResolve => P::CommentResolve,
         C::ChannelBoardEditOthers => P::ChannelBoardEditOthers,
         C::GlobalRead => P::GlobalRead,
+        C::GlobalBoardWrite => P::GlobalBoardWrite,
         C::FilesReadOtherSession => P::FilesReadOtherSession,
         C::FilesReadOtherMachine => P::FilesReadOtherMachine,
         C::FilesCopyIn => P::FilesCopyIn,

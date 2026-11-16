@@ -70,6 +70,45 @@ fn noisy_args() -> Vec<OsString> {
 }
 
 #[test]
+fn the_hook_state_is_kept_for_the_running_agent_and_cleared_by_a_launch_or_resume() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put_session(&session("se_h", 1)).unwrap();
+    store.put_agent(&agent("se_h", AgentState::Launching)).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), None);
+    // Not running: nothing is kept.
+    store.set_hook_turn("se_h", 4242, 2, 10).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), None);
+
+    store
+        .put_agent(&agent("se_h", AgentState::Running { holder_pid: 4242 }))
+        .unwrap();
+    // Another holder's report is not this agent's.
+    store.set_hook_turn("se_h", 1, 2, 10).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), None);
+    store.set_hook_turn("se_h", 4242, 2, 10).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), Some((2, 10)));
+    // An older report arriving late is dropped; a newer one replaces it.
+    store.set_hook_turn("se_h", 4242, 1, 5).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), Some((2, 10)));
+    store.set_hook_turn("se_h", 4242, 3, 20).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), Some((3, 20)));
+
+    // The agent exiting keeps it; launching or resuming clears it.
+    store.put_agent(&agent("se_h", AgentState::Exited { code: 0 })).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), Some((3, 20)));
+    store.put_agent(&agent("se_h", AgentState::Resuming)).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), None);
+    store
+        .put_agent(&agent("se_h", AgentState::Running { holder_pid: 5 }))
+        .unwrap();
+    store.set_hook_turn("se_h", 5, 1, 30).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), Some((1, 30)));
+    store.put_agent(&agent("se_h", AgentState::Launching)).unwrap();
+    assert_eq!(store.hook_turn("se_h").unwrap(), None);
+}
+
+#[test]
 fn every_state_and_its_interruptions_survive_reopening() {
     let dir = tempfile::tempdir().unwrap();
     let states = [

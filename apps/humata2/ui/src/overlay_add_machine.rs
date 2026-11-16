@@ -20,8 +20,8 @@ use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
-use humata2_clients::machines::{StepKind, StepStatus, UnattendedMethod};
-use humata2_hosts::add::{AddMachineAction, AddMachineState, Choice, Step};
+use humata2_clients::machines::{LoginReason, StepKind, StepStatus, UnattendedMethod};
+use humata2_hosts::add::{AddMachineAction, AddMachineState, Choice, Step, Unattended, login_intro};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -36,6 +36,21 @@ const MONO: &str = "Menlo";
 
 /// How the dialog's actions become the app's.
 pub(crate) type Wrap = fn(AddMachineAction) -> AppAction;
+
+/// The banner that offers Open interactively: the line the connect stopped at, when it
+/// printed one, then what the person has to do.
+fn offer_text(reason: &LoginReason) -> String {
+    match reason {
+        LoginReason::Prompted { line, .. } if !line.trim().is_empty() => {
+            format!("{line} The machine is waiting for you to log in.")
+        }
+        LoginReason::Prompted { .. } => "The machine is waiting for you to log in.".to_owned(),
+        LoginReason::Hung => {
+            "The connect command didn't finish on its own, so the machine may be waiting for you to log in."
+                .to_owned()
+        }
+    }
+}
 
 /// An input and the text the view itself last put in it, so that putting a
 /// value in doesn't send a change back.
@@ -150,7 +165,7 @@ impl AddMachineDialog {
             cx,
             host_input,
             &enter,
-            move |text| wrap(AddMachineAction::SelectHost(text)),
+            move |text| wrap(AddMachineAction::TypeHost(text)),
             &mut subscriptions,
         );
         let name = bind(
@@ -301,11 +316,7 @@ impl AddMachineDialog {
         let wrap = self.wrap;
         let ui = self.ui.clone();
         self.sync_terminal(state, look, window, cx);
-        let host_text = match &state.choice {
-            Some(Choice::Host(host)) => host.as_str(),
-            _ => "",
-        };
-        self.host.set(host_text, window, cx);
+        self.host.set(&state.typed, window, cx);
         self.name.set(&state.name, window, cx);
         let title = format!(
             "Add machine · {}",
@@ -314,6 +325,10 @@ impl AddMachineDialog {
         let body = sheet("add-machine", "Add machine", look)
             .w(px(620.))
             .max_w_full()
+            // Grows to its content; scrolls inside when the window is too short.
+            .max_h(window.viewport_size().height - px(60. + 24.))
+            .overflow_y_scroll()
+            .rounded(px(12.))
             .p(px(20.))
             .gap(px(12.))
             .text_size(px(12.5))
@@ -327,7 +342,7 @@ impl AddMachineDialog {
             *self.enter.borrow_mut() = Some(wrap(AddMachineAction::MakeUnattended));
             let name = state.display_name().unwrap_or("this machine");
             (
-                Self::unattended(body, state, unattended.method, unattended.working, name, look, &ui, wrap),
+                Self::unattended(body, state, unattended, name, look, &ui, wrap),
                 self.host.input.focus_handle(cx),
             )
         } else if let Some(login) = &state.login {
@@ -355,7 +370,7 @@ impl AddMachineDialog {
 
     /// Whether Add has enough to start with.
     fn can_start(state: &AddMachineState) -> bool {
-        match &state.choice {
+        match &state.effective_choice() {
             Some(Choice::Host(host)) => !host.trim().is_empty(),
             Some(Choice::Provider { id, params }) => state
                 .providers
@@ -384,79 +399,57 @@ impl AddMachineDialog {
         let wrap = self.wrap;
         let ui = self.ui.clone();
         let locked = Self::locked(state);
-        let cancel = widgets::send(
+        let cancel = widgets::push_quiet(
             &ui,
             "add-machine-cancel",
             "Cancel",
             wrap(AddMachineAction::Cancel),
+            look,
         );
         let mut body = body;
 
-        // Where to add: a listed host, a provider, or a typed host.
-        let mut chips = row().flex_wrap().gap(px(6.));
-        for host in &state.hosts {
-            let selected = matches!(&state.choice, Some(Choice::Host(name)) if name == &host.name);
-            chips = chips.child(chip(
-                &ui,
-                format!("add-machine-host {}", host.name),
-                &host.name,
-                selected,
-                locked,
-                wrap(AddMachineAction::SelectHost(host.name.clone())),
-                look,
-            ));
-        }
-        for provider in &state.providers {
-            let selected =
-                matches!(&state.choice, Some(Choice::Provider { id, .. }) if id == &provider.id);
-            chips = chips.child(chip(
-                &ui,
-                format!("add-machine-provider {}", provider.id),
-                &provider.label,
-                selected,
-                locked,
-                wrap(AddMachineAction::SelectProvider(provider.id.clone())),
-                look,
-            ));
-        }
-        let provider = match &state.choice {
+        // Where to add: the pop-up's pick (a listed host or a provider), or a
+        // typed host, which wins.
+        let provider = match state.effective_choice() {
             Some(Choice::Provider { id, params }) => state
                 .providers
                 .iter()
-                .find(|provider| &provider.id == id)
-                .map(|provider| (provider.clone(), params.clone())),
+                .find(|provider| provider.id == id)
+                .map(|provider| (provider.clone(), params)),
             _ => None,
+        };
+        let picked = match &state.choice {
+            Some(Choice::Host(name)) if !name.trim().is_empty() => name.clone(),
+            Some(Choice::Provider { id, .. }) => state
+                .providers
+                .iter()
+                .find(|provider| &provider.id == id)
+                .map_or_else(|| id.clone(), |provider| provider.label.clone()),
+            _ => "Choose a host".to_owned(),
         };
         body = body.child(
             row()
-                .items_start()
                 .gap(px(10.))
                 .child(
                     div()
                         .w(px(50.))
                         .flex_shrink_0()
-                        .pt(px(4.))
                         .text_color(rgb(look.secondary))
                         .child("Host"),
                 )
+                .child(host_popup(&ui, state, picked, locked, look, wrap))
                 .child(
-                    col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(6.))
-                        .child(chips)
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(rgb(look.secondary))
-                                .child("from ~/.ssh/config, or type a host"),
-                        ),
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.secondary))
+                        .child("from ~/.ssh/config, or type a host"),
                 )
+                .child(div().flex_1())
                 .child(
                     div().w(px(150.)).flex_shrink_0().child(
                         Input::new(&self.host.input)
-                            .disabled(locked || provider.is_some())
-                            .aria_label("Host"),
+                            .disabled(locked)
+                            .aria_label("or type a host"),
                     ),
                 ),
         );
@@ -508,7 +501,7 @@ impl AddMachineDialog {
         }
 
         if !state.steps.is_empty() {
-            body = body.child(steps(look, &state.steps));
+            body = body.child(steps(look, &state.steps).test_support());
         }
         if let Some(failure) = &state.failure {
             let mut card = col()
@@ -549,7 +542,9 @@ impl AddMachineDialog {
                             .child(mono(
                                 look.term_dim,
                                 format!("# run this on {}, then Try again", fix.where_to_run),
-                            )),
+                            ))
+                            // Named for tests and assistive tools: the command to copy.
+                            .test_support(),
                     );
             }
             body = body.child(card.test_support());
@@ -569,7 +564,7 @@ impl AddMachineDialog {
                             .items_start()
                             .gap(px(8.))
                             .child(chrome::icon(IconName::Info, ORANGE, 12.))
-                            .child(div().child(
+                            .child(div().flex_1().min_w_0().child(
                                 "This host's key is new to this computer. Confirm only if the fingerprint matches what the host shows.",
                             )),
                     )
@@ -577,23 +572,25 @@ impl AddMachineDialog {
                     .child(
                         row()
                             .gap(px(8.))
-                            .child(widgets::primary(
+                            .child(widgets::push_primary(
                                 &ui,
                                 "add-machine-confirm-key",
                                 "Confirm",
                                 wrap(AddMachineAction::ConfirmHostKey),
+                                look,
                             ))
-                            .child(widgets::send(
+                            .child(widgets::push_quiet(
                                 &ui,
                                 "add-machine-decline-key",
                                 "Don't add",
                                 wrap(AddMachineAction::DeclineHostKey),
+                                look,
                             )),
                     )
                     .test_support(),
             );
         }
-        if let Some(prompt) = &state.login_offer {
+        if let Some(reason) = &state.login_offer {
             body = body.child(
                 row()
                     .id("add-machine-login-offer")
@@ -605,14 +602,13 @@ impl AddMachineDialog {
                     .rounded(px(8.))
                     .bg(rgb(look.fill))
                     .child(chrome::icon(IconName::SquareTerminal, look.accent, 12.))
-                    .child(div().flex_1().child(format!(
-                        "{prompt} The machine is waiting for you to log in."
-                    )))
-                    .child(widgets::primary(
+                    .child(div().flex_1().child(offer_text(reason)))
+                    .child(widgets::push_primary(
                         &ui,
                         "add-machine-open-login",
                         "Open interactively",
                         wrap(AddMachineAction::OpenLogin),
+                        look,
                     ))
                     .test_support(),
             );
@@ -636,8 +632,14 @@ impl AddMachineDialog {
             let action = wrap(AddMachineAction::TryAgain);
             (
                 Some(
-                    widgets::primary(&ui, "add-machine-try-again", "Try again", action.clone())
-                        .into_any_element(),
+                    widgets::push_primary(
+                        &ui,
+                        "add-machine-try-again",
+                        "Try again",
+                        action.clone(),
+                        look,
+                    )
+                    .into_any_element(),
                 ),
                 Some(action),
             )
@@ -648,7 +650,7 @@ impl AddMachineDialog {
             let ready = Self::can_start(state) && state.operation.is_none() && !state.loading;
             (
                 Some(
-                    widgets::primary(&ui, "add-machine-start", "Add", action.clone())
+                    widgets::push_primary(&ui, "add-machine-start", "Add", action.clone(), look)
                         .disabled(!ready)
                         .into_any_element(),
                 ),
@@ -676,13 +678,13 @@ impl AddMachineDialog {
         ui: &Rc<Ui>,
     ) -> Stateful<Div> {
         let wrap = self.wrap;
-        let intro = match &state.login_offer {
-            Some(prompt) => format!(
-                "{prompt} Humata opened the login here. Finish logging in, then press Done."
-            ),
-            None => "Humata opened the login here. Finish logging in, then press Done.".to_owned(),
-        };
         let name = state.display_name().unwrap_or("this machine");
+        // Why it opened, said once when the terminal opens (D167).
+        let intro = state
+            .login
+            .as_ref()
+            .map(|login| login_intro(&state.who(), login.why, name))
+            .unwrap_or_default();
         let output = match (&self.terminal, &self.terminal_error) {
             (Some(terminal), _) => div()
                 .id("add-machine-terminal")
@@ -710,7 +712,7 @@ impl AddMachineDialog {
                 .items_start()
                 .gap(px(8.))
                 .child(chrome::icon(IconName::SquareTerminal, look.accent, 12.))
-                .child(div().child(intro)),
+                .child(div().flex_1().min_w_0().child(intro)),
         )
         .child(
             div()
@@ -732,7 +734,7 @@ impl AddMachineDialog {
                 .rounded(px(8.))
                 .bg(rgb(look.attention_bg))
                 .child(chrome::icon(IconName::Info, ORANGE, 12.))
-                .child(div().child(format!(
+                .child(div().flex_1().min_w_0().child(format!(
                     "Reconnecting will need you: sessions keep running, but {name} can't be reached until you log in again."
                 )))
                 .test_support(),
@@ -751,18 +753,20 @@ impl AddMachineDialog {
                 .justify_end()
                 .gap(px(8.))
                 .pt(px(4.))
-                .child(widgets::send(
+                .child(widgets::push_quiet(
                     ui,
                     "add-machine-cancel",
                     "Cancel",
                     wrap(AddMachineAction::Cancel),
+                    look,
                 ))
                 .child(
-                    widgets::primary(
+                    widgets::push_primary(
                         ui,
                         "add-machine-login-done",
                         "Done, I'm logged in",
                         wrap(AddMachineAction::LoginDone),
+                        look,
                     )
                     .disabled(finishing),
                 ),
@@ -773,16 +777,20 @@ impl AddMachineDialog {
     fn unattended(
         body: Stateful<Div>,
         state: &AddMachineState,
-        method: UnattendedMethod,
-        working: bool,
+        offer: &Unattended,
         name: &str,
         look: Look,
         ui: &Rc<Ui>,
         wrap: Wrap,
     ) -> Stateful<Div> {
+        let (method, working) = (offer.method, offer.working);
+        let headline = match &offer.version {
+            Some(version) => format!("Logged in to {name} \u{b7} humatad {version} running"),
+            None => format!("Logged in to {name}"),
+        };
         let option = |id: &'static str,
                       selected: bool,
-                      title: &'static str,
+                      title: String,
                       note: String,
                       action: AddMachineAction| {
             let ui = ui.clone();
@@ -790,7 +798,7 @@ impl AddMachineDialog {
             row()
                 .id(id)
                 .role(Role::RadioButton)
-                .aria_label(title)
+                .aria_label(title.clone())
                 .aria_selected(selected)
                 .items_start()
                 .gap(px(8.))
@@ -834,10 +842,10 @@ impl AddMachineDialog {
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(format!("Logged in to {name}")),
+                        .child(headline),
                 ),
         )
-        .child(steps(look, &state.steps))
+        .child(steps(look, &state.steps).test_support())
         .child(div().h(px(1.)).w_full().flex_shrink_0().bg(rgb(look.line)))
         .child(
             div()
@@ -850,21 +858,24 @@ impl AddMachineDialog {
                 .child(option(
                     "add-machine-method-key",
                     method == UnattendedMethod::AddKey,
-                    "Add a Humata key to authorized_keys",
+                    "Add a Humata key to authorized_keys".to_owned(),
                     format!("Humata makes its own key and adds it on {name}. Reconnects won't ask you."),
                     AddMachineAction::ChooseMethod(UnattendedMethod::AddKey),
                 ))
-                .child(option(
-                    "add-machine-method-token",
-                    method == UnattendedMethod::KeepToken,
-                    "Keep the cached token",
-                    "Reconnects work while the token is valid, then need you again.".to_owned(),
-                    AddMachineAction::ChooseMethod(UnattendedMethod::KeepToken),
-                ))
+                // Only a provider has a token of its own to keep (MP-17).
+                .children(offer.provider.as_ref().map(|provider| {
+                    option(
+                        "add-machine-method-token",
+                        method == UnattendedMethod::KeepToken,
+                        format!("Keep {provider}'s cached token"),
+                        "Reconnects work while the token is valid, then need you again.".to_owned(),
+                        AddMachineAction::ChooseMethod(UnattendedMethod::KeepToken),
+                    )
+                }))
                 .child(option(
                     "add-machine-method-hand",
                     false,
-                    "Keep logging in by hand",
+                    "Keep logging in by hand".to_owned(),
                     format!("Reconnects need you: {name} is unreachable until you log in."),
                     AddMachineAction::SkipUnattended,
                 )),
@@ -874,14 +885,15 @@ impl AddMachineDialog {
                 .justify_end()
                 .gap(px(8.))
                 .pt(px(4.))
-                .child(widgets::send(
+                .child(widgets::push_quiet(
                     ui,
                     "add-machine-skip",
                     "Not now",
                     wrap(AddMachineAction::SkipUnattended),
+                    look,
                 ))
                 .child(
-                    widgets::primary(
+                    widgets::push_primary(
                         ui,
                         "add-machine-make-unattended",
                         if working {
@@ -890,6 +902,7 @@ impl AddMachineDialog {
                             "Make it unattended"
                         },
                         wrap(AddMachineAction::MakeUnattended),
+                        look,
                     )
                     .disabled(working),
                 ),
@@ -906,43 +919,160 @@ fn mono(hex: u32, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// A pick-one chip.
-fn chip(
+/// The Host pop-up (frame 56): its button says the pick, and while it is open
+/// the SSH hosts, a divider and the providers hang under it, drawn over the
+/// dialog. Whether it is open is the dialog state's (`host_menu`).
+fn host_popup(
     ui: &Rc<Ui>,
-    id: String,
-    label: &str,
-    selected: bool,
+    state: &AddMachineState,
+    picked: String,
     locked: bool,
-    action: AppAction,
     look: Look,
-) -> Stateful<Div> {
-    let ui = ui.clone();
-    div()
-        .id(SharedString::from(id))
-        .role(Role::RadioButton)
-        .aria_label(label.to_owned())
-        .aria_selected(selected)
+    wrap: Wrap,
+) -> Div {
+    let toggle = wrap(AddMachineAction::HostMenu(!state.host_menu));
+    let send = ui.clone();
+    let button = row()
+        .id("add-machine-host-popup")
+        .role(Role::Button)
+        .aria_label("Host")
+        .w_full()
+        .gap(px(6.))
         .h(px(24.))
-        .px(px(9.))
-        .flex()
-        .items_center()
+        .pl(px(9.))
+        .pr(px(5.))
         .rounded(px(6.))
-        .text_size(px(12.))
-        .border_1()
-        .border_color(rgb(if selected { look.accent } else { look.line }))
         .bg(rgb(look.fill))
-        .when(selected, |x| x.font_weight(FontWeight::MEDIUM))
+        .border_1()
+        .border_color(rgb(look.line))
+        .text_size(px(12.))
         .when(locked, |x| x.opacity(0.6))
         .when(!locked, |x| {
             x.cursor_pointer()
-                .on_click(move |_, _, cx| ui.send(action.clone(), cx))
+                .on_click(move |_, _, cx| send.send(toggle.clone(), cx))
         })
-        .child(label.to_owned())
+        .child(picked)
+        .child(chrome::icon(IconName::ChevronsUpDown, look.secondary, 12.))
+        .test_support();
+    div()
+        .relative()
+        .w(px(180.))
+        .flex_shrink_0()
+        .child(button)
+        .when(state.host_menu && !locked, |wrapper| {
+            // Deferred, so both paint over the dialog's rows and take the
+            // clicks there; the scrim first, the menu over it.
+            wrapper
+                .child(deferred(host_scrim(ui, wrap)))
+                .child(deferred(host_menu(ui, state, look, wrap)))
+        })
+}
+
+/// A transparent layer behind the open pop-up: a click on it closes the
+/// pop-up and reaches nothing else.
+fn host_scrim(ui: &Rc<Ui>, wrap: Wrap) -> impl IntoElement {
+    let ui = ui.clone();
+    div()
+        .id("add-machine-host-scrim")
+        .absolute()
+        .top(px(-4000.))
+        .left(px(-4000.))
+        .w(px(8000.))
+        .h(px(8000.))
+        .occlude()
+        .on_click(move |_, _, cx| ui.send(wrap(AddMachineAction::HostMenu(false)), cx))
+}
+
+/// The pop-up's entries: each SSH host, then each provider by its label.
+fn host_menu(ui: &Rc<Ui>, state: &AddMachineState, look: Look, wrap: Wrap) -> impl IntoElement {
+    let entry = |id: String, label: String, selected: bool, action: AddMachineAction| {
+        let ui = ui.clone();
+        let action = wrap(action);
+        row()
+            .id(SharedString::from(id))
+            .role(Role::ListBoxOption)
+            .aria_label(label.clone())
+            .aria_selected(selected)
+            .gap(px(8.))
+            .h(px(26.))
+            .px(px(8.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .hover(move |x| x.bg(rgb(look.fill)))
+            .child(
+                div()
+                    .w(px(12.))
+                    .flex_shrink_0()
+                    .children(selected.then(|| chrome::icon(IconName::Check, look.accent, 12.))),
+            )
+            .child(div().flex_1().min_w_0().whitespace_nowrap().child(label))
+            .on_click(move |_, _, cx| ui.send(action.clone(), cx))
+            .test_support()
+    };
+    col()
+        .id("add-machine-host-menu")
+        .role(Role::ListBox)
+        .aria_label("Hosts and providers")
+        .absolute()
+        .top(px(28.))
+        .left(px(0.))
+        .w(px(260.))
+        .max_h(px(260.))
+        .overflow_y_scroll()
+        .p(px(4.))
+        .gap(px(1.))
+        .rounded(px(8.))
+        .bg(rgb(look.card))
+        .border_1()
+        .border_color(rgb(look.line))
+        .shadow_lg()
+        .occlude()
+        .text_size(px(12.5))
+        .when(state.hosts.is_empty() && state.providers.is_empty(), |list| {
+            list.child(
+                div()
+                    .px(px(8.))
+                    .py(px(5.))
+                    .text_color(rgb(look.tertiary))
+                    .child("No hosts in ~/.ssh/config. Type one instead."),
+            )
+        })
+        .children(state.hosts.iter().map(|host| {
+            let selected = matches!(&state.choice, Some(Choice::Host(name)) if name == &host.name);
+            entry(
+                format!("add-machine-host {}", host.name),
+                host.name.clone(),
+                selected,
+                AddMachineAction::SelectHost(host.name.clone()),
+            )
+        }))
+        .when(!state.hosts.is_empty() && !state.providers.is_empty(), |list| {
+            list.child(
+                div()
+                    .h(px(1.))
+                    .mx(px(4.))
+                    .my(px(3.))
+                    .flex_shrink_0()
+                    .bg(rgb(look.line)),
+            )
+        })
+        .children(state.providers.iter().map(|provider| {
+            let selected = matches!(
+                &state.choice,
+                Some(Choice::Provider { id, .. }) if id == &provider.id
+            );
+            entry(
+                format!("add-machine-provider {}", provider.id),
+                provider.label.clone(),
+                selected,
+                AddMachineAction::SelectProvider(provider.id.clone()),
+            )
+        }))
         .test_support()
 }
 
 /// The step list, each with its mark and the line under it.
-fn steps(look: Look, steps: &[Step]) -> Div {
+fn steps(look: Look, steps: &[Step]) -> Stateful<Div> {
     col()
         .id("add-machine-steps")
         .role(Role::List)

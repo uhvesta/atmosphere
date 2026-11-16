@@ -18,9 +18,8 @@ enum Capability {
   // "See its channel": machines of its channel, sessions on each (title,
   // agent, status), the channel board and Activity. Default Allow. (TP-1)
   CAPABILITY_CHANNEL_READ = 1;
-  // "Global board, or other channels and their boards: anything". Default
-  // Allow (D127.4). One row in IN-17, so this one capability covers reads and
-  // writes there (D21); GLOBAL_BOARD_WRITE is no longer checked.
+  // "Global board, or other channels and their boards: see them". Default
+  // Allow (D127.4). Writes there are GLOBAL_BOARD_WRITE (D155).
   CAPABILITY_GLOBAL_READ = 2;
   // Its own session board: add, edit, move, delete. Default Allow. A rule,
   // not part of the no-rule set (IN-16).
@@ -31,10 +30,9 @@ enum Capability {
   CAPABILITY_CHANNEL_BOARD_EDIT_OWN = 5;
   // Channel board: edit, move or delete anyone else's items. Default Ask me.
   CAPABILITY_CHANNEL_BOARD_EDIT_OTHERS = 6;
-  // Replaced by GLOBAL_READ, which IN-17 makes one row with other
-  // channels (D21). Never offered, never checked; kept so the number is
-  // not reused.
-  CAPABILITY_GLOBAL_BOARD_WRITE = 7 [deprecated = true];
+  // Add, edit, move or delete items on the Global board or another
+  // channel's boards, whoever made them. Default Ask me (BD-9, D155).
+  CAPABILITY_GLOBAL_BOARD_WRITE = 7;
   // Write its own files into the channel's shared/ on its machine.
   // Default Allow. (FC-8; added row.)
   CAPABILITY_SHARED_WRITE = 8;

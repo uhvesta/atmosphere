@@ -93,7 +93,7 @@ impl Review {
     async fn save_comments(&self, session: &str, review: &SessionReview) -> Result<(), Status> {
         let _saving = review.comments_saving.lock().await;
         let planned = difference(session, &lock(&review.comments), &lock(&review.comments_kept));
-        let Some((change, kept)) = planned else {
+        let Some((change, kept, told)) = planned else {
             return Ok(());
         };
         let store = self.inner.store.clone();
@@ -101,6 +101,11 @@ impl Review {
             .await?
             .map_err(|error| status::store(error, &self.inner.machine, "save the session's comments"))?;
         *lock(&review.comments_kept) = kept;
+        // Told while the saves are held in order, so the feed agrees with
+        // the store. Nobody watching is no one to tell.
+        for event in told {
+            let _ = review.comment_feed.0.send(event);
+        }
         Ok(())
     }
 
@@ -413,7 +418,8 @@ impl Review {
                     .iter()
                     .zip(&folders)
                     .map(|(comment, folder)| MessagePart {
-                        repo: several_clones.then_some(folder.as_str()),
+                        // A folder file (repo "") has no repo to lead with.
+                        repo: (several_clones && !folder.is_empty()).then_some(folder.as_str()),
                         path: &comment.anchor.file.path,
                         first: comment.anchor.first,
                         last: comment.anchor.last,
@@ -727,7 +733,9 @@ impl Review {
     }
 
     /// An anchor from the wire. The repo is the one named, else `fallback`,
-    /// else the session's only clone. A new-side passage with lines but no
+    /// else "" (the session folder itself) when the path is a file of the
+    /// folder outside every clone (a desk session's own document), else the
+    /// session's only clone. A new-side passage with lines but no
     /// quoted text is read from the clone, so it can be found again.
     async fn anchor_from_pb(
         &self,
@@ -748,16 +756,22 @@ impl Review {
         let repo = match (named, fallback) {
             (Some(repo), _) | (None, Some(repo)) => repo,
             (None, None) => {
-                let mut clones = repo_keys(record, &[]).await?;
-                match (clones.pop(), clones.is_empty()) {
-                    (Some(only), true) => only,
-                    _ => {
-                        return Err(status::invalid_field(
-                            "anchor.file.repo",
-                            pb::invalid_field::Problem::Missing,
-                            "the session has more than one repository, and the comment doesn't say which one it is in",
-                            "name the repository in the anchor's file, like acme/api",
-                        ));
+                let folder = record.folder.clone();
+                let asked_path = path.clone();
+                if blocking(move || is_folder_file(&folder, &asked_path)).await? {
+                    String::new()
+                } else {
+                    let mut clones = repo_keys(record, &[]).await?;
+                    match (clones.pop(), clones.is_empty()) {
+                        (Some(only), true) => only,
+                        _ => {
+                            return Err(status::invalid_field(
+                                "anchor.file.repo",
+                                pb::invalid_field::Problem::Missing,
+                                "the session has more than one repository, and the comment doesn't say which one it is in",
+                                "name the repository in the anchor's file, like acme/api",
+                            ));
+                        }
                     }
                 }
             }
@@ -911,9 +925,30 @@ fn passage(lines: &[String], first: u32, last: u32) -> Vec<String> {
         .collect()
 }
 
+/// Whether `path` is a regular file inside the session folder itself and
+/// not inside any clone (a folder with a `.git`). A path that climbs out of
+/// the folder, or goes through a link out of it, is not.
+fn is_folder_file(folder: &Path, path: &str) -> bool {
+    let Ok(root) = std::fs::canonicalize(folder) else {
+        return false;
+    };
+    let Ok(file) = std::fs::canonicalize(folder.join(path)) else {
+        return false;
+    };
+    let Ok(inside) = file.strip_prefix(&root) else {
+        return false;
+    };
+    let in_clone = inside
+        .components()
+        .next()
+        .is_some_and(|first| root.join(first).join(".git").exists());
+    !in_clone && file.is_file()
+}
+
 /// The lines of `path` in the session's clone of `repo`. A file that isn't
 /// there is an empty file; a clone or file that can't be read safely gives
-/// `None`, so nothing is concluded from it.
+/// `None`, so nothing is concluded from it. The repo "" is the session
+/// folder itself, for the session's own documents.
 fn read_lines(folder: &Path, repo: &str, path: &str) -> Option<Vec<String>> {
     let clone = folder.join(folder_name(repo));
     let root = std::fs::canonicalize(&clone).ok()?;
@@ -1011,7 +1046,9 @@ fn to_pb(comment: &UserComment, session: &str) -> pb::Comment {
         }),
         anchor: Some(pb::CommentAnchor {
             file: Some(pb::RepoPath {
-                repo: Some(wire::repo_ref(&anchor.file.repo)),
+                // A file of the session folder (repo "") goes out with no
+                // repo at all, not an empty one.
+                repo: (!anchor.file.repo.is_empty()).then(|| wire::repo_ref(&anchor.file.repo)),
                 path: anchor.file.path.clone(),
             }),
             lines: (!whole_file).then_some(pb::LineRange {
@@ -1166,8 +1203,13 @@ fn store_state(state: DeliveryState) -> CommentDeliveryState {
 }
 
 /// What saving `ledger` writes, given what was `kept`, and what is kept
-/// once it is written; `None` when nothing differs.
-fn difference(session: &str, ledger: &CommentLedger, kept: &Kept) -> Option<(CommentChange, Kept)> {
+/// once it is written, and what WatchComments is told (a changed comment
+/// per put, a dropped id per removal); `None` when nothing differs.
+fn difference(
+    session: &str,
+    ledger: &CommentLedger,
+    kept: &Kept,
+) -> Option<(CommentChange, Kept, Vec<pb::CommentFeedEvent>)> {
     let in_batch: BTreeMap<&str, CommentDeliveryState> = ledger
         .deliveries()
         .iter()
@@ -1183,21 +1225,31 @@ fn difference(session: &str, ledger: &CommentLedger, kept: &Kept) -> Option<(Com
         numbers: CommentNumbers::default(),
     };
     let mut now_kept = Kept::default();
+    let mut told = Vec::new();
     for comment in ledger.comments() {
         let state = in_batch.get(comment.id.as_str()).copied().unwrap_or(CommentDeliveryState::None);
         let entry = (comment.clone(), state);
         if kept.comments.get(&comment.id) != Some(&entry) {
+            let encoded = to_pb(comment, session);
             change.put.push(CommentRecord {
                 id: comment.id.clone(),
                 archived: comment.archived.is_some(),
                 delivery_state: state,
-                comment: to_pb(comment, session).encode_to_vec(),
+                comment: encoded.encode_to_vec(),
                 updated_unix_ms: at,
+            });
+            told.push(pb::CommentFeedEvent {
+                event: Some(pb::comment_feed_event::Event::Changed(encoded)),
             });
         }
         now_kept.comments.insert(comment.id.clone(), entry);
     }
     change.removed = kept.comments.keys().filter(|id| !now_kept.comments.contains_key(*id)).cloned().collect();
+    told.extend(change.removed.iter().map(|id| pb::CommentFeedEvent {
+        event: Some(pb::comment_feed_event::Event::Dropped(pb::CommentId {
+            value: format!("{session}/{id}"),
+        })),
+    }));
     for delivery in ledger.deliveries() {
         if kept.deliveries.get(&delivery.key) != Some(delivery) {
             change.put_deliveries.push(CommentDeliveryRecord {
@@ -1229,7 +1281,7 @@ fn difference(session: &str, ledger: &CommentLedger, kept: &Kept) -> Option<(Com
         && change.put_deliveries.is_empty()
         && change.removed_deliveries.is_empty()
         && now_kept.numbers == kept.numbers;
-    (!unchanged).then_some((change, now_kept))
+    (!unchanged).then_some((change, now_kept, told))
 }
 
 /// A session's saved comments as a ledger, and what that saved. What can't

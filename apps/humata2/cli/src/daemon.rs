@@ -279,6 +279,7 @@ pub mod rpc {
 
     service!(operation, "OperationService" {
         GET_OPERATION = "GetOperation" -> "Operation",
+        WATCH_OPERATION = "WatchOperation" -> "Operation",
         LIST_OPERATIONS = "ListOperations" -> "ListOperationsResponse",
         CANCEL_OPERATION = "CancelOperation" -> "Operation",
         RETRY_OPERATION = "RetryOperation" -> "Operation",
@@ -333,6 +334,7 @@ pub mod rpc {
         READ_CONVERSATION = "ReadConversation" -> "ReadConversationResponse",
         SEND_NOTE = "SendNote" -> "SendNoteResponse",
         ASK_SESSION = "AskSession" -> "AskSessionResponse",
+        REPORT_TURN = "ReportTurn" -> "ReportTurnResponse",
     });
 
     service!(settings, "SettingsService" {
@@ -454,6 +456,7 @@ pub mod rpc {
         inbox::REQUEST_ACCESS,
         inbox::WAIT_FOR_ANSWER,
         operation::GET_OPERATION,
+        operation::WATCH_OPERATION,
         operation::LIST_OPERATIONS,
         operation::CANCEL_OPERATION,
         operation::RETRY_OPERATION,
@@ -493,6 +496,7 @@ pub mod rpc {
         session::READ_CONVERSATION,
         session::SEND_NOTE,
         session::ASK_SESSION,
+        session::REPORT_TURN,
         settings::GET_SETTINGS,
         settings::UPDATE_SETTINGS,
         settings::GET_CHANNEL_SETTINGS,

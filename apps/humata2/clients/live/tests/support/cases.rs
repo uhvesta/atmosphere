@@ -4,6 +4,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use humata2_clients::comments::{
+    Anchor, Comment, CommentEvent, CommentEvents, CommentsClient, Side, Status, Which,
+};
 use humata2_clients::model::{Agent, ChannelId, MachineId, SessionId, SessionOptions};
 use humata2_clients::{Daemon, DaemonError, Event, Events, Terminals};
 
@@ -262,4 +265,134 @@ pub async fn session_change_is_pushed(
     })
     .await;
     assert!(found, "no session event arrived for the new session");
+}
+
+// ---------------------------------------------------------------------------
+// Review comments: the same cases against FakeComments and LiveComments.
+// ---------------------------------------------------------------------------
+
+async fn session_to_comment_on(
+    world: &dyn World,
+    daemon: &Arc<dyn Daemon>,
+) -> (SessionId, String) {
+    let (channel, repo, mac) = channel_with_repo(world, daemon, "payments").await;
+    let id = start_session(world, daemon, &channel, &repo, &mac, "Fix the ledger").await;
+    (id, repo)
+}
+
+fn anchor_in(repo: &str) -> Anchor {
+    Anchor {
+        repo: repo.to_owned(),
+        path: "README.md".to_owned(),
+        side: Side::New,
+        first: 1,
+        last: 1,
+        quoted: vec![repo.to_owned()],
+        base: None,
+        detached: false,
+    }
+}
+
+async fn draft_in(
+    comments: &Arc<dyn CommentsClient>,
+    session: &SessionId,
+    repo: &str,
+    key: &str,
+) -> Comment {
+    within(
+        "create",
+        comments.create(session, anchor_in(repo), "Rename this", key),
+    )
+    .await
+    .expect("create a comment")
+}
+
+pub async fn comment_is_listed_as_a_draft(
+    world: &dyn World,
+    daemon: Arc<dyn Daemon>,
+    comments: Arc<dyn CommentsClient>,
+) {
+    let (session, repo) = session_to_comment_on(world, &daemon).await;
+    let made = draft_in(&comments, &session, &repo, "key-1").await;
+    assert_eq!(made.status, Status::Draft);
+    let listing = within("list", comments.list(&session, Which::Open))
+        .await
+        .expect("list");
+    assert_eq!(listing.comments.len(), 1);
+    assert_eq!(listing.comments[0].id, made.id);
+    assert_eq!(listing.comments[0].text, "Rename this");
+    assert_eq!(listing.comments[0].anchor.path, "README.md");
+    assert_eq!(listing.draft_count, 1);
+}
+
+pub async fn edit_with_a_stale_revision_is_refused(
+    world: &dyn World,
+    daemon: Arc<dyn Daemon>,
+    comments: Arc<dyn CommentsClient>,
+) {
+    let (session, repo) = session_to_comment_on(world, &daemon).await;
+    let made = draft_in(&comments, &session, &repo, "key-1").await;
+    let edited = within("edit", comments.edit(&made.id, "Rename that", made.revision))
+        .await
+        .expect("edit at the current revision");
+    assert_eq!(edited.text, "Rename that");
+    assert!(edited.revision > made.revision);
+    let stale = within("edit", comments.edit(&made.id, "Too late", made.revision)).await;
+    assert!(
+        matches!(stale, Err(DaemonError::Refused { .. })),
+        "expected a refusal, got {stale:?}"
+    );
+}
+
+pub async fn archived_comment_moves_to_the_archive(
+    world: &dyn World,
+    daemon: Arc<dyn Daemon>,
+    comments: Arc<dyn CommentsClient>,
+) {
+    let (session, repo) = session_to_comment_on(world, &daemon).await;
+    let made = draft_in(&comments, &session, &repo, "key-1").await;
+    let archived = within("archive", comments.archive(&made.id))
+        .await
+        .expect("archive");
+    assert!(archived.archived);
+    let open = within("list", comments.list(&session, Which::Open))
+        .await
+        .expect("list open");
+    assert!(open.comments.is_empty());
+    assert_eq!(open.draft_count, 0);
+    let kept = within("list", comments.list(&session, Which::Archived))
+        .await
+        .expect("list archived");
+    assert_eq!(kept.comments.len(), 1);
+    assert_eq!(kept.comments[0].id, made.id);
+}
+
+/// The next `Changed` for `id`; a `Resync` on the way is ignored (the
+/// daemon opens its feed with one, the fake's feed has none).
+async fn changed_comment(events: &mut CommentEvents, id: &humata2_clients::comments::CommentId) -> Comment {
+    within("a comment event", async {
+        loop {
+            match events.recv().await {
+                Some(CommentEvent::Changed(comment)) if &comment.id == id => return comment,
+                Some(_) => {}
+                None => panic!("the comment feed ended"),
+            }
+        }
+    })
+    .await
+}
+
+pub async fn watch_follows_a_new_comment(
+    world: &dyn World,
+    daemon: Arc<dyn Daemon>,
+    comments: Arc<dyn CommentsClient>,
+) {
+    let (session, repo) = session_to_comment_on(world, &daemon).await;
+    let mut events = within("watch", comments.watch(&session))
+        .await
+        .expect("watch");
+    let made = draft_in(&comments, &session, &repo, "key-1").await;
+    let heard = changed_comment(&mut events, &made.id).await;
+    assert_eq!(heard.text, "Rename this");
+    assert_eq!(heard.status, Status::Draft);
 }

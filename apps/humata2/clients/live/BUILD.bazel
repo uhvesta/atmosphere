@@ -12,6 +12,7 @@ rust_library(
         "//apps/humata2/daemon/humatad:grpc",
         "@crates//:hyper-util",
         "@crates//:prost",
+        "@crates//:sha2",
         "@crates//:thiserror",
         "@crates//:tokio",
         "@crates//:tokio-stream",
@@ -50,8 +51,86 @@ rust_test(
     ],
 )
 
+# The file manager on the fake and on a real humatad2 (admin build).
+rust_test(
+    name = "file_manager_test",
+    srcs = ["tests/file_manager.rs"],
+    crate_root = "tests/file_manager.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# The machines client against a real humatad2 and a fake machine: no network, never the
+# real ~/.ssh.
+rust_test(
+    name = "machines_test",
+    srcs = ["tests/machines.rs"],
+    crate_root = "tests/machines.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "//apps/humata2/daemon/humatad:grpc",
+        "//apps/humata2/daemon/machines:fake_machine",
+        "@crates//:hyper-util",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+    ],
+)
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],
     tags = ["starlark"],
+)
+
+# The Inbox and access rules through the live client against a real humatad2
+# (admin build); the agent there asks with the real `humata` from its own tab.
+rust_test(
+    name = "inbox_test",
+    srcs = ["tests/inbox.rs"],
+    crate_root = "tests/inbox.rs",
+    data = [
+        "//apps/humata2/cli:humata",
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
 )

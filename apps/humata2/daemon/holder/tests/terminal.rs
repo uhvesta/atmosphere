@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use humata2_holder::{
     Event, Events, HolderError, HolderSpec, attach, holder_pid, read_saved, saved_scrollback_path,
-    shutdown, spawn,
+    shutdown, spawn, spawn_with_banner,
 };
 use rustix::process::{Pid, Signal};
 use tempfile::TempDir;
@@ -153,6 +153,28 @@ fn contains(haystack: &[u8], needle: &str) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle.as_bytes())
+}
+
+#[tokio::test]
+async fn a_banner_shows_before_the_program() {
+    let dir = tempfile::Builder::new()
+        .prefix("h2h")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let spec = spec(dir.path(), 1 << 20);
+    let spawned = spawn_with_banner(&spec, "[Humata] the-banner-line").unwrap();
+    let holder = Holder {
+        socket: spec.socket.clone(),
+        pid: spawned.pid,
+        _dir: dir,
+    };
+    let attached = attach(&holder.socket, 0).await.unwrap();
+    let mut control = attached.control;
+    let mut seen = Transcript::new(attached.events);
+    control.input(1, b"echo program-$((1+1))\n").await.unwrap();
+    seen.until_text("program-2").await;
+    let text = String::from_utf8_lossy(&seen.bytes);
+    assert!(text.find("the-banner-line").unwrap() < text.find("program-2").unwrap());
 }
 
 #[tokio::test]

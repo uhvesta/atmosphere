@@ -90,7 +90,7 @@ impl Overlays {
                     ))
                     .child(add),
             )
-            .focus_trap("desk-add-repo-trap", &self.desk.repo.focus_handle(cx))
+            .focus_trap("desk-add-repo-dialog", &self.desk.repo.focus_handle(cx))
             .into_any_element()
     }
 }

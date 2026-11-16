@@ -140,7 +140,10 @@ pub(crate) fn bar(
         .flex_shrink_0()
         .child(picker)
         .when(machine_open, |wrap| {
-            wrap.child(deferred(machine_menu(ui, state, session, look)))
+            // Deferred, so both paint over the tabs and terminal under the
+            // bar and take the clicks there; the scrim first, the menu over it.
+            wrap.child(deferred(crate::desk::scrim(ui, "desk-bar-machine-scrim")))
+                .child(deferred(machine_menu(ui, state, session, look)))
         });
 
     let repos = record.repos.iter().map(|repo| {

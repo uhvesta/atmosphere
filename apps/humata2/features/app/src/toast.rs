@@ -2,20 +2,23 @@ use std::sync::Arc;
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::SessionId;
+use humata2_review::comments::CommentsAction;
 use tca::Effect;
 
 use crate::{App, AppAction, AppState, ReportForm, TOAST};
 
 /// The action a toast offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ToastAction {
     RestoreSession(SessionId),
+    /// Undo a change to review comments by sending this.
+    Comments(Box<CommentsAction>),
     /// Open the bug-report form for a saved report.
     OpenReport(Box<ReportForm>),
 }
 
 /// A message at the bottom of the window.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Toast {
     /// Its id, to dismiss it.
     pub id: u64,
@@ -54,6 +57,11 @@ impl App {
         };
         let session = match toast.action.clone() {
             Some(ToastAction::RestoreSession(session)) => session,
+            Some(ToastAction::Comments(undo)) => {
+                state.toasts.retain(|t| t.id != id);
+                let undone = self.handle(state, AppAction::Comments(*undo));
+                return Effect::merge([Effect::cancel(format!("toast-{id}")), undone]);
+            }
             Some(ToastAction::OpenReport(form)) => {
                 state.toasts.retain(|t| t.id != id);
                 state.report.form = Some(*form);

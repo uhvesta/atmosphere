@@ -70,13 +70,13 @@ pub fn home_after_restart(look: Look) -> Div {
                     "Needs you · 2",
                     vec![
                         session_row(look, St::NeedsYou, "Try BRIN index", "fork of Ledger schema", "Asks to push try-brin to origin", "9m", Some(button(look, Kind::Primary, "Review"))),
-                        session_row(look, St::Exited, "Upgrade Postgres 17", "# infra", "Exited with code 1 after the dump step", "40m", Some(button(look, Kind::Secondary, "Resume"))),
+                        session_row(look, St::Exited, "Upgrade Postgres 17", "# infra · devbox-1", "Exited with code 1 after the dump step", "40m", Some(button(look, Kind::Secondary, "Resume"))),
                     ],
                 ))
                 .child(group(
                     look,
                     "Working · 1",
-                    vec![session_row(look, St::Working, "Benchmark BRIN", "# infra · gpu-box", "pgbench run 2 of 4", "1m", None)],
+                    vec![session_row(look, St::Working, "Benchmark BRIN", "# infra · devbox-1", "pgbench run 2 of 4", "1m", None)],
                 ))
                 .child(group(
                     look,

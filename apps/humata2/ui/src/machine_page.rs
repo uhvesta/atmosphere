@@ -12,11 +12,12 @@ use crate::theme::Look;
 use crate::widgets::{self, col, row};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
+use gpui_kit::base::ObservedElement;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
-use humata2_app::AppAction;
-use humata2_clients::machines::{ClashChoice, MachineDetail, Reach, SkillsPreview};
-use humata2_clients::model::{Channel, RuleSetting, Session, Status};
+use humata2_app::{AppAction, AppState};
+use humata2_clients::machines::{ClashChoice, MachineDetail, Reach, SkillsPreview, tool_label};
+use humata2_clients::model::{Channel, MachineId, RuleSetting, Session, Status};
 use humata2_hosts::page::{MachinePageAction, MachinePageState, SkillsDialog, Tab};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -159,7 +160,7 @@ fn link(
     text: &str,
     action: AppAction,
     look: Look,
-) -> Stateful<Div> {
+) -> ObservedElement<Stateful<Div>> {
     let ui = ui.clone();
     div()
         .id(id)
@@ -188,6 +189,42 @@ fn reach_name(reach: &Reach) -> String {
         Reach::Provider(provider) => provider.clone(),
         Reach::Local => "local".to_owned(),
     }
+}
+
+/// The page for the machine route: names things from the workspace and
+/// draws the page's own state.
+pub(crate) fn route(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    machine: &MachineId,
+    inputs: &MachinePageInputs,
+    look: Look,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let found = state.workspace.machine(machine);
+    let context = PageContext {
+        name: found.map_or_else(|| machine.to_string(), |found| found.name.clone()),
+        online: found.is_some_and(|found| found.online),
+        sessions: state
+            .workspace
+            .sessions
+            .iter()
+            .filter(|session| &session.machine == machine)
+            .cloned()
+            .collect(),
+        channels: state.workspace.channels.clone(),
+    };
+    machine_page(
+        ui,
+        AppAction::MachinePage,
+        &state.machine_page,
+        &context,
+        inputs,
+        look,
+        window,
+        cx,
+    )
 }
 
 /// The machine's page, for `state`.
@@ -220,7 +257,9 @@ pub(crate) fn machine_page(
         .child(header(ui, wrap, state, context, look))
         .child(tabs(ui, wrap, state, look));
     let body = match state.tab {
-        Tab::Overview => overview(ui, wrap, state, context, inputs, look).into_any_element(),
+        Tab::Overview => overview(ui, wrap, state, context, inputs, look)
+            .test_support()
+            .into_any_element(),
         // The Storage tab's body is drawn by another milestone (frame 60).
         Tab::Storage => div().id("machine-storage").flex_1().into_any_element(),
     };
@@ -250,8 +289,6 @@ fn header(
     });
     col()
         .flex_shrink_0()
-        .border_b_1()
-        .border_color(rgb(look.line))
         .child(
             row()
                 .gap(px(8.))
@@ -280,45 +317,49 @@ fn header(
                         .test_support(),
                 )
                 .child(div().flex_1())
-                .child(
-                    widgets::send(
-                        ui,
-                        "machine-open-shell",
-                        "Open a shell",
-                        wrap(MachinePageAction::OpenShell),
-                    )
-                    .disabled(!context.online),
-                )
-                .child(
-                    widgets::primary(
-                        ui,
-                        "machine-new-session",
-                        format!("New session on {}", context.name),
-                        wrap(MachinePageAction::NewSession),
-                    )
-                    .disabled(!context.online),
-                )
-                // The ⋯ menu: its two entries.
+                // The actions the frame's ⋯ stands for, until the app has a menu to hold them.
                 .child(
                     row()
                         .id("machine-menu")
                         .role(Role::Toolbar)
                         .aria_label("More")
                         .gap(px(4.))
-                        .child(chrome::icon(IconName::Ellipsis, look.secondary, 15.))
                         .child(widgets::ghost(
                             ui,
                             "machine-sync-skills",
                             "Sync skills",
                             wrap(MachinePageAction::SyncSkills),
                         ))
-                        .child(widgets::ghost(
-                            ui,
-                            "machine-reconnect-menu",
-                            "Reconnect now",
-                            wrap(MachinePageAction::ReconnectNow),
-                        ))
+                        // While the link-down row shows, Reconnect now lives there (HO-5).
+                        .children((context.online || state.detail.is_none()).then(|| {
+                            widgets::ghost(
+                                ui,
+                                "machine-reconnect-menu",
+                                "Reconnect now",
+                                wrap(MachinePageAction::ReconnectNow),
+                            )
+                        }))
                         .test_support(),
+                )
+                .child(
+                    widgets::push_quiet(
+                        ui,
+                        "machine-open-shell",
+                        "Open a shell",
+                        wrap(MachinePageAction::OpenShell),
+                        look,
+                    )
+                    .disabled(!context.online),
+                )
+                .child(
+                    widgets::push_primary(
+                        ui,
+                        "machine-new-session",
+                        format!("New session on {}", context.name),
+                        wrap(MachinePageAction::NewSession),
+                        look,
+                    )
+                    .disabled(!context.online),
                 ),
         )
         .child(
@@ -329,7 +370,7 @@ fn header(
         )
 }
 
-fn tabs(ui: &Rc<Ui>, wrap: Wrap, state: &MachinePageState, look: Look) -> Div {
+fn tabs(ui: &Rc<Ui>, wrap: Wrap, state: &MachinePageState, look: Look) -> Stateful<Div> {
     row()
         .id("machine-tabs")
         .role(Role::Toolbar)
@@ -394,11 +435,12 @@ fn overview(
                     "Only the link to {} is down. What you see is from the last time it answered.",
                     context.name
                 )))
-                .child(widgets::send(
+                .child(widgets::push_quiet(
                     ui,
                     "machine-reconnect",
                     "Reconnect now",
                     wrap(MachinePageAction::ReconnectNow),
+                    look,
                 ))
                 .test_support(),
         );
@@ -412,11 +454,12 @@ fn overview(
                 .gap(px(10.))
                 .text_color(rgb(RED))
                 .child(div().child(error.clone()))
-                .child(widgets::send(
+                .child(widgets::push_quiet(
                     ui,
                     "machine-reload",
                     "Try again",
                     wrap(MachinePageAction::Reload),
+                    look,
                 ))
                 .test_support(),
         );
@@ -459,7 +502,10 @@ fn left(
             .channels
             .iter()
             .find(|channel| &channel.id == id)
-            .map_or_else(|| id.to_string(), |channel| format!("# {}", channel.name))
+            .map_or_else(
+                || if id.as_str() == humata2_clients::desk::FOLDER { "Desk".to_owned() } else { id.to_string() },
+                |channel| format!("# {}", channel.name),
+            )
     };
     let mut sessions = card(look).overflow_hidden();
     let listed = detail
@@ -502,7 +548,11 @@ fn left(
                         .flex_1()
                         .whitespace_nowrap()
                         .text_color(rgb(look.secondary))
-                        .child(session.agent.name()),
+                        .child(if session.agent == humata2_clients::model::Agent::Claude {
+                            "Claude Code"
+                        } else {
+                            session.agent.name()
+                        }),
                 )
                 .on_click(move |_, _, cx| ui.send(action.clone(), cx))
                 .test_support(),
@@ -580,14 +630,13 @@ fn right(
     let health = &detail.health;
     let kv = |key: &'static str, value: Div| {
         row()
-            .items_start()
+            .items_center()
             .gap(px(8.))
             .min_h(px(22.))
             .child(
                 div()
                     .w(px(84.))
                     .flex_shrink_0()
-                    .pt(px(2.))
                     .text_color(rgb(look.secondary))
                     .child(key),
             )
@@ -760,7 +809,7 @@ fn right(
                 health
                     .agents
                     .iter()
-                    .map(|(agent, version)| chip(look, format!("{} {version}", agent.command()))),
+                    .map(|(agent, version)| chip(look, tool_label(agent.command(), version))),
             ),
         ))
         .child(kv("Disk", disk))
@@ -822,7 +871,7 @@ fn right(
         .w(px(400.))
         .flex_shrink_0()
         .gap(px(12.))
-        .child(health_card)
+        .child(health_card.test_support())
         .child(
             col()
                 .gap(px(6.))

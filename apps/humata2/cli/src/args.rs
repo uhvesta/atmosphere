@@ -217,6 +217,12 @@ pub enum Command {
     },
     #[command(subcommand)]
     Report(ReportCommand),
+    /// Say what turn this session's agent is in. For the agent's hooks:
+    /// prints nothing, and works only from the session's own terminal.
+    Turn {
+        #[arg(value_enum)]
+        state: TurnArg,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -374,8 +380,12 @@ pub enum BoardCommand {
         column: Option<Column>,
         #[arg(long)]
         description: Option<String>,
+        /// A session working on it; repeat for more.
         #[arg(long, value_name = "SESSION")]
-        assign: Option<String>,
+        assign: Vec<String>,
+        /// An item it depends on, on any board; repeat for more.
+        #[arg(long, value_name = "ITEM")]
+        depends_on: Vec<String>,
     },
     Edit {
         item: String,
@@ -383,10 +393,18 @@ pub enum BoardCommand {
         title: Option<String>,
         #[arg(long)]
         description: Option<String>,
-        #[arg(long, value_name = "SESSION", conflicts_with = "unassign")]
-        assign: Option<String>,
-        #[arg(long)]
-        unassign: bool,
+        /// Add a session; repeat for more.
+        #[arg(long, value_name = "SESSION")]
+        assign: Vec<String>,
+        /// Remove a session; repeat for more.
+        #[arg(long, value_name = "SESSION")]
+        unassign: Vec<String>,
+        /// Add an item it depends on; repeat for more.
+        #[arg(long, value_name = "ITEM")]
+        depends_on: Vec<String>,
+        /// Remove an item it depends on; repeat for more.
+        #[arg(long, value_name = "ITEM")]
+        drop_depends_on: Vec<String>,
     },
     Move {
         item: String,
@@ -575,6 +593,10 @@ pub enum HostCommand {
         name: Option<String>,
         #[arg(long)]
         root: Option<String>,
+        /// The host's key fingerprint, as the first add printed it, once
+        /// you have checked it is the host's.
+        #[arg(long, value_name = "FINGERPRINT")]
+        trust_host_key: Option<String>,
     },
     Reconnect { machine: String },
     Remove { machine: String },
@@ -615,7 +637,15 @@ pub enum HostCommand {
 #[derive(Debug, Subcommand)]
 pub enum VarCommand {
     /// Set a variable; the value is read with echo off, or from stdin.
-    Set { machine: String, name: String },
+    Set {
+        machine: String,
+        name: String,
+        /// Not taken: a value on the command line would stay in the
+        /// shell's history and show in the process list (HO-13). Anything
+        /// given here is refused without being repeated.
+        #[arg(hide = true, num_args = 0.., value_name = "VALUE")]
+        value_on_command_line: Vec<String>,
+    },
     Rm { machine: String, name: String },
 }
 
@@ -763,6 +793,13 @@ pub enum ViewAction {
     NotNow,
     Revert,
     Keep,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum TurnArg {
+    Working,
+    Idle,
+    NeedsInput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

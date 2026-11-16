@@ -12,7 +12,7 @@ use humata2_store::fault::point;
 use serde::{Deserialize, Serialize};
 
 use crate::error::TrashError;
-use crate::fsutil::{remove_all, tree_size};
+use crate::fsutil::{make_dirs, remove_all, tree_size};
 
 /// Items stay this long (LD-7).
 pub const KEEP_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -61,7 +61,7 @@ impl Trash {
     /// Opens (and makes, 0700) the trash folder, and removes what a crash
     /// left: items never moved in, and items being removed.
     pub fn open(folder: PathBuf) -> Result<Self, TrashError> {
-        create_dir_all(&folder, 0o700).map_err(io("create the trash folder", &folder))?;
+        make_dirs(&folder, 0o700).map_err(io("create the trash folder", &folder))?;
         fs::set_permissions(&folder, fs::Permissions::from_mode(0o700))
             .map_err(io("restrict the trash folder", &folder))?;
         if let Some(parent) = folder.parent() {
@@ -207,10 +207,7 @@ impl Trash {
             });
         }
         if let Some(parent) = item.original.parent() {
-            create_dir_all(parent, 0o755).map_err(io("create the folder", parent))?;
-            if let Some(grand) = parent.parent() {
-                let _ = sync_dir(grand);
-            }
+            make_dirs(parent, 0o755).map_err(io("create the folder", parent))?;
         }
         if let Err(source) = rename(&dir.join(CONTENT), &item.original) {
             return Err(if source.kind() == ErrorKind::CrossesDevices {

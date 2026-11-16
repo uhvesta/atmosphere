@@ -1,0 +1,14 @@
+libghostty-vt (Ghostty)
+https://github.com/ghostty-org/ghostty
+Humata 2's terminal screen is libghostty-vt, the terminal core of Ghostty,
+linked into humatad2 and the holder. Ghostty is by Mitchell Hashimoto and
+the Ghostty contributors, under the MIT license below. It is built from the
+source tarball pinned in apps/humata2/terminal/vt/libghostty_vt.bzl.
+
+Fonts: the Mac app ships none. Inter and JetBrains Mono (SIL Open Font
+License 1.1) are embedded only in the browser terminal client
+(apps/humata2/terminal/client), which isn't in Humata2.app; add their
+LICENSE files here if that changes.
+
+This file is kept by hand. When a non-crate part joins the app, name it here
+and add its license file to `extra_license_files` in tools/notices/notices.bzl.

@@ -25,6 +25,10 @@ pub enum Command {
     Hosts,
     /// Go to Files.
     Files,
+    /// Go to the Desk.
+    Desk,
+    /// Start a Desk session.
+    NewDeskSession,
     /// Go to Settings.
     Settings,
     /// Start a session.
@@ -55,10 +59,26 @@ pub enum Command {
     },
     /// Expand the terminal in the current session.
     TerminalFullScreen,
-    /// Start recording a bug report (I9).
+    /// Start, or stop, recording a bug report (I9, D159).
     Record,
+    /// Take a snapshot for a bug report, like ⇧⌘S (D159).
+    Snapshot,
+    /// Stop a running recording, else take a snapshot; the form opens
+    /// either way (D159).
+    ReportBug,
+    /// Open the last bug report's form again (D159).
+    OpenLastReport,
     /// Show or hide the session's side panel.
     TogglePanel,
+}
+
+/// Where bug reporting stands, so its entries read right (D159).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReportStatus {
+    /// A recording runs.
+    pub recording: bool,
+    /// A report was saved this run, so it can open again.
+    pub last: bool,
 }
 
 /// One line of the palette.
@@ -91,6 +111,8 @@ pub struct PaletteState {
     pub context: Option<SessionId>,
     /// Whether a session is open, so session commands apply.
     pub in_session: bool,
+    /// Bug reporting, set by the app before it opens the palette.
+    pub report: ReportStatus,
 }
 
 /// What the palette asks its parent to do.
@@ -248,6 +270,30 @@ impl PaletteState {
         self.cursor = 0;
     }
 
+    fn report_entries(&self) -> Vec<Entry> {
+        let record = if self.report.recording {
+            "Stop recording"
+        } else {
+            "Start recording a bug report"
+        };
+        let mut entries = vec![
+            (Command::Record, record, "⇧⌘R"),
+            (Command::Snapshot, "Take a snapshot for a bug report", "⇧⌘S"),
+            (Command::ReportBug, "Report a bug…", ""),
+        ];
+        if self.report.last {
+            entries.push((Command::OpenLastReport, "Open the last bug report", ""));
+        }
+        entries
+            .into_iter()
+            .map(|(command, title, hint)| Entry {
+                command,
+                title: title.to_owned(),
+                hint: hint.to_owned(),
+            })
+            .collect()
+    }
+
     fn all(&self) -> Vec<Entry> {
         let mut entries: Vec<Entry> = [
             (Command::Home, "Go to Home", "⌘1"),
@@ -255,6 +301,8 @@ impl PaletteState {
             (Command::Board, "Go to Board", "⌘3"),
             (Command::Hosts, "Go to Hosts", "⌘4"),
             (Command::Files, "Go to Files", "⌘5"),
+            (Command::Desk, "Go to Desk", ""),
+            (Command::NewDeskSession, "New desk session…", ""),
             (Command::Settings, "Open Settings", "⌘,"),
             (Command::NewSession, "New session…", "⌘N"),
             (Command::NewChannel, "New channel…", "⇧⌘N"),
@@ -262,7 +310,6 @@ impl PaletteState {
             (Command::CollapseAll, "Collapse all", "⌥⌘←"),
             (Command::ToggleSidebar, "Toggle sidebar", "⌘0"),
             (Command::TogglePanel, "Toggle side panel", "⌥⌘0"),
-            (Command::Record, "Record a bug report", ""),
         ]
         .into_iter()
         .map(|(command, title, hint)| Entry {
@@ -271,27 +318,42 @@ impl PaletteState {
             hint: hint.to_owned(),
         })
         .collect();
+        entries.extend(self.report_entries());
         if self.in_session {
             entries.push(Entry {
                 command: Command::TerminalFullScreen,
                 title: "Terminal full screen".into(),
                 hint: "⇧⌘↩".into(),
             });
-            entries.push(Entry {
-                command: Command::Fork,
-                title: self
-                    .context
-                    .as_ref()
-                    .and_then(|id| self.workspace.session(id))
-                    .map_or_else(
-                        || "Fork this session…".into(),
-                        |session| format!("Fork “{}”", session.title),
-                    ),
-                hint: "⇧⌘F".to_owned(),
-            });
+            // A Desk session has no Fork, and its Archive is Close (DK-11,
+            // DK-12).
+            let on_desk = self
+                .context
+                .as_ref()
+                .and_then(|id| self.workspace.session(id))
+                .is_some_and(humata2_clients::desk::is_desk);
+            if !on_desk {
+                entries.push(Entry {
+                    command: Command::Fork,
+                    title: self
+                        .context
+                        .as_ref()
+                        .and_then(|id| self.workspace.session(id))
+                        .map_or_else(
+                            || "Fork this session…".into(),
+                            |session| format!("Fork “{}”", session.title),
+                        ),
+                    hint: "⇧⌘F".to_owned(),
+                });
+            }
             entries.push(Entry {
                 command: Command::Archive,
-                title: "Archive this session".to_owned(),
+                title: if on_desk {
+                    "Close this session"
+                } else {
+                    "Archive this session"
+                }
+                .to_owned(),
                 hint: String::new(),
             });
         }
@@ -318,8 +380,12 @@ impl PaletteState {
                     .map_or_else(
                         || {
                             format!(
-                                "# {} · {}",
-                                session.channel,
+                                "{} · {}",
+                                if humata2_clients::desk::is_desk(session) {
+                                    "Desk".to_owned()
+                                } else {
+                                    format!("# {}", session.channel)
+                                },
                                 session.status.label().to_lowercase()
                             )
                         },

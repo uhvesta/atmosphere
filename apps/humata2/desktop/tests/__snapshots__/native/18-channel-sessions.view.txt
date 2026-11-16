@@ -42,7 +42,7 @@ Tab "Agent access"
 Tab "Activity"
 #channel-sessions
   #channel-session-filter
-    #input-4294967327
+    #input-4294967331
       TextInput "Filter sessions" value="" placeholder="Filter sessions"
   Tab "Open" selected
   Tab "Archived"

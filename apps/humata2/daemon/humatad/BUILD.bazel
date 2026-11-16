@@ -1,7 +1,7 @@
+load("@lifr_identity//:defs.bzl", "HUMATA2_BUNDLE_ID", "TEAM_ID")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 load(":tonic.bzl", "rust_tonic_services")
 load(":tools.bzl", "tools_bundle")
-load("@lifr_identity//:defs.bzl", "HUMATA2_BUNDLE_ID", "TEAM_ID")
 
 # humatad2, Humata 2's daemon: serves the gRPC API (../../api/GRPC.md) on a
 # Unix socket, or the peer link on stdio with `serve --stdio`; `humatad2
@@ -35,7 +35,10 @@ rust_library(
     compile_data = [":tonic_gen"],
     crate_name = "humata2_grpc",
     # The app's real daemon client speaks the same generated clients.
-    visibility = ["//apps/humata2/clients/live:__pkg__"],
+    visibility = [
+        "//apps/humata2/cli:__pkg__",
+        "//apps/humata2/clients/live:__pkg__",
+    ],
     # The generated code is written for this edition.
     edition = "2021",
     rustc_env = {"HUMATA2_TONIC_RS": "$(execpath :tonic_gen)"},
@@ -50,12 +53,11 @@ rust_library(
 )
 
 DAEMON_DEPS = [
-    "//apps/humata2/daemon/transfers",
-    "//apps/humata2/daemon/app_peer",
     ":grpc",
     "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/app_peer",
     "//apps/humata2/daemon/holder",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/mcp",
@@ -63,6 +65,7 @@ DAEMON_DEPS = [
     "//apps/humata2/daemon/revive",
     "//apps/humata2/daemon/sessions",
     "//apps/humata2/daemon/store",
+    "//apps/humata2/daemon/transfers",
     "@crates//:clap",
     "@crates//:hmac",
     "@crates//:hyper-util",
@@ -135,6 +138,7 @@ rust_binary(
     rustc_env = APP_IDENTITY,
     # The app client's parity suite and the app's live flows run against it too.
     visibility = [
+        "//apps/humata2/cli:__pkg__",
         "//apps/humata2/clients/live:__pkg__",
         "//apps/humata2/desktop:__pkg__",
     ],
@@ -148,6 +152,7 @@ filegroup(
     testonly = True,
     srcs = ["//apps/humata2/daemon/holder:humata2_holder"],
     visibility = [
+        "//apps/humata2/cli:__pkg__",
         "//apps/humata2/clients/live:__pkg__",
         "//apps/humata2/desktop:__pkg__",
     ],
@@ -235,6 +240,12 @@ rust_test(
         "@crates//:tonic",
         "@crates//:tower",
     ],
+)
+
+# The daemon tests' harness, which the CLI's live tests reuse by path.
+exports_files(
+    ["tests/common/mod.rs"],
+    visibility = ["//apps/humata2/cli:__pkg__"],
 )
 
 filegroup(

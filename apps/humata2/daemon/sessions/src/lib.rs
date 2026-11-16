@@ -5,14 +5,17 @@
 
 mod agents;
 mod error;
+mod fork;
 mod git;
 mod layout;
 mod names;
 mod recover;
+mod restore;
 mod setup;
 mod start;
+mod work;
 
-pub use agents::{AgentKind, Agents, LaunchPlan};
+pub use agents::{AgentKind, Agents, LaunchPlan, TurnEnd};
 pub use error::{AgentError, GitError, LayoutError, NameError, SetupError, StartError};
 pub use git::{
     DEFAULT_REMOTE_TEMPLATE, clone_main, clone_session, default_branch, local_branches,
@@ -23,3 +26,6 @@ pub use names::{Branch, branch_slug, channel_folder, pick_branch};
 pub use recover::{Leftovers, Recovery, recover};
 pub use setup::{NewChannel, clone_mains, create_channel};
 pub use start::{RepoName, StartRequest, Started, Starter};
+pub use fork::{ForkCopy, ForkPlan, ForkRequest};
+pub use restore::{RestoredFrom, restore_clone};
+pub use work::{FileChange, RepoWork, repo_work};

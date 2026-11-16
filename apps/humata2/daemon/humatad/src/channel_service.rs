@@ -18,7 +18,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use humata2_access::{AccessRequest, Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::{GitError, NewChannel, SetupError, Starter, clone_mains, create_channel};
-use humata2_store::{ChannelRecord, MainClone, Store, StoreError};
+use humata2_store::{ChannelRecord, ChannelRepo, MainClone, Store, StoreError};
 use pb::invalid_field::Problem;
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
@@ -27,8 +27,12 @@ use crate::events::{Feed, Scope};
 use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller};
 use crate::inbox::{Deferred, Inbox};
-use crate::operations::{Operations, Progress, Started};
+use crate::operations::{Operations, Started};
+use crate::remote_work::{HostOp, MachineOutcome, RemoteWork, channel_steps};
 use crate::status;
+
+mod add;
+mod known;
 
 /// Every channel `caller` may read.
 async fn readable_channels(
@@ -165,6 +169,14 @@ pub(crate) struct ChannelSvc {
     default_agent: String,
     /// Where a call a rule sends to Ask waits for the user (D38.6).
     inbox: Arc<Inbox>,
+    /// The host's way to other machines (D139); none on a machine's own
+    /// daemon, which keeps only this machine.
+    remote: Option<RemoteWork>,
+    /// The host's machine list, so a channel names only machines it has
+    /// (D164); none on a machine's own daemon.
+    known: Option<Arc<crate::machine_service::Work>>,
+    /// One clone at a time per channel (D164).
+    cloning: Arc<known::CloneLocks>,
 }
 
 impl ChannelSvc {
@@ -175,6 +187,8 @@ impl ChannelSvc {
         machine: String,
         default_agent: String,
         inbox: Arc<Inbox>,
+        remote: Option<RemoteWork>,
+        known: Option<Arc<crate::machine_service::Work>>,
     ) -> Self {
         Self {
             guard,
@@ -183,6 +197,9 @@ impl ChannelSvc {
             machine,
             default_agent,
             inbox,
+            remote,
+            known,
+            cloning: Arc::default(),
         }
     }
 
@@ -252,6 +269,7 @@ impl ChannelSvc {
         &self,
         caller: &Caller,
         request: pb::CreateChannelRequest,
+        assigned: Option<String>,
         approved: bool,
     ) -> Result<Gated<pb::CreateChannelResponse>, Status> {
         if let Some(asked) =
@@ -265,22 +283,59 @@ impl ChannelSvc {
         {
             return Ok(Gated::Done(self.answer(setup).await?));
         }
-        let new = NewChannel {
-            name: clean_name(&request.name)?,
-            repos: clean_repos(&request.repos)?,
-            machines: self.machines(&request.machines)?,
-            branch_prefix: String::new(),
-            default_agent: self.default_agent.clone(),
+        let name = clean_name(&request.name)?;
+        let repos = clean_repos(&request.repos)?;
+        let machines = self.machines(&request.machines)?;
+        // The machines other than this one get the same channel made by their own
+        // daemon, with the id this one chose (D139, D150).
+        let remote_machines: Vec<String> = machines
+            .iter()
+            .filter(|machine| **machine != self.machine)
+            .cloned()
+            .collect();
+        let remote_request = request.clone();
+        // A host asking again for a channel this machine already made under its id:
+        // answer with it, adding the repositories it lacks and cloning again the
+        // ones that aren't ready (CH-7, CH-19).
+        let known = match &assigned {
+            Some(id) => {
+                let (store, id) = (self.starter.store.clone(), id.clone());
+                blocking(move || store.channel(&id))
+                    .await?
+                    .map_err(|error| status::store(error, &self.machine, "look up the channel"))?
+            }
+            None => None,
         };
-        let (store, layout) = (self.starter.store.clone(), self.starter.layout.clone());
-        let channel = blocking(move || create_channel(&store, &layout, new))
-            .await?
-            .map_err(|error| setup_status(error, &self.machine))?;
+        let channel = match known {
+            Some(existing) => {
+                let starter = self.starter.clone();
+                blocking(move || rejoin_channel(&starter, existing, &repos))
+                    .await?
+                    .map_err(|error| setup_status(error, &self.machine))?
+            }
+            None => {
+                let new = NewChannel {
+                    id: assigned,
+                    name,
+                    repos,
+                    machines,
+                    branch_prefix: String::new(),
+                    default_agent: self.default_agent.clone(),
+                };
+                let (store, layout) = (self.starter.store.clone(), self.starter.layout.clone());
+                blocking(move || create_channel(&store, &layout, new))
+                    .await?
+                    .map_err(|error| setup_status(error, &self.machine))?
+            }
+        };
 
         let mut steps = vec![("record".to_owned(), "Saving the channel".to_owned())];
         for repo in &channel.repos {
             let shown = format!("{}/{}", repo.owner, repo.name);
             steps.push((format!("clone_main:{shown}"), clone_title(&shown)));
+        }
+        for machine in &remote_machines {
+            steps.extend(channel_steps(machine, &request.repos));
         }
         let target = pb::EntityRef {
             entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
@@ -299,7 +354,17 @@ impl ChannelSvc {
             Started::Existing(setup) => return Ok(Gated::Done(self.answer(setup).await?)),
         };
         progress.set_step("record", pb::StepState::Done, None);
+        // What a channel this machine already had has ready is done already.
+        for repo in channel
+            .repos
+            .iter()
+            .filter(|repo| repo.main == MainClone::Ready)
+        {
+            let shown = format!("{}/{}", repo.owner, repo.name);
+            progress.set_step(&format!("clone_main:{shown}"), pb::StepState::Done, None);
+        }
         let setup = progress.operation();
+        let host = Arc::new(HostOp::new(progress));
         let answer = pb::CreateChannelResponse {
             channel: Some(self.show(channel.clone()).await?),
             setup: Some(setup),
@@ -314,9 +379,68 @@ impl ChannelSvc {
             tell_channel(&feed, &store, &id, pb::Change::Created, Some(by));
         })
         .await;
-        let (starter, record) = (self.starter.clone(), channel);
-        let (feed, by) = (self.operations.feed(), identity::actor(caller));
-        tokio::task::spawn_blocking(move || clone_in_background(starter, record, progress, &feed, by));
+        let (starter, record, local, locks) =
+            (self.starter.clone(), channel.clone(), host.clone(), self.cloning.clone());
+        let cloning = tokio::task::spawn_blocking(move || {
+            known::clone_one_at_a_time(&starter, &record, &local, &locks)
+        });
+        let mut remotes = Vec::new();
+        if let Some(work) = &self.remote {
+            for machine in remote_machines {
+                let (work, id, request, host) = (
+                    work.clone(),
+                    channel.id.clone(),
+                    remote_request.clone(),
+                    host.clone(),
+                );
+                remotes.push(tokio::spawn(async move {
+                    work.create_channel_on(&machine, &id, request, host).await
+                }));
+            }
+        }
+        // The operation ends once, when the local clones and every machine's setup
+        // have: the first failure fails it; a machine that was removed while its
+        // setup waited counts as done (D150).
+        let (feed, store, id, by) = (
+            self.operations.feed(),
+            self.starter.store.clone(),
+            channel.id.clone(),
+            identity::actor(caller),
+        );
+        tokio::spawn(async move {
+            let mut outcome = cloning.await.unwrap_or_else(|error| {
+                Err(error_of(
+                    &error,
+                    "restart humatad2 and create the channel again",
+                    None,
+                ))
+            });
+            for remote in remotes {
+                let ended = match remote.await {
+                    Ok(MachineOutcome::Failed(error)) => Err(error),
+                    Ok(MachineOutcome::Ready | MachineOutcome::Gone) => Ok(()),
+                    Err(error) => Err(error_of(
+                        &error,
+                        "restart humatad2 and create the channel again",
+                        None,
+                    )),
+                };
+                if outcome.is_ok() {
+                    outcome = ended;
+                }
+            }
+            if let Some(progress) = host.take() {
+                match outcome {
+                    Ok(()) => progress.succeed(None),
+                    Err(error) => progress.fail(error),
+                }
+            }
+            // The clones' outcome is part of how the channel shows.
+            let _ = blocking(move || {
+                tell_channel(&feed, &store, &id, pb::Change::Updated, Some(by));
+            })
+            .await;
+        });
         Ok(Gated::Done(answer))
     }
 
@@ -411,7 +535,7 @@ impl ChannelSvc {
     fn machines(&self, wanted: &[pb::MachineId]) -> Result<Vec<String>, Status> {
         let mut machines: Vec<String> = Vec::new();
         for (n, machine) in wanted.iter().enumerate() {
-            if machine.value != self.machine {
+            if machine.value != self.machine && self.remote.is_none() {
                 return Err(status::failure(
                     Code::Unimplemented,
                     pb::Error {
@@ -427,6 +551,12 @@ impl ChannelSvc {
                         })),
                     },
                 ));
+            }
+            // A machine the host never linked would wait for ever (D164).
+            if machine.value != self.machine
+                && let Some(list) = &self.known
+            {
+                known::check_known(list, &format!("machines[{n}]"), &machine.value)?;
             }
             if !machines.contains(&machine.value) {
                 machines.push(machine.value.clone());
@@ -661,18 +791,17 @@ fn clone_failed(operation: &str, repo: &str, reason: &str) -> pb::Error {
     }
 }
 
-/// Clones the channel's mains, telling `progress` about each, and ends the
-/// operation. Blocking.
+/// Clones the channel's mains, telling `progress` about each. Blocking. What
+/// became of them is the answer; the caller ends the operation, once every
+/// machine's part is in.
 fn clone_in_background(
-    starter: Starter,
-    channel: ChannelRecord,
-    progress: Progress,
-    feed: &Feed,
-    by: pb::Actor,
-) {
+    starter: &Starter,
+    channel: &ChannelRecord,
+    progress: &HostOp,
+) -> Result<(), pb::Error> {
     let operation = progress
         .operation()
-        .id
+        .and_then(|operation| operation.id)
         .map(|id| id.value)
         .unwrap_or_default();
     let keys: Vec<String> = channel
@@ -708,7 +837,7 @@ fn clone_in_background(
         &mut on_step,
     );
     match done {
-        Err(error) => progress.fail(error_of(
+        Err(error) => Err(error_of(
             &error,
             "check that the Humata state folder is writable and the disk has space, then create the channel again",
             None,
@@ -721,19 +850,55 @@ fn clone_in_background(
                 })
             });
             match failed {
-                Some((repo, reason)) => progress.fail(clone_failed(&operation, &repo, &reason)),
-                None => progress.succeed(None),
+                Some((repo, reason)) => Err(clone_failed(&operation, &repo, &reason)),
+                None => Ok(()),
             }
         }
     }
-    // The clones' outcome is part of how the channel shows.
-    tell_channel(
-        feed,
-        &starter.store,
-        &channel.id,
-        pb::Change::Updated,
-        Some(by),
-    );
+}
+
+/// The channel `channel` as a host asks for it again (D150): the repositories
+/// the request names that it lacks are added, and each one whose main clone
+/// isn't ready is set to be cloned again. Blocking.
+fn rejoin_channel(
+    starter: &Starter,
+    mut channel: ChannelRecord,
+    repos: &[(String, String)],
+) -> Result<ChannelRecord, SetupError> {
+    let mut changed = false;
+    for (owner, name) in repos {
+        match channel
+            .repos
+            .iter_mut()
+            .find(|repo| &repo.owner == owner && &repo.name == name)
+        {
+            Some(repo) if repo.main != MainClone::Ready && repo.main != MainClone::Cloning => {
+                repo.main = MainClone::Cloning;
+                changed = true;
+            }
+            Some(_) => {}
+            None => {
+                channel.repos.push(ChannelRepo {
+                    owner: owner.clone(),
+                    name: name.clone(),
+                    main: MainClone::Cloning,
+                });
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        channel.revision += 1;
+        starter
+            .store
+            .put_channel(&channel)
+            .map_err(|source| SetupError::Store {
+                doing: "save the channel",
+                source,
+            })?;
+    }
+    starter.layout.create_channel(&channel.folder)?;
+    Ok(channel)
 }
 
 #[tonic::async_trait]
@@ -745,12 +910,15 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         request: Request<pb::CreateChannelRequest>,
     ) -> Result<Response<pb::CreateChannelResponse>, Status> {
         let caller = identity::caller(&request)?;
+        let assigned = identity::host_assigned_id(&request, &caller)?;
         let request = request.into_inner();
         let key = request
             .idempotency_key
             .as_ref()
             .map(|key| key.value.clone());
-        let first = self.make_channel(&caller, request.clone(), false).await;
+        let first = self
+            .make_channel(&caller, request.clone(), assigned.clone(), false)
+            .await;
         let (me, who) = (self.clone(), caller.clone());
         answer_gated(
             &self.inbox,
@@ -758,7 +926,7 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
             key,
             "humata.v1.CreateChannelResponse",
             first,
-            move || async move { me.make_channel(&who, request, true).await },
+            move || async move { me.make_channel(&who, request, assigned, true).await },
         )
         .await
     }
@@ -856,11 +1024,29 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         ))
     }
 
+    /// Adds a repository to the channel and clones it on every machine of
+    /// the channel (CH-6, CH-18, CH-19, D163).
     async fn add_repo(
         &self,
-        _request: Request<pb::AddRepoRequest>,
+        request: Request<pb::AddRepoRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.ChannelService.AddRepo"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.add_repo_to_channel(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.add_repo_to_channel(&who, request, true).await },
+        )
+        .await
     }
 
     async fn plan_remove_repo(
@@ -877,11 +1063,29 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         Err(status::not_built("humata.v1.ChannelService.RemoveRepo"))
     }
 
+    /// Adds a machine to the channel and makes its folders and main clones
+    /// there (CH-7, D163).
     async fn add_machine(
         &self,
-        _request: Request<pb::AddChannelMachineRequest>,
+        request: Request<pb::AddChannelMachineRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.ChannelService.AddMachine"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.add_machine_to_channel(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.add_machine_to_channel(&who, request, true).await },
+        )
+        .await
     }
 
     async fn plan_remove_machine(

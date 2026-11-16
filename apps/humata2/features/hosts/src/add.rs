@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use humata2_clients::DaemonError;
 use humata2_clients::machines::{
-    AddFailure, AddEvent, AddOutcome, AddRequest, AddTarget, Choices, LoginEvent, LoginTarget,
+    AddFailure, AddEvent, AddOutcome, AddRequest, AddTarget, Choices, LoginEvent, LoginReason, LoginTarget,
+    PromptKind,
     Machines, OperationId, Provider, SshHost, StepKind, StepStatus, StepUpdate, UnattendedMethod,
 };
 use humata2_clients::model::MachineId;
@@ -42,11 +43,66 @@ pub struct Step {
     pub detail: String,
 }
 
+/// Why the login terminal opened (D167).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginWhy {
+    /// The add's connect printed this kind of prompt.
+    Prompted(PromptKind),
+    /// The add's connect ran until its timeout without finishing.
+    Hung,
+    /// The provider is marked interactive (MP-12) and the connect didn't finish.
+    AlwaysInteractive,
+    /// The person opened it, or the daemon named no prompt.
+    Asked,
+}
+
+/// The sentence above the login terminal (D167, frame 57). `who` is the
+/// provider's id, or `ssh` for a plain SSH host; `machine` is what the
+/// machine is called in the dialog. Fixed when the terminal opens.
+#[must_use]
+pub fn login_intro(who: &str, why: LoginWhy, machine: &str) -> String {
+    let clause = match why {
+        LoginWhy::Prompted(PromptKind::Code) => "is asking for a verification code",
+        LoginWhy::Prompted(PromptKind::Password) => "is asking for a password",
+        LoginWhy::Prompted(PromptKind::Passphrase) => "is asking for a passphrase",
+        LoginWhy::Prompted(PromptKind::Confirm) => "is asking a yes or no question",
+        LoginWhy::Prompted(PromptKind::Device) => "is asking you to sign in on a web page",
+        LoginWhy::Hung => "didn't finish connecting on its own",
+        LoginWhy::AlwaysInteractive => "is set up to log in by hand",
+        LoginWhy::Prompted(PromptKind::Other) | LoginWhy::Asked => {
+            return format!("Humata opened the login to {machine} here. Finish logging in, then press Done.");
+        }
+    };
+    format!("{who} {clause}, so Humata opened it here. Finish logging in, then press Done.")
+}
+
+/// The line under the "Log in" step once it worked (D168, frame 58). `why`
+/// is the login's first prompt if one arrived, else the reason it opened.
+/// "Accepted" is inferred from a prompt followed by the machine answering.
+#[must_use]
+pub fn login_detail(who: &str, why: LoginWhy, machine: &str) -> String {
+    let tail = match why {
+        LoginWhy::Prompted(PromptKind::Code) => format!("{who} accepted the code"),
+        LoginWhy::Prompted(PromptKind::Password) => format!("{who} accepted the password"),
+        LoginWhy::Prompted(PromptKind::Passphrase) => format!("{who} accepted the passphrase"),
+        LoginWhy::Prompted(PromptKind::Device) => format!("{who} accepted the sign-in"),
+        LoginWhy::Prompted(PromptKind::Confirm | PromptKind::Other)
+        | LoginWhy::Hung
+        | LoginWhy::AlwaysInteractive
+        | LoginWhy::Asked => format!("{machine} answered"),
+    };
+    format!("Finished in the terminal; {tail}")
+}
+
 /// A login the person is doing in the dialog's terminal (frame 57).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Login {
     /// What it belongs to.
     pub target: LoginTarget,
+    /// Why it opened.
+    pub why: LoginWhy,
+    /// The kind of the first prompt the terminal showed, once one did.
+    pub prompt: Option<PromptKind>,
     /// Everything the terminal printed so far, for the view to draw.
     pub bytes: Vec<u8>,
     /// "Done, I'm logged in" is waiting for the answer.
@@ -64,6 +120,11 @@ pub struct Unattended {
     pub method: UnattendedMethod,
     /// The request is in flight.
     pub working: bool,
+    /// The id of the provider the add used; none for a plain SSH host, which has no
+    /// cached token to keep (MP-17).
+    pub provider: Option<String>,
+    /// humatad's version on the machine, when the daemon knew it (frame 58).
+    pub version: Option<String>,
 }
 
 /// The dialog's state.
@@ -79,6 +140,10 @@ pub struct AddMachineState {
     pub providers: Vec<Provider>,
     /// What is chosen; none until the person picks or types.
     pub choice: Option<Choice>,
+    /// A host typed in the field next to the pop-up; when not empty it wins over the pick.
+    pub typed: String,
+    /// The Host pop-up is open (frame 56).
+    pub host_menu: bool,
     /// The name to give the machine; empty means the host's own.
     pub name: String,
     /// The operation, once the add has begun.
@@ -91,8 +156,8 @@ pub struct AddMachineState {
     pub failure: Option<AddFailure>,
     /// The fingerprint waiting for the person to confirm.
     pub host_key: Option<String>,
-    /// The prompt that asked for a login, offering Open interactively.
-    pub login_offer: Option<String>,
+    /// Why the add asked for a login, offering Open interactively.
+    pub login_offer: Option<LoginReason>,
     /// The login in the dialog.
     pub login: Option<Login>,
     /// The offer to make reconnects unattended.
@@ -108,9 +173,41 @@ impl AddMachineState {
         if !self.name.trim().is_empty() {
             return Some(self.name.trim());
         }
+        let typed = self.typed.trim();
+        if !typed.is_empty() {
+            return Some(typed);
+        }
         match &self.choice {
             Some(Choice::Host(host)) if !host.trim().is_empty() => Some(host.trim()),
             _ => None,
+        }
+    }
+
+    /// Who the login talks to (D167): the provider's id, or `ssh` for a plain SSH host.
+    #[must_use]
+    pub fn who(&self) -> String {
+        match self.effective_choice() {
+            Some(Choice::Provider { id, .. }) => id,
+            _ => "ssh".to_owned(),
+        }
+    }
+
+    /// Whether the chosen provider is marked interactive (MP-12).
+    fn provider_is_interactive(&self) -> bool {
+        match self.effective_choice() {
+            Some(Choice::Provider { id, .. }) => self.providers.iter().any(|p| p.id == id && p.interactive),
+            _ => false,
+        }
+    }
+
+    /// What the add targets: the typed host when there is one, else the pop-up's pick.
+    #[must_use]
+    pub fn effective_choice(&self) -> Option<Choice> {
+        let typed = self.typed.trim();
+        if typed.is_empty() {
+            self.choice.clone()
+        } else {
+            Some(Choice::Host(typed.to_owned()))
         }
     }
 }
@@ -131,8 +228,12 @@ pub enum AddMachineAction {
     Open,
     /// The choices arrived.
     Loaded(Result<Choices, DaemonError>),
-    /// Pick (or type) an SSH host.
+    /// Pick an SSH host in the pop-up.
     SelectHost(String),
+    /// Type a host in the field; it wins over the pop-up's pick while it isn't empty.
+    TypeHost(String),
+    /// Open or close the Host pop-up.
+    HostMenu(bool),
     /// Pick a provider; its params start at their defaults.
     SelectProvider(String),
     /// Change a provider param.
@@ -198,7 +299,7 @@ impl AddMachine {
     }
 
     fn request(state: &AddMachineState, trusted: Option<String>) -> Option<AddRequest> {
-        let target = match state.choice.as_ref()? {
+        let target = match &state.effective_choice()? {
             Choice::Host(host) if host.trim().is_empty() => return None,
             Choice::Host(host) => AddTarget::Ssh { host: host.trim().to_owned() },
             Choice::Provider { id, params } => {
@@ -236,6 +337,20 @@ impl AddMachine {
             Effect::send(AddMachineAction::Delegate(Delegate::Added(machine))),
             Effect::send(AddMachineAction::Delegate(Delegate::Toast(format!("Added {name}.")))),
         ])
+    }
+
+    /// Shows the login as its own done step (frame 58): in the place of the connect attempt
+    /// that asked for it, else first. The detail says what was accepted (D168).
+    fn mark_logged_in(state: &mut AddMachineState, who: &str, why: LoginWhy, machine: &str) {
+        let detail = login_detail(who, why, machine);
+        let login = Step { kind: StepKind::Login, status: StepStatus::Done, detail };
+        let at = [StepKind::Login, StepKind::Connect]
+            .into_iter()
+            .find_map(|kind| state.steps.iter().position(|step| step.kind == kind));
+        match at.and_then(|at| state.steps.get_mut(at)) {
+            Some(slot) => *slot = login,
+            None => state.steps.insert(0, login),
+        }
     }
 
     fn update_step(state: &mut AddMachineState, update: StepUpdate) {
@@ -289,8 +404,16 @@ impl Reducer for AddMachine {
             A::SelectHost(host) => {
                 if state.open && !state.running {
                     state.choice = Some(Choice::Host(host));
+                    state.typed.clear();
+                    state.host_menu = false;
                 }
             }
+            A::TypeHost(text) => {
+                if state.open && !state.running {
+                    state.typed = text;
+                }
+            }
+            A::HostMenu(open) => state.host_menu = open && state.open && !state.running,
             A::SelectProvider(id) => {
                 if state.open
                     && !state.running
@@ -302,6 +425,8 @@ impl Reducer for AddMachine {
                         .map(|param| (param.name.clone(), param.default.clone()))
                         .collect();
                     state.choice = Some(Choice::Provider { id, params });
+                    state.typed.clear();
+                    state.host_menu = false;
                 }
             }
             A::SetParam(name, value) => {
@@ -328,6 +453,7 @@ impl Reducer for AddMachine {
                 state.operation = None;
                 state.steps.clear();
                 state.failure = None;
+                state.host_menu = false;
                 state.host_key = None;
                 state.login_offer = None;
                 state.error = None;
@@ -359,7 +485,7 @@ impl Reducer for AddMachine {
                                 state.failure = Some(failure);
                             }
                             AddOutcome::HostKey { fingerprint } => state.host_key = Some(fingerprint),
-                            AddOutcome::NeedsLogin { prompt } => state.login_offer = Some(prompt),
+                            AddOutcome::NeedsLogin { reason } => state.login_offer = Some(reason),
                         }
                     }
                 }
@@ -422,15 +548,23 @@ impl Reducer for AddMachine {
             }
             A::DeclineHostKey => state.host_key = None,
             A::OpenLogin => {
-                let (Some(_), None, Some(operation)) =
+                let (Some(reason), None, Some(operation)) =
                     (&state.login_offer, &state.login, state.operation.clone())
                 else {
                     return Effect::none();
+                };
+                let why = match reason {
+                    LoginReason::Prompted { kind: PromptKind::Other, .. } => LoginWhy::Asked,
+                    LoginReason::Prompted { kind, .. } => LoginWhy::Prompted(*kind),
+                    LoginReason::Hung if state.provider_is_interactive() => LoginWhy::AlwaysInteractive,
+                    LoginReason::Hung => LoginWhy::Hung,
                 };
                 let target = LoginTarget::Operation(operation);
                 state.login_offer = None;
                 state.login = Some(Login {
                     target: target.clone(),
+                    why,
+                    prompt: None,
                     bytes: Vec::new(),
                     finishing: false,
                     error: None,
@@ -448,16 +582,35 @@ impl Reducer for AddMachine {
                         login.bytes.extend(bytes);
                     }
                 }
-                LoginEvent::Step(update) => Self::update_step(state, update),
-                LoginEvent::Ready { machine, can_make_unattended } => {
-                    if state.login.take().is_none() {
-                        return Effect::none();
+                LoginEvent::Prompt { kind, .. } => {
+                    // The first prompt of the session says what was accepted (D168).
+                    if let Some(login) = &mut state.login
+                        && login.prompt.is_none()
+                        && kind != PromptKind::Other
+                    {
+                        login.prompt = Some(kind);
                     }
+                }
+                LoginEvent::Step(update) => Self::update_step(state, update),
+                LoginEvent::Ready { machine, can_make_unattended, daemon_version } => {
+                    let Some(login) = state.login.take() else {
+                        return Effect::none();
+                    };
+                    let provider = match state.effective_choice() {
+                        Some(Choice::Provider { id, .. }) => Some(id),
+                        _ => None,
+                    };
+                    let why = login.prompt.map_or(login.why, LoginWhy::Prompted);
+                    let who = state.who();
+                    let name = state.display_name().map_or_else(|| machine.to_string(), str::to_owned);
+                    Self::mark_logged_in(state, &who, why, &name);
                     if can_make_unattended {
                         state.unattended = Some(Unattended {
                             machine,
                             method: UnattendedMethod::AddKey,
                             working: false,
+                            provider,
+                            version: daemon_version,
                         });
                     } else {
                         return Self::close_added(state, machine);
@@ -498,6 +651,7 @@ impl Reducer for AddMachine {
             A::ChooseMethod(method) => {
                 if let Some(offer) = &mut state.unattended
                     && !offer.working
+                    && (method != UnattendedMethod::KeepToken || offer.provider.is_some())
                 {
                     offer.method = method;
                 }

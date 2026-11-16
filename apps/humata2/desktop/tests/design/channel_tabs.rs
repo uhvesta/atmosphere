@@ -34,10 +34,11 @@ pub fn inbox(look: Look) -> Div {
                             .border_b_1()
                             .border_color(c(look.line))
                             .child(segmented(look, &["Waiting", "Answered", "All"], 0))
-                            .child(div().flex().gap(px(8.)).child(button(look, Kind::Secondary, "Allow all 2")).child(button(look, Kind::Secondary, "Deny all"))),
+                            .child(div().flex().gap(px(8.)).child(button(look, Kind::Secondary, "Allow all 3")).child(button(look, Kind::Secondary, "Deny all"))),
                     )
                     .child(inbox_row(look, "Move PAY-3 to Done", "Claude Code · Ledger schema migration", "2m", true, true))
-                    .child(inbox_row(look, "Push try-brin to origin", "Claude Code · Try BRIN index", "9m", false, false)),
+                    .child(inbox_row(look, "Push try-brin to origin", "Claude Code · Try BRIN index", "9m", false, false))
+                    .child(inbox_row(look, "Which currency for refunds?", "Copilot · Refund retries", "15m", false, false)),
             )
             .child(div().flex_1().p(px(20.)).flex().flex_col().gap(px(12.)).child(request_card(look, true).max_w(px(560.)))),
     )
@@ -52,7 +53,8 @@ pub fn access(look: Look) -> Div {
         ("Channel board: add items", 0),
         ("Channel board: edit, move or delete items it created", 0),
         ("Channel board: edit, move or delete anyone else's items", 1),
-        ("Global board, or other channels and their boards: anything", 1),
+        ("Global board, or other channels and their boards: read", 0),
+        ("Global board, or other channels' boards: change", 1),
         ("Write into shared/ on its machine", 0),
         ("Fetch files from shared/, the channel folder or a main clone into its own clone", 0),
         ("Prepare views for you", 0),

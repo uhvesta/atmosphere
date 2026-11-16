@@ -158,8 +158,12 @@ fn path_filters_include_and_exclude() {
 #[test]
 fn computing_any_diff_leaves_the_users_index_and_status_alone() {
     let repo = pull_request();
-    let index = repo.index_bytes();
+    // Every tracked file's cached stat is now stale (same bytes, a new
+    // mtime), so anything that refreshes the user's index rewrites it: the
+    // check can't pass by luck of timing.
+    repo.make_index_stale(&["a.txt", "b.txt", ".gitignore", "s.txt"]);
     let status = repo.status();
+    let index = repo.index_bytes();
     for upto in [Upto::Commits, Upto::Staged, Upto::Unstaged] {
         for untracked in [Untracked::None, Untracked::All] {
             diff(&repo, &since_main(compare(upto, untracked)));

@@ -19,6 +19,7 @@ humata2-desk = { path = "../features/desk" }
 humata2-files = { path = "../features/files" }
 humata2-hosts = { path = "../features/hosts" }
 humata2-inbox = { path = "../features/inbox" }
+humata2-markdown = { path = "../markdown" }
 humata2-palette = { path = "../features/palette" }
 humata2-report = { path = "../report" }
 humata2-review = { path = "../features/review" }
@@ -26,6 +27,7 @@ humata2-session = { path = "../features/session" }
 humata2-settings = { path = "../features/settings" }
 humata2-sidebar = { path = "../features/sidebar" }
 humata2-views = { path = "../features/views" }
+image = { workspace = true }
 tca-rust = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

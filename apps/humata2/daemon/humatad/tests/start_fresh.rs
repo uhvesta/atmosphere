@@ -1,5 +1,4 @@
 //! Start fresh with a summary (PER-15, D143) through a real `humatad2`.
-//! Main moves this to `tests/start_fresh.rs` once the seams are applied.
 
 mod common;
 
@@ -7,6 +6,8 @@ use common::{
     Attach, Daemon, World, agent_tab, create_channel, finished, get_session, kill_holders,
     open, start_session, start_world, stored_tabs, wait_status,
 };
+use std::time::{Duration, Instant};
+
 use humata2_grpc::humata::v1 as pb;
 use pb::SessionStatus as Status;
 
@@ -44,6 +45,12 @@ impl Fixture {
     /// A reboot that also lost the conversation: the session ends up
     /// RESUME_FAILED.
     async fn lose_conversation(&mut self) {
+        self.lose_conversation_then_start(&[]).await;
+    }
+
+    /// As [`Self::lose_conversation`], with `env` for the daemon that comes
+    /// back, such as `HUMATA2_STOP_AT`.
+    async fn lose_conversation_then_start(&mut self, env: &[(&str, &str)]) {
         let id = self.id().value;
         let tabs: Vec<_> = stored_tabs(&self.daemon.state)
             .into_iter()
@@ -52,8 +59,24 @@ impl Fixture {
         self.daemon.kill();
         kill_holders(&tabs).await;
         std::fs::remove_file(self.world.conversation(&self.session.conversation_id)).unwrap();
-        self.daemon.restart().await;
+        self.daemon.restart_env(env).await;
         wait_status(&self.daemon, &self.id(), Status::ResumeFailed).await;
+    }
+
+    /// Asks to start fresh without waiting for the answer.
+    async fn ask_start_fresh(&self, key: &str) {
+        let _ = self
+            .daemon
+            .session_service()
+            .await
+            .resume_session(pb::ResumeSessionRequest {
+                idempotency_key: Some(pb::IdempotencyKey {
+                    value: key.to_owned(),
+                }),
+                id: Some(self.id()),
+                mode: pb::resume_session_request::Mode::StartFreshWithSummary as i32,
+            })
+            .await;
     }
 
     async fn start_fresh(&self, key: &str) -> Result<pb::Operation, tonic::Status> {
@@ -106,4 +129,115 @@ async fn a_working_session_cannot_start_fresh() {
     let fix = Fixture::new().await;
     let refused = fix.start_fresh("k-2").await.unwrap_err();
     assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lost_conversation_is_summarized_from_the_saved_terminal_output() {
+    let mut fix = Fixture::new().await;
+    fix.say("remember-the-blue-door").await;
+    fix.lose_conversation().await;
+
+    let operation = fix.start_fresh("k-3").await.unwrap();
+
+    assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{:?}", operation.error);
+    let session = wait_status(&fix.daemon, &fix.id(), Status::Working).await;
+    // The new agent keeps every line typed to it: the seed carried the old
+    // terminal's answer.
+    let file = fix.world.conversation(&session.conversation_id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let heard = std::fs::read_to_string(&file).unwrap_or_default();
+        if heard.contains("got: remember-the-blue-door") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the new conversation holds {heard:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_resume_says_what_start_fresh_can_summarize() {
+    let mut fix = Fixture::new().await;
+    fix.say("one").await;
+    assert_eq!(fix.session.summary_source, pb::session::SummarySource::Unspecified as i32);
+
+    fix.lose_conversation().await;
+
+    // The conversation file is gone, but the terminal's output was saved.
+    let failed = get_session(&fix.daemon, &fix.id()).await;
+    assert_eq!(failed.summary_source, pb::session::SummarySource::Scrollback as i32);
+}
+
+/// How often `needle` is in `text`.
+fn times(text: &str, needle: &str) -> usize {
+    text.matches(needle).count()
+}
+
+/// Waits until the conversation file holds `needle`, and returns what it holds.
+async fn heard_with(file: &std::path::Path, needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let heard = std::fs::read_to_string(file).unwrap_or_default();
+        if heard.contains(needle) {
+            return heard;
+        }
+        assert!(Instant::now() < deadline, "the new conversation holds {heard:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A start fresh whose daemon dies once the new agent runs and before its
+/// first message is typed; then the daemon starts again. With
+/// `holder_lost`, the new agent's holder dies with it, so the restart
+/// resumes the agent instead of finding it running.
+async fn killed_after_launch(holder_lost: bool) {
+    let mut fix = Fixture::new().await;
+    fix.say("remember-the-blue-door").await;
+    fix.lose_conversation_then_start(&[("HUMATA2_STOP_AT", "start_fresh.launched")]).await;
+
+    fix.ask_start_fresh("k-kill").await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while std::os::unix::net::UnixStream::connect(&fix.daemon.socket).is_ok() {
+        assert!(Instant::now() < deadline, "the daemon never died at the fault point");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    fix.daemon.kill();
+    if holder_lost {
+        let id = fix.id().value;
+        let tabs: Vec<_> = stored_tabs(&fix.daemon.state)
+            .into_iter()
+            .filter(|tab| tab.session.as_deref() == Some(id.as_str()))
+            .collect();
+        kill_holders(&tabs).await;
+    }
+
+    fix.daemon.restart().await;
+
+    let session = wait_status(&fix.daemon, &fix.id(), Status::Working).await;
+    assert_ne!(session.conversation_id, fix.session.conversation_id);
+    let file = fix.world.conversation(&session.conversation_id);
+    let tag = format!("[start fresh {}]", session.conversation_id);
+    heard_with(&file, &tag).await;
+    // Give a second typing time to show itself.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let heard = std::fs::read_to_string(&file).unwrap_or_default();
+    assert_eq!(times(&heard, &tag), 1, "the new conversation holds {heard:?}");
+    // The seed is the agent's first message: nothing, such as the note that
+    // it was interrupted, came before it.
+    assert!(
+        heard.lines().next().is_some_and(|first| first.starts_with(&tag)),
+        "the new conversation holds {heard:?}"
+    );
+    // It carried the old terminal's output.
+    assert!(heard.contains("remember-the-blue-door"), "the new conversation holds {heard:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_fresh_killed_after_launch_types_its_seed_once_after_the_restart() {
+    killed_after_launch(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_fresh_killed_after_launch_with_its_holder_lost_still_hears_the_seed_first() {
+    killed_after_launch(true).await;
 }

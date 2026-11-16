@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! humata2 [--data <folder>] [--live] [--socket <path>]
+//! humata2 --version
 //! ```
 //!
 //! From an app bundle, or with `--live` or `--socket`, the app installs the
@@ -11,15 +12,22 @@
 //! 2`. Otherwise it runs on the demo workspace's fakes and keeps its state in
 //! `~/Library/Application Support/Humata 2 (fakes)`. `--data` overrides
 //! either folder; `--socket` the daemon's socket, `~/.humata2/humatad.sock`.
+//! `--version` prints the bundle's version and touches nothing else, so a
+//! release check can run the signed app without installing anything.
 
 mod live;
+mod starting;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui_kit::{App, Bounds, KeyBinding, Menu, MenuItem, WindowBounds, WindowOptions, px, size};
+use gpui_kit::component::input;
+use gpui_kit::{
+    App, Bounds, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, WindowBounds, WindowOptions,
+    px, size,
+};
 use humata2_clients::Clients;
 use humata2_engine::Resources;
 use humata2_install::Installed;
@@ -32,7 +40,17 @@ gpui_kit::actions!(
     humata_desktop,
     [
         /// ⌘Q: quit.
-        Quit
+        Quit,
+        /// ⌘H: hide the app.
+        Hide,
+        /// ⌥⌘H: hide the other apps.
+        HideOthers,
+        /// Show the other apps again.
+        ShowAll,
+        /// ⌘M: minimize the window.
+        Minimize,
+        /// Zoom the window.
+        Zoom
     ]
 );
 
@@ -41,7 +59,7 @@ gpui_kit::actions!(
 enum ArgsError {
     /// An option this app doesn't know.
     #[error(
-        "humata2 doesn't know the option `{option}`. Run it with no options, or with `--data <folder>`, `--live` or `--socket <path>`."
+        "humata2 doesn't know the option `{option}`. Run it with no options, with `--data <folder>`, `--live` or `--socket <path>`, or with `--version` alone."
     )]
     Unknown {
         /// The option given.
@@ -169,15 +187,49 @@ fn tell_about_install(installed: Installed) {
 fn menus(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    cx.on_action(|_: &Minimize, cx| {
+        if let Some(window) = cx.active_window() {
+            // A window that closed between the key and here has nothing to minimize.
+            let _ = window.update(cx, |_, window, _| window.minimize_window());
+        }
+    });
+    cx.on_action(|_: &Zoom, cx| {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| window.zoom_window());
+        }
+    });
+    cx.bind_keys([
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("alt-cmd-h", HideOthers, None),
+        KeyBinding::new("cmd-m", Minimize, None),
+    ]);
     cx.set_menus([
         Menu::new("Humata").items([
             MenuItem::action("Settings…", keys::OpenSettings),
+            MenuItem::separator(),
+            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::separator(),
+            MenuItem::action("Hide Humata", Hide),
+            MenuItem::action("Hide Others", HideOthers),
+            MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
             MenuItem::action("Quit Humata", Quit),
         ]),
         Menu::new("File").items([
             MenuItem::action("New Session", keys::NewSession),
             MenuItem::action("New Channel", keys::NewChannel),
+        ]),
+        Menu::new("Edit").items([
+            MenuItem::os_action("Undo", input::Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", input::Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
+            MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
         ]),
         Menu::new("View").items([
             MenuItem::action("Command Palette", keys::OpenPalette),
@@ -186,6 +238,10 @@ fn menus(cx: &mut App) {
             MenuItem::action("Home", keys::GoHome),
             MenuItem::action("Inbox", keys::GoInbox),
             MenuItem::action("Board", keys::GoBoard),
+        ]),
+        Menu::new("Window").items([
+            MenuItem::action("Minimize", Minimize),
+            MenuItem::action("Zoom", Zoom),
         ]),
         Menu::new("Help").items([
             MenuItem::action("Keyboard Shortcuts", keys::ShowShortcuts),
@@ -197,8 +253,31 @@ fn menus(cx: &mut App) {
     ]);
 }
 
+/// What `--version` prints: the version the release wrote into the app
+/// bundle's Info.plist.
+fn version_line(exe: &Path) -> String {
+    match bundle_version(exe) {
+        Some(version) => format!("Humata 2 {version}"),
+        None => "Humata 2 (a development build: only an app bundle has a version)".to_owned(),
+    }
+}
+
+fn bundle_version(exe: &Path) -> Option<String> {
+    live::bundled_tools(exe)?;
+    let contents = exe.parent()?.parent()?;
+    let plist = std::fs::read_to_string(contents.join("Info.plist")).ok()?;
+    let (_, after) = plist.split_once("<key>CFBundleShortVersionString</key>")?;
+    let (value, _) = after.trim_start().strip_prefix("<string>")?.split_once("</string>")?;
+    Some(value.trim().to_owned()).filter(|value| !value.is_empty())
+}
+
 fn run() -> Result<(), StartError> {
     let exe = std::env::current_exe().unwrap_or_default();
+    // Before anything else: it must not install tools or open a window.
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("{}", version_line(&exe));
+        return Ok(());
+    }
     let args = Args::parse(std::env::args().skip(1), std::env::var("HOME").map(PathBuf::from), &exe)?;
     let bundle = live::bundled_tools(&exe);
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -216,61 +295,94 @@ fn run() -> Result<(), StartError> {
         }
         humata2_ui::init(cx);
         menus(cx);
-        let reports = args.data.join("reports");
+        let recorder = Recorder::new().saving_to(args.data.join("reports"));
         let storage = Arc::new(FileStorage::new(args.data));
-        let (clients, _daemon) = match &args.backend {
+        match &args.backend {
             live::Backend::Fakes => {
-                let (clients, daemon) = Clients::demo(Arc::new(SystemClock::new()), storage);
-                (clients, Some(daemon))
+                let (clients, _daemon) = Clients::demo(Arc::new(SystemClock::new()), storage);
+                open_main(cx, &handle, clients, recorder);
             }
             live::Backend::Live { socket } => {
-                let started = handle.block_on(live::start_live(
-                    socket,
-                    bundle.as_ref(),
-                    &args.home,
-                    storage,
-                    Duration::from_secs(10),
-                ));
-                match started {
-                    Ok((clients, installed)) => {
+                // Installing the tools and waiting for the daemon can take
+                // seconds, so they run on the runtime while a small window
+                // shows progress; the main window opens when they're done.
+                let socket = socket.clone();
+                let home = args.home.clone();
+                let calls = calls_into(&recorder);
+                let first = live::first_phase(bundle.is_some());
+                let bundle = bundle.clone();
+                // The starting window reads the saved theme; the job keeps `storage`.
+                let saved_ui = storage.clone();
+                starting::show_while(
+                    cx,
+                    &handle.clone(),
+                    saved_ui.as_ref(),
+                    first,
+                    move |progress| async move {
+                        live::start_live(
+                            &socket,
+                            bundle.as_ref(),
+                            &home,
+                            storage,
+                            Duration::from_secs(10),
+                            Some(calls),
+                            |phase| progress(phase),
+                        )
+                        .await
+                    },
+                    move |cx, (clients, installed)| {
                         if let Some(installed) = installed {
                             tell_about_install(installed);
                         }
-                        (clients, None)
-                    }
-                    Err(error) => {
-                        eprintln!("{error}");
-                        cx.quit();
-                        return;
-                    }
-                }
+                        open_main(cx, &handle, clients, recorder);
+                    },
+                );
             }
-        };
-        let ui = Ui::new(&handle, clients, Recorder::new().saving_to(reports));
-        let bounds = Bounds::centered(None, size(px(humata2_ui::WINDOW.0), px(humata2_ui::WINDOW.1)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            ..WindowOptions::default()
-        };
-        let window = match humata2_ui::open(cx, &ui, options) {
-            Ok((window, _)) => window,
-            Err(error) => {
-                eprintln!("Humata couldn't open its window: {error}. Check the system's display settings and try again.");
-                cx.quit();
-                return;
-            }
-        };
-        // `humata report` reaches the running app here. Another app already
-        // answering is not fatal: this one just can't take its commands.
-        if let Err(error) = humata2_ui::report_view::serve_default(cx, &ui, window, &handle) {
-            eprintln!("{error}");
         }
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
-        cx.activate(true);
     });
     drop(runtime);
     Ok(())
+}
+
+/// Opens the main window on `clients`, wires `humata report` to it and quits
+/// the app when a window closes. On failure it says why and quits.
+fn open_main(cx: &mut App, handle: &tokio::runtime::Handle, clients: Clients, recorder: Recorder) {
+    let ui = Ui::new(handle, clients, recorder);
+    let bounds = Bounds::centered(None, size(px(humata2_ui::WINDOW.0), px(humata2_ui::WINDOW.1)), cx);
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: None,
+        ..WindowOptions::default()
+    };
+    let window = match humata2_ui::open(cx, &ui, options) {
+        Ok((window, _)) => window,
+        Err(error) => {
+            eprintln!("Humata couldn't open its window: {error}. Check the system's display settings and try again.");
+            cx.quit();
+            return;
+        }
+    };
+    // `humata report` reaches the running app here. Another app already
+    // answering is not fatal: this one just can't take its commands.
+    if let Err(error) = humata2_ui::report_view::serve_default(cx, &ui, window, handle) {
+        eprintln!("{error}");
+    }
+    cx.on_window_closed(|cx, _| cx.quit()).detach();
+    cx.activate(true);
+}
+
+/// The live client's calls, into the bug-report recorder while it records
+/// (D159).
+fn calls_into(recorder: &Recorder) -> humata2_clients_live::Observer {
+    let feed = recorder.rpc_feed();
+    std::sync::Arc::new(move |call: humata2_clients_live::Call| {
+        feed.push(humata2_ui::record::RpcCall {
+            method: call.method,
+            started: call.started,
+            duration: call.duration,
+            status: call.status,
+        });
+    })
 }
 
 fn main() -> ExitCode {

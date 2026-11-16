@@ -162,6 +162,28 @@ pub enum StartError {
         #[source]
         source: std::io::Error,
     },
+    #[error("the session {id} does not exist; pick a session from the list")]
+    NoSession { id: String },
+    #[error(
+        "the session {session} has no agent to copy the conversation from; fork it with the \
+         code only, or start the session's agent first"
+    )]
+    NoAgent { session: String },
+    #[error(
+        "could not read the conversation at {path}: {source}; fork with the code only, or \
+         check the file is still there"
+    )]
+    NoConversation {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not copy to {path}: {source}; check the disk has space and is writable")]
+    Copy {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("a background task stopped before it finished; restart humatad2 and try again")]
     Background {
         #[source]

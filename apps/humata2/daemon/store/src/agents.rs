@@ -60,6 +60,57 @@ impl Store {
         })
     }
 
+    /// What the agent's own hooks last said about its turn: the API's
+    /// `TurnState` and when the report was made (unix ns), if one was heard
+    /// since it launched or resumed (D169).
+    pub fn hook_turn(&self, session: &str) -> Result<Option<(i32, i64)>, StoreError> {
+        check_id(session)?;
+        let inner = self.inner();
+        inner.read("read an agent's turn state", |connection| {
+            connection
+                .query_row(
+                    "SELECT hook_turn, hook_turn_at FROM agents WHERE session = ?1",
+                    [session],
+                    |row| Ok((row.get::<_, Option<i32>>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )
+                .map(|saved| match saved {
+                    (Some(turn), Some(at)) => Some((turn, at)),
+                    _ => None,
+                })
+                .or_else(|error| match error {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    other => Err(other),
+                })
+        })
+    }
+
+    /// Saves what the agent's hooks said about its turn, for the agent
+    /// running in `holder_pid` and only if the report is newer than the one
+    /// saved. Another holder, or an agent that isn't running, keeps nothing.
+    /// Launching or resuming the agent clears it.
+    pub fn set_hook_turn(
+        &self,
+        session: &str,
+        holder_pid: u32,
+        turn: i32,
+        at_unix_ns: i64,
+    ) -> Result<(), StoreError> {
+        check_id(session)?;
+        let inner = self.inner();
+        let doing = "save an agent's turn state";
+        inner.write_for_session("agent.hook_turn", doing, Some(session), |transaction| {
+            transaction
+                .execute(
+                    "UPDATE agents SET hook_turn = ?3, hook_turn_at = ?4
+                     WHERE session = ?1 AND state = 'running' AND holder_pid = ?2
+                       AND (hook_turn_at IS NULL OR hook_turn_at < ?4)",
+                    params![session, holder_pid, turn, at_unix_ns],
+                )
+                .map(|_| ())
+                .map_err(inner.failed(doing))
+        })
+    }
+
     /// Every session's agent, oldest session first.
     pub fn agents(&self) -> Result<Vec<AgentRecord>, StoreError> {
         let inner = self.inner();
@@ -94,7 +145,11 @@ fn put_row(
              tab = excluded.tab, state = excluded.state, holder_pid = excluded.holder_pid,
              exit_code = excluded.exit_code, failure = excluded.failure,
              generation = excluded.generation, updated_unix_ms = excluded.updated_unix_ms,
-             launch = excluded.launch, launch_file = excluded.launch_file",
+             launch = excluded.launch, launch_file = excluded.launch_file,
+             hook_turn = CASE WHEN excluded.state IN ('launching', 'resuming')
+                              THEN NULL ELSE agents.hook_turn END,
+             hook_turn_at = CASE WHEN excluded.state IN ('launching', 'resuming')
+                                 THEN NULL ELSE agents.hook_turn_at END",
         params![
             agent.session,
             agent.tab,

@@ -73,6 +73,7 @@ pub fn of_kind(kind: &Kind) -> (&'static str, i32) {
         Kind::RepoNotVisible(_) => ("repo_not_visible", PRECONDITION),
         Kind::StepFailed(_) => ("step_failed", TOOL_FAILED),
         Kind::PassphraseLocked(_) => ("passphrase_locked", RESOURCES),
+        Kind::DependencyLoop(_) => ("dependency_loop", PRECONDITION),
         Kind::Internal(_) => ("internal", INTERNAL),
     }
 }

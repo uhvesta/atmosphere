@@ -181,7 +181,8 @@ pub fn drawer(look: Look) -> Div {
         .child(div().text_color(c(look.secondary)).child("Split postings into ledger_entries and ledger_balances, backfill from the old table in batches, and keep both in step until cut-over."))
         .child(label(look, "History"))
         .child(secondary(look, "Moved to In progress by Ledger schema migration · 1h"))
-        .child(secondary(look, "Created by you · Mon"));
+        .child(secondary(look, "Created by you · Mon"))
+        .child(div().flex().child(button(look, Kind::Secondary, "Start a session for this item")));
     page(
         look,
         Side::at("Board"),

@@ -31,6 +31,7 @@ use tonic::{Request, Status};
 use crate::cli_login::CliLogins;
 use crate::script_tokens::{ScriptCaller, ScriptTokenUnusable, ScriptTokens};
 use crate::error::DaemonError;
+use crate::relay_auth::{ConnId, MethodPath, PeerFacts, RelayAuth};
 use crate::status;
 use crate::terminal_session::{self, Processes};
 
@@ -68,6 +69,10 @@ pub(crate) enum UserVia {
     App,
     /// A process in the terminal session that this `humata login` bound.
     CliLogin { login: String },
+    /// The host, through the peer link's relay (D139, D144): a call on a
+    /// socket connection that proved itself once with the host's own
+    /// proof, for a method the relay allows.
+    Host,
 }
 
 /// A session's agent, or anything else running in one of its tabs.
@@ -118,6 +123,28 @@ pub(crate) fn session_ref(record: &SessionRecord, here: &str) -> SessionRef {
     }
 }
 
+/// The id the host minted for what it asks this machine to create (D139, D150), from
+/// `humata-host-assigned-id`. Only a caller that came through the proven relay may name
+/// one (D144); anyone else's header is ignored.
+pub(crate) fn host_assigned_id<T>(
+    request: &Request<T>,
+    caller: &Caller,
+) -> Result<Option<String>, Status> {
+    if !matches!(caller, Caller::User(UserVia::Host)) {
+        return Ok(None);
+    }
+    let Some(value) = request.metadata().get(crate::host_relay::HOST_ASSIGNED_ID) else {
+        return Ok(None);
+    };
+    let id = value
+        .to_str()
+        .map_err(|_| status::missing(crate::host_relay::HOST_ASSIGNED_ID))?;
+    if id.len() > 80 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return Err(status::missing(crate::host_relay::HOST_ASSIGNED_ID));
+    }
+    Ok(Some(id.to_owned()))
+}
+
 /// Marks a call that carried no credential on a method open to anyone.
 #[derive(Clone, Copy, Debug)]
 struct Unauthenticated;
@@ -133,15 +160,21 @@ struct AddedAgentMayCall;
 struct OpenToAnyone;
 
 /// The methods `OpenToAnyone` covers, as (service, method).
-const OPEN_TO_ANYONE: [(&str, &str); 2] = [
+const OPEN_TO_ANYONE: [(&str, &str); 4] = [
     (pb::daemon_service_server::SERVICE_NAME, "WhoAmI"),
     (pb::cli_auth_service_server::SERVICE_NAME, "BeginCliSession"),
+    // D144: the peer link proves itself on a connection that has no
+    // credential yet; neither call grants anything alone.
+    (pb::daemon_service_server::SERVICE_NAME, "BeginRelay"),
+    (pb::daemon_service_server::SERVICE_NAME, "CompleteRelay"),
 ];
 
 /// Marks `request` when its method is open to anyone. Runs before
 /// `Authenticate`, which can't see the path. Extensions are the server's
 /// own: a client can't set this marker.
-pub(crate) fn mark_open(mut request: http::Request<Body>) -> http::Request<Body> {
+pub(crate) fn mark_open(request: http::Request<Body>) -> http::Request<Body> {
+    // D144: the relay's per-connection check reads the method from here.
+    let mut request = crate::relay_auth::mark_method(request);
     let open = request
         .uri()
         .path()
@@ -179,7 +212,7 @@ pub(crate) fn actor(caller: &Caller) -> pb::Actor {
     let actor = match caller {
         Caller::User(via) => Actor::User(pb::UserActor {
             via: match via {
-                UserVia::App => pb::user_actor::Via::App,
+                UserVia::App | UserVia::Host => pb::user_actor::Via::App,
                 UserVia::CliLogin { .. } => pb::user_actor::Via::Unspecified,
             } as i32,
             machine: None,
@@ -234,6 +267,29 @@ pub(crate) fn peer_pid<T>(request: &Request<T>) -> Option<i32> {
         .get::<humata2_app_peer::PeerInfo>()
         .and_then(|info| info.uds.peer_cred)
         .and_then(|cred| cred.pid())
+}
+
+/// Which accepted connection of the socket the call came on, as the accept
+/// loop numbered it (D144). None for a request that didn't come over the
+/// socket.
+pub(crate) fn conn_id<T>(request: &Request<T>) -> Option<ConnId> {
+    request
+        .extensions()
+        .get::<humata2_app_peer::PeerInfo>()
+        .map(|info| ConnId(info.conn))
+}
+
+/// What the kernel said of the process at the other end of the call's
+/// socket, read when the connection was accepted (D144).
+pub(crate) fn peer_facts<T>(request: &Request<T>) -> PeerFacts {
+    let cred = request
+        .extensions()
+        .get::<humata2_app_peer::PeerInfo>()
+        .and_then(|info| info.uds.peer_cred);
+    PeerFacts {
+        pid: cred.and_then(|cred| cred.pid()),
+        uid: cred.map(|cred| cred.uid()),
+    }
 }
 
 /// Whether the other end of the call's socket is the signed Humata app
@@ -447,6 +503,9 @@ pub(crate) struct Authenticate {
     /// Where the tabs and their holders' pids are, to place a token's use.
     store: Arc<Store>,
     processes: Arc<dyn Processes>,
+    /// What tells the peer link's connection from an ordinary one (D144);
+    /// none where nothing relays.
+    relay: Option<Arc<RelayAuth>>,
     /// Admin mode: a call with no credential is the user. Test daemons
     /// only; release builds don't have the feature, so not the code.
     #[cfg(feature = "admin")]
@@ -478,6 +537,7 @@ impl Authenticate {
             scripts,
             store,
             processes,
+            relay: None,
             #[cfg(feature = "admin")]
             admin: None,
         }
@@ -500,8 +560,16 @@ impl Authenticate {
             scripts,
             store,
             processes,
+            relay: None,
             admin: Some(who),
         }
+    }
+
+    /// Takes a connection that completed the relay's proof (D144) for the
+    /// host's, for the methods the relay allows.
+    pub(crate) fn with_relay(mut self, relay: Arc<RelayAuth>) -> Self {
+        self.relay = Some(relay);
+        self
     }
 
     /// Who a call with no credential from `pid` is, if anyone. `app` says
@@ -522,7 +590,7 @@ impl Authenticate {
 
     /// Whether `pid` is inside any tab's process tree. Fails closed: no
     /// pid, or tabs that can't be read, count as inside.
-    fn in_a_session(&self, pid: Option<i32>) -> bool {
+    pub(crate) fn in_a_session(&self, pid: Option<i32>) -> bool {
         let Some(pid) = pid else {
             return true;
         };
@@ -598,6 +666,28 @@ impl Authenticate {
         pid: Option<i32>,
         app: bool,
     ) -> Result<Request<()>, Status> {
+        // D144: a connection that proved itself as the link's is the host's
+        // for the methods the relay allows, with no credential on the call;
+        // anything else on it is refused. An ordinary connection falls
+        // through.
+        if let (Some(relay), Some(conn)) = (&self.relay, conn_id(&request)) {
+            let method = request
+                .extensions()
+                .get::<MethodPath>()
+                .map(|path| path.0.clone())
+                .unwrap_or_default();
+            let carries = [TOKEN_HEADER, LOGIN_HEADER, SCRIPT_HEADER]
+                .iter()
+                .any(|header| request.metadata().contains_key(*header));
+            if relay
+                .authorize(conn, &method, carries)
+                .map_err(|refusal| refusal.status())?
+                .is_some()
+            {
+                request.extensions_mut().insert(Caller::User(UserVia::Host));
+                return Ok(request);
+            }
+        }
         let open = request.extensions().get::<OpenToAnyone>().is_some();
         let session = request.metadata().get(TOKEN_HEADER);
         let login = request.metadata().get(LOGIN_HEADER);

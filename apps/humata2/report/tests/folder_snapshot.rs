@@ -135,7 +135,9 @@ fn a_saved_recording_holds_what_its_snapshot_holds() {
         comments: vec![Comment {
             element: item("milk"),
             text: "shown twice".to_owned(),
+            place: None,
         }],
+        ..Form::default()
     };
     let secrets = Secrets::new().secret("GITHUB_TOKEN", "ghp_Zx81Qm2Lp0Vb7Rt4");
 
@@ -150,6 +152,7 @@ fn a_saved_snapshot_holds_what_its_snapshot_holds() {
         happened: "the draft kept milk after a restart".to_owned(),
         expected: "an empty draft".to_owned(),
         comments: Vec::new(),
+        ..Form::default()
     };
 
     check("snapshot", &saved_text(snapshot(context(), toy.trees()), form, &Secrets::new()));

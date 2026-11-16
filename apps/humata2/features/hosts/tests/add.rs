@@ -5,11 +5,11 @@ use std::sync::Arc;
 use humata2_clients::DaemonError;
 use humata2_clients::machines::{
     AddEvent, AddFailure, AddOutcome, AddRequest, AddTarget, Call, Choices, FakeMachines, Fix,
-    LoginEvent, LoginTarget, OperationId, Provider, ProviderParam, SshHost, StepKind, StepStatus,
-    StepUpdate, UnattendedMethod,
+    LoginEvent, LoginReason, LoginTarget, OperationId, PromptKind, Provider, ProviderParam, SshHost,
+    StepKind, StepStatus, StepUpdate, UnattendedMethod,
 };
 use humata2_clients::model::MachineId;
-use humata2_hosts::add::{Choice, Delegate};
+use humata2_hosts::add::{Choice, Delegate, LoginWhy, login_detail, login_intro};
 use humata2_hosts::{AddMachine, AddMachineAction as A, AddMachineState};
 use tca::{StreamEnd, TestStore};
 
@@ -217,13 +217,16 @@ fn a_failure_stops_there_and_try_again_retries_the_same_operation() {
 #[test]
 fn cancel_stops_a_running_add_and_closes() {
     let (mut store, fake) = store(open_with_host("devbox-2"));
-    fake.script_add(vec![started()]);
+    // The add stays open, as a running one does, until Cancel reaches it.
+    fake.script_add_held(vec![started()]);
     store.send(A::Start, |_| {});
     store.receive(A::Progress(started()), |_| {});
     store.send(A::Cancel, |_| {});
     store.skip_received();
     assert_eq!(*store.state(), AddMachineState::default());
     assert!(fake.calls().contains(&Call::Cancel(op())));
+    let adds = fake.calls().into_iter().filter(|c| matches!(c, Call::Add(_))).count();
+    assert_eq!(adds, 1, "nothing is added or retried");
 }
 
 #[test]
@@ -275,22 +278,150 @@ fn login_target() -> LoginTarget {
     LoginTarget::Operation(op())
 }
 
+fn ready(can_make_unattended: bool) -> LoginEvent {
+    LoginEvent::Ready {
+        machine: MachineId::new("corp-vm"),
+        can_make_unattended,
+        daemon_version: Some("2.0.4".to_owned()),
+    }
+}
+
+fn code_prompt() -> LoginReason {
+    LoginReason::Prompted { kind: PromptKind::Code, line: "Verification code:".to_owned() }
+}
+
 fn ask_for_login(store: &mut TestStore<AddMachine>, fake: &FakeMachines) {
-    fake.script_add(vec![
-        started(),
-        AddEvent::Outcome(AddOutcome::NeedsLogin { prompt: "Verification code:".to_owned() }),
-    ]);
+    ask_for_login_because(store, fake, code_prompt());
+}
+
+fn ask_for_login_because(store: &mut TestStore<AddMachine>, fake: &FakeMachines, reason: LoginReason) {
+    fake.script_add(vec![started(), AddEvent::Outcome(AddOutcome::NeedsLogin { reason })]);
     store.send(A::Start, |_| {});
     store.receive(A::ProgressEnded(StreamEnd::Finished), |_| {});
+}
+
+/// The detail under the "Log in" step after the login worked.
+fn login_step_detail(store: &TestStore<AddMachine>) -> Option<String> {
+    store
+        .state()
+        .steps
+        .iter()
+        .find(|step| step.kind == StepKind::Login)
+        .map(|step| step.detail.clone())
+}
+
+#[test]
+fn the_login_offer_keeps_the_daemons_reason_and_opening_it_keeps_why() {
+    let (mut store, fake) = store(provider_state());
+    ask_for_login(&mut store, &fake);
+    assert_eq!(store.state().login_offer, Some(code_prompt()));
+    store.send(A::OpenLogin, |_| {});
+    assert_eq!(
+        store.state().login.as_ref().map(|login| login.why),
+        Some(LoginWhy::Prompted(PromptKind::Code))
+    );
+    assert!(store.state().login_offer.is_none());
+}
+
+#[test]
+fn a_hung_connect_is_always_interactive_for_an_interactive_provider_and_hung_for_others() {
+    let (mut store, fake) = store(provider_state());
+    ask_for_login_because(&mut store, &fake, LoginReason::Hung);
+    store.send(A::OpenLogin, |_| {});
+    assert_eq!(store.state().login.as_ref().map(|login| login.why), Some(LoginWhy::AlwaysInteractive));
+
+    let (mut store, fake) = self::store(open_with_host("corp-vm"));
+    ask_for_login_because(&mut store, &fake, LoginReason::Hung);
+    store.send(A::OpenLogin, |_| {});
+    assert_eq!(store.state().login.as_ref().map(|login| login.why), Some(LoginWhy::Hung));
+}
+
+#[test]
+fn a_prompt_the_daemon_could_not_name_is_the_persons_own_choice_to_log_in() {
+    let (mut store, fake) = store(open_with_host("corp-vm"));
+    let other = LoginReason::Prompted { kind: PromptKind::Other, line: "Token?".to_owned() };
+    ask_for_login_because(&mut store, &fake, other);
+    store.send(A::OpenLogin, |_| {});
+    assert_eq!(store.state().login.as_ref().map(|login| login.why), Some(LoginWhy::Asked));
+}
+
+#[test]
+fn the_first_prompt_of_the_session_says_what_the_login_accepted() {
+    let (mut store, fake) = store(provider_state());
+    ask_for_login_because(&mut store, &fake, LoginReason::Hung);
+    let ready = ready(true);
+    fake.script_login(vec![], vec![ready.clone()]);
+    store.send(A::OpenLogin, |_| {});
+    store.send(
+        A::LoginProgress(LoginEvent::Prompt { kind: PromptKind::Password, line: "Password:".to_owned() }),
+        |_| {},
+    );
+    // A later prompt doesn't replace the first.
+    store.send(
+        A::LoginProgress(LoginEvent::Prompt { kind: PromptKind::Code, line: "Code:".to_owned() }),
+        |_| {},
+    );
+    assert_eq!(store.state().login.as_ref().and_then(|login| login.prompt), Some(PromptKind::Password));
+    store.send(A::LoginDone, |_| {});
+    store.receive(A::LoginProgress(ready), |_| {});
+    assert_eq!(
+        login_step_detail(&store),
+        Some(login_detail("corp-ssh", LoginWhy::Prompted(PromptKind::Password), "corp-vm"))
+    );
+}
+
+#[test]
+fn without_a_prompt_the_detail_follows_the_reason_and_names_ssh_for_a_plain_host() {
+    let (mut store, fake) = store(provider_state());
+    log_in(&mut store, &fake, ready(true));
+    assert_eq!(
+        login_step_detail(&store),
+        Some(login_detail("corp-ssh", LoginWhy::Prompted(PromptKind::Code), "corp-vm"))
+    );
+
+    let (mut store, fake) = self::store(open_with_host("corp-vm"));
+    log_in(&mut store, &fake, ready(true));
+    assert_eq!(
+        login_step_detail(&store),
+        Some(login_detail("ssh", LoginWhy::Prompted(PromptKind::Code), "corp-vm"))
+    );
+}
+
+#[test]
+fn the_login_texts_for_every_reason_are_the_decisions_wording() {
+    let rows = [
+        (LoginWhy::Prompted(PromptKind::Code), "corp-ssh is asking for a verification code, so Humata opened it here. Finish logging in, then press Done.", "Finished in the terminal; corp-ssh accepted the code"),
+        (LoginWhy::Prompted(PromptKind::Password), "corp-ssh is asking for a password, so Humata opened it here. Finish logging in, then press Done.", "Finished in the terminal; corp-ssh accepted the password"),
+        (LoginWhy::Prompted(PromptKind::Passphrase), "corp-ssh is asking for a passphrase, so Humata opened it here. Finish logging in, then press Done.", "Finished in the terminal; corp-ssh accepted the passphrase"),
+        (LoginWhy::Prompted(PromptKind::Confirm), "corp-ssh is asking a yes or no question, so Humata opened it here. Finish logging in, then press Done.", "Finished in the terminal; corp-vm answered"),
+        (LoginWhy::Prompted(PromptKind::Device), "corp-ssh is asking you to sign in on a web page, so Humata opened it here. Finish logging in, then press Done.", "Finished in the terminal; corp-ssh accepted the sign-in"),
+        (LoginWhy::Hung, "corp-ssh didn't finish connecting on its own, so Humata opened it here. Finish logging in, then press Done.", "Finished in the terminal; corp-vm answered"),
+        (LoginWhy::AlwaysInteractive, "corp-ssh is set up to log in by hand, so Humata opened it here. Finish logging in, then press Done.", "Finished in the terminal; corp-vm answered"),
+        (LoginWhy::Asked, "Humata opened the login to corp-vm here. Finish logging in, then press Done.", "Finished in the terminal; corp-vm answered"),
+        (LoginWhy::Prompted(PromptKind::Other), "Humata opened the login to corp-vm here. Finish logging in, then press Done.", "Finished in the terminal; corp-vm answered"),
+    ];
+    for (why, intro, detail) in rows {
+        assert_eq!(login_intro("corp-ssh", why, "corp-vm"), intro, "{why:?}");
+        assert_eq!(login_detail("corp-ssh", why, "corp-vm"), detail, "{why:?}");
+    }
+    // A plain SSH host is `ssh`, the program Humata ran.
+    assert_eq!(
+        login_detail("ssh", LoginWhy::Prompted(PromptKind::Password), "corp-vm"),
+        "Finished in the terminal; ssh accepted the password"
+    );
+    assert_eq!(
+        login_intro("ssh", LoginWhy::Prompted(PromptKind::Password), "corp-vm"),
+        "ssh is asking for a password, so Humata opened it here. Finish logging in, then press Done."
+    );
 }
 
 #[test]
 fn a_login_flows_from_the_offer_through_done_to_the_unattended_offer() {
     let (mut store, fake) = store(open_with_host("corp-vm"));
     ask_for_login(&mut store, &fake);
-    assert_eq!(store.state().login_offer.as_deref(), Some("Verification code:"));
+    assert_eq!(store.state().login_offer, Some(code_prompt()));
 
-    let ready = LoginEvent::Ready { machine: MachineId::new("corp-vm"), can_make_unattended: true };
+    let ready = ready(true);
     fake.script_login(
         vec![LoginEvent::Output(b"Verification ".to_vec()), LoginEvent::Output(b"code: ".to_vec())],
         vec![ready.clone()],
@@ -311,7 +442,8 @@ fn a_login_flows_from_the_offer_through_done_to_the_unattended_offer() {
     assert_eq!(offer.map(|o| (o.machine, o.method)), Some((MachineId::new("corp-vm"), UnattendedMethod::AddKey)));
     assert!(store.state().login.is_none());
 
-    store.send(A::ChooseMethod(UnattendedMethod::KeepToken), |_| {});
+    // A plain SSH host has no provider's token to keep (MP-17), so the
+    // offer's method stays the key; the provider case has its own test.
     store.send(A::MakeUnattended, |_| {});
     store.receive_matching("finished", |a| matches!(a, A::UnattendedFinished(Ok(()))), |_| {});
     receive_added(&mut store, "corp-vm");
@@ -319,14 +451,14 @@ fn a_login_flows_from_the_offer_through_done_to_the_unattended_offer() {
     assert!(calls.contains(&Call::LoginInput(login_target(), b"123456\r".to_vec())));
     assert!(calls.contains(&Call::LoginResize(login_target(), 90, 20)));
     assert!(calls.contains(&Call::LoginDone(login_target())));
-    assert!(calls.contains(&Call::MakeUnattended(MachineId::new("corp-vm"), UnattendedMethod::KeepToken)));
+    assert!(calls.contains(&Call::MakeUnattended(MachineId::new("corp-vm"), UnattendedMethod::AddKey)));
 }
 
 #[test]
 fn skipping_the_unattended_offer_keeps_the_machine_interactive() {
     let (mut store, fake) = store(open_with_host("corp-vm"));
     ask_for_login(&mut store, &fake);
-    let ready = LoginEvent::Ready { machine: MachineId::new("corp-vm"), can_make_unattended: true };
+    let ready = ready(true);
     fake.script_login(vec![], vec![ready.clone()]);
     store.send(A::OpenLogin, |_| {});
     store.send(A::LoginDone, |_| {});
@@ -340,7 +472,7 @@ fn skipping_the_unattended_offer_keeps_the_machine_interactive() {
 fn a_login_that_cannot_be_unattended_adds_the_machine_at_once() {
     let (mut store, fake) = store(open_with_host("corp-vm"));
     ask_for_login(&mut store, &fake);
-    let ready = LoginEvent::Ready { machine: MachineId::new("corp-vm"), can_make_unattended: false };
+    let ready = ready(false);
     fake.script_login(vec![], vec![ready.clone()]);
     store.send(A::OpenLogin, |_| {});
     store.send(A::LoginDone, |_| {});
@@ -401,4 +533,128 @@ fn a_failed_call_is_kept_as_text_and_out_of_order_actions_change_nothing() {
         |_| {},
     );
     assert!(store.state().error.is_some());
+}
+
+fn provider_state() -> AddMachineState {
+    AddMachineState {
+        open: true,
+        providers: vec![Provider {
+            id: "corp-ssh".to_owned(),
+            label: "Corporate SSH".to_owned(),
+            interactive: true,
+            params: vec![],
+        }],
+        choice: Some(Choice::Provider {
+            id: "corp-ssh".to_owned(),
+            params: std::collections::BTreeMap::new(),
+        }),
+        ..AddMachineState::default()
+    }
+}
+
+/// Runs an add that asks for a login through to the login's ready event.
+fn log_in(store: &mut TestStore<AddMachine>, fake: &FakeMachines, ready: LoginEvent) {
+    ask_for_login(store, fake);
+    fake.script_login(vec![], vec![ready.clone()]);
+    store.send(A::OpenLogin, |_| {});
+    store.send(A::LoginDone, |_| {});
+    store.receive(A::LoginProgress(ready), |_| {});
+}
+
+#[test]
+fn a_login_shows_as_its_own_done_step_in_place_of_the_connect_attempt() {
+    let (mut store, fake) = store(open_with_host("corp-vm"));
+    log_in(&mut store, &fake, ready(true));
+    let kinds: Vec<_> = store.state().steps.iter().map(|s| (s.kind, s.status)).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            (StepKind::Login, StepStatus::Done),
+            (StepKind::Check, StepStatus::NotRun),
+            (StepKind::Install, StepStatus::NotRun),
+            (StepKind::Start, StepStatus::NotRun),
+            (StepKind::FindAgents, StepStatus::NotRun),
+        ]
+    );
+}
+
+#[test]
+fn the_offer_carries_the_daemons_version_when_it_was_known() {
+    let (mut store, fake) = store(open_with_host("corp-vm"));
+    log_in(&mut store, &fake, ready(true));
+    assert_eq!(store.state().unattended.as_ref().and_then(|o| o.version.clone()).as_deref(), Some("2.0.4"));
+
+    let (mut store, fake) = self::store(open_with_host("corp-vm"));
+    let unknown = LoginEvent::Ready { machine: MachineId::new("corp-vm"), can_make_unattended: true, daemon_version: None };
+    log_in(&mut store, &fake, unknown);
+    assert_eq!(store.state().unattended.as_ref().map(|o| o.version.clone()), Some(None));
+}
+
+#[test]
+fn a_plain_ssh_login_has_no_token_to_keep() {
+    let (mut store, fake) = store(open_with_host("corp-vm"));
+    log_in(&mut store, &fake, ready(true));
+    assert_eq!(store.state().unattended.as_ref().map(|o| o.provider.clone()), Some(None));
+    store.send(A::ChooseMethod(UnattendedMethod::KeepToken), |_| {});
+    assert_eq!(store.state().unattended.as_ref().map(|o| o.method), Some(UnattendedMethod::AddKey));
+}
+
+#[test]
+fn a_provider_login_offers_its_own_cached_token() {
+    let (mut store, fake) = store(provider_state());
+    log_in(&mut store, &fake, ready(true));
+    assert_eq!(
+        store.state().unattended.as_ref().and_then(|o| o.provider.clone()).as_deref(),
+        Some("corp-ssh")
+    );
+    store.send(A::ChooseMethod(UnattendedMethod::KeepToken), |_| {});
+    assert_eq!(store.state().unattended.as_ref().map(|o| o.method), Some(UnattendedMethod::KeepToken));
+}
+
+#[test]
+fn a_typed_host_wins_over_the_popups_pick() {
+    let (mut store, fake) = store(open_with_host("devbox-2"));
+    fake.script_add(added_events("gpu-9"));
+    store.send(A::TypeHost("gpu-9".to_owned()), |_| {});
+    assert_eq!(store.state().display_name(), Some("gpu-9"));
+    store.send(A::Start, |_| {});
+    receive_added(&mut store, "gpu-9");
+    assert_eq!(fake.calls(), vec![Call::Add(ssh_request("gpu-9", None))]);
+}
+
+#[test]
+fn emptying_the_typed_host_goes_back_to_the_pick_and_a_new_pick_clears_it() {
+    let (mut store, _fake) = store(open_with_host("devbox-2"));
+    store.send(A::TypeHost("gpu-9".to_owned()), |_| {});
+    store.send(A::TypeHost("  ".to_owned()), |_| {});
+    assert_eq!(store.state().effective_choice(), Some(Choice::Host("devbox-2".to_owned())));
+
+    store.send(A::TypeHost("gpu-9".to_owned()), |_| {});
+    store.send(A::SelectHost("corp-vm".to_owned()), |_| {});
+    assert!(store.state().typed.is_empty());
+    assert_eq!(store.state().effective_choice(), Some(Choice::Host("corp-vm".to_owned())));
+}
+
+#[test]
+fn the_host_menu_opens_and_closes_on_a_pick_or_cancel_and_not_while_running() {
+    let (mut store, fake) = store(open_with_host("devbox-2"));
+    store.send(A::HostMenu(true), |_| {});
+    assert!(store.state().host_menu);
+    store.send(A::SelectHost("corp-vm".to_owned()), |_| {});
+    assert!(!store.state().host_menu);
+
+    store.send(A::HostMenu(true), |_| {});
+    store.send(A::Cancel, |_| {});
+    assert_eq!(*store.state(), AddMachineState::default());
+    store.send(A::HostMenu(true), |_| {});
+    assert!(!store.state().host_menu, "a closed dialog has no menu");
+
+    let (mut store, fake2) = self::store(open_with_host("devbox-2"));
+    fake2.script_add_held(vec![started()]);
+    store.send(A::Start, |_| {});
+    store.send(A::HostMenu(true), |_| {});
+    assert!(!store.state().host_menu, "a running add can't change its target");
+    store.send(A::Cancel, |_| {});
+    store.skip_received();
+    assert!(fake.calls().is_empty());
 }

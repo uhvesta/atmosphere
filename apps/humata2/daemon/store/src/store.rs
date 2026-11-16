@@ -225,6 +225,15 @@ impl Store {
                         [id],
                     )
                 })
+                .and_then(|_| {
+                    transaction.execute("DELETE FROM fresh_seeds WHERE session_id = ?1", [id])
+                })
+                .and_then(|_| {
+                    transaction.execute("DELETE FROM fork_origins WHERE session_id = ?1", [id])
+                })
+                .and_then(|_| {
+                    transaction.execute("DELETE FROM archives WHERE session_id = ?1", [id])
+                })
                 .map(drop)
         })?;
         self.inner.sweep().map(drop)

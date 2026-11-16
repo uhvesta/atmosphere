@@ -5,7 +5,7 @@
 
 use gpui_kit::base::TextViewStyle;
 use gpui_kit::component::Theme;
-use gpui_kit::{App, HighlightStyle, Hsla, Pixels, Rgba, SharedString, StyleRefinement, Styled as _, rems};
+use gpui_kit::{App, HighlightStyle, Hsla, Pixels, Rgba, SharedString, StyleRefinement, Styled as _, rems, rgb};
 
 /// Everything the view draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,6 +28,10 @@ pub struct MarkdownTheme {
     /// A comment's highlight, and one whose passage changed since.
     pub comment: Hsla,
     pub comment_outdated: Hsla,
+    /// A commented block's tint and its left bar and count, when comments
+    /// show as counts ([`crate::CommentMarks::Counts`]).
+    pub comment_lit: Hsla,
+    pub comment_accent: Hsla,
     /// An inline error, such as an invalid diagram.
     pub error: Hsla,
     pub sans: SharedString,
@@ -60,6 +64,8 @@ impl MarkdownTheme {
             changed: theme.warning,
             comment: theme.info.opacity(0.25),
             comment_outdated: theme.muted_foreground.opacity(0.2),
+            comment_lit: if theme.is_dark() { rgb(0x1c2a3f).into() } else { rgb(0xeaf2ff).into() },
+            comment_accent: theme.info,
             error: theme.danger,
             sans: theme.font_family.clone(),
             mono: theme.mono_font_family.clone(),

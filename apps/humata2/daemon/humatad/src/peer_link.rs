@@ -14,14 +14,16 @@
 //! folder: in a terminal Humata took over, stderr shares the stream, so a
 //! late error line would corrupt it.
 //!
-//! This process opens no socket and no store: the socket's daemon keeps
-//! the terminals and the store (PER-7). Until the two share them, the
-//! services the Mac relays, and PeerService past the handshake, answer
-//! "not built".
+//! This process opens no store and no holders: the socket's daemon keeps
+//! the terminals and the store (PER-7). Once the host has proved itself,
+//! the services the Mac relays go to that daemon over one connection
+//! (`relay`, D139, D144); PeerService past the handshake answers "not
+//! built". A link started with its own `--state` and no `--socket` relays
+//! nothing (D146).
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -36,12 +38,13 @@ use tonic::transport::Server;
 use tonic::transport::server::Connected;
 use tower::util::MapRequestLayer;
 
+use crate::bridge;
 use crate::compression::Compression;
 use crate::daemon::Daemon;
 use crate::error::DaemonError;
 use crate::link_proof;
-use crate::not_built;
 use crate::peer::{self, Gate, Handshake, Peer};
+use crate::relay::{self, Relay};
 use crate::serve;
 use crate::sync;
 
@@ -58,11 +61,14 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Prints the sync marker if asked, points stderr at the link's log, then
 /// serves the peer link on stdio until it closes, a stop signal comes, or
 /// the host's proof is wrong. `state` is the state folder, with a private
-/// `logs` folder in it.
+/// `logs` folder in it. `socket` is the machine's daemon socket the relay
+/// connects to, starting that daemon if nobody listens; none relays nothing
+/// (D146).
 pub(crate) async fn run(
     state: &Path,
     machine: String,
     sync_nonce: Option<&str>,
+    socket: Option<PathBuf>,
 ) -> Result<(), DaemonError> {
     // Opened before the marker, so that failing to open it still reaches
     // whoever reads this terminal, before the stream starts.
@@ -90,6 +96,9 @@ pub(crate) async fn run(
         state.join(link_proof::KEY_FILE),
         machine.clone(),
         Arc::new(Compression::new(state)),
+        Relay::to_socket(socket, machine.clone(), |socket| async move {
+            bridge::connect_or_start(&socket).await
+        }),
     ));
     let stop = serve::stop_signal()?;
     let (input, output) = stdio(output);
@@ -168,6 +177,10 @@ where
                 // The answer to the wrong proof still goes out: the
                 // server lets calls in flight finish before it closes.
                 () = handshake.closing() => {}
+                // The connection to the machine's daemon is gone, so there
+                // is nothing left to relay to: end the link and the host
+                // dials a new one (D144, TR-7).
+                () = handshake.relay().lost() => {}
             }
         }
     };
@@ -183,8 +196,8 @@ where
             machine,
             pb::DaemonRole::Machine,
         )))
-        .add_service(pb::peer_service_server::PeerServiceServer::new(Peer::new(handshake)));
-    let router = not_built::register_peer_link(router);
+        .add_service(pb::peer_service_server::PeerServiceServer::new(Peer::new(handshake.clone())));
+    let router = relay::register(router, handshake.relay());
     router
         .serve_with_incoming_shutdown(incoming, done)
         .await
@@ -273,6 +286,7 @@ mod tests {
     use crate::error::DaemonError;
     use crate::link_proof;
     use crate::peer::Handshake;
+    use crate::relay::Relay;
 
     const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     const DATA: u8 = 0;
@@ -325,6 +339,7 @@ mod tests {
             dir.join(link_proof::KEY_FILE),
             "ma_test".to_owned(),
             Arc::new(Compression::new(dir)),
+            Relay::off("ma_test".to_owned()),
         ));
         let (stop, stopped) = oneshot::channel::<()>();
         let served = tokio::spawn(serve_link(input, output, handshake, "ma_test".to_owned(), async {

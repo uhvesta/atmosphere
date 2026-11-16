@@ -5,6 +5,7 @@
 use super::Overlays;
 use crate::bridge::Ui;
 use crate::chrome;
+use crate::desk::runs;
 use crate::theme::Look;
 use crate::widgets::{col, row};
 use gpui_kit::assets::IconName;
@@ -12,7 +13,6 @@ use gpui_kit::base::ObservedElement;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
-use humata2_clients::model::Agent;
 use humata2_clients::model::SessionId;
 use humata2_desk::{DeskAction, DeskState, Menu as DeskMenu, NewAction};
 use std::rc::Rc;
@@ -172,16 +172,10 @@ impl Overlays {
     }
 }
 
-/// What a Desk session runs, as the dialogs name it.
-fn agent_label(agent: Agent) -> &'static str {
-    match agent {
-        Agent::Claude => "Claude Code",
-        Agent::Shell => "Terminal",
-        other => other.name(),
-    }
-}
-
-/// The dialog's card, `width` wide.
+/// The dialog's card, `width` wide. Every dialog ends with
+/// `.focus_trap(<the same id>, ..)`: the trap is the element the window
+/// sees, and it draws this card under the trap's id, so a trap with another
+/// id would hide the dialog's id from tests and flows.
 fn card(
     id: &'static str,
     label: &'static str,
@@ -228,8 +222,29 @@ fn secondary(look: Look, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// A form row: the key on the left, right-aligned, the value beside it.
+/// A form row as the frames draw it: the key on the left, right-aligned in
+/// a column that gives way when the value needs the room, so a long line of
+/// the value stays on one line (frame 40's folder caption).
 fn form_row(look: Look, key: &'static str, value: impl IntoElement) -> Div {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(12.))
+        .child(
+            div()
+                .w(px(110.))
+                .pt(px(3.))
+                .flex()
+                .justify_end()
+                .text_color(rgb(look.secondary))
+                .child(key),
+        )
+        .child(div().flex_1().child(value))
+}
+
+/// A form row whose key column keeps its width and whose value wraps: for a
+/// value too long to fit on one line however far the key gives way.
+fn form_row_wrapping(look: Look, key: &'static str, value: impl IntoElement) -> Div {
     div()
         .flex()
         .items_start()
@@ -255,16 +270,8 @@ fn button(
     text: impl Into<SharedString>,
     action: AppAction,
 ) -> gpui_kit::component::button::Button {
-    use gpui_kit::component::Sizable as _;
-    crate::widgets::send(ui, id, text, action)
-        .small()
-        .h(px(24.))
-        .px(px(11.))
-        .font_weight(FontWeight::MEDIUM)
-        .bg(rgb(look.fill))
-        .text_color(rgb(look.text))
-        .border_1()
-        .border_color(rgb(look.line))
+    // The shared push button: the frames' 12 pt label, 24 pt high.
+    crate::widgets::push_quiet(ui, id, text, action, look)
 }
 
 /// The main button, sending `action`; `busy` disables it.
@@ -277,15 +284,7 @@ fn primary(
     busy: bool,
 ) -> gpui_kit::component::button::Button {
     use gpui_kit::base::Disableable as _;
-    use gpui_kit::component::Sizable as _;
-    crate::widgets::primary(ui, id, text, action)
-        .small()
-        .h(px(24.))
-        .px(px(11.))
-        .font_weight(FontWeight::MEDIUM)
-        .bg(rgb(look.accent))
-        .text_color(rgb(0xffffff))
-        .disabled(busy)
+    crate::widgets::push_primary(ui, id, text, action, look).disabled(busy)
 }
 
 /// A pop-up button showing `text`, sending `action`.

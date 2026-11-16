@@ -63,7 +63,7 @@ pub fn palette(look: Look, under: Div) -> Div {
                         .child(div().flex_1()),
                 )
                 .child(group("Sessions"))
-                .child(result(IconName::SquareTerminal, "Ledger schema migration", "# payments-rewrite · needs you", Some("used Today 12:52"), None, true))
+                .child(result(IconName::SquareTerminal, "Ledger schema migration", "# payments-rewrite · working", Some("used Today 12:52"), None, true))
                 .child(result(IconName::GitFork, "Try BRIN index", "fork of Ledger schema migration", Some("used Today 13:02"), None, false))
                 .child(group("Files"))
                 .child(result(IconName::FileCode, "ledger/migrations/0042_accounts.sql", "Ledger schema migration", None, None, false))

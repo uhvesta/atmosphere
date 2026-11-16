@@ -761,7 +761,8 @@ impl Render for Sidebar {
                         )
                     })
                     .when(
-                        route == Route::Hosts && selected_host.as_ref() == Some(&m.id),
+                        (route == Route::Hosts && selected_host.as_ref() == Some(&m.id))
+                            || route == Route::Machine(m.id.clone()),
                         |x| {
                             x.rounded(px(6.))
                                 .bg(rgb(look.selection))
@@ -769,11 +770,7 @@ impl Render for Sidebar {
                         },
                     )
                     .on_click(move |_, _, cx| {
-                        ui.send(AppAction::Switch(Route::Hosts), cx);
-                        ui.send(
-                            AppAction::Hosts(humata2_hosts::HostsAction::Select(m.id.clone())),
-                            cx,
-                        );
+                        ui.send(AppAction::Switch(Route::Machine(m.id.clone())), cx);
                     })
                     .test_support()
             }))

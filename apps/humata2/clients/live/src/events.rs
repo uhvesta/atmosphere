@@ -71,6 +71,8 @@ impl Shared {
                     pb::Topic::Sessions as i32,
                     pb::Topic::Channels as i32,
                     pb::Topic::Machines as i32,
+                    pb::Topic::Inbox as i32,
+                    pb::Topic::Access as i32,
                 ],
             };
             match self.event_stream().subscribe(request).await {
@@ -118,6 +120,22 @@ async fn handle(shared: &Arc<Shared>, event: pb::Event) {
             }
         }
         Some(Payload::Machine(machine)) => shared.publish(Event::Machine(map::machine(&machine))),
+        Some(Payload::Request(request)) => shared.publish(Event::Request(shared.map_request(&request))),
+        Some(Payload::Rules(rules)) => {
+            let channel = map::channel_id(rules.channel.as_ref());
+            shared.publish(Event::Rules {
+                channel,
+                rules: shared.map_rules(&rules),
+            });
+        }
+        // A grant was made or removed: read its channel's rules again.
+        Some(Payload::Grant(grant)) => {
+            let channel = map::channel_id(grant.channel.as_ref());
+            match shared.read_rules(&channel).await {
+                Ok(rules) => shared.publish(Event::Rules { channel, rules }),
+                Err(_) => shared.publish(Event::Resync),
+            }
+        }
         // The app has no channel event yet: reload instead.
         Some(Payload::Channel(_) | Payload::Resync(_)) => shared.publish(Event::Resync),
         _ => {}

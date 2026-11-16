@@ -60,6 +60,7 @@ fn expected(kind: &Kind) -> (&'static str, i32) {
         Kind::RepoNotVisible(_) => ("repo_not_visible", 7),
         Kind::StepFailed(_) => ("step_failed", 9),
         Kind::PassphraseLocked(_) => ("passphrase_locked", 10),
+        Kind::DependencyLoop(_) => ("dependency_loop", 7),
         Kind::Internal(_) => ("internal", 70),
     }
 }
@@ -113,6 +114,7 @@ fn every_kind() -> Vec<Kind> {
         Kind::RepoNotVisible(Default::default()),
         Kind::StepFailed(Default::default()),
         Kind::PassphraseLocked(Default::default()),
+        Kind::DependencyLoop(Default::default()),
         Kind::Internal(Default::default()),
     ]
 }

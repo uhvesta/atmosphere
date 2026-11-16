@@ -65,6 +65,30 @@ pub fn read_saved(path: &Path) -> Result<Option<SavedOutput>, HolderError> {
     }
 }
 
+/// The last `max_bytes` of output a holder saved at `path`, oldest first,
+/// or `None` if it saved nothing there or was shut down. Output a holder
+/// that took over printed after a gap follows with nothing between.
+pub fn read_saved_tail(path: &Path, max_bytes: usize) -> Result<Option<Vec<u8>>, HolderError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(tail(&bytes, max_bytes))),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(HolderError::Saved {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+/// The last `max_bytes` of the output in the saved log `bytes`.
+fn tail(bytes: &[u8], max_bytes: usize) -> Vec<u8> {
+    parse(bytes, max_bytes)
+        .kept
+        .since(0)
+        .into_iter()
+        .flat_map(|(_, data)| data)
+        .collect()
+}
+
 struct Parsed {
     kept: Scrollback,
     reserved: u64,
@@ -271,4 +295,42 @@ fn rewrite(path: &Path, kept: &Scrollback) -> std::io::Result<(File, u64)> {
     }
     let file = File::open(OpenOptions::new().read(true).write(true), path)?;
     Ok((file, out.len() as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn log(records: &[(u8, u64, &[u8])]) -> Vec<u8> {
+        let mut out = MAGIC.to_vec();
+        for (kind, offset, data) in records {
+            put_record(&mut out, *kind, *offset, data);
+        }
+        out
+    }
+
+    #[test]
+    fn the_tail_is_the_newest_output() {
+        let saved = log(&[(OUTPUT, 0, b"hello "), (OUTPUT, 6, b"world"), (RESERVE, 1 << 20, b"")]);
+        assert_eq!(tail(&saved, 1024), b"hello world");
+        assert_eq!(tail(&saved, 5), b"world");
+    }
+
+    #[test]
+    fn output_after_a_takeover_follows_the_old() {
+        let saved = log(&[(OUTPUT, 0, b"old"), (RESERVE, 100, b""), (OUTPUT, 100, b"new")]);
+        assert_eq!(tail(&saved, 1024), b"oldnew");
+    }
+
+    #[test]
+    fn a_damaged_end_keeps_what_came_before_it() {
+        let mut saved = log(&[(OUTPUT, 0, b"kept"), (OUTPUT, 4, b"cut")]);
+        saved.truncate(saved.len() - 3);
+        assert_eq!(tail(&saved, 1024), b"kept");
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_log_has_no_output() {
+        assert!(tail(b"something else", 1024).is_empty());
+    }
 }

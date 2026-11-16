@@ -58,7 +58,9 @@ fn the_form() -> Form {
         comments: vec![Comment {
             element: item("milk"),
             text: "should be gone".to_owned(),
+            place: None,
         }],
+        ..Form::default()
     }
 }
 

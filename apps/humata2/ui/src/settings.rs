@@ -10,7 +10,7 @@ use gpui_kit::component::{Sizable as _, button::Button};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::model::Agent;
-use humata2_settings::{Section, SettingsAction as A, Theme};
+use humata2_settings::{FONT_SIZES, Section, SettingsAction as A, Theme};
 use std::rc::Rc;
 fn dim(look: Look, text: impl Into<SharedString>) -> Div {
     div()
@@ -18,13 +18,87 @@ fn dim(look: Look, text: impl Into<SharedString>) -> Div {
         .text_color(rgb(look.secondary))
         .child(text.into())
 }
-fn card(look: Look) -> Div {
+fn open_card(look: Look) -> Div {
     col()
         .rounded(px(9.))
         .border_1()
         .border_color(rgb(look.line))
         .bg(rgb(look.card))
-        .overflow_hidden()
+}
+fn card(look: Look) -> Div {
+    open_card(look).overflow_hidden()
+}
+/// The terminal font pop-up: the closed control, and the size list under it while open.
+fn font_popup(ui: &Rc<Ui>, size: u8, open: bool, look: Look) -> Div {
+    let label = SharedString::from(format!("Menlo {size}"));
+    let toggle = {
+        let ui = ui.clone();
+        row()
+            .id("settings-font")
+            .role(Role::Button)
+            .aria_label(format!("Terminal font: {label}"))
+            .flex_shrink_0()
+            .gap(px(6.))
+            .h(px(24.))
+            .pl(px(9.))
+            .pr(px(5.))
+            .rounded(px(6.))
+            .bg(rgb(look.fill))
+            .border_1()
+            .border_color(rgb(look.line))
+            .text_size(px(12.))
+            .cursor_pointer()
+            .child(label)
+            .child(chrome::icon(IconName::ChevronsUpDown, look.secondary, 12.))
+            .on_click(move |_, _, cx| ui.send(AppAction::Settings(A::FontMenu), cx))
+            .test_support()
+    };
+    div()
+        .relative()
+        .flex_shrink_0()
+        .child(toggle)
+        .when(open, |wrap| wrap.child(deferred(font_menu(ui, size, look))))
+}
+fn font_menu(ui: &Rc<Ui>, current: u8, look: Look) -> impl IntoElement {
+    col()
+        .id("settings-font-menu")
+        .role(Role::ListBox)
+        .aria_label("Terminal font size")
+        .absolute()
+        .top(px(28.))
+        .right(px(0.))
+        .w(px(120.))
+        .p(px(4.))
+        .gap(px(1.))
+        .rounded(px(8.))
+        .bg(rgb(look.card))
+        .border_1()
+        .border_color(rgb(look.line))
+        .shadow_lg()
+        .occlude()
+        .text_size(px(12.))
+        .children(FONT_SIZES.map(|size| {
+            let ui = ui.clone();
+            row()
+                .id(SharedString::from(format!("settings-font-{size}")))
+                .role(Role::ListBoxOption)
+                .aria_label(format!("Menlo {size}"))
+                .aria_selected(size == current)
+                .gap(px(8.))
+                .h(px(26.))
+                .px(px(8.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .hover(move |x| x.bg(rgb(look.fill)))
+                .child(
+                    div().w(px(12.)).flex_shrink_0().children(
+                        (size == current).then(|| chrome::icon(IconName::Check, look.accent, 12.)),
+                    ),
+                )
+                .child(format!("Menlo {size}"))
+                .on_click(move |_, _, cx| ui.send(AppAction::Settings(A::SetFontSize(size)), cx))
+                .test_support()
+        }))
 }
 fn button(
     ui: &Rc<Ui>,
@@ -189,7 +263,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
             );
             body = body
                 .child(
-                    card(look)
+                    open_card(look)
                         .child(setting(
                             look,
                             "Appearance",
@@ -200,31 +274,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                             look,
                             "Terminal font",
                             "Used by every terminal and the diff.",
-                            row()
-                                .gap(px(6.))
-                                .h(px(24.))
-                                .px(px(5.))
-                                .rounded(px(6.))
-                                .bg(rgb(look.fill))
-                                .border_1()
-                                .border_color(rgb(look.line))
-                                .text_size(px(12.))
-                                .flex_shrink_0()
-                                .child(button(
-                                    ui,
-                                    "settings-font-minus",
-                                    "−",
-                                    AppAction::Settings(A::FontSize(-1)),
-                                    look,
-                                ))
-                                .child(format!("Menlo {}", prefs.font_size))
-                                .child(button(
-                                    ui,
-                                    "settings-font-plus",
-                                    "+",
-                                    AppAction::Settings(A::FontSize(1)),
-                                    look,
-                                ))
+                            font_popup(ui, prefs.font_size, state.settings.font_menu, look)
                                 .into_any_element(),
                         ))
                         .child(setting(

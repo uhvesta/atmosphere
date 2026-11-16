@@ -381,6 +381,11 @@ impl Rules<'_> {
             comment.text = self.matcher.scrub(&comment.text);
             self.scrub_element(&mut comment.element);
         }
+        for stroke in &mut form.drawing.strokes {
+            for element in &mut stroke.covers {
+                self.scrub_element(element);
+            }
+        }
     }
 }
 

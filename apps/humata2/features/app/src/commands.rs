@@ -5,7 +5,7 @@ use humata2_sidebar::SidebarAction;
 use tca::{Effect, Reducer};
 
 use crate::layout::{FullScreen, PaneId};
-use crate::{App, AppAction, AppState, Route};
+use crate::{App, AppAction, AppState, ReportAction, ReportRequest, Route};
 
 impl App {
     pub(super) fn run(&self, state: &mut AppState, command: Command) -> Effect<AppAction> {
@@ -15,6 +15,8 @@ impl App {
             Command::Board => self.navigate(state, Route::Board(Scope::Global)),
             Command::Hosts => self.navigate(state, Route::Hosts),
             Command::Files => self.navigate(state, Route::Files),
+            Command::Desk => self.navigate(state, Route::Desk),
+            Command::NewDeskSession => self.reduce(state, AppAction::StartNewDeskSession),
             Command::Settings => self.navigate(state, Route::Settings),
             Command::NewSession => self.reduce(state, AppAction::StartNewSession),
             Command::NewChannel => self.reduce(state, AppAction::StartNewChannel),
@@ -26,13 +28,10 @@ impl App {
                 state.layout.toggle(PaneId::Sidebar);
                 Effect::none()
             }
-            Command::Fork => self.child(
-                state,
-                AppAction::Session(SessionAction::StartFork(
-                    humata2_clients::model::ForkKind::Worktree,
-                )),
-            ),
-            Command::Archive => self.child(state, AppAction::Session(SessionAction::Archive)),
+            Command::Fork => {
+                self.fork_unless_desk(state, humata2_clients::model::ForkKind::Worktree)
+            }
+            Command::Archive => self.archive_or_close(state),
             Command::Channel(id) => self.navigate(state, Route::Channel(id)),
             Command::Session(id) => self.navigate(state, Route::Session(id)),
             Command::Pull(number) => {
@@ -75,12 +74,27 @@ impl App {
                 Effect::merge([go, select, open])
             }
             Command::Record => {
-                let clock = self.clients.clock.clone();
-                state.toast(
-                    "Recording starts from the desktop app's --record flag for now.".to_owned(),
-                    &clock,
-                )
+                forget(state, &Command::Record);
+                self.report(state, ReportAction::Request(ReportRequest::Toggle))
+            }
+            Command::Snapshot => {
+                forget(state, &Command::Snapshot);
+                self.report(state, ReportAction::Request(ReportRequest::Snapshot))
+            }
+            Command::ReportBug => {
+                forget(state, &Command::ReportBug);
+                self.report(state, ReportAction::Request(ReportRequest::ReportBug))
+            }
+            Command::OpenLastReport => {
+                forget(state, &Command::OpenLastReport);
+                self.report(state, ReportAction::OpenLast)
             }
         }
     }
+}
+
+/// Takes a report command back out of the palette's recent picks: the
+/// recording rewinds it out, so a replay could never put it back (D159).
+fn forget(state: &mut AppState, command: &Command) {
+    state.palette.recent.retain(|recent| recent != command);
 }

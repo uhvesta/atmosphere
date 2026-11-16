@@ -32,7 +32,7 @@ Navigation "Sidebar"
   Link "Settings"
 Splitter "Resize the sidebar"
 #board-filter-input
-  #input-4294967329
+  #input-4294967333
     TextInput "Filter" value="" placeholder="Filter"
 Button "Scope: All channels"
 Button "New item"

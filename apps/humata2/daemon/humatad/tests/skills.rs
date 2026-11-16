@@ -35,7 +35,12 @@ fn bundle(dir: &Path) -> PathBuf {
     let mut entries = serde_json::Map::new();
     for file in FILES {
         let body = if file == "humatad2" {
-            format!("#!/bin/sh\nexec '{}' \"$@\"\n", binary("HUMATAD2_RELEASE").display())
+            // A link a test starts gets its state folder named (the default, said out
+            // loud), so it relays nothing and starts no daemon of its own (D146).
+            format!(
+                "#!/bin/sh\ncase \" $* \" in *\" --stdio \"*) exec '{real}' \"$@\" --state \"$HOME/.humata2/state\" ;; esac\nexec '{real}' \"$@\"\n",
+                real = binary("HUMATAD2_RELEASE").display()
+            )
         } else {
             format!("#!/bin/sh\n# {file}\nexit 0\n")
         };
@@ -497,10 +502,29 @@ async fn an_agent_cannot_preview_sync_or_pick_for_skills() {
         .preview_skills_sync(as_agent(pb::PreviewSkillsSyncRequest { machine: box_id() }, &token))
         .await
         .unwrap_err();
-    skills
-        .sync_skills(as_agent(pb::SyncSkillsRequest::default(), &token))
+    // Previewing is the user's review of a plan: an agent is told to ask the user.
+    let refused = skills
+        .preview_skills_sync(as_agent(pb::PreviewSkillsSyncRequest { machine: box_id() }, &token))
         .await
         .unwrap_err();
+    let error = error_of(&refused);
+    assert!(matches!(error.kind, Some(pb::error::Kind::UserOnly(_))), "{refused:?}");
+    assert!(!error.fix.is_empty());
+
+    // Syncing is Ask me (MACHINE_PROVISION): the call waits in the Inbox.
+    let asked = skills
+        .sync_skills(as_agent(
+            pb::SyncSkillsRequest {
+                machines: vec![pb::MachineId {
+                    value: "box-1".to_owned(),
+                }],
+                ..pb::SyncSkillsRequest::default()
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(error_of(&asked).kind, Some(pb::error::Kind::ApprovalPending(_))), "{asked:?}");
     skills
         .resolve_skill_clash(as_agent(
             pb::ResolveSkillClashRequest {

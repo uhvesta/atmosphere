@@ -578,7 +578,7 @@ fn user_only(caller: &Caller) -> Result<(), Status> {
 fn app_only(caller: &Caller, what: &str) -> Result<(), Status> {
     match caller {
         Caller::User(UserVia::App) => Ok(()),
-        Caller::User(UserVia::CliLogin { .. }) => Err(status::app_only(what)),
+        Caller::User(UserVia::CliLogin { .. } | UserVia::Host) => Err(status::app_only(what)),
         Caller::Agent(_) | Caller::Script(_) => {
             Err(status::refused(&Refusal::UserOnly { capability: None }))
         }

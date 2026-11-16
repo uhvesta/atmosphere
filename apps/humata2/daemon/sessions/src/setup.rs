@@ -14,6 +14,9 @@ use crate::names::channel_folder;
 /// A channel to create.
 #[derive(Clone, Debug)]
 pub struct NewChannel {
+    /// The channel's id when the host chose it for a channel it makes on this machine
+    /// (D150); a fresh one when None.
+    pub id: Option<String>,
     pub name: String,
     /// `(owner, name)`, in the order the user gave.
     pub repos: Vec<(String, String)>,
@@ -50,7 +53,9 @@ pub fn create_channel(
         });
     }
     let record = ChannelRecord {
-        id: format!("ch_{}", uuid::Uuid::new_v4().simple()),
+        id: new
+            .id
+            .unwrap_or_else(|| format!("ch_{}", uuid::Uuid::new_v4().simple())),
         name: new.name,
         folder,
         branch_prefix: new.branch_prefix,

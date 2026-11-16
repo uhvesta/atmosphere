@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 use super::{FakeDaemon, Subscriber};
 use crate::daemon::{DaemonError, EVENT_QUEUE, Event, Events, Operation, Reply};
 use crate::model::{
-    Agent, ChannelId, ForkKind, ItemStatus, Line, MachineId, Scope, Session, SessionId, Speaker,
+    Agent, Archive, ChannelId, ForkKind, ItemStatus, Line, MachineId, Scope, Session, SessionId, Speaker,
     Status, Turn,
 };
 use crate::workspace::Workspace;
@@ -117,6 +117,7 @@ pub(super) fn start_fresh(daemon: &FakeDaemon, session: &SessionId) -> Reply<()>
             found.turn = Turn::Ended;
             found.recovery = None;
             found.resume_failed = None;
+            found.summary_source = None;
             let agent = found.agent;
             inner.changed(&id);
             inner.output(
@@ -231,7 +232,7 @@ pub(super) fn fork(
     )
 }
 
-pub(super) fn archive(daemon: &FakeDaemon, session: &SessionId) -> Reply<()> {
+pub(super) fn archive(daemon: &FakeDaemon, session: &SessionId) -> Reply<Archive> {
     let id = session.clone();
     daemon.reply(
         Some(Operation::Archive),
@@ -282,7 +283,9 @@ pub(super) fn archive(daemon: &FakeDaemon, session: &SessionId) -> Reply<()> {
                 child.parent.clone_from(&parent);
             }
             inner.emit(Event::Resync);
-            Ok(())
+            Ok(Archive {
+                frees: inner.archive_frees.get(&id).cloned(),
+            })
         },
     )
 }
@@ -439,6 +442,7 @@ pub(super) fn create_session(
                 recovery: None,
                 resume_failed: None,
                 interrupted_unix_ms: None,
+                summary_source: None,
                 model: None,
                 restart_detail: None,
                 permissions: Vec::new(),

@@ -2,6 +2,11 @@
 use super::*;
 
 pub(super) fn board(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look) -> Div {
+    // DK-4, DK-12: a Desk session has no board of its own; its panel shows
+    // every channel's items (frame 37).
+    if let Some(panel) = crate::desk_board::panel(ui, state, session, look) {
+        return col().size_full().child(panel);
+    }
     let channel = state.workspace.channel(&session.channel);
     let items: Vec<_> = state
         .workspace
@@ -21,13 +26,7 @@ pub(super) fn board(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool
         } else {
             // L14: beside the terminal, active lanes first and Done last,
             // leaving out lanes with nothing in them.
-            vec![
-                ItemStatus::InProgress,
-                ItemStatus::InReview,
-                ItemStatus::Todo,
-                ItemStatus::Backlog,
-                ItemStatus::Done,
-            ]
+            ItemStatus::COMPACT[..5].to_vec()
         };
         let used = |status: &ItemStatus| items.iter().any(|item| item.status == *status);
         for status in ItemStatus::ALL {
@@ -180,23 +179,19 @@ pub(super) fn board_item(
                             .whitespace_nowrap(),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("board-review {}", item.id)))
-                            .label("Review")
-                            .small()
-                            .h(px(24.))
-                            .px(px(10.))
-                            .bg(rgb(look.fill))
-                            .text_color(rgb(look.text))
-                            .on_click(move |_, _, cx| {
-                                cx.stop_propagation();
-                                ui.send(
-                                    AppAction::Session(SessionAction::SetPanel(Some(
-                                        Panel::Inbox,
-                                    ))),
-                                    cx,
-                                );
-                                ui.send(AppAction::Inbox(InboxAction::Select(request.clone())), cx);
-                            }),
+                        widgets::push_quiet_shape(
+                            SharedString::from(format!("board-review {}", item.id)),
+                            "Review",
+                            look,
+                        )
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            ui.send(
+                                AppAction::Session(SessionAction::SetPanel(Some(Panel::Inbox))),
+                                cx,
+                            );
+                            ui.send(AppAction::Inbox(InboxAction::Select(request.clone())), cx);
+                        }),
                     )
             }));
     } else {
