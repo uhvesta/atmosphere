@@ -330,6 +330,62 @@ pub(crate) fn login_denied() -> Status {
     )
 }
 
+/// The passphrase login was tried while the host is reachable.
+pub(crate) fn login_host_reachable() -> Status {
+    failure(
+        Code::FailedPrecondition,
+        pb::Error {
+            message: "logging in with the approval passphrase works only while the Mac is away, and this machine can reach it now".to_owned(),
+            fix: "log in from the Mac, or wait until it is away".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
+/// The passphrase login was tried on a machine that holds no passphrase.
+pub(crate) fn login_no_passphrase() -> Status {
+    failure(
+        Code::FailedPrecondition,
+        pb::Error {
+            message: "this machine holds no approval passphrase, so it can't log anyone in while the Mac is away".to_owned(),
+            fix: "set one in Settings > Security on the Mac, then connect this machine once so it receives it".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
+/// Five wrong passphrase tries locked the prompt until `until`.
+pub(crate) fn passphrase_locked(machine: &str, until: std::time::SystemTime) -> Status {
+    let since = until
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let at = humata2_grpc::Timestamp {
+        seconds: i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+        nanos: i32::try_from(since.subsec_nanos()).unwrap_or(0),
+    };
+    failure(
+        Code::ResourceExhausted,
+        error(
+            "too many wrong approval passphrase tries: this machine's passphrase prompt is locked",
+            format!(
+                "wait until {} seconds past the Unix epoch ({} seconds from now), or answer from the app on the Mac. Trying again early does not shorten the lock",
+                at.seconds,
+                until
+                    .duration_since(std::time::SystemTime::now())
+                    .map_or(0, |left| left.as_secs())
+            ),
+            pb::error::Kind::PassphraseLocked(pb::PassphraseLocked {
+                machine: Some(pb::MachineId {
+                    value: machine.to_owned(),
+                }),
+                until: Some(at),
+            }),
+        ),
+    )
+}
+
 /// No one answered a login in the app in time.
 pub(crate) fn login_unanswered(minutes: u64) -> Status {
     failure(

@@ -119,13 +119,20 @@ fn keep(store: &Store, chosen: Chosen) -> Result<Option<String>, SetError> {
 }
 
 /// The kept hash, or empty when no passphrase is set, for the policy copy.
-pub(super) fn verifier(store: &Store) -> Result<String, StoreError> {
+pub(crate) fn verifier(store: &Store) -> Result<String, StoreError> {
     Ok(store.setting(VERIFIER_KEY)?.map(|saved| saved.value).unwrap_or_default())
 }
 
-/// Keeps the host's hash on a machine, from its policy copy.
+/// Keeps the host's hash on a machine, from its policy copy. A new
+/// passphrase starts a fresh try count: the old count and lock were for
+/// the old one.
 pub(super) fn put_verifier(store: &Store, encoded: &str, revision: u64) -> Result<(), StoreError> {
-    store.put_setting(VERIFIER_KEY, encoded, revision)
+    let changed = verifier(store)? != encoded;
+    store.put_setting(VERIFIER_KEY, encoded, revision)?;
+    if changed {
+        super::lockout::forget(store)?;
+    }
+    Ok(())
 }
 
 fn hash(passphrase: &str) -> Result<String, SetError> {

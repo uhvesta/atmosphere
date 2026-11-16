@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_access::{
     AccessRequest, Agent, Call, Capability, Context, Effect, MachineId, PeerLink, Policy,
-    PresenceMethod, Principal, Refusal, SessionKind, Verdict,
+    Principal, Refusal, SessionKind, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use tokio::sync::watch;
@@ -207,7 +207,7 @@ fn next_revision(last: u64) -> u64 {
 pub(crate) fn principal(caller: &Caller) -> Principal {
     match caller {
         Caller::User(UserVia::App | UserVia::Host) => Principal::App,
-        Caller::User(UserVia::CliLogin { .. }) => Principal::Cli(PresenceMethod::CliLogin),
+        Caller::User(UserVia::CliLogin { method, .. }) => Principal::Cli(*method),
         Caller::Agent(agent) => Principal::Agent(Agent {
             session: agent.session.clone(),
             kind: agent.session_kind(),

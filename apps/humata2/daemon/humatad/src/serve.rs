@@ -359,6 +359,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     ));
     let authenticate = authenticate.with_relay(relay.clone());
     let guard = Arc::new(Guard::new(&machine, role));
+    let login_host_link = guard.host_link();
     crate::rules_kept::restore(&store, &guard).map_err(DaemonError::RulesKept)?;
     // AW-8: a machine judges by the host's last copy, kept across restarts.
     if role == pb::DaemonRole::Machine
@@ -762,6 +763,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 store,
                 machine,
                 role,
+                host: login_host_link,
             },
         ));
     let router = router

@@ -227,6 +227,7 @@ RIG_TESTS = [
             ":grpc",
             "//apps/humata2/chunk:humata2_chunk",
             "//apps/humata2/daemon/machines:fake_machine",
+            "//apps/humata2/daemon/passphrase",
             "//apps/humata2/daemon/store",
             "@crates//:hmac",
             "@crates//:hyper-util",

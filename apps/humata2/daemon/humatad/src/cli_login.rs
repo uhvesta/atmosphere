@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use humata2_access::{Refusal, Tier};
+use humata2_access::{PresenceMethod, Refusal, Tier};
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::Store;
@@ -79,6 +79,8 @@ struct Pending {
 
 struct Login {
     id: String,
+    /// How the user showed they were there.
+    method: PresenceMethod,
     bound: TerminalSession,
     expires: Instant,
     /// As the API shows it, without the token.
@@ -107,11 +109,16 @@ impl CliLogins {
         }
     }
 
-    /// The login `token` names, if `pid` is still in the terminal session
-    /// it bound (SEC-11). An expired login is forgotten here.
-    pub(crate) fn caller(&self, token: &str, pid: Option<i32>) -> Result<String, LoginUnusable> {
+    /// The login `token` names, with how it was made, if `pid` is still in
+    /// the terminal session it bound (SEC-11). An expired login is
+    /// forgotten here.
+    pub(crate) fn caller(
+        &self,
+        token: &str,
+        pid: Option<i32>,
+    ) -> Result<(String, PresenceMethod), LoginUnusable> {
         let hash = identity::digest(token);
-        let (id, bound) = {
+        let (id, method, bound) = {
             let mut state = lock(&self.state);
             let Some(login) = state.logins.get(&hash) else {
                 return Err(LoginUnusable::Unknown);
@@ -120,11 +127,11 @@ impl CliLogins {
                 state.logins.remove(&hash);
                 return Err(LoginUnusable::Expired);
             }
-            (login.id.clone(), login.bound.clone())
+            (login.id.clone(), login.method, login.bound.clone())
         };
         let pid = pid.ok_or(LoginUnusable::NoProcess { source: None })?;
         match terminal_session::terminal_session(&*self.processes, pid) {
-            Ok(found) if found == bound => Ok(id),
+            Ok(found) if found == bound => Ok((id, method)),
             Ok(_) => Err(LoginUnusable::OtherTerminal { source: None }),
             Err(error @ TerminalSessionError::Read { .. }) => Err(LoginUnusable::NoProcess {
                 source: Some(error),
@@ -180,6 +187,7 @@ impl CliLogins {
         terminal: String,
         hours: u32,
         machine: &str,
+        method: PresenceMethod,
     ) -> pb::CliSession {
         let lasts = self
             .lifetime
@@ -202,6 +210,7 @@ impl CliLogins {
             hash,
             Login {
                 id,
+                method,
                 bound,
                 expires: now + lasts,
                 shown: shown.clone(),
@@ -240,6 +249,9 @@ pub(crate) struct CliAuth {
     pub(crate) store: Arc<Store>,
     pub(crate) machine: String,
     pub(crate) role: pb::DaemonRole,
+    /// Whether the host is reachable: the passphrase logs in only while it
+    /// isn't.
+    pub(crate) host: Arc<crate::away::HostLink>,
 }
 
 impl CliAuth {
@@ -283,6 +295,55 @@ impl CliAuth {
     }
 }
 
+impl CliAuth {
+    /// Checks the approval passphrase a machine's terminal typed while the
+    /// host is away (SEC-13, AW-5): refuses unless it is right and the
+    /// prompt isn't locked.
+    async fn passphrase_login(&self, proof: Option<pb::presence_proof::Proof>) -> Result<(), Status> {
+        use pb::presence_proof::Proof;
+        if self.host.reachable() {
+            return Err(status::login_host_reachable());
+        }
+        let store = self.store.clone();
+        let held = tokio::task::spawn_blocking(move || crate::away::verifier(&store))
+            .await
+            .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?
+            .map_err(|error| status::store(error, &self.machine, "read the approval passphrase"))?;
+        if held.is_empty() {
+            return Err(status::login_no_passphrase());
+        }
+        let accepted = vec![PresenceMethod::ApprovalPassphrase];
+        let typed = match proof {
+            None => return Err(status::refused(&Refusal::PresenceRequired { accepted })),
+            Some(Proof::ConfirmInApp(_)) => {
+                return Err(status::not_built(
+                    "humata.v1.CliAuthService.BeginCliSession confirmed in the app from a machine",
+                ));
+            }
+            Some(Proof::ApprovalPassphrase(typed)) => typed,
+        };
+        let store = self.store.clone();
+        let checked = tokio::task::spawn_blocking(move || {
+            crate::away::check_passphrase(&store, &typed)
+        })
+        .await
+        .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))?
+        .map_err(|error| match error {
+            crate::away::CheckError::NoVerifier => status::login_no_passphrase(),
+            error => status::internal(status::chain(&error), ""),
+        })?;
+        match checked {
+            crate::away::Checked::Accepted => Ok(()),
+            crate::away::Checked::Wrong { .. } => {
+                Err(status::refused(&Refusal::PresenceRequired { accepted }))
+            }
+            crate::away::Checked::Locked { until } => {
+                Err(status::passphrase_locked(&self.machine, until))
+            }
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl pb::cli_auth_service_server::CliAuthService for CliAuth {
     async fn begin_cli_session(
@@ -317,23 +378,25 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
         };
         let (bound, terminal) = self.locate(pid).await?;
         use pb::presence_proof::Proof;
-        match request.presence.and_then(|presence| presence.proof) {
-            None => {
+        let proof = request.presence.and_then(|presence| presence.proof);
+        if self.role == pb::DaemonRole::Machine {
+            self.passphrase_login(proof).await?;
+            return Ok(Response::new(self.logins.grant(
+                bound,
+                terminal,
+                hours,
+                &self.machine,
+                PresenceMethod::ApprovalPassphrase,
+            )));
+        }
+        match proof {
+            Some(Proof::ConfirmInApp(_)) => {}
+            // The passphrase is for machines while the host is away.
+            None | Some(Proof::ApprovalPassphrase(_)) => {
                 return Err(status::refused(&Refusal::PresenceRequired {
-                    accepted: vec![humata2_access::PresenceMethod::ConfirmInApp],
+                    accepted: vec![PresenceMethod::ConfirmInApp],
                 }));
             }
-            Some(Proof::ApprovalPassphrase(_)) => {
-                return Err(status::not_built(
-                    "humata.v1.CliAuthService.BeginCliSession with the approval passphrase",
-                ));
-            }
-            Some(Proof::ConfirmInApp(_)) => {}
-        }
-        if self.role == pb::DaemonRole::Machine {
-            return Err(status::not_built(
-                "humata.v1.CliAuthService.BeginCliSession confirmed in the app from a machine",
-            ));
         }
         let (asked, answered) = self.logins.ask(terminal.clone(), hours);
         let answer = tokio::time::timeout(CONFIRM_WAIT, answered).await;
@@ -344,6 +407,7 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
                 terminal,
                 hours,
                 &self.machine,
+                PresenceMethod::CliLogin,
             ))),
             // The question is gone only when the daemon is stopping.
             Ok(Ok(false) | Err(_)) => Err(status::login_denied()),
@@ -619,7 +683,7 @@ mod tests {
     /// A login for the session of `pid` in `logins`.
     fn log_in(logins: &CliLogins, pid: i32) -> pb::CliSession {
         let bound = terminal_session::terminal_session(&*logins.processes, pid).unwrap();
-        logins.grant(bound, "tty7".to_owned(), 12, "ma_test")
+        logins.grant(bound, "tty7".to_owned(), 12, "ma_test", PresenceMethod::CliLogin)
     }
 
     #[test]
@@ -627,8 +691,9 @@ mod tests {
         let logins = logins(terminal(), None);
         let login = log_in(&logins, 21);
 
-        assert_eq!(logins.caller(&login.token, Some(22)).unwrap(), login.id);
-        assert_eq!(logins.caller(&login.token, Some(21)).unwrap(), login.id);
+        let want = (login.id.clone(), PresenceMethod::CliLogin);
+        assert_eq!(logins.caller(&login.token, Some(22)).unwrap(), want);
+        assert_eq!(logins.caller(&login.token, Some(21)).unwrap(), want);
     }
 
     #[test]

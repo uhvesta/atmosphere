@@ -178,6 +178,7 @@ mod tests {
                 "a cli login",
                 Caller::User(UserVia::CliLogin {
                     login: "login_1".to_owned(),
+                    method: humata2_access::PresenceMethod::CliLogin,
                     on_host: true,
                 }),
             ),

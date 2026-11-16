@@ -71,7 +71,12 @@ pub(crate) enum UserVia {
     /// A process in the terminal session that this `humata login` bound.
     /// `on_host` says the daemon taking the call is the host's, not a
     /// machine's: whoami and the records name the machine it's on.
-    CliLogin { login: String, on_host: bool },
+    CliLogin {
+        login: String,
+        on_host: bool,
+        /// How the user showed they were there when they logged in.
+        method: humata2_access::PresenceMethod,
+    },
     /// The host, through the peer link's relay (D139, D144): a call on a
     /// socket connection that proved itself once with the host's own
     /// proof, for a method the relay allows.
@@ -908,8 +913,9 @@ impl Authenticate {
                     Err(_) => Err(crate::cli_login::LoginUnusable::Unknown),
                 };
                 match checked {
-                    Ok(login) => Some(Caller::User(UserVia::CliLogin {
+                    Ok((login, method)) => Some(Caller::User(UserVia::CliLogin {
                         login,
+                        method,
                         // Same rule as whoami always had: only a machine is not the host.
                         on_host: self.role != pb::DaemonRole::Machine,
                     })),
@@ -1188,6 +1194,7 @@ mod tests {
     fn a_cli_login_call_is_recorded_as_cli_on_host() {
         let caller = Caller::User(UserVia::CliLogin {
             login: "login_1".to_owned(),
+            method: humata2_access::PresenceMethod::CliLogin,
             on_host: true,
         });
         let Some(pb::actor::Actor::User(user)) = actor(&caller).actor else {
@@ -1200,6 +1207,7 @@ mod tests {
     fn a_cli_login_on_a_machine_is_recorded_as_cli_on_machine() {
         let caller = Caller::User(UserVia::CliLogin {
             login: "login_1".to_owned(),
+            method: humata2_access::PresenceMethod::CliLogin,
             on_host: false,
         });
         let Some(pb::actor::Actor::User(user)) = actor(&caller).actor else {
