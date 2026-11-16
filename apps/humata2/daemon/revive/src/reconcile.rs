@@ -14,7 +14,7 @@ use humata2_store::{
 };
 
 use crate::agent::{
-    blocking, probe, relaunch, resume, running, spawn, stop_holder, store_error, unix_ms,
+    Why, blocking, probe, relaunch, resume, running, spawn, stop_holder, store_error, unix_ms,
 };
 use crate::report::Restart;
 use crate::{Env, ReviveConfig, ReviveError};
@@ -117,7 +117,7 @@ pub async fn reconcile(
         let tab = by_id.get(&agent.tab).cloned();
         let session = agent.session.clone();
         report.agent(config, &agent, tab.as_ref());
-        let outcome = revive_agent(store, config, agent, tab, &giving).await;
+        let outcome = revive_agent(store, config, agent, tab, &giving, Why::Interrupted).await;
         report.mask(&std::mem::take(&mut *lock(&given)));
         report.agent_outcome(&outcome);
         reconciled.agents.push((session, outcome));
@@ -158,12 +158,38 @@ pub async fn resume_agent(
     record: AgentRecord,
     env: Env<'_>,
 ) -> Result<Revived, ReviveError> {
+    revive_listed(store, config, record, env, Why::Interrupted).await
+}
+
+/// Starts `record`'s agent again with its conversation, as [`resume_agent`]
+/// does, for a change the person asked for rather than an interruption: no
+/// interruption is recorded and the agent isn't told it was interrupted.
+/// `line` is shown first in its terminal, after `[Humata] `. A failure is
+/// saved as [`Revived::ResumeFailed`], as a resume's is.
+pub async fn restart_agent(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    record: AgentRecord,
+    env: Env<'_>,
+    line: &str,
+) -> Result<Revived, ReviveError> {
+    revive_listed(store, config, record, env, Why::Moved(line)).await
+}
+
+/// Looks up the agent's tab, then brings the agent back for `why`.
+async fn revive_listed(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    record: AgentRecord,
+    env: Env<'_>,
+    why: Why<'_>,
+) -> Result<Revived, ReviveError> {
     let tab = {
         let (store, id) = (store.clone(), record.tab.clone());
         blocking(move || store.tab(&id)).await?
     }
     .map_err(|source| store_error(&record.session, "read the agent's tab", source))?;
-    revive_agent(store, config, record, tab, env).await
+    revive_agent(store, config, record, tab, env, why).await
 }
 
 async fn revive_agent(
@@ -172,6 +198,7 @@ async fn revive_agent(
     mut record: AgentRecord,
     tab: Option<TabRecord>,
     env: Env<'_>,
+    why: Why<'_>,
 ) -> Result<Revived, ReviveError> {
     if !record.state.should_run() {
         return Ok(Revived::Left);
@@ -181,8 +208,10 @@ async fn revive_agent(
     let Some(welcome) = probe(&socket).await else {
         // Its holder is gone (PER-24).
         return match record.state {
-            AgentState::Launching => launch_or_resume(store, config, record, created, env).await,
-            _ => resume(store, config, record, created, env).await,
+            AgentState::Launching => {
+                launch_or_resume(store, config, record, created, env, why).await
+            }
+            _ => resume(store, config, record, created, env, why).await,
         };
     };
     match record.state {
@@ -218,13 +247,13 @@ async fn revive_agent(
                 let _ = humata2_holder::shutdown(&socket).await;
             }
             stop_holder(&socket, None).await;
-            launch_or_resume(store, config, record, created, env).await
+            launch_or_resume(store, config, record, created, env, why).await
         }
         // Stopped part way through a resume, before it was checked: the
         // resume is done again, keeping the output so far.
         _ => {
             stop_holder(&socket, None).await;
-            resume(store, config, record, created, env).await
+            resume(store, config, record, created, env, why).await
         }
     }
 }
@@ -237,9 +266,10 @@ async fn launch_or_resume(
     record: AgentRecord,
     created: i64,
     env: Env<'_>,
+    why: Why<'_>,
 ) -> Result<Revived, ReviveError> {
     if record.launch.conversation_file.is_file() {
-        resume(store, config, record, created, env).await
+        resume(store, config, record, created, env, why).await
     } else {
         relaunch(store, config, record, created, env).await
     }

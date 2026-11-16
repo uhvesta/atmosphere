@@ -175,18 +175,28 @@ mod channel;
 mod desk;
 #[path = "native/document.rs"]
 mod document;
+#[path = "native/editor.rs"]
+mod editor;
+#[path = "native/editor_comments.rs"]
+mod editor_comments;
+#[path = "native/fork_move.rs"]
+mod fork_move;
 #[path = "native/hosts_settings.rs"]
 mod hosts_settings;
 #[path = "native/lists.rs"]
 mod lists;
 #[path = "native/machines.rs"]
 mod machines;
+#[path = "native/marks.rs"]
+mod marks;
 #[path = "native/overlays.rs"]
 mod overlays;
 #[path = "native/queue.rs"]
 mod queue;
 #[path = "native/review.rs"]
 mod review;
+#[path = "native/push.rs"]
+mod push;
 #[path = "native/session.rs"]
 mod session;
 #[path = "native/shell.rs"]

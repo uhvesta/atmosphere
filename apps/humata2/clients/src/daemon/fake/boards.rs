@@ -1,6 +1,6 @@
 use super::FakeDaemon;
 use crate::daemon::{DaemonError, Event, Operation, Reply};
-use crate::model::{Item, ItemId, ItemKind, ItemStatus, Scope};
+use crate::model::{Item, ItemId, ItemKind, ItemStatus, Scope, SessionId};
 
 pub(super) fn move_item(daemon: &FakeDaemon, item: &ItemId, status: ItemStatus) -> Reply<()> {
     let id = item.clone();
@@ -82,6 +82,85 @@ pub(super) fn add_dependency(daemon: &FakeDaemon, item: &ItemId, on: &ItemId) ->
         }
         inner.emit(Event::Resync);
         Ok(())
+    })
+}
+
+pub(super) fn remove_dependency(daemon: &FakeDaemon, item: &ItemId, on: &ItemId) -> Reply<()> {
+    let item = item.clone();
+    let on = on.clone();
+    daemon.reply(None, format!("undepend {item} on {on}"), move |inner| {
+        let found = inner
+            .workspace
+            .items
+            .iter_mut()
+            .find(|found| found.id == item)
+            .ok_or_else(|| DaemonError::NotFound {
+                what: format!("Item {item}"),
+            })?;
+        found.depends_on.retain(|each| each != &on);
+        inner.emit(Event::Resync);
+        Ok(())
+    })
+}
+
+pub(super) fn set_item_session(
+    daemon: &FakeDaemon,
+    item: &ItemId,
+    session: &SessionId,
+    working: bool,
+) -> Reply<()> {
+    let item = item.clone();
+    let session = session.clone();
+    daemon.reply(
+        None,
+        format!("item {item} session {session} working {working}"),
+        move |inner| {
+            if inner.workspace.session(&session).is_none() {
+                return Err(DaemonError::NotFound {
+                    what: format!("Session {session}"),
+                });
+            }
+            let found = inner
+                .workspace
+                .items
+                .iter_mut()
+                .find(|found| found.id == item)
+                .ok_or_else(|| DaemonError::NotFound {
+                    what: format!("Item {item}"),
+                })?;
+            let details = inner
+                .workspace
+                .item_details
+                .entry(item.clone())
+                .or_default();
+            if details.sessions.is_empty() {
+                details.sessions.extend(found.session.iter().cloned());
+            }
+            details.sessions.retain(|each| each != &session);
+            if working {
+                details.sessions.push(session);
+            }
+            found.session = details.sessions.first().cloned();
+            inner.emit(Event::Resync);
+            Ok(())
+        },
+    )
+}
+
+pub(super) fn item_history(daemon: &FakeDaemon, item: &ItemId) -> Reply<Vec<String>> {
+    let item = item.clone();
+    daemon.reply(None, format!("history {item}"), move |inner| {
+        if !inner.workspace.items.iter().any(|found| found.id == item) {
+            return Err(DaemonError::NotFound {
+                what: format!("Item {item}"),
+            });
+        }
+        Ok(inner
+            .workspace
+            .item_details
+            .get(&item)
+            .map(|details| details.history.clone())
+            .unwrap_or_default())
     })
 }
 

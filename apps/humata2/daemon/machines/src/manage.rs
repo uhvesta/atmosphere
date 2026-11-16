@@ -793,6 +793,20 @@ impl Machines {
         self.remove_claimed(machine, entry, drive)
     }
 
+    /// LD-12: forgets a machine that is lost, on this host only, without
+    /// reaching it: its peer key, its entry and its pinned host key go, in
+    /// the order a removal forgets them. Humata stays on the machine; adding
+    /// it again makes a new machine.
+    pub fn forget(&self, machine: &str) -> Result<(), ManageError> {
+        let _busy = self.claim(machine)?;
+        let entry = self.get(machine)?;
+        let name = machine_name(&entry)?;
+        self.forget_peer_key(machine)?;
+        self.hosts.remove(machine)?;
+        known_hosts::unpin(&self.known_hosts, &name)?;
+        Ok(())
+    }
+
     fn remove_claimed(&self, machine: &str, mut entry: HostEntry, drive: &mut Drive<'_>) -> Result<(), ManageError> {
         let link = self.link_if_any(&entry)?;
         if entry.state == EntryState::Adding {

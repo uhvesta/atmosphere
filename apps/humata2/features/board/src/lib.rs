@@ -4,7 +4,9 @@
 
 use std::sync::Arc;
 
-use humata2_clients::model::{Item, ItemId, ItemStatus, Scope, SessionId};
+use humata2_clients::model::{
+    Agent, FieldChange, Item, ItemChange, ItemId, ItemStatus, Scope, SessionId,
+};
 use humata2_clients::{Clients, DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
@@ -38,6 +40,61 @@ pub struct View {
     pub global_only: bool,
 }
 
+/// What a drawer picker adds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerKind {
+    /// Sessions working on the item.
+    Sessions,
+    /// Items it depends on.
+    Dependencies,
+}
+
+/// The drawer's open picker: a filter over a list with a highlighted row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Picker {
+    /// What it adds.
+    pub kind: PickerKind,
+    /// The filter text.
+    pub query: String,
+    /// The highlighted row.
+    pub cursor: usize,
+}
+
+/// One row of a picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Choice {
+    /// A session to add.
+    Session(SessionId),
+    /// An item to depend on.
+    Item(ItemId),
+}
+
+/// What the agent behind a waiting request asks of the drawer's item (BD-15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// Move the item.
+    Move {
+        /// The agent asking.
+        by: Option<Agent>,
+        /// The column it asks for.
+        to: ItemStatus,
+        /// The column the item is in.
+        keep: ItemStatus,
+    },
+    /// Change fields.
+    Edit {
+        /// The agent asking.
+        by: Option<Agent>,
+        /// Each field, before and after.
+        changes: Vec<FieldChange>,
+    },
+    /// Delete the item.
+    Delete {
+        /// The agent asking.
+        by: Option<Agent>,
+    },
+}
+
 /// The board's state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoardState {
@@ -59,8 +116,10 @@ pub struct BoardState {
     pub drawer: Option<ItemId>,
     /// A new item's title, while it is being written.
     pub new_title: Option<String>,
-    /// The item picking what it depends on.
-    pub linking: Option<ItemId>,
+    /// The open picker under the drawer's Sessions or Depends on row.
+    pub picker: Option<Picker>,
+    /// What the drawer's item has been through, read when it opened.
+    pub history: Vec<String>,
     /// What went wrong last.
     pub error: Option<String>,
 }
@@ -77,7 +136,8 @@ impl Default for BoardState {
             new_status: ItemStatus::Todo,
             drawer: None,
             new_title: None,
-            linking: None,
+            picker: None,
+            history: Vec::new(),
             error: None,
         }
     }
@@ -151,6 +211,102 @@ impl BoardState {
         self.workspace.waiting().find(|r| &r.id == request)
     }
 
+    /// What a waiting request asks of `item`, if one still waits.
+    #[must_use]
+    pub fn ask(&self, item: &Item) -> Option<Ask> {
+        let details = self.workspace.item_details.get(&item.id)?;
+        let request = self.request(item)?;
+        let by = self.workspace.session(&request.session).map(|s| s.agent);
+        match &details.requested_change {
+            Some(ItemChange::Edit(changes)) => Some(Ask::Edit {
+                by,
+                changes: changes.clone(),
+            }),
+            Some(ItemChange::Delete) => Some(Ask::Delete { by }),
+            None => details.requested_status.map(|to| Ask::Move {
+                by,
+                to,
+                keep: item.status,
+            }),
+        }
+    }
+
+    /// The rows the open picker offers for the drawer's item.
+    #[must_use]
+    pub fn choices(&self) -> Vec<Choice> {
+        let (Some(picker), Some(item)) = (&self.picker, self.opened()) else {
+            return Vec::new();
+        };
+        let query = picker.query.trim().to_lowercase();
+        let details = self.workspace.item_details.get(&item.id);
+        match picker.kind {
+            PickerKind::Sessions => {
+                let working = details.map(|d| d.sessions.as_slice()).unwrap_or_default();
+                let allowed = |s: &&humata2_clients::model::Session| {
+                    !s.archived
+                        && !working.contains(&s.id)
+                        && item.session.as_ref() != Some(&s.id)
+                        && (query.is_empty() || s.title.to_lowercase().contains(&query))
+                };
+                let channels: Vec<_> = match &item.scope {
+                    Scope::Channel(id) => vec![id],
+                    Scope::Global => self.workspace.channels.iter().map(|c| &c.id).collect(),
+                };
+                let mut rows: Vec<Choice> = channels
+                    .iter()
+                    .flat_map(|channel| {
+                        self.workspace
+                            .sessions
+                            .iter()
+                            .filter(move |s| &s.channel == *channel)
+                    })
+                    .filter(allowed)
+                    .map(|s| Choice::Session(s.id.clone()))
+                    .collect();
+                if item.scope == Scope::Global {
+                    // Sessions of channels missing from the list still show.
+                    rows.extend(
+                        self.workspace
+                            .sessions
+                            .iter()
+                            .filter(|s| !self.workspace.channels.iter().any(|c| c.id == s.channel))
+                            .filter(allowed)
+                            .map(|s| Choice::Session(s.id.clone())),
+                    );
+                }
+                rows
+            }
+            PickerKind::Dependencies => {
+                let mut blocked = vec![item.id.clone()];
+                blocked.extend(item.depends_on.iter().cloned());
+                // Anything that already waits on this item, however far.
+                let mut at = 0;
+                let mut dependents = vec![item.id.clone()];
+                while at < dependents.len() {
+                    let on = dependents[at].clone();
+                    at += 1;
+                    for other in &self.workspace.items {
+                        if other.depends_on.contains(&on) && !dependents.contains(&other.id) {
+                            dependents.push(other.id.clone());
+                        }
+                    }
+                }
+                blocked.extend(dependents);
+                self.workspace
+                    .items
+                    .iter()
+                    .filter(|other| !blocked.contains(&other.id))
+                    .filter(|other| {
+                        query.is_empty()
+                            || other.id.as_str().to_lowercase().contains(&query)
+                            || other.title.to_lowercase().contains(&query)
+                    })
+                    .map(|other| Choice::Item(other.id.clone()))
+                    .collect()
+            }
+        }
+    }
+
     /// The item whose drawer is open.
     #[must_use]
     pub fn opened(&self) -> Option<&Item> {
@@ -166,6 +322,8 @@ pub enum Delegate {
     OpenSession(SessionId),
     /// Say this in a toast.
     Toast(String),
+    /// Read the workspace again.
+    Refresh,
 }
 
 /// What happens on a board.
@@ -197,8 +355,28 @@ pub enum BoardAction {
     NewStatus(ItemStatus),
     /// Open an item's drawer.
     Open(ItemId),
+    /// The drawer item's history arrived.
+    History(ItemId, Result<Vec<String>, DaemonError>),
     /// Close the drawer.
     Close,
+    /// Open a picker under the Sessions or Depends on row.
+    OpenPicker(PickerKind),
+    /// The picker's filter changed.
+    PickerQuery(String),
+    /// Highlight the row above.
+    PickerUp,
+    /// Highlight the row below.
+    PickerDown,
+    /// Add the highlighted row.
+    PickerEnter,
+    /// Add this row.
+    Pick(Choice),
+    /// Close the picker.
+    ClosePicker,
+    /// Take a session off the drawer's item.
+    RemoveSession(SessionId),
+    /// Drop a dependency of the drawer's item.
+    RemoveDependency(ItemId),
     /// Move an item to a column.
     Move(ItemId, ItemStatus),
     /// Start writing a new item's title.
@@ -209,12 +387,6 @@ pub enum BoardAction {
     CreateNew,
     /// Drop the new item.
     CancelNew,
-    /// Pick what the drawer's item depends on.
-    StartLink,
-    /// It depends on this.
-    Link(ItemId),
-    /// Stop picking.
-    CancelLink,
     /// Open the session working on the drawer's item.
     OpenSession,
     /// A request finished; on failure its message is shown.
@@ -275,7 +447,7 @@ impl Reducer for Board {
                 state.scope = scope;
                 state.scope_menu = false;
                 state.drawer = None;
-                state.linking = None;
+                state.picker = None;
             }
             BoardAction::Open(id) => {
                 state.drawer = state
@@ -285,12 +457,81 @@ impl Reducer for Board {
                     .any(|i| i.id == id)
                     .then_some(id);
                 state.status_menu = false;
-                state.linking = None;
+                state.picker = None;
+                state.history = Vec::new();
+                if let Some(open) = state.drawer.clone() {
+                    return Effect::future(async move {
+                        let history = daemon.item_history(&open).await;
+                        BoardAction::History(open, history)
+                    });
+                }
+            }
+            BoardAction::History(id, result) => {
+                if state.drawer.as_ref() == Some(&id) {
+                    match result {
+                        Ok(history) => state.history = history,
+                        Err(error) => state.error = Some(error.to_string()),
+                    }
+                }
             }
             BoardAction::Close => {
                 state.drawer = None;
-                state.linking = None;
+                state.picker = None;
+                state.history = Vec::new();
                 state.expanded = false;
+            }
+            BoardAction::OpenPicker(kind) => {
+                if state.drawer.is_some() {
+                    state.picker = Some(Picker {
+                        kind,
+                        query: String::new(),
+                        cursor: 0,
+                    });
+                }
+            }
+            BoardAction::PickerQuery(text) => {
+                if let Some(picker) = &mut state.picker {
+                    picker.query = text;
+                    picker.cursor = 0;
+                }
+            }
+            BoardAction::PickerUp => {
+                if let Some(picker) = &mut state.picker {
+                    picker.cursor = picker.cursor.saturating_sub(1);
+                }
+            }
+            BoardAction::PickerDown => {
+                let last = state.choices().len().saturating_sub(1);
+                if let Some(picker) = &mut state.picker {
+                    picker.cursor = (picker.cursor + 1).min(last);
+                }
+            }
+            BoardAction::PickerEnter => {
+                let Some(picker) = &state.picker else {
+                    return Effect::none();
+                };
+                let Some(choice) = state.choices().into_iter().nth(picker.cursor) else {
+                    return Effect::none();
+                };
+                return add(state, &daemon, choice);
+            }
+            BoardAction::Pick(choice) => return add(state, &daemon, choice),
+            BoardAction::ClosePicker => state.picker = None,
+            BoardAction::RemoveSession(session) => {
+                let Some(item) = state.drawer.clone() else {
+                    return Effect::none();
+                };
+                return Effect::future(async move {
+                    BoardAction::Done(daemon.set_item_session(&item, &session, false).await)
+                });
+            }
+            BoardAction::RemoveDependency(on) => {
+                let Some(item) = state.drawer.clone() else {
+                    return Effect::none();
+                };
+                return Effect::future(async move {
+                    BoardAction::Done(daemon.remove_dependency(&item, &on).await)
+                });
             }
             BoardAction::Move(id, status) => {
                 state.status_menu = false;
@@ -327,15 +568,6 @@ impl Reducer for Board {
                 });
             }
             BoardAction::CancelNew => state.new_title = None,
-            BoardAction::StartLink => state.linking.clone_from(&state.drawer),
-            BoardAction::Link(on) => {
-                if let Some(item) = state.linking.take() {
-                    return Effect::future(async move {
-                        BoardAction::Done(daemon.add_dependency(&item, &on).await)
-                    });
-                }
-            }
-            BoardAction::CancelLink => state.linking = None,
             BoardAction::OpenSession => {
                 if let Some(session) = state.opened().and_then(|item| item.session.clone()) {
                     return Effect::send(BoardAction::Delegate(Delegate::OpenSession(session)));
@@ -343,10 +575,31 @@ impl Reducer for Board {
             }
             BoardAction::Done(result) => match result {
                 Ok(()) => state.error = None,
-                Err(error) => state.error = Some(error.to_string()),
+                Err(error) => {
+                    state.error = Some(error.to_string());
+                    return Effect::send(BoardAction::Delegate(Delegate::Refresh));
+                }
             },
             BoardAction::Delegate(_) => {}
         }
         Effect::none()
     }
+}
+
+/// Adds `choice` to the drawer's item, finishing with `Done`.
+fn add(
+    state: &BoardState,
+    daemon: &Arc<dyn humata2_clients::Daemon>,
+    choice: Choice,
+) -> Effect<BoardAction> {
+    let Some(item) = state.drawer.clone() else {
+        return Effect::none();
+    };
+    let daemon = daemon.clone();
+    Effect::future(async move {
+        BoardAction::Done(match choice {
+            Choice::Session(session) => daemon.set_item_session(&item, &session, true).await,
+            Choice::Item(on) => daemon.add_dependency(&item, &on).await,
+        })
+    })
 }

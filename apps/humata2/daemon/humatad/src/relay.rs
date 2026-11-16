@@ -71,7 +71,7 @@ const WHOLE_SERVICES: [&str; 5] = [
 ];
 
 /// The services the host may call only by these methods.
-const LISTED_METHODS: [(&str, &[&str]); 4] = [
+const LISTED_METHODS: [(&str, &[&str]); 6] = [
     (
         pb::session_service_server::SERVICE_NAME,
         &[
@@ -80,7 +80,11 @@ const LISTED_METHODS: [(&str, &[&str]); 4] = [
             "ResumeSession",
             "GetSession",
             "ListSessions",
+            "RenameSession",
             "PreviewBranchNames",
+            "PlanArchive",
+            "ArchiveSession",
+            "RestoreSession",
         ],
     ),
     (
@@ -92,13 +96,23 @@ const LISTED_METHODS: [(&str, &[&str]); 4] = [
         &["GetOperation", "WatchOperation", "CancelOperation"],
     ),
     (pb::event_service_server::SERVICE_NAME, &["Subscribe"]),
+    // D189: the host reads a machine's conversation for its mirror there,
+    // where the file and the host variable values are. Search and read stay
+    // off the list: the host keeps the copy.
+    (pb::history_service_server::SERVICE_NAME, &["ReadMirror"]),
+    // D195: the host's driver stages, checks and tidies a session that moves.
+    // The carry service itself refuses every caller but the host.
+    (
+        pb::session_carry_service_server::SERVICE_NAME,
+        &["Pack", "Unpack", "Release", "Abort"],
+    ),
 ];
 
 /// Every service the link answers for the host on the relay's behalf: the
-/// nine with an allowlisted method come first, then the client services
+/// eleven with an allowlisted method come first, then the client services
 /// that are never relayed, so a call to one is refused by name rather than
 /// with a bare UNIMPLEMENTED. `Routed<N>` is `ROUTED[N]`.
-const ROUTED: [&str; 28] = [
+const ROUTED: [&str; 30] = [
     pb::terminal_service_server::SERVICE_NAME,
     pb::file_service_server::SERVICE_NAME,
     pb::trash_service_server::SERVICE_NAME,
@@ -108,6 +122,8 @@ const ROUTED: [&str; 28] = [
     pb::channel_service_server::SERVICE_NAME,
     pb::operation_service_server::SERVICE_NAME,
     pb::event_service_server::SERVICE_NAME,
+    pb::history_service_server::SERVICE_NAME,
+    pb::session_carry_service_server::SERVICE_NAME,
     pb::access_service_server::SERVICE_NAME,
     pb::cli_auth_service_server::SERVICE_NAME,
     pb::audit_service_server::SERVICE_NAME,
@@ -220,7 +236,7 @@ fn off_list(path: &str) -> Status {
         Code::PermissionDenied,
         pb::Error {
             message: format!(
-                "humatad2 refused {method} on the peer link: the host may relay only terminal, file, trash and diff calls, session start/stop/resume/get/list, channel create/get, operation get/watch/cancel and the event feed"
+                "humatad2 refused {method} on the peer link: the host may relay only terminal, file, trash and diff calls, session start/stop/resume/get/list, channel create/get, operation get/watch/cancel, the event feed and a conversation read for the host's mirror (HistoryService/ReadMirror)"
             ),
             fix: "do this on the Mac's own daemon, or on the machine itself with `humata`".to_owned(),
             retry: None,
@@ -556,7 +572,7 @@ pub(crate) fn register<L>(router: Router<L>, relay: &Relay) -> Router<L> {
         router,
         Routed,
         relay,
-        0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27
+        0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29
     )
 }
 
@@ -606,13 +622,22 @@ mod tests {
             "/humata.v1.SessionService/ResumeSession",
             "/humata.v1.SessionService/GetSession",
             "/humata.v1.SessionService/ListSessions",
+            "/humata.v1.SessionService/RenameSession",
             "/humata.v1.SessionService/PreviewBranchNames",
+            "/humata.v1.SessionService/PlanArchive",
+            "/humata.v1.SessionService/ArchiveSession",
+            "/humata.v1.SessionService/RestoreSession",
             "/humata.v1.ChannelService/CreateChannel",
             "/humata.v1.ChannelService/GetChannel",
             "/humata.v1.OperationService/GetOperation",
             "/humata.v1.OperationService/WatchOperation",
             "/humata.v1.OperationService/CancelOperation",
             "/humata.v1.EventService/Subscribe",
+            "/humata.v1.HistoryService/ReadMirror",
+            "/humata.v1.SessionCarryService/Pack",
+            "/humata.v1.SessionCarryService/Unpack",
+            "/humata.v1.SessionCarryService/Release",
+            "/humata.v1.SessionCarryService/Abort",
         ] {
             assert!(allows(allowed), "{allowed}");
         }
@@ -623,6 +648,9 @@ mod tests {
             "/humata.v1.OperationService/RetryOperation",
             "/humata.v1.AccessService/ListRules",
             "/humata.v1.InboxService/Answer",
+            "/humata.v1.HistoryService/SearchSessions",
+            "/humata.v1.HistoryService/ReadTurns",
+            "/humata.v1.HistoryService/ReadMirrorX",
             "/humata.v1.TransferService/Anything",
             "/humata.v1.PeerService/Hello",
             "/humata.v1.DaemonService/WhoAmI",

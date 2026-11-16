@@ -48,7 +48,7 @@ async fn world() -> World {
             id: CHANNEL.to_owned(),
             name: "ops".to_owned(),
             folder: CHANNEL_FOLDER.to_owned(),
-            branch_prefix: String::new(),
+            branch_prefix: None,
             default_agent: "zsh".to_owned(),
             repos: vec![ChannelRepo {
                 owner: "acme".to_owned(),

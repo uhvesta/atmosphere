@@ -17,7 +17,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use humata2_access::{AccessRequest, Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::{GitError, NewChannel, SetupError, Starter, clone_mains, create_channel};
+use humata2_sessions::{GitError, NameError, NewChannel, SetupError, Starter, clone_mains, create_channel};
 use humata2_store::{ChannelRecord, ChannelRepo, MainClone, Store, StoreError};
 use pb::invalid_field::Problem;
 use prost::Message;
@@ -32,7 +32,11 @@ use crate::remote_work::{HostOp, MachineOutcome, RemoteWork, channel_steps};
 use crate::status;
 
 mod add;
+mod delete;
+pub(crate) use delete::{finish_restore, pick_place};
 mod known;
+mod remove_machine;
+mod remove_machine_apply;
 
 /// Every channel `caller` may read.
 async fn readable_channels(
@@ -69,7 +73,7 @@ async fn readable_channels(
 /// Puts `channel` as the store holds it now on the feed, as GetChannel
 /// shows it. Blocking. A channel that can't be read is not told:
 /// publishing never fails the call that changed it.
-fn tell_channel(
+pub(crate) fn tell_channel(
     feed: &Feed,
     store: &Store,
     channel: &str,
@@ -137,6 +141,24 @@ where
     T: Message,
     Fut: Future<Output = Result<Gated<T>, Status>> + Send + 'static,
 {
+    answer_gated_showing(inbox, caller, key, type_name, first, None, again).await
+}
+
+/// [`answer_gated`] whose card, when the rule says Ask, previews `card`
+/// rather than the capability (IN-10).
+pub(crate) async fn answer_gated_showing<T, Fut>(
+    inbox: &Inbox,
+    caller: &Caller,
+    key: Option<String>,
+    type_name: &'static str,
+    first: Result<Gated<T>, Status>,
+    card: Option<crate::inbox::BoardAsk>,
+    again: impl FnOnce() -> Fut + Send + 'static,
+) -> Result<Response<T>, Status>
+where
+    T: Message,
+    Fut: Future<Output = Result<Gated<T>, Status>> + Send + 'static,
+{
     match first? {
         Gated::Done(done) => Ok(Response::new(done)),
         Gated::Ask(asked) => {
@@ -154,7 +176,10 @@ where
                     }
                 })
             });
-            Err(inbox.defer(caller, *asked, key, run).await)
+            Err(match card {
+                Some(card) => inbox.defer_board(caller, *asked, key, card, run).await,
+                None => inbox.defer(caller, *asked, key, run).await,
+            })
         }
     }
 }
@@ -177,6 +202,12 @@ pub(crate) struct ChannelSvc {
     known: Option<Arc<crate::machine_service::Work>>,
     /// One clone at a time per channel (D164).
     cloning: Arc<known::CloneLocks>,
+    /// RemoveMachine plans not yet taken (CH-8).
+    plans: Arc<remove_machine::Plans>,
+    /// DeleteChannel plans and the trash it sends folders to (CH-24).
+    deletes: Arc<delete::State>,
+    /// The host's SessionService, which moves and archives the sessions of a machine being removed (CH-8); set once.
+    sessions: Arc<std::sync::OnceLock<crate::session_service::SessionSvc>>,
 }
 
 impl ChannelSvc {
@@ -200,7 +231,15 @@ impl ChannelSvc {
             remote,
             known,
             cloning: Arc::default(),
+            plans: Arc::default(),
+            deletes: Arc::default(),
+            sessions: Arc::default(),
         }
+    }
+
+    /// Gives RemoveMachine the SessionService that moves and archives the sessions of the machine it removes. Once.
+    pub(crate) fn use_sessions(&self, sessions: crate::session_service::SessionSvc) {
+        let _ = self.sessions.set(sessions);
     }
 
     fn gate(
@@ -634,7 +673,7 @@ fn channel_pb(channel: &ChannelRecord, live_sessions: u32) -> pb::Channel {
                 value: machine.clone(),
             })
             .collect(),
-        branch_prefix: Some(channel.branch_prefix.clone()).filter(|prefix| !prefix.is_empty()),
+        branch_prefix: channel.branch_prefix.clone(),
         default_agent: Some(pb::AgentId {
             value: channel.default_agent.clone(),
         }),
@@ -707,10 +746,13 @@ fn setup_status(error: SetupError, machine: &str) -> Status {
         return status::store(source, machine, doing);
     }
     match &error {
-        SetupError::Name(_) => failed(
+        SetupError::Name(name) => failed(
             Code::InvalidArgument,
             &error,
-            "use a name with at least one letter or digit",
+            match name {
+                NameError::NoLettersOrDigits { .. } => "use a name with at least one letter or digit",
+                NameError::Reserved { .. } => "use another name: Desk sessions use that folder",
+            },
             Some(pb::error::Kind::InvalidField(pb::InvalidField {
                 field: "name".to_owned(),
                 problem: Problem::BadFormat as i32,
@@ -1088,20 +1130,49 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         .await
     }
 
+    /// What leaving the channel would do to a machine's sessions (CH-8):
+    /// their unpushed work and a token for RemoveMachine. Read-only.
     async fn plan_remove_machine(
         &self,
-        _request: Request<pb::PlanRemoveChannelMachineRequest>,
+        request: Request<pb::PlanRemoveChannelMachineRequest>,
     ) -> Result<Response<pb::RemoveChannelMachinePlan>, Status> {
-        Err(status::not_built(
-            "humata.v1.ChannelService.PlanRemoveMachine",
-        ))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let first = self.plan_remove_machine_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            None,
+            "humata.v1.RemoveChannelMachinePlan",
+            first,
+            move || async move { me.plan_remove_machine_of(&who, request, true).await },
+        )
+        .await
     }
 
+    /// Takes a machine out of a channel once each of its sessions was moved or archived (CH-8, LD-10).
     async fn remove_machine(
         &self,
-        _request: Request<pb::RemoveChannelMachineRequest>,
+        request: Request<pb::RemoveChannelMachineRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.ChannelService.RemoveMachine"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.remove_machine_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.remove_machine_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn get_grid(
@@ -1113,18 +1184,22 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
 
     async fn plan_delete_channel(
         &self,
-        _request: Request<pb::PlanDeleteChannelRequest>,
+        request: Request<pb::PlanDeleteChannelRequest>,
     ) -> Result<Response<pb::DeleteChannelPlan>, Status> {
-        Err(status::not_built(
-            "humata.v1.ChannelService.PlanDeleteChannel",
-        ))
+        let caller = identity::caller(&request)?;
+        self.plan_delete_channel_of(&caller, request.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn delete_channel(
         &self,
-        _request: Request<pb::DeleteChannelRequest>,
+        request: Request<pb::DeleteChannelRequest>,
     ) -> Result<Response<pb::DeleteChannelResponse>, Status> {
-        Err(status::not_built("humata.v1.ChannelService.DeleteChannel"))
+        let caller = identity::caller(&request)?;
+        self.delete_channel_of(&caller, request.into_inner())
+            .await
+            .map(Response::new)
     }
 }
 
@@ -1168,7 +1243,7 @@ mod tests {
             id: "ch_1".to_owned(),
             name: "Payments".to_owned(),
             folder: "payments".to_owned(),
-            branch_prefix: String::new(),
+            branch_prefix: None,
             default_agent: "claude".to_owned(),
             repos: Vec::new(),
             machines: vec!["m1".to_owned()],
@@ -1181,7 +1256,7 @@ mod tests {
         assert_eq!(shown.revision.map(|r| r.value), Some(3));
         let with = channel_pb(
             &ChannelRecord {
-                branch_prefix: "me/".to_owned(),
+                branch_prefix: Some("me/".to_owned()),
                 ..record
             },
             0,

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::raw::Raw;
 use crate::{MirrorEntry, MirrorError, OwnTools, Role, SessionMeta};
 
 const LOG: &str = "entries.log";
@@ -31,6 +32,15 @@ pub(crate) struct State {
     pub own_tools: OwnTools,
     /// When the last catch-up finished (RFC 3339).
     pub as_of: String,
+    /// For a session on another machine: what that machine said its
+    /// conversation file was at the last read (D189), `offset` counting
+    /// that file's bytes. Empty for this host's own sessions.
+    #[serde(default)]
+    pub source: String,
+    /// The raw lines of a session on another machine (D195), kept beside
+    /// the entries; see `raw.rs`.
+    #[serde(default)]
+    pub raw: Raw,
 }
 
 /// The names saved by `describe`.

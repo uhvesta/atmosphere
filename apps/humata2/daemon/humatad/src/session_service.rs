@@ -13,6 +13,7 @@
 //! is STARTING whatever its agent says.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use humata2_access::{AgentId, Call, Capability, ChannelId, Refusal, Target};
@@ -27,8 +28,9 @@ use pb::invalid_field::Problem;
 use tokio::sync::oneshot;
 use tonic::{Code, Request, Response, Status};
 
+use crate::desk_service;
 use crate::events::{Feed, Scope};
-use crate::channel_service::{Gated, answer_gated, blocking, error_of, failed, gate, timestamp_ms};
+use crate::channel_service::{Gated, answer_gated, answer_gated_showing, blocking, error_of, failed, gate, timestamp_ms};
 use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
@@ -37,16 +39,51 @@ use crate::remote_work::RemoteWork;
 use crate::restart::Tokens;
 use crate::status;
 
+mod archive;
+mod archive_remote;
+mod forget;
+mod fork;
+mod fork_card;
+mod fork_remote;
+mod hooks;
+mod lineage;
+mod move_recover;
+mod move_session;
+mod own_copy;
+mod pointers;
+mod push;
+mod rebuild;
+mod rename_branch;
 mod remote;
 mod start_fresh;
 mod turns;
+mod turns_list;
 mod watch;
+
+pub(crate) use archive_remote::Removal;
 
 pub(crate) use remote::TellSink;
 pub(crate) use turns::{
     HooksError, changes as turn_changes, install_hooks, running as running_turn, set_sources,
 };
-pub(crate) use watch::after_restart;
+pub(crate) use hooks::install_agent_hooks;
+pub(crate) use pointers_start::after_restart;
+pub(crate) use move_session::{is_moving, moving_changes};
+
+mod pointers_start {
+    use super::Tell;
+
+    /// Starts the pointer loop, then the restart's own work.
+    pub(crate) async fn after_restart(tell: Tell) {
+        super::pointers::spawn(tell.clone());
+        super::watch::after_restart(tell).await;
+    }
+}
+
+/// Watches a Desk session's agent the way a channel session's is watched (SE-21).
+pub(crate) fn watch_agent(tell: Tell, session: String) {
+    watch::agent(tell, session);
+}
 
 /// The longest session title taken.
 const TITLE_MAX: usize = 200;
@@ -66,6 +103,12 @@ pub(crate) struct SessionSvc {
     /// The host's way to other machines (D139); none on a machine's own
     /// daemon, where every session is here.
     remote: Option<RemoteWork>,
+    /// Plan tokens and per-session locks of fork, archive and push.
+    lifecycle: Arc<archive::Lifecycle>,
+    /// The host's way to move a session between machines (D195); set once.
+    carry: Arc<std::sync::OnceLock<crate::carry::Carry>>,
+    /// The host's mirror's scrubbed lines, for rebuilding a lost session (SL-4).
+    raw_lines: rebuild::Lines,
 }
 
 /// Puts a session as the store holds it now on the event feed.
@@ -77,6 +120,8 @@ pub(crate) struct Tell {
     /// Set once the host's remote work exists: what a remote session shows is
     /// merged with what its machine reported (SL-3).
     remote: Arc<std::sync::OnceLock<RemoteWork>>,
+    /// The last pointers of this machine's sessions (SL-3).
+    pointers: Arc<pointers::Cache>,
 }
 
 impl Tell {
@@ -86,6 +131,7 @@ impl Tell {
             store,
             machine,
             remote: Arc::default(),
+            pointers: pointers::shared(),
         }
     }
 
@@ -114,7 +160,7 @@ impl Tell {
     /// Reads `session` back and publishes it as GetSession would show it.
     /// A session that can't be read is not told; publishing never fails
     /// the call that changed it.
-    async fn session(&self, session: &str, change: pb::Change, by: Option<pb::Actor>) {
+    pub(crate) async fn session(&self, session: &str, change: pb::Change, by: Option<pb::Actor>) {
         let (store, key) = (self.store.clone(), session.to_owned());
         let read = blocking(move || Loaded::read(&store, &key))
         .await;
@@ -132,7 +178,13 @@ impl Tell {
             && remote::elsewhere(&loaded.record, &self.machine)
         {
             remote.merge(&mut shown);
+        } else if !remote::elsewhere(&loaded.record, &self.machine) {
+            self.pointers.fill(&loaded.record.id, &mut shown);
+            self.pointers.poke(&loaded.record.id);
         }
+        // After the machine's report, so an archived session shows archived.
+        lineage::apply(&self.store, &mut shown);
+        move_session::show_moving(&mut shown);
         self.feed.publish_in(
             change,
             pb::event::Payload::Session(shown),
@@ -146,7 +198,7 @@ impl Tell {
 }
 
 /// What the store holds of one session.
-struct Loaded {
+pub(crate) struct Loaded {
     record: SessionRecord,
     detail: Option<SessionDetail>,
     agent: Option<AgentRecord>,
@@ -157,7 +209,7 @@ struct Loaded {
 impl Loaded {
     /// Reads session `key`. It looks at the disk for a failed resume, so it
     /// is blocking.
-    fn read(store: &humata2_store::Store, key: &str) -> Result<Option<Loaded>, StoreError> {
+    pub(crate) fn read(store: &humata2_store::Store, key: &str) -> Result<Option<Loaded>, StoreError> {
         let Some(record) = store.session(key)? else {
             return Ok(None);
         };
@@ -181,8 +233,9 @@ impl SessionSvc {
         inbox: Arc<Inbox>,
         remote: Option<RemoteWork>,
         tell: Tell,
+        socket: PathBuf,
     ) -> Self {
-        let tokens = Arc::new(Tokens::new(starter.store.clone(), identities));
+        let tokens = Arc::new(Tokens::new(starter.store.clone(), identities, socket));
         Self {
             tell,
             guard,
@@ -192,6 +245,9 @@ impl SessionSvc {
             inbox,
             machine,
             remote,
+            lifecycle: Arc::default(),
+            carry: Arc::default(),
+            raw_lines: rebuild::Lines::default(),
         }
     }
 
@@ -208,9 +264,7 @@ impl SessionSvc {
 
     /// Ends the grants of a session that was archived or deleted, in the
     /// policy and in the store, so a restart doesn't bring them back
-    /// (IN-22). Not called yet: ArchiveSession and DeleteSession are still
-    /// "not built"; each calls this, then `withdraw_requests_of`.
-    #[allow(dead_code)]
+    /// (IN-22). ArchiveSession calls this, then `withdraw_requests_of`.
     async fn end_grants_of(&self, session: &str) -> Result<(), Status> {
         let id = humata2_access::SessionId::new(session);
         let ended = self
@@ -232,6 +286,18 @@ impl SessionSvc {
         match caller {
             Caller::Peer => Err(status::refused(&Refusal::PeerCannotCall)),
             _ => Ok(()),
+        }
+    }
+
+    /// Refuses a channel action (`action` names it) on the Desk session
+    /// `session`, which belongs to no channel (D182.2).
+    async fn refuse_desk(&self, session: Option<&pb::SessionId>, action: &str) -> Result<(), Status> {
+        match session {
+            Some(id) => {
+                desk_service::refuse_channel_action(&self.starter.store, &self.machine, &id.value, action)
+                    .await
+            }
+            None => Ok(()),
         }
     }
 
@@ -299,6 +365,12 @@ impl SessionSvc {
         {
             return Ok(Gated::Done(self.started_by(operation).await?));
         }
+        // The host placing a session it rebuilt from its own records (SL-4).
+        if let Some(rebuild) = request.rebuild.clone() {
+            return self
+                .begin_rebuild_here(caller, request, rebuild, assigned)
+                .await;
+        }
         // A start naming a session this machine already has (the host asking again,
         // D150) answers with it and starts nothing.
         if let Some(id) = &assigned
@@ -352,6 +424,7 @@ impl SessionSvc {
             model: Some(request.model).filter(|model| !model.is_empty()),
             repos: Some(repos),
             first_message: Some(request.first_message).filter(|message| !message.is_empty()),
+            branch: Some(request.branch).filter(|branch| !branch.is_empty()),
             operation: operation.id.as_ref().map(|id| id.value.clone()),
             cols: COLS,
             rows: ROWS,
@@ -519,8 +592,11 @@ impl SessionSvc {
                 },
             ));
         }
-        if loaded.record.title != title {
+        let on_machine = self.rename_branch_on_machine(&mut loaded, &title, request.rename_branch).await?;
+        let rename = self.plan_branch_rename(&loaded, &title, request.rename_branch).await?;
+        if loaded.record.title != title || on_machine || rename.as_ref().is_some_and(|plan| plan.changes()) {
             loaded.record.title = title;
+            self.apply_branch_rename(&mut loaded, rename.as_ref()).await?;
             if let Some(detail) = loaded.detail.as_mut() {
                 detail.revision += 1;
             }
@@ -537,7 +613,12 @@ impl SessionSvc {
                 }
             })
             .await?
-            .map_err(|error| status::store(error, &self.machine, "save the session's new title"))?;
+            .map_err(|error| status::store(error, &self.machine, "save the session's new title"))
+            .inspect_err(|_| {
+                if let Some(plan) = &rename {
+                    plan.undo();
+                }
+            })?;
             self.tell
                 .session(&id, pb::Change::Updated, Some(identity::actor(caller)))
                 .await;
@@ -620,6 +701,7 @@ impl SessionSvc {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| status::missing("id"))?;
         let loaded = self.load(&id).await?;
+        desk_service::refuse_if_closed(&self.starter.store, &self.machine, &id).await?;
         let own = matches!(caller, Caller::Agent(agent) if agent.session.id.as_str() == id);
         if let Some(asked) = self.gate(
             caller,
@@ -649,6 +731,9 @@ impl SessionSvc {
             .existing(caller, request.idempotency_key.as_ref())?
         {
             return Ok(Gated::Done(operation));
+        }
+        if fork_remote::unlaunched(&loaded) {
+            return self.launch_unlaunched(caller, request.idempotency_key, loaded).await;
         }
         let running = match loaded.agent.as_ref().map(|agent| agent.state) {
             None => {
@@ -762,6 +847,11 @@ impl SessionSvc {
             &self.machine,
         );
         self.merge_remote(&loaded.record, &mut shown);
+        if !remote::elsewhere(&loaded.record, &self.machine) {
+            self.tell.pointers.fill(&loaded.record.id, &mut shown);
+        }
+        self.apply_lineage(&mut shown);
+        move_session::show_moving(&mut shown);
         shown
     }
 
@@ -1004,7 +1094,7 @@ fn session_pb(
     }
 }
 
-fn clean_title(title: &str) -> Result<String, Status> {
+pub(crate) fn clean_title(title: &str) -> Result<String, Status> {
     let title = title.trim();
     if title.chars().count() > TITLE_MAX {
         return Err(status::invalid_field(
@@ -1106,7 +1196,7 @@ fn describe_main(main: &MainClone) -> String {
 }
 
 /// A start's error as the API shows it, and the code it travels with.
-fn start_error(error: &StartError) -> (Code, pb::Error) {
+pub(crate) fn start_error(error: &StartError) -> (Code, pb::Error) {
     let channel_not_found = |id: &str| {
         (
             Code::NotFound,
@@ -1151,6 +1241,26 @@ fn start_error(error: &StartError) -> (Code, pb::Error) {
                 error,
                 "wait for the channel's clones to finish",
                 field("repos", Problem::NotAllowedHere),
+            ),
+        ),
+        StartError::BadBranch { .. } => (
+            Code::InvalidArgument,
+            error_of(
+                error,
+                "type a branch name git accepts (no spaces, `..`, `~`, `^`, `:` or a trailing `/`), or clear it to let Humata pick one",
+                field("branch", Problem::BadFormat),
+            ),
+        ),
+        StartError::BranchTaken { branch, suggestion } => (
+            Code::AlreadyExists,
+            error_of(
+                error,
+                "use the free name suggested, or clear the branch to let Humata pick one",
+                Some(pb::error::Kind::NameTaken(pb::NameTaken {
+                    kind: pb::EntityKind::Session as i32,
+                    name: branch.clone(),
+                    suggestion: suggestion.clone(),
+                })),
             ),
         ),
         StartError::Agent(_) => (
@@ -1367,7 +1477,7 @@ fn resume_failed(session: &str, reason: ResumeFailure, exit_code: Option<i32>) -
 /// resumes an agent whose record says it should run (it stops a holder
 /// still answering), so the record is saved as resuming first and revive
 /// does the rest for this one agent.
-async fn run_resume(
+pub(crate) async fn run_resume(
     starter: Starter,
     tell: Tell,
     by: pb::Actor,
@@ -1560,14 +1670,33 @@ impl pb::session_service_server::SessionService for SessionSvc {
             return Ok(Response::new(pb::ListSessionsResponse::default()));
         }
         let store = self.starter.store.clone();
-        let (sessions, details, agents, sources) = blocking(move || {
+        let include_archived = request.include_archived;
+        let (sessions, details, agents, sources, lineage) = blocking(move || {
             let agents = store.agents()?;
             // Read from the disk, so here and not in the handler.
             let sources: HashMap<String, pb::session::SummarySource> = agents
                 .iter()
                 .map(|agent| (agent.session.clone(), start_fresh::summary_source(Some(agent))))
                 .collect();
-            Ok::<_, StoreError>((store.sessions()?, store.session_details()?, agents, sources))
+            let lineage = lineage::Lineage::read(&store)?;
+            // A Desk session that was deleted is hidden from every list (D182.2).
+            let deleted: std::collections::HashSet<String> = store
+                .desks()?
+                .into_iter()
+                .filter(|row| row.deleted_unix_ms.is_some())
+                .map(|row| row.session_id)
+                .collect();
+            Ok::<_, StoreError>((
+                store
+                    .sessions()?
+                    .into_iter()
+                    .filter(|session| !deleted.contains(&session.id))
+                    .collect::<Vec<_>>(),
+                store.session_details()?,
+                agents,
+                sources,
+                lineage,
+            ))
         })
         .await?
         .map_err(|error| status::store(error, &self.machine, "list the sessions"))?;
@@ -1597,6 +1726,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
                 })
             })
             .filter(|session| self.may_read(&caller, session))
+            .filter(|session| include_archived || !lineage.is_archived(&session.id))
             .collect();
         sessions.sort_by(|a, b| (a.created_unix_ms, &a.id).cmp(&(b.created_unix_ms, &b.id)));
         let sessions = sessions
@@ -1613,6 +1743,8 @@ impl pb::session_service_server::SessionService for SessionSvc {
                     &self.machine,
                 );
                 self.merge_remote(session, &mut shown);
+                lineage.apply(&mut shown);
+                move_session::show_moving(&mut shown);
                 shown
             })
             .collect();
@@ -1701,58 +1833,192 @@ impl pb::session_service_server::SessionService for SessionSvc {
 
     async fn list_turns(
         &self,
-        _request: Request<pb::ListTurnsRequest>,
+        request: Request<pb::ListTurnsRequest>,
     ) -> Result<Response<pb::ListTurnsResponse>, Status> {
-        Err(status::not_built("humata.v1.SessionService.ListTurns"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let first = self.list_turns_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            None,
+            "humata.v1.ListTurnsResponse",
+            first,
+            move || async move { me.list_turns_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn preview_fork(
         &self,
-        _request: Request<pb::ForkSessionRequest>,
+        request: Request<pb::ForkSessionRequest>,
     ) -> Result<Response<pb::ForkPreview>, Status> {
-        Err(status::not_built("humata.v1.SessionService.PreviewFork"))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().parent.as_ref(), "Fork").await?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.preview_fork_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.ForkPreview",
+            first,
+            move || async move { me.preview_fork_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn fork_session(
         &self,
-        _request: Request<pb::ForkSessionRequest>,
+        request: Request<pb::ForkSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.SessionService.ForkSession"))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().parent.as_ref(), "Fork").await?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.fork_session_of(&caller, request.clone(), false).await;
+        // TP-6, IN-10: a fork waiting on Ask me shows what it would start.
+        let card = match &first {
+            Ok(Gated::Ask(_)) => self.fork_card(&request).await,
+            _ => None,
+        };
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated_showing(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            card,
+            move || async move { me.fork_session_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn give_own_copy(
         &self,
-        _request: Request<pb::GiveOwnCopyRequest>,
+        request: Request<pb::GiveOwnCopyRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.SessionService.GiveOwnCopy"))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().fork.as_ref(), "Give it its own copy").await?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.give_own_copy_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.give_own_copy_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn move_session(
         &self,
-        _request: Request<pb::MoveSessionRequest>,
+        request: Request<pb::MoveSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.SessionService.MoveSession"))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().id.as_ref(), "Move").await?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.move_session_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.move_session_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn plan_archive(
         &self,
-        _request: Request<pb::PlanArchiveRequest>,
+        request: Request<pb::PlanArchiveRequest>,
     ) -> Result<Response<pb::ArchivePlan>, Status> {
-        Err(status::not_built("humata.v1.SessionService.PlanArchive"))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().id.as_ref(), "Archive").await?;
+        let request = request.into_inner();
+        let key = None;
+        let first = self.plan_archive_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.ArchivePlan",
+            first,
+            move || async move { me.plan_archive_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn archive_session(
         &self,
-        _request: Request<pb::ArchiveSessionRequest>,
+        request: Request<pb::ArchiveSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.SessionService.ArchiveSession"))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().id.as_ref(), "Archive").await?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.archive_session_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.archive_session_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn restore_session(
         &self,
-        _request: Request<pb::RestoreSessionRequest>,
+        request: Request<pb::RestoreSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.SessionService.RestoreSession"))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().id.as_ref(), "Restore").await?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.restore_session_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.restore_session_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn plan_delete(
@@ -1769,11 +2035,28 @@ impl pb::session_service_server::SessionService for SessionSvc {
         Err(status::not_built("humata.v1.SessionService.DeleteSession"))
     }
 
+    /// A session lost with its machine, rebuilt on another (SL-4).
     async fn rebuild_session(
         &self,
-        _request: Request<pb::RebuildSessionRequest>,
+        request: Request<pb::RebuildSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.SessionService.RebuildSession"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.rebuild_session_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.rebuild_session_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn add_repo_to_session(
@@ -1801,18 +2084,51 @@ impl pb::session_service_server::SessionService for SessionSvc {
 
     async fn plan_push(
         &self,
-        _request: Request<pb::PlanPushRequest>,
+        request: Request<pb::PlanPushRequest>,
     ) -> Result<Response<pb::PushPlan>, Status> {
-        Err(status::not_built("humata.v1.SessionService.PlanPush"))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().id.as_ref(), "Push").await?;
+        let request = request.into_inner();
+        let first = self.plan_push_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            None,
+            "humata.v1.PushPlan",
+            first,
+            move || async move { me.plan_push_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn push_and_open_pull_requests(
         &self,
-        _request: Request<pb::PushAndOpenPullRequestsRequest>,
+        request: Request<pb::PushAndOpenPullRequestsRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built(
-            "humata.v1.SessionService.PushAndOpenPullRequests",
-        ))
+        let caller = identity::caller(&request)?;
+        self.refuse_desk(request.get_ref().id.as_ref(), "Push").await?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self
+            .push_and_open_pull_requests_of(&caller, request.clone(), false)
+            .await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move {
+                me.push_and_open_pull_requests_of(&who, request, true)
+                    .await
+            },
+        )
+        .await
     }
 
     async fn read_conversation(
@@ -1851,6 +2167,17 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::ReportTurnRequest>,
     ) -> Result<Response<pb::ReportTurnResponse>, Status> {
         self.report_turn_of(request).await
+    }
+
+    type HookStream = hooks::HookStream;
+
+    /// The session's own agent's permission hook holds this while the
+    /// Inbox card is open (HOOKS, D191).
+    async fn hook(
+        &self,
+        request: Request<pb::HookRequest>,
+    ) -> Result<Response<Self::HookStream>, Status> {
+        self.hook_of(request).await
     }
 }
 
@@ -1915,7 +2242,7 @@ mod tests {
             id: "ch_1".to_owned(),
             name: "Payments".to_owned(),
             folder: "payments".to_owned(),
-            branch_prefix: String::new(),
+            branch_prefix: None,
             default_agent: "claude".to_owned(),
             repos: repos
                 .iter()

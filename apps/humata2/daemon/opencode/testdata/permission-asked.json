@@ -1,0 +1,24 @@
+{
+    "id": "evt_1e3ac9e96001Q2N6WYqZ58BKGX",
+    "created": 1794821103254,
+    "type": "permission.asked",
+    "location": {
+        "directory": "/work/proj"
+    },
+    "data": {
+        "id": "per_1e3ac9e95001Sgm3zNE4P6lF7q",
+        "sessionID": "ses_e1c537029ffejTdBfVrnGEG0jm",
+        "action": "shell",
+        "resources": [
+            "echo hi"
+        ],
+        "save": [
+            "echo *"
+        ],
+        "source": {
+            "type": "tool",
+            "messageID": "msg_1e3ac9288001CSUFqiz4xfCgXF",
+            "id": "call_6748772b22274f56a8321a7d"
+        }
+    }
+}

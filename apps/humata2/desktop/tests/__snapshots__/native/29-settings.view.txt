@@ -44,5 +44,5 @@ Tab "Storage"
 Button "On" selected
 Tab "Notifications"
 Tab "Keyboard"
-Tab "Wrap"
-Tab "Scroll" selected
+Tab "Wrap" selected
+Tab "Scroll"

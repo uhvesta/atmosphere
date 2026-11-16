@@ -6,9 +6,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_clients::model::{ItemId, MachineId, Recovery, SessionId, Status};
-use humata2_clients::{Daemon, DaemonError, EVENT_QUEUE, Event, FakeDaemon, Operation, fixture};
+use humata2_clients::{
+    Daemon, DaemonError, EVENT_QUEUE, Event, FakeDaemon, ForkOptions, Operation, fixture,
+};
 use tca::TestClock;
 use tokio::runtime::Builder;
+
+fn options(kind: humata2_clients::model::ForkKind, title: &str) -> ForkOptions {
+    ForkOptions {
+        kind,
+        title: title.to_owned(),
+        before_turn: None,
+        agent: None,
+        machine: None,
+        branch: String::new(),
+    }
+}
 
 fn block_on<T>(future: impl Future<Output = T>) -> T {
     match Builder::new_current_thread().enable_all().build() {
@@ -122,7 +135,7 @@ fn a_fork_starts_with_its_parents_clone_listing() {
     let before = daemon.workspace().session_files[&parent].clone();
     assert!(!before.is_empty());
     for kind in [ForkKind::Worktree, ForkKind::Shared, ForkKind::Conversation] {
-        let fork = block_on(daemon.fork(&parent, kind, "Try another fix")).expect("fork");
+        let fork = block_on(daemon.fork(&parent, options(kind, "Try another fix"))).expect("fork");
         let workspace = daemon.workspace();
         assert_eq!(workspace.session_files.get(&fork), Some(&before));
         assert_eq!(workspace.session_files.get(&parent), Some(&before));
@@ -218,7 +231,7 @@ fn archive_undo_restores_tree_and_pin_without_rewinding_terminal_output() {
         .unwrap()
         .pinned = true;
     let daemon = FakeDaemon::new(workspace, Arc::new(TestClock::new()));
-    block_on(daemon.archive(&id)).expect("archive");
+    block_on(daemon.archive(&id, false)).expect("archive");
     assert!(daemon.workspace().session(&id).unwrap().archived);
     assert_ne!(
         daemon
@@ -357,7 +370,7 @@ fn fork_kinds_keep_the_right_conversation_files_and_branch() {
     let source = before.session(&parent).unwrap();
     let original = &source.transcript[1];
     for kind in [ForkKind::Worktree, ForkKind::Conversation, ForkKind::Shared] {
-        let id = block_on(daemon.fork(&parent, kind, "Another approach")).unwrap();
+        let id = block_on(daemon.fork(&parent, options(kind, "Another approach"))).unwrap();
         let workspace = daemon.workspace();
         let fork = workspace.session(&id).unwrap();
         assert_eq!(fork.parent.as_ref(), Some(&parent));

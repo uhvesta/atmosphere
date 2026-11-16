@@ -1,0 +1,13 @@
+{
+    "id": "evt_1e3b8d368001h6WSd2YTnlejQV",
+    "created": 1794821903208,
+    "type": "permission.replied",
+    "location": {
+        "directory": "/work/proj"
+    },
+    "data": {
+        "sessionID": "ses_e1c475c49ffedcCVhZP8OU5Y4U",
+        "requestID": "per_1e3b8ad35001SJlhi5mukhN4Be",
+        "reply": "always"
+    }
+}

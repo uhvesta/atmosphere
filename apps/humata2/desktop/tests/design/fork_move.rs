@@ -112,7 +112,7 @@ pub fn fork(look: Look) -> Div {
                 .flex_col()
                 .gap(px(6.))
                 .child(kind_card(look, true, "Code + context", "New copies of the files as they are now, uncommitted changes included, and an agent that knows the conversation."))
-                .child(kind_card(look, false, "Context only", "An agent that knows the conversation and reads the files but never writes them."))
+                .child(kind_card(look, false, "Context only", "An agent that knows the conversation and works in this session's files, with no copies, so its edits land here."))
                 .child(kind_card(look, false, "Code only", "New copies of the files and a fresh agent with no conversation.")),
         )
         .child(row(

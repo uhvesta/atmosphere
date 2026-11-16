@@ -9,6 +9,7 @@ rust_library(
     visibility = [
         "//apps/humata2/desktop:__pkg__",
         "//apps/humata2/features/app:__pkg__",
+        "//apps/humata2/features/palette:__pkg__",
         "//apps/humata2/ui:__pkg__",
     ],
     deps = [

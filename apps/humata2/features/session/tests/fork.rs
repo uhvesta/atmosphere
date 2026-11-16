@@ -32,13 +32,9 @@ fn a_failed_fork_keeps_its_title_and_kind_for_retry() {
         |s| s.forking = false,
     );
     assert!(store.state().error.is_some());
-    assert_eq!(
-        store.state().fork.as_ref().unwrap(),
-        &ForkDraft {
-            kind: ForkKind::Conversation,
-            title: "Review safely".into()
-        }
-    );
+    let draft = store.state().fork.as_ref().unwrap();
+    assert_eq!(draft.kind, ForkKind::Conversation);
+    assert_eq!(draft.title, "Review safely");
     store.send(A::ConfirmFork, |s| {
         s.forking = true;
         s.error = None;
@@ -71,6 +67,12 @@ fn pending_forks_ignore_repeated_create_and_edits() {
         fork: Some(ForkDraft {
             kind: ForkKind::Shared,
             title: "Fresh attempt".into(),
+            before_turn: None,
+            agent: None,
+            machine: None,
+            branch: "uhvesta/fresh-attempt".into(),
+            turns: None,
+            picker: None,
         }),
         forking: true,
         ..Default::default()

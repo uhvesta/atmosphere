@@ -1,0 +1,1 @@
+{"session_id":"019a-thread","transcript_path":null,"cwd":"/work/api","hook_event_name":"PermissionRequest","model":"gpt-5.5-codex","turn_id":"turn-7","permission_mode":"on-request","tool_name":"Bash","tool_input":{"command":"cargo publish --dry-run","description":"Check the crate packages"}}

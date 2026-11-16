@@ -18,7 +18,7 @@ fn channel(id: &str, created: i64) -> ChannelRecord {
         id: id.to_owned(),
         name: format!("Channel {id}"),
         folder: format!("/work/{id}"),
-        branch_prefix: "ava/".to_owned(),
+        branch_prefix: Some("ava/".to_owned()),
         default_agent: "claude".to_owned(),
         repos: vec![repo("zed", "web"), repo("acme", "api")],
         machines: vec!["ma_2".to_owned(), "ma_1".to_owned()],

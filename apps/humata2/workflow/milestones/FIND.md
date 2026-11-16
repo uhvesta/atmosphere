@@ -1,6 +1,6 @@
 # FIND: Find and reach anything
 
-- **Status:** blocked
+- **Status:** ready to close
 - **Depends on:**
   - MACH: search runs over the conversation mirror from every machine
   - LOOK2: the palette and the Pinned section are drawn there
@@ -38,9 +38,21 @@ The palette's look (LOOK2). Review this PR from a pasted link (PR).
   - [x] T1 mirror crate: transcript reader, scrubber, mirror files, FTS index, search/read · tests `daemon/mirror/tests/` · files `daemon/mirror/`
   - [x] T2 marks crate: set/get/pinned/reorder/forget, revision · tests `daemon/marks/tests/` · files `daemon/marks/`
   - [x] T3 app: History + MarksClient traits and fakes, `features/find` search + pinned reducers · tests `clients/tests/pending/`, `features/find/tests/`
-  - [ ] T4 humatad HistoryService + MarkService on a real daemon (boundary tests in `tests/pending/`), history.proto · after T1, T2
-  - [ ] T5 CLI `humata sessions search`, `humata session read`, `humata pin|unpin|vip|unvip|pinned [reorder]`; MCP `sessions_search`, `session_read` · after T4
-  - [ ] T6 live clients + view files (palette Conversations section, sidebar Pinned) + seams for LOOK2 · after T3, T4
-- **Waiting on:** MACH relay (other machines' mirrors), LOOK2 (palette/sidebar drawing).
+  - [x] T4a MarkService on a real daemon: `seams_t4a.py --skip-cargo` applied 2026-11-15 (minion FIND, second manager); `//apps/humata2/daemon/humatad:marks_test` 16/16 live. humatad `Cargo.toml` humata2-marks line waits for main's next repin.
+  - [x] T1 follow-up: mirror page tokens tagged with FNV-1a 64 over the request's JSON (Fable ruling; was std DefaultHasher, not stable across toolchains); `a_page_token_from_an_earlier_build_still_opens`; catch_up's empty skip and `a_catch_up_that_adds_nothing_writes_nothing` now built and passing.
+  - [x] T4b HistoryService on a real daemon: `seams_t4b.py --skip-cargo` applied 2026-11-15; `//apps/humata2/daemon/humatad:history_test` (19) live, marks_test and humatad2_unit_test green. Agents limited to their own channel (SEAM SESSIONS_SEARCH_OTHER); machine_name = machine id and an empty scrubber are seams. humatad `Cargo.toml` humata2-mirror line waits for the repin.
+  - [x] T5a CLI `humata sessions search`, `humata session read`, `humata pin|unpin|vip|unvip|pinned [reorder]` · `cli:search_test`, `cli:marks_test` green
+  - [x] T5b MCP `sessions_search`, `session_read` (`daemon/humatad/src/mcp/history.rs`, `find/seams_t5b.py`) · `history_tools_test` 11/11, equal to gRPC (LD-25)
+  - [x] T6a live clients `clients/live/src/{marks,history}.rs` · `marks_live_test` (incl. two clients at once, restart), `history_live_test`, `live_unit_test` green
+  - [x] T6b view files: `ui/src/palette_hits.rs` (hits list, cursor after the entries, "more" row → FindAction::More), `ui/src/sidebar_pinned.rs` (FakeMarks seeded from the workspace; RowKey::Pinned gone), `ui/src/conversation_tab.rs` (seams_t6_views.py, seams_conversation_tab.py) · ui:all, ui_unit_test green; frames 15/25 re-recorded by the recorder
+  - [x] T7 flow §26.22 (`desktop/tests/live_flows/find.rs`, real humatad2: move asks inline, a search hit opens the Conversation tab at the turn, PR link → ReviewPull, Long lines setting revealed, pin shows in two clients) and the KP-1 audit (`features/app:every_action_test`) · green
+  - [x] Paging: `FindState.next_page`, `FindAction::{More, MoreLoaded}` · `features/find:search_more_test`
+  - [x] D186: a hit opens the turn (`SearchHit.seq`, `FindDelegate::OpenTurn`, `features/session/src/conversation.rs`) · `session:conversation_test`, `app:find_conversation_test`
+  - [x] Palette for 26.22 + KP-1: settings sections/rows, Back, Shortcuts, Views, Machine, ChannelBoard, MoveSession (inline ask, ⌥⌘M in keys.rs + shell.rs), ReviewPull, hits cursor · `palette:act_test`, `palette:hits_cursor_test`
+  - [x] D189 remote mirror: host pulls other machines' mirrors over the relay (`history.proto` ReadMirror, `history_service/{remote,source}.rs`, `mirror/src/source.rs`; `seams_remote_mirror.py`) · `humatad:remote_history_test` (3), `mirror:remote_source_test` (9), relay/remote/history tests green; `humatad2_unit_test` (refusal unit test) green 2026-11-16
+  - [x] Gaps 1–5 (main, 2026-11-16): palette Pin/Unpin and Mark/Clear VIP for the session or channel beneath it (`Marked`, `Command::{Pin,Vip}`, `PaletteState.{channel,marks}`; not added to recent); channel page's Pin icon pins and unpins (`ui/src/channel.rs` `pin_icon`; frames 18–20 view text re-recorded, PNGs identical); Up/Down move the palette cursor (`overlay_palette.rs`, function flag ignored); D197 Review this PR only for a PR a session here reviews; palette Move on a channel session runs the session's Move dialog (StartMove → MovePick → ConfirmMove → `daemon.move_session`) · `palette:marks_test`, `palette:review_pull_gate_test`, `palette:act_test`, `app:marks_test`, `app:move_from_palette_test`, `app:every_action_test`, `desktop:native_test` `marks::`
+- **Waiting on:** nothing; humatad2_unit_test green in main's 2026-11-16 batch.
 - **Build gates:** none yet
-- **Ready to commit:** no
+- **Ready to commit:** yes
+- **Known gaps:** highlights come from the query words; offline flag passed by the caller; PR-review pins open Changes; the daemon's channel-session MoveSession is FORK's (MV-2, not_built until it lands; the app side is done); Review a pull request dialog is the PR milestone's (D197 hides the entry until then); VIP's palette icon is Bell (the design draws VIP as a text badge, no glyph); remote machine_name is the id; scrubber empty until SetHostVariable; local mirror truncation gap; D189 open item MV-2/LD-4 carried history offset; headless paste into the palette unproven; live_flows_test lacks palette/find/settings deps, so the flow compares Debug names.
+- **GAPS_REVIEW note:** FIND: ⌘K runs every action (KP-1 audit), finds turns on every machine (D186, D189) and opens them in a Conversation tab; pins/VIP live on the host. Gaps as listed above.

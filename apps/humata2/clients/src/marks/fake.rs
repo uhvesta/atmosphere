@@ -92,6 +92,29 @@ impl FakeMarks {
         Self::default()
     }
 
+    /// Marks holding the pins and VIP marks `workspace` starts with: each
+    /// unarchived session whose `pinned` flag is set is pinned, in the
+    /// workspace's order, under its title; each session marked `vip` is VIP.
+    /// The first list is at revision 0, as with [`new`](Self::new).
+    #[must_use]
+    pub fn seeded_from(workspace: &crate::workspace::Workspace) -> Self {
+        let marks = Self::new();
+        {
+            let mut inner = marks.inner();
+            for session in &workspace.sessions {
+                let thing = Thing::Session(session.id.clone());
+                if session.pinned && !session.archived {
+                    inner.order.push(thing.clone());
+                    inner.titles.insert(thing.clone(), session.title.clone());
+                }
+                if session.vip {
+                    inner.vip.insert(thing);
+                }
+            }
+        }
+        marks
+    }
+
     fn inner(&self) -> MutexGuard<'_, Inner> {
         self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }

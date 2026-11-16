@@ -194,6 +194,7 @@ fn request(channel: &str, first_message: Option<&str>) -> StartRequest {
         model: None,
         repos: None,
         first_message: first_message.map(str::to_owned),
+        branch: None,
         operation: None,
         cols: 80,
         rows: 24,

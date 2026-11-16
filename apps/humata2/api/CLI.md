@@ -100,18 +100,19 @@ none, only `humata whoami` and `humata login` run.
 | `humata session queue <session>` | `terminal.list_queued` | ListQueued | user; agent: its own | local |
 | `humata session send-now <session> [<queued-id>…]` | `terminal.send_queued_now` | SendQueuedNow | user-only (TERMINAL_INPUT, SE-23) | local |
 | `humata session start --machine m [--agent a] [--repo r]… [--title t] [--message m]` | `session.start` | StartSession | user; agent: SESSION_START_* | waits (other machine), or per away rule (this machine) |
-| `humata session fork <session> --kind code-and-context\|code-only\|context-only --machine m` | `session.fork` | PreviewFork, ForkSession | as start | as start |
+| `humata session fork <session> --kind code-and-context\|code-only\|context-only [--title t] [--branch b] --machine m` | `session.fork` | PreviewFork, ForkSession | as start | as start |
 | `humata session rename <session> <title>` | `session.rename` | RenameSession | user; agent: OWN_SESSION_MANAGE (self) | host |
 | `humata session stop\|resume <session>` | `session.stop`, `session.resume` | StopSession, ResumeSession | user; agent: OWN_SESSION_END (self), SESSION_STOP_OTHER | local for this machine's holders, then journaled |
 | `humata session archive\|delete <session> [--dry-run\|--plan t]` | `session.archive`, `session.delete` | PlanArchive/ArchiveSession, PlanDelete/DeleteSession | user; agent: OWN_SESSION_END (self), SESSION_STOP_OTHER (others, D21) | host |
 | `humata session restore\|rebuild <session> [--machine m]` | `session.restore`, `session.rebuild` | RestoreSession, RebuildSession | user; agent: SESSION_START_* (D21) | host |
 | `humata session move <session> --to m` | `session.move` | MoveSession | user; agent: SESSION_MOVE | host |
 | `humata session repo add\|drop <session> <repo>` | `session.add_repo`, `session.drop_repo` | AddRepoToSession, PlanDropRepo/DropRepo | user; agent: OWN_SESSION_MANAGE | host |
-| `humata session own-copy <session> <repo>` | `session.own_copy` | GiveOwnCopy | as repo | host |
+| `humata session own-copy <session>` (copies every repo of a context-only fork, FK-9) | `session.own_copy` | GiveOwnCopy | as repo | host |
 | `humata session push <session> [--repo r]… [--pr] [--from-view v]` | `session.push` | PlanPush, PushAndOpenPullRequests | user (no rule, IN-24); agent: GIT_PUSH. `--from-view` opens a prepared PR view's fields (VW-13) | host (GitHub goes through the Mac) |
 | `humata session note\|ask <session> <text>` | `session.note`, `session.ask` | SendNote, AskSession | user; agent: SESSION_NOTE | per away rule here; waits elsewhere |
 | `humata session type <session> <text> [--at-turn-end]` | `session.type` | TerminalService.Type | user; agent: SESSION_TYPE. With the output fallback or in a shell, `--at-turn-end` queues it as "waiting: turn end not certain" (SE-23) | as note |
 | `humata turn working\|idle\|needs-input` | `session.report_turn` | ReportTurn | the session's own agent only: it is what its Claude Code hooks run (D169); user, script and peer callers are refused. Prints nothing and exits 0 whatever happens, so a hook can't fail or wait on it | the session's machine |
+| `humata hook claude\|codex\|copilot permission` | `session.hook` | Hook (stream) | the session's own agent only: its blocking permission hook runs it with the agent's payload on stdin (D191). The daemon raises one Inbox card and holds; the command prints the answer in that agent's shape. It prints nothing, which is no decision so the agent's own prompt asks, when the daemon is down, refuses, ends the hold at 3590 s, or the payload isn't an ask or is over 1 MiB. Always exits 0; gives up itself at 3595 s (D192) | the session's machine |
 | `humata shell <machine>` | `machine.shell` | OpenMachineShell | user-only (TERMINAL_INPUT) | local on that machine |
 | `humata conversation <session>` | `session.conversation` | ReadConversation | user; agent: FILES_READ_OTHER_SESSION for others | stale |
 
@@ -196,6 +197,7 @@ Inside a session, a bare relative path is the agent's own clone.
 | `humata agents ls\|add\|edit` | `agents.*` | AgentService | add, edit: user-only | host only |
 | `humata pin\|unpin\|vip\|unvip <thing>`, `humata pinned` | `marks.set`, `pinned.list` | MarkService | user-only (NV-20); a new pin goes at the end (NV-25) | host only |
 | `humata pinned reorder <thing>…` | `pinned.reorder` | ReorderPinned | user-only (NV-25) | host only |
+| `humata sessions search <words…> [--channel c] [--machine m] [--agent a] [--since t] [--until t]`, `humata session read <session> [--from n] [--to n]` | `session.search`, `session.read` | SearchSessions, ReadTurns (HistoryService) | anyone; an agent is limited to its own channel by the host | host only |
 
 Expand all and Collapse all (NV-18, NV-19) are the app's own and have no
 command.
@@ -230,7 +232,7 @@ stderr, and when `retry.after` is set, "Try again after 14:32". With
 | 0 | Done: applied, or journaled (unless `--strict`) |
 | 2 | Usage: unknown command, bad flag, ambiguous name (`invalid_field` from parsing) |
 | 3 | `not_found` |
-| 4 | `denied`, `not_in_channel`, `parent_read_only`, `main_clone_read_only`, `push_refused` |
+| 4 | `denied`, `not_in_channel`, `main_clone_read_only`, `push_refused` |
 | 5 | `user_only`, `presence_required`, `identity_mismatch` |
 | 6 | `revision_conflict`, `plan_stale`, `already_answered`, `name_taken` |
 | 7 | Other preconditions: `unpushed_work`, `session_busy`, `user_away`, `request_withdrawn`, `host_key_changed`, … |

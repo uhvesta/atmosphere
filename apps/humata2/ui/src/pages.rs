@@ -64,6 +64,7 @@ pub fn page(
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let look = Look::of(cx);
     match &state.route {
         Route::Home => home(ui, state, Look::of(cx)).into_any_element(),
         Route::Desk => crate::desk::page(ui, state, Look::of(cx)).into_any_element(),
@@ -85,7 +86,7 @@ pub fn page(
         Route::Inbox => crate::lists::inbox(ui, state, Look::of(cx)).into_any_element(),
         Route::Channel(id) => state.workspace.channel(id).map_or_else(
             || {
-                widgets::empty("This channel is gone.", "Pick another in the sidebar.")
+                widgets::empty_in(look, "This channel is gone.", "Pick another in the sidebar.")
                     .into_any_element()
             },
             |channel| {
@@ -106,14 +107,15 @@ pub fn page(
             .find(|session| &session.id == id)
             .map_or_else(
                 || {
-                    widgets::empty("This session is gone.", "Pick another in the sidebar.")
+                    widgets::empty_in(look, "This session is gone.", "Pick another in the sidebar.")
                         .into_any_element()
                 },
                 |session| {
                     session_body(ui, state, session, Look::of(cx), terminals, documents, cx).into_any_element()
                 },
             ),
-        _ => widgets::empty("Nothing here yet.", "This screen is being built.").into_any_element(),
+        _ => widgets::empty_in(look, "Nothing here yet.", "This screen is being built.")
+            .into_any_element(),
     }
 }
 
@@ -253,7 +255,7 @@ pub(crate) fn session_header(
         })
         .when(matches!(session.status, Status::Exited { .. }), |bar| {
             bar.child(
-                widgets::primary(
+                widgets::primary_in(look,
                     ui,
                     "resume-agent",
                     "Resume agent",

@@ -72,6 +72,7 @@ impl Shared {
                     pb::Topic::Channels as i32,
                     pb::Topic::Machines as i32,
                     pb::Topic::Inbox as i32,
+                    pb::Topic::Boards as i32,
                     pb::Topic::Access as i32,
                 ],
             };
@@ -120,7 +121,34 @@ async fn handle(shared: &Arc<Shared>, event: pb::Event) {
             }
         }
         Some(Payload::Machine(machine)) => shared.publish(Event::Machine(map::machine(&machine))),
-        Some(Payload::Request(request)) => shared.publish(Event::Request(shared.map_request(&request))),
+        Some(Payload::Request(request)) => {
+            let mapped = shared.map_request(&request);
+            if request.state == pb::RequestState::Withdrawn as i32 {
+                // HOOKS (D191): the agent stopped waiting, so the card goes.
+                shared.publish(Event::RequestGone(mapped.id));
+            } else {
+                shared.publish(Event::Request(mapped));
+            }
+            let about = match request.preview.as_ref().and_then(|preview| preview.preview.as_ref()) {
+                Some(pb::request_preview::Preview::BoardChange(change)) => change.item.clone(),
+                _ => None,
+            };
+            if let Some(item) = about {
+                shared.refresh_item(&item).await;
+            }
+        }
+        Some(Payload::BoardItem(wire)) => {
+            if event.change == pb::Change::Deleted as i32 {
+                shared.publish(Event::ItemGone(humata2_clients::model::ItemId::new(
+                    wire.id.map(|id| id.value).unwrap_or_default(),
+                )));
+            } else {
+                shared.publish(Event::Item {
+                    item: crate::boards::item(&wire),
+                    details: crate::boards::details(&wire),
+                });
+            }
+        }
         Some(Payload::Rules(rules)) => {
             let channel = map::channel_id(rules.channel.as_ref());
             shared.publish(Event::Rules {

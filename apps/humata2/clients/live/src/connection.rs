@@ -11,11 +11,12 @@ use humata2_clients::DaemonError;
 use humata2_clients::model::{Agent, ChannelId, MachineId};
 use humata2_grpc::humata::v1 as pb;
 use humata2_grpc::humata::v1::{
-    access_service_client::AccessServiceClient, inbox_service_client::InboxServiceClient,
+    access_service_client::AccessServiceClient, board_service_client::BoardServiceClient, inbox_service_client::InboxServiceClient,
     channel_service_client::ChannelServiceClient, comment_service_client::CommentServiceClient,
-    daemon_service_client::DaemonServiceClient,
+    daemon_service_client::DaemonServiceClient, desk_service_client::DeskServiceClient, diff_service_client::DiffServiceClient,
     event_service_client::EventServiceClient, operation_service_client::OperationServiceClient,
-    session_service_client::SessionServiceClient, terminal_service_client::TerminalServiceClient,
+    session_service_client::SessionServiceClient, settings_service_client::SettingsServiceClient,
+    terminal_service_client::TerminalServiceClient,
 };
 use hyper_util::rt::TokioIo;
 use prost::Message;
@@ -160,6 +161,8 @@ pub(crate) struct State {
     pub(crate) setup_channels: BTreeMap<String, ChannelId>,
     /// What the Inbox last showed of each request, for answering it.
     pub(crate) inbox: crate::inbox::Seen,
+    /// The last Clean up list answered, with the token CleanUpDesk checks.
+    pub(crate) desk_plan: Option<crate::desk::HeldPlan>,
 }
 
 /// How a tab's output offsets, as its holders number them, map onto the
@@ -300,14 +303,38 @@ impl Shared {
             .max_encoding_message_size(MESSAGE_MAX_BYTES)
     }
 
+    pub(crate) fn settings(&self) -> SettingsServiceClient<Wire> {
+        SettingsServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
+    pub(crate) fn boards(&self) -> BoardServiceClient<Wire> {
+        BoardServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
     pub(crate) fn comments(&self) -> CommentServiceClient<Wire> {
         CommentServiceClient::new(self.wire.clone())
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
             .max_encoding_message_size(MESSAGE_MAX_BYTES)
     }
 
+    pub(crate) fn diffs(&self) -> DiffServiceClient<Wire> {
+        DiffServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
     pub(crate) fn sessions(&self) -> SessionServiceClient<Wire> {
         SessionServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
+    pub(crate) fn desk(&self) -> DeskServiceClient<Wire> {
+        DeskServiceClient::new(self.wire.clone())
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
             .max_encoding_message_size(MESSAGE_MAX_BYTES)
     }

@@ -35,7 +35,7 @@ impl Fixture {
                 id: CHANNEL.to_owned(),
                 name: "Payments".to_owned(),
                 folder: "payments".to_owned(),
-                branch_prefix: String::new(),
+                branch_prefix: None,
                 default_agent: "zsh".to_owned(),
                 repos: Vec::new(),
                 machines: Vec::new(),

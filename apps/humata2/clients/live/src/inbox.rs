@@ -337,7 +337,7 @@ fn request(request: &pb::InboxRequest, titles: &BTreeMap<i32, String>, now: i64)
             .map(|at| ago(now, at.seconds))
             .unwrap_or_default(),
         answer: answer(request),
-        operation: String::new(),
+        operation: request.operation.clone(),
         steps,
         why_you: why_you(request),
         asked_by,

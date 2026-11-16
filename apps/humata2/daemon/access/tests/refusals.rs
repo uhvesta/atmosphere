@@ -74,17 +74,29 @@ fn review(push_allowed: bool) -> Principal {
 }
 
 #[test]
-fn a_fork_reads_its_parent_but_does_not_write_it() {
+fn a_fork_works_in_its_parents_clone_as_its_own() {
     let parent_file = file_of(&a(), "src/lib.rs");
-    assert!(allowed(Source::Owned).met_by(&check(
+    for call in [read(parent_file.clone()), write(parent_file)] {
+        assert!(
+            allowed(Source::Owned).met_by(&check(&policy(), &fork_of_a(), &call, &on_mac())),
+            "{call:?}"
+        );
+    }
+}
+
+#[test]
+fn a_fork_is_still_held_to_the_rules_for_other_sessions_files() {
+    // Another session's clone: a write is refused, as for any agent.
+    let refusal = refused(&fork_of_a(), &write(file_of(&b(), "src/lib.rs")));
+    assert_eq!(refusal.kind(), ErrorKind::Denied(DeniedSource::HardLimit));
+    assert_eq!(refusal.fix(), Fix::UseOwnFolders);
+    // Another machine's clone in the channel: a read asks.
+    assert!(asks(Capability::FilesReadOtherMachine).met_by(&check(
         &policy(),
         &fork_of_a(),
-        &read(parent_file.clone()),
+        &read(file_of(&c(), "src/lib.rs")),
         &on_mac(),
     )));
-    let refusal = refused(&fork_of_a(), &write(parent_file));
-    assert_eq!(refusal.kind(), ErrorKind::ParentReadOnly);
-    assert_eq!(refusal.fix(), Fix::UseOwnFolders);
 }
 
 #[test]

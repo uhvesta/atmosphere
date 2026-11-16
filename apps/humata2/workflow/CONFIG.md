@@ -10,7 +10,7 @@ project.
   e2e or boundary test that fails for the right reason and can't flake: no
   sleeps or wall-clock asserts, wait on events or conditions with generous
   deadlines, deterministic fakes and seeds, its own temp dirs and ports or
-  sockets, nothing shared between tests. Then a Sonnet worker implements
+  sockets, nothing shared between tests. Then a worker implements
   until that one target passes, running only it. Fable or Opus reviews the
   diff and the findings before it is handed to main.
 - **Focused tests by any agent:** managers and workers may run
@@ -64,7 +64,7 @@ project.
   migration numbers), `not_built.rs`, `daemon/mcp/src/tools.rs`, CLI command
   registration, `clients/src/model.rs`; `daemon/humatad/tests/common/mod.rs`
   is additive only. Managers write seam lines for main to apply.
-- **Models:** managers Opus 5.5 or Fable 5.2 (owner OK'd heavy Fable use); workers Sonnet 5.5, medium effort; reviewers
+- **Models:** managers Opus 5.5 or Fable 5.2 (owner OK'd heavy Fable use); workers Haiku 5.5, high effort, for well-scoped tractable tasks (named files, a failing target to make pass, a clear brief), which is the default; Sonnet 5.5 medium only for work too open-ended to scope that tightly (owner, 2026-11-15); reviewers
   and judges Fable.
 - **Docs:** SPEC.md (rules by ID), OVERVIEW.md (living work list),
   DECISIONS.md (D-entries), GAPS_REVIEW.md (one entry per commit), goldens in

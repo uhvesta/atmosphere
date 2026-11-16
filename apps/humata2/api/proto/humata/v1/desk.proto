@@ -1,0 +1,218 @@
+// The Desk (DK-1..DK-14, D182): sessions that belong to no channel. A Desk
+// session is an ordinary Session whose channel is the reserved id "desk";
+// SessionService serves its page, tabs, conversation and marks, and refuses
+// the channel actions (archive, restore, fork, give own copy, push, move)
+// naming the Desk one. What only the Desk knows (its folder, the two access
+// switches, when it closed) is a DeskSession, served here. This machine only.
+//
+// Every call is the user's (the app, or the CLI with presence) except
+// KeepDeskFolder on the caller's own session (D182.6). Moving to another
+// machine is added here when sessions can move (MV-1, D182.2).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/common.proto";
+import "humata/v1/files.proto";
+import "humata/v1/operations.proto";
+
+service DeskService {
+  // DK-14. Claims the folder, clones the repos into it, records the
+  // session and starts its agent (or shell). A start on another machine is
+  // refused naming it, and a clone that fails starts nothing; either way no
+  // folder is left behind.
+  rpc StartDeskSession(StartDeskSessionRequest) returns (StartDeskSessionResponse);
+  // Every Desk session on this machine, open and closed, deleted ones left
+  // out (DK-5). Runs no git.
+  rpc ListDeskSessions(ListDeskSessionsRequest) returns (ListDeskSessionsResponse);
+  // DK-11: stops the agent and every tab, keeps record, conversation,
+  // scrollback and folder, and starts a scratch folder's 7 days.
+  rpc CloseDeskSession(CloseDeskSessionRequest) returns (DeskSession);
+  // DK-11: resumes the agent with its conversation in the same folder; a
+  // Terminal session gets a new shell. Refused when the folder is gone.
+  rpc ReopenDeskSession(ReopenDeskSessionRequest) returns (Operation);
+  // DK-2: the scratch folder stays after its session closes. Nothing
+  // changes for a picked folder, which always stays. Can't be undone.
+  rpc KeepDeskFolder(KeepDeskFolderRequest) returns (DeskSession);
+  // DK-4: the session's two Agent access switches, from the agent's next
+  // call (IN-21).
+  rpc SetDeskAccess(SetDeskAccessRequest) returns (DeskSession);
+  // DK-11 Clean up…: the closed sessions, least recently used first, with
+  // what deleting each frees and the work it would lose (MV-9).
+  rpc PlanDeskCleanUp(PlanDeskCleanUpRequest) returns (DeskCleanUpPlan);
+  // Deletes the named closed sessions: a scratch folder goes to this
+  // machine's trash (LD-5, LD-7), a picked folder stays where it is. When
+  // the list or its work changed since the plan, deletes nothing and
+  // answers the new plan (NV-27).
+  rpc CleanUpDesk(CleanUpDeskRequest) returns (CleanUpDeskResponse);
+  // DK-3: clones the repository's default branch into the session's folder
+  // as `<name>`. Refused while the session is closed or when the folder
+  // already has `<name>`.
+  rpc AddDeskRepo(AddDeskRepoRequest) returns (DeskSession);
+  // DK-3, MV-9: moves a clone to this machine's trash. Refused, naming the
+  // work, while the clone holds uncommitted or unpushed work, so nothing is
+  // lost unseen.
+  rpc RemoveDeskRepo(RemoveDeskRepoRequest) returns (DeskSession);
+  // DK-13: copies a file of the session's folder into a channel's
+  // `shared/` folder on this machine. The Desk's copy stays. Refused when
+  // the channel already has a file of that name, which is left as it is.
+  rpc CopyDeskDocument(CopyDeskDocumentRequest) returns (CopyDeskDocumentResponse);
+}
+
+// DK-4, DK-10.
+message DeskAccess {
+  // "Read and change every channel's board": both IN-17 board rows.
+  bool boards = 1;
+  // "Make channels and add machines": "Create a channel" and "Add, create,
+  // start or stop machines".
+  bool channels_and_machines = 2;
+}
+
+message DeskFolder {
+  // Where the session's agent runs.
+  string path = 1;
+  oneof kind {
+    // A folder Humata made, `<root>/desk/<name>` (DK-2).
+    Scratch scratch = 2;
+    // A folder the user picked; never deleted, trashed or moved.
+    Picked picked = 3;
+  }
+  message Scratch {
+    // Stays after its session closes (DK-2).
+    bool kept = 1;
+  }
+  message Picked {}
+}
+
+message DeskSession {
+  SessionId session = 1;
+  DeskFolder folder = 2;
+  DeskAccess access = 3;
+  // SE-26; moved by Start, Reopen, Close, Keep and SetDeskAccess.
+  google.protobuf.Timestamp last_used_at = 4;
+  // Unset while open.
+  google.protobuf.Timestamp closed_at = 5;
+  // When the scratch folder goes; unset when it stays: open, kept, picked
+  // or held by work.
+  google.protobuf.Timestamp delete_at = 6;
+  // LD-17: the uncommitted or unpushed work that held a closed scratch
+  // folder past its 7 days, in words. Empty when nothing holds it.
+  string held_work = 7;
+  // DK-3: the clones directly under the folder, by their origin; sorted.
+  repeated RepoRef repos = 8;
+  // DK-5: the Markdown files directly in the folder, by name; sorted.
+  repeated string documents = 9;
+}
+
+message StartDeskSessionRequest {
+  // A retry with the same key answers the first start and claims no new
+  // folder.
+  IdempotencyKey idempotency_key = 1;
+  // The scratch folder's name comes from it (FC-13, FC-14 suffixes).
+  string title = 2;
+  // Unset takes the default agent; "zsh" and the like for a plain terminal.
+  AgentId agent = 3;
+  string model = 4;
+  // Unset or this machine.
+  MachineId machine = 5;
+  // An existing directory outside Humata's folders; unset for a scratch
+  // folder.
+  string picked_path = 6;
+  // Cloned into the folder, each as `<name>` (DK-3).
+  repeated RepoRef repos = 7;
+  DeskAccess access = 8;
+  string first_message = 9;
+}
+
+message StartDeskSessionResponse {
+  SessionId session = 1;
+  Operation operation = 2;
+  DeskSession desk = 3;
+}
+
+message ListDeskSessionsRequest {}
+
+message ListDeskSessionsResponse {
+  repeated DeskSession sessions = 1;
+}
+
+message CloseDeskSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+}
+
+message ReopenDeskSessionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+}
+
+message KeepDeskFolderRequest {
+  SessionId session = 1;
+}
+
+message SetDeskAccessRequest {
+  SessionId session = 1;
+  DeskAccess access = 2;
+}
+
+message PlanDeskCleanUpRequest {}
+
+message DeskCleanUpRow {
+  SessionId session = 1;
+  // Bytes the scratch folder holds; unset for a picked folder.
+  optional uint64 size_bytes = 2;
+  // MV-9: what deleting loses, in words; empty when nothing.
+  string unpushed = 3;
+}
+
+message DeskCleanUpPlan {
+  repeated DeskCleanUpRow rows = 1;
+  // Names the sessions listed and the work each holds, not their sizes.
+  PlanToken token = 2;
+}
+
+message CleanUpDeskRequest {
+  IdempotencyKey idempotency_key = 1;
+  PlanToken plan = 2;
+  repeated SessionId delete = 3;
+}
+
+message CleanUpDeskResponse {
+  oneof result {
+    Deleted deleted = 1;
+    // The plan no longer held; nothing was deleted.
+    DeskCleanUpPlan changed = 2;
+  }
+  message Deleted {
+    uint32 sessions = 1;
+    uint64 freed_bytes = 2;
+    repeated TrashItemId trash_items = 3;
+  }
+}
+
+message AddDeskRepoRequest {
+  SessionId session = 1;
+  RepoRef repo = 2;
+}
+
+message RemoveDeskRepoRequest {
+  SessionId session = 1;
+  RepoRef repo = 2;
+}
+
+message CopyDeskDocumentRequest {
+  // A retry with the same key answers the first copy.
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // Relative to the session's folder, such as `rfc-brin.md`.
+  string path = 3;
+  ChannelId channel = 4;
+  // Unset or this machine.
+  MachineId machine = 5;
+}
+
+message CopyDeskDocumentResponse {
+  // Where the copy is.
+  FileLocation copy = 1;
+}

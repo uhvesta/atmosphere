@@ -53,7 +53,8 @@ fn read_channels(
     only: Option<&str>,
 ) -> rusqlite::Result<Vec<ChannelRecord>> {
     let mut statement = connection.prepare(
-        "SELECT id, name, folder, branch_prefix, default_agent, revision, created_unix_ms
+        "SELECT id, name, folder, branch_prefix, default_agent, revision, created_unix_ms,
+                branch_prefix_set
          FROM channels WHERE (?1 IS NULL OR id = ?1) ORDER BY created_unix_ms, id",
     )?;
     let mut channels = statement
@@ -62,7 +63,7 @@ fn read_channels(
                 id: row.get(0)?,
                 name: row.get(1)?,
                 folder: row.get(2)?,
-                branch_prefix: row.get(3)?,
+                branch_prefix: if row.get::<_, i64>(7)? != 0 { Some(row.get(3)?) } else { None },
                 default_agent: row.get(4)?,
                 repos: Vec::new(),
                 machines: Vec::new(),
@@ -143,11 +144,13 @@ impl Store {
         self.inner().write("channel.put", doing, |transaction| {
             transaction.execute(
                 "INSERT INTO channels
-                     (id, name, folder, branch_prefix, default_agent, revision, created_unix_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     (id, name, folder, branch_prefix, default_agent, revision, created_unix_ms,
+                      branch_prefix_set)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT (id) DO UPDATE SET
                      name = excluded.name, folder = excluded.folder,
                      branch_prefix = excluded.branch_prefix,
+                     branch_prefix_set = excluded.branch_prefix_set,
                      default_agent = excluded.default_agent,
                      revision = excluded.revision,
                      created_unix_ms = excluded.created_unix_ms",
@@ -155,10 +158,11 @@ impl Store {
                     channel.id,
                     channel.name,
                     channel.folder,
-                    channel.branch_prefix,
+                    channel.branch_prefix.as_deref().unwrap_or(""),
                     channel.default_agent,
                     to_sql(channel.revision),
-                    channel.created_unix_ms
+                    channel.created_unix_ms,
+                    i64::from(channel.branch_prefix.is_some())
                 ],
             )?;
             transaction.execute("DELETE FROM channel_repos WHERE channel = ?1", [&channel.id])?;

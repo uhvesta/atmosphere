@@ -238,7 +238,7 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | IN-17 | AccessService.GetChannelRules/SetChannelRule, ListCapabilities | — | `humata access`, `access set` | D21 rows |
 | IN-18 | errors.denied (rule named) | all tools | all commands | |
 | IN-19 | AccessService.ListGrants/RevokeGrant | — | `humata access grants` | |
-| IN-20 | Internal (context-only fork never writes parent) | file_write refuses | — | |
+| IN-20 | Dropped (D185): a context-only fork writes its parent's clones as its own | — | — | |
 | IN-21 | Internal | — | — | |
 | IN-22 | GrantTarget | — | `humata inbox approve --always` | |
 | IN-23 | errors.user_only | all tools | all commands | |

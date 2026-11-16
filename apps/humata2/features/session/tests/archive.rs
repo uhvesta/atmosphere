@@ -18,6 +18,11 @@ fn failed_archive_keeps_the_open_session() {
     };
     let mut store = TestStore::new(state, Sessions::new(clients));
     store.send(A::Archive, |_| {});
+    store.receive_matching(
+        "the plan",
+        |a| matches!(a, A::ArchivePlanned { result: Ok(_), .. }),
+        |_| {},
+    );
     let error = DaemonError::Scripted {
         operation: Operation::Archive,
         message: "link unavailable".into(),

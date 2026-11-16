@@ -27,10 +27,13 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status, Streaming};
 
-use crate::files::{Roots, Target};
+use crate::compression::Compression;
+use crate::files::{Placed, Roots, Target};
 use crate::grant_target;
 use crate::guard::{Checked, Guard};
+use crate::host_relay::Links;
 use crate::identity::{self, Caller};
+use crate::remote_end::{self, RemoteEnd, RouterEnd};
 use crate::status;
 use crate::trash_service::{Answers, Bin, answer_key, blocking, lock, now_ms};
 
@@ -93,8 +96,14 @@ fn decode(text: &str) -> Data {
         .unwrap_or_default()
 }
 
-fn finished(state: tr::State) -> bool {
-    matches!(state, tr::State::Done | tr::State::Failed | tr::State::Cancelled)
+/// Over for good. A transfer waiting for a machine is Failed in the engine
+/// but not finished: it continues when the link is back.
+fn finished(snapshot: &tr::Snapshot) -> bool {
+    match snapshot.state {
+        tr::State::Done | tr::State::Cancelled => true,
+        tr::State::Failed => remote_end::waiting_for(snapshot).is_none(),
+        _ => false,
+    }
 }
 
 /// This machine's transfers.
@@ -109,6 +118,9 @@ struct Core {
     /// The daemon's state folder; the journals are in `transfers` in it.
     state: PathBuf,
     machine: String,
+    /// Reaches files on other machines over their links (FM-9); offline
+    /// until [`TransferSvc::use_links`].
+    remote: Arc<RemoteEnd>,
     engine: Mutex<Option<Arc<tr::Transfers>>>,
     /// Idempotency key (as kept in `Data::key`) to the transfer it started.
     keys: Mutex<HashMap<String, String>>,
@@ -124,8 +136,12 @@ impl TransferSvc {
         bin: Arc<Bin>,
         state: PathBuf,
         machine: String,
+        compression: Arc<Compression>,
     ) -> Arc<Self> {
         let (changes, _) = broadcast::channel(WATCH_BUFFER);
+        // Called from the daemon's async start: the engine's blocking threads
+        // reach the runtime through this handle.
+        let remote = Arc::new(RemoteEnd::new(tokio::runtime::Handle::current(), compression));
         Arc::new(Self {
             core: Arc::new(Core {
                 roots,
@@ -133,6 +149,7 @@ impl TransferSvc {
                 bin,
                 state,
                 machine,
+                remote,
                 engine: Mutex::new(None),
                 keys: Mutex::new(HashMap::new()),
                 changes,
@@ -148,6 +165,28 @@ impl TransferSvc {
             crate::log::say!("humatad2: transfers: {}", status.message());
         }
     }
+
+    /// Gives the transfers the machines' links (the host only; without them
+    /// every machine is offline) and resumes the transfers waiting for a
+    /// machine whenever its link comes up (FM-8, FM-13). Inside the runtime,
+    /// once.
+    pub(crate) fn use_links(self: &Arc<Self>, links: Links) {
+        // The engine's resume writes a journal: never on the runtime.
+        let in_background = |work: fn(&Core, &str)| -> Arc<dyn Fn(&str) + Send + Sync> {
+            let core = self.core.clone();
+            Arc::new(move |what: &str| {
+                let (core, what) = (core.clone(), what.to_owned());
+                drop(tokio::task::spawn_blocking(move || work(&core, &what)));
+            })
+        };
+        remote_end::follow_links(
+            links,
+            self.core.remote.clone(),
+            self.core.changes.subscribe(),
+            in_background(Core::resume_waiting),
+            in_background(Core::resume_one),
+        );
+    }
 }
 
 impl Core {
@@ -159,10 +198,14 @@ impl Core {
         }
         let trash = self.bin.get()?;
         let sender = self.changes.clone();
+        let router: Arc<dyn tr::End> = Arc::new(RouterEnd::new(
+            Arc::new(tr::Disk::new(self.machine.clone(), trash)),
+            self.remote.clone(),
+        ));
         let config = tr::Config {
             journal: self.state.join("transfers"),
-            source: Arc::new(tr::Disk::new(self.machine.clone(), trash.clone())),
-            destination: Arc::new(tr::Disk::new(self.machine.clone(), trash)),
+            source: router.clone(),
+            destination: router,
             free_floor_bytes: FREE_FLOOR_BYTES,
             sync_every_bytes: SYNC_EVERY_BYTES,
             listener: Arc::new(move |snapshot: &tr::Snapshot| {
@@ -199,6 +242,24 @@ impl Core {
         }
     }
 
+    /// Resumes each transfer that stopped for `machine`'s link. Blocking.
+    fn resume_waiting(&self, machine: &str) {
+        let Ok(engine) = self.engine() else { return };
+        for snapshot in engine.list() {
+            if remote_end::waiting_for(&snapshot) == Some(machine) {
+                // Already running or taken over by the user: nothing to do.
+                let _ = engine.resume(&snapshot.id);
+            }
+        }
+    }
+
+    /// Resumes one transfer that stopped for a machine. Blocking.
+    fn resume_one(&self, id: &str) {
+        if let Ok(engine) = self.engine() {
+            let _ = engine.resume(id);
+        }
+    }
+
     /// The transfer a key already started, as it is now.
     fn started_by(&self, engine: &tr::Transfers, key: &str) -> Option<pb::Transfer> {
         let id = lock(&self.keys).get(key).cloned()?;
@@ -216,34 +277,43 @@ impl Core {
         transfer(&self.machine, snapshot, data)
     }
 
-    /// A folder to write into: it must be writable here and the caller
-    /// allowed to write it.
-    fn folder(&self, caller: &Caller, location: Option<pb::FileLocation>, field: &str) -> Result<Target, Status> {
-        let target = self.roots.target(location, field, Entry::Folder)?;
-        target.require_writable(field)?;
+    /// A folder to write into, here or on another machine: the caller must
+    /// be allowed to write it. Nothing is looked at on any disk.
+    fn placed_folder(&self, caller: &Caller, location: Option<pb::FileLocation>, field: &str) -> Result<Placed, Status> {
+        let placed = self.roots.place(location, field, Entry::Folder)?;
+        placed.require_writable(field)?;
         self.guard
-            .require(caller, &Call::WriteFiles(target.place.clone()))?;
-        Ok(target)
+            .require(caller, &Call::WriteFiles(placed.place.clone()))?;
+        Ok(placed)
+    }
+
+    /// The engine's path for a destination, which must be an existing folder
+    /// (asked of the machine when it is another one).
+    fn destination_folder(&self, destination: &Placed) -> Result<PathBuf, Status> {
+        match destination.machine() == self.machine {
+            true => existing_folder(&destination.clone().into_target(), "destination"),
+            false => self.remote.folder(&destination.location, "destination"),
+        }
     }
 
     /// Whether the caller may control or see the transfer: whoever may
     /// write its destination.
     fn authorize(&self, caller: &Caller, snapshot: &tr::Snapshot) -> Result<(), Status> {
         let data = decode(&snapshot.caller_data);
-        let target = self.roots.target(data.destination, "destination", Entry::Folder)?;
+        let placed = self.roots.place(data.destination, "destination", Entry::Folder)?;
         self.guard
-            .require(caller, &Call::WriteFiles(target.place))
+            .require(caller, &Call::WriteFiles(placed.place))
     }
 
     fn may_see(&self, caller: &Caller, snapshot: &tr::Snapshot) -> bool {
         let data = decode(&snapshot.caller_data);
-        let Ok(target) = self.roots.target(data.destination, "destination", Entry::Folder) else {
+        let Ok(placed) = self.roots.place(data.destination, "destination", Entry::Folder) else {
             // A destination that can't be resolved any more is shown to
             // the user only.
             return matches!(caller, Caller::User(_));
         };
         matches!(
-            self.guard.check(caller, &Call::WriteFiles(target.place)),
+            self.guard.check(caller, &Call::WriteFiles(placed.place)),
             Ok(Checked::Allowed)
         )
     }
@@ -256,11 +326,11 @@ impl Core {
         if begin.sources.is_empty() {
             return Err(status::missing("sources"));
         }
-        let destination = self.folder(caller, begin.destination, "destination")?;
+        let destination = self.placed_folder(caller, begin.destination, "destination")?;
         let mut sources = Vec::new();
         for (index, location) in begin.sources.into_iter().enumerate() {
             let field = format!("sources[{index}]");
-            let source = self.roots.target(Some(location), &field, Entry::File)?;
+            let source = self.roots.place(Some(location), &field, Entry::File)?;
             if begin.mode == tr::Mode::Move {
                 if source.is_root() {
                     return Err(status::invalid_field(
@@ -283,10 +353,10 @@ impl Core {
             )?;
             sources.push(source);
         }
-        let folder = existing_folder(&destination, "destination")?;
+        let folder = self.destination_folder(&destination)?;
         let mut items = Vec::new();
         for (index, source) in sources.iter().enumerate() {
-            let path = source.unfollowed()?;
+            let path = remote_end::source_path(source, &self.machine)?;
             // A folder copied into itself would never end.
             if folder.starts_with(&path) {
                 return Err(status::invalid_field(
@@ -348,7 +418,7 @@ impl Core {
         let mut rest = engine
             .list()
             .into_iter()
-            .filter(|snapshot| !active_only || !finished(snapshot.state))
+            .filter(|snapshot| !active_only || !finished(snapshot))
             .filter(|snapshot| token.is_empty() || before(token, snapshot))
             .filter(|snapshot| self.may_see(caller, snapshot));
         let page: Vec<tr::Snapshot> = rest.by_ref().take(size).collect();
@@ -388,7 +458,7 @@ impl Core {
         let engine = self.engine()?;
         let on_existing = on_existing(header.on_existing, "header.on_existing")?;
         check_name(&header.name)?;
-        let destination = self.folder(caller, header.destination, "header.destination")?;
+        let destination = self.placed_folder(caller, header.destination, "header.destination")?;
         let key = answer_key("upload", caller, header.idempotency_key.as_ref(), "");
         let resume = header
             .resume
@@ -417,7 +487,7 @@ impl Core {
         } else if let Some(found) = key.as_deref().and_then(|key| self.started_by(&engine, key)) {
             return Ok(Began::Existing(found));
         }
-        let folder = existing_folder(&destination, "header.destination")?;
+        let folder = self.destination_folder(&destination)?;
         let id = resume
             .clone()
             .unwrap_or_else(|| format!("tr_{}", uuid::Uuid::new_v4().simple()));
@@ -765,6 +835,18 @@ fn problem_error(machine: &pb::MachineId, id: &str, problem: &tr::Problem) -> (C
                 }),
             ),
         ),
+        P::Offline { machine: name } => (
+            Code::Unavailable,
+            status::error(
+                format!("{name} can't be reached right now, so the transfer is waiting for it"),
+                "nothing to do: the transfer continues by itself when the machine's link is back. Use Reconnect now on the machine's page to hurry it, or cancel the transfer to remove what arrived",
+                pb::error::Kind::MachineOffline(pb::MachineOffline {
+                    machine: Some(pb::MachineId { value: name.clone() }),
+                    machine_name: name.clone(),
+                    since: None,
+                }),
+            ),
+        ),
         P::Interrupted => (
             Code::Aborted,
             status::error(
@@ -814,6 +896,9 @@ fn transfer(machine: &str, snapshot: &tr::Snapshot, data: Data) -> pb::Transfer 
             tr::State::Paused => pb::TransferState::Paused,
             tr::State::Verifying => pb::TransferState::Verifying,
             tr::State::Done => pb::TransferState::Done,
+            tr::State::Failed if remote_end::waiting_for(snapshot).is_some() => {
+                pb::TransferState::WaitingForMachine
+            }
             tr::State::Failed => pb::TransferState::Failed,
             tr::State::Cancelled => pb::TransferState::Cancelled,
         } as i32,
@@ -1024,11 +1109,11 @@ impl pb::transfer_service_server::TransferService for TransferSvc {
                 if let Some(snapshot) = next.take() {
                     if snapshot.version > from {
                         from = snapshot.version;
-                        let done = finished(snapshot.state);
+                        let done = finished(&snapshot);
                         if sender.send(Ok(core.view(&snapshot))).await.is_err() || done {
                             return;
                         }
-                    } else if finished(snapshot.state) {
+                    } else if finished(&snapshot) {
                         return;
                     }
                 }

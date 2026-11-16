@@ -623,3 +623,59 @@ async fn an_agents_typing_into_another_session_that_a_rule_sends_to_ask_runs_onc
     assert!(typed.typed);
     watching.wait_for("hello").await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_tab_is_told_the_socket_its_daemon_serves_on() {
+    let dir = folder();
+    let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
+    store
+        .put_session(&SessionRecord {
+            id: TYPING_SESSION.to_owned(),
+            channel: "ch_typing".to_owned(),
+            machine: String::new(),
+            title: "typing".to_owned(),
+            agent: "sh".to_owned(),
+            folder: dir.path().to_owned(),
+            created_unix_ms: 0,
+        })
+        .unwrap();
+    drop(store);
+    let daemon = Daemon::start_in(dir).await;
+    let tab = daemon
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: None,
+            session: Some(typing_session()),
+            repo: None,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id
+        .unwrap();
+    let file = daemon.dir.path().join("socket-seen");
+    let mut attach = Attach::start(&daemon, open(&tab, 0)).await;
+    attach
+        .type_text(&format!(
+            "printf '%s' \"$HUMATA_SOCKET\" > {}\r",
+            file.display()
+        ))
+        .await;
+    let deadline = std::time::Instant::now() + common::WAIT;
+    let seen = loop {
+        if let Ok(text) = std::fs::read_to_string(&file)
+            && !text.is_empty()
+        {
+            break text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the tab never wrote HUMATA_SOCKET"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+
+    let expected = std::path::absolute(&daemon.socket).unwrap();
+    assert_eq!(std::path::PathBuf::from(seen), expected);
+}

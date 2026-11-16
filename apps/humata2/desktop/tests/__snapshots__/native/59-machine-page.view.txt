@@ -33,11 +33,9 @@ Navigation "Sidebar"
 Splitter "Resize the sidebar"
 Document "Machine devbox-1"
   Heading "devbox-1"
+  Button "More"
   Button "Open a shell"
   Button "New session on devbox-1"
-  Toolbar "More"
-    Button "Sync skills"
-    Button "Reconnect now"
   Tab "Overview" selected
   Tab "Storage"
   #machine-overview

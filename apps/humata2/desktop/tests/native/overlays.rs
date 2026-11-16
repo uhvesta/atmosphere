@@ -114,3 +114,72 @@ fn palette_file_results_open_the_current_sessions_clone() {
             .is_some_and(|id| id.as_str() == "ledger")
     }));
 }
+
+/// The keyboard shortcuts sheet over Home, in one appearance.
+fn shortcuts_sheet(mode: ThemeMode, name: &str) {
+    let mut app = App::new(fixture::design());
+    app.cx.update(|cx| Theme::change(mode, None, cx));
+    app.send(AppAction::Switch(Route::Home));
+    app.send(AppAction::ShowShortcuts);
+    assert!(
+        app.ui
+            .read(|s| matches!(s.overlay(), Some(humata2_app::Overlay::Shortcuts)))
+    );
+    app.snapshot(name);
+}
+
+#[test]
+fn shortcuts_sheet_light() {
+    shortcuts_sheet(ThemeMode::Light, "shortcuts-sheet-light");
+}
+
+#[test]
+fn shortcuts_sheet_dark() {
+    shortcuts_sheet(ThemeMode::Dark, "shortcuts-sheet-dark");
+}
+
+/// The New channel sheet after Create with no name: its error banner, in light mode.
+#[test]
+fn new_channel_error_light() {
+    use humata2_app::NewChannelAction as N;
+    let mut app = App::new(fixture::design());
+    app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    app.send(AppAction::Switch(Route::Home));
+    app.send(AppAction::StartNewChannel);
+    app.send(AppAction::NewChannel(N::Create));
+    assert!(app.ui.read(|s| {
+        matches!(
+            s.overlay(),
+            Some(humata2_app::Overlay::NewChannel(sheet)) if sheet.error.is_some()
+        )
+    }));
+    app.snapshot("new-channel-error-light");
+}
+
+/// The shortcuts list scrolled to its end: the last shortcut is in the view.
+#[test]
+fn shortcuts_sheet_scrolled_light() {
+    let mut app = App::new(fixture::design());
+    app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    app.send(AppAction::Switch(Route::Home));
+    app.send(AppAction::ShowShortcuts);
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.scroll(
+                "shortcuts-list",
+                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+                cx,
+            );
+        })
+        .unwrap();
+    app.settle();
+    app.draw();
+    let tree = app
+        .cx
+        .update_window(app.window, |_, window, _| view::capture(window))
+        .expect("window stays open")
+        .expect("view");
+    assert!(tree.contains("Take a bug report snapshot"));
+    app.snapshot("shortcuts-sheet-scrolled-light");
+}

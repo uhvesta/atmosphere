@@ -1,0 +1,1 @@
+{"sessionId":"c0p1-session","timestamp":1763251201000,"cwd":"/work/api","hook_event_name":"permissionRequest","toolName":"bash","toolInput":{"command":"curl https://example.com","requestSandboxBypass":true}}

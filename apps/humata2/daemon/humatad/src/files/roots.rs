@@ -94,40 +94,62 @@ impl Roots {
         Ok(None)
     }
 
-    /// The entry `location` names and the place the policy judges. `field`
-    /// names the location in the request, for errors ("location",
-    /// "destination", "sources[0]"). A file (`Entry::File`) needs a path;
-    /// a folder may be the root itself, with an empty path.
+    /// The entry `location` names on this machine and the place the policy
+    /// judges: [`Roots::place`], then the disk. `field` names the location
+    /// in the request, for errors ("location", "destination", "sources[0]").
+    /// A file (`Entry::File`) needs a path; a folder may be the root itself,
+    /// with an empty path. A location on another machine is refused: the
+    /// FileService handlers serve only this machine's own files.
     pub(crate) fn target(
         &self,
         location: Option<pb::FileLocation>,
         field: &str,
         entry: Entry,
     ) -> Result<Target, Status> {
-        use pb::file_location::Root as R;
-
-        let location = location.ok_or_else(|| status::missing(field))?;
-        if let Some(machine) = location
-            .machine
-            .as_ref()
-            .filter(|machine| !machine.value.is_empty())
-            && machine.value != self.machine
-        {
+        let placed = self.place(location, field, entry)?;
+        if placed.machine() != self.machine {
             return Err(status::invalid_field(
                 &format!("{field}.machine"),
                 Problem::NotAllowedHere,
                 format!(
                     "this is machine {}, and files on machine {} aren't relayed through it yet",
-                    self.machine, machine.value
+                    self.machine,
+                    placed.machine()
                 ),
                 "ask the daemon on that machine, or leave the machine out for this one",
             ));
         }
+        Ok(placed.into_target())
+    }
+
+    /// What `location` names on whichever machine it is on, and the place the
+    /// policy judges, without looking at any disk: the session or channel is
+    /// found in this daemon's store, which holds the host's record of every
+    /// machine's (D139). A session says which machine it is on (a location
+    /// that names another is refused); a channel's folders are on the machine
+    /// the location names, this one when it names none. The location comes
+    /// back with its machine filled in.
+    pub(crate) fn place(
+        &self,
+        location: Option<pb::FileLocation>,
+        field: &str,
+        entry: Entry,
+    ) -> Result<Placed, Status> {
+        use pb::file_location::Root as R;
+
+        let location = location.ok_or_else(|| status::missing(field))?;
+        // The machine the location names; none or empty is this one.
+        let given = location
+            .machine
+            .as_ref()
+            .map(|machine| machine.value.clone())
+            .filter(|machine| !machine.is_empty());
+        let named = given.clone().unwrap_or_else(|| self.machine.clone());
         if location.path.is_empty() && entry == Entry::File {
             return Err(status::missing(&format!("{field}.path")));
         }
         let path = RepoPath::new(location.path.as_str()).map_err(|_| outside(&location.path))?;
-        let here = MachineId::new(self.machine.as_str());
+        let here = MachineId::new(named.as_str());
         let (root, folder, policy_path, writable, normal) = match location.root {
             Some(R::SessionClone(clone)) => {
                 let id = clone
@@ -154,23 +176,32 @@ impl Roots {
                 let session = identity::session_ref(&record, &self.machine);
                 let folder = record.folder.join(&repo.name);
                 let place_machine = session.machine.clone();
+                let session_machine = place_machine.as_str().to_owned();
+                if given.as_ref().is_some_and(|given| *given != session_machine) {
+                    return Err(status::invalid_field(
+                        &format!("{field}.machine"),
+                        Problem::NotAllowedHere,
+                        format!("session {id} is on machine {session_machine}, not {named}"),
+                        "leave the machine out, or name the session's own",
+                    ));
+                }
                 let normal = R::SessionClone(pb::SessionClone {
                     session: Some(pb::SessionId { value: id }),
                     repo: Some(repo),
                 });
-                return Ok(Target {
+                return Ok(Placed {
                     place: Place {
                         machine: place_machine,
                         root: Root::Clone(session),
                         path: policy_path,
                         entry,
                     },
-                    root: folder,
+                    folder,
                     path,
                     shown: shown(&location.path),
                     location: pb::FileLocation {
                         machine: Some(pb::MachineId {
-                            value: self.machine.clone(),
+                            value: session_machine,
                         }),
                         root: Some(normal),
                         path: location.path,
@@ -256,20 +287,18 @@ impl Roots {
             false => None,
         };
         let root = landed.unwrap_or(root);
-        Ok(Target {
+        Ok(Placed {
             place: Place {
                 machine: here,
                 root,
                 path: policy_path,
                 entry,
             },
-            root: folder,
+            folder,
             path,
             shown: shown(&location.path),
             location: pb::FileLocation {
-                machine: Some(pb::MachineId {
-                    value: self.machine.clone(),
-                }),
+                machine: Some(pb::MachineId { value: named }),
                 root: Some(normal),
                 path: location.path,
             },
@@ -347,6 +376,64 @@ fn shown(path: &str) -> String {
         "" => "the folder".to_owned(),
         path => path.to_owned(),
     }
+}
+
+/// What a location names, on whichever machine, as far as the store knows
+/// (see [`Roots::place`]): no disk was looked at.
+#[derive(Clone)]
+pub(crate) struct Placed {
+    /// What the policy judges.
+    pub(crate) place: Place,
+    /// The root's folder on disk if the entry is on this machine.
+    folder: PathBuf,
+    path: RepoPath,
+    /// The path as the caller gave it, for messages.
+    pub(crate) shown: String,
+    /// The location with its machine filled in.
+    pub(crate) location: pb::FileLocation,
+    /// False in a main clone, the read-only reference (FC-2).
+    pub(crate) writable: bool,
+}
+
+impl Placed {
+    /// The machine the entry is on.
+    pub(crate) fn machine(&self) -> &str {
+        self.place.machine.as_str()
+    }
+
+    /// Whether this is the root itself, not something in it.
+    pub(crate) fn is_root(&self) -> bool {
+        self.path.as_str().is_empty()
+    }
+
+    /// Refuses a change in a main clone (FC-2).
+    pub(crate) fn require_writable(&self, field: &str) -> Result<(), Status> {
+        read_only(self.writable, field)
+    }
+
+    /// The entry to resolve on disk; only for one on this machine.
+    pub(crate) fn into_target(self) -> Target {
+        Target {
+            place: self.place,
+            root: self.folder,
+            path: self.path,
+            shown: self.shown,
+            location: self.location,
+            writable: self.writable,
+        }
+    }
+}
+
+fn read_only(writable: bool, field: &str) -> Result<(), Status> {
+    if writable {
+        return Ok(());
+    }
+    Err(status::invalid_field(
+        field,
+        Problem::NotAllowedHere,
+        "a main clone is the read-only reference new clones start from, so nothing in it can be changed here",
+        "make the change in a session's clone, or in the channel's shared folder",
+    ))
 }
 
 /// A file or folder in one of this machine's roots.
@@ -476,15 +563,7 @@ impl Target {
 
     /// Refuses a change in a main clone (FC-2).
     pub(crate) fn require_writable(&self, field: &str) -> Result<(), Status> {
-        if self.writable {
-            return Ok(());
-        }
-        Err(status::invalid_field(
-            field,
-            Problem::NotAllowedHere,
-            "a main clone is the read-only reference new clones start from, so nothing in it can be changed here",
-            "make the change in a session's clone, or in the channel's shared folder",
-        ))
+        read_only(self.writable, field)
     }
 }
 

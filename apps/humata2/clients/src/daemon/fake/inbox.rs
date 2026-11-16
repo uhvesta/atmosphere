@@ -34,15 +34,16 @@ pub(super) fn answer(daemon: &FakeDaemon, request: &RequestId, answer: Answer) -
                     scope: rule.clone(),
                     granted: "now".to_owned(),
                 };
-                if let Some(row) = inner
-                    .workspace
-                    .rules
-                    .get_mut(&request.channel)
-                    .and_then(|rules| {
-                        rules
-                            .iter_mut()
-                            .find(|row| row.capability == asked_by.capability)
-                    })
+                if let Some(row) =
+                    inner
+                        .workspace
+                        .rules
+                        .get_mut(&request.channel)
+                        .and_then(|rules| {
+                            rules
+                                .iter_mut()
+                                .find(|row| row.capability == asked_by.capability)
+                        })
                 {
                     row.grants.push(grant);
                     let rules = inner

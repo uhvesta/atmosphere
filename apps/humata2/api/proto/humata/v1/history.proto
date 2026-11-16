@@ -17,6 +17,11 @@ service HistoryService {
   rpc SearchSessions(SearchSessionsRequest) returns (SearchSessionsResponse);
   // LD-25: a session's turns, paged (`session_read`).
   rpc ReadTurns(ReadTurnsRequest) returns (ReadTurnsResponse);
+  // LD-8, LD-21, D189: on a machine, the next part of a session's
+  // conversation for the host's mirror, from `offset`, scrubbed. Only the
+  // host asks, over the peer link's relay, on a connection it proved as its
+  // own (D144); every other caller gets permission_denied.
+  rpc ReadMirror(ReadMirrorRequest) returns (ReadMirrorResponse);
 }
 
 message SearchSessionsRequest {
@@ -83,4 +88,46 @@ message MirrorEntry {
 message ReadTurnsResponse {
   repeated MirrorEntry entries = 1;
   PageResponse page = 2;
+}
+
+message ReadMirrorRequest {
+  SessionId session = 1;
+  // Bytes of the machine's conversation file the host's mirror already has.
+  uint64 offset = 2;
+  // At most this many bytes are read; 0, or more than 1 MiB, means 1 MiB.
+  // The machine always takes at least the first complete line.
+  uint32 max_bytes = 3;
+  // What the machine said its file was at the last answer; empty at first
+  // (which matches only offset 0). Compared, never read as a path.
+  string source = 4;
+  // The codecs the host decodes, best first. Empty: raw bytes only.
+  repeated ChunkCodec accept_codecs = 5;
+}
+
+message ReadMirrorResponse {
+  // The complete lines of the file from `offset`, each scrubbed (LD-21) and
+  // written as one compact JSON line, encoded with `codec`. At most 1 MiB
+  // before encoding (TR-11). A last line with no newline is left for later.
+  bytes data = 1;
+  // Where the next read starts: just past the last line read, in the
+  // machine's own file bytes. Past `offset` whenever `more` is set.
+  uint64 next_offset = 2;
+  // Another complete line follows `next_offset`: ask again at once.
+  bool more = 3;
+  // The file is not the one `source` named, or is shorter than `offset`
+  // (truncated, replaced or rewritten): `data` is from byte 0 of the file
+  // as it is now, and the host appends it after what it has.
+  bool rewritten = 4;
+  // The file's identity: the machine, the device, the inode and the birth
+  // time when the file system gives one. Echo it in the next request.
+  string source = 5;
+  // Names whose values were replaced in `data`; never the values.
+  repeated string scrubbed_names = 6;
+  // As FileChunk: only a codec the host listed; a chunk that doesn't shrink
+  // is sent as NONE.
+  ChunkCodec codec = 7;
+  // The decoded length; 0 with NONE means len(data).
+  uint32 raw_size = 8;
+  // CRC-32 (IEEE) of the decoded bytes. Always set on a compressed chunk.
+  optional uint32 crc32 = 9;
 }

@@ -12,6 +12,9 @@ pub enum Tab {
     File { repo: String, path: String },
     /// An agent-prepared view the person chose to open.
     View(String),
+    /// The session's read-only conversation from the host's mirror, one per
+    /// session (D186).
+    Conversation,
 }
 
 /// One of the session's two possible tab groups.

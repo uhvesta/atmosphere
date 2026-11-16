@@ -244,3 +244,37 @@ fn terminal_focus_tracks_only_the_visible_tab_in_its_own_session() {
     assert_eq!(store.state().view().unwrap().groups[0].selected, 0);
     store.finish();
 }
+
+/// A changed file can be opened before the Files tree is listed, as on a
+/// real daemon where only the diff names it yet (§26.20 steps 1–2).
+#[test]
+fn a_changed_file_opens_without_the_files_tree() {
+    let (mut store, _) = store();
+    let id = SessionId::new("ledger");
+    let mut workspace = (*store.state().workspace).clone();
+    workspace.session_files.remove(&id);
+    let changed = workspace
+        .diffs
+        .iter()
+        .find(|diff| diff.session == id && !diff.files.is_empty())
+        .map(|diff| (diff.repo.clone(), diff.files[0].path.clone()))
+        .expect("the fixture session has a changed file");
+    let mut state = store.state().clone();
+    state.workspace = Arc::new(workspace);
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let mut store = TestStore::new(state, Sessions::new(clients));
+    store.send(
+        A::SelectFile {
+            repo: changed.0.clone(),
+            path: changed.1.clone(),
+        },
+        |s| s.views.get_mut(&id).unwrap().file = Some(changed.clone()),
+    );
+    store.send(
+        A::SelectFile {
+            repo: "api".into(),
+            path: "no/such/file.rs".into(),
+        },
+        |_| {},
+    );
+}

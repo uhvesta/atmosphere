@@ -33,17 +33,21 @@ use tonic::{Code, Request, Response, Status, Streaming};
 use crate::compression::{self, Compression};
 use crate::grant_target;
 use crate::guard::Guard;
+use crate::host_relay::Links;
 use crate::identity;
 use crate::status;
 use crate::trash_service::Bin;
 
 mod find;
+mod forward;
 mod ops;
 mod roots;
 
 use find::Find;
+use forward::Forward;
+pub(crate) use forward::TrashForward;
 use ops::Ops;
-pub(crate) use roots::{Roots, Target};
+pub(crate) use roots::{Placed, Roots, Target};
 use roots::io_failure;
 
 pub(crate) type ReadFileStream = Pin<Box<dyn Stream<Item = Result<pb::FileChunk, Status>> + Send>>;
@@ -63,6 +67,8 @@ pub(crate) struct Files {
     /// The link the callers are on: the socket's or the peer link's.
     link: Link,
     uploads: Mutex<Uploads>,
+    /// Calls that name another machine (FM-9, FM-12).
+    forward: Forward,
 }
 
 /// Uploads by idempotency key: running, or finished with this result.
@@ -116,6 +122,7 @@ impl Files {
     ) -> Self {
         Self {
             ops: Ops::new(roots.clone(), guard.clone(), bin),
+            forward: Forward::new(roots.clone(), guard.clone()),
             find: Find::new(roots.clone(), guard.clone(), roots.store().clone()),
             roots,
             guard,
@@ -123,6 +130,12 @@ impl Files {
             link,
             uploads: Mutex::new(Uploads::default()),
         }
+    }
+
+    /// The machines' links (the host only; without them every other
+    /// machine is offline), for calls that name one.
+    pub(crate) fn use_links(&self, links: Links) {
+        self.forward.use_links(links);
     }
 
     /// Claims `key` for an upload to `target`. `Ok(Err(entry))` is the
@@ -174,6 +187,9 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::ListDirectoryRequest>,
     ) -> Result<Response<pb::ListDirectoryResponse>, Status> {
+        if self.forward.elsewhere(request.get_ref().location.as_ref()).is_some() {
+            return self.forward.list_directory(request).await;
+        }
         self.ops.list_directory(request).await
     }
 
@@ -181,6 +197,9 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::StatRequest>,
     ) -> Result<Response<pb::FileEntry>, Status> {
+        if self.forward.elsewhere(request.get_ref().location.as_ref()).is_some() {
+            return self.forward.stat(request).await;
+        }
         self.ops.stat(request).await
     }
 
@@ -193,6 +212,9 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::ReadFileRequest>,
     ) -> Result<Response<ReadFileStream>, Status> {
+        if self.forward.elsewhere(request.get_ref().location.as_ref()).is_some() {
+            return self.forward.read_file(request).await;
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let target = self.roots.target(request.location, "location", Entry::File)?;
@@ -234,6 +256,9 @@ impl pb::file_service_server::FileService for Files {
             }) => header,
             _ => return Err(status::missing("header")),
         };
+        if self.forward.elsewhere(header.location.as_ref()).is_some() {
+            return self.forward.write_file(&caller, header, messages).await;
+        }
         let target = self.roots.target(header.location, "location", Entry::File)?;
         // The upload is a stream that can't be held and replayed after an approval, so Ask stays refused.
         self.guard
@@ -342,6 +367,9 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::CreateFolderRequest>,
     ) -> Result<Response<pb::FileEntry>, Status> {
+        if self.forward.elsewhere(request.get_ref().location.as_ref()).is_some() {
+            return self.forward.create_folder(request).await;
+        }
         self.ops.create_folder(request).await
     }
 
@@ -349,6 +377,9 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::RenameRequest>,
     ) -> Result<Response<pb::FileEntry>, Status> {
+        if self.forward.elsewhere(request.get_ref().location.as_ref()).is_some() {
+            return self.forward.rename(request).await;
+        }
         self.ops.rename(request).await
     }
 
@@ -356,6 +387,9 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::MoveToTrashRequest>,
     ) -> Result<Response<pb::MoveToTrashResponse>, Status> {
+        if self.forward.elsewhere_any(&request.get_ref().locations).is_some() {
+            return self.forward.move_to_trash(request).await;
+        }
         self.ops.move_to_trash(request).await
     }
 
@@ -363,6 +397,9 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::FindFilesRequest>,
     ) -> Result<Response<pb::FindFilesResponse>, Status> {
+        if self.forward.elsewhere_session(request.get_ref().session.as_ref()).is_some() {
+            return self.forward.find_files(request).await;
+        }
         self.find.find_files(request).await
     }
 }

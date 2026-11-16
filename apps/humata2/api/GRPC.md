@@ -143,7 +143,7 @@ a machine checks only calls it answers alone, using the host's last
 | --- | --- | --- | --- |
 | DaemonService (daemon) | each daemon | every endpoint | `GetServerInfo.last_start` says what the start brought back (§2.2); `BeginRelay` and `CompleteRelay` let the peer link prove itself to a machine's socket daemon (§8) |
 | ChannelService, ActivityService (channels) | host | host socket; forwarded from machines | Channel records, repos, machines (SL-1) |
-| SessionService (sessions) | host for records; the session's machine for holders, clones, conversation | host socket; forwarded | The host writes the record, then drives the machine through PeerService. `ReadConversation` reads the host's mirror (LD-8). `ReportTurn` is the session's own agent saying what turn it is in, from its hooks (D169): any other caller is refused, an older report than the last one kept is dropped, and repeating the state changes nothing |
+| SessionService (sessions) | host for records; the session's machine for holders, clones, conversation | host socket; forwarded | The host writes the record, then drives the machine through PeerService. `ReadConversation` reads the host's mirror (LD-8). `ReportTurn` is the session's own agent saying what turn it is in, from its hooks (D169): any other caller is refused, an older report than the last one kept is dropped, and repeating the state changes nothing. `Hook` (server stream) is the agent's blocking permission hook (D191): the daemon parses the payload, raises one Inbox card (kind SESSION, the whole command shown, Approve or Deny), sends a keepalive every 15 s and ends with the bytes the hook prints. The card lives only while a stream holds it: the same ask again holds the same card, the last stream dropping withdraws it (CALL_ENDED), Answer all skips it, and it is saved only once answered or withdrawn. At 3590 s it ends with no decision (D192) |
 | TerminalService (terminal) | the session's machine | machine socket for its own sessions; host socket, relayed over the peer link | One HTTP/2 stream per attached tab end to end. `PasteImage` saves a pasted image (32 MiB at most) in the session's own folder on its machine, file 0600, gone with the session, and returns the path there for the client to type as input; a text paste is plain input |
 | FileService (files) | the machine that has the files | machine socket for its own files; host socket, relayed | Every location is a Humata root plus a relative path |
 | TransferService (files) | host | host socket; forwarded | The host drives both ends; chunks pass through it |
@@ -159,6 +159,7 @@ a machine checks only calls it answers alone, using the host's last
 | BridgeService (hosts) | host; the forward's two ends are the session's machine and the Mac | host socket; forwarded from the session's machine | HO-10, HO-11: the only way anything but Humata's own calls crosses the bridge |
 | SettingsService, AgentService, MarkService, ViewStateService (settings) | host | host socket | User-only writes (BOUNDARIES.md §5) |
 | EventService (events) | host | host socket; machine socket relays a filtered feed | |
+| SessionCarryService (sessions) | the machine a session leaves or reaches | machine socket; host socket, relayed. Host only | Moving a session (Move): `Pack` freezes the session and packs its work and conversation, `Unpack` lays it down on the new machine, `Release` deletes the old copy once the new one runs, and `Abort` undoes a half-done move. A fork onto another machine packs through the same calls: `CarryPackRequest.fork` (a `CarryFork`: the fork's id, title, kind, turn and typed branch) packs a copy and leaves the parent running (a typed branch git won't take, or one a parent on this Mac already uses, is refused when ForkSession is called; a box parent's taken names are checked at pack), and `CarryPackResponse.branch` and `conversation_id` give the fork's branch and conversation. Only the host's relayed calls are honoured, never the user or an agent (D203) |
 | PeerService (peer) | each remote machine | peer link only | §8 |
 
 ## 5. Conventions
@@ -252,6 +253,27 @@ Rules:
 - Event payloads are the entity after the change, so clients update in place
   without a fetch. `PointersUpdated` is coalesced to one per session per
   second.
+- A `Pointer` also names the repo's dirty paths and unpushed commit
+  subjects (`dirty_paths`, `unpushed_subjects`, 50 of each at most), read
+  in two git passes that must agree. The host keeps the last ones, so
+  `PlanForgetMachine` can list a lost machine's work without reaching it,
+  and `ArchiveSummary.Repo.unpushed_subjects` carries them into the
+  archive.
+
+Forget and rebuild (LD-11, LD-12, SL-4). `ForgetMachine` is user-only. It
+archives each session on the lost machine as machine-lost from the host's
+records, takes the machine out of every channel and forgets it on this
+host without dialing it: its entry, peer key and pinned host key go, so
+adding it again makes a new machine. What each idempotency key answered
+is kept in `forget-answers.json` beside `hosts.json` (the newest 256), so
+a retry after a host restart answers the same. `RebuildSession` sends the target
+machine a host-only `StartSession` with `rebuild` set (a `RebuildFrom`:
+each repo's branch, the folder name, the old folder and the mirror's
+scrubbed conversation lines). The machine clones each branch at its origin
+tip, the last pushed sha, writes the lines with the old folder's paths made
+its own, resumes the agent and tells it what was lost. The record moves to
+the new machine only once that succeeds. The conversation goes in one
+unary message, so the gRPC message limit bounds it for now.
 
 What humatad2 builds of `EventService` so far (D82): machine events only
 (`Machine` payloads, to the user; an agent sees none, as ListMachines
@@ -363,7 +385,13 @@ undone when the daemon starts, PER-27). `CancelOperation` stops an
 attempts) and undoes it, and the operation ends `CANCELLED`; cancelling
 one that already ended answers with how it ended. `REMOVE_MACHINE` is
 past its point of no return from its first step, so cancelling it fails
-with `not_cancellable`. A failed add is undone at once, so
+with `not_cancellable`. `MOVE_SESSION` (its steps are `check`, `pause`,
+`pack`, `copy`, `verify`, `resume`, `switch`, `release`) stops at its next
+step boundary until the old agent stops for `resume`: what reached the
+target is deleted, the session keeps running where it was, and the
+operation ends `CANCELLED`. From `resume` on it shows `cancellable` false
+and a cancel fails with `not_cancellable`; one asked just before that
+point wins and undoes the move. A failed add is undone at once, so
 `RetryOperation` runs a failed operation's work again from its first step
 under the same id (D81); a retry resent with the same key answers with
 that run, and any other state fails with `invalid_field` on `id`.
@@ -415,7 +443,8 @@ by the host over the stdio link the host started.
 - **Relayed calls (D139, D144, D146).** After ProveHost the link relays the
   calls the host may make (terminal, file, trash and diff; session start,
   stop, resume, get, list and branch-name preview; channel create and get;
-  operation get, watch and cancel; the event feed) to the machine's own socket
+  operation get, watch and cancel; the event feed; HistoryService/ReadMirror)
+  to the machine's own socket
   daemon, which runs them as the user's, marked as from the host. Before
   answering Hello the link calls `DaemonService.BeginRelay` on that socket and
   offers the nonce it gets as Hello's `machine_nonce`; when ProveHost succeeds
@@ -426,6 +455,16 @@ by the host over the stdio link the host started.
   nothing alone. Until then, and for any method off the list, relayed calls
   are refused. A link started with `--state` and no `--socket` relays nothing
   and answers relayed calls as unavailable.
+- **The conversation mirror (D189).** `HistoryService.ReadMirror`, on a
+  machine, returns the next part of a session's conversation for the host's
+  mirror, from `offset`: complete lines, scrubbed of host variable values
+  (LD-21), at most 1 MiB before encoding, with the file's `source` identity,
+  `rewritten`, `more` and codec fields as FileChunk. Only the host calls it,
+  and only through the relay (the one HistoryService method on the D139
+  allowlist); every other caller, on any connection, gets permission_denied.
+  Offsets count the machine's own file bytes, not scrubbed bytes.
+  `SearchSessions` and `ReadTurns` are never relayed: the host keeps the copy
+  and answers them itself.
 - A forwarded call or journal entry names an `AgentPrincipal`. The host
   accepts it only for a session it placed on that machine. A machine taken
   over by an attacker can therefore act only as its own sessions, never as

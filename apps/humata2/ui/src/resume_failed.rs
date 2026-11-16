@@ -129,7 +129,7 @@ pub(crate) fn note(
                     .gap(px(8.))
                     .pt(px(2.))
                     .child(
-                        widgets::primary(
+                        widgets::primary_in(look,
                             ui,
                             "resume-try-again",
                             "Try again",

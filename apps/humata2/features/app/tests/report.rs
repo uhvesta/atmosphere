@@ -247,3 +247,51 @@ fn opening_the_palette_tells_it_about_the_report() {
     assert!(status.recording);
     assert!(status.last);
 }
+
+/// Each machine's daemon version the report reads when it starts, and
+/// only for the machines the app has no version for yet.
+fn reads_when_started(workspace: humata2_clients::Workspace) -> Vec<humata2_clients::model::MachineId> {
+    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let mut initial = AppState::launch(&clients);
+    initial.workspace = Arc::new(workspace);
+    let mut store = TestStore::new(initial, App::new(clients)).non_exhaustive();
+    send(&mut store, ReportAction::Started);
+    store.skip_received();
+    fakes
+        .machines
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            humata2_clients::machines::Call::Detail(machine) => Some(machine),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn starting_a_report_reads_each_machine_once_when_no_version_is_loaded() {
+    let mut workspace = fixture::design();
+    workspace.machine_health.clear();
+    let machines: Vec<_> = workspace.machines.iter().map(|machine| machine.id.clone()).collect();
+    assert!(!machines.is_empty());
+    assert_eq!(reads_when_started(workspace), machines);
+}
+
+#[test]
+fn starting_a_report_does_not_read_a_machine_whose_version_is_loaded() {
+    let mut workspace = fixture::design();
+    workspace.machine_health = workspace
+        .machines
+        .iter()
+        .map(|machine| {
+            (
+                machine.id.clone(),
+                humata2_clients::model::MachineHealth {
+                    daemon: "2.0.3".to_owned(),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    assert!(reads_when_started(workspace).is_empty());
+}

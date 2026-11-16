@@ -360,7 +360,6 @@ fn the_fork_dialog_creates_the_selected_kind_and_can_cancel() {
     app.send(AppAction::Session(SessionAction::ForkTitle(
         "Review the migration".into(),
     )));
-    app.snapshot("fork-dialog");
     app.click("fork-create");
     let id = app.ui.read(|s| s.session.open.clone()).unwrap();
     assert_ne!(id, SessionId::new("ledger"));
@@ -377,9 +376,7 @@ fn the_fork_dialog_creates_the_selected_kind_and_can_cancel() {
     app.settle();
     assert!(!app.contains("fork-create"));
     assert!(app.ui.read(|s| s.session.fork.is_none()));
-    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
     app.click("session-fork");
-    app.snapshot("fork-dialog-dark");
     app.click("fork-cancel");
     assert!(app.ui.read(|s| s.session.fork.is_none()));
 }

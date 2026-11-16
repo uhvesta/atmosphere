@@ -43,11 +43,26 @@ pub struct Agent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionKind {
     Ordinary,
-    /// A fork that reads its parent's clones but never writes them (IN-20).
+    /// A fork that works in its parent's clones and reads and writes them as
+    /// its own, with no rule (IN-16, D185, D187).
     ContextOnlyFork { parent: SessionId },
     /// A PR review session. Its pushes follow PR-7 and PR-8, not the push
     /// rule: refused unless the user let the agent push to the PR branch.
     Review { push_allowed: bool },
+    /// A Desk session (DK-4, D182). It belongs to no channel and takes the
+    /// new-channel defaults; its switches allow more on top, after Never.
+    Desk(DeskAccess),
+}
+
+/// The two Desk switches (DK-10, D182.3). A switch that is off adds
+/// nothing: the new-channel rule decides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeskAccess {
+    /// Reads and changes every board: the global one and other channels'.
+    pub boards: bool,
+    /// Creates channels, and adds, creates and starts machines. Never
+    /// removes a machine.
+    pub channels_and_machines: bool,
 }
 
 /// What a script token lets its holder do (SEC-14).

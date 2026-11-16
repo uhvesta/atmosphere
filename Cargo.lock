@@ -4073,6 +4073,7 @@ dependencies = [
  "humata2-clients",
  "humata2-desk",
  "humata2-files",
+ "humata2-find",
  "humata2-hosts",
  "humata2-inbox",
  "humata2-palette",
@@ -4354,6 +4355,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-opencode"
+version = "0.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "humata2-palette"
 version = "0.0.0"
 dependencies = [
@@ -4486,6 +4503,7 @@ dependencies = [
  "humata2-clients",
  "humata2-desk",
  "humata2-files",
+ "humata2-find",
  "humata2-hosts",
  "humata2-inbox",
  "humata2-markdown",
@@ -4557,11 +4575,14 @@ dependencies = [
  "humata2-chunk",
  "humata2-holder",
  "humata2-machines",
+ "humata2-marks",
  "humata2-mcp",
+ "humata2-mirror",
  "humata2-review-diff",
  "humata2-revive",
  "humata2-store",
  "hyper-util",
+ "notify",
  "prost",
  "protoc-gen-prost",
  "protoc-gen-tonic",

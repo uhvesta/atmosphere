@@ -8,6 +8,7 @@
 
 mod deferred;
 mod kept;
+pub(crate) mod permission;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use std::time::{Duration, SystemTime};
 
 use humata2_access::{
     AccessRequest, Agent, Answer, AnswerError, Call, Capability, CheckError, Decision, GrantTarget,
-    PresentUser, Refusal, RequestId, SessionKind, Source, Target, Verdict,
+    PresentUser, Refusal, RequestId, Source, Target, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::Store;
@@ -78,6 +79,9 @@ struct Entry {
     /// What a deferred call does once approved (D38.6); taken when it
     /// starts, and gone after a restart.
     run: std::sync::Mutex<Option<Run>>,
+    /// An agent's permission hook holds it (D191): Approve or Deny only,
+    /// left out of Answer all, and withdrawn once no hook holds it.
+    permission: bool,
 }
 
 impl Entry {
@@ -97,6 +101,7 @@ impl Entry {
             keys: key.into_iter().collect(),
             request: watch::channel(held).0,
             run: std::sync::Mutex::new(None),
+            permission: false,
         }
     }
 }
@@ -228,6 +233,21 @@ impl Inbox {
             .find(|entry| entry.id == id && sees(caller, entry))
             .map(|entry| entry.request.clone())
             .ok_or_else(|| no_request(id))
+    }
+
+    /// The ids of the pending requests of any of `sessions`, for a plan
+    /// that lists what deleting them would withdraw (CH-24).
+    pub(crate) async fn pending_ids_of(&self, sessions: &[String]) -> Vec<String> {
+        let state = self.state.lock().await;
+        state
+            .requests
+            .iter()
+            .filter(|entry| {
+                sessions.contains(&entry.session)
+                    && entry.request.borrow().request.state == pb::RequestState::Pending as i32
+            })
+            .map(|entry| entry.id.clone())
+            .collect()
     }
 
     /// Withdraws every pending request of `session` for `reason`, as when
@@ -367,6 +387,9 @@ impl Inbox {
     ) -> Result<Decided, Status> {
         use pb::request_answer::Answer as A;
         let id = &entry.id;
+        if entry.permission {
+            return permission::decide(id, answer);
+        }
         let decided = |state, answer, grant| Decided {
             state,
             answer,
@@ -518,6 +541,8 @@ impl pb::inbox_service_server::InboxService for Inbox {
             .iter()
             .find(|entry| entry.id == id && sees(&caller, entry))
             .ok_or_else(|| no_request(&id))?;
+        // A permission card whose hook let go has no one to hear the answer.
+        let _ = self.withdraw_unheld(entry).await;
         let current = entry.request.borrow().request.clone();
         still_open(&current)?;
         if let Some(expected) = request.expected_revision {
@@ -569,7 +594,8 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 .requests
                 .iter()
                 .find(|entry| entry.id == id.value && sees(&caller, entry));
-            let Some(entry) = entry else {
+            // A permission card is one tool call, approved one at a time.
+            let Some(entry) = entry.filter(|entry| !entry.permission) else {
                 skipped.push(id);
                 continue;
             };
@@ -740,7 +766,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         }
         let asker = Agent {
             session: agent.session.clone(),
-            kind: SessionKind::Ordinary,
+            kind: agent.session_kind(),
         };
         let (verdict, grant, decision) = self.guard.with_policy(|policy, context| {
             let verdict = policy.check_ask_ahead(&asker, &call, context);
@@ -965,6 +991,7 @@ fn question(
         kind: pb::RequestKind::Question as i32,
         state: pb::RequestState::Pending as i32,
         requester: Some(agent.actor()),
+        operation: agent.operation(),
         action_title: format!("{} asks you a question", agent.title),
         preview: Some(pb::RequestPreview {
             preview: Some(pb::request_preview::Preview::Question(
@@ -1000,6 +1027,7 @@ fn access_request(
         kind: kind_of(asked.capability) as i32,
         state: pb::RequestState::Pending as i32,
         requester: Some(agent.actor()),
+        operation: agent.operation(),
         action_title: format!(
             "{} asks ahead to {}",
             agent.title,

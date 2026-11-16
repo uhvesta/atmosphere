@@ -9,8 +9,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::{prelude::*, *};
-use humata2_app::{AppAction, AppState, Route};
-use humata2_clients::model::{Answer, MachineKind, Session, Status};
+use humata2_app::{AppAction, AppState, NeedsRow, Route};
+use humata2_clients::model::{Answer, MachineKind, Request, Session, SessionId, Status};
 use humata2_inbox::{Bulk, History, InboxAction};
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
@@ -31,7 +31,7 @@ pub(crate) fn toolbar(
         .border_color(rgb(look.line))
         .when(hidden, |bar| bar.child(chrome::lights()))
         .when(!state.trail.is_empty(), |bar| {
-            bar.child(widgets::ghost(ui, "back", "‹ Back", AppAction::Back))
+            bar.child(widgets::ghost_in(look, ui, "back", "‹ Back", AppAction::Back))
         })
         .child(
             div()
@@ -113,16 +113,21 @@ pub(crate) fn toolbar(
         })
 }
 
+/// One session on Home. With a pending `request`, the row's detail is the
+/// request's title and its primary button reviews the request.
 fn home_row(
     ui: &Rc<Ui>,
     state: &AppState,
     session: &Session,
+    request: Option<&Request>,
     group: &'static str,
     index: usize,
     look: Look,
 ) -> impl IntoElement {
     let ui2 = ui.clone();
     let id = session.id.clone();
+    let asked = request.map(|request| request.id.clone());
+    let detail = request.map_or_else(|| session.activity.clone(), |request| request.title.clone());
     let place = humata2_clients::desk::place(&state.workspace, &session.channel);
     let description = if let Some(parent) = session
         .parent
@@ -149,8 +154,10 @@ fn home_row(
     } else {
         None
     };
-    let need = matches!(session.status, Status::NeedsYou | Status::Exited { .. });
-    let label = if matches!(session.status, Status::Exited { .. }) {
+    let need = asked.is_some() || matches!(session.status, Status::NeedsYou | Status::Exited { .. });
+    let label = if asked.is_some() {
+        Some("Review")
+    } else if matches!(session.status, Status::Exited { .. }) {
         Some("Resume")
     } else if session.status == Status::NeedsYou {
         Some("Review")
@@ -195,13 +202,15 @@ fn home_row(
                 .child(
                     div()
                         .text_size(px(12.))
-                        .text_color(rgb(if session.status == Status::NeedsYou {
-                            0xff9f0a
-                        } else {
-                            look.secondary
-                        }))
-                        .child(session.activity.clone())
-                        .test_text(session.activity.clone()),
+                        .text_color(rgb(
+                            if session.status == Status::NeedsYou || asked.is_some() {
+                                0xff9f0a
+                            } else {
+                                look.secondary
+                            },
+                        ))
+                        .child(detail.clone())
+                        .test_text(detail),
                 ),
         )
         .child(
@@ -214,17 +223,23 @@ fn home_row(
             let ui = ui.clone();
             let url = open_url.clone();
             let session = session.id.clone();
-            let exited = matches!(session_status(state, &session), Some(Status::Exited { .. }));
+            let exited = asked.is_none()
+                && matches!(session_status(state, &session), Some(Status::Exited { .. }));
             let button_id = SharedString::from(format!("{group}-action-{index}"));
             let button = if need && !exited {
                 widgets::push_primary_shape(button_id, label, look)
             } else {
                 widgets::push_quiet_shape(button_id, label, look)
             };
+            let asked = asked.clone();
             button.on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 if let Some(url) = &url {
                     cx.open_url(url);
+                    return;
+                }
+                if let Some(request) = &asked {
+                    ui.send(AppAction::Inbox(InboxAction::OpenRequest(request.clone())), cx);
                     return;
                 }
                 ui.send(AppAction::Navigate(Route::Session(session.clone())), cx);
@@ -289,10 +304,85 @@ fn session_group(
             sessions
                 .iter()
                 .enumerate()
-                .map(|(index, session)| home_row(ui, state, session, id, index, look)),
+                .map(|(index, session)| home_row(ui, state, session, None, id, index, look)),
         )
     };
     group(look, title, body)
+}
+
+/// Home's "Needs you" group: a session row for each session that needs the
+/// person or has a pending request, and a row for each pending request that
+/// has no session listed.
+fn needs_group(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    title: String,
+    rows: &[NeedsRow<'_>],
+    look: Look,
+) -> Div {
+    let body = if rows.is_empty() {
+        card(look)
+            .px(px(14.))
+            .py(px(12.))
+            .text_color(rgb(look.tertiary))
+            .child("Nothing needs you.")
+    } else {
+        card(look).overflow_hidden().children(rows.iter().enumerate().map(|(index, row)| {
+            match row {
+                NeedsRow::Session { session, request } => {
+                    home_row(ui, state, session, *request, "home-needs", index, look)
+                        .into_any_element()
+                }
+                NeedsRow::Request(request) => {
+                    request_row(ui, request, index, look).into_any_element()
+                }
+            }
+        }))
+    };
+    group(look, title, body)
+}
+
+/// A pending request with no session listed: its title, why it is asked, and
+/// when. The row opens the request.
+fn request_row(ui: &Rc<Ui>, request: &Request, index: usize, look: Look) -> impl IntoElement {
+    let ui2 = ui.clone();
+    let id = request.id.clone();
+    row()
+        .id(("home-needs-request", index))
+        .role(Role::Link)
+        .aria_label(request.title.clone())
+        .gap(px(10.))
+        .px(px(12.))
+        .py(px(9.))
+        .border_b_1()
+        .border_color(rgb(look.line))
+        .cursor_pointer()
+        .child(
+            col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(request.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(0xff9f0a))
+                        .child(request.reason.clone()),
+                ),
+        )
+        .child(
+            div()
+                .text_size(px(11.5))
+                .text_color(rgb(look.secondary))
+                .child(request.asked.clone()),
+        )
+        .on_click(move |_, _, cx| {
+            ui2.send(AppAction::Inbox(InboxAction::OpenRequest(id.clone())), cx)
+        })
+        .test_support()
 }
 
 /// One row of Get set up: what to do, why, and the button that starts it.
@@ -383,11 +473,21 @@ fn counted(name: &str, count: usize) -> String {
 }
 
 pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
-    let all = state.workspace.sessions.iter().filter(|s| !s.archived);
-    let needs = all
-        .clone()
-        .filter(|s| matches!(s.status, Status::NeedsYou | Status::Exited { .. }))
-        .collect::<Vec<_>>();
+    let needs = humata2_app::needs_you(&state.workspace);
+    // A session in "Needs you" is not repeated under Working or Recent.
+    let listed: Vec<&SessionId> = needs
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            NeedsRow::Session { session, .. } => Some(&session.id),
+            NeedsRow::Request(_) => None,
+        })
+        .collect();
+    let all = state
+        .workspace
+        .sessions
+        .iter()
+        .filter(|s| !s.archived && !listed.contains(&&s.id));
     let working = all
         .clone()
         .filter(|s| s.status == Status::Working)
@@ -403,15 +503,7 @@ pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
         .gap(px(20.))
         // After a restart (frame 47): what couldn't be resumed and what came back idle.
         .children(crate::restart_report::home_groups(ui, state, look))
-        .child(session_group(
-            ui,
-            state,
-            counted("Needs you", needs.len()),
-            "home-needs",
-            &needs,
-            "Nothing needs you.",
-            look,
-        ))
+        .child(needs_group(ui, state, counted("Needs you", needs.len()), &needs.rows, look))
         .child(session_group(
             ui,
             state,
@@ -666,7 +758,8 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                         .child(request_card::card(ui, state, r, true, look))
                 }))
                 .when(selected.is_none(), |x| {
-                    x.child(widgets::empty(
+                    x.child(widgets::empty_in(
+                        look,
                         "Nothing waiting.",
                         "New requests appear here.",
                     ))

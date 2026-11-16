@@ -178,6 +178,16 @@ crate.annotation(
     patches = ["//apps/humata2/diff/patches:gpui-component-diff-update.patch"],
 )
 
+# gpui-base's text selection, patched (D104): a drag through the blank space
+# beside lines selects the lines in between, as in a browser, and a gesture
+# that selects nothing tells the text view it ended, so it stops counting as
+# selecting; see apps/humata2/markdown/patches. In every crate repository.
+crate.annotation(
+    crate = "gpui-base",
+    patch_args = ["-p1"],
+    patches = ["//apps/humata2/markdown/patches:gpui-base-selection.patch"],
+)
+
 # GPUI's dev build derives inspector reflection under debug_assertions.
 # Bazel compiles proc macros in the optimized exec configuration, so enable
 # the macro explicitly to keep that API available to the target crate.
@@ -213,16 +223,6 @@ register_toolchains(
 register_toolchains("//apps/humata/proto:prost_toolchain")
 
 # MARK: - Swift
-
-# gpui-base's text selection, patched (D104): a drag through the blank space
-# beside lines selects the lines in between, as in a browser, and a gesture
-# that selects nothing tells the text view it ended, so it stops counting as
-# selecting; see apps/humata2/markdown/patches. In every crate repository.
-crate.annotation(
-    crate = "gpui-base",
-    patch_args = ["-p1"],
-    patches = ["//apps/humata2/markdown/patches:gpui-base-selection.patch"],
-)
 
 # Hermetic swift.org compilers plus the macOS and Static Linux (musl) SDKs.
 # Override the version from your own MODULE.bazel with
@@ -388,6 +388,12 @@ libghostty_vt = use_repo_rule("//apps/humata2/terminal/vt:libghostty_vt.bzl", "l
 
 libghostty_vt(name = "libghostty_vt")
 
+# THIRD_PARTY_NOTICES.txt for Humata 2.app, generated from cargo-bazel-lock.json
+# and the crate sources. See tools/notices/notices.bzl.
+humata2_notices = use_repo_rule("//tools/notices:notices.bzl", "humata2_notices")
+
+humata2_notices(name = "humata2_notices")
+
 # Same pinned terminal core for the browser portability proof.
 libghostty_vt_wasm = use_repo_rule("//apps/humata2/terminal/vt:libghostty_vt_wasm.bzl", "libghostty_vt_wasm")
 
@@ -432,12 +438,6 @@ lifr_identity(name = "lifr_identity")
 # MARK: - Zig
 
 # rules_zig downloads the Zig compiler for the build host and cross-compiles
-# THIRD_PARTY_NOTICES.txt for Humata 2.app, generated from cargo-bazel-lock.json
-# and the crate sources. See tools/notices/notices.bzl.
-humata2_notices = use_repo_rule("//tools/notices:notices.bzl", "humata2_notices")
-
-humata2_notices(name = "humata2_notices")
-
 # with Zig's own libc for each target platform. The root module's first
 # zig.toolchain(...) is the default; override it from your own MODULE.bazel.
 zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")

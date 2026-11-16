@@ -280,24 +280,27 @@ impl ReportView {
             .border_color(rgb(look.line))
             .shadow_lg()
             .test_support()
-            .child(widgets::title(match form.kind {
+            .child(widgets::title_in(look, match form.kind {
                 ReportKind::Recording => "Bug report from your recording",
                 ReportKind::Snapshot => "Bug report from a snapshot",
             }))
-            .child(widgets::faint(format!("Saved in {}", form.folder.display())))
+            .child(widgets::faint_in(look, format!("Saved in {}", form.folder.display())))
             .child(field(
+                look,
                 "What happened",
                 Textarea::new(&self.happened)
                     .h(px(70.))
                     .aria_label("What happened"),
             ))
             .child(field(
+                look,
                 "What you expected",
                 Textarea::new(&self.expected)
                     .h(px(70.))
                     .aria_label("What you expected"),
             ))
             .child(field(
+                look,
                 "Pin a comment to",
                 col()
                     .gap_1()
@@ -308,7 +311,7 @@ impl ReportView {
                             .max_h(px(150.))
                             .overflow_y_scroll()
                             .children(matches.iter().map(|&at| {
-                                widgets::ghost(
+                                widgets::ghost_in(look,
                                     ui,
                                     ("report-pin", at),
                                     form.elements[at].to_string(),
@@ -316,7 +319,7 @@ impl ReportView {
                                 )
                             }))
                             .when(matches.is_empty(), |list| {
-                                list.child(widgets::faint("Nothing on screen matches."))
+                                list.child(widgets::faint_in(look, "Nothing on screen matches."))
                             }),
                     ),
             ))
@@ -337,7 +340,7 @@ impl ReportView {
                 row()
                     .justify_end()
                     .gap_2()
-                    .children(copied.then(|| widgets::faint("Copied")))
+                    .children(copied.then(|| widgets::faint_in(look, "Copied")))
                     .child({
                         let ui = ui.clone();
                         Button::new("report-copy")
@@ -345,7 +348,7 @@ impl ReportView {
                             .label("Copy report")
                             .on_click(move |_, _, cx| copy(&ui, cx))
                     })
-                    .child(widgets::primary(
+                    .child(widgets::primary_in(look,
                         ui,
                         "report-done",
                         "Done",
@@ -406,7 +409,7 @@ impl ReportView {
         };
         col()
             .gap_1()
-            .child(widgets::dim(header).text_size(px(12.)))
+            .child(widgets::dim_in(look, header).text_size(px(12.)))
             .children(form.strokes.iter().enumerate().map(|(at, stroke)| {
                 let number = at + 1;
                 row()
@@ -434,7 +437,7 @@ impl ReportView {
                     )
             }))
             .child(
-                row().child(widgets::ghost(
+                row().child(widgets::ghost_in(look,
                     &self.ui,
                     "report-draw",
                     "Draw on the window",
@@ -583,7 +586,7 @@ impl ReportView {
     fn comment(&self, at: usize, comment: &PinnedComment, cx: &mut Context<Self>) -> Div {
         col()
             .gap_1()
-            .child(widgets::dim(comment.target.to_string()).text_size(px(12.)))
+            .child(widgets::dim_in(Look::of(cx), comment.target.to_string()).text_size(px(12.)))
             .child(
                 row()
                     .gap_2()
@@ -610,10 +613,10 @@ impl ReportView {
     }
 }
 
-fn field(label: &'static str, input: impl IntoElement) -> Div {
+fn field(look: Look, label: &'static str, input: impl IntoElement) -> Div {
     col()
         .gap_1()
-        .child(widgets::dim(label).text_size(px(12.)))
+        .child(widgets::dim_in(look, label).text_size(px(12.)))
         .child(input)
 }
 
@@ -688,7 +691,8 @@ fn stop(
     title: Option<String>,
     open: bool,
 ) -> Result<PathBuf, String> {
-    saved(ui, cx, open, ui.recorder().finish(window, title))
+    let made = ui.read(|state| ui.recorder().finish(window, state, title));
+    saved(ui, cx, open, made)
 }
 
 /// Saves a snapshot; `open` shows the form at once.

@@ -26,7 +26,9 @@ use humata2_store::TabRecord;
 
 pub use agent::launch_agent;
 pub use error::ReviveError;
-pub use reconcile::{Reconciled, Revived, ShellRevived, reconcile, resume_agent};
+pub use reconcile::{
+    Reconciled, Revived, ShellRevived, reconcile, restart_agent, resume_agent,
+};
 pub use report::RestartReports;
 
 /// What reviving needs to know about this machine's daemon.

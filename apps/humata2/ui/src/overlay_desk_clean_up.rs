@@ -91,7 +91,7 @@ impl Overlays {
         content
             .children(rows)
             .children(dialog.error.clone().map(|error| {
-                widgets::error_banner(ui, "desk-clean-up-error", error, AppAction::Escape)
+                widgets::error_banner_in(look, ui, "desk-clean-up-error", error, AppAction::Escape)
             }))
             .child(
                 row()

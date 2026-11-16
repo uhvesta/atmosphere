@@ -126,6 +126,7 @@ fn card(
         kind: kind_of(asked.capability) as i32,
         state: pb::RequestState::Pending as i32,
         requester: Some(agent.actor()),
+        operation: agent.operation(),
         action_title: format!(
             "{} asks to {}",
             agent.title,
@@ -173,8 +174,9 @@ impl Inbox {
         }
     }
 
-    /// [`Inbox::defer`] for a board call: its card shows `board`'s change
-    /// rather than the capability (BD-15).
+    /// [`Inbox::defer`] for a board call or a fork: its card shows `board`'s
+    /// change or the fork's new session rather than the capability (BD-15,
+    /// IN-10).
     pub(crate) async fn defer_board(
         &self,
         caller: &Caller,

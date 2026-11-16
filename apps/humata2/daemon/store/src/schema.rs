@@ -385,6 +385,35 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE agents ADD COLUMN hook_turn INTEGER;
     ALTER TABLE agents ADD COLUMN hook_turn_at INTEGER;
 ",
+    "
+    -- Step 16. Desk sessions (DK-2, DK-4, DK-11, D182): what only the
+    -- Desk knows about a session whose channel is \"desk\". kind 1 is a
+    -- scratch folder under <root>/desk, 2 a folder the user picked. A row
+    -- with deleted_unix_ms is a deleted session, hidden everywhere.
+    CREATE TABLE desk_sessions (
+        session_id TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+        kind INTEGER NOT NULL,
+        kept INTEGER NOT NULL,
+        boards INTEGER NOT NULL,
+        channels_and_machines INTEGER NOT NULL,
+        last_used_unix_ms INTEGER NOT NULL,
+        closed_unix_ms INTEGER,
+        deleted_unix_ms INTEGER,
+        held_work TEXT NOT NULL
+    ) STRICT;
+",
+    "
+    -- Step 17. Settings the user set (ST-13, D196): one row per key; no
+    -- row means the default. A channel's own branch prefix may be empty,
+    -- so branch_prefix_set says whether the channel has one at all.
+    CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        revision INTEGER NOT NULL
+    ) STRICT;
+    ALTER TABLE channels ADD COLUMN branch_prefix_set INTEGER NOT NULL DEFAULT 0;
+    UPDATE channels SET branch_prefix_set = 1 WHERE branch_prefix <> '';
+",
 ];
 
 /// The schema this build writes and reads.

@@ -1,0 +1,45 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# OpenCode's own loopback server, as the `humata opencode` wrapper's link
+# uses it (D201, D201a): its event stream, what each event means for
+# the turn and the Inbox, the link that reports turns and passes asks to the
+# daemon, its HTTP client, and the wrapper that runs serve and the TUI and
+# keeps a 0600 state file. Recorded from OpenCode v2.3.0 (testdata/).
+rust_library(
+    name = "opencode",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_opencode",
+    visibility = ["//apps/humata2/cli:__pkg__"],
+    deps = [
+        "@crates//:base64",
+        "@crates//:http-body-util",
+        "@crates//:hyper",
+        "@crates//:hyper-util",
+        "@crates//:rustix",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        compile_data = glob(["testdata/**"]),
+        deps = [
+            ":opencode",
+            "@crates//:serde_json",
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

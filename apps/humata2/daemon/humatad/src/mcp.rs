@@ -25,6 +25,7 @@ use crate::identity::TOKEN_HEADER;
 use crate::{serve, status};
 
 mod boards;
+mod history;
 
 #[derive(clap::Args)]
 pub(crate) struct McpArgs {
@@ -672,6 +673,47 @@ impl GrpcDaemon {
         Ok(applied(session_json(&session), None))
     }
 
+    /// `session_fork` (flow 26.5): forks the caller's own session; the
+    /// daemon asks the user first when the rule says so.
+    async fn session_fork(&self, call: Call) -> Result<Reply, ToolError> {
+        let arguments = &call.arguments;
+        let kind = match text(arguments, "kind").as_str() {
+            "code_and_context" => pb::ForkKind::CodeAndContext,
+            "code_only" => pb::ForkKind::CodeOnly,
+            "context_only" => pb::ForkKind::ContextOnly,
+            other => return Err(fork_unsupported(format!("kind {other:?} isn't a fork kind"), "send kind code_and_context, code_only or context_only")),
+        };
+        let some_repos = arguments
+            .get("repos")
+            .and_then(Value::as_array)
+            .is_some_and(|repos| !repos.is_empty());
+        if some_repos || !text(arguments, "first_message").is_empty() {
+            return Err(fork_unsupported(
+                "forking only some repos or with a first message isn't built yet".to_owned(),
+                "leave out repos and first_message to fork every repo, then type the message with session_type once the fork runs",
+            ));
+        }
+        let machine = text(arguments, "machine");
+        let request = self.request(pb::ForkSessionRequest {
+            idempotency_key: Some(key(&call)),
+            parent: Some(self.own_session().await?),
+            kind: kind as i32,
+            title: text(arguments, "title"),
+            machine: (!machine.is_empty()).then_some(pb::MachineId { value: machine }),
+            ..Default::default()
+        })?;
+        let operation = self
+            .sessions()
+            .fork_session(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(
+            json!({ "operation": operation.id.map(|id| id.value) }),
+            None,
+        ))
+    }
+
     /// `session_archive`: plans, then archives with nothing unpushed lost.
     async fn session_archive(&self, call: Call) -> Result<Reply, ToolError> {
         let id = self.named_session(&call.arguments).await?;
@@ -978,6 +1020,7 @@ impl Daemon for GrpcDaemon {
             Operation::SessionInfo => self.session_info().await,
             Operation::SessionStop => self.session_stop(call).await,
             Operation::SessionArchive => self.session_archive(call).await,
+            Operation::SessionFork => self.session_fork(call).await,
             Operation::FileWrite => self.file_write(call).await,
             Operation::FilesList => self.files_list(call).await,
             Operation::FileRead => self.file_read(call).await,
@@ -991,6 +1034,8 @@ impl Daemon for GrpcDaemon {
             Operation::BoardItemUpdate => self.board_item_update(call).await,
             Operation::BoardItemMove => self.board_item_move(call).await,
             Operation::BoardItemDelete => self.board_item_delete(call).await,
+            Operation::SessionsSearch => self.sessions_search(call).await,
+            Operation::SessionRead => self.session_read(call).await,
             other => Err(not_built(other)),
         };
         pending_or(reply)
@@ -1104,6 +1149,17 @@ fn text(arguments: &Map<String, Value>, field: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// A `session_fork` argument this daemon can't act on.
+fn fork_unsupported(message: String, fix: &str) -> ToolError {
+    ToolError {
+        kind: ErrorKind::InvalidField,
+        message,
+        fix: fix.to_owned(),
+        retry: None,
+        details: Map::new(),
+    }
 }
 
 fn not_built(operation: Operation) -> ToolError {
@@ -1342,6 +1398,9 @@ fn approved_result(result_type: &str, bytes: &[u8]) -> Value {
         "humata.v1.Session" => pb::Session::decode(bytes)
             .ok()
             .map(|session| session_json(&session)),
+        "humata.v1.Operation" => pb::Operation::decode(bytes)
+            .ok()
+            .map(|operation| json!({ "operation": operation.id.map(|id| id.value) })),
         "humata.v1.ExplainResponse" => pb::ExplainResponse::decode(bytes)
             .ok()
             .map(|r| explain_json(&r)),

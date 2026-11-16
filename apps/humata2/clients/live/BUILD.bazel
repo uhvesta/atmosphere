@@ -51,6 +51,30 @@ rust_test(
     ],
 )
 
+# The Desk on the fake and on a real humatad2 (admin build). Manual while
+# the live client does not call DeskService yet; drop the tag then.
+rust_test(
+    name = "desk_live_test",
+    srcs = ["tests/desk.rs"] + glob(["tests/support/*.rs"]),
+    crate_root = "tests/desk.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "//libs/tca-rust:tca",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
 # The file manager on the fake and on a real humatad2 (admin build).
 rust_test(
     name = "file_manager_test",
@@ -123,6 +147,97 @@ rust_test(
     ],
     env = {
         "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# Boards through the live client against a real humatad2 (admin build):
+# items, columns, dependencies, sessions, history and pushed changes.
+rust_test(
+    name = "boards_test",
+    srcs = ["tests/boards.rs"],
+    crate_root = "tests/boards.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# A session's changes through the live client against a real humatad2
+# (admin build) and a real git clone (REVIEW).
+rust_test(
+    name = "diffs_live_test",
+    srcs = ["tests/diffs.rs"],
+    crate_root = "tests/diffs.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# Pins and VIP marks through the live client against a real humatad2
+# (admin build): two clients at once, and what a restart keeps.
+rust_test(
+    name = "marks_live_test",
+    srcs = ["tests/marks.rs"],
+    crate_root = "tests/marks.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# Searching and reading conversations through the live client against a real humatad2 (admin build) and a Claude conversation file.
+rust_test(
+    name = "history_live_test",
+    srcs = ["tests/history.rs"],
+    crate_root = "tests/history.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
         "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
     },

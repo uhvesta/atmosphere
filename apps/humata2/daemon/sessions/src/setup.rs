@@ -58,7 +58,7 @@ pub fn create_channel(
             .unwrap_or_else(|| format!("ch_{}", uuid::Uuid::new_v4().simple())),
         name: new.name,
         folder,
-        branch_prefix: new.branch_prefix,
+        branch_prefix: Some(new.branch_prefix).filter(|prefix| !prefix.is_empty()),
         default_agent: new.default_agent,
         repos: new
             .repos

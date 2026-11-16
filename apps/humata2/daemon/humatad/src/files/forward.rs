@@ -68,11 +68,22 @@ impl Reach {
 fn lost(links: Option<&Links>, machine: &str, status: Status) -> Status {
     let down = links.is_none_or(|links| links.channel(machine).is_err());
     match status.code() {
-        Code::Unavailable | Code::Unknown | Code::Cancelled | Code::Aborted if down => {
+        Code::Unavailable | Code::Unknown | Code::Cancelled | Code::Aborted
+            if down || built_locally(&status) =>
+        {
             offline(machine, true)
         }
         _ => status,
     }
+}
+
+/// Whether the client built `status` itself from a transport error. Tonic
+/// gives every status made from an error a source; a status the machine
+/// answered arrives over the wire with none. A broken connection reaches the
+/// call at the same moment as the link supervisor, on another task, so the
+/// links table may not say down yet: the status itself is the evidence.
+fn built_locally(status: &Status) -> bool {
+    std::error::Error::source(status).is_some()
 }
 
 /// `sent`: the call may have reached the machine before its link went down.
@@ -675,5 +686,35 @@ impl TrashForward {
             .map_err(|status| self.reach.lost(&machine, status))?
             .into_inner();
         Ok(Response::new(reply))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offline_named(status: &Status) -> bool {
+        status.code() == Code::Unavailable
+            && status::error_of(status)
+                .is_some_and(|error| matches!(error.kind, Some(pb::error::Kind::MachineOffline(_))))
+    }
+
+    #[tokio::test]
+    async fn a_call_cut_by_a_broken_connection_is_offline_before_the_link_is_marked_down() {
+        // The call hears the broken connection before the supervisor marks
+        // the link down: the links still say Up.
+        let links = Links::default();
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        links.up("box-1", channel);
+        let broken = Status::from_error(Box::new(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "connection reset",
+        )));
+        assert!(offline_named(&lost(Some(&links), "box-1", broken)));
+        // What the machine itself answered stays its answer.
+        let said = Status::new(Code::Unknown, "the machine said so");
+        let kept = lost(Some(&links), "box-1", said);
+        assert_eq!(kept.code(), Code::Unknown);
+        assert!(!offline_named(&kept));
     }
 }

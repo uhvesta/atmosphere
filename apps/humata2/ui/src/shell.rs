@@ -168,14 +168,14 @@ fn top_bar(
         .border_color(rgb(look.line))
         .when(sidebar_hidden, |bar| {
             bar.child(
-                widgets::ghost(ui, "show-sidebar", "", AppAction::ToggleNavigationOverlay)
+                widgets::ghost_in(look, ui, "show-sidebar", "", AppAction::ToggleNavigationOverlay)
                     .icon(IconName::PanelLeft)
                     .accessibility_label("Show sidebar")
                     .tooltip("Show sidebar  ⌘0"),
             )
         })
         .child(
-            widgets::ghost(ui, "back", "", AppAction::Back)
+            widgets::ghost_in(look, ui, "back", "", AppAction::Back)
                 .icon(IconName::ChevronLeft)
                 .accessibility_label("Back")
                 .tooltip("Back  ⌘[")
@@ -209,7 +209,7 @@ fn top_bar(
             ui.read(|state| matches!(state.route, Route::Session(_))),
             |bar| {
                 bar.child(
-                    widgets::ghost(
+                    widgets::ghost_in(look,
                         ui,
                         "toggle-side-panel",
                         "",
@@ -276,7 +276,10 @@ impl Render for Shell {
             .read(|state| self.terminals.sync(&self.ui, state, look, window, cx));
         self.documents.sync(&self.ui, window, cx);
         let target = self.ui.read(|state| {
-            (state.overlays.is_empty() && state.session.fork.is_none())
+            (state.overlays.is_empty()
+                && state.session.fork.is_none()
+                && state.session.moving.is_none()
+                && state.session.archiving.is_none())
                 .then(|| crate::terminals::focus_target(state))
         });
         if let Some(target) = target
@@ -394,7 +397,7 @@ impl Render for Shell {
                 .flex_1()
                 .items_center()
                 .justify_center()
-                .child(widgets::dim("Connecting to this Mac…"))
+                .child(widgets::dim_in(look, "Connecting to this Mac…"))
                 .into_any_element(),
             Load::Failed(message) => col()
                 .flex_1()
@@ -409,7 +412,7 @@ impl Render for Shell {
                         .child(message)
                         .test_support(),
                 )
-                .child(widgets::primary(
+                .child(widgets::primary_in(look,
                     &ui,
                     "retry",
                     "Try again",
@@ -466,7 +469,8 @@ impl Render for Shell {
                 })
             })
             .children(restore_error.map(|error| {
-                div().p_3().child(widgets::error_banner(
+                div().p_3().child(widgets::error_banner_in(
+                    look,
                     &ui,
                     "restore-error",
                     error,
@@ -532,6 +536,16 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &keys::TogglePanel, _, cx| {
                 this.send(AppAction::Pane(PaneAction::Toggle(PaneId::Panel)), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::MoveSession, _, cx| {
+                // ⌥⌘M asks for a machine only when a session is open.
+                if this.ui.read(|state| matches!(state.route, Route::Session(_))) {
+                    this.send(AppAction::OpenPalette, cx);
+                    let begin = humata2_palette::PaletteAction::Begin(
+                        humata2_palette::Command::MoveSession,
+                    );
+                    this.send(AppAction::Palette(begin), cx);
+                }
             }))
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
                 let Some(pane) = this.dragging else { return };

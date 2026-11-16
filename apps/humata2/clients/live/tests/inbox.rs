@@ -540,6 +540,19 @@ async fn allow_ends_the_agents_wait_with_the_result() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_card_names_the_operation_the_agent_called() {
+    let world = World::start().await;
+    let (channel, session) = world.session().await;
+    world.set_rule(&channel, "global_read", RuleSetting::Ask).await;
+    world.agent_calls(&session, LIST_CHANNELS).await;
+
+    let request = world.waiting_request(&session, LIST_CHANNELS).await;
+
+    // TP-16: `humata channels` is ListChannels, `channel.list` on the card.
+    assert_eq!(request.operation, "channel.list", "{request:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn deny_with_a_reply_ends_the_agents_wait_as_denied() {
     let world = World::start().await;
     let (channel, session) = world.session().await;
@@ -585,6 +598,9 @@ async fn always_allow_makes_a_grant_the_app_lists_and_can_remove() {
             },
         )
         .await;
+    // The agent's ask-ahead waited (`--wait`) and ends approved.
+    let ended = world.ended(ASK_AHEAD).await;
+    assert_eq!(ended.code, 0, "{ended:?}");
     let granted = rule(&world.load().await, &channel, "network_reach").grants;
     assert_eq!(granted.len(), 1, "{granted:?}");
     assert_eq!(granted[0].session, session);

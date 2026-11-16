@@ -237,6 +237,9 @@ impl RemoteTerminal {
         let relay = Relay {
             links: self.links.clone(),
             machine: machine.to_owned(),
+            session: open.session.as_ref().map(|session| session.value.clone()),
+            moves: crate::session_service::moving_changes(),
+            showed_moving: false,
             tracker: Tracker::new(open),
         };
         let (out, queued) = mpsc::channel(TO_CLIENT);
@@ -369,6 +372,12 @@ async fn open_once(links: &Links, machine: &str, open: &pb::AttachOpen) -> Resul
 struct Relay {
     links: Links,
     machine: String,
+    /// The session whose terminal this is. While this host moves it, the
+    /// terminal is shown read-only and typing is dropped (MV-4).
+    session: Option<String>,
+    moves: watch::Receiver<u64>,
+    /// Whether the last state the client was sent said Moving.
+    showed_moving: bool,
     tracker: Tracker,
 }
 
@@ -381,6 +390,19 @@ fn link_failure(status: &Status) -> bool {
 }
 
 impl Relay {
+    fn moving(&self) -> bool {
+        self.session.as_deref().is_some_and(crate::session_service::is_moving)
+    }
+
+    /// Shows `state` as Moving while this host moves the session (MV-4).
+    fn show_moving(&mut self, state: &mut pb::TerminalState) {
+        self.showed_moving = self.moving();
+        if self.showed_moving {
+            state.writable = pb::terminal_state::Writable::Moving as i32;
+            state.status = pb::SessionStatus::Moving as i32;
+        }
+    }
+
     async fn run(
         mut self,
         first: Upstream,
@@ -457,6 +479,7 @@ impl Relay {
                 ToRoom(bool),
                 Client(Option<Result<pb::AttachClientMessage, Status>>),
                 Link(bool),
+                Moved,
             }
 
             let event = tokio::select! {
@@ -482,6 +505,7 @@ impl Relay {
                 },
                 message = client.next(), if waiting.is_none() => Event::Client(message),
                 changed = link.changed() => Event::Link(changed.is_ok()),
+                Ok(()) = self.moves.changed() => Event::Moved,
             };
 
             match event {
@@ -492,8 +516,11 @@ impl Relay {
                     waiting = None;
                     to = None;
                 }
-                Event::Machine(Some(Ok(message))) => {
+                Event::Machine(Some(Ok(mut message))) => {
                     self.tracker.delivered(&message);
+                    if let Some(ServerMessage::State(state)) = &mut message.message {
+                        self.show_moving(state);
+                    }
                     outbox.push_back(Ok(message));
                 }
                 Event::Machine(Some(Err(status))) if link_failure(&status) => {
@@ -513,13 +540,25 @@ impl Relay {
                 }
                 Event::Client(Some(Ok(message))) => {
                     self.tracker.asked(&message);
-                    // Down: typing is disabled; nothing is kept for later (SE-16).
-                    if to.is_some() {
+                    // Down or moving: typing is disabled; nothing is kept for
+                    // later (SE-16, MV-4).
+                    let typing = matches!(message.message, Some(ClientMessage::Input(_)));
+                    if to.is_some() && !(typing && self.moving()) {
                         waiting = Some(message);
                     }
                 }
                 Event::Client(Some(Err(_)) | None) => return,
                 Event::Link(true) => pending_change = true,
+                Event::Moved => {
+                    if self.moving() != self.showed_moving
+                        && let Some(mut state) = self.tracker.state.clone()
+                    {
+                        self.show_moving(&mut state);
+                        outbox.push_back(Ok(pb::AttachServerMessage {
+                            message: Some(ServerMessage::State(state)),
+                        }));
+                    }
+                }
                 Event::Link(false) => {
                     outbox.push_back(Err(RelayError::Offline {
                         machine: self.machine.clone(),

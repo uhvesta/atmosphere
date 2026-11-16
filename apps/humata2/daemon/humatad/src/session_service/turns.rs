@@ -455,6 +455,7 @@ pub(crate) fn set_sources(agents: &Agents) {
         })
         .collect();
     let _ = REGISTRY.sources.set(sources);
+    crate::inbox::permission::codex_trust::set_kinds(agents);
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +499,7 @@ impl SessionSvc {
             at if at > 0 => at,
             _ => unix_ns(),
         };
+        self.inbox.hook_heard(&agent.agent).await;
         let session = agent.session.id.to_string();
         let timed = source_of(&agent.agent) != pb::TurnEndSource::None;
         let ok = || Ok(Response::new(pb::ReportTurnResponse {}));
@@ -658,10 +660,16 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// Claude Code's settings with the hooks D169 lists. Every hook is async
+/// How long Claude Code lets a turn hook run; `humata turn` takes well
+/// under a second, and a slower one is dropped, not waited on.
+const TURN_HOOK_SECONDS: u64 = 10;
+
+/// Claude Code's settings with the hooks D169 lists. Every turn hook is async
 /// and runs `humata turn <state>` against this daemon's socket with its
 /// output thrown away and its failure ignored, so it can't block a prompt
-/// or put anything in the context.
+/// or put anything in the context. Beside its async report, the
+/// PermissionRequest group has the one blocking hook: it asks in the Inbox
+/// and holds for the answer (HOOKS, D191).
 fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
     let group = |matcher: Option<&str>, state: &str| {
         let command = format!(
@@ -669,7 +677,12 @@ fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
             quote(&socket.to_string_lossy()),
             quote(&humata.to_string_lossy()),
         );
-        let hooks = serde_json::json!([{ "type": "command", "command": command, "async": true }]);
+        let hooks = serde_json::json!([{
+            "type": "command",
+            "command": command,
+            "async": true,
+            "timeout": TURN_HOOK_SECONDS,
+        }]);
         let mut group = serde_json::Map::new();
         if let Some(matcher) = matcher {
             group.insert("matcher".to_owned(), matcher.into());
@@ -677,6 +690,12 @@ fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
         group.insert("hooks".to_owned(), hooks);
         serde_json::Value::Array(vec![serde_json::Value::Object(group)])
     };
+    let mut permission = group(None, "needs-input");
+    // HOOKS (D191): after the async needs-input report, the blocking hook
+    // that asks in the Inbox and holds for the answer.
+    if let Some(hooks) = permission[0]["hooks"].as_array_mut() {
+        hooks.push(humata2_agent_hooks::claude_permission_hook(humata, socket));
+    }
     serde_json::json!({
         "hooks": {
             "SessionStart": group(Some("startup|resume"), "idle"),
@@ -684,7 +703,7 @@ fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
             "PostToolBatch": group(None, "working"),
             "Stop": group(None, "idle"),
             "StopFailure": group(None, "idle"),
-            "PermissionRequest": group(None, "needs-input"),
+            "PermissionRequest": permission,
             "PermissionDenied": group(None, "working"),
             "Elicitation": group(None, "needs-input"),
             "ElicitationResult": group(None, "working"),

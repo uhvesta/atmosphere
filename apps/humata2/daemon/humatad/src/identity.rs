@@ -16,10 +16,11 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use humata2_access::{ChannelId, MachineId, SessionId, SessionRef};
+use humata2_access::{ChannelId, DeskAccess, MachineId, SessionId, SessionKind, SessionRef};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{SessionRecord, Store, StoreError, write_atomic};
 use sha2::{Digest, Sha256};
@@ -68,7 +69,9 @@ pub(crate) enum UserVia {
     #[cfg_attr(not(feature = "admin"), allow(dead_code))]
     App,
     /// A process in the terminal session that this `humata login` bound.
-    CliLogin { login: String },
+    /// `on_host` says the daemon taking the call is the host's, not a
+    /// machine's: whoami and the records name the machine it's on.
+    CliLogin { login: String, on_host: bool },
     /// The host, through the peer link's relay (D139, D144): a call on a
     /// socket connection that proved itself once with the host's own
     /// proof, for a method the relay allows.
@@ -81,6 +84,19 @@ pub(crate) struct AgentCaller {
     pub(crate) session: SessionRef,
     pub(crate) agent: String,
     pub(crate) title: String,
+    /// The gRPC method of the call being made, as the server routed it
+    /// (never what the request says); empty outside a call. The Inbox card
+    /// names the operation from it (TP-16).
+    pub(crate) method: String,
+    /// The parent this context-only fork works in its parent's folder for
+    /// (D185, D187); `None` for any other session, and for a fork that has
+    /// its own copy. Set by [`AgentCaller::resolve_fork`] once the caller is
+    /// identified.
+    pub(crate) context_only_parent: Option<SessionId>,
+    /// The two switches of the Desk session this agent runs in (DK-4, D182.3);
+    /// `None` for a session on a channel. Set by [`AgentCaller::resolve_fork`]
+    /// on every call, so a switch changed by the user applies from the next call.
+    pub(crate) desk: Option<DeskAccess>,
 }
 
 impl AgentCaller {
@@ -89,7 +105,40 @@ impl AgentCaller {
             session: session_ref(record, here),
             agent: record.agent.clone(),
             title: record.title.clone(),
+            method: String::new(),
+            context_only_parent: None,
+            desk: None,
         }
+    }
+
+    /// Works out from the store whether this session is a context-only fork
+    /// still in its parent's folder, so the policy judges its calls on the
+    /// parent's clones as its own (D185, D187).
+    pub(crate) fn resolve_fork(mut self, store: &Store) -> Result<Self, StoreError> {
+        self.context_only_parent = context_only_parent(store, self.session.id.as_str())?;
+        self.desk = desk_access(store, self.session.id.as_str())?;
+        Ok(self)
+    }
+
+    /// The kind of session the policy judges this agent's calls by.
+    pub(crate) fn session_kind(&self) -> SessionKind {
+        if let Some(access) = self.desk {
+            return SessionKind::Desk(access);
+        }
+        match &self.context_only_parent {
+            Some(parent) => SessionKind::ContextOnlyFork {
+                parent: parent.clone(),
+            },
+            None => SessionKind::Ordinary,
+        }
+    }
+
+    /// The dotted operation id of the call being made (TP-16), such as
+    /// `channel.list` for `ChannelService/ListChannels`: the service's area,
+    /// then the method in snake case without the area's own word. Empty
+    /// outside a call.
+    pub(crate) fn operation(&self) -> String {
+        operation_of(&self.method)
     }
 
     pub(crate) fn actor(&self) -> pb::AgentActor {
@@ -106,6 +155,67 @@ impl AgentCaller {
             session_title: self.title.clone(),
         }
     }
+}
+
+/// The switches of `session`'s Desk row, if it has one (DK-4).
+fn desk_access(store: &Store, session: &str) -> Result<Option<DeskAccess>, StoreError> {
+    Ok(store.desk(session)?.map(|row| DeskAccess {
+        boards: row.boards,
+        channels_and_machines: row.channels_and_machines,
+    }))
+}
+
+/// The parent a session is a context-only fork of, while it still works in
+/// the parent's folder (D185, D187). A fork that has its own copy has its
+/// own folder by then, so it is no longer one.
+fn context_only_parent(store: &Store, session: &str) -> Result<Option<SessionId>, StoreError> {
+    let Some(origin) = store.fork_origin(session)? else {
+        return Ok(None);
+    };
+    if origin.kind != pb::ForkKind::ContextOnly as i32 {
+        return Ok(None);
+    }
+    let (Some(fork), Some(parent)) = (store.session(session)?, store.session(&origin.parent)?)
+    else {
+        return Ok(None);
+    };
+    Ok((fork.folder == parent.folder).then(|| SessionId::new(parent.id.as_str())))
+}
+
+/// The dotted operation id (TP-16) of the gRPC method at `path`
+/// (`/humata.v1.ChannelService/ListChannels` → `channel.list`).
+fn operation_of(path: &str) -> String {
+    let Some((service, method)) = path.trim_start_matches('/').split_once('/') else {
+        return String::new();
+    };
+    let service = service.rsplit('.').next().unwrap_or(service);
+    let area = snake(service.strip_suffix("Service").unwrap_or(service));
+    let words = snake(method);
+    let plural = format!("{area}s");
+    let verb: Vec<&str> = words
+        .split('_')
+        .filter(|word| *word != area && *word != plural)
+        .collect();
+    if verb.is_empty() {
+        return format!("{area}.{words}");
+    }
+    format!("{area}.{}", verb.join("_"))
+}
+
+/// `ListChannels` → `list_channels`.
+fn snake(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (at, letter) in name.chars().enumerate() {
+        if letter.is_ascii_uppercase() {
+            if at > 0 {
+                out.push('_');
+            }
+            out.push(letter.to_ascii_lowercase());
+        } else {
+            out.push(letter);
+        }
+    }
+    out
 }
 
 /// A session as the policy sees it. A session with no machine recorded
@@ -205,16 +315,22 @@ pub(crate) fn mark_peer(mut request: http::Request<Body>) -> http::Request<Body>
     request
 }
 
-/// Who `caller` is, as events and records name them. A user's CLI login
-/// says nothing of the machine it's on here, so its `via` is unset.
+/// How the user reached this daemon, as records and whoami both name it.
+/// Admin mode's token-less user is the app's authority (D41), so it is `App`.
+pub(crate) fn user_via(via: &UserVia) -> pb::user_actor::Via {
+    match via {
+        UserVia::App | UserVia::Host => pb::user_actor::Via::App,
+        UserVia::CliLogin { on_host: true, .. } => pb::user_actor::Via::CliOnHost,
+        UserVia::CliLogin { on_host: false, .. } => pb::user_actor::Via::CliOnMachine,
+    }
+}
+
+/// Who `caller` is, as events and records name them.
 pub(crate) fn actor(caller: &Caller) -> pb::Actor {
     use pb::actor::Actor;
     let actor = match caller {
         Caller::User(via) => Actor::User(pb::UserActor {
-            via: match via {
-                UserVia::App | UserVia::Host => pb::user_actor::Via::App,
-                UserVia::CliLogin { .. } => pb::user_actor::Via::Unspecified,
-            } as i32,
+            via: user_via(via) as i32,
             machine: None,
         }),
         Caller::Agent(agent) => Actor::Agent(pb::AgentActor {
@@ -322,6 +438,25 @@ struct Holder {
     /// Whose token it is: the session's agent, or an agent added to the
     /// session's tabs.
     identity: TabIdentity,
+}
+
+/// The variable a session tab's shell finds the daemon's socket in.
+const SOCKET_VAR: &str = "HUMATA_SOCKET";
+
+/// What a session tab's shell is started with: its session token, and the
+/// daemon's socket, so `humata` run there reaches this daemon even when it
+/// serves on a socket other than the default one.
+pub(crate) fn tab_env(token: String, socket: &Path) -> Vec<(OsString, OsString)> {
+    vec![
+        (OsString::from(humata2_mcp::TOKEN_VAR), OsString::from(token)),
+        // The tab's shell starts in another folder than the daemon did.
+        (
+            OsString::from(SOCKET_VAR),
+            std::path::absolute(socket)
+                .unwrap_or_else(|_| socket.to_owned())
+                .into_os_string(),
+        ),
+    ]
 }
 
 /// What a token minted for a tab says its holder is (SE-29, SEC-8).
@@ -503,6 +638,8 @@ pub(crate) struct Authenticate {
     /// Where the tabs and their holders' pids are, to place a token's use.
     store: Arc<Store>,
     processes: Arc<dyn Processes>,
+    /// The role of the daemon these calls reach: a CLI login's via depends on it.
+    role: pb::DaemonRole,
     /// What tells the peer link's connection from an ordinary one (D144);
     /// none where nothing relays.
     relay: Option<Arc<RelayAuth>>,
@@ -530,6 +667,7 @@ impl Authenticate {
         scripts: Arc<ScriptTokens>,
         store: Arc<Store>,
         processes: Arc<dyn Processes>,
+        role: pb::DaemonRole,
     ) -> Self {
         Self {
             identities,
@@ -537,6 +675,7 @@ impl Authenticate {
             scripts,
             store,
             processes,
+            role,
             relay: None,
             #[cfg(feature = "admin")]
             admin: None,
@@ -552,6 +691,7 @@ impl Authenticate {
         scripts: Arc<ScriptTokens>,
         store: Arc<Store>,
         processes: Arc<dyn Processes>,
+        role: pb::DaemonRole,
         who: Admin,
     ) -> Self {
         Self {
@@ -560,6 +700,7 @@ impl Authenticate {
             scripts,
             store,
             processes,
+            role,
             relay: None,
             admin: Some(who),
         }
@@ -613,6 +754,22 @@ impl Authenticate {
 }
 
 impl Authenticate {
+    /// The caller's session kind, worked out once when the caller is
+    /// identified (D185, D187). A store error refuses the call: guessing
+    /// Ordinary could let a fork write its parent's code under the wrong rule.
+    fn resolve_fork(&self, agent: AgentCaller) -> Result<AgentCaller, Status> {
+        let session = agent.session.id.to_string();
+        agent.resolve_fork(&self.store).map_err(|error| {
+            status::internal(
+                format!(
+                    "couldn't read where session {session} came from, so its access can't be checked: {}; try the call again, and if it keeps failing, restart humatad2",
+                    status::chain(&error)
+                ),
+                "",
+            )
+        })
+    }
+
     /// Whether the process at the other end may use `holder`'s token: it
     /// must be in the process tree of the holder of the tab the token was
     /// minted for (SEC-15). Fails closed: no pid, no holder, a tab that is
@@ -701,7 +858,17 @@ impl Authenticate {
                 Some(holder) => {
                     self.token_is_in_its_tree(&holder, pid)?;
                     match holder.identity {
-                        TabIdentity::Session => Some(Caller::Agent(holder.caller)),
+                        TabIdentity::Session => {
+                            let agent = AgentCaller {
+                                method: request
+                                    .extensions()
+                                    .get::<MethodPath>()
+                                    .map(|path| path.0.clone())
+                                    .unwrap_or_default(),
+                                ..holder.caller
+                            };
+                            Some(Caller::Agent(self.resolve_fork(agent)?))
+                        }
                         // An added agent may ask who it is; nothing else.
                         // It answers as a caller with no credential, so it
                         // learns why its other calls are refused.
@@ -741,7 +908,11 @@ impl Authenticate {
                     Err(_) => Err(crate::cli_login::LoginUnusable::Unknown),
                 };
                 match checked {
-                    Ok(login) => Some(Caller::User(UserVia::CliLogin { login })),
+                    Ok(login) => Some(Caller::User(UserVia::CliLogin {
+                        login,
+                        // Same rule as whoami always had: only a machine is not the host.
+                        on_host: self.role != pb::DaemonRole::Machine,
+                    })),
                     Err(_) if open => None,
                     Err(unusable) => return Err(status::login_unusable(&unusable)),
                 }
@@ -830,6 +1001,20 @@ mod tests {
     use super::*;
     use crate::terminal_session::tests::Fake;
 
+    #[test]
+    fn a_method_path_names_its_dotted_operation() {
+        for (path, operation) in [
+            ("/humata.v1.ChannelService/ListChannels", "channel.list"),
+            ("/humata.v1.SessionService/StartSession", "session.start"),
+            ("/humata.v1.InboxService/RequestAccess", "inbox.request_access"),
+            ("/humata.v1.TerminalService/OpenShellTab", "terminal.open_shell_tab"),
+            ("/humata.v1.ChannelService/GetChannel", "channel.get"),
+            ("not a path", ""),
+        ] {
+            assert_eq!(operation_of(path), operation, "{path}");
+        }
+    }
+
     fn record() -> SessionRecord {
         SessionRecord {
             id: "se_main".to_owned(),
@@ -878,6 +1063,7 @@ mod tests {
             scripts,
             store.clone(),
             Arc::new(processes()),
+            pb::DaemonRole::Host,
         );
         Rig {
             _dir: dir,
@@ -999,6 +1185,30 @@ mod tests {
     }
 
     #[test]
+    fn a_cli_login_call_is_recorded_as_cli_on_host() {
+        let caller = Caller::User(UserVia::CliLogin {
+            login: "login_1".to_owned(),
+            on_host: true,
+        });
+        let Some(pb::actor::Actor::User(user)) = actor(&caller).actor else {
+            panic!("expected a user actor");
+        };
+        assert_eq!(user.via(), pb::user_actor::Via::CliOnHost);
+    }
+
+    #[test]
+    fn a_cli_login_on_a_machine_is_recorded_as_cli_on_machine() {
+        let caller = Caller::User(UserVia::CliLogin {
+            login: "login_1".to_owned(),
+            on_host: false,
+        });
+        let Some(pb::actor::Actor::User(user)) = actor(&caller).actor else {
+            panic!("expected a user actor");
+        };
+        assert_eq!(user.via(), pb::user_actor::Via::CliOnMachine);
+    }
+
+    #[test]
     fn the_signed_app_outside_every_session_is_the_user() {
         let rig = rig();
         put_tab(&rig, "tab_main", 30);
@@ -1052,5 +1262,73 @@ mod tests {
             reloaded.find(&token).map(|holder| holder.identity),
             Some(TabIdentity::AddedAgent)
         );
+    }
+
+    fn in_folder(id: &str, folder: &str) -> SessionRecord {
+        SessionRecord {
+            id: id.to_owned(),
+            folder: PathBuf::from(folder),
+            ..record()
+        }
+    }
+
+    fn put_origin(rig: &Rig, fork: &str, parent: &str, kind: pb::ForkKind) {
+        rig.store
+            .put_fork_origin(&humata2_store::ForkOrigin {
+                session_id: fork.to_owned(),
+                parent: parent.to_owned(),
+                kind: kind as i32,
+                before_turn: 0,
+                created_unix_ms: 0,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_context_only_fork_in_its_parents_folder_is_judged_as_the_parents_fork() {
+        let rig = rig();
+        rig.store
+            .put_session(&in_folder("se_parent", "/work/parent"))
+            .unwrap();
+        let fork = in_folder("se_fork", "/work/parent");
+        rig.store.put_session(&fork).unwrap();
+        put_origin(&rig, "se_fork", "se_parent", pb::ForkKind::ContextOnly);
+
+        let caller = AgentCaller::of(&fork, "ma_here")
+            .resolve_fork(&rig.store)
+            .unwrap();
+
+        assert_eq!(
+            caller.session_kind(),
+            SessionKind::ContextOnlyFork {
+                parent: SessionId::new("se_parent"),
+            }
+        );
+    }
+
+    #[test]
+    fn a_fork_with_its_own_copy_or_code_is_an_ordinary_session() {
+        let rig = rig();
+        rig.store
+            .put_session(&in_folder("se_parent", "/work/parent"))
+            .unwrap();
+        // A context-only fork that has its own copy now has its own folder.
+        let copied = in_folder("se_copied", "/work/copied");
+        rig.store.put_session(&copied).unwrap();
+        put_origin(&rig, "se_copied", "se_parent", pb::ForkKind::ContextOnly);
+        // A fork that carries its own code from the start.
+        let own_code = in_folder("se_own_code", "/work/own");
+        rig.store.put_session(&own_code).unwrap();
+        put_origin(&rig, "se_own_code", "se_parent", pb::ForkKind::CodeAndContext);
+        // A session that was never forked.
+        let plain = in_folder("se_plain", "/work/parent");
+        rig.store.put_session(&plain).unwrap();
+
+        for session in [copied, own_code, plain] {
+            let caller = AgentCaller::of(&session, "ma_here")
+                .resolve_fork(&rig.store)
+                .unwrap();
+            assert_eq!(caller.session_kind(), SessionKind::Ordinary, "{}", session.id);
+        }
     }
 }

@@ -181,6 +181,8 @@ rust_test(
         "//apps/humata2/engine:engine_test_support",
         "//apps/humata2/features/app",
         "//apps/humata2/features/files",
+        "//apps/humata2/features/review",
+        "//apps/humata2/features/session",
         "//apps/humata2/testing/flow",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",
@@ -201,6 +203,44 @@ rust_test(
     srcs = ["tests/live_inbox.rs"],
     compile_data = ["Cargo.toml"],
     crate_root = "tests/live_inbox.rs",
+    data = [
+        "//apps/humata2/cli:humata",
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    # Starts a real daemon, holders and an agent, so it runs alone.
+    tags = ["exclusive"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/session",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+# BD-15 (frame 22): an agent's move of the person's item, answered from the
+# item's drawer, against a real humatad2.
+rust_test(
+    name = "live_boards_test",
+    size = "large",
+    srcs = ["tests/live_boards.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/live_boards.rs",
     data = [
         "//apps/humata2/cli:humata",
         "//apps/humata2/daemon/humatad:holder_for_clients",

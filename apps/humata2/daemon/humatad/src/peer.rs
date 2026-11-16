@@ -513,8 +513,12 @@ pub(crate) mod host_probe {
 
     use humata2_grpc::humata::v1 as pb;
 
-    /// How long one external command may run.
-    const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
+    /// How long one external command may run. The commands and the folder
+    /// sizes run side by side, so this is about how long a probe takes; it
+    /// stays under GetMachine's `PROBE_DEADLINE` (6 s) and leaves a loaded
+    /// machine time to start a shell, where a timed-out command would show
+    /// as not installed.
+    const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
     /// The most output kept from one command.
     const MAX_OUTPUT: u64 = 1 << 20;
     /// The agents the probe looks for: (agent id, command on PATH). The
@@ -532,7 +536,11 @@ pub(crate) mod host_probe {
             .iter()
             .filter_map(|(id, command)| locate(command, home.as_deref()).map(|path| (*id, path)))
             .collect();
-        let (git, gh, gh_version, linger, agent_versions) = std::thread::scope(|scope| {
+        let (git, gh, gh_version, linger, agent_versions, folder_bytes) = std::thread::scope(|scope| {
+            let folder_bytes = scope.spawn(|| match (&home, measure_storage) {
+                (Some(home), true) => folder_sizes(&home.join("Humata")),
+                _ => BTreeMap::new(),
+            });
             let git = scope.spawn(|| run("git", &["--version"], &[]));
             let gh_version = scope.spawn(|| run("gh", &["--version"], &[("GH_NO_UPDATE_NOTIFIER", "1")]));
             let agents: Vec<_> = installed
@@ -563,14 +571,11 @@ pub(crate) mod host_probe {
                 gh_version.join().ok().flatten().map(|output| version_number(&output)).unwrap_or_default(),
                 linger.join().ok().flatten(),
                 agent_versions,
+                folder_bytes.join().unwrap_or_default(),
             )
         });
         let (gh_user, gh_scopes) = gh.map(|output| gh_account(&output)).unwrap_or_default();
         let (disk_free_bytes, disk_total_bytes) = disk(home.as_deref().unwrap_or(Path::new("/")));
-        let folder_bytes = match (&home, measure_storage) {
-            (Some(home), true) => folder_sizes(&home.join("Humata")),
-            _ => BTreeMap::new(),
-        };
         pb::ProbeResponse {
             os: std::env::consts::OS.replace("macos", "darwin"),
             arch: std::env::consts::ARCH.to_owned(),

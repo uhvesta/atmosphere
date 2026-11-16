@@ -140,6 +140,9 @@ impl Checkout {
                 }
                 self.tree_of(rev)
             }
+            Base::Snapshot { n: None } if self.never_reviewed(context)? => {
+                self.base_tree(&unreviewed_base(), context)
+            }
             Base::Snapshot { n } => {
                 let snapshot = self.snapshot_ref(&context.session, *n)?;
                 self.tree_of(&snapshot)
@@ -295,14 +298,24 @@ impl Checkout {
     pub(crate) fn summary(
         &self,
         spec: &RepoSpec,
+        context: &BaseContext,
         trees: Trees,
         files: Vec<crate::model::FileSummary>,
     ) -> Result<RepoDiff, DiffError> {
+        let label = if spec.base == (Base::Snapshot { n: None }) && self.never_reviewed(context)? {
+            let since = RepoSpec {
+                base: unreviewed_base(),
+                ..spec.clone()
+            };
+            format!("not reviewed yet: {}", crate::diff::label(&since))
+        } else {
+            crate::diff::label(spec)
+        };
         Ok(RepoDiff {
             repo: spec.repo.clone(),
             branch: self.branch()?,
             head: self.head()?,
-            label: crate::diff::label(spec),
+            label,
             trees,
             files,
         })
@@ -333,5 +346,22 @@ fn absolute(base: &Path, path: &str) -> PathBuf {
         path.to_owned()
     } else {
         base.join(path)
+    }
+}
+
+/// Where "Since I last reviewed" starts in a repo never reviewed (D198).
+fn unreviewed_base() -> Base {
+    Base::MergeBase {
+        with: "origin/main".to_owned(),
+    }
+}
+
+impl Checkout {
+    /// Whether this session has no snapshot of the repo yet while
+    /// origin/main resolves, so "Since I last reviewed" shows everything
+    /// since origin/main (D198). Without origin/main the refusal stands.
+    fn never_reviewed(&self, context: &BaseContext) -> Result<bool, DiffError> {
+        Ok(self.snapshots_blocking(&context.session)?.is_empty()
+            && self.git.resolve("origin/main^{commit}")?.is_some())
     }
 }

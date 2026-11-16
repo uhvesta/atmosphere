@@ -1,6 +1,6 @@
 //! DaemonService: versions, role and who a connection is.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
@@ -23,7 +23,7 @@ pub(crate) struct Daemon {
     /// Says which codecs chunks sent here may use; none means raw only.
     compression: Option<Arc<Compression>>,
     /// What this start brought back, once it's done (PER-31).
-    last_start: Option<Arc<OnceLock<pb::LastStart>>>,
+    last_start: Option<Arc<crate::restart::Started>>,
     /// The socket's relay state (D144). None on the peer link, where
     /// BeginRelay and CompleteRelay answer "not built".
     relay: Option<Arc<RelayAuth>>,
@@ -41,7 +41,7 @@ impl Daemon {
     }
 
     /// Tells the user what this start brought back, once `last_start` is set.
-    pub(crate) fn started(self, last_start: Arc<OnceLock<pb::LastStart>>) -> Self {
+    pub(crate) fn started(self, last_start: Arc<crate::restart::Started>) -> Self {
         Self {
             last_start: Some(last_start),
             ..self
@@ -120,13 +120,10 @@ impl pb::daemon_service_server::DaemonService for Daemon {
         let (actor, channel) = match caller {
             // Actor has no peer case; the Mac knows it is on the peer link.
             Caller::Peer => return Ok(Response::new(no_actor)),
-            Caller::User(_) => {
-                let via = match self.role {
-                    pb::DaemonRole::Machine => pb::user_actor::Via::CliOnMachine,
-                    _ => pb::user_actor::Via::CliOnHost,
-                };
+            // Whoami says what identity resolved for this call, as the records do.
+            Caller::User(via) => {
                 let user = pb::actor::Actor::User(pb::UserActor {
-                    via: via as i32,
+                    via: identity::user_via(&via) as i32,
                     machine: Some(self.machine()),
                 });
                 (user, None)

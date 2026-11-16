@@ -105,7 +105,7 @@ impl Overlays {
                 "Copied into the channel's shared folder. The Desk keeps its copy.",
             ))
             .children(dialog.error.clone().map(|error| {
-                widgets::error_banner(ui, "desk-copy-error", error, AppAction::Escape)
+                widgets::error_banner_in(look, ui, "desk-copy-error", error, AppAction::Escape)
             }))
             .child(
                 row()

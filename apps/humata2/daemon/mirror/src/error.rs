@@ -43,4 +43,21 @@ pub enum MirrorError {
         "the page token doesn't belong to this search or session; ask again without a token to start from the first page"
     )]
     BadPageToken,
+
+    /// A backfill of a session's raw lines read past the offset its entries
+    /// already hold, so the lines couldn't be told apart as new or old.
+    /// Nothing was saved.
+    #[error(
+        "a backfill read a session's conversation to byte {read_to}, past the {at} bytes its mirror already holds; nothing was saved. The host must read a backfill only up to byte {at}: this is a bug in the host, so update it and report it if it repeats"
+    )]
+    BackfillPast { at: u64, read_to: u64 },
+
+    /// The request couldn't be written down to tag its page tokens.
+    #[error(
+        "couldn't encode this search or read to tag its pages; ask again, and if it keeps failing report it as a bug in the host with the request that failed"
+    )]
+    Request {
+        #[source]
+        source: serde_json::Error,
+    },
 }

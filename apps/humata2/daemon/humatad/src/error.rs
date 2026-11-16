@@ -67,10 +67,46 @@ pub(crate) enum DaemonError {
     AlreadyRunning { socket: PathBuf },
 
     #[error(
-        "the socket path {} is longer than the {max} bytes Unix sockets allow; pass a shorter --socket",
+        "the socket path {} is {len} bytes, but Unix sockets allow only {max}; pass a --socket in a shorter folder, or a symlink to one",
         socket.display()
     )]
-    SocketPathTooLong { socket: PathBuf, max: usize },
+    SocketPathTooLong {
+        socket: PathBuf,
+        len: usize,
+        max: usize,
+    },
+
+    #[error(
+        "a terminal's socket would be {} ({len} bytes), but Unix sockets allow only {max}, so no terminal could start in this state folder; pass a --state with a shorter path, or a symlink whose target has one (humatad2 resolves a symlink to its target before it measures, so a link to this long folder won't help)",
+        socket.display()
+    )]
+    HolderSocketPathTooLong {
+        socket: PathBuf,
+        len: usize,
+        max: usize,
+    },
+
+    #[error(
+        "another humatad2 is already running for the state folder {}, as pid {pid}; stop it first with `kill {pid}` (its terminals keep running in their holders), then start this one again",
+        state.display()
+    )]
+    StateInUse { state: PathBuf, pid: u32 },
+
+    #[error(
+        "another humatad2 is already running for the state folder {}; stop it first with `kill` on its pid (`pgrep -l humatad2` lists it; its terminals keep running in their holders), then start this one again",
+        state.display()
+    )]
+    StateInUseUnknownPid { state: PathBuf },
+
+    #[error(
+        "couldn't lock {}, which keeps a second humatad2 off the same state folder; check that the file belongs to you and that the disk supports file locks",
+        path.display()
+    )]
+    StateLock {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error(
         "couldn't listen on {}; check that its folder belongs to you",

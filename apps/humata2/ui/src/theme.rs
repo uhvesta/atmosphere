@@ -3,16 +3,17 @@
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{App, Rgba, rgb};
 
-/// Body text.
-pub const TEXT: u32 = 0xe6e7e9;
-/// Secondary text.
-pub const DIM: u32 = 0x9aa0a8;
-/// Hints.
-pub const FAINT: u32 = 0x6b7179;
-/// The accent, pressed.
-pub const ACCENT2: u32 = 0x3d7be0;
 /// Errors, removed, destructive.
 pub const RED: u32 = 0xf05d5d;
+
+/// Status: working.
+pub(crate) const GREEN: u32 = 0x30d158;
+/// Status: needs you.
+pub(crate) const ORANGE: u32 = 0xff9f0a;
+/// Status: failed or exited, as the frames draw it.
+pub(crate) const RED_STATUS: u32 = 0xff453a;
+/// Status: idle or offline.
+pub(crate) const GREY: u32 = 0x8e8e93;
 
 /// The top bar's height.
 pub const TOP_BAR: f32 = 52.0;

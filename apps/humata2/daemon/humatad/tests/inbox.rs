@@ -1148,3 +1148,42 @@ async fn after_a_restart_a_pending_deferred_request_is_withdrawn_and_an_ask_ahea
         pb::RequestState::Pending
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_listing_another_sessions_turns_waits_in_the_inbox_when_the_rule_asks() {
+    let fixture = Fixture::start().await;
+    fixture
+        .access()
+        .await
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: Some(pb::ChannelId {
+                value: CHANNEL.to_owned(),
+            }),
+            capability: pb::Capability::ChannelRead as i32,
+            decision: pb::Decision::Ask as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let deferred = pb::session_service_client::SessionServiceClient::new(fixture.daemon.channel().await)
+        .list_turns(fixture.as_agent(pb::ListTurnsRequest {
+            session: Some(session(OTHER)),
+            page: None,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(deferred.code(), Code::FailedPrecondition, "{deferred:?}");
+    let Some(pb::error::Kind::ApprovalPending(pending)) = error_of(&deferred).kind else {
+        panic!("expected approval_pending, got {deferred:?}");
+    };
+    let id = pending.request.unwrap();
+
+    fixture.answer(&id, approve()).await.unwrap();
+    let waited = fixture.wait(&id).await;
+
+    assert_eq!(waited.state(), pb::RequestState::Approved);
+    assert!(waited.error.is_none(), "{:?}", waited.error);
+    assert_eq!(waited.result_type, "humata.v1.ListTurnsResponse");
+    pb::ListTurnsResponse::decode(waited.result.as_slice()).unwrap();
+}

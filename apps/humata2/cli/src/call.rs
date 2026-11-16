@@ -26,6 +26,8 @@ pub enum Outcome {
     Planned,
     /// The command printed as it went (a file, a terminal, events).
     Printed,
+    /// The command ran a program in this terminal and exits as it did.
+    Exited(i32),
 }
 
 impl Done {
@@ -308,10 +310,15 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             .as_ref()
             .map(|id| id.value.clone())
             .unwrap_or_default();
-        let forever = self.flags.wait.is_none() && self.interactive();
-        if !forever {
-            return Err(CliError::Pending { request });
-        }
+        // `--wait N` waits N seconds even when the daemon answered pending
+        // at once, as RequestAccess and AskUser do; without it a terminal
+        // waits until answered and `--json` not at all.
+        let wait_seconds = match self.flags.wait {
+            Some(0) => return Err(CliError::Pending { request }),
+            Some(seconds) => seconds,
+            None if self.interactive() => u32::MAX,
+            None => return Err(CliError::Pending { request }),
+        };
         self.note(&format!(
             "Waiting for an answer (request {request}). Ctrl-C stops waiting; the request stays."
         ));
@@ -320,7 +327,7 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         let rpc = rpc::inbox::WAIT_FOR_ANSWER;
         let asked = pb::WaitForAnswerRequest {
             id: reply.id.clone(),
-            wait_seconds: u32::MAX,
+            wait_seconds,
         };
         let mut replies = self
             .daemon
@@ -337,6 +344,10 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             }
         }
         if reply.state == pending {
+            // A bounded wait that ran out leaves the request waiting.
+            if self.flags.wait.is_some() {
+                return Err(CliError::Pending { request });
+            }
             return Err(DaemonError::Ended { rpc: rpc.path }.into());
         }
         Ok(reply)

@@ -72,7 +72,9 @@ struct Inner {
     calls: Vec<Call>,
     /// The next search waits.
     hold_next: bool,
-    /// Opens the gates of the searches that wait.
+    /// The next read waits.
+    hold_read_next: bool,
+    /// Opens the gates of the searches and reads that wait.
     gates: Vec<watch::Sender<bool>>,
 }
 
@@ -85,6 +87,7 @@ impl Default for Inner {
             failure: None,
             calls: Vec::new(),
             hold_next: false,
+            hold_read_next: false,
             gates: Vec::new(),
         }
     }
@@ -115,9 +118,21 @@ impl Inner {
         if words.is_empty() {
             return Err(refused("This search", "it has no words; type something to look for"));
         }
+        // Each piece's place in its session, as `read` numbers them.
+        let mut per_session: HashMap<&SessionId, u64> = HashMap::new();
+        let seqs: Vec<u64> = self
+            .pieces
+            .iter()
+            .map(|piece| {
+                let next = per_session.entry(&piece.session).or_insert(0);
+                let seq = *next;
+                *next += 1;
+                seq
+            })
+            .collect();
         let mut seen = HashSet::new();
         let mut hits = Vec::new();
-        for piece in self.pieces.iter().rev() {
+        for (index, piece) in self.pieces.iter().enumerate().rev() {
             let text = piece.text.to_lowercase();
             if !words.iter().all(|word| text.contains(word.as_str())) {
                 continue;
@@ -137,6 +152,7 @@ impl Inner {
                 machine_name: about.machine_name.clone(),
                 agent: about.agent.clone(),
                 turn: piece.turn,
+                seq: seqs.get(index).copied().unwrap_or_default(),
                 snippet: piece.text.clone(),
                 as_of: about.as_of.clone(),
             });
@@ -262,10 +278,19 @@ impl FakeHistory {
         self.inner().hold_next = true;
     }
 
-    /// Lets every search that waits answer.
+    /// Makes the next read wait: its reply doesn't come until
+    /// [`release`](Self::release). It answers from what the fake held when
+    /// it was asked. Reads after that one answer at once, so a test can let
+    /// a newer read's reply overtake an older one's (D186).
+    pub fn hold_read(&self) {
+        self.inner().hold_read_next = true;
+    }
+
+    /// Lets every search and read that waits answer.
     pub fn release(&self) {
         let mut inner = self.inner();
         inner.hold_next = false;
+        inner.hold_read_next = false;
         for gate in inner.gates.drain(..) {
             gate.send_replace(true);
         }
@@ -299,6 +324,15 @@ impl History for FakeHistory {
             Some(error) => Err(error),
             None => inner.read(session, first_turn, last_turn),
         };
-        Box::pin(std::future::ready(result))
+        if !std::mem::take(&mut inner.hold_read_next) {
+            return Box::pin(std::future::ready(result));
+        }
+        let (gate, mut opened) = watch::channel(false);
+        inner.gates.push(gate);
+        Box::pin(async move {
+            // A gate dropped without opening answers too: nothing is left to wait for.
+            let _ = opened.wait_for(|open| *open).await;
+            result
+        })
     }
 }

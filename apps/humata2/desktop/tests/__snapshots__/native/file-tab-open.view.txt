@@ -91,8 +91,30 @@ Tab "client.rs" selected
   Button "Close tab"
 Button "New terminal"
 Document "api/src/client.rs"
-  text "use crate::ledger::{Entry, Ledger};"
-  text "pub fn insert_entry(ledger: &mut Ledger, entry: Entry) {"
-  text "    ledger.insert(entry.clone());"
-  text "    ledger.insert_legacy(entry);"
-  text "}"
+  RadioGroup "Show the changes as"
+    RadioButton "Inline" selected
+    RadioButton "Side by side"
+    RadioButton "Full file"
+  Button "Previous change"
+  Button "Next change"
+  #editor-count
+    text "1 change"
+  Code "api/src/client.rs"
+    Button "⋯ 39 unchanged lines — show"
+    #editor-line-1
+      Button "Comment on line 40"
+      text "    pub async fn post(&self, entry: Entry)"
+    #editor-line-2
+      text "        self.db.insert_legacy(&entry).await?;"
+    #editor-line-3
+      Button "Comment on line 41"
+      text "        let tx = self.db.begin().await?;"
+    #editor-line-4
+      Button "Comment on line 42"
+      text "        tx.insert_entry(&entry).await?;"
+    #editor-line-5
+      Button "Comment on line 43"
+      text "        tx.insert_legacy(&entry).await?;"
+    #editor-line-6
+      Button "Comment on line 44"
+      text "        tx.commit().await?;"

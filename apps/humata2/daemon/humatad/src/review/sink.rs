@@ -4,6 +4,7 @@
 //! terminals.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tonic::Status;
 
@@ -53,6 +54,9 @@ pub(crate) enum Arrived {
     Unknown,
 }
 
+/// The pause between a batch's paste and the return that sends it.
+const RETURN_PAUSE: Duration = Duration::from_millis(100);
+
 /// The real sink: the terminals' shared state.
 pub(crate) struct TerminalSink {
     core: Arc<Core>,
@@ -78,11 +82,21 @@ impl CommentSink for TerminalSink {
         Ok(Target { tab, holder })
     }
 
+    /// Types the paste, then presses return so the agent gets it as one
+    /// message (SM-9), each once for its own key. A return that fails
+    /// leaves the batch in doubt: sending it again presses only return.
     async fn paste(&self, target: &Target, key: &str, paste: &[u8]) -> Pasted {
-        match self.core.type_comments(&core_target(target), key, paste).await {
+        let target = core_target(target);
+        match self.core.type_comments(&target, key, paste).await {
+            CommentsTyped::Yes => {}
+            CommentsTyped::No(status) => return Pasted::NotTyped(status),
+            CommentsTyped::Unknown(status) => return Pasted::Unknown(status),
+        }
+        // An agent CLI reads a return right behind a paste as part of it.
+        tokio::time::sleep(RETURN_PAUSE).await;
+        match self.core.type_comments(&target, &format!("{key}/return"), b"\r").await {
             CommentsTyped::Yes => Pasted::Typed,
-            CommentsTyped::No(status) => Pasted::NotTyped(status),
-            CommentsTyped::Unknown(status) => Pasted::Unknown(status),
+            CommentsTyped::No(status) | CommentsTyped::Unknown(status) => Pasted::Unknown(status),
         }
     }
 

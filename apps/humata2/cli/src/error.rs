@@ -88,6 +88,9 @@ pub enum CliError {
     },
     #[error("humata stopped while decoding the chunk of the file at byte {offset}")]
     DecoderStopped { offset: u64 },
+    /// `humata opencode` couldn't run OpenCode; the message says how to fix it.
+    #[error(transparent)]
+    OpenCode(#[from] humata2_opencode::WrapperError),
 }
 
 /// A failure as printed: `error` in `--json`, message and fix on stderr.
@@ -182,6 +185,7 @@ impl CliError {
                 exit::INTERNAL,
                 "Run the command again. If it fails the same way, set compression to Off in the daemon's compression.toml and report it.".into(),
             ),
+            Self::OpenCode(_) => plain("tool_failed", exit::TOOL_FAILED, String::new()),
             Self::LoginNeedsHome => plain(
                 "invalid_field",
                 exit::USAGE,

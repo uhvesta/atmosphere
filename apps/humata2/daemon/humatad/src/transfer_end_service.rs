@@ -160,6 +160,12 @@ fn end_failure(error: EndError, machine: &str, field: &str, shown: &str) -> Stat
                 ),
             )
         }
+        // A machine further on (another machine's end, reached from here)
+        // is down: said as that machine being offline, so the caller waits.
+        EndError::Offline { machine } => crate::host_relay::RelayError::Offline {
+            machine: machine.clone(),
+        }
+        .into(),
         EndError::Io { .. } | EndError::Trash { .. } => {
             status::internal(format!("couldn't do that to {shown}: {}", status::chain(&error)), "")
         }

@@ -154,14 +154,17 @@ impl Default for Access {
 pub struct LastUsed {
     /// Orders sessions by use: the larger, the more recent.
     pub order: u64,
-    /// The time as people read it, such as "now", "Today 12:05" or "Nov 2".
+    /// The time as people read it: the live daemon's client says how long
+    /// ago, such as "now", "9m ago" or "2d ago"; the design fixture draws
+    /// clock and day labels such as "Today 12:05" or "Nov 2".
     pub label: String,
 }
 
 /// A closed Desk session's state (DK-11).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Closed {
-    /// The day it was closed, as people read it, such as "Nov 14".
+    /// When it was closed, as people read it: "3h ago" from the live
+    /// daemon's client, "Nov 14" in the design fixture.
     pub when: String,
     /// Days until its folder is deleted. `None` when the folder stays: it
     /// was kept, the person picked it, or unpushed work holds it.

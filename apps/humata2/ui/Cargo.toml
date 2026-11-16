@@ -17,6 +17,7 @@ humata2-board = { path = "../features/board" }
 humata2-clients = { path = "../clients" }
 humata2-desk = { path = "../features/desk" }
 humata2-files = { path = "../features/files" }
+humata2-find = { path = "../features/find" }
 humata2-hosts = { path = "../features/hosts" }
 humata2-inbox = { path = "../features/inbox" }
 humata2-markdown = { path = "../markdown" }

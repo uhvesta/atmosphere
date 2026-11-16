@@ -67,6 +67,11 @@ pub(crate) struct Record {
     pub files: Vec<PlanFile>,
     pub file_index: usize,
     pub offset: u64,
+    /// The part of the current file the destination has confirmed on disk
+    /// (after a sync); a resume falls back to it when the destination holds
+    /// less than `offset`.
+    #[serde(default)]
+    pub confirmed: u64,
     pub done_bytes: u64,
     pub total_bytes: u64,
     pub done_files: u32,

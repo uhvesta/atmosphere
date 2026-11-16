@@ -17,9 +17,11 @@ use humata2_app::{
     AppAction, AppState, Route,
     channel::{self, Action, History, Tab, View},
 };
+use humata2_clients::marks::Thing;
 use humata2_clients::model::{
     ActivityKind, Agent, Channel, ChannelId, ForkKind, Scope, SessionId, Status,
 };
+use humata2_find::PinnedAction;
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
 
@@ -35,6 +37,37 @@ fn inert_icon(id: &'static str, glyph: IconName, label: &'static str, look: Look
         .p_0()
         .child(chrome::icon(glyph, look.tertiary, 15.))
         .disabled(true)
+}
+/// The channel's Pin, in the same 15 pt box as the inert icons: a click pins or
+/// unpins the channel on the host, and the icon is accent-colored while pinned.
+fn pin_icon(ui: &Rc<Ui>, channel: &ChannelId, pinned: bool, look: Look) -> Button {
+    let ui = ui.clone();
+    let thing = Thing::Channel(channel.clone());
+    Button::new("channel-pin")
+        .accessibility_label(if pinned {
+            "Unpin this channel"
+        } else {
+            "Pin this channel"
+        })
+        .ghost()
+        .small()
+        .w(px(15.))
+        .h(px(15.))
+        .p_0()
+        .child(chrome::icon(
+            IconName::Pin,
+            if pinned { look.accent } else { look.tertiary },
+            15.,
+        ))
+        .on_click(move |_, _, cx| {
+            ui.send(
+                AppAction::Pinned(PinnedAction::Toggle {
+                    thing: thing.clone(),
+                    pin: !pinned,
+                }),
+                cx,
+            )
+        })
 }
 /// Accent text that acts as a button, as the frames draw table links.
 fn link(
@@ -102,6 +135,12 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
         channel.repos.join(", ")
     };
     let new_session = ui.clone();
+    let pinned = state
+        .pinned
+        .list
+        .items
+        .iter()
+        .any(|pin| pin.thing == Thing::Channel(channel.id.clone()));
     let has_sessions = state
         .workspace
         .sessions
@@ -137,12 +176,9 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
                             format!("{repos} · {machines}")
                         }),
                 )
-                // Frames 18 and 35 draw Pin and a "…" menu here. Neither has an action yet
-                // (a channel can't be pinned, and there is nothing for the menu to hold), so
-                // both are drawn disabled.
-                .when(has_sessions, |bar| {
-                    bar.child(inert_icon("channel-pin", IconName::Pin, "Pin this channel", look))
-                })
+                // Frames 18 and 35 draw Pin and a "…" menu here. Pin acts; the menu has no
+                // action yet (there is nothing for it to hold), so it is drawn disabled.
+                .when(has_sessions, |bar| bar.child(pin_icon(ui, &channel.id, pinned, look)))
                 .child(inert_icon(
                     "channel-more",
                     IconName::Ellipsis,
@@ -443,14 +479,14 @@ fn sessions(
                                         .ghost()
                                         .h(px(20.))
                                         .px_0()
-                                        .text_color(rgb(0xff453a))
+                                        .text_color(rgb(crate::theme::RED_STATUS))
                                         .child(
                                             row()
                                                 .gap(px(2.))
                                                 .text_size(px(11.))
                                                 .child(chrome::icon(
                                                     IconName::Inbox,
-                                                    0xff453a,
+                                                    crate::theme::RED_STATUS,
                                                     12.,
                                                 ))
                                                 .child(r.pending.to_string()),
@@ -485,7 +521,7 @@ fn sessions(
                                 .w(px(110.))
                                 .flex_shrink_0()
                                 .text_color(rgb(if s.status == Status::NeedsYou {
-                                    0xff9f0a
+                                    crate::theme::ORANGE
                                 } else {
                                     look.secondary
                                 }))
@@ -557,11 +593,11 @@ fn activity(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> Any
                         .enumerate()
                         .map(|(i, e)| {
                             let (icon, color) = match e.kind {
-                                ActivityKind::Inbox => (IconName::Inbox, 0xff9f0a),
+                                ActivityKind::Inbox => (IconName::Inbox, crate::theme::ORANGE),
                                 ActivityKind::Fork => (IconName::GitFork, look.accent),
-                                ActivityKind::Turn => (IconName::Check, 0x30d158),
+                                ActivityKind::Turn => (IconName::Check, crate::theme::GREEN),
                                 ActivityKind::Item => (IconName::FileText, look.secondary),
-                                ActivityKind::Offline => (IconName::WifiOff, 0x8e8e93),
+                                ActivityKind::Offline => (IconName::WifiOff, crate::theme::GREY),
                                 ActivityKind::PullRequest => (IconName::GitPullRequest, 0xbf5af2),
                             };
                             row()
@@ -731,7 +767,7 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                                                 .text_color(rgb(if machine.online {
                                                     look.secondary
                                                 } else {
-                                                    0x8e8e93
+                                                    crate::theme::GREY
                                                 }))
                                                 .child(format!(
                                                     "{count} session{}{}",
@@ -886,7 +922,7 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                                 .py(px(12.))
                                 .border_b_1()
                                 .border_color(rgb(look.line))
-                                .child(chrome::icon(IconName::Check, 0x30d158, 15.))
+                                .child(chrome::icon(IconName::Check, crate::theme::GREEN, 15.))
                                 .child(
                                     div()
                                         .flex_1()

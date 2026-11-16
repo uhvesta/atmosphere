@@ -63,12 +63,14 @@ session_move
 session_note
 session_own_copy
 session_push
+session_read
 session_rebuild
 session_rename
 session_restore
 session_start
 session_stop
 session_type
+sessions_search
 skills_sync
 topology_get
 trash_restore

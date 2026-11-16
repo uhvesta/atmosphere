@@ -31,30 +31,32 @@ impl Overlays {
         sync(&self.repos, &sheet_state.repos, window, cx);
         sheet("new-channel", "New channel", look)
             .test_support()
-            .child(widgets::title("New channel"))
-            .child(field(
+            .child(widgets::title_in(look, "New channel"))
+            .child(field(look,
                 "Name",
                 Input::new(&self.name).aria_label("Channel name"),
             ))
-            .child(field(
+            .child(field(look,
                 "Repositories, separated by commas",
                 Input::new(&self.repos).aria_label("Repositories"),
             ))
             .children(sheet_state.error.clone().map(|error| {
-                widgets::error_banner(ui, "new-channel-error", error, AppAction::Escape)
+                widgets::error_banner_in(look, ui, "new-channel-error", error, AppAction::Escape)
             }))
             .child(
                 row()
                     .justify_end()
                     .gap_2()
-                    .child(widgets::ghost(
+                    .child(widgets::ghost_in(
+                        look,
                         ui,
                         "new-channel-cancel",
                         "Cancel",
                         AppAction::Escape,
                     ))
                     .child(
-                        widgets::primary(
+                        widgets::primary_in(
+                            look,
                             ui,
                             "new-channel-create",
                             if sheet_state.creating {
@@ -109,19 +111,21 @@ impl Overlays {
         });
         sheet("new-channel-setup", "Creating channel", look)
             .test_support()
-            .child(widgets::title(format!("Creating # {}", setup.name)))
+            .child(widgets::title_in(look, format!("Creating # {}", setup.name)))
             .children(groups)
             .children(sheet_state.error.clone().map(|error| {
-                widgets::error_banner(ui, "new-channel-error", error, AppAction::Escape)
+                widgets::error_banner_in(look, ui, "new-channel-error", error, AppAction::Escape)
             }))
             .child(
                 row()
                     .gap_2()
-                    .child(widgets::faint(
+                    .child(widgets::faint_in(
+                        look,
                         "The channel opens when every clone is done.",
                     ))
                     .child(div().flex_1())
-                    .child(widgets::ghost(
+                    .child(widgets::ghost_in(
+                        look,
                         ui,
                         "new-channel-setup-cancel",
                         "Cancel",
@@ -159,7 +163,7 @@ fn made_row(look: Look) -> Div {
         .gap(px(8.))
         .pl(px(8.))
         .child(chrome::icon(IconName::Check, GREEN, 12.))
-        .child(widgets::dim("Folders made").text_color(rgb(look.secondary)))
+        .child(widgets::dim_in(look, "Folders made").text_color(rgb(look.secondary)))
 }
 
 fn bar(look: Look, percent: u8, color: u32) -> Div {

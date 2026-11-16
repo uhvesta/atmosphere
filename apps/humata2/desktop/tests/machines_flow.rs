@@ -600,7 +600,8 @@ fn an_offline_machine_keeps_its_last_detail_and_reconnects() {
     assert_eq!(app.ui.read(|s| s.machine_page.detail.clone()), Some(detail));
     assert!(app.ui.read(|s| s.machine_page.load_error.is_some()));
 
-    // Offline, "Reconnect now" is the link-down row's button alone (HO-5).
+    // Offline, "Reconnect now" is the link-down row's item alone (HO-5), in the "…" menu.
+    app.click(Role::Button, "More");
     app.click(Role::Button, "Reconnect now");
     assert!(app.ui.read(|s| s.workspace.machine(&id("gpu-box")).is_some_and(|m| m.online)));
 }
@@ -614,6 +615,7 @@ fn sync_skills_shows_the_preview_and_needs_a_confirm() {
         ..SkillsPreview::default()
     }));
     open_devbox(&mut app);
+    app.click(Role::Button, "More");
     app.click(Role::Button, "Sync skills");
     assert!(app.fake.calls().contains(&Call::SkillsPreview(id("devbox-1"))));
     assert!(app.shows(Role::Dialog, "Sync skills"));
@@ -630,6 +632,7 @@ fn sync_skills_shows_the_preview_and_needs_a_confirm() {
 fn cancelling_the_skills_preview_syncs_nothing() {
     let mut app = App::new();
     open_devbox(&mut app);
+    app.click(Role::Button, "More");
     app.click(Role::Button, "Sync skills");
     app.click(Role::Button, "Cancel");
     assert!(!app.shows(Role::Dialog, "Sync skills"));

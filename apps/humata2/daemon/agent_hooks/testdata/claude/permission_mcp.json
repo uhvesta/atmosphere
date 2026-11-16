@@ -1,0 +1,1 @@
+{"session_id":"abc123","transcript_path":"/home/u/.claude/projects/p/abc123.jsonl","cwd":"/work/api","permission_mode":"default","hook_event_name":"PermissionRequest","tool_name":"mcp__github__create_issue","tool_input":{"title":"Login fails","body":"Steps…"},"mcp_server":{"name":"github"}}

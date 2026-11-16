@@ -153,6 +153,21 @@ fn rule(capability: &str, label: &str, setting: RuleSetting) -> ReachRule {
 
 #[test]
 fn machine_page_reference_image() {
+    let mut app = machine_page();
+    app.snapshot("59-machine-page");
+}
+
+/// The machine page with its "…" menu open.
+#[test]
+fn machine_menu_open_reference_image() {
+    let mut app = machine_page();
+    app.click("machine-menu");
+    assert!(app.contains("machine-sync-skills"));
+    app.snapshot("machine-menu-open");
+}
+
+/// Devbox-1's page, in light mode, with nothing open.
+fn machine_page() -> App {
     let mut app = App::new(fixture::design());
     app.fakes.machines.set_detail(Ok(MachineDetail {
         machine: MachineId::new("devbox-1"),
@@ -190,5 +205,5 @@ fn machine_page_reference_image() {
     app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
     app.send(AppAction::Switch(Route::Machine(MachineId::new("devbox-1"))));
     assert!(app.contains("machine-overview"));
-    app.snapshot("59-machine-page");
+    app
 }

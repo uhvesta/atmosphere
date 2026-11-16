@@ -9,7 +9,7 @@
 //! the trash is used and once at start ([`Bin::sweep`]), with no timer.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,8 +20,10 @@ use pb::invalid_field::Problem;
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
+use crate::files::TrashForward;
 use crate::grant_target;
 use crate::guard::{self, Guard};
+use crate::host_relay::Links;
 use crate::identity::{self, Caller};
 use crate::status;
 
@@ -207,24 +209,42 @@ pub(crate) struct TrashSvc {
     bin: Arc<Bin>,
     guard: Arc<Guard>,
     machine: String,
+    /// Calls that name another machine's trash (FM-9, FM-12).
+    forward: TrashForward,
     plans: Mutex<HashMap<String, (EmptyPlan, Instant)>>,
     restored: Answers<pb::EntityRef>,
     emptied: Answers<u64>,
+    /// The state a restored channel's records go back to (D194).
+    store: std::sync::OnceLock<Arc<humata2_store::Store>>,
 }
 
 impl TrashSvc {
     pub(crate) fn new(bin: Arc<Bin>, guard: Arc<Guard>, machine: String) -> Self {
         Self {
+            forward: TrashForward::new(guard.clone(), machine.clone()),
             bin,
             guard,
             machine,
             plans: Mutex::new(HashMap::new()),
             restored: Answers::new(),
             emptied: Answers::new(),
+            store: std::sync::OnceLock::new(),
         }
     }
 
-    /// The trash of this machine; another machine's isn't relayed yet.
+    /// Lets a restored channel's records come back (D194).
+    pub(crate) fn use_store(&self, store: Arc<humata2_store::Store>) {
+        let _ = self.store.set(store);
+    }
+
+    /// The machines' links (the host only; without them every other
+    /// machine's trash is offline).
+    pub(crate) fn use_links(&self, links: Links) {
+        self.forward.use_links(links);
+    }
+
+    /// The trash of this machine; another machine's is forwarded before
+    /// a handler gets here.
     fn own(&self, machine: Option<&pb::MachineId>, field: &str) -> Result<(), Status> {
         match machine.filter(|machine| !machine.value.is_empty()) {
             Some(machine) if machine.value != self.machine => Err(status::invalid_field(
@@ -294,6 +314,33 @@ fn after(token: &str, item: &TrashItem) -> bool {
     (item.deleted_unix_ms, item.id.as_str()) > (ms, id)
 }
 
+/// Puts the item back where it was; a channel's folder goes to the first
+/// free `-2`, `-3`, ... of its old place when something took it (D194).
+fn restore_at_free_place(
+    trash: &Trash,
+    id: &str,
+    channels: Option<&humata2_store::Store>,
+) -> Result<PathBuf, TrashError> {
+    // A file trashed inside a channel names the channel too; only a
+    // deleted channel's own folder carries its records and may need a new
+    // place.
+    let Some(store) = channels.filter(|_| {
+        trash
+            .holds(id, Path::new(humata2_store::SIDE_FILE))
+            .unwrap_or(false)
+    }) else {
+        return trash.restore(id);
+    };
+    let original = trash
+        .list()?
+        .into_iter()
+        .find(|item| item.id == id)
+        .map(|item| item.original)
+        .ok_or_else(|| TrashError::NoSuchItem { id: id.to_owned() })?;
+    let place = crate::channel_service::pick_place(store, &original).unwrap_or(original);
+    trash.restore_to(id, &place)
+}
+
 /// A trash library failure the caller can't fix from the request.
 fn trash_failure(error: &TrashError, doing: &str) -> Status {
     status::internal(
@@ -324,6 +371,9 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         &self,
         request: Request<pb::ListTrashRequest>,
     ) -> Result<Response<pb::ListTrashResponse>, Status> {
+        if self.forward.elsewhere(request.get_ref().machine.as_ref()).is_some() {
+            return self.forward.list_trash(request).await;
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         self.own(request.machine.as_ref(), "machine")?;
@@ -365,6 +415,9 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         &self,
         request: Request<pb::RestoreFromTrashRequest>,
     ) -> Result<Response<pb::RestoreFromTrashResponse>, Status> {
+        if self.forward.elsewhere_item(request.get_ref().id.as_ref()).is_some() {
+            return self.forward.restore_from_trash(request).await;
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let id = item_id(request.id)?;
@@ -410,9 +463,16 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         )?;
         let bin = self.bin.clone();
         let wanted = id.clone();
-        blocking(move || {
+        let channel_store = match &was {
+            Some(pb::EntityRef {
+                entity: Some(pb::entity_ref::Entity::Channel(_)),
+            }) => self.store.get().cloned(),
+            _ => None,
+        };
+        let restoring = channel_store.clone();
+        let placed = blocking(move || {
             let trash = bin.get()?;
-            trash.restore(&wanted).map_err(|error| match error {
+            restore_at_free_place(&trash, &wanted, channel_store.as_deref()).map_err(|error| match error {
                 TrashError::NoSuchItem { id } => no_item(&id),
                 TrashError::Occupied { path } => status::failure(
                     Code::AlreadyExists,
@@ -433,6 +493,22 @@ impl pb::trash_service_server::TrashService for TrashSvc {
             })
         })
         .await??;
+        // A file or folder trashed inside a channel names that channel too;
+        // only a deleted channel's own folder carries its records' side file.
+        let restoring = restoring.filter(|_| placed.join(humata2_store::SIDE_FILE).is_file());
+        if let Some(store) = restoring {
+            blocking(move || crate::channel_service::finish_restore(&store, &placed))
+                .await?
+                .map_err(|error| {
+                    status::internal(
+                        format!(
+                            "the channel's folder is back, but its records were not: {}. Restart Humata on this machine to finish bringing the channel back; the folder is safe",
+                            status::chain(&error)
+                        ),
+                        "",
+                    )
+                })?;
+        }
         let restored = was.unwrap_or_default();
         if let Some(key) = key {
             self.restored.put(key, restored.clone());
@@ -447,6 +523,9 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         &self,
         request: Request<pb::PlanEmptyTrashRequest>,
     ) -> Result<Response<pb::EmptyTrashPlan>, Status> {
+        if self.forward.elsewhere(request.get_ref().machine.as_ref()).is_some() {
+            return self.forward.plan_empty_trash(request).await;
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         self.own(request.machine.as_ref(), "machine")?;
@@ -479,6 +558,9 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         &self,
         request: Request<pb::EmptyTrashRequest>,
     ) -> Result<Response<pb::EmptyTrashResponse>, Status> {
+        if self.forward.elsewhere(request.get_ref().machine.as_ref()).is_some() {
+            return self.forward.empty_trash(request).await;
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         self.own(request.machine.as_ref(), "machine")?;

@@ -58,9 +58,7 @@ not_built! {
     ProviderService => provider_service_server,
     SkillsService => skills_service_server,
     BridgeService => bridge_service_server,
-    SettingsService => settings_service_server,
     AgentService => agent_service_server,
-    MarkService => mark_service_server,
     ViewStateService => view_state_service_server,
     PullRequestReviewService => pull_request_review_service_server,
 }
@@ -71,9 +69,7 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(AuditService)
         .add_service(ActivityService)
         .add_service(BridgeService)
-        .add_service(SettingsService)
         .add_service(AgentService)
-        .add_service(MarkService)
         .add_service(ViewStateService)
         .add_service(PullRequestReviewService)
 }

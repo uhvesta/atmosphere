@@ -359,7 +359,7 @@ impl pb::cli_auth_service_server::CliAuthService for CliAuth {
         let caller = identity::caller(&request)?;
         let id = request.into_inner().id;
         let id = match (caller, id.is_empty()) {
-            (Caller::User(UserVia::CliLogin { login }), true) => login,
+            (Caller::User(UserVia::CliLogin { login, .. }), true) => login,
             (Caller::User(_), true) => return Err(status::missing("id")),
             (Caller::User(_), false) => id,
             (Caller::Agent(_) | Caller::Script(_), _) => {

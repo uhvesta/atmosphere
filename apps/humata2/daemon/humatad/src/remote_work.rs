@@ -568,6 +568,12 @@ impl RemoteWork {
         Ok(())
     }
 
+    /// The typed clients on `machine`'s live link, for the host's own calls
+    /// to it that no relay of a user's call covers (SL-4's rebuild).
+    pub(crate) fn relayed(&self, machine: &str) -> Result<crate::host_relay::Relayed, RemoteError> {
+        Ok(self.inner.links.relayed(machine)?)
+    }
+
     /// Starts session `session` on `machine` with the id the host minted. The
     /// caller wrote the host's record first (SL-1, PER-11). Answers as the
     /// local path does once the machine has recorded the session (D121); the
@@ -631,6 +637,31 @@ impl RemoteWork {
             .await
             .map_err(|source| call_failed(machine, "stop the session", source))?;
         Ok(stopped.into_inner())
+    }
+
+    /// Renames session `session` on `machine`, and its branch there too when
+    /// `rename_branch` (FC-17, D196), and returns it as the machine shows it.
+    /// The machine refuses a branch that was pushed.
+    pub(crate) async fn rename_session_on(
+        &self,
+        machine: &str,
+        session: &str,
+        title: &str,
+        rename_branch: bool,
+    ) -> Result<pb::Session, RemoteError> {
+        let relayed = self.inner.links.relayed(machine)?;
+        let request = pb::RenameSessionRequest {
+            id: Some(pb::SessionId { value: session.to_owned() }),
+            title: title.to_owned(),
+            rename_branch,
+            ..Default::default()
+        };
+        let renamed = relayed
+            .session()
+            .rename_session(assigned(request, None)?)
+            .await
+            .map_err(|source| call_failed(machine, "rename the session's branch", source))?;
+        Ok(renamed.into_inner())
     }
 
     /// Resumes session `session` on `machine` (D123, PER-15). The machine's
@@ -1007,6 +1038,19 @@ impl RemoteWork {
                 status::chain(&error)
             );
         }
+    }
+
+    /// `session` moved off `machine` (MV-2): what the machine last reported
+    /// of it is forgotten, in memory and in the host's state.
+    pub(crate) async fn forget_session(&self, machine: &str, session: &str) {
+        {
+            let mut views = lock(&self.inner.views);
+            views.views.remove(&(machine.to_owned(), session.to_owned()));
+            if let Some(awaiting) = views.awaiting.get_mut(machine) {
+                awaiting.remove(session);
+            }
+        }
+        self.forget(machine, session).await;
     }
 
     async fn forget(&self, machine: &str, session: &str) {
@@ -1615,6 +1659,12 @@ mod tests {
         }
 
         async fn report_turn(&self, _: Request<pb::ReportTurnRequest>) -> Result<Response<pb::ReportTurnResponse>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
+
+        type HookStream = ReceiverStream<Result<pb::HookReply, Status>>;
+
+        async fn hook(&self, _: Request<pb::HookRequest>) -> Result<Response<Self::HookStream>, Status> {
             Err(Status::unimplemented("not used"))
         }
     }

@@ -2,16 +2,21 @@
 //! `Daemon` and `Terminals` traits over gRPC to a `humatad2` on its Unix
 //! socket.
 
+mod boards;
 mod comments;
 mod connection;
 mod daemon;
 mod desk;
+mod diff;
 mod events;
 mod file_manager;
+pub mod history;
 mod inbox;
 mod machines;
+pub mod marks;
 mod map;
 mod recorded;
+mod settings;
 mod setup;
 mod terminals;
 

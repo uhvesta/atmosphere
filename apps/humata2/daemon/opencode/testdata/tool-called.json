@@ -1,0 +1,22 @@
+{
+    "id": "evt_1e3ac9e8e001U1PT31mtdssG2n",
+    "created": 1794821103246,
+    "type": "session.tool.called",
+    "location": {
+        "directory": "/work/proj"
+    },
+    "data": {
+        "sessionID": "ses_e1c537029ffejTdBfVrnGEG0jm",
+        "assistantMessageID": "msg_1e3ac9288001CSUFqiz4xfCgXF",
+        "id": "call_6748772b22274f56a8321a7d",
+        "input": {
+            "command": "echo hi"
+        },
+        "executed": false
+    },
+    "durable": {
+        "aggregateID": "ses_e1c537029ffejTdBfVrnGEG0jm",
+        "seq": 11,
+        "version": 1
+    }
+}

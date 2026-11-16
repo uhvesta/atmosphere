@@ -84,6 +84,39 @@ pub(crate) fn starter(store: &Arc<Store>, revive: Revive, sessions: Sessions) ->
     }
 }
 
+/// What this start brought back, set once when it's done. Waiters wake
+/// when it is set: nothing looks again on a timer.
+#[derive(Default)]
+pub(crate) struct Started {
+    done: OnceLock<pb::LastStart>,
+    set: tokio::sync::Notify,
+}
+
+impl Started {
+    /// What the start brought back, once it's done.
+    pub(crate) fn get(&self) -> Option<&pb::LastStart> {
+        self.done.get()
+    }
+
+    fn set(&self, start: pb::LastStart) {
+        let _ = self.done.set(start);
+        self.set.notify_waiters();
+    }
+
+    /// Returns once the start is done; at once if it already is.
+    pub(crate) async fn wait(&self) {
+        loop {
+            let woken = self.set.notified();
+            tokio::pin!(woken);
+            woken.as_mut().enable();
+            if self.done.get().is_some() {
+                return;
+            }
+            woken.await;
+        }
+    }
+}
+
 /// Brings back what the last run left while the daemon serves: each agent
 /// may take [`RESUME_TIMEOUT`] to resume, longer than a bridge waits for
 /// the daemon to listen. Then finishes or undoes the channel setups and
@@ -95,15 +128,24 @@ pub(crate) fn in_background(
     starter: Starter,
     restored: Option<Restored>,
     tell: crate::session_service::Tell,
-) -> Arc<OnceLock<pb::LastStart>> {
-    let done = Arc::new(OnceLock::new());
+    socket: PathBuf,
+) -> Arc<Started> {
+    let done = Arc::new(Started::default());
     let setting = done.clone();
     // Read now, before anything is served, so a channel or session a call
     // makes while this runs is left to that call.
     let left = Leftovers::read(&store);
     tokio::spawn(async move {
-        let start = bring_back(&store, &identities, &starter, restored.as_ref(), left).await;
-        let _ = setting.set(start);
+        let start = bring_back(
+            &store,
+            &identities,
+            &starter,
+            restored.as_ref(),
+            left,
+            socket,
+        )
+        .await;
+        setting.set(start);
         crate::session_service::after_restart(tell).await;
     });
     done
@@ -117,8 +159,9 @@ async fn bring_back(
     starter: &Starter,
     restored: Option<&Restored>,
     left: Result<Leftovers, StoreError>,
+    socket: PathBuf,
 ) -> pb::LastStart {
-    let tokens = Tokens::new(store.clone(), identities.clone());
+    let tokens = Tokens::new(store.clone(), identities.clone(), socket);
     let env = |tab: &TabRecord| tokens.env(tab);
     let mut start = pb::LastStart {
         started_at: Some(crate::attach::now()),
@@ -265,14 +308,17 @@ fn describe(reconciled: Reconciled, start: &mut pb::LastStart) {
 pub(crate) struct Tokens {
     store: Arc<Store>,
     identities: Arc<Identities>,
+    /// The socket this daemon serves on, given to session tabs.
+    socket: PathBuf,
     minted: Mutex<HashMap<String, Vec<(OsString, OsString)>>>,
 }
 
 impl Tokens {
-    pub(crate) fn new(store: Arc<Store>, identities: Arc<Identities>) -> Self {
+    pub(crate) fn new(store: Arc<Store>, identities: Arc<Identities>, socket: PathBuf) -> Self {
         Self {
             store,
             identities,
+            socket,
             minted: Mutex::new(HashMap::new()),
         }
     }
@@ -309,10 +355,7 @@ impl Tokens {
             .identities
             .mint_as(&tab.id, &record, tab_identity(tab.kind))
         {
-            Ok(token) => vec![(
-                OsString::from(humata2_mcp::TOKEN_VAR),
-                OsString::from(token),
-            )],
+            Ok(token) => crate::identity::tab_env(token, &self.socket),
             Err(error) => {
                 crate::log::say!(
                     "humatad2: couldn't save a token for tab {}, so its agent can't reach Humata until the tab is restarted: {}",
@@ -382,7 +425,32 @@ fn pretty_name(text: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::pretty_name;
+    use std::sync::Arc;
+
+    use humata2_grpc::humata::v1 as pb;
+
+    use super::{Started, pretty_name};
+
+    /// A recovery that waits for the start runs once the start is done,
+    /// woken by it: paused time never moves, so no timer ran.
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_for_the_start_ends_when_the_start_does_with_no_timer() {
+        let started = Arc::new(Started::default());
+        let before = tokio::time::Instant::now();
+        let waiter = tokio::spawn({
+            let started = started.clone();
+            async move { started.wait().await }
+        });
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!waiter.is_finished(), "nothing runs before the start is done");
+
+        started.set(pb::LastStart::default());
+        waiter.await.unwrap();
+        started.wait().await;
+        assert_eq!(tokio::time::Instant::now(), before, "no timer ran");
+    }
 
     #[test]
     fn an_os_release_names_its_distribution() {

@@ -25,6 +25,7 @@ members = [
     "apps/humata2/daemon/review_diff",
     "apps/humata2/daemon/mirror",
     "apps/humata2/daemon/marks",
+    "apps/humata2/daemon/opencode",
     "apps/humata2/cli",
     "apps/humata2/engine",
     "apps/humata2/ui-prototype",
@@ -39,8 +40,8 @@ members = [
     "apps/humata2/features/app",
     "apps/humata2/features/board",
     "apps/humata2/features/desk",
-    "apps/humata2/features/files",
     "apps/humata2/features/find",
+    "apps/humata2/features/files",
     "apps/humata2/features/hosts",
     "apps/humata2/features/inbox",
     "apps/humata2/features/palette",
@@ -93,10 +94,13 @@ console_error_panic_hook = "0.1.7"
 # splices its nested Cargo workspace into this workspace for feature resolution.
 gpui-pre-apple = { version = "=0.3.12", features = ["font-kit", "test-support"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-# Humata 2's peer link proves both ends with the enrollment key.
 png = "0.18.1"
+# Humata 2's peer link proves both ends with the enrollment key.
 hmac = "0.13.0"
 # Humata 2 tests drive the daemon over a Unix socket with these.
+# Humata 2's OpenCode link talks to the agent's own loopback server (D201).
+http-body-util = "0.1.5"
+hyper = { version = "1.12.0", features = ["client", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 plist = "1.10.3"
 prost = "0.14.5"

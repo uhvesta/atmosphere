@@ -20,11 +20,14 @@ use tonic::{Request, Response, Status, Streaming};
 use crate::attach::{self, AttachStream};
 use crate::channel_service::{Gated, answer_gated, gate};
 use crate::compression::Compression;
+use crate::desk_service;
+use crate::error::DaemonError;
 use crate::guard::Guard;
 use crate::holders::{Holders, TypeFailed};
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
 use crate::remote_terminal::RemoteTerminal;
+use crate::serve::SOCKET_PATH_MAX;
 use crate::{paste, status};
 
 /// How long a holder gets to answer a first connection before a tab is
@@ -40,6 +43,29 @@ const INITIAL_ROWS: u16 = 24;
 
 /// How long a tab's shell gets to take text typed into it.
 const TYPE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Where a tab's holder listens: `holders/` and 16 hex digits of the tab's
+/// id, so the path stays under the socket limit for an ordinary state
+/// folder. The digits are random, so two tabs don't share one.
+pub(crate) fn holder_socket(holders: &Path, tab: uuid::Uuid) -> PathBuf {
+    holders.join(format!("{:016x}.sock", tab.as_u128() >> 64))
+}
+
+/// Refuses a state folder whose holder sockets would be longer than Unix
+/// sockets allow: every tab's would be as long, so no terminal could start.
+pub(crate) fn check_holder_sockets(holders: &Path) -> Result<(), DaemonError> {
+    // Every name has the same length, so the nil id's stands for them all.
+    let socket = holder_socket(holders, uuid::Uuid::nil());
+    let len = socket.as_os_str().len();
+    if len > SOCKET_PATH_MAX {
+        return Err(DaemonError::HolderSocketPathTooLong {
+            socket,
+            len,
+            max: SOCKET_PATH_MAX,
+        });
+    }
+    Ok(())
+}
 
 pub(crate) struct TerminalsConfig {
     pub(crate) store: Arc<Store>,
@@ -65,6 +91,8 @@ pub(crate) struct TerminalsConfig {
     /// The host's way to the terminals of other machines (D139); none on a machine's
     /// own daemon, where every session is here.
     pub(crate) remote: Option<RemoteTerminal>,
+    /// The socket this daemon serves on, given to session tabs.
+    pub(crate) socket: PathBuf,
 }
 
 /// The service. Its state sits behind an `Arc` so a call waiting for the
@@ -271,6 +299,13 @@ impl Core {
 }
 
 impl Core {
+    /// Drops the in-memory link and writer of `tab` once its holder has been
+    /// shut down (D182.4), so nothing reuses a connection to a gone holder.
+    pub(crate) fn forget_tab(&self, tab: &str) {
+        self.holders.forget(tab);
+        self.writers.forget(tab);
+    }
+
     async fn find_session(&self, id: &str) -> Result<Option<SessionRecord>, Status> {
         let store = self.config.store.clone();
         let key = id.to_owned();
@@ -287,6 +322,28 @@ impl Core {
 
     async fn session(&self, id: &str) -> Result<SessionRecord, Status> {
         self.find_session(id).await?.ok_or_else(|| no_session(id))
+    }
+
+    /// The folder of `session`'s clone of `repo`, for a shell started there.
+    async fn clone_path(&self, session: &SessionRecord, repo: &pb::RepoRef) -> Result<PathBuf, Status> {
+        let store = self.config.store.clone();
+        let id = session.id.clone();
+        let detail = blocking(move || store.session_detail(&id))
+            .await?
+            .map_err(|error| status::store(error, &self.config.machine, "look up the session's clones"))?;
+        detail
+            .into_iter()
+            .flat_map(|detail| detail.repos)
+            .find(|clone| clone.owner == repo.owner && clone.name == repo.name)
+            .map(|clone| clone.path)
+            .ok_or_else(|| {
+                status::invalid_field(
+                    "repo",
+                    Problem::UnknownValue,
+                    format!("session {} has no clone of {}/{}", session.id, repo.owner, repo.name),
+                    "pick one of the session's repositories, or leave repo unset to start in the session folder",
+                )
+            })
     }
 
     async fn find_tab(&self, id: &str) -> Result<Option<TabRecord>, Status> {
@@ -453,8 +510,9 @@ impl Core {
         cwd: PathBuf,
     ) -> Result<pb::Tab, Status> {
         let config = &self.config;
-        let id = format!("tb_{}", uuid::Uuid::new_v4().simple());
-        let socket = config.holders.join(format!("{id}.sock"));
+        let tab = uuid::Uuid::new_v4();
+        let id = format!("tb_{}", tab.simple());
+        let socket = holder_socket(&config.holders, tab);
         let log = config.logs.join(format!("{id}.log"));
         let mut env = Vec::new();
         if let Some(record) = session {
@@ -465,10 +523,7 @@ impl Core {
                 .map_err(|error| {
                     status::store(error, &config.machine, "save the tab's session token")
                 })?;
-            env.push((
-                OsString::from(humata2_mcp::TOKEN_VAR),
-                OsString::from(token),
-            ));
+            env = identity::tab_env(token, &config.socket);
         }
         let spec = HolderSpec {
             holder: config.holder.clone(),
@@ -619,6 +674,8 @@ impl Core {
         let session = id_of(request.session.clone().map(|session| session.value))
             .ok_or_else(|| status::missing("session"))?;
         let session = self.session(&session).await?;
+        // A closed Desk session gets no new tab until Reopen (DK-11).
+        desk_service::refuse_if_closed(&self.config.store, &self.config.machine, &session.id).await?;
         if let Some(asked) = self.gate_input(caller, self.session_target(&session), approved)? {
             return Ok(Gated::Ask(asked));
         }
@@ -628,17 +685,11 @@ impl Core {
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
             return Ok(Gated::Done(tab));
         }
-        if request.repo.is_some() {
-            return Err(status::invalid_field(
-                "repo",
-                Problem::NotAllowedHere,
-                "starting a shell in one of the session's clones isn't built yet",
-                "leave repo unset to start in the session folder, then cd into the clone",
-            ));
-        }
-        let tab = self
-            .open_shell(Some(&session), session.folder.clone())
-            .await?;
+        let folder = match &request.repo {
+            None => session.folder.clone(),
+            Some(repo) => self.clone_path(&session, repo).await?,
+        };
+        let tab = self.open_shell(Some(&session), folder).await?;
         self.remember(key, Outcome::Tab(tab.clone()));
         Ok(Gated::Done(tab))
     }

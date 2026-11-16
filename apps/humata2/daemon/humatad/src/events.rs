@@ -13,7 +13,7 @@ use humata2_access::{
     Call, Capability, ChannelId, MachineId, Refusal, SessionId, SessionRef, Target,
 };
 use humata2_grpc::humata::v1 as pb;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
@@ -55,6 +55,8 @@ impl std::ops::Deref for Published {
 pub(crate) struct Feed {
     kept: Mutex<Kept>,
     live: broadcast::Sender<Arc<Published>>,
+    /// Turned to `true` once the daemon stops, which ends every subscription.
+    stopping: watch::Sender<bool>,
 }
 
 impl Default for Feed {
@@ -69,11 +71,23 @@ impl Default for Feed {
                 events: VecDeque::new(),
             }),
             live: broadcast::channel(KEPT).0,
+            stopping: watch::channel(false).0,
         }
     }
 }
 
 impl Feed {
+    /// Ends every subscription, as the daemon stops: each one's stream
+    /// finishes, so the app's open subscriptions don't hold up the stop.
+    pub(crate) fn end_subscriptions(&self) {
+        self.stopping.send_replace(true);
+    }
+
+    /// Resolves to `true` once [`Self::end_subscriptions`] has run.
+    fn end_watch(&self) -> watch::Receiver<bool> {
+        self.stopping.subscribe()
+    }
+
     /// Adds one change to the feed, numbered after the last. `by` is who
     /// made it; unset, the daemon did (D95).
     pub(crate) fn publish(
@@ -195,6 +209,8 @@ struct Filter {
     session_topic: bool,
     channel_topic: bool,
     boards: bool,
+    marks: bool,
+    settings: bool,
     channels: Vec<String>,
     sessions: Vec<String>,
 }
@@ -225,6 +241,12 @@ impl Filter {
         let session_topic = topics.is_empty() || topics.contains(&(pb::Topic::Sessions as i32));
         let channel_topic = topics.is_empty() || topics.contains(&(pb::Topic::Channels as i32));
         let boards = topics.is_empty() || topics.contains(&(pb::Topic::Boards as i32));
+        // Marks belong to no channel or session, as machines.
+        let marks = topics.contains(&(pb::Topic::Marks as i32))
+            || (topics.is_empty() && request.channels.is_empty() && request.sessions.is_empty());
+        // Settings are the user's, and belong to no channel or session.
+        let settings = topics.contains(&(pb::Topic::Settings as i32))
+            || (topics.is_empty() && request.channels.is_empty() && request.sessions.is_empty());
         Ok(Self {
             caller: caller.clone(),
             guard,
@@ -240,6 +262,8 @@ impl Filter {
             session_topic,
             channel_topic,
             boards,
+            marks,
+            settings,
             channels: request.channels.iter().map(|id| id.value.clone()).collect(),
             sessions: request.sessions.iter().map(|id| id.value.clone()).collect(),
         })
@@ -344,7 +368,10 @@ impl Filter {
             Some(pb::event::Payload::BoardItem(_)) => {
                 self.boards && self.asked(scope) && (self.user || self.reads_channel(scope))
             }
+            // Pins and VIP marks are the user's own (NV-20, NV-24).
+            Some(pb::event::Payload::Marks(_)) => self.user && self.marks,
             Some(pb::event::Payload::Rules(_)) => self.user && self.access && self.asked(scope),
+            Some(pb::event::Payload::Settings(_)) => self.user && self.settings,
             _ => false,
         }
     }
@@ -386,6 +413,7 @@ impl pb::event_service_server::EventService for EventSvc {
         let filter = Filter::of(&caller, &request, self.guard.clone(), self.machine.clone())?;
         let (backlog, mut live) = self.feed.subscribe(request.after.map(|after| after.value));
         let feed = self.feed.clone();
+        let mut end = self.feed.end_watch();
         let (sender, receiver) = mpsc::channel(64);
         tokio::spawn(async move {
             let mut last = 0;
@@ -399,6 +427,7 @@ impl pb::event_service_server::EventService for EventSvc {
                 let event = tokio::select! {
                     event = live.recv() => event,
                     () = sender.closed() => return,
+                    _ = end.wait_for(|stopping| *stopping) => return,
                 };
                 let event = match event {
                     Ok(event) if seq(&event) <= last => continue,

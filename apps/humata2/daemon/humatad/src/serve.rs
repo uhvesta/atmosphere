@@ -4,7 +4,7 @@
 //! socket.
 
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{ErrorKind, Write};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -25,6 +25,8 @@ use crate::access_service::Access;
 use crate::board_service::BoardSvc;
 use crate::channel_service::ChannelSvc;
 use crate::cli_login::{CliAuth, CliLogins};
+use crate::carry::Carry;
+use crate::carry_service::SessionCarrySvc;
 use crate::compression::Compression;
 use crate::daemon::Daemon;
 use crate::error::DaemonError;
@@ -54,9 +56,16 @@ use crate::trash_service::{Bin, TrashSvc};
 
 /// What Unix sockets allow in a path, without its terminating NUL.
 #[cfg(target_os = "linux")]
-const SOCKET_PATH_MAX: usize = 107;
+pub(crate) const SOCKET_PATH_MAX: usize = 107;
 #[cfg(not(target_os = "linux"))]
-const SOCKET_PATH_MAX: usize = 103;
+pub(crate) const SOCKET_PATH_MAX: usize = 103;
+
+/// How long a stopping daemon gives its connections to finish once its
+/// event subscriptions have ended, before it cuts them and exits.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The file a daemon locks in its state folder. Its pid is written in it.
+const LOCK_FILE: &str = "daemon.lock";
 
 /// Room for a pasted image and the message around it.
 const DECODE_MAX_BYTES: usize = PASTE_MAX_BYTES + (1 << 20);
@@ -249,12 +258,17 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     })?;
     let holders = state.join("holders");
     let logs = state.join("logs");
+    crate::terminal::check_holder_sockets(&holders)?;
     private_folder(&holders)?;
     private_folder(&logs)?;
-    // Bound before the state is touched, so a second daemon on the same
+    // Locked before the socket is bound or the state touched, so a second
+    // daemon on this state stops here, and it can't take the first one's
+    // socket. The lock lasts as long as this function does.
+    let _state_lock = lock_state(&state)?;
+    // Bound before the store is opened, so a second daemon on the same
     // socket stops here; and only the daemon that has the socket keeps
     // the log.
-    let listener = bind(&socket)?;
+    let (listener, socket_id) = bind(&socket)?;
     let daemon_log = crate::log::start(&logs);
     let (store, restored) = Store::open_or_restore(state.join("store"))
         .map_err(|source| DaemonError::Store { source })?;
@@ -295,6 +309,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 scripts.clone(),
                 store.clone(),
                 Arc::new(Kernel),
+                role,
                 identity::Admin::Anyone,
             )
         }
@@ -308,6 +323,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 scripts.clone(),
                 store.clone(),
                 Arc::new(Kernel),
+                role,
                 identity::Admin::Process(pid),
             )
         }
@@ -317,6 +333,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             scripts.clone(),
             store.clone(),
             Arc::new(Kernel),
+            role,
         ),
     };
     #[cfg(not(feature = "admin"))]
@@ -326,6 +343,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         scripts.clone(),
         store.clone(),
         Arc::new(Kernel),
+        role,
     );
     // D144: a connection that completes the relay's proof is the host's.
     // The session check inside it uses the interceptor as it is now, with
@@ -366,11 +384,19 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let humata = std::fs::canonicalize(&humata).unwrap_or(humata);
     let hooks = crate::session_service::install_hooks(
         state.join("claude-hooks.json"),
-        humata,
+        humata.clone(),
         socket.clone(),
     )
     .map_err(|source| DaemonError::Hooks { source })?;
-    let agents = agents.with_hooks(&hooks);
+    // HOOKS (D193): Codex's hooks go in as `-c hooks=…`, Copilot's as a
+    // plugin in the state folder; the agents' own settings stay as they are.
+    let agent_hooks = crate::session_service::install_agent_hooks(&state, &humata, &socket)
+        .map_err(|source| DaemonError::Hooks { source })?;
+    let agents = agents
+        .with_hooks(&hooks)
+        .with_agent_hooks(&agent_hooks.codex, &agent_hooks.copilot_plugin)
+        // D201a: OpenCode runs through `humata opencode` on this daemon.
+        .with_wrapper(&humata, &socket, &state);
     crate::session_service::set_sources(&agents);
     let reports = state.join("restarts");
     private_folder(&reports)?;
@@ -403,6 +429,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         starter.clone(),
         restored,
         tell,
+        socket.clone(),
     );
     last_good::keep(store.clone(), last_good::Quiet::default());
     let compression = Arc::new(Compression::new(&state));
@@ -462,6 +489,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         compression: compression.clone(),
         inbox: inbox.clone(),
         remote: remote_terminal,
+        socket: socket.clone(),
     });
     let roots = Arc::new(Roots::new(
         store.clone(),
@@ -479,6 +507,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Link::Local,
     );
     let trash = TrashSvc::new(bin.clone(), guard.clone(), machine.clone());
+    // D194: a restored channel's records come back into the state.
+    trash.use_store(store.clone());
+    let channel_bin = bin.clone();
     // FM-9: the far end of a transfer the host drives on this machine.
     let transfer_end = TransferEndSvc::new(
         roots.clone(),
@@ -492,13 +523,15 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         bin.clone(),
         state.clone(),
         machine.clone(),
+        compression.clone(),
     );
     // LD-7, PER-27: trash past its 30 days goes, and transfers a restart
     // cut short continue or finish undoing, off the runtime.
     tokio::task::spawn_blocking({
         let transfers = transfers.clone();
+        let sweep_bin = bin.clone();
         move || {
-            bin.sweep();
+            sweep_bin.sweep();
             transfers.recover();
         }
     });
@@ -517,6 +550,20 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     }
     let access = Access::new(guard.clone(), feed.clone(), inbox.clone(), store.clone());
     let events = EventSvc::new(feed.clone(), guard.clone(), machine.clone());
+    // NV-24, D170: pins and VIP marks, in a file of their own in the state folder.
+    let marks = crate::mark_service::MarkSvc::new(
+        state.join("marks.db"),
+        guard.clone(),
+        feed.clone(),
+        store.clone(),
+    );
+    // LD-8, LD-23 to LD-25: search and read the mirrored conversations, kept under the state folder.
+    let history = Arc::new(crate::history_service::HistorySvc::new(
+        state.clone(),
+        guard.clone(),
+        feed.clone(),
+        store.clone(),
+    ));
     let operations = Arc::new(Operations::new(feed.clone()));
     let channel_svc = ChannelSvc::new(
         guard.clone(),
@@ -528,6 +575,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         remote_work.clone(),
         host_work.clone(),
     );
+    // D194: a delete a restart cut short is finished once the start is done.
+    channel_svc.recover_deletes_after(channel_bin, last_start.clone());
     let board_svc = BoardSvc::new(
         guard.clone(),
         store.clone(),
@@ -535,6 +584,23 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         inbox.clone(),
         machine.clone(),
     );
+    // DK-14, D182: the Desk's sessions, beside the session service.
+    let desk = crate::desk_service::server(crate::desk_service::DeskDeps {
+        guard: guard.clone(),
+        operations: operations.clone(),
+        starter: starter.clone(),
+        identities: identities.clone(),
+        inbox: inbox.clone(),
+        tell: session_tell.clone(),
+        machine: machine.clone(),
+        socket: socket.clone(),
+        default_agent: args.default_agent.clone(),
+        bin: bin.clone(),
+        terminals: terminals.core(),
+        state: state.clone(),
+    });
+    // D195: how a session leaves this machine or arrives on it.
+    let carry_svc = SessionCarrySvc::new(starter.clone(), bin.clone(), host_work.is_some());
     let session_svc = SessionSvc::new(
         guard.clone(),
         operations.clone(),
@@ -544,7 +610,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         inbox.clone(),
         remote_work,
         session_tell,
+        socket.clone(),
     );
+    // Archives a cut run left are finished once the start has brought the
+    // sessions back (MV-15, PER-27).
+    session_svc.finish_archives_after(last_start.clone());
+    // CH-8: a machine's removal moves and archives its sessions through the session service.
+    channel_svc.use_sessions(session_svc.clone());
+    // SL-4: a rebuilt session's conversation comes from the host's mirror.
+    {
+        let history = history.clone();
+        session_svc.use_raw_lines(Arc::new(move |session| history.raw_lines(session)));
+    }
+    let settings = crate::settings_service::SettingsSvc::new(guard.clone(), store.clone(), machine.clone(), feed.clone());
+    // The default branch prefix is the host's gh login; a start never waits for it (D196).
+    settings.follow_gh_login();
     let machines = match host_work {
         Some(work) => {
             let skills_home = match args.skills_home {
@@ -557,6 +637,27 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             let skills = Arc::new(crate::skills_service::SkillsHost::new(&state, skills_home));
             // Set before any link starts, so the first link-up reaches it.
             let _ = work.skills.set(skills.clone());
+            // LD-11: forgetting a machine archives its sessions through the SessionService.
+            work.forgetting.set(Arc::new(session_svc.clone()));
+            // FM-8, FM-9: transfers reach other machines over their links.
+            transfers.use_links(work.links());
+            // D195: the host moves sessions between machines.
+            session_svc.use_carry(Carry::new(
+                carry_svc.clone(),
+                work.links(),
+                bin.clone(),
+                state.clone(),
+                machine.clone(),
+                channels_folder.clone(),
+                compression.clone(),
+            ));
+            // MV-14: a move the last run cut short is undone or finished once its machines are linked.
+            session_svc.recover_moves_after(last_start.clone());
+            // A pane on another machine: its file and trash calls are forwarded.
+            files.use_links(work.links());
+            // D189: other machines' conversations reach the host's mirror.
+            history.use_links(work.links(), work.reports());
+            trash.use_links(work.links());
             machine_service::recover_in_background(work.clone());
             let providers = ProviderSvc::new(guard.clone(), work.clone(), operations.clone(), inbox.clone());
             let skills = crate::skills_service::SkillsSvc::new(
@@ -616,6 +717,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .add_service(pb::session_service_server::SessionServiceServer::new(
             session_svc,
         ))
+        .add_service(pb::session_carry_service_server::SessionCarryServiceServer::from_arc(carry_svc))
+        .add_service(desk)
         .add_service(pb::board_service_server::BoardServiceServer::new(board_svc))
         .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(
             CliAuth {
@@ -646,6 +749,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             )),
         None => not_built::register_host_only(router),
     };
+    let router = router.add_service(pb::settings_service_server::SettingsServiceServer::new(settings));
+    let router = router.add_service(pb::mark_service_server::MarkServiceServer::new(marks));
+    let router = router.add_service(pb::history_service_server::HistoryServiceServer::from_arc(history));
     let router = not_built::register(router);
 
     let stop = stop_signal()?;
@@ -654,9 +760,44 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         let _ = ready.write_all(b"\n");
     }
     let incoming = humata2_app_peer::incoming(listener, app_requirement());
-    let served = router.serve_with_incoming_shutdown(incoming, stop).await;
-    let _ = std::fs::remove_file(&socket);
-    served.map_err(|source| DaemonError::Serve { source })
+    // A stop ends every event subscription: graceful shutdown would wait
+    // on them for as long as the app keeps them open. The socket goes at
+    // once too, so nothing new reaches a daemon that is leaving.
+    let (stopped, stopping) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = {
+        let feed = feed.clone();
+        let socket = socket.clone();
+        async move {
+            stop.await;
+            feed.end_subscriptions();
+            unlink_socket(&socket, socket_id);
+            let _ = stopped.send(());
+        }
+    };
+    let served = router.serve_with_incoming_shutdown(incoming, shutdown);
+    tokio::pin!(served);
+    let outcome = tokio::select! {
+        outcome = &mut served => outcome,
+        () = cut_after_grace(stopping) => {
+            crate::log::say!(
+                "humatad2: connections were still open {}s after the stop, so they were cut",
+                SHUTDOWN_GRACE.as_secs()
+            );
+            Ok(())
+        }
+    };
+    unlink_socket(&socket, socket_id);
+    outcome.map_err(|source| DaemonError::Serve { source })
+}
+
+/// Resolves once a stop has waited out [`SHUTDOWN_GRACE`]. Never resolves
+/// when the server ends without a stop, which its own result reports.
+async fn cut_after_grace(stopping: tokio::sync::oneshot::Receiver<()>) {
+    if stopping.await.is_ok() {
+        tokio::time::sleep(SHUTDOWN_GRACE).await;
+    } else {
+        std::future::pending::<()>().await;
+    }
 }
 
 /// The signed app's identity (D135), from the build: none in an unsigned
@@ -812,12 +953,73 @@ fn read_machine_id(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
+/// A socket file's device and inode: what tells the socket a daemon bound
+/// from one a later daemon binds at the same path.
+type SocketId = (u64, u64);
+
+fn socket_id(socket: &Path) -> std::io::Result<SocketId> {
+    std::fs::symlink_metadata(socket).map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+/// Removes `socket` if it is still the one bound with `id`. A daemon that
+/// started since has bound its own there, and that one stays.
+fn unlink_socket(socket: &Path, id: SocketId) {
+    if socket_id(socket).is_ok_and(|now| now == id) {
+        let _ = std::fs::remove_file(socket);
+    }
+}
+
+/// Takes the state folder's lock, which lasts as long as the daemon does.
+/// A second daemon on the same state is refused here, and the pid the lock
+/// holder wrote is what the refusal names.
+fn lock_state(state: &Path) -> Result<File, DaemonError> {
+    let path = state.join(LOCK_FILE);
+    let lock_failed = |source| DaemonError::StateLock {
+        path: path.clone(),
+        source,
+    };
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(lock_failed)?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            let pid = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok());
+            return Err(match pid {
+                Some(pid) => DaemonError::StateInUse {
+                    state: state.to_owned(),
+                    pid,
+                },
+                None => DaemonError::StateInUseUnknownPid {
+                    state: state.to_owned(),
+                },
+            });
+        }
+        Err(TryLockError::Error(source)) => return Err(lock_failed(source)),
+    }
+    // Only the lock's holder writes the file, so the pid written is this one's.
+    file.set_len(0)
+        .and_then(|()| file.write_all(format!("{}\n", std::process::id()).as_bytes()))
+        .and_then(|()| file.sync_data())
+        .map_err(lock_failed)?;
+    Ok(file)
+}
+
 /// Listens on `socket`, 0600 in a folder only this user can open. A socket
-/// left by a daemon that died is taken over; a live one is refused.
-fn bind(socket: &Path) -> Result<UnixListener, DaemonError> {
+/// left by a daemon that died is taken over; a live one is refused. Returns
+/// the listener and the socket's id, for [`unlink_socket`].
+fn bind(socket: &Path) -> Result<(UnixListener, SocketId), DaemonError> {
     if socket.as_os_str().len() > SOCKET_PATH_MAX {
         return Err(DaemonError::SocketPathTooLong {
             socket: socket.to_owned(),
+            len: socket.as_os_str().len(),
             max: SOCKET_PATH_MAX,
         });
     }
@@ -845,7 +1047,8 @@ fn bind(socket: &Path) -> Result<UnixListener, DaemonError> {
     let listener = UnixListener::bind(socket).map_err(bind_failed)?;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
         .map_err(bind_failed)?;
-    Ok(listener)
+    let id = socket_id(socket).map_err(bind_failed)?;
+    Ok((listener, id))
 }
 
 /// Resolves on SIGTERM or SIGINT.

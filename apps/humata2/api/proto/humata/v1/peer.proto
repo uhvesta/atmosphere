@@ -137,6 +137,11 @@ message MachineToHost {
   oneof message {
     UplinkAck ack = 1;
     PointersReport pointers = 2;
+    // Not used (D189). The host reads another machine's conversations itself, by
+    // pull: it calls HistoryService.ReadMirror through the relay from the byte
+    // offset its mirror saved, and the machine scrubs the lines before they leave
+    // it. Offsets there count the machine's own file bytes, not scrubbed bytes.
+    // Nothing sends or acks this field.
     MirrorChunk mirror = 3;
     SessionStatusReport status = 4;
     JournalEntry journal = 5;
@@ -153,12 +158,21 @@ message MachineToHost {
 // answers once stored.
 message UplinkAck {
   uint64 journal_through = 1;
-  // Per session: mirror bytes stored on the host.
+  // Not used (D189). The host reads another machine's conversations itself, by
+  // pull: it calls HistoryService.ReadMirror through the relay from the byte
+  // offset its mirror saved, and the machine scrubs the lines before they leave
+  // it. Offsets there count the machine's own file bytes, not scrubbed bytes.
+  // Nothing sends or acks this field.
   repeated MirrorOffset mirror = 2;
   uint64 policy_revision = 3;
   uint64 answers_through = 4;
 }
 
+// Not used (D189). The host reads another machine's conversations itself, by
+// pull: it calls HistoryService.ReadMirror through the relay from the byte
+// offset its mirror saved, and the machine scrubs the lines before they leave
+// it. Offsets there count the machine's own file bytes, not scrubbed bytes.
+// Nothing sends or acks this message.
 message MirrorOffset {
   SessionId session = 1;
   uint64 offset = 2;
@@ -177,9 +191,11 @@ message PointersReport {
 }
 
 // LD-8: the conversation file, append-only, offset-keyed.
-// LD-21: before data leaves the machine, every exact value of its host
-// variables is replaced with ‹NAME›. Offsets count the scrubbed bytes, so
-// the host's copy is the scrubbed one and never holds a value.
+// Not used (D189). The host reads another machine's conversations itself, by
+// pull: it calls HistoryService.ReadMirror through the relay from the byte
+// offset its mirror saved, and the machine scrubs the lines before they leave
+// it. Offsets there count the machine's own file bytes, not scrubbed bytes.
+// Nothing sends or acks this message.
 message MirrorChunk {
   SessionId session = 1;
   string conversation_id = 2;

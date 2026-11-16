@@ -57,7 +57,7 @@ impl Checkout {
     ) -> Result<RepoDiff, DiffError> {
         let trees = self.trees(spec, context)?;
         let files = self.files(&trees, spec)?;
-        self.summary(spec, trees, files)
+        self.summary(spec, context, trees, files)
     }
 
     /// The files between two trees under `spec`'s paths and matching.

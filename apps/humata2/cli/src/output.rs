@@ -5,11 +5,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Map, Value as Json, json};
 
 use crate::args::Global;
+use crate::as_json;
 use crate::call::{Done, Outcome};
 use crate::console::Console;
 use crate::error::{CliError, Failure};
 use crate::exit;
-use crate::as_json;
 
 /// Prints a run's result or failure and gives its exit code.
 pub fn finish(
@@ -26,6 +26,7 @@ pub fn finish(
 
 fn success(console: &impl Console, flags: &Global, operation: &str, done: Done) -> i32 {
     let outcome = match done.outcome {
+        Outcome::Exited(code) => return code,
         Outcome::Printed if !flags.json => return exit::OK,
         Outcome::Planned => "planned",
         Outcome::Printed | Outcome::Reply if journaled(&done.result) => "journaled",
@@ -60,14 +61,16 @@ fn success(console: &impl Console, flags: &Global, operation: &str, done: Done) 
             console.print(&text);
         }
         match outcome {
-            "planned" => console.eprint("Nothing changed. Run it again with --plan <token> to do this."),
+            "planned" => {
+                console.eprint("Nothing changed. Run it again with --plan <token> to do this.")
+            }
             "journaled" if strict_failure => {
                 console.eprint(STRICT_MESSAGE);
                 console.eprint(STRICT_FIX);
             }
-            "journaled" => console.eprint(
-                "Saved on this machine; the Mac applies it when it's back.",
-            ),
+            "journaled" => {
+                console.eprint("Saved on this machine; the Mac applies it when it's back.")
+            }
             _ => {}
         }
     }
@@ -78,7 +81,8 @@ fn success(console: &impl Console, flags: &Global, operation: &str, done: Done) 
     }
 }
 
-const STRICT_MESSAGE: &str = "The change is only journaled on this machine: the Mac hasn't applied it.";
+const STRICT_MESSAGE: &str =
+    "The change is only journaled on this machine: the Mac hasn't applied it.";
 const STRICT_FIX: &str = "It applies when the Mac is reachable; check with `humata ops` or the item later, or run without --strict.";
 
 /// A reply delivered to the journal rather than applied (GRPC.md §9).
@@ -101,7 +105,8 @@ fn failure(console: &impl Console, flags: &Global, operation: &str, failure: &Fa
             );
         }
         console.print(
-            &json!({ "ok": false, "operation": operation, "error": Json::Object(error) }).to_string(),
+            &json!({ "ok": false, "operation": operation, "error": Json::Object(error) })
+                .to_string(),
         );
     } else {
         console.eprint(&format!("humata: {}", failure.message));
@@ -123,10 +128,7 @@ fn at(after: Duration) -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .saturating_add(after);
-    as_json::rfc3339(
-        i64::try_from(when.as_secs()).unwrap_or(i64::MAX),
-        0,
-    )
+    as_json::rfc3339(i64::try_from(when.as_secs()).unwrap_or(i64::MAX), 0)
 }
 
 /// A result for a person: `key: value` lines, nested ones indented, with

@@ -215,6 +215,12 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<PinnedCommand>,
     },
+    /// Find what sessions said.
+    #[command(subcommand)]
+    Sessions(SessionsCommand),
+    /// Desk sessions: the ones that belong to no channel.
+    #[command(subcommand)]
+    Desk(DeskCommand),
     #[command(subcommand)]
     Report(ReportCommand),
     /// Say what turn this session's agent is in. For the agent's hooks:
@@ -222,6 +228,28 @@ pub enum Command {
     Turn {
         #[arg(value_enum)]
         state: TurnArg,
+    },
+    /// Pass an agent's hook to the Inbox and print its answer. For the
+    /// agent's hooks: reads the payload on stdin, always exits 0.
+    Hook {
+        /// claude, codex or copilot
+        agent: String,
+        #[arg(value_enum)]
+        event: HookEventArg,
+    },
+    /// Run OpenCode for a Humata session: its TUI on a server of its own,
+    /// with turns and permission asks going to Humata. The built-in
+    /// OpenCode agent runs this; exits as OpenCode's TUI does.
+    Opencode {
+        /// The session's conversation id; OpenCode's session follows from it.
+        #[arg(long)]
+        conversation: String,
+        /// Where the server's address and password are kept while it runs.
+        #[arg(long)]
+        state: std::path::PathBuf,
+        /// The OpenCode to run.
+        #[arg(long, default_value = "opencode")]
+        program: std::path::PathBuf,
     },
 }
 
@@ -278,6 +306,35 @@ pub enum OpsCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum DeskCommand {
+    /// Keep a Desk session's scratch folder after it closes, so it is
+    /// never deleted after its 7 days. Inside a Desk session, leave out
+    /// the session to keep this one's own folder.
+    Keep {
+        /// The session's id or title; this session's own when left out.
+        session: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SessionsCommand {
+    /// Search every session you may see for words.
+    Search {
+        /// Every word must match.
+        words: Vec<String>,
+        /// Only this agent kind, such as claude.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Only after this time (RFC 3339).
+        #[arg(long)]
+        since: Option<String>,
+        /// Only before this time (RFC 3339).
+        #[arg(long)]
+        until: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum SessionCommand {
     /// Typing waiting for the turn to end.
     Queue { session: String },
@@ -302,6 +359,20 @@ pub enum SessionCommand {
         kind: ForkKind,
         #[arg(long)]
         title: Option<String>,
+        /// The branch the fork's clones are made on (default: one named
+        /// from the title and the branch prefix).
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Print a session's turns.
+    Read {
+        session: String,
+        /// First turn to read (default: the first).
+        #[arg(long = "from")]
+        from: Option<u32>,
+        /// Last turn to read (default: the last).
+        #[arg(long = "to")]
+        to: Option<u32>,
     },
     Rename { session: String, title: String },
     Stop { session: String },
@@ -329,8 +400,8 @@ pub enum SessionCommand {
     },
     #[command(subcommand)]
     Repo(SessionRepoCommand),
-    /// A fork's own copy of a repo it reads from its parent.
-    OwnCopy { session: String, repo: String },
+    /// Give a context-only fork its own copy of its parent's clones (D185).
+    OwnCopy { session: String },
     Push {
         session: String,
         #[arg(long)]
@@ -800,6 +871,11 @@ pub enum TurnArg {
     Working,
     Idle,
     NeedsInput,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum HookEventArg {
+    Permission,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

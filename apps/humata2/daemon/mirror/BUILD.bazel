@@ -9,7 +9,10 @@ rust_library(
     name = "mirror",
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_mirror",
-    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    visibility = [
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
     deps = [
         "@crates//:rusqlite",
         "@crates//:serde",

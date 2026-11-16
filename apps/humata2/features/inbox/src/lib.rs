@@ -65,6 +65,17 @@ pub struct InboxState {
     pub error: Option<String>,
 }
 
+/// How many requests wait for an answer. The sidebar's Inbox badge and Home's
+/// "Needs you" both show this count, so they cannot disagree.
+#[must_use]
+pub fn waiting(workspace: &Workspace) -> usize {
+    workspace
+        .requests
+        .iter()
+        .filter(|request| request.answer.is_none())
+        .count()
+}
+
 impl InboxState {
     /// The requests that show, newest first.
     #[must_use]

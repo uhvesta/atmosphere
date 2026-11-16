@@ -8,7 +8,7 @@ use humata2_clients::machines::{
     SkillsPreview,
 };
 use humata2_clients::model::{ChannelId, MachineId, SessionId};
-use humata2_hosts::page::{Delegate, Tab};
+use humata2_hosts::page::{Delegate, MenuPick, Tab};
 use humata2_hosts::{MachinePage, MachinePageAction as A, MachinePageState};
 use tca::TestStore;
 
@@ -116,6 +116,37 @@ fn actions_that_belong_to_the_parent_are_delegated() {
         store.send(action, |_| {});
         store.receive(A::Delegate(delegate), |_| {});
     }
+}
+
+#[test]
+fn the_menu_opens_picks_its_effect_and_closes() {
+    let (mut store, _fake) = store();
+    show(&mut store);
+    store.send(A::OpenMenu, |_| {});
+    assert!(store.state().menu_open);
+    store.send(A::PickMenu(MenuPick::ReconnectNow), |_| {});
+    assert!(!store.state().menu_open);
+    store.receive(A::Delegate(Delegate::Reconnect(id())), |_| {});
+}
+
+#[test]
+fn closing_the_menu_runs_nothing() {
+    let (mut store, _fake) = store();
+    show(&mut store);
+    store.send(A::OpenMenu, |_| {});
+    store.send(A::CloseMenu, |_| {});
+    assert!(!store.state().menu_open);
+}
+
+#[test]
+fn picking_sync_skills_from_the_menu_loads_the_preview() {
+    let (mut store, _fake) = store();
+    show(&mut store);
+    store.send(A::OpenMenu, |_| {});
+    store.send(A::PickMenu(MenuPick::SyncSkills), |_| {});
+    assert!(!store.state().menu_open);
+    assert!(store.state().skills.is_some());
+    store.receive_matching("previewed", |a| matches!(a, A::Previewed(_, Ok(_))), |_| {});
 }
 
 #[test]

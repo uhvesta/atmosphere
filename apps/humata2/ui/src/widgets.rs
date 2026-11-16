@@ -11,7 +11,7 @@ use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
 
 use crate::bridge::Ui;
-use crate::theme::{self, color};
+use crate::theme::{self, Look, color};
 
 /// A horizontal flex row, items centered.
 #[must_use]
@@ -23,42 +23,6 @@ pub fn row() -> Div {
 #[must_use]
 pub fn col() -> Div {
     div().flex().flex_col()
-}
-
-/// A page's title.
-#[must_use]
-pub fn title(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_size(px(20.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(color(theme::TEXT))
-        .child(text.into())
-}
-
-/// Secondary text.
-#[must_use]
-pub fn dim(text: impl Into<SharedString>) -> Div {
-    div().text_color(color(theme::DIM)).child(text.into())
-}
-
-/// Hint text.
-#[must_use]
-pub fn faint(text: impl Into<SharedString>) -> Div {
-    div()
-        .text_size(px(11.))
-        .text_color(color(theme::FAINT))
-        .child(text.into())
-}
-
-/// What shows where a list is empty: what is missing and what to do.
-#[must_use]
-pub fn empty(what: impl Into<SharedString>, next: impl Into<SharedString>) -> Div {
-    col()
-        .items_center()
-        .gap_1()
-        .py_6()
-        .child(dim(what))
-        .child(faint(next))
 }
 
 /// A button that sends `action`.
@@ -74,28 +38,6 @@ pub fn send(
         .label(label)
         .small()
         .on_click(move |_, _, cx| ui.send(action.clone(), cx))
-}
-
-/// A quiet button that sends `action`.
-#[must_use]
-pub fn ghost(
-    ui: &Rc<Ui>,
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    action: AppAction,
-) -> Button {
-    send(ui, id, label, action).ghost()
-}
-
-/// The main button of a form, sending `action`.
-#[must_use]
-pub fn primary(
-    ui: &Rc<Ui>,
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    action: AppAction,
-) -> Button {
-    send(ui, id, label, action).primary()
 }
 
 /// A push button as the frames draw it: 24 pt high, radius 6, with a 12 pt
@@ -174,9 +116,74 @@ pub(crate) fn push_primary(
     })
 }
 
-/// A banner saying what went wrong, with a button to dismiss it.
+/// `primary`, drawn as the frames draw a filled button: accent fill, white label.
 #[must_use]
-pub fn error_banner(
+pub(crate) fn primary_in(
+    look: theme::Look,
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    action: AppAction,
+) -> Button {
+    push_primary(ui, id, label, action, look)
+}
+
+/// `ghost`, drawn as the frames draw a grey button with a hairline.
+#[must_use]
+pub(crate) fn ghost_in(
+    look: theme::Look,
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    action: AppAction,
+) -> Button {
+    push_quiet(ui, id, label, action, look)
+}
+
+/// `title`, with its text in `look`.
+#[must_use]
+pub(crate) fn title_in(look: Look, text: impl Into<SharedString>) -> Div {
+    div()
+        .text_size(px(20.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(color(look.text))
+        .child(text.into())
+}
+
+/// `dim`, with its text in `look`.
+#[must_use]
+pub(crate) fn dim_in(look: Look, text: impl Into<SharedString>) -> Div {
+    div().text_color(color(look.secondary)).child(text.into())
+}
+
+/// `faint`, with its text in `look`.
+#[must_use]
+pub(crate) fn faint_in(look: Look, text: impl Into<SharedString>) -> Div {
+    div()
+        .text_size(px(11.))
+        .text_color(color(look.tertiary))
+        .child(text.into())
+}
+
+/// `empty`, with its text in `look`.
+#[must_use]
+pub(crate) fn empty_in(
+    look: Look,
+    what: impl Into<SharedString>,
+    next: impl Into<SharedString>,
+) -> Div {
+    col()
+        .items_center()
+        .gap_1()
+        .py_6()
+        .child(dim_in(look, what))
+        .child(faint_in(look, next))
+}
+
+/// `error_banner`, filled with `look`'s error tint and outlined in red.
+#[must_use]
+pub(crate) fn error_banner_in(
+    look: Look,
     ui: &Rc<Ui>,
     id: &'static str,
     text: impl Into<SharedString>,
@@ -193,20 +200,20 @@ pub fn error_banner(
         .px_3()
         .py_2()
         .rounded(px(6.))
-        .bg(color(0x2a1717))
+        .bg(color(look.del))
         .border_1()
         .border_color(color(theme::RED))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
-                .text_color(color(theme::TEXT))
+                .text_color(color(look.text))
                 .child(text),
         )
         .child(
-            div()
-                .flex_shrink_0()
-                .child(ghost(ui, (id, 1usize), "Dismiss", dismiss).text_color(color(theme::TEXT))),
+            div().flex_shrink_0().child(
+                ghost_in(look, ui, (id, 1usize), "Dismiss", dismiss).text_color(color(look.text)),
+            ),
         )
         .test_support()
 }

@@ -41,11 +41,11 @@ Complementary "Inbox"
     text "9m"
     text "Claude Code in Try BRIN index"
     text "The index migration and its tests are ready to review."
+    text "Command"
     text "git push origin try-brin"
-    CheckBox "Allow this for the rest of the session" unchecked disabled
     Button "Allow"
     Button "Deny"
-    Button "Reply…" disabled
+    Button "Reply…"
 Toolbar "Session panels"
   Button "Inbox"
     Status "Inbox: 1"

@@ -14,15 +14,16 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
-use humata2_board::{BoardAction as A, Filter, Mode};
-use humata2_clients::model::{Answer, Item, ItemId, ItemStatus as S, Scope};
+use humata2_board::{Ask, BoardAction as A, Choice, Filter, Mode, PickerKind};
+use humata2_clients::model::{Agent, Answer, Item, ItemId, ItemStatus as S, Scope};
 use humata2_inbox::InboxAction;
 use std::rc::Rc;
 
 pub(crate) struct Inputs {
     filter: Entity<InputState>,
     title: Entity<InputState>,
-    _subscriptions: [Subscription; 2],
+    picker: Entity<InputState>,
+    _subscriptions: [Subscription; 3],
 }
 impl Inputs {
     pub(crate) fn new(
@@ -32,8 +33,10 @@ impl Inputs {
     ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("Item title"));
+        let picker = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
         let one = ui.clone();
         let two = ui.clone();
+        let three = ui.clone();
         let subs = [
             cx.subscribe(&filter, move |_, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -51,10 +54,19 @@ impl Inputs {
                     );
                 }
             }),
+            cx.subscribe(&picker, move |_, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    three.send(
+                        AppAction::Board(A::PickerQuery(input.read(cx).value().to_string())),
+                        cx,
+                    );
+                }
+            }),
         ];
         Self {
             filter,
             title,
+            picker,
             _subscriptions: subs,
         }
     }
@@ -62,6 +74,10 @@ impl Inputs {
         for (input, value) in [
             (&self.filter, state.board.view.query.as_str()),
             (&self.title, state.board.new_title.as_deref().unwrap_or("")),
+            (
+                &self.picker,
+                state.board.picker.as_ref().map_or("", |p| p.query.as_str()),
+            ),
         ] {
             if input.read(cx).value().as_ref() != value {
                 input.update(cx, |i, cx| i.set_value(value.to_owned(), window, cx));
@@ -370,8 +386,8 @@ fn item_card(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> impl Int
                 row()
                     .gap(px(6.))
                     .text_size(px(11.))
-                    .text_color(rgb(0xff9f0a))
-                    .child(chrome::icon(IconName::Inbox, 0xff9f0a, 12.))
+                    .text_color(rgb(crate::theme::ORANGE))
+                    .child(chrome::icon(IconName::Inbox, crate::theme::ORANGE, 12.))
                     .child(
                         div()
                             .flex_1()
@@ -677,7 +693,7 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
             )
             .on_click(move |_, _, cx| ui.send(AppAction::Board(A::Drill(filter)), cx))
     };
-    let lane_colors = [look.tertiary, 0x8e8e93, look.accent, 0xbf5af2, 0x30d158];
+    let lane_colors = [look.tertiary, crate::theme::GREY, look.accent, 0xbf5af2, crate::theme::GREEN];
     let ss = [S::Backlog, S::Todo, S::InProgress, S::InReview, S::Done];
     let mut by_channel = card(look)
         .flex_1()
@@ -863,7 +879,7 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                     waiting,
                     "Review the asks →",
                     Filter::Waiting,
-                    0xff9f0a,
+                    crate::theme::ORANGE,
                 ))
                 .child(tile(
                     "progress",
@@ -909,7 +925,127 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
         )
         .child(sessions)
 }
-fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Div> {
+/// A control that is in the accessibility tree and tab order but is painted
+/// only while its row is hovered or it has focus, and takes no layout space.
+fn hover_control(
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    glyph: &'static str,
+    action: A,
+    group: SharedString,
+    look: Look,
+) -> impl IntoElement {
+    let ui = ui.clone();
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .absolute()
+        .top(px(0.))
+        .right(px(0.))
+        .px(px(5.))
+        .rounded(px(4.))
+        .bg(rgb(look.fill))
+        .text_color(rgb(look.secondary))
+        .cursor_pointer()
+        .opacity(0.)
+        .group_hover(group, |x| x.opacity(1.))
+        .focus_visible(|x| x.opacity(1.))
+        .child(glyph)
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            ui.send(AppAction::Board(action.clone()), cx)
+        })
+        .test_support()
+}
+/// What the agent is called in the drawer's ask.
+fn agent_name(by: Option<Agent>) -> String {
+    by.map_or_else(|| "An agent".to_owned(), |a| crate::desk::runs(a).to_owned())
+}
+/// The picker popover under a drawer row: a filter over the offered rows.
+fn picker(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, kind: PickerKind, look: Look) -> Option<Stateful<Div>> {
+    let open = state.board.picker.as_ref().filter(|p| p.kind == kind)?;
+    let cursor = open.cursor;
+    let rows = state.board.choices().into_iter().enumerate().map(|(at, choice)| {
+        let (name, id) = match &choice {
+            Choice::Session(id) => (
+                state
+                    .workspace
+                    .session(id)
+                    .map_or_else(|| id.to_string(), |s| s.title.clone()),
+                format!("board-pick-session {id}"),
+            ),
+            Choice::Item(id) => (
+                state.workspace.items.iter().find(|i| &i.id == id).map_or_else(
+                    || id.to_string(),
+                    |i| format!("{} {}", i.id, i.title),
+                ),
+                format!("board-pick-item {id}"),
+            ),
+        };
+        let ui = ui.clone();
+        div()
+            .id(SharedString::from(id))
+            .role(Role::Button)
+            .aria_label(name.clone())
+            .px(px(6.))
+            .py(px(2.))
+            .rounded(px(4.))
+            .cursor_pointer()
+            .when(at == cursor, |x| x.bg(rgb(look.fill)))
+            .child(name)
+            .on_click(move |_, _, cx| {
+                ui.send(AppAction::Board(A::Pick(choice.clone())), cx)
+            })
+            .test_support()
+    });
+    let keys = ui.clone();
+    Some(
+        col()
+            .id(match kind {
+                PickerKind::Sessions => "board-picker-sessions",
+                PickerKind::Dependencies => "board-picker-dependencies",
+            })
+            .gap(px(4.))
+            .p(px(6.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(rgb(look.line))
+            .bg(rgb(look.card))
+            .on_key_down(move |event, _, cx| {
+                let action = match event.keystroke.key.as_str() {
+                    "up" => A::PickerUp,
+                    "down" => A::PickerDown,
+                    "enter" => A::PickerEnter,
+                    "escape" => A::ClosePicker,
+                    _ => return,
+                };
+                cx.stop_propagation();
+                keys.send(AppAction::Board(action), cx);
+            })
+            .child(
+                Input::new(&inputs.picker)
+                    .small()
+                    .min_h(px(26.))
+                    .rounded(px(6.))
+                    .bg(rgb(look.content))
+                    .border_color(rgb(look.line))
+                    .text_size(px(12.)),
+            )
+            .child(col().id("board-picker-choices").gap(px(1.)).max_h(px(160.)).overflow_y_scroll().children(rows)),
+    )
+}
+/// "Keep in <column>" for the ask's second button.
+fn keep_label(status: S) -> String {
+    let name = status.name();
+    if status == S::InProgress {
+        "Keep in progress".to_owned()
+    } else {
+        format!("Keep in {}", name.to_lowercase())
+    }
+}
+fn drawer(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, item: &Item, look: Look) -> Stateful<Div> {
     let details = state.workspace.item_details.get(&item.id);
     let field = |name: &str, value: AnyElement| {
         row()
@@ -989,75 +1125,153 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
         .map(|d| d.sessions.clone())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| item.session.iter().cloned().collect());
-    panel = panel.child(field(
-        "Sessions",
-        col()
-            .gap(px(4.))
-            .children(
-                ids.into_iter()
-                    .filter_map(|id| state.workspace.session(&id))
-                    .map(|s| {
-                        let ui = ui.clone();
-                        let id = s.id.clone();
-                        row()
-                            .id(SharedString::from(format!("board-drawer-session {}", id)))
-                            .role(Role::Button)
-                            .aria_label(s.title.clone())
-                            .test_support()
-                            .gap(px(6.))
-                            .cursor_pointer()
-                            .child(chrome::status(s.status))
-                            .child(s.title.clone())
-                            .on_click(move |_, _, cx| {
-                                ui.send(AppAction::Navigate(Route::Session(id.clone())), cx)
-                            })
-                    }),
-            )
-            .into_any_element(),
-    ));
-    panel = panel.child(field(
-        "Depends on",
-        col()
-            .items_start()
-            .gap(px(4.))
-            .children(
-                item.depends_on
-                    .iter()
-                    .filter_map(|id| state.workspace.items.iter().find(|i| &i.id == id))
-                    .map(|i| {
-                        let ui = ui.clone();
-                        let id = i.id.clone();
-                        let name = format!(
-                            "{} {}{}",
-                            i.id,
-                            i.title,
-                            if i.status == S::Done { " ✓" } else { "" }
-                        );
-                        div()
-                            .id(SharedString::from(format!("board-dependency {}", i.id)))
-                            .role(Role::Button)
-                            .aria_label(name.clone())
-                            .flex_shrink_0()
-                            .px(px(6.))
-                            .py(px(1.))
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(rgb(look.line))
-                            .text_size(px(11.))
-                            .text_color(rgb(look.secondary))
-                            .cursor_pointer()
-                            .child(name)
-                            .on_click(move |_, _, cx| {
-                                ui.send(AppAction::Board(A::Open(id.clone())), cx)
-                            })
-                            .test_support()
-                    }),
-            )
-            .into_any_element(),
-    ));
+    let add = |ui: &Rc<Ui>,
+               id: &'static str,
+               label: &'static str,
+               group: &'static str,
+               kind: PickerKind| {
+        let ui = ui.clone();
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .absolute()
+            .top(px(0.))
+            .right(px(0.))
+            .px(px(5.))
+            .rounded(px(4.))
+            .text_color(rgb(look.secondary))
+            .cursor_pointer()
+            .opacity(0.)
+            .group_hover(group, |x| x.opacity(1.))
+            .focus_visible(|x| x.opacity(1.))
+            .child("+")
+            .on_click(move |_, _, cx| ui.send(AppAction::Board(A::OpenPicker(kind)), cx))
+            .test_support()
+    };
+    let mut sessions = col().relative().flex_1().group("board-sessions-field").gap(px(4.)).children(
+        ids.into_iter()
+            .filter_map(|id| state.workspace.session(&id))
+            .map(|s| {
+                let ui = ui.clone();
+                let id = s.id.clone();
+                let group = SharedString::from(format!("board-session-row {id}"));
+                row()
+                    .id(SharedString::from(format!("board-drawer-session {}", id)))
+                    .role(Role::Button)
+                    .aria_label(s.title.clone())
+                    .test_support()
+                    .relative()
+                    .group(group.clone())
+                    .gap(px(6.))
+                    .cursor_pointer()
+                    .child(chrome::status(s.status))
+                    .child(s.title.clone())
+                    .child(hover_control(
+                        &ui,
+                        SharedString::from(format!("board-remove-session {id}")),
+                        format!("Remove session {}", s.title),
+                        "×",
+                        A::RemoveSession(id.clone()),
+                        group,
+                        look,
+                    ))
+                    .on_click(move |_, _, cx| {
+                        ui.send(AppAction::Navigate(Route::Session(id.clone())), cx)
+                    })
+            }),
+    );
+    sessions = sessions.child(add(ui, "board-add-session", "Add session", "board-sessions-field", PickerKind::Sessions));
+    if let Some(open) = picker(ui, state, inputs, PickerKind::Sessions, look) {
+        sessions = sessions.child(open);
+    }
+    panel = panel.child(field("Sessions", sessions.into_any_element()));
+    let mut depends = col()
+        .relative()
+        .flex_1()
+        .group("board-dependencies-field")
+        .items_start()
+        .gap(px(4.))
+        .children(
+            item.depends_on
+                .iter()
+                .filter_map(|id| state.workspace.items.iter().find(|i| &i.id == id))
+                .map(|i| {
+                    let ui = ui.clone();
+                    let id = i.id.clone();
+                    let name = format!(
+                        "{} {}{}",
+                        i.id,
+                        i.title,
+                        if i.status == S::Done { " ✓" } else { "" }
+                    );
+                    let group = SharedString::from(format!("board-dependency-row {id}"));
+                    div()
+                        .id(SharedString::from(format!("board-dependency {}", i.id)))
+                        .role(Role::Button)
+                        .aria_label(name.clone())
+                        .relative()
+                        .group(group.clone())
+                        .flex_shrink_0()
+                        .px(px(6.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(rgb(look.line))
+                        .text_size(px(11.))
+                        .text_color(rgb(look.secondary))
+                        .cursor_pointer()
+                        .child(name)
+                        .child(hover_control(
+                            &ui,
+                            SharedString::from(format!("board-remove-dependency {id}")),
+                            format!("Remove dependency {id}"),
+                            "×",
+                            A::RemoveDependency(id.clone()),
+                            group,
+                            look,
+                        ))
+                        .on_click(move |_, _, cx| {
+                            ui.send(AppAction::Board(A::Open(id.clone())), cx)
+                        })
+                        .test_support()
+                }),
+        );
+    depends = depends.child(add(ui, "board-add-dependency", "Add dependency", "board-dependencies-field", PickerKind::Dependencies));
+    if let Some(open) = picker(ui, state, inputs, PickerKind::Dependencies, look) {
+        depends = depends.child(open);
+    }
+    panel = panel.child(field("Depends on", depends.into_any_element()));
     panel = panel.child(div().h(px(1.)).flex_shrink_0().bg(rgb(look.line)));
-    if let Some(request) = state.board.request(item) {
+    if let (Some(request), Some(ask)) = (state.board.request(item), state.board.ask(item)) {
         let answer = |answer| AppAction::Inbox(InboxAction::Answer(request.id.clone(), answer));
+        let (title, yes, no, changes, destructive) = match &ask {
+            Ask::Move { by, to, keep } => (
+                format!("{} asks to move this to {}", agent_name(*by), to.name()),
+                format!("Move to {}", to.name()),
+                keep_label(*keep),
+                Vec::new(),
+                false,
+            ),
+            Ask::Edit { by, changes } => (
+                format!("{} asks to edit this", agent_name(*by)),
+                "Apply edit".to_owned(),
+                "Keep as is".to_owned(),
+                changes.clone(),
+                false,
+            ),
+            Ask::Delete { by } => (
+                format!("{} asks to delete this", agent_name(*by)),
+                "Delete item".to_owned(),
+                "Keep item".to_owned(),
+                Vec::new(),
+                true,
+            ),
+        };
+        let mut approve = button(ui, "board-approve", yes, answer(Answer::Approved), look, true);
+        if destructive {
+            approve = approve.bg(rgb(crate::theme::RED));
+        }
         panel = panel.child(
             col()
                 .gap(px(6.))
@@ -1068,11 +1282,7 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
                     row()
                         .gap(px(6.))
                         .child(chrome::status(humata2_clients::model::Status::NeedsYou))
-                        .child(
-                            div()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Claude Code asks to move this to Done"),
-                        ),
+                        .child(div().font_weight(FontWeight::SEMIBOLD).child(title)),
                 )
                 .child(secondary(
                     look,
@@ -1083,21 +1293,17 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
                             .map_or(request.reason.as_str(), |d| d.request_summary.as_str())
                     ),
                 ))
+                .children(changes.into_iter().map(|c| {
+                    secondary(look, format!("{}: {} → {}", c.field, c.before, c.after))
+                }))
                 .child(
                     row()
                         .gap(px(6.))
-                        .child(button(
-                            ui,
-                            "board-approve",
-                            "Move to Done",
-                            answer(Answer::Approved),
-                            look,
-                            true,
-                        ))
+                        .child(approve)
                         .child(button(
                             ui,
                             "board-deny",
-                            "Keep in progress",
+                            no,
                             answer(Answer::Denied { reply: None }),
                             look,
                             false,
@@ -1123,9 +1329,10 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
         )
         .child(heading(look, "History"))
         .children(
-            details
-                .into_iter()
-                .flat_map(|d| &d.history)
+            state
+                .board
+                .history
+                .iter()
                 .map(|line| secondary(look, line.clone())),
         )
         .child(row().child(button(
@@ -1207,7 +1414,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, look: Look) -
         page = page.child(
             div()
                 .p(px(10.))
-                .text_color(rgb(0xff453a))
+                .text_color(rgb(crate::theme::RED_STATUS))
                 .child(error.clone()),
         );
     }
@@ -1285,7 +1492,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, look: Look) -
                 state
                     .board
                     .opened()
-                    .map(|item| drawer(ui, state, item, look)),
+                    .map(|item| drawer(ui, state, inputs, item, look)),
             ),
     )
 }

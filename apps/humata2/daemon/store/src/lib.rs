@@ -14,8 +14,10 @@ mod agents;
 mod atomic;
 mod blob;
 mod boards;
+mod channel_snapshot;
 mod channels;
 mod comments;
+mod desk;
 mod error;
 mod fresh_seeds;
 pub mod fault;
@@ -28,14 +30,17 @@ mod records;
 mod remote_reports;
 mod reviews;
 mod rules;
+mod settings;
 mod schema;
 mod script_tokens;
+mod session_snapshot;
 mod store;
 mod views;
 
 use humata2_store_proto::humata::store::v1 as proto;
 
 pub use atomic::write_atomic;
+pub use channel_snapshot::{DeletedChannel, SIDE_FILE, Placement};
 pub use boards::{
     BoardHistoryEntry, BoardHistoryKind, BoardItemChange, BoardItemRecord, BoardKey,
     BoardWrite, NewBoardItem, PrefixClaim,
@@ -43,6 +48,7 @@ pub use boards::{
 pub use comments::{
     CommentChange, CommentDeliveryRecord, CommentDeliveryState, CommentNumbers, CommentRecord, SessionComments,
 };
+pub use desk::{DeskFolderKind, DeskRow};
 pub use error::StoreError;
 pub use fresh_seeds::FreshSeed;
 pub use journal::{Journal, JournalEntry};
@@ -56,6 +62,8 @@ pub use records::{
 };
 pub use remote_reports::RemoteReportRow;
 pub use rules::SavedRules;
+pub use settings::SavedSetting;
 pub use schema::SCHEMA_VERSION;
 pub use script_tokens::SavedScriptToken;
+pub use session_snapshot::Take;
 pub use store::Store;

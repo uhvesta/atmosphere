@@ -249,7 +249,7 @@ fn expected_revision(arguments: &Map<String, Value>) -> Option<pb::Revision> {
         .map(|value| pb::Revision { value })
 }
 
-fn page(arguments: &Map<String, Value>) -> Option<pb::PageRequest> {
+pub(super) fn page(arguments: &Map<String, Value>) -> Option<pb::PageRequest> {
     let token = text(arguments, "page_token");
     (!token.is_empty()).then_some(pb::PageRequest {
         page_size: 0,
@@ -257,7 +257,7 @@ fn page(arguments: &Map<String, Value>) -> Option<pb::PageRequest> {
     })
 }
 
-fn next_page(result: &mut Map<String, Value>, page: Option<pb::PageResponse>) {
+pub(super) fn next_page(result: &mut Map<String, Value>, page: Option<pb::PageResponse>) {
     if let Some(page) = page.filter(|page| !page.next_page_token.is_empty()) {
         result.insert("next_page_token".to_owned(), json!(page.next_page_token));
     }

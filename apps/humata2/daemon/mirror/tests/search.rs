@@ -733,3 +733,35 @@ fn a_page_token_the_search_did_not_hand_out_is_an_error() {
         );
     }
 }
+
+#[test]
+fn a_page_token_from_an_earlier_build_still_opens() {
+    let dir = tempfile::tempdir().unwrap();
+    let mirror = Mirror::open(&dir.path().join("state")).unwrap();
+    mirror_session(&mirror, dir.path(), "se_1", &invoice_turns(60, 0));
+    let first = mirror.search(&words("invoice")).unwrap();
+    let handed_out = mirror
+        .search(&Query {
+            page: PageAsk {
+                size: 0,
+                token: first.next_token,
+            },
+            ..words("invoice")
+        })
+        .unwrap();
+
+    // The token a host gave out for the second page of "invoice", written
+    // down: a client may hold it across a host upgrade.
+    let kept = mirror
+        .search(&Query {
+            page: PageAsk {
+                size: 0,
+                token: "32-11619f5514028ee0".to_owned(),
+            },
+            ..words("invoice")
+        })
+        .unwrap();
+
+    assert_eq!(places(&kept.items), places(&handed_out.items));
+    assert_eq!(kept.items.len(), 10);
+}

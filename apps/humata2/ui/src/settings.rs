@@ -10,7 +10,7 @@ use gpui_kit::component::{Sizable as _, button::Button};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::model::Agent;
-use humata2_settings::{FONT_SIZES, Section, SettingsAction as A, Theme};
+use humata2_settings::{FONT_SIZES, Row, Section, SettingsAction as A, Theme};
 use std::rc::Rc;
 fn dim(look: Look, text: impl Into<SharedString>) -> Div {
     div()
@@ -90,11 +90,9 @@ fn font_menu(ui: &Rc<Ui>, current: u8, look: Look) -> impl IntoElement {
                 .rounded(px(5.))
                 .cursor_pointer()
                 .hover(move |x| x.bg(rgb(look.fill)))
-                .child(
-                    div().w(px(12.)).flex_shrink_0().children(
-                        (size == current).then(|| chrome::icon(IconName::Check, look.accent, 12.)),
-                    ),
-                )
+                .child(div().w(px(12.)).flex_shrink_0().children(
+                    (size == current).then(|| chrome::icon(IconName::Check, look.accent, 12.)),
+                ))
                 .child(format!("Menlo {size}"))
                 .on_click(move |_, _, cx| ui.send(AppAction::Settings(A::SetFontSize(size)), cx))
                 .test_support()
@@ -210,110 +208,119 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
         .gap(px(14.));
     match state.settings.section {
         Section::Layout => {
-            let themes = row().flex_shrink_0().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
-                [
-                    (Theme::System, "System"),
-                    (Theme::Light, "Light"),
-                    (Theme::Dark, "Dark"),
-                ]
-                .into_iter()
-                .map(|(theme, name)| {
-                    let ui = ui.clone();
-                    div()
-                        .id(SharedString::from(format!("settings-theme-{name}")))
-                        .role(Role::Tab)
-                        .aria_label(name)
-                        .aria_selected(prefs.theme == theme)
-                        .test_support()
-                        .px(px(12.))
-                        .py(px(2.))
-                        .rounded(px(5.))
-                        .text_size(px(11.5))
-                        .when(prefs.theme == theme, |x| x.bg(rgb(look.card)).shadow_sm())
-                        .child(name)
-                        .cursor_pointer()
-                        .on_click(move |_, _, cx| {
-                            ui.send(AppAction::Settings(A::SetTheme(theme)), cx)
-                        })
-                }),
-            );
-            let long_lines = row().flex_shrink_0().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
-                [(true, "Wrap"), (false, "Scroll")].into_iter().map(|(wrap, name)| {
-                    let ui = ui.clone();
-                    let on = prefs.wrap_diffs == wrap;
-                    div()
-                        .id(SharedString::from(format!("settings-long-lines-{name}")))
-                        .role(Role::Tab)
-                        .aria_label(name)
-                        .aria_selected(on)
-                        .test_support()
-                        .px(px(12.))
-                        .py(px(2.))
-                        .rounded(px(5.))
-                        .text_size(px(11.5))
-                        .when(on, |x| x.bg(rgb(look.card)).shadow_sm())
-                        .child(name)
-                        .cursor_pointer()
-                        .on_click(move |_, _, cx| {
-                            if !on {
-                                ui.send(AppAction::Settings(A::ToggleWrap), cx)
-                            }
-                        })
-                }),
-            );
-            body = body
-                .child(
-                    open_card(look)
-                        .child(setting(
-                            look,
-                            "Appearance",
-                            "Follows the system unless you pick one.",
-                            themes.into_any_element(),
-                        ))
-                        .child(setting(
-                            look,
-                            "Terminal font",
-                            "Used by every terminal and the diff.",
-                            font_popup(ui, prefs.font_size, state.settings.font_menu, look)
-                                .into_any_element(),
-                        ))
-                        .child(setting(
-                            look,
-                            "Sidebar shows Pinned",
-                            "Pinned sessions, reviews and machines at the top.",
-                            toggle(
-                                ui,
-                                "settings-pinned",
-                                prefs.show_pinned,
-                                A::TogglePinned,
-                                look,
-                            )
-                            .into_any_element(),
-                        ))
-                        .child(setting(
-                            look,
-                            "Long lines",
-                            "Code in the diff, the editor, Files and reviews.",
-                            long_lines.into_any_element(),
-                        )),
+            let themes = row()
+                .flex_shrink_0()
+                .p(px(2.))
+                .rounded(px(7.))
+                .bg(rgb(look.fill))
+                .children(
+                    [
+                        (Theme::System, "System"),
+                        (Theme::Light, "Light"),
+                        (Theme::Dark, "Dark"),
+                    ]
+                    .into_iter()
+                    .map(|(theme, name)| {
+                        let ui = ui.clone();
+                        div()
+                            .id(SharedString::from(format!("settings-theme-{name}")))
+                            .role(Role::Tab)
+                            .aria_label(name)
+                            .aria_selected(prefs.theme == theme)
+                            .test_support()
+                            .px(px(12.))
+                            .py(px(2.))
+                            .rounded(px(5.))
+                            .text_size(px(11.5))
+                            .when(prefs.theme == theme, |x| x.bg(rgb(look.card)).shadow_sm())
+                            .child(name)
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| {
+                                ui.send(AppAction::Settings(A::SetTheme(theme)), cx)
+                            })
+                    }),
                 );
-        }
-        Section::General => {
+            let long_lines =
+                row()
+                    .flex_shrink_0()
+                    .p(px(2.))
+                    .rounded(px(7.))
+                    .bg(rgb(look.fill))
+                    .children([(true, "Wrap"), (false, "Scroll")].into_iter().map(
+                        |(wrap, name)| {
+                            let ui = ui.clone();
+                            let on = prefs.wrap_diffs == wrap;
+                            div()
+                                .id(SharedString::from(format!("settings-long-lines-{name}")))
+                                .role(Role::Tab)
+                                .aria_label(name)
+                                .aria_selected(on)
+                                .test_support()
+                                .px(px(12.))
+                                .py(px(2.))
+                                .rounded(px(5.))
+                                .text_size(px(11.5))
+                                .when(on, |x| x.bg(rgb(look.card)).shadow_sm())
+                                .child(name)
+                                .cursor_pointer()
+                                .on_click(move |_, _, cx| {
+                                    if !on {
+                                        ui.send(AppAction::Settings(A::ToggleWrap), cx)
+                                    }
+                                })
+                        },
+                    ));
             body = body.child(
-                card(look)
+                open_card(look)
                     .child(setting(
                         look,
-                        "Confirm bulk approvals",
-                        "Ask before approving requests that cannot be undone.",
+                        "Appearance",
+                        "Follows the system unless you pick one.",
+                        themes.into_any_element(),
+                    ))
+                    .child(setting(
+                        look,
+                        "Terminal font",
+                        "Used by every terminal and the diff.",
+                        font_popup(ui, prefs.font_size, state.settings.font_menu, look)
+                            .into_any_element(),
+                    ))
+                    .child(setting(
+                        look,
+                        "Sidebar shows Pinned",
+                        "Pinned sessions, reviews and machines at the top.",
                         toggle(
                             ui,
-                            "settings-confirm",
-                            prefs.confirm_destructive,
-                            A::ToggleConfirm,
+                            "settings-pinned",
+                            prefs.show_pinned,
+                            A::TogglePinned,
                             look,
                         )
                         .into_any_element(),
+                    ))
+                    .child(setting(
+                        look,
+                        "Long lines",
+                        "Code in the diff, the editor, Files and reviews.",
+                        long_lines.into_any_element(),
                     )),
+            );
+        }
+        Section::General => {
+            body = body.child(
+                card(look).child(setting(
+                    look,
+                    "Confirm bulk approvals",
+                    "Ask before approving requests that cannot be undone.",
+                    toggle(
+                        ui,
+                        "settings-confirm",
+                        prefs.confirm_destructive,
+                        A::ToggleConfirm,
+                        look,
+                    )
+                    .into_any_element(),
+                )),
             );
         }
         Section::Agents => {
@@ -335,7 +342,30 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                                 x.bg(rgb(look.accent)).text_color(rgb(0xffffff))
                             })
                         })),
-                );
+                )
+                .child(
+                    card(look).child(setting(
+                        look,
+                        Row::AsksInInbox.title(),
+                        "Off: each agent asks in its own terminal",
+                        toggle(
+                            ui,
+                            "settings-asks-in-inbox",
+                            state.settings.asks_in_inbox != Some(false),
+                            A::ToggleAsksInInbox,
+                            look,
+                        )
+                        .into_any_element(),
+                    )),
+                )
+                .when(state.settings.codex_needs_trust, |x| {
+                    x.child(card(look).child(setting(
+                        look,
+                        "Trust Humata's hooks in Codex",
+                        "Start a Codex session and run /hooks once, then trust Humata's",
+                        div().into_any_element(),
+                    )))
+                });
         }
         Section::Machines | Section::Storage => {
             body = body

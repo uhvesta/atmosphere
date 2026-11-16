@@ -170,6 +170,12 @@ pub enum StoreError {
         name: String,
     },
 
+    #[error(
+        "{} holds no deleted channel, so there is nothing to bring back from it. If it came from the trash, restore the item again; don't delete the file, which holds the channel's sessions and board",
+        path.display()
+    )]
+    NoDeletedChannel { path: PathBuf },
+
     #[error("no board item {key} is saved on this machine; it was never made here, or the key is mistyped")]
     NoBoardItem { key: String },
 

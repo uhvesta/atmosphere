@@ -13,6 +13,7 @@ rust_library(
     ],
     deps = [
         "//apps/humata2/clients",
+        "//apps/humata2/features/settings",
         "//libs/tca-rust:tca",
         "@crates//:serde",
     ],
@@ -26,6 +27,7 @@ rust_library(
         deps = [
             ":palette",
             "//apps/humata2/clients",
+            "//apps/humata2/features/settings",
             "//libs/tca-rust:tca",
         ],
     )

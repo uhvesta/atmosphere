@@ -28,6 +28,16 @@ const STOP_GRACE: Duration = Duration::from_secs(5);
 /// paste whole doesn't take the return as part of it.
 const TYPE_PAUSE: Duration = Duration::from_millis(100);
 
+/// Why an agent is resumed: after an interruption, or because the person
+/// moved it (its folder changed), which is no interruption.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Why<'a> {
+    Interrupted,
+    /// Resumed with this line shown first in its terminal, not recorded as an
+    /// interruption, and not told it was interrupted.
+    Moved(&'a str),
+}
+
 /// Saves `session`'s agent as launching, and fsyncs it (PER-11), then
 /// starts it in a holder of its own and saves it as running with its tab.
 /// `launch.argv` pins the conversation id (PER-12). A crash at any point
@@ -114,10 +124,14 @@ pub(crate) async fn resume(
     mut record: AgentRecord,
     created: i64,
     env: Env<'_>,
+    why: Why<'_>,
 ) -> Result<Revived, ReviveError> {
     let socket = record.launch.holder_socket.clone();
     let saved = read_saved(&socket, &record.session).await?;
-    let already_told = already_told(&record).await?;
+    let already_told = match why {
+        Why::Interrupted => already_told(&record).await?,
+        Why::Moved(_) => None,
+    };
     record.generation += 1;
     let mut interruption = Interruption {
         at_unix_ms: unix_ms(),
@@ -126,7 +140,9 @@ pub(crate) async fn resume(
         saved_tail_damaged: saved.is_some_and(|saved| saved.tail_damaged),
         told: already_told,
     };
-    record.interruptions.push(interruption.clone());
+    if matches!(why, Why::Interrupted) {
+        record.interruptions.push(interruption.clone());
+    }
     record.state = AgentState::Resuming;
     record.updated_unix_ms = unix_ms();
     save(store, &record, "save that the agent is resuming").await?;
@@ -136,10 +152,13 @@ pub(crate) async fn resume(
         return failed(store, record, reason, None).await;
     }
     let before = Conversation::look(&record.launch.conversation_file);
-    let mut line = format!(
-        "[Humata] This terminal stopped: its machine restarted or its holder was killed. Output after this point wasn't saved. Resuming the {} conversation {}.",
-        record.launch.agent, record.launch.conversation_id
-    );
+    let mut line = match why {
+        Why::Interrupted => format!(
+            "[Humata] This terminal stopped: its machine restarted or its holder was killed. Output after this point wasn't saved. Resuming the {} conversation {}.",
+            record.launch.agent, record.launch.conversation_id
+        ),
+        Why::Moved(text) => format!("[Humata] {text}"),
+    };
     if interruption.saved_tail_damaged {
         line.push_str(" The end of the saved output was damaged and dropped.");
     }
@@ -150,14 +169,16 @@ pub(crate) async fn resume(
 
     // A start fresh's first message that was kept but not typed is this
     // conversation's first message, and says what the session is about: the
-    // agent isn't told it was interrupted ahead of it (D153).
+    // agent isn't told it was interrupted ahead of it (D153). A move tells
+    // it nothing.
     let seeded = seed_pending(store, &record).await?;
-    let tell = already_told.is_none() && !seeded;
+    let tell = matches!(why, Why::Interrupted) && already_told.is_none() && !seeded;
     match verify(store, config, &mut record, interruption.output_resumes_at, before, tell).await {
         Ok(Ok(())) => {
             point("revive.resume.verified");
-            // With what verify added: when it was told.
-            if let Some(last) = record.interruptions.last() {
+            // With what verify added: when it was told. A move records no
+            // interruption, so there is nothing to take from the record.
+            if let (Why::Interrupted, Some(last)) = (why, record.interruptions.last()) {
                 interruption = last.clone();
             }
             running(store, record, spawned, created).await?;

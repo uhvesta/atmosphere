@@ -96,7 +96,7 @@ can check. A requirement tagged "(provisional, D<n>)" follows a pick in
 | Host | The machine whose `humatad` holds the source of truth (SL-1): your Mac by default, or a machine you host (AR-7). The worked examples in §26 use a Mac as the host; elsewhere the spec says "host". "Away" means a machine has no link to it. |
 | Bridge | The host. Every machine has one SSH link to it, and every call between machines goes through it. |
 | Turn | From a message reaching the agent until the agent waits for input again. How Humata learns a turn ended is per agent (SE-21). |
-| Own clones | The clones under a session's own folder (`sessions/<session>/`). A context-only fork has none until it gets its own copy (FK-9). |
+| Own clones | The clones under a session's own folder (`sessions/<session>/`). A context-only fork has none: it works in its parent's clones until it gets its own copy (FK-9). |
 | Grant | An "Always allow …" permission for one session and one target (IN-14, IN-22). |
 | Presence | Proof that the person, not an agent, is giving a command from the CLI (SEC-10). |
 | Inactive | A session with no terminal output, no input and not opened by the user for a given time (LD-16). Not the Idle status. |
@@ -554,7 +554,7 @@ is configurable per machine.
 
 - **SE-18** The Info panel shows: agent; machine with its OS; started; forked
   from (link, with fork kind); forks (links); each clone (repo, branch, path,
-  "main clone" chip if it is one); for a context-only fork, "Read only: the
+  "main clone" chip if it is one); for a context-only fork, "Shares the
   files of “parent”" and a **Give it its own copy** button (FK-9).
 - **SE-19** It has a **Survives restarts** card: the terminal is held by
   `humatad` on <machine>, not by the app; after a reboot the agent is started
@@ -685,8 +685,9 @@ review) are in §11.
 - **DK-10** For every rule that is set per channel (agent access rules, the
   While I'm away rule, Contain agents, retention), a Desk session uses the
   defaults for new channels (ST-4, ST-6, ST-14, ST-17). DK-4's two switches
-  are that session's grants on top of them: the first allows the "Global
-  board, or other channels and their boards" row of IN-17, the second the
+  are that session's grants on top of them: the first allows both "Global
+  board, or other channels' boards" rows of IN-17 (read and change, D180),
+  the second the
   "Create a channel" and "Add, create, start or stop machines" rows. No
   channel is a Desk agent's own: the IN-17 rows about "its channel" give it
   nothing. (provisional, D108)
@@ -728,8 +729,10 @@ review) are in §11.
   - **Code + context**: new clones copied from the parent's files as they are
     right now (uncommitted changes included), on a new branch, and a new agent
     that knows the conversation.
-  - **Context only**: a new agent that knows the conversation and can read the
-    parent's files but never write them. For a reviewer or a side question.
+  - **Context only**: a new agent that knows the conversation and works in
+    the parent's clones, reading and writing them like the parent, so two
+    agents work on one tree. A fresh agent in the parent's code is a
+    context-only fork followed by `/clear` (D185).
   - **Code only**: new clones copied from the parent's files, and a fresh agent
     with no conversation.
 - **FK-3** The dialog also asks: fork from (now, or before an earlier turn,
@@ -746,11 +749,14 @@ review) are in §11.
   conversation is handed over as the transcript plus a short summary. The
   dialog says the new agent knows what was said and done but not the exact
   internal state.
-- **FK-7** A context-only fork's file tools read the parent's clones and
-  cannot write them: writes fail with a message telling the agent to ask for
-  its own copy. Its diff, files and editor show the parent's files.
-- **FK-8** A context-only fork may run on another machine; it then reads its
-  parent's files across the bridge (rule-gated as a cross-machine read).
+- **FK-7** A context-only fork's working folder is its parent's clones. It
+  reads and writes them as the parent does, through Humata and directly, under
+  the same rules as its own clones. Its diff, files and editor show the
+  parent's files, and both agents' edits appear together; nothing stops the
+  two from editing the same file at once (D185).
+- **FK-8** A context-only fork may run on another machine; it then reads and
+  writes its parent's files across the bridge (rule-gated as cross-machine
+  reads and writes).
 - **FK-9** **Give it its own copy** turns a context-only fork into code +
   context: Humata copies the parent's files as they are now onto a new branch
   in the fork's own clones, and from then on the agent can edit them.
@@ -772,9 +778,9 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 │  └─⑂ Partition by month            code + context
 │     └─⑂ Monthly + BRIN indexes     code + context
 │        ├─⑂ Benchmark BRIN vs btree code only        Codex · devbox-1 (fresh agent)
-│        │  └─⑂ Check vacuum cost    context only     reads Benchmark's files
+│        │  └─⑂ Check vacuum cost    context only     works in Benchmark's files
 │        └─⑂ Why not hash partitions? context only    Copilot: transcript + summary
-└─⑂ Review the migration             context only     Codex: reads parent, never writes
+└─⑂ Review the migration             context only     Codex: works in the parent's files
 ```
 
 ## 7. Moving and archiving
@@ -1042,7 +1048,8 @@ each repo's branch.
   01) sends every draft of the session as one message (SM-9). The comments
   then show as sent and the session is marked working.
 - **RV-6** **Mark reviewed** records the current state of every repo, so that
-  "Since I last reviewed" starts there.
+  "Since I last reviewed" starts there. A repo never marked shows everything
+  since origin/main, labelled "not reviewed yet" (D198).
 - **RV-7** With no changes against the chosen base, the panel says so; with
   no changes at all, "No changes yet".
 - **RV-8** The Diff strip icon shows the number of unsent comments.
@@ -1443,7 +1450,8 @@ mode. Frames 39 and 41–43 draw it.
   after it was sent alters any of the comment's anchored lines. A change
   that only alters whitespace does not count. A passage moved elsewhere
   unchanged is re-anchored (SM-7) and stays sent. Changes the user makes
-  never address a comment. (provisional, D13)
+  never address a comment. If the passage is gone instead, a sent comment
+  returns to a detached draft (SM-7, D190). (provisional, D13)
 
 ### Resolving and archiving (owner direction 2026-11-15, D101)
 
@@ -1738,8 +1746,8 @@ and frame 37 a Desk session's.
 - **IN-16** Some actions need no rule, and no setting stops them: reading its
   own session (title, status, repos, branches), reading and writing its own
   clones, its own views, its own requests, and replies to comments sent to
-  its own session (DK-9). A context-only fork reads its
-  parent's clones the same way but can never write them (IN-20). Every other
+  its own session (DK-9). A context-only fork reads and writes its
+  parent's clones the same way (FK-7). Every other
   action is checked against the channel's rules, including its own session
   board and the channel items it created, whose rules default to Allow. The
   rules govern calls made through Humata only (SEC-5).
@@ -1791,8 +1799,8 @@ and frame 37 a Desk session's.
   and adds nothing to the Inbox.
 - **IN-19** Scoped "Always allow …" rules are listed under their rule with their
   scope and can be removed.
-- **IN-20** A context-only fork's writes to its parent's clones are never
-  allowed, whatever the rules say (FK-7).
+- **IN-20** Dropped (D185): a context-only fork's parent's clones count as
+  its own (FK-7, IN-16).
 - **IN-21** Rule changes take effect for the next call; pending requests stay
   pending. When a pending request is answered, the answer is checked against
   the rule as it is then: approving a request whose rule became Never fails
@@ -2880,8 +2888,7 @@ NV-32–NV-34 keep what still holds.
 - **SEC-2** The GitHub token never leaves the host. Remote clones without `gh`
   use bundles and pushes through the host (FC-7).
 - **SEC-3** Agents get only what the rules allow for calls made through
-  Humata (SEC-5); a context-only fork can never write its parent's files
-  through Humata.
+  Humata (SEC-5).
 - **SEC-4** The local socket is readable only by the user.
 - **SEC-5** An agent that is not contained runs as the user and can read and
   write anything the user can on its machine, and open network connections,
@@ -2892,8 +2899,9 @@ NV-32–NV-34 keep what still holds.
   Settings, with a per-channel override. A contained agent can write only
   inside its session folder and `shared/`. Its reads of other sessions'
   folders, Humata's own folders, `~/.ssh` and the `gh` config fail. Its only
-  network connection is to its daemon's socket. A change applies when a
-  session next launches or resumes. (provisional, D1)
+  network connection is to its daemon's socket. A contained context-only
+  fork can also read and write its parent's clones (FK-7). A
+  change applies when a session next launches or resumes. (provisional, D1)
 - **SEC-7** Some actions are the user's only, and no rule or grant gives
   them to an agent: answering Inbox requests; changing access rules, grants,
   the passphrase, Settings, agents and providers; pins and VIP; submitting a
@@ -3309,8 +3317,8 @@ that used to be here is gone with it.
 - **q1** Channel feed: events only, or can the user also post notes into it?
 - **q2** Answered: comments are pasted into the agent's terminal as one
   message (SM-9); the agent replies and resolves over MCP (DK-9, SM-19).
-- **q3** Answered: context-only forks are read-only on their parent's files
-  (FK-7, IN-20).
+- **q3** Answered (D185): context-only forks share and edit the parent's
+  code.
 - **q4** Main clones: read-only reference only, or may a plain shell session
   work in them?
 - **q5** Does a fork's session board start as a copy of its parent's, empty,

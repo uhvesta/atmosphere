@@ -5,15 +5,20 @@ use std::time::Duration;
 use tca::{BoxFuture, Clock};
 use tokio::sync::mpsc;
 
-use crate::daemon::{Daemon, DaemonError, Event, Events, Operation, Reply, Terminals};
+use crate::daemon::{
+    ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, Operation, PastTurn, Reply,
+    Terminals,
+};
 use crate::fixture;
 use crate::model::{
-    Agent, Answer, Archive, Capability, ChannelId, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
-    RequestId, RuleSetting, Scope, Session, SessionId, SetupId, Speaker, Status, TransferId,
+    Agent, Answer, Archive, Capability, ChannelId, DiffBase, ForkKind, GrantId, ItemId, ItemStatus,
+    Line, MachineId, PushChoice, Recovery, RepoDiff, RequestId, RuleSetting, Scope, Session,
+    SessionId, SetupId, Speaker, Status, TransferId,
 };
 use crate::workspace::Workspace;
 
 mod access;
+mod agent_asks;
 mod boards;
 mod channels;
 mod desk;
@@ -46,7 +51,18 @@ struct Inner {
     next: u32,
     archived: HashMap<SessionId, (Session, Vec<SessionId>)>,
     archive_frees: HashMap<SessionId, String>,
+    unpushed: HashMap<SessionId, Vec<(String, String)>>,
+    last_fork: Option<ForkOptions>,
+    last_move: Option<(SessionId, MachineId)>,
+    last_archive: Option<(SessionId, bool)>,
     terminal_input: HashMap<(SessionId, usize), Vec<u8>>,
+    diffs: HashMap<SessionId, Vec<RepoDiff>>,
+    reviewed: HashMap<SessionId, Vec<RepoDiff>>,
+    pushes: Vec<(SessionId, PushChoice)>,
+    pull_requests: HashMap<(SessionId, String), u32>,
+    next_pull_request: u32,
+    asks_in_inbox: bool,
+    codex_needs_trust: bool,
 }
 
 struct Subscriber {
@@ -76,7 +92,18 @@ impl FakeDaemon {
                 next: 1,
                 archived: HashMap::new(),
                 archive_frees: HashMap::new(),
+                unpushed: HashMap::new(),
+                last_fork: None,
+                last_move: None,
+                last_archive: None,
                 terminal_input: HashMap::new(),
+                diffs: HashMap::new(),
+                reviewed: HashMap::new(),
+                pushes: Vec::new(),
+                pull_requests: HashMap::new(),
+                next_pull_request: 1,
+                asks_in_inbox: true,
+                codex_needs_trust: false,
             })),
             clock,
             latency: Duration::ZERO,
@@ -104,10 +131,65 @@ impl FakeDaemon {
     }
 
     /// Says how much disk archiving `session` will free, as people read it ("1.4 GB").
+    /// Makes the daemon say Codex's hooks still need trusting, or not (D202).
+    pub fn set_codex_needs_trust(&self, on: bool) {
+        self.inner().codex_needs_trust = on;
+    }
+
     pub fn set_archive_frees(&self, session: &SessionId, frees: impl Into<String>) {
         self.inner()
             .archive_frees
             .insert(session.clone(), frees.into());
+    }
+
+    /// Says what work in each repository (its name, then what is unpushed)
+    /// archiving `session` would delete.
+    pub fn set_unpushed(&self, session: &SessionId, work: Vec<(String, String)>) {
+        self.inner().unpushed.insert(session.clone(), work);
+    }
+
+    /// What the last fork asked for.
+    #[must_use]
+    pub fn last_fork(&self) -> Option<ForkOptions> {
+        self.inner().last_fork.clone()
+    }
+
+    /// The session and machine of the last move.
+    #[must_use]
+    pub fn last_move(&self) -> Option<(SessionId, MachineId)> {
+        self.inner().last_move.clone()
+    }
+
+    /// The session of the last archive, and whether it asked to commit,
+    /// push and open pull requests first.
+    #[must_use]
+    pub fn last_archive(&self) -> Option<(SessionId, bool)> {
+        self.inner().last_archive.clone()
+    }
+
+    /// Says what `session`'s changes against origin/main are now.
+    pub fn set_diffs(&self, session: &SessionId, diffs: Vec<RepoDiff>) {
+        let mut merged: Vec<RepoDiff> = Vec::new();
+        for diff in diffs {
+            match merged.iter_mut().find(|have| have.repo == diff.repo) {
+                Some(have) => have.files.extend(diff.files),
+                None => merged.push(diff),
+            }
+        }
+        self.inner().diffs.insert(session.clone(), merged);
+    }
+
+    /// Says which pull request is open for `session`'s branch in `repo`.
+    pub fn set_open_pull_request(&self, session: &SessionId, repo: &str, number: u32) {
+        self.inner()
+            .pull_requests
+            .insert((session.clone(), repo.to_owned()), number);
+    }
+
+    /// Every push choice the app sent, oldest first, with its session.
+    #[must_use]
+    pub fn pushes(&self) -> Vec<(SessionId, PushChoice)> {
+        self.inner().pushes.clone()
     }
 
     /// Says what reconnecting will do to `session`.
@@ -330,6 +412,18 @@ impl Daemon for FakeDaemon {
         access::remove_grant(self, grant)
     }
 
+    fn asks_in_inbox(&self) -> Reply<bool> {
+        agent_asks::asks_in_inbox(self)
+    }
+
+    fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool> {
+        agent_asks::set_asks_in_inbox(self, inbox)
+    }
+
+    fn codex_needs_trust(&self) -> Reply<bool> {
+        agent_asks::codex_needs_trust(self)
+    }
+
     fn reconnect(&self, machine: &MachineId) -> Reply<Vec<(SessionId, Recovery)>> {
         machines::reconnect(self, machine)
     }
@@ -342,12 +436,24 @@ impl Daemon for FakeDaemon {
         sessions::start_fresh(self, session)
     }
 
-    fn fork(&self, session: &SessionId, kind: ForkKind, title: &str) -> Reply<SessionId> {
-        sessions::fork(self, session, kind, title)
+    fn fork(&self, session: &SessionId, options: ForkOptions) -> Reply<SessionId> {
+        sessions::fork(self, session, options)
     }
 
-    fn archive(&self, session: &SessionId) -> Reply<Archive> {
-        sessions::archive(self, session)
+    fn list_turns(&self, session: &SessionId) -> Reply<Vec<PastTurn>> {
+        sessions::list_turns(self, session)
+    }
+
+    fn move_session(&self, session: &SessionId, to: &MachineId) -> Reply<()> {
+        sessions::move_session(self, session, to)
+    }
+
+    fn plan_archive(&self, session: &SessionId) -> Reply<ArchivePlan> {
+        sessions::plan_archive(self, session)
+    }
+
+    fn archive(&self, session: &SessionId, push_first: bool) -> Reply<Archive> {
+        sessions::archive(self, session, push_first)
     }
 
     fn add_machine(&self, address: &str) -> Reply<MachineId> {
@@ -410,8 +516,41 @@ impl Daemon for FakeDaemon {
         boards::add_dependency(self, item, on)
     }
 
+    fn remove_dependency(&self, item: &ItemId, on: &ItemId) -> Reply<()> {
+        boards::remove_dependency(self, item, on)
+    }
+
+    fn set_item_session(&self, item: &ItemId, session: &SessionId, working: bool) -> Reply<()> {
+        boards::set_item_session(self, item, session, working)
+    }
+
+    fn item_history(&self, item: &ItemId) -> Reply<Vec<String>> {
+        boards::item_history(self, item)
+    }
+
     fn read_file(&self, session: &SessionId, repo: &str, path: &str) -> Reply<String> {
         review::read_file(self, session, repo, path)
+    }
+
+    fn diffs(&self, session: &SessionId, base: &DiffBase) -> Reply<Vec<RepoDiff>> {
+        review::diffs(self, session, base)
+    }
+
+    fn mark_reviewed(&self, session: &SessionId) -> Reply<()> {
+        review::mark_reviewed(self, session)
+    }
+
+    fn plan_push(&self, session: &SessionId) -> Reply<crate::model::PushPlan> {
+        review::plan_push(self, session)
+    }
+
+    fn push(
+        &self,
+        session: &SessionId,
+        _token: &str,
+        choices: Vec<PushChoice>,
+    ) -> Reply<Option<u32>> {
+        review::push(self, session, choices)
     }
 
     fn retry_transfer(&self, transfer: &TransferId) -> Reply<()> {

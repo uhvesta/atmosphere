@@ -420,8 +420,10 @@ impl pb::access_service_server::AccessService for Access {
         };
         let principal = guard::principal(&Caller::Agent(agent.clone()));
         let channel = agent.session.channel.clone();
+        // A Desk agent belongs to no channel; nothing is added for it (D182.3).
+        let desk = matches!(agent.session_kind(), humata2_access::SessionKind::Desk(_));
         let explained = self.guard.with_policy(|policy, context| {
-            if policy.channel_rules(&channel).is_none() {
+            if !desk && policy.channel_rules(&channel).is_none() {
                 policy.add_channel(channel.clone()).map_err(policy_failed)?;
             }
             let mut checked = policy.check(&principal, &call, context);

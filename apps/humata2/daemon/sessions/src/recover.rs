@@ -4,6 +4,7 @@
 //! whose launch was recorded is already running again.
 
 use std::collections::HashSet;
+use std::fs;
 
 use humata2_revive::Env;
 use humata2_store::{MainClone, SessionRecord, StartStep, Store, StoreError};
@@ -58,12 +59,39 @@ impl Leftovers {
 }
 
 /// Finishes or undoes every unfinished channel setup and session start
-/// among `left`.
+/// among `left`, after clearing what a crash left of own copies (FK-9).
 pub async fn recover(starter: &Starter, env: Env<'_>, left: &Leftovers) -> Vec<Recovery> {
     let mut done = Vec::new();
+    remove_own_copy_partials(starter).await;
     recover_channels(starter, left, &mut done).await;
     recover_sessions(starter, env, left, &mut done).await;
     done
+}
+
+/// Removes the partial copies that own copies of the code leave beside a
+/// channel's session folders, as `sessions/<folder>.partial` (FK-9). A
+/// session start's partials are one folder deeper and are left alone. Best
+/// effort: nothing is reported, and a channel with no sessions folder has
+/// nothing to remove.
+async fn remove_own_copy_partials(starter: &Starter) {
+    let this = starter.clone();
+    let Ok(Ok(channels)) = blocking(move || this.store.channels()).await else {
+        return;
+    };
+    for channel in channels {
+        let sessions = starter.layout.sessions(&channel.folder);
+        let _ = blocking(move || {
+            let Ok(entries) = fs::read_dir(&sessions) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().ends_with(".partial") {
+                    let _ = fs::remove_dir_all(entry.path());
+                }
+            }
+        })
+        .await;
+    }
 }
 
 async fn recover_channels(starter: &Starter, left: &Leftovers, done: &mut Vec<Recovery>) {

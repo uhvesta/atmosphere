@@ -136,6 +136,22 @@ async fn fork_forks_the_parent() {
     assert_eq!(sent.title, "Try B");
 }
 
+/// FK-4: a typed branch goes to the daemon as typed; none leaves it to the daemon.
+#[tokio::test]
+async fn fork_sends_a_typed_branch() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "session", "fork", "se_1", "--kind", "code-only", "--branch", "me/try-b"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+    let sent: pb::ForkSessionRequest = daemon.only(rpc::session::FORK_SESSION);
+    assert_eq!(sent.branch, "me/try-b");
+}
+
 #[tokio::test]
 async fn archive_push_first_archives_by_the_plan() {
     let daemon = FakeDaemon::new();

@@ -29,7 +29,7 @@ genrule(
     outs = ["Humata2.icns"],
     cmd = "&&\n".join(
         ["mkdir -p $(@D)/Humata2.iconset"] + [
-            "$(location :draw_icon) --candidate {c} --size {s} --out $(@D)/Humata2.iconset/{n}".format(
+            "$(execpath :draw_icon) --candidate {c} --size {s} --out $(@D)/Humata2.iconset/{n}".format(
                 c = CANDIDATE,
                 n = name,
                 s = size,

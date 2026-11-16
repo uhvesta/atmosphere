@@ -5,8 +5,9 @@ Complementary "Changes"
   Button "Minimize window"
   Button "Zoom window"
   text "Diff"
+  Button "Against main"
+    text "main"
   text "Diff"
-  text "main"
   text "against"
   Button "Show the terminal"
   Button "Close panel"
@@ -18,62 +19,63 @@ Complementary "Changes"
   Code "acme/api/src/client.rs"
     text "@@ -40,7 +40,9 @@ impl Client {"
     #change-line-1
-      #change-gutter-1
+      Button "Comment on line 40"
         text "40"
       text " "
       #change-code-1-0
         text "    pub async fn send(&self, request: Request) -> Result<Response> {"
     #change-line-2
-      #change-gutter-2
+      Button "Comment on line 41"
         text "41"
       text "−"
       #change-code-2-0
         text "        let response = self.http.send(request.clone()).await?;"
     #change-line-3
-      #change-gutter-3
+      Button "Comment on line 42"
         text "42"
       text "−"
       #change-code-3-0
         text "        if response.status() == 401 { return self.retry(request).await; }"
     #change-line-4
-      #change-gutter-4
+      Button "Comment on line 41"
         text "41"
       text "+"
       #change-code-4-0
         text "        let response = self.http.send(request.clone()).await?;"
     #change-line-5
-      #change-gutter-5
+      Button "Comment on line 42"
         text "42"
       text "+"
       #change-code-5-0
         text "        if response.status() == 401 {"
+    text "You"
+    text "Refresh once only; a second 401 should surface."
     #change-line-6
-      #change-gutter-6
+      Button "Comment on line 43"
         text "43"
       text "+"
       #change-code-6-0
         text "            self.tokens.refresh().await?;"
     #change-line-7
-      #change-gutter-7
+      Button "Comment on line 44"
         text "44"
       text "+"
       #change-code-7-0
         text "            return self.http.send(request).await;"
     #change-line-8
-      #change-gutter-8
+      Button "Comment on line 45"
         text "45"
       text " "
       #change-code-8-0
         text "        }"
     #change-line-9
-      #change-gutter-9
+      Button "Comment on line 46"
         text "46"
       text " "
       #change-code-9-0
         text "        Ok(response)"
-    text "You"
-    text "Refresh once only; a second 401 should surface."
   text "acme/api"
+  Button "Push & PR"
   text "humata/s-auth"
   ListBoxOption "acme/api/src/client.rs" selected
     text "src/client.rs"

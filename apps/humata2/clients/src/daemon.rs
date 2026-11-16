@@ -6,7 +6,8 @@ use tca::BoxFuture;
 use tokio::sync::mpsc;
 
 use crate::model::{
-    AccessRule, Agent, Answer, Archive, Capability, ChannelId, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
+    AccessRule, Agent, Answer, Archive, Capability, ChannelId, DiffBase, ForkKind, GrantId, Item,
+    ItemDetails, ItemId, ItemStatus, Line, MachineId, PushChoice, PushPlan, Recovery, RepoDiff,
     RequestId, RuleSetting, Scope, Session, SessionId, SetupId, Transfer, TransferId,
 };
 use crate::workspace::Workspace;
@@ -44,6 +45,9 @@ pub enum Event {
     },
     /// A request was added or answered.
     Request(crate::model::Request),
+    /// A request no one can answer any more: the agent stopped waiting
+    /// (HOOKS, D191) or withdrew it.
+    RequestGone(RequestId),
     /// A channel's access rules changed.
     Rules {
         /// The channel.
@@ -59,6 +63,15 @@ pub enum Event {
     ChannelSetup(crate::model::ChannelSetup),
     /// A transfer moved on.
     Transfer(Transfer),
+    /// A board item was made or changed (BD-1).
+    Item {
+        /// Its card.
+        item: Item,
+        /// What its drawer shows.
+        details: ItemDetails,
+    },
+    /// A board item was deleted.
+    ItemGone(ItemId),
     /// Events were dropped because the subscriber fell behind: reload.
     Resync,
 }
@@ -86,6 +99,8 @@ pub enum Operation {
     MoveItem,
     /// [`Daemon::archive`].
     Archive,
+    /// [`Daemon::move_session`].
+    MoveSession,
     /// [`Daemon::resume`].
     Resume,
     /// [`Daemon::start_fresh`].
@@ -98,6 +113,16 @@ pub enum Operation {
     SetRule,
     /// [`Daemon::remove_grant`].
     RemoveGrant,
+    /// [`Daemon::diffs`].
+    Diffs,
+    /// [`Daemon::mark_reviewed`].
+    MarkReviewed,
+    /// [`Daemon::plan_push`].
+    PlanPush,
+    /// [`Daemon::push`].
+    Push,
+    /// [`Daemon::set_asks_in_inbox`].
+    SetAsksInInbox,
 }
 
 /// Why a daemon call failed.
@@ -137,7 +162,7 @@ pub enum DaemonError {
         what: String,
     },
     /// A fake was told to fail this call.
-    #[error("{operation:?} failed: {message}. Try again; a test made this fail on purpose")]
+    #[error("{operation:?} failed: {}. Try again; a test made this fail on purpose", .message.trim_end_matches('.'))]
     Scripted {
         /// The call.
         operation: Operation,
@@ -146,10 +171,86 @@ pub enum DaemonError {
     },
 }
 
+/// What the Fork dialog sends (FK-1 to FK-5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForkOptions {
+    /// How the fork shares the parent's work.
+    pub kind: ForkKind,
+    /// Its title.
+    pub title: String,
+    /// The turn to fork before; `None` forks from now.
+    pub before_turn: Option<u32>,
+    /// The agent the fork runs; `None` keeps the parent's.
+    pub agent: Option<Agent>,
+    /// Where the fork runs; `None` keeps the parent's machine.
+    pub machine: Option<MachineId>,
+    /// The branch the fork's clones are made on.
+    pub branch: String,
+}
+
+/// One turn of a conversation a fork may start before.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PastTurn {
+    /// Its number, counting from 1.
+    pub index: u32,
+    /// The first line of what was asked.
+    pub text: String,
+}
+
+/// Work in one repository that archiving would delete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnpushedWork {
+    /// The repository, as the session names it.
+    pub repo: String,
+    /// What is unpushed there, in a sentence.
+    pub what: String,
+}
+
+/// What archiving a session does, known before it happens.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArchivePlan {
+    /// How many forks stay running and move up the tree.
+    pub forks_keep_running: u32,
+    /// Work that exists only in this session's clones; empty when archiving
+    /// loses nothing.
+    pub unpushed: Vec<UnpushedWork>,
+    /// The disk archiving frees, as people read it, when known.
+    pub frees: Option<String>,
+}
+
 /// What the app asks of the daemons.
 pub trait Daemon: Send + Sync + 'static {
     /// Reads a text file in this session's own repository clone.
     fn read_file(&self, session: &SessionId, repo: &str, path: &str) -> Reply<String>;
+    /// The session's changes in each of its repositories against `base`
+    /// (RV-1), read from its clones now.
+    fn diffs(&self, session: &SessionId, base: &DiffBase) -> Reply<Vec<RepoDiff>> {
+        let what = format!("The changes of {session} against {base:?}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// What pushing each of the session's repositories would do (RV-2).
+    fn plan_push(&self, session: &SessionId) -> Reply<PushPlan> {
+        let what = format!("Pushing {session}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Commits, pushes and opens pull requests for the chosen repositories
+    /// of a plan, spending its `token`. Returns the pull request number the
+    /// daemon opened or found, if any.
+    fn push(
+        &self,
+        session: &SessionId,
+        token: &str,
+        choices: Vec<PushChoice>,
+    ) -> Reply<Option<u32>> {
+        let what = format!("Pushing {session}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Remembers the session's changes as reviewed, so "Since I last
+    /// reviewed" starts from here (RV-6).
+    fn mark_reviewed(&self, session: &SessionId) -> Reply<()> {
+        let what = format!("Mark reviewed for {session}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
     /// Everything there is, merged across hosts.
     fn load(&self) -> Reply<Workspace>;
     /// Follows what changes, from now on.
@@ -166,10 +267,28 @@ pub trait Daemon: Send + Sync + 'static {
     /// Starts a session whose resume failed on a new conversation, seeded
     /// with a summary of the old one (PER-15, D143).
     fn start_fresh(&self, session: &SessionId) -> Reply<()>;
-    /// Forks a session.
-    fn fork(&self, session: &SessionId, kind: ForkKind, title: &str) -> Reply<SessionId>;
-    /// Archives a session; its forks keep running.
-    fn archive(&self, session: &SessionId) -> Reply<Archive>;
+    /// Forks a session as the dialog set it up (FK-1 to FK-5).
+    fn fork(&self, session: &SessionId, options: ForkOptions) -> Reply<SessionId>;
+    /// The turns a fork may start before, oldest first (FK-3).
+    fn list_turns(&self, session: &SessionId) -> Reply<Vec<PastTurn>> {
+        let what = format!("The turns of {session}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Moves a session to another machine (MV-1 to MV-6).
+    fn move_session(&self, session: &SessionId, to: &MachineId) -> Reply<()> {
+        let what = format!("Moving {session} to {to}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// What archiving a session would lose or leave running (MV-8, MV-9),
+    /// read before it is archived.
+    fn plan_archive(&self, session: &SessionId) -> Reply<ArchivePlan> {
+        let what = format!("What archiving {session} would lose");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Archives a session; its forks keep running. With `push_first` its
+    /// unpushed work is committed, pushed and opened as pull requests first;
+    /// without it, that work is deleted with the session.
+    fn archive(&self, session: &SessionId, push_first: bool) -> Reply<Archive>;
     /// Adds a plain SSH destination to the fake workspace.
     fn add_machine(&self, address: &str) -> Reply<MachineId>;
     /// Restores a session archived by this client, including its tree and pin.
@@ -206,6 +325,13 @@ pub trait Daemon: Send + Sync + 'static {
     fn create_item(&self, scope: Scope, title: &str) -> Reply<ItemId>;
     /// Makes `item` wait for `on`; refused when that would make a cycle.
     fn add_dependency(&self, item: &ItemId, on: &ItemId) -> Reply<()>;
+    /// Stops `item` waiting for `on` (BD-14).
+    fn remove_dependency(&self, item: &ItemId, on: &ItemId) -> Reply<()>;
+    /// Adds `session` to the sessions working on `item`, or removes it
+    /// (BD-16).
+    fn set_item_session(&self, item: &ItemId, session: &SessionId, working: bool) -> Reply<()>;
+    /// An item's history as the drawer words it, newest first (BD-3).
+    fn item_history(&self, item: &ItemId) -> Reply<Vec<String>>;
     /// Retries a failed transfer.
     fn retry_transfer(&self, transfer: &TransferId) -> Reply<()>;
     /// Sets what a channel's rule does; refused for a rule with no setting
@@ -218,6 +344,13 @@ pub trait Daemon: Send + Sync + 'static {
     ) -> Reply<()>;
     /// Removes a scoped "Always allow" grant (IN-19).
     fn remove_grant(&self, grant: &GrantId) -> Reply<()>;
+    /// Whether agents' permission asks wait in the Inbox (D199); false: the
+    /// agent's own prompt asks.
+    fn asks_in_inbox(&self) -> Reply<bool>;
+    /// Sets it; gives what the daemon holds after.
+    fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool>;
+    /// Whether Codex's hooks still need trusting in Codex's /hooks (D202).
+    fn codex_needs_trust(&self) -> Reply<bool>;
 }
 
 /// The terminals of sessions: typing into tabs other than the agent's.

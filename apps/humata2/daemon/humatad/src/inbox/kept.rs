@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{
     AccessRequest, Agent, Grant, GrantId, MachineId, Policy, PresenceMethod, RequestId,
-    SessionKind, Verdict,
+    Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{InboxRecord, Store};
@@ -212,6 +212,8 @@ fn restored(
         keys: body.keys,
         request: tokio::sync::watch::channel(held).0,
         run: std::sync::Mutex::new(None),
+        // Only settled permission cards are saved: nothing holds them now.
+        permission: false,
     };
     Some((entry, standing, changed))
 }
@@ -229,11 +231,11 @@ fn asked_again(
 ) -> Option<AccessRequest> {
     let capability = grant_target::capability_of(capability)?;
     let record = store.session(session).ok()??;
-    let agent = AgentCaller::of(&record, machine);
+    let agent = AgentCaller::of(&record, machine).resolve_fork(store).ok()?;
     let call = grant_target::ask_ahead_call(store, machine, &agent, capability, target).ok()?;
     let asker = Agent {
         session: agent.session.clone(),
-        kind: SessionKind::Ordinary,
+        kind: agent.session_kind(),
     };
     guard.with_policy(|policy, context| {
         if policy.channel_rules(&asker.session.channel).is_none() {

@@ -1,0 +1,4 @@
+data: {"id":"evt_1e3abc7cd001z0p0g11w6CHXDJ","type":"server.connected","data":{}}
+
+data: {"id":"evt_1e3abcdbb001Ew2F3s07spMeG8","created":1794821049787,"type":"session.created","location":{"directory":"/work/proj"},"data":{"sessionID":"ses_e1c543246ffe0gpn6l1Dehz8dH","slug":"gentle-star","version":"2.3.0","projectID":"global","location":{"directory":"/work/proj"},"subpath":"","permissions":[{"action":"bash","resource":"*","effect":"ask"}]},"durable":{"aggregateID":"ses_e1c543246ffe0gpn6l1Dehz8dH","seq":0,"version":1}}
+

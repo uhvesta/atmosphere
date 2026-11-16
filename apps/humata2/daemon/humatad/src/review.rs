@@ -329,7 +329,7 @@ impl Review {
     ) -> Result<(humata2_review_diff::ReviewPlan, Vec<RepoDiff>), Status> {
         let mut plan = wire::plan_from_pb(plan).map_err(|error| wire_failed("review_plan", &error))?;
         let asked_repos: Vec<pb::RepoRef> = plan.spec.repos.iter().map(|repo| wire::repo_ref(&repo.repo)).collect();
-        let keys = repo_keys(record, &asked_repos).await?;
+        let keys = repo_keys(&self.inner, record, &asked_repos).await?;
         self.require_read(caller, session, &keys)?;
         let clones = clones(record, &keys).await?;
         let diffs = clones
@@ -350,7 +350,11 @@ impl Review {
 }
 
 /// The repos `asked` names by key, or every clone in the session's folder.
-async fn repo_keys(record: &SessionRecord, asked: &[pb::RepoRef]) -> Result<Vec<String>, Status> {
+/// The repositories asked for, else every clone in the session's folder,
+/// each as `owner/name` when the session's start recorded its owner (the
+/// key comments, reviews and the app's repo names use) and as the folder
+/// name otherwise.
+async fn repo_keys(inner: &Inner, record: &SessionRecord, asked: &[pb::RepoRef]) -> Result<Vec<String>, Status> {
     if !asked.is_empty() {
         let mut keys = Vec::with_capacity(asked.len());
         for repo in asked {
@@ -362,6 +366,19 @@ async fn repo_keys(record: &SessionRecord, asked: &[pb::RepoRef]) -> Result<Vec<
         }
         return Ok(keys);
     }
+    let owners: BTreeMap<String, String> = inner
+        .store
+        .session_detail(&record.id)
+        .map_err(|error| status::store(error, &inner.machine, "read the session's repositories"))?
+        .map(|detail| {
+            detail
+                .repos
+                .into_iter()
+                .filter(|repo| !repo.owner.is_empty())
+                .map(|repo| (repo.name, repo.owner))
+                .collect()
+        })
+        .unwrap_or_default();
     let folder = record.folder.clone();
     blocking(move || {
         let entries = std::fs::read_dir(&folder).map_err(|error| {
@@ -371,6 +388,10 @@ async fn repo_keys(record: &SessionRecord, asked: &[pb::RepoRef]) -> Result<Vec<
             .filter_map(Result::ok)
             .filter(|entry| entry.path().join(".git").exists())
             .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+            .map(|name| match owners.get(&name) {
+                Some(owner) => format!("{owner}/{name}"),
+                None => name,
+            })
             .collect();
         keys.sort();
         Ok(keys)
@@ -411,7 +432,7 @@ impl pb::diff_service_server::DiffService for Review {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let (record, session) = self.session(request.session.as_ref())?;
-        let keys = repo_keys(&record, &request.repos).await?;
+        let keys = repo_keys(&self.inner, &record, &request.repos).await?;
         self.require_read(&caller, &session, &keys)?;
         let base = request.base.unwrap_or_default();
         let clones = clones(&record, &keys).await?;
@@ -453,7 +474,7 @@ impl pb::diff_service_server::DiffService for Review {
         if file.path.is_empty() {
             return Err(status::missing("file.path"));
         }
-        let keys = repo_keys(&record, std::slice::from_ref(&repo)).await?;
+        let keys = repo_keys(&self.inner, &record, std::slice::from_ref(&repo)).await?;
         self.require_read(&caller, &session, &keys)?;
         let base = request.base.clone().unwrap_or_default();
         let spec = wire::spec_for_base(&base, &keys, |_| None).map_err(|error| wire_failed("base", &error))?;
@@ -514,7 +535,7 @@ impl pb::diff_service_server::DiffService for Review {
         if let Some(Answer::Marked(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(Response::new(answer));
         }
-        let keys = repo_keys(&record, &[]).await?;
+        let keys = repo_keys(&self.inner, &record, &[]).await?;
         let clones = clones(&record, &keys).await?;
         // RV-28: per repo, the tree the client says it showed, else the
         // last GetDiff's, else the working tree as it is now.
@@ -552,7 +573,7 @@ impl pb::diff_service_server::DiffService for Review {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let (record, session) = self.session(request.session.as_ref())?;
-        let keys = repo_keys(&record, &request.repos).await?;
+        let keys = repo_keys(&self.inner, &record, &request.repos).await?;
         self.require_read(&caller, &session, &keys)?;
         let clones = clones(&record, &keys).await?;
         let mut snapshots = Vec::new();

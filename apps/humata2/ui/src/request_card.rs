@@ -14,10 +14,7 @@ use humata2_clients::model::{
 use humata2_inbox::InboxAction;
 use std::rc::Rc;
 
-const GREEN: u32 = 0x30d158;
-const ORANGE: u32 = 0xff9f0a;
-const RED: u32 = 0xff453a;
-const GREY: u32 = 0x8e8e93;
+use crate::theme::{GREEN, GREY, ORANGE, RED_STATUS as RED};
 
 fn text(value: impl Into<SharedString>) -> Div {
     let value = value.into();
@@ -146,8 +143,9 @@ fn tick(ui: &Rc<Ui>, request: &Request, on: bool, look: Look) -> impl IntoElemen
     let label = "Allow this for the rest of the session";
     row()
         .id(SharedString::from(format!("always {}", request.id)))
-        .role(Role::Button)
+        .role(Role::CheckBox)
         .aria_label(label)
+        .aria_selected(on)
         .test_support()
         .gap(px(8.))
         .cursor_pointer()
@@ -166,6 +164,26 @@ fn tick(ui: &Rc<Ui>, request: &Request, on: bool, look: Look) -> impl IntoElemen
         .on_click(move |_, _, cx| {
             ui.send(AppAction::Inbox(InboxAction::ToggleAlways(id.clone())), cx);
         })
+}
+
+/// Who asks: the agent and its session, then with `tool` what it called (the
+/// daemon's operation id, or else the rule's tool name, as the design draws).
+pub(crate) fn requester(state: &AppState, request: &Request, tool: bool) -> String {
+    let Some(s) = state.workspace.session(&request.session) else {
+        return String::new();
+    };
+    let runs = if humata2_clients::desk::is_desk(s) {
+        crate::desk::runs(s.agent)
+    } else {
+        agent_name(s.agent)
+    };
+    let mut line = format!("{runs} in {}", s.title);
+    let called = if request.operation.is_empty() { &request.rule } else { &request.operation };
+    if tool && !called.is_empty() {
+        line.push_str(" · ");
+        line.push_str(called);
+    }
+    line
 }
 
 /// One request as the decision card. `wide` is the Inbox's detail pane; the
@@ -202,15 +220,7 @@ pub(crate) fn card(
         .child(secondary(look, request.asked.clone()));
 
     // 2. Who, where, and Open session.
-    let by = session.map_or_else(String::new, |s| {
-        let runs = if humata2_clients::desk::is_desk(s) { crate::desk::runs(s.agent) } else { agent_name(s.agent) };
-        let mut line = format!("{runs} in {}", s.title);
-        if !request.operation.is_empty() {
-            line.push_str(" · ");
-            line.push_str(&request.operation);
-        }
-        line
-    });
+    let by = requester(state, request, true);
     let place = [machine_name, channel_name]
         .into_iter()
         .flatten()
@@ -244,9 +254,10 @@ pub(crate) fn card(
                     look,
                     format!("{} · {}", setting_name(asked.setting), asked.label),
                 )
-                .flex_1(),
+                .flex_1()
+                .min_w_0(),
             )
-            .child(button(
+            .child(div().flex_shrink_0().child(button(
                 ui,
                 SharedString::from(format!("change rule {}", request.id)),
                 "Change this rule",
@@ -256,7 +267,7 @@ pub(crate) fn card(
                 ],
                 look,
                 false,
-            ))
+            )))
     });
 
     // 8. The answers.

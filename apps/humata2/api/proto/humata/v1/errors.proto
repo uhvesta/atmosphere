@@ -232,7 +232,8 @@ message SessionBusy {
   string running_title = 3;   // "Moving to gpu-box"
 }
 
-// IN-20 / FK-7: a context-only fork never writes its parent's files.
+// Deprecated (D185): a context-only fork shares and edits its parent's
+// code, so nothing sends this now. Kept so the tag number stays taken.
 message ParentReadOnly {
   SessionId fork = 1;
   SessionId parent = 2;

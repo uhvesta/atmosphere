@@ -112,6 +112,8 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 repos,
                 first_message: message.unwrap_or_default(),
                 board_item: None,
+                branch: String::new(),
+                rebuild: None,
             };
             reply(ctx, rpc::session::START_SESSION, &request).await
         }
@@ -119,6 +121,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
             session,
             kind,
             title,
+            branch,
         } => {
             let request = pb::ForkSessionRequest {
                 idempotency_key: ctx.key(),
@@ -129,6 +132,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 agent: None,
                 model: String::new(),
                 machine: ctx.machine_flag().await?,
+                branch: branch.unwrap_or_default(),
             };
             if ctx.flags.dry_run {
                 let preview = ctx.json(rpc::session::PREVIEW_FORK, &request).await?;
@@ -139,12 +143,14 @@ pub(super) async fn session<D: Daemon, C: Console>(
             }
             reply(ctx, rpc::session::FORK_SESSION, &request).await
         }
+        SessionCommand::Read { session, from, to } => super::search::read(ctx, &session, from, to).await,
         SessionCommand::Rename { session, title } => {
             let request = pb::RenameSessionRequest {
                 idempotency_key: ctx.key(),
                 id: Some(ctx.session(&session).await?),
                 title,
                 expected_revision: None,
+                rename_branch: false,
             };
             reply(ctx, rpc::session::RENAME_SESSION, &request).await
         }
@@ -273,10 +279,8 @@ pub(super) async fn session<D: Daemon, C: Console>(
             )
             .await
         }
-        SessionCommand::OwnCopy { session, repo } => {
-            // GiveOwnCopyRequest names only the fork: the daemon copies
-            // every repo it reads from its parent (see the report's gaps).
-            resolve::repo(&repo)?;
+        SessionCommand::OwnCopy { session } => {
+            // The daemon copies every clone the fork shares with its parent.
             let request = pb::GiveOwnCopyRequest {
                 idempotency_key: ctx.key(),
                 fork: Some(ctx.session(&session).await?),

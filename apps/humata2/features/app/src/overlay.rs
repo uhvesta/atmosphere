@@ -30,6 +30,9 @@ impl App {
             }
             return self.report(state, ReportAction::Close);
         }
+        if state.overlay() == Some(&Overlay::Palette) && state.palette.asking.is_some() {
+            return self.child(state, AppAction::Palette(PaletteAction::Escape));
+        }
         if let Some(top) = state.overlays.pop() {
             if top == Overlay::Palette {
                 state.palette.open = false;
@@ -57,6 +60,18 @@ impl App {
         }
         if state.session.terminal_menu.is_some() {
             return self.child(state, AppAction::Session(SessionAction::TerminalMenu(None)));
+        }
+        if state.machine_page.menu_open {
+            return self.child(
+                state,
+                AppAction::MachinePage(humata2_hosts::MachinePageAction::CloseMenu),
+            );
+        }
+        if state.session.archiving.is_some() {
+            return self.child(state, AppAction::Session(SessionAction::CancelArchive));
+        }
+        if state.session.moving.is_some() {
+            return self.child(state, AppAction::Session(SessionAction::CancelMove));
         }
         if state.session.fork.is_some() {
             return self.child(state, AppAction::Session(SessionAction::CancelFork));
@@ -100,6 +115,11 @@ impl App {
             Route::Session(id) => Some(id.clone()),
             _ => None,
         };
+        state.palette.channel = match &state.route {
+            Route::Channel(id) => Some(id.clone()),
+            _ => None,
+        };
+        state.palette.marks = state.pinned.list.clone();
         self.child(
             state,
             AppAction::Palette(PaletteAction::Open { in_session }),

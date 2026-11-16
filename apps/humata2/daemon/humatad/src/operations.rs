@@ -9,7 +9,6 @@
 //! each change goes on the event feed too (D94).
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use humata2_access::Refusal;
@@ -62,10 +61,19 @@ struct Tracked {
     steps: Vec<OpStep>,
     /// Whether the kind can be cancelled while it runs (GRPC.md §7).
     cancellable: bool,
-    cancel: AtomicBool,
+    cancel: Mutex<Cancel>,
     rerun: Mutex<Option<Rerun>>,
     /// The key of the retry that started the current run.
     retry_key: Mutex<Option<String>>,
+}
+
+/// Whether CancelOperation asked the run to stop, and whether the run is
+/// past its point of no return; one lock, so a cancel never slips in
+/// between the run's last check and that point.
+#[derive(Default)]
+struct Cancel {
+    asked: bool,
+    past_no_return: bool,
 }
 
 #[derive(Default)]
@@ -198,7 +206,7 @@ impl Operations {
             operation: sender,
             steps: rerun_steps,
             cancellable,
-            cancel: AtomicBool::new(false),
+            cancel: Mutex::default(),
             rerun: Mutex::new(None),
             retry_key: Mutex::new(None),
         });
@@ -260,9 +268,29 @@ impl Progress {
         self.tracked.operation.borrow().clone()
     }
 
+    /// The operation's changes, for the work that hands this handle to
+    /// another task and waits for the operation to end.
+    pub(crate) fn watch(&self) -> watch::Receiver<pb::Operation> {
+        self.tracked.operation.subscribe()
+    }
+
     /// True once CancelOperation asked this run to stop.
     pub(crate) fn cancelled(&self) -> bool {
-        self.tracked.cancel.load(Ordering::SeqCst)
+        lock(&self.tracked.cancel).asked
+    }
+
+    /// The run is at its point of no return (GRPC.md §7): from here
+    /// CancelOperation answers `not_cancellable`. False when a cancel was
+    /// asked first; the run then stops and undoes instead.
+    pub(crate) fn past_no_return(&self) -> bool {
+        let mut cancel = lock(&self.tracked.cancel);
+        if cancel.asked {
+            return false;
+        }
+        cancel.past_no_return = true;
+        drop(cancel);
+        self.change(|operation| operation.cancellable = false);
+        true
     }
 
     /// How RetryOperation runs this operation's work again.
@@ -650,10 +678,13 @@ impl pb::operation_service_server::OperationService for OperationSvc {
         if finished(&operation) {
             return Ok(Response::new(operation));
         }
-        if !tracked.cancellable {
-            return Err(not_cancellable(&id, &operation));
+        let mut cancel = lock(&tracked.cancel);
+        if !tracked.cancellable || cancel.past_no_return {
+            drop(cancel);
+            return Err(not_cancellable(&id, &tracked.operation.borrow().clone()));
         }
-        tracked.cancel.store(true, Ordering::SeqCst);
+        cancel.asked = true;
+        drop(cancel);
         Ok(Response::new(tracked.operation.borrow().clone()))
     }
 
@@ -682,7 +713,7 @@ impl pb::operation_service_server::OperationService for OperationSvc {
             return Err(not_retryable(&id, &operation));
         };
         *retry_key = key;
-        tracked.cancel.store(false, Ordering::SeqCst);
+        *lock(&tracked.cancel) = Cancel::default();
         let progress = Progress {
             tracked: tracked.clone(),
         };

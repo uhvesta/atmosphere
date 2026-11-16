@@ -77,7 +77,16 @@ fn the_global_inbox_answers_only_the_selected_request() {
 /// Home actions open the right session and Resume the exited process.
 #[test]
 fn home_review_and_resume_act_on_their_own_rows() {
-    let mut app = App::new(fixture::design());
+    let mut workspace = fixture::design();
+    // The design fixture's only exited session, postgres, also has a pending
+    // request, which makes its row offer Review. Move that request to another
+    // session so postgres's row offers Resume.
+    for request in &mut workspace.requests {
+        if request.session.as_str() == "postgres" {
+            request.session = SessionId::new("partial-brin");
+        }
+    }
+    let mut app = App::new(workspace);
     app.click("home-needs-action-0");
     assert_eq!(
         app.ui.read(|s| s.session.open.clone()),
@@ -85,13 +94,20 @@ fn home_review_and_resume_act_on_their_own_rows() {
     );
     assert_eq!(app.ui.read(|s| s.panel()), Some(Panel::Inbox));
     app.click("rail-home");
-    // Home's Needs you group lists sessions in workspace order (HM-1).
+    // Home's Needs you rows come from `needs_you`, which also lists sessions
+    // with a pending request. Find postgres's row by its session, not by its
+    // place among the sessions that need the person.
     let postgres = app.ui.read(|s| {
-        s.workspace
-            .sessions
+        humata2_app::needs_you(&s.workspace)
+            .rows
             .iter()
-            .filter(|x| !x.archived && matches!(x.status, Status::NeedsYou | Status::Exited { .. }))
-            .position(|x| x.id.as_str() == "postgres")
+            .position(|row| {
+                matches!(
+                    row,
+                    humata2_app::NeedsRow::Session { session, .. }
+                        if session.id.as_str() == "postgres"
+                )
+            })
     });
     let Some(postgres) = postgres else {
         panic!("the design workspace has an exited postgres session");

@@ -43,7 +43,8 @@ pub(crate) fn tab(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) 
                 .child(INTRO),
         )
         .children(state.settings.access.error.as_ref().map(|error| {
-            crate::widgets::error_banner(
+            crate::widgets::error_banner_in(
+                look,
                 ui,
                 "access-error",
                 error.clone(),

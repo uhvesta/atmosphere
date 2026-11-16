@@ -1,16 +1,64 @@
 //! The command palette (KP-1–6): ⌘K opens it over whatever shows; typing
 //! narrows every command, channel and session by fuzzy match, recent picks
-//! first; a pasted pull request URL offers to open it (KP-5).
+//! first; a pasted pull request URL offers to open it (KP-5). Acting from
+//! it (flow 26.22): Move session asks inline which machine, Escape steps
+//! back, and the search hits sit under the entries the cursor runs over.
 
 use std::sync::Arc;
 
 use humata2_clients::Workspace;
-use humata2_clients::model::{ChannelId, SessionId};
+use humata2_clients::marks::{PinnedList, Thing};
+use humata2_clients::model::{ChannelId, Machine, MachineId, SessionId};
+use humata2_settings::{Row, Section};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
 /// How many recent picks are remembered.
 pub const RECENT: usize = 8;
+
+/// A GitHub pull request named by a pasted URL or `owner/repo#n` (PR-1).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PullRef {
+    /// The owner, such as `acme`.
+    pub owner: String,
+    /// The repository.
+    pub repo: String,
+    /// The pull request's number.
+    pub number: u32,
+}
+
+/// What a pin or VIP mark applies to: a session or a channel (NV-20).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Marked {
+    /// A session.
+    Session(SessionId),
+    /// A channel.
+    Channel(ChannelId),
+}
+
+impl Marked {
+    /// The host's name for this thing, as the pins are kept.
+    #[must_use]
+    pub fn to_thing(&self) -> Thing {
+        match self {
+            Self::Session(id) => Thing::Session(id.clone()),
+            Self::Channel(id) => Thing::Channel(id.clone()),
+        }
+    }
+}
+
+/// What the palette is asking for inline (KP-5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// The machine to move `session` to; `query` is what was typed before
+    /// Move asked, given back by Escape.
+    MoveSession {
+        /// The session to move.
+        session: SessionId,
+        /// What was typed before Move asked.
+        query: String,
+    },
+}
 
 /// What a palette entry does.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -70,6 +118,47 @@ pub enum Command {
     OpenLastReport,
     /// Show or hide the session's side panel.
     TogglePanel,
+    /// Go back to the screen before this one.
+    Back,
+    /// Show the keyboard shortcuts.
+    ShowShortcuts,
+    /// Go to Views.
+    Views,
+    /// Open a host's page.
+    Machine(MachineId),
+    /// Open a channel's board.
+    ChannelBoard(ChannelId),
+    /// Move the open session to another machine; the palette asks which.
+    MoveSession,
+    /// Move a session to a machine, as the palette asked.
+    MoveTo {
+        /// The session to move.
+        session: SessionId,
+        /// Where it goes.
+        machine: MachineId,
+    },
+    /// Review a GitHub pull request.
+    ReviewPull(PullRef),
+    /// Open a Settings section.
+    SettingsSection(Section),
+    /// Open Settings at a row, in its section.
+    SettingsRow(Row),
+    /// Pin or unpin a session or channel; `on` pins it, else unpins it
+    /// (NV-20).
+    Pin {
+        /// What is pinned.
+        thing: Marked,
+        /// Pin it, or unpin it.
+        on: bool,
+    },
+    /// Mark a session or channel VIP, or clear the mark; `on` marks it
+    /// VIP, else clears the mark (NV-20).
+    Vip {
+        /// What is marked.
+        thing: Marked,
+        /// VIP, or not.
+        on: bool,
+    },
 }
 
 /// Where bug reporting stands, so its entries read right (D159).
@@ -92,6 +181,26 @@ pub struct Entry {
     pub hint: String,
 }
 
+/// Where an entry is grouped in the list, first to last (KP-3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Group {
+    /// A pull request, pasted or numbered.
+    Pull,
+    /// What the session the palette opened over can do, when the query
+    /// names the action rather than the session.
+    ThisSession,
+    /// Other sessions.
+    Sessions,
+    /// Files in the sessions' clones.
+    Files,
+    /// Channels.
+    Channels,
+    /// Commands, views, hosts' pages, boards and Settings.
+    Commands,
+    /// The machines Move session asks between.
+    Machines,
+}
+
 /// The palette's state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PaletteState {
@@ -109,10 +218,22 @@ pub struct PaletteState {
     pub recent: Vec<Command>,
     /// The session beneath the palette, for scoped file/context actions.
     pub context: Option<SessionId>,
+    /// The channel whose page is beneath the palette, set by the app before
+    /// it opens; the pin and VIP entries act on it when no session is open.
+    pub channel: Option<ChannelId>,
+    /// The host's pins as the app last had them, for the pin and VIP
+    /// entries (NV-20).
+    pub marks: PinnedList,
     /// Whether a session is open, so session commands apply.
     pub in_session: bool,
     /// Bug reporting, set by the app before it opens the palette.
     pub report: ReportStatus,
+    /// The question the palette asks inline, if any (KP-5).
+    pub asking: Option<Ask>,
+    /// How many search hits the app shows under the entries.
+    pub hits: usize,
+    /// Whether another page of hits can load, shown as a "more" row.
+    pub more_hits: bool,
 }
 
 /// What the palette asks its parent to do.
@@ -122,6 +243,10 @@ pub enum Delegate {
     Run(Command),
     /// It closed; put focus back.
     Closed,
+    /// Open the search hit at this place among the hits shown (LD-24).
+    Hit(usize),
+    /// Load the next page of hits; the palette stays open.
+    MoreHits,
 }
 
 /// What happens in the palette.
@@ -140,6 +265,9 @@ pub enum PaletteAction {
     Context(Option<SessionId>),
     /// Escape or a click outside.
     Close,
+    /// Escape while the palette shows: steps back from an inline question,
+    /// else closes it.
+    Escape,
     /// The query changed.
     Query(String),
     /// ↑ or ↓.
@@ -148,6 +276,15 @@ pub enum PaletteAction {
     Run,
     /// An entry was clicked.
     Pick(usize),
+    /// The search hits under the entries changed.
+    Hits {
+        /// How many hits there are.
+        count: usize,
+        /// Whether another page can load.
+        more: bool,
+    },
+    /// Run this command as if its entry were picked (⌥⌘M, G3).
+    Begin(Command),
     /// For the parent.
     Delegate(Delegate),
 }
@@ -172,6 +309,7 @@ impl Reducer for Palette {
             PaletteAction::Open { in_session } => {
                 state.open = true;
                 state.in_session = in_session;
+                state.asking = None;
                 state.query.clear();
                 state.refresh();
             }
@@ -184,15 +322,23 @@ impl Reducer for Palette {
             PaletteAction::Close => {
                 if state.open {
                     state.open = false;
+                    state.asking = None;
                     return Effect::send(PaletteAction::Delegate(Delegate::Closed));
                 }
             }
+            PaletteAction::Escape => match state.asking.take() {
+                Some(Ask::MoveSession { query, .. }) => {
+                    state.query = query;
+                    state.refresh();
+                }
+                None => return self.reduce(state, PaletteAction::Close),
+            },
             PaletteAction::Query(query) => {
                 state.query = query;
                 state.refresh();
             }
             PaletteAction::Move(delta) => {
-                let count = state.entries.len();
+                let count = state.rows();
                 if count > 0 {
                     let next = i64::try_from(state.cursor).unwrap_or(0) + i64::from(delta);
                     let count = i64::try_from(count).unwrap_or(i64::MAX);
@@ -201,6 +347,17 @@ impl Reducer for Palette {
             }
             PaletteAction::Run => return state.pick(state.cursor),
             PaletteAction::Pick(index) => return state.pick(index),
+            PaletteAction::Hits { count, more } => {
+                state.hits = count;
+                state.more_hits = more;
+                let total = state.rows();
+                state.cursor = if total == 0 {
+                    0
+                } else {
+                    state.cursor.min(total - 1)
+                };
+            }
+            PaletteAction::Begin(command) => return state.pick_command(command),
             PaletteAction::Delegate(_) => {}
         }
         Effect::none()
@@ -208,25 +365,147 @@ impl Reducer for Palette {
 }
 
 impl PaletteState {
+    /// How many rows the cursor walks: the entries, then the hits and the
+    /// "more" row, which are not shown while the palette asks inline.
+    fn rows(&self) -> usize {
+        let hits = if self.asking.is_some() {
+            0
+        } else {
+            self.hits + usize::from(self.more_hits)
+        };
+        self.entries.len() + hits
+    }
+
     fn pick(&mut self, index: usize) -> Effect<PaletteAction> {
-        let Some(entry) = self.entries.get(index).cloned() else {
+        if let Some(entry) = self.entries.get(index) {
+            let command = entry.command.clone();
+            return self.pick_command(command);
+        }
+        if self.asking.is_some() {
+            return Effect::none();
+        }
+        let Some(hit) = index.checked_sub(self.entries.len()) else {
             return Effect::none();
         };
-        self.recent.retain(|command| command != &entry.command);
-        self.recent.insert(0, entry.command.clone());
-        self.recent.truncate(RECENT);
+        if hit < self.hits {
+            self.open = false;
+            return Effect::concat([
+                Effect::send(PaletteAction::Delegate(Delegate::Closed)),
+                Effect::send(PaletteAction::Delegate(Delegate::Hit(hit))),
+            ]);
+        }
+        if hit == self.hits && self.more_hits {
+            return Effect::send(PaletteAction::Delegate(Delegate::MoreHits));
+        }
+        Effect::none()
+    }
+
+    /// Runs a command, except that Move session asks which machine first
+    /// and a machine move is not a recent pick.
+    fn pick_command(&mut self, command: Command) -> Effect<PaletteAction> {
+        if command == Command::MoveSession
+            && let Some(session) = self.context.clone()
+        {
+            self.asking = Some(Ask::MoveSession {
+                session,
+                query: std::mem::take(&mut self.query),
+            });
+            self.refresh();
+            return Effect::none();
+        }
+        if !matches!(
+            command,
+            Command::MoveTo { .. } | Command::Pin { .. } | Command::Vip { .. }
+        ) {
+            self.recent.retain(|recent| recent != &command);
+            self.recent.insert(0, command.clone());
+            self.recent.truncate(RECENT);
+        }
         self.open = false;
+        self.asking = None;
         Effect::concat([
             Effect::send(PaletteAction::Delegate(Delegate::Closed)),
-            Effect::send(PaletteAction::Delegate(Delegate::Run(entry.command))),
+            Effect::send(PaletteAction::Delegate(Delegate::Run(command))),
         ])
     }
 
     fn refresh(&mut self) {
         let query = self.query.trim();
-        let mut entries: Vec<(i64, Entry)> = Vec::new();
+        let asking = self
+            .asking
+            .as_ref()
+            .map(|Ask::MoveSession { session, .. }| session.clone());
+        let scored = match &asking {
+            Some(session) => self.machine_entries(session, query),
+            None => self.command_entries(query),
+        };
+        let mut ranked: Vec<(Group, i64, Entry)> = scored
+            .into_iter()
+            .map(|(score, entry)| (self.group(&entry), score, entry))
+            .collect();
+        ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        self.entries = Arc::new(ranked.into_iter().map(|(_, _, entry)| entry).collect());
+        self.cursor = 0;
+    }
+
+    /// The machines Move session can send `session` to: online, not where
+    /// it runs, and matching the query (MV-1). A Desk session may go to any
+    /// host (DK-3).
+    fn machine_entries(&self, session: &SessionId, query: &str) -> Vec<(i64, Entry)> {
+        let Some(current) = self.workspace.session(session) else {
+            return Vec::new();
+        };
+        let candidates: Vec<&Machine> = if humata2_clients::desk::is_desk(current) {
+            self.workspace.machines.iter().collect()
+        } else {
+            self.workspace.channel_machines(&current.channel).collect()
+        };
+        candidates
+            .into_iter()
+            .filter(|machine| machine.online && machine.id != current.machine)
+            .filter_map(|machine| {
+                let score = fuzzy(query, &machine.name)?;
+                let entry = Entry {
+                    command: Command::MoveTo {
+                        session: session.clone(),
+                        machine: machine.id.clone(),
+                    },
+                    title: machine.name.clone(),
+                    hint: machine.detail.clone(),
+                };
+                Some((score, entry))
+            })
+            .collect()
+    }
+
+    /// Whether a session here already reviews `pull`.
+    fn reviewed(&self, pull: &PullRef) -> bool {
+        self.workspace.pulls.iter().any(|p| {
+            p.session.is_some()
+                && p.number == pull.number
+                && p.repo == format!("{}/{}", pull.owner, pull.repo)
+        })
+    }
+
+    /// Every command, channel, session and file the query matches, with
+    /// its score; the pull request entries come first when the query is one.
+    fn command_entries(&self, query: &str) -> Vec<(i64, Entry)> {
+        let mut scored: Vec<(i64, Entry)> = Vec::new();
+        // D197: until the Review a pull request dialog exists, Review this PR
+        // only opens the session already reviewing it, so other PRs offer nothing.
+        if let Some(pull) = pull_ref(query).filter(|pull| self.reviewed(pull)) {
+            let hint = format!("{}/{} #{}", pull.owner, pull.repo, pull.number);
+            scored.push((
+                i64::MAX,
+                Entry {
+                    command: Command::ReviewPull(pull),
+                    title: "Review this PR".to_owned(),
+                    hint,
+                },
+            ));
+        }
         if let Some(number) = pull_number(query) {
-            entries.push((
+            scored.push((
                 i64::MAX,
                 Entry {
                     command: Command::Pull(number),
@@ -256,18 +535,100 @@ impl PaletteState {
                     .position(|command| command == &entry.command)
                     .map_or(0, |at| 1_000 - i64::try_from(at).unwrap_or(0));
                 let direct = fuzzy(query, &entry.title).is_some();
-                entries.push((score + recent + if direct { 10_000 } else { 0 }, entry));
+                scored.push((score + recent + if direct { 10_000 } else { 0 }, entry));
             }
         }
-        let rank = |entry: &Entry| match entry.command {
-            Command::Session(_) => 0,
-            Command::File { .. } => 1,
-            Command::Channel(_) => 2,
-            _ => 3,
+        scored
+    }
+
+    /// The group an entry sits in (G4). A command the query names, that
+    /// acts on the session the palette opened over, is "this session" when
+    /// the session's own title does not match the query (KP-3).
+    #[must_use]
+    pub fn group(&self, entry: &Entry) -> Group {
+        match entry.command {
+            Command::ReviewPull(_) | Command::Pull(_) => Group::Pull,
+            Command::MoveTo { .. } => Group::Machines,
+            Command::Session(_) => Group::Sessions,
+            Command::File { .. } => Group::Files,
+            Command::Channel(_) => Group::Channels,
+            _ if self.promoted(entry) => Group::ThisSession,
+            _ => Group::Commands,
+        }
+    }
+
+    /// Whether `entry` is one of the session actions the query asks for by
+    /// name, so it sorts ahead of the sessions it would otherwise follow.
+    fn promoted(&self, entry: &Entry) -> bool {
+        let query = self.query.trim();
+        matches!(
+            entry.command,
+            Command::MoveSession
+                | Command::Fork
+                | Command::Archive
+                | Command::TerminalFullScreen
+                | Command::TogglePanel
+        ) && !query.is_empty()
+            && fuzzy(query, &entry.title).is_some()
+            && self
+                .context
+                .as_ref()
+                .and_then(|id| self.workspace.session(id))
+                .is_none_or(|session| fuzzy(query, &session.title).is_none())
+    }
+
+    /// The pin and VIP entries for the session beneath the palette, or for
+    /// the channel whose page it opened over (NV-20). Each says what it will
+    /// do, from the marks the app handed over.
+    fn mark_entries(&self) -> Vec<Entry> {
+        let (thing, workspace_vip, subject) = match (&self.context, &self.channel) {
+            (Some(id), _) => {
+                let Some(session) = self.workspace.session(id) else {
+                    return Vec::new();
+                };
+                (Marked::Session(id.clone()), session.vip, "this session")
+            }
+            (None, Some(channel)) => (Marked::Channel(channel.clone()), false, "this channel"),
+            (None, None) => return Vec::new(),
         };
-        entries.sort_by(|a, b| rank(&a.1).cmp(&rank(&b.1)).then_with(|| b.0.cmp(&a.0)));
-        self.entries = Arc::new(entries.into_iter().map(|(_, entry)| entry).collect());
-        self.cursor = 0;
+        let pinned = self
+            .marks
+            .items
+            .iter()
+            .find(|pinned| pinned.thing == thing.to_thing());
+        let vip = workspace_vip || pinned.is_some_and(|pinned| pinned.vip);
+        let (pin, pin_title) = match pinned {
+            Some(_) => (false, format!("Unpin {subject}")),
+            None => (true, format!("Pin {subject}")),
+        };
+        let (mark, mark_title) = if vip {
+            (false, format!("Clear {subject}'s VIP mark"))
+        } else {
+            (true, format!("Mark {subject} VIP"))
+        };
+        [
+            (
+                Command::Pin {
+                    thing: thing.clone(),
+                    on: pin,
+                },
+                pin_title,
+            ),
+            (
+                Command::Vip {
+                    thing,
+                    on: mark,
+                },
+                mark_title,
+            ),
+        ]
+        .into_iter()
+        .map(|(command, title)| Entry {
+            command,
+            title,
+            hint: String::new(),
+        })
+        .collect()
     }
 
     fn report_entries(&self) -> Vec<Entry> {
@@ -310,6 +671,9 @@ impl PaletteState {
             (Command::CollapseAll, "Collapse all", "⌥⌘←"),
             (Command::ToggleSidebar, "Toggle sidebar", "⌘0"),
             (Command::TogglePanel, "Toggle side panel", "⌥⌘0"),
+            (Command::Back, "Go back", "⌘["),
+            (Command::ShowShortcuts, "Keyboard shortcuts", "⌘/"),
+            (Command::Views, "Go to Views", ""),
         ]
         .into_iter()
         .map(|(command, title, hint)| Entry {
@@ -319,6 +683,7 @@ impl PaletteState {
         })
         .collect();
         entries.extend(self.report_entries());
+        entries.extend(self.mark_entries());
         if self.in_session {
             entries.push(Entry {
                 command: Command::TerminalFullScreen,
@@ -356,12 +721,52 @@ impl PaletteState {
                 .to_owned(),
                 hint: String::new(),
             });
+            let live = self
+                .context
+                .as_ref()
+                .and_then(|id| self.workspace.session(id))
+                .is_some_and(|session| !session.archived);
+            if live {
+                entries.push(Entry {
+                    command: Command::MoveSession,
+                    title: "Move session to another machine…".to_owned(),
+                    hint: "⌥⌘M".to_owned(),
+                });
+            }
         }
         for channel in &self.workspace.channels {
             entries.push(Entry {
                 command: Command::Channel(channel.id.clone()),
                 title: format!("#{}", channel.name),
                 hint: "Channel".to_owned(),
+            });
+        }
+        for machine in &self.workspace.machines {
+            entries.push(Entry {
+                command: Command::Machine(machine.id.clone()),
+                title: machine.name.clone(),
+                hint: "Machine".to_owned(),
+            });
+        }
+        for channel in &self.workspace.channels {
+            entries.push(Entry {
+                command: Command::ChannelBoard(channel.id.clone()),
+                title: format!("#{} board", channel.name),
+                hint: "Board".to_owned(),
+            });
+        }
+        for section in Section::ALL {
+            entries.push(Entry {
+                command: Command::SettingsSection(section),
+                title: format!("Settings › {}", section.title()),
+                hint: "Settings".to_owned(),
+            });
+        }
+        for row in Row::ALL {
+            entries.push(Entry {
+                command: Command::SettingsRow(row),
+                title: format!("Settings › {}", row.title()),
+                hint: row.section().title().to_owned(),
             });
         }
         for session in self
@@ -455,4 +860,43 @@ pub fn pull_number(text: &str) -> Option<u32> {
     }
     let (_, rest) = text.split_once("/pull/")?;
     rest.split(['/', '#', '?']).next()?.parse().ok()
+}
+
+/// The pull request a pasted GitHub URL (with or without `https://`, and
+/// with a trailing `/files`, `?…` or `#…`) or an `owner/repo#n` names (PR-1).
+#[must_use]
+pub fn pull_ref(text: &str) -> Option<PullRef> {
+    let text = text.trim();
+    let without_scheme = text
+        .strip_prefix("https://")
+        .or_else(|| text.strip_prefix("http://"))
+        .unwrap_or(text);
+    if let Some(path) = without_scheme.strip_prefix("github.com/") {
+        let path = path.split(['?', '#']).next()?;
+        let mut parts = path.split('/');
+        let owner = parts.next()?;
+        let repo = parts.next()?;
+        if parts.next()? != "pull" {
+            return None;
+        }
+        let number = parts.next()?.parse().ok()?;
+        return named_pull(owner, repo, number);
+    }
+    let (names, number) = text.split_once('#')?;
+    let (owner, repo) = names.split_once('/')?;
+    named_pull(owner, repo, number.parse().ok()?)
+}
+
+/// A pull request whose owner and repository are plain names.
+fn named_pull(owner: &str, repo: &str, number: u32) -> Option<PullRef> {
+    let plain = |part: &str| {
+        !part.is_empty()
+            && !part.contains(['/', '#', '?'])
+            && !part.chars().any(char::is_whitespace)
+    };
+    (plain(owner) && plain(repo)).then(|| PullRef {
+        owner: owner.to_owned(),
+        repo: repo.to_owned(),
+        number,
+    })
 }

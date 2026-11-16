@@ -1,0 +1,25 @@
+[package]
+name = "humata2-opencode"
+description = "Humata 2's link to OpenCode's own loopback server: events, turns, Inbox asks and the `humata opencode` wrapper (D201)."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_opencode"
+path = "src/lib.rs"
+
+[dependencies]
+base64 = "=0.23.1"
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -377,7 +377,7 @@ impl Review {
         let (record, session) = self.session(asked.as_ref())?;
         self.require_use(caller, Capability::UserReviewState, &session)?;
         let review = self.review(&record.id)?;
-        let several_clones = repo_keys(&record, &[]).await?.len() > 1;
+        let several_clones = repo_keys(&self.inner, &record, &[]).await?.len() > 1;
         let named = local_ids(&record.id, &request.ids)?;
 
         // Begin the batches in memory: the ledger checks everything before
@@ -588,7 +588,10 @@ impl Review {
             match place(&w.quoted, w.first, &lines) {
                 Placement::Same => {}
                 Placement::Moved { first, last } => changed |= ledger.moved(&w.id, first, last),
-                Placement::Changed { now: after } => changed |= ledger.changed(&w.id, after, now()),
+                Placement::Changed { first, last, now: after } => {
+                    changed |= ledger.changed(&w.id, first, last, after, now());
+                }
+                Placement::Gone => changed |= ledger.gone(&w.id),
             }
         }
         changed
@@ -761,7 +764,7 @@ impl Review {
                 if blocking(move || is_folder_file(&folder, &asked_path)).await? {
                     String::new()
                 } else {
-                    let mut clones = repo_keys(record, &[]).await?;
+                    let mut clones = repo_keys(&self.inner, record, &[]).await?;
                     match (clones.pop(), clones.is_empty()) {
                         (Some(only), true) => only,
                         _ => {

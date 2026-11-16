@@ -154,6 +154,7 @@ impl SessionSvc {
             model: Some(request.model.clone()).filter(|model| !model.is_empty()),
             repos: Some(repos),
             first_message: Some(request.first_message.clone()).filter(|message| !message.is_empty()),
+            branch: Some(request.branch.clone()).filter(|branch| !branch.is_empty()),
             operation: operation.id.as_ref().map(|id| id.value.clone()),
             cols: COLS,
             rows: ROWS,

@@ -19,7 +19,8 @@ use crate::agents::Agents;
 use crate::error::StartError;
 use crate::git::{clone_session, local_branches, remote_branches, remote_url};
 use crate::layout::Layout;
-use crate::names::{Branch, branch_slug, pick_branch};
+use crate::names::{Branch, branch_slug, pick_branch, valid_branch_name};
+use crate::prefix::effective_prefix;
 use crate::setup::unix_ms;
 
 /// `(owner, name)` of a repository.
@@ -57,6 +58,9 @@ pub struct StartRequest {
     /// ready main clone when None.
     pub repos: Option<Vec<RepoName>>,
     pub first_message: Option<String>,
+    /// A branch typed in the dialog (FC-15), used as typed for every
+    /// repository; Humata picks one from the title when None.
+    pub branch: Option<String>,
     pub operation: Option<String>,
     pub cols: u16,
     pub rows: u16,
@@ -108,6 +112,19 @@ impl Starter {
             .ok_or_else(|| StartError::NoChannel { id: id.to_owned() })
     }
 
+    fn pick_for(
+        &self,
+        channel: &ChannelRecord,
+        repos: &[RepoName],
+        title: &str,
+        typed: Option<&str>,
+    ) -> Result<Branch, StartError> {
+        match typed.filter(|branch| !branch.is_empty()) {
+            Some(typed) => self.pick_typed(channel, repos, title, typed),
+            None => self.pick(channel, repos, title),
+        }
+    }
+
     /// One branch for all `repos`: the first free name, given what the
     /// main clones, the remotes and the channel's other sessions use
     /// (FC-14), and no session folder already there.
@@ -117,6 +134,40 @@ impl Starter {
         repos: &[RepoName],
         title: &str,
     ) -> Result<Branch, StartError> {
+        self.pick_excluding(channel, repos, title, None)
+    }
+
+    /// As [`Starter::pick`], where the branch and folder of the session
+    /// `own` don't count as taken (a rename keeps its folder).
+    pub(crate) fn pick_excluding(
+        &self,
+        channel: &ChannelRecord,
+        repos: &[RepoName],
+        title: &str,
+        own: Option<&str>,
+    ) -> Result<Branch, StartError> {
+        let taken = self.taken_names(channel, repos, own)?;
+        let prefix = self.prefix(channel)?;
+        let prefix = prefix.as_str();
+        Ok(pick_branch(prefix, &branch_slug(title), |name| {
+            let folder = name.strip_prefix(prefix).unwrap_or(name);
+            taken.contains(name)
+                || (own.is_none() && self.layout.session(&channel.folder, folder).exists())
+        }))
+    }
+
+    pub(crate) fn prefix(&self, channel: &ChannelRecord) -> Result<String, StartError> {
+        effective_prefix(&self.store, channel).map_err(store_err("read the branch prefix"))
+    }
+
+    /// The names already used for branches in `repos`: the main clones, the
+    /// remotes and the channel's sessions, except the session `own`.
+    fn taken_names(
+        &self,
+        channel: &ChannelRecord,
+        repos: &[RepoName],
+        own: Option<&str>,
+    ) -> Result<HashSet<String>, StartError> {
         let mut taken: HashSet<String> = HashSet::new();
         for (owner, name) in repos {
             let main = self.layout.main_clone(&channel.folder, name);
@@ -139,20 +190,34 @@ impl Starter {
             .filter(|s| s.channel == channel.id)
             .map(|s| s.id)
             .collect();
-        for detail in self
-            .store
-            .session_details()
-            .map_err(store_err("list the sessions"))?
-        {
-            if in_channel.contains(&detail.session) {
+        for detail in self.store.session_details().map_err(store_err("list the sessions"))? {
+            if in_channel.contains(&detail.session) && own != Some(detail.session.as_str()) {
                 taken.extend(detail.repos.into_iter().map(|r| r.branch));
             }
         }
-        let prefix = channel.branch_prefix.as_str();
-        Ok(pick_branch(prefix, &branch_slug(title), |name| {
-            let folder = name.strip_prefix(prefix).unwrap_or(name);
-            taken.contains(name) || self.layout.session(&channel.folder, folder).exists()
-        }))
+        Ok(taken)
+    }
+
+    /// A branch typed in the dialog (FC-15): used as typed, with no prefix.
+    /// The folder stays the title's slug.
+    pub(crate) fn pick_typed(
+        &self,
+        channel: &ChannelRecord,
+        repos: &[RepoName],
+        title: &str,
+        typed: &str,
+    ) -> Result<Branch, StartError> {
+        if !valid_branch_name(typed) {
+            return Err(StartError::BadBranch { branch: typed.to_owned() });
+        }
+        let taken = self.taken_names(channel, repos, None)?;
+        if taken.contains(typed) {
+            let suggestion = pick_branch("", typed, |name| taken.contains(name)).name;
+            return Err(StartError::BranchTaken { branch: typed.to_owned(), suggestion });
+        }
+        let slug = branch_slug(title);
+        let folder = pick_branch("", &slug, |name| self.layout.session(&channel.folder, name).exists()).name;
+        Ok(Branch { name: typed.to_owned(), folder })
     }
 
     fn choose(
@@ -227,10 +292,10 @@ impl Starter {
         let chosen = self.choose(&channel, request.repos.as_deref())?;
 
         let this = self.clone();
-        let (picked, title) = (channel.clone(), request.title.clone());
+        let (picked, title, typed) = (channel.clone(), request.title.clone(), request.branch.clone());
         let branch = {
             let chosen = chosen.clone();
-            blocking(move || this.pick(&picked, &chosen, &title)).await??
+            blocking(move || this.pick_for(&picked, &chosen, &title, typed.as_deref())).await??
         };
         let folder = self.layout.session(&channel.folder, &branch.folder);
         let session = SessionRecord {
@@ -325,8 +390,9 @@ impl Starter {
             });
         }
         let this = self.clone();
-        let (picked, repos, title) = (channel.clone(), chosen.clone(), request.title.clone());
-        let branch = blocking(move || match this.pick(&picked, &repos, &title) {
+        let (picked, repos, title, typed) =
+            (channel.clone(), chosen.clone(), request.title.clone(), request.branch.clone());
+        let branch = blocking(move || match this.pick_for(&picked, &repos, &title, typed.as_deref()) {
             // This machine may not have the clones (or not reach the remote): the names
             // this channel's sessions use are all it can know.
             Err(StartError::Git { .. }) => this.pick_unseen(&picked, &title),
@@ -398,7 +464,7 @@ impl Starter {
             }
         }
         Ok(pick_branch(
-            channel.branch_prefix.as_str(),
+            &self.prefix(channel)?,
             &branch_slug(title),
             |name| taken.contains(name),
         ))
@@ -554,7 +620,9 @@ impl Starter {
     }
 
     /// Takes a start back: removes the session folder (partial clones
-    /// included) and the session with its records. Safe to repeat.
+    /// included) and the session with its records. Safe to repeat. A folder
+    /// another session also uses (a context-only fork works in its parent's,
+    /// D185) is left alone: only this session's records go.
     pub(crate) async fn undo(&self, session: &SessionRecord) -> Result<(), StartError> {
         let (store, id, folder) = (
             self.store.clone(),
@@ -562,7 +630,14 @@ impl Starter {
             session.folder.clone(),
         );
         blocking(move || -> Result<(), StartError> {
-            remove_folder(&folder)?;
+            let shared = store
+                .sessions()
+                .map_err(store_err("list the sessions"))?
+                .iter()
+                .any(|other| other.id != id && other.folder == folder);
+            if !shared {
+                remove_folder(&folder)?;
+            }
             store
                 .remove_session(&id)
                 .map_err(store_err("remove the session"))

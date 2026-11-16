@@ -39,7 +39,7 @@ impl World {
                     id: id.to_owned(),
                     name: name.to_owned(),
                     folder: id.to_owned(),
-                    branch_prefix: String::new(),
+                    branch_prefix: None,
                     default_agent: "zsh".to_owned(),
                     repos: Vec::new(),
                     machines: Vec::new(),

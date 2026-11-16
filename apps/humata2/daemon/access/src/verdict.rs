@@ -29,6 +29,8 @@ pub enum Source {
     Rule,
     /// A grant covers it.
     Grant(GrantId),
+    /// A Desk session's switch the user turned on covers it (D182.3).
+    DeskSwitch,
     /// The While I'm away rule lists it as low-risk. The daemon journals it
     /// for the user to review (AW-4).
     AwayRule,
@@ -99,6 +101,8 @@ pub enum Refusal {
         capability: Capability,
     },
 
+    /// No longer produced: a context-only fork works in its parent's clones
+    /// as its own (D185). Kept until the daemon's status mapping drops it.
     #[error(
         "session {fork} is a context-only fork and never writes its parent {parent}'s clones (IN-20); write in its own clone, or fork with its own copy"
     )]

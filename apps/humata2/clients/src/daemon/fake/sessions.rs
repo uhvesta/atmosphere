@@ -1,10 +1,13 @@
 use tokio::sync::mpsc;
 
 use super::{FakeDaemon, Subscriber};
-use crate::daemon::{DaemonError, EVENT_QUEUE, Event, Events, Operation, Reply};
+use crate::daemon::{
+    ArchivePlan, DaemonError, EVENT_QUEUE, Event, Events, ForkOptions, Operation, PastTurn, Reply,
+    UnpushedWork,
+};
 use crate::model::{
-    Agent, Archive, ChannelId, ForkKind, ItemStatus, Line, MachineId, Scope, Session, SessionId, Speaker,
-    Status, Turn,
+    Agent, Archive, ChannelId, ForkKind, ItemStatus, Line, MachineId, Scope, Session, SessionId,
+    Speaker, Status, Turn,
 };
 use crate::workspace::Workspace;
 
@@ -124,7 +127,10 @@ pub(super) fn start_fresh(daemon: &FakeDaemon, session: &SessionId) -> Reply<()>
                 &id,
                 0,
                 Speaker::System,
-                &format!("{} started fresh with a summary of its last conversation", agent.name()),
+                &format!(
+                    "{} started fresh with a summary of its last conversation",
+                    agent.name()
+                ),
             );
             Ok(())
         },
@@ -134,11 +140,11 @@ pub(super) fn start_fresh(daemon: &FakeDaemon, session: &SessionId) -> Reply<()>
 pub(super) fn fork(
     daemon: &FakeDaemon,
     session: &SessionId,
-    kind: ForkKind,
-    title: &str,
+    options: ForkOptions,
 ) -> Reply<SessionId> {
     let parent = session.clone();
-    let title = title.to_owned();
+    let kind = options.kind;
+    let title = options.title.clone();
     daemon.reply(
         Some(Operation::Fork),
         format!("fork {session} {kind:?} {title:?}"),
@@ -151,8 +157,15 @@ pub(super) fn fork(
                 });
             }
             let id = SessionId::new(inner.id("s-fork"));
+            inner.last_fork = Some(options.clone());
             let mut fork = source.clone();
             fork.id = id.clone();
+            if let Some(agent) = options.agent {
+                fork.agent = agent;
+            }
+            if let Some(machine) = options.machine.clone() {
+                fork.machine = machine;
+            }
             fork.parent = Some(parent.clone());
             fork.fork = Some(kind);
             fork.title = title.clone();
@@ -172,12 +185,21 @@ pub(super) fn fork(
             };
             fork.branch = if kind == ForkKind::Conversation {
                 source.branch.clone()
-            } else {
+            } else if options.branch.trim().is_empty() {
                 format!("humata/{id}")
+            } else {
+                options.branch.trim().to_owned()
             };
             fork.transcript = vec![Line {
                 from: Speaker::System,
-                text: format!("Forked from “{}” at now ({})", source.title, kind.name()),
+                text: match options.before_turn {
+                    Some(turn) => format!(
+                        "Forked from “{}” before turn {turn} ({})",
+                        source.title,
+                        kind.name()
+                    ),
+                    None => format!("Forked from “{}” at now ({})", source.title, kind.name()),
+                },
             }];
             if kind == ForkKind::Shared {
                 fork.transcript.push(Line {
@@ -232,7 +254,88 @@ pub(super) fn fork(
     )
 }
 
-pub(super) fn archive(daemon: &FakeDaemon, session: &SessionId) -> Reply<Archive> {
+pub(super) fn list_turns(daemon: &FakeDaemon, session: &SessionId) -> Reply<Vec<PastTurn>> {
+    let id = session.clone();
+    daemon.reply(None, format!("list turns {session}"), move |inner| {
+        let found = inner.session_mut(&id)?;
+        let mut turns = Vec::new();
+        for line in found
+            .transcript
+            .iter()
+            .filter(|line| line.from == Speaker::You)
+        {
+            let index = u32::try_from(turns.len() + 1).unwrap_or(u32::MAX);
+            let text = line.text.lines().next().unwrap_or_default().to_owned();
+            turns.push(PastTurn { index, text });
+        }
+        Ok(turns)
+    })
+}
+
+pub(super) fn move_session(daemon: &FakeDaemon, session: &SessionId, to: &MachineId) -> Reply<()> {
+    let (id, to) = (session.clone(), to.clone());
+    daemon.reply(
+        Some(Operation::MoveSession),
+        format!("move {session} to {to}"),
+        move |inner| {
+            let online = inner
+                .workspace
+                .machines
+                .iter()
+                .find(|machine| machine.id == to)
+                .ok_or_else(|| DaemonError::NotFound {
+                    what: format!("Machine {to}"),
+                })?
+                .online;
+            if !online {
+                return Err(DaemonError::Offline { machine: to });
+            }
+            let found = inner.session_mut(&id)?;
+            found.machine = to.clone();
+            let changed = found.clone();
+            inner.last_move = Some((id, to));
+            inner.emit(Event::Session(changed));
+            Ok(())
+        },
+    )
+}
+
+pub(super) fn plan_archive(daemon: &FakeDaemon, session: &SessionId) -> Reply<ArchivePlan> {
+    let id = session.clone();
+    daemon.reply(None, format!("plan archive {session}"), move |inner| {
+        if inner.workspace.session(&id).is_none() {
+            return Err(DaemonError::NotFound {
+                what: format!("Session {id}"),
+            });
+        }
+        let forks = inner
+            .workspace
+            .sessions
+            .iter()
+            .filter(|s| s.parent.as_ref() == Some(&id) && !s.archived)
+            .count();
+        Ok(ArchivePlan {
+            forks_keep_running: u32::try_from(forks).unwrap_or(u32::MAX),
+            unpushed: inner
+                .unpushed
+                .get(&id)
+                .into_iter()
+                .flatten()
+                .map(|(repo, what)| UnpushedWork {
+                    repo: repo.clone(),
+                    what: what.clone(),
+                })
+                .collect(),
+            frees: inner.archive_frees.get(&id).cloned(),
+        })
+    })
+}
+
+pub(super) fn archive(
+    daemon: &FakeDaemon,
+    session: &SessionId,
+    push_first: bool,
+) -> Reply<Archive> {
     let id = session.clone();
     daemon.reply(
         Some(Operation::Archive),
@@ -259,6 +362,7 @@ pub(super) fn archive(daemon: &FakeDaemon, session: &SessionId) -> Reply<Archive
                 .filter(|s| s.parent.as_ref() == Some(&id))
                 .map(|s| s.id.clone())
                 .collect();
+            inner.last_archive = Some((id.clone(), push_first));
             inner.archived.insert(id.clone(), (snapshot, children));
             let parent = {
                 let found = inner
@@ -452,6 +556,8 @@ pub(super) fn create_session(
             }
             if let Some(item)=&options.item {
                 if let Some(item)=inner.workspace.items.iter_mut().find(|i|&i.id==item) {item.session=Some(id.clone());if matches!(item.status,ItemStatus::Backlog|ItemStatus::Todo){item.status=ItemStatus::InProgress;}}
+                let working=inner.workspace.item_details.entry(item.clone()).or_default();
+                if !working.sessions.contains(&id){working.sessions.push(id.clone());}
             }
             inner.workspace.activity.insert(0,crate::model::Activity {channel,session:Some(id.clone()),kind:crate::model::ActivityKind::Turn,text:format!("Started “{title}” with {} on {machine_name}",agent.name()),by:"You".into(),at:"now".into()});
             inner.workspace.session_options.insert(id.clone(),options);

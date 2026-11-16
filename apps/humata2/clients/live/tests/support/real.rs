@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use humata2_clients::comments::CommentsClient;
+use humata2_clients::desk::DeskClient;
 use humata2_clients::model::Agent;
 use humata2_clients::{Daemon, Terminals};
 use humata2_clients_live::{LiveComments, LiveDaemon, LiveOptions};
@@ -178,4 +179,12 @@ pub async fn start_comments() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn CommentsCl
     let comments: Arc<dyn CommentsClient> = Arc::new(LiveComments::new(&live));
     let daemon: Arc<dyn Daemon> = Arc::new(live);
     (world, daemon, comments)
+}
+
+pub async fn start_desk() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn DeskClient>) {
+    let (world, live) = start_live().await;
+    let live = Arc::new(live);
+    let daemon: Arc<dyn Daemon> = live.clone();
+    let desk: Arc<dyn DeskClient> = live;
+    (world, daemon, desk)
 }

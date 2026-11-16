@@ -1,14 +1,13 @@
 //! The durable copy of each session's conversation and the index over it.
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::index::{Index, Search};
+use crate::raw::{self, Cursor, Raw};
 use crate::session::{self, SavedMeta, State};
-use crate::{MirrorError, Role, Scrubber, read_from};
+use crate::{Entry, MirrorError, OwnTools, Role, Scrubber, parse_lines, read_from};
 
 /// The index's format. It is kept in `index.db` as `PRAGMA user_version`;
 /// an index with another number is deleted and rebuilt from the mirror
@@ -47,6 +46,18 @@ pub struct MirrorEntry {
     pub text: String,
     /// When the agent wrote it (RFC 3339), if its file said.
     pub at: Option<String>,
+}
+
+/// The raw lines a session on another machine keeps (D195): the scrubbed
+/// lines as they came from the machine's conversation file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawConversation {
+    /// The agent that runs the session, from its meta. The lines are in
+    /// that agent's format.
+    pub agent: String,
+    /// Complete scrubbed lines, each ended by `\n`. While a backfill runs,
+    /// only the lines read so far.
+    pub data: Vec<u8>,
 }
 
 /// What to search for.
@@ -157,6 +168,7 @@ impl Mirror {
             let dir = session::dir_of(&mirror_dir, session);
             let state = session::load_state(&dir)?;
             session::trim_log(&dir, state.committed_len)?;
+            raw::trim(&dir, &state.raw)?;
             let meta = session::load_meta(&dir)?.unwrap_or_default();
             index.sync_session(session, &dir, &state, &meta)?;
         }
@@ -210,7 +222,7 @@ impl Mirror {
     ) -> Result<usize, MirrorError> {
         let mut index = self.lock();
         let dir = self.dir(session);
-        let mut state = session::load_state(&dir)?;
+        let state = session::load_state(&dir)?;
         session::trim_log(&dir, state.committed_len)?;
         let meta = session::load_meta(&dir)?.unwrap_or_default();
         // The index may have missed an append that was saved before a crash.
@@ -218,43 +230,171 @@ impl Mirror {
 
         let mut own_tools = state.own_tools.clone();
         let read = read_from(file, state.offset, &mut own_tools)?;
-        let mut turn = state.turn;
-        let mut seq = state.next_seq;
-        let entries: Vec<MirrorEntry> = read
-            .entries
-            .into_iter()
-            .map(|entry| {
-                if entry.new_turn {
-                    turn += 1;
-                }
-                seq += 1;
-                MirrorEntry {
-                    seq: seq - 1,
-                    turn,
-                    role: entry.role,
-                    text: scrubber.scrub(&entry.text),
-                    at: entry.at,
-                }
-            })
-            .collect();
+        let (entries, next_seq, turn) = number(&state, read.entries, scrubber);
         // Nothing new: the saved state already says all of it, so don't
         // pay for another fsync'd save just to move "as of".
         if entries.is_empty() && read.next_offset == state.offset && own_tools == state.own_tools {
             return Ok(0);
         }
-
-        let written = session::append(&dir, state.committed_len, &entries)?;
-        state = State {
-            committed_len: state.committed_len + written,
+        let next = Progress {
             offset: read.next_offset,
-            next_seq: seq,
+            source: state.source.clone(),
+            next_seq,
             turn,
             own_tools,
-            as_of: session::now(),
+            backfill: state.raw.backfill.clone(),
+            raw: RawChange::Keep,
         };
-        session::save_state(&dir, &state)?;
-        index.add(session, &meta, &state.as_of, &entries)?;
+        commit(&mut index, session, &dir, &meta, &state, next, &entries)?;
         Ok(entries.len())
+    }
+
+    /// Where reading session `session`'s conversation file on another
+    /// machine goes on, in that file's bytes, and what the machine said the
+    /// file was at the last read (empty before the first). While a backfill
+    /// runs (see [`Mirror::begin_raw_backfill`]) that is the backfill's own
+    /// place, which starts at the file's beginning.
+    pub fn source_offset(&self, session: &str) -> Result<(u64, String), MirrorError> {
+        let _index = self.lock();
+        let state = session::load_state(&self.dir(session))?;
+        Ok(match state.raw.backfill {
+            Some(cursor) => (cursor.offset, cursor.source),
+            None => (state.offset, state.source),
+        })
+    }
+
+    /// Whether the session keeps raw lines yet. A session mirrored before
+    /// the host kept them doesn't until [`Mirror::begin_raw_backfill`].
+    pub fn keeps_raw_lines(&self, session: &str) -> Result<bool, MirrorError> {
+        let _index = self.lock();
+        Ok(session::load_state(&self.dir(session))?.raw.kept)
+    }
+
+    /// Starts keeping raw lines for a session whose entries were mirrored
+    /// before that: from now on [`Mirror::source_offset`] answers `(0, "")`,
+    /// and the machine's file is read again from its start for the raw lines
+    /// alone. The raw lines start over, so a session that already keeps them
+    /// gets them again in full. Until the read reaches the offset the entries
+    /// already hold, takes add raw lines and no entries; the entries are then
+    /// read as usual from that offset on. A session with no entries yet
+    /// starts with none. Survives a reopen.
+    pub fn begin_raw_backfill(&self, session: &str) -> Result<(), MirrorError> {
+        let _index = self.lock();
+        let dir = self.dir(session);
+        let state = session::load_state(&dir)?;
+        let raw = Raw {
+            kept: true,
+            generation: state.raw.generation + 1,
+            committed_len: 0,
+            backfill: (state.offset > 0).then(Cursor::default),
+        };
+        session::save_state(&dir, &State { raw, ..state })
+    }
+
+    /// While a backfill runs, the offset where the mirror's entries already
+    /// stop. The backfill's reads must end there: a chunk that runs past it
+    /// is refused by [`Mirror::take`]. `None` when no backfill runs.
+    pub fn raw_backfill_stop(&self, session: &str) -> Result<Option<u64>, MirrorError> {
+        let _index = self.lock();
+        let state = session::load_state(&self.dir(session))?;
+        Ok(state.raw.backfill.is_some().then_some(state.offset))
+    }
+
+    /// The raw lines a session on another machine keeps, as they came. `None`
+    /// for a session that never had a take (this host's own sessions, which
+    /// resume from their own files). During a backfill, the lines read so far.
+    pub fn raw_conversation(&self, session: &str) -> Result<Option<RawConversation>, MirrorError> {
+        let _index = self.lock();
+        let dir = self.dir(session);
+        let state = session::load_state(&dir)?;
+        if !state.raw.kept {
+            return Ok(None);
+        }
+        let data = raw::read(&dir, &state.raw)?;
+        let agent = session::load_meta(&dir)?
+            .map(|meta| meta.agent)
+            .unwrap_or_default();
+        Ok(Some(RawConversation { agent, data }))
+    }
+
+    /// Adds what a machine read for the host's mirror (D189): `chunk.data`
+    /// is complete scrubbed lines as [`read_lines`](crate::read_lines) made
+    /// them, read from byte `chunk.from` of the machine's file.
+    ///
+    /// A chunk that doesn't start where the mirror stopped is stale (a
+    /// repeated trigger read the same bytes twice) and is dropped: `None`.
+    /// A `rewritten` chunk starts a new file: its entries are appended after
+    /// the old ones (nothing mirrored is lost, LD-9), `seq` and turns go on,
+    /// and the source offset, the new source and the entries are saved in
+    /// one write. Every taken chunk, even an empty one, moves "as of".
+    ///
+    /// The lines are also kept as they came, in the session's raw file (D195);
+    /// a `rewritten` chunk starts that file over. During a backfill a chunk
+    /// adds raw lines only, and one that runs past the offset the entries
+    /// hold is [`MirrorError::BackfillPast`], which saves nothing: the host
+    /// reads a backfill only up to [`Mirror::raw_backfill_stop`].
+    /// Returns how many entries were added.
+    pub fn take(&self, session: &str, chunk: &Chunk<'_>) -> Result<Option<usize>, MirrorError> {
+        let mut index = self.lock();
+        let dir = self.dir(session);
+        let state = session::load_state(&dir)?;
+        session::trim_log(&dir, state.committed_len)?;
+        raw::trim(&dir, &state.raw)?;
+        let meta = session::load_meta(&dir)?.unwrap_or_default();
+        index.sync_session(session, &dir, &state, &meta)?;
+        let (entries, next) = match &state.raw.backfill {
+            Some(cursor) if !chunk.rewritten => {
+                if chunk.from != cursor.offset {
+                    return Ok(None);
+                }
+                if chunk.next_offset > state.offset {
+                    return Err(MirrorError::BackfillPast {
+                        at: state.offset,
+                        read_to: chunk.next_offset,
+                    });
+                }
+                // The entries already hold these lines: only the raw lines are new.
+                let next = Progress {
+                    offset: state.offset,
+                    source: state.source.clone(),
+                    next_seq: state.next_seq,
+                    turn: state.turn,
+                    own_tools: state.own_tools.clone(),
+                    backfill: (chunk.next_offset < state.offset).then(|| Cursor {
+                        offset: chunk.next_offset,
+                        source: chunk.source.to_owned(),
+                    }),
+                    raw: RawChange::Append(chunk.data.to_vec()),
+                };
+                (Vec::new(), next)
+            }
+            _ => {
+                if !chunk.rewritten && chunk.from != state.offset {
+                    return Ok(None);
+                }
+                let mut own_tools = state.own_tools.clone();
+                let read = parse_lines(chunk.data, &mut own_tools);
+                // The lines were scrubbed on the machine.
+                let (entries, next_seq, turn) = number(&state, read, &Scrubber::default());
+                let raw = if chunk.rewritten {
+                    RawChange::Restart(chunk.data.to_vec())
+                } else {
+                    RawChange::Append(chunk.data.to_vec())
+                };
+                let next = Progress {
+                    offset: chunk.next_offset,
+                    source: chunk.source.to_owned(),
+                    next_seq,
+                    turn,
+                    own_tools,
+                    backfill: None,
+                    raw,
+                };
+                (entries, next)
+            }
+        };
+        commit(&mut index, session, &dir, &meta, &state, next, &entries)?;
+        Ok(Some(entries.len()))
     }
 
     /// Searches every mirrored session, archived ones included (LD-23,
@@ -274,7 +414,7 @@ impl Mirror {
             &query.agent,
             &query.since,
             &query.until,
-        ));
+        ))?;
         let offset = match query.page.token.as_str() {
             "" => 0,
             token => open_token(token, fingerprint)?,
@@ -323,7 +463,7 @@ impl Mirror {
         last_turn: Option<u32>,
         page: &PageAsk,
     ) -> Result<Page<MirrorEntry>, MirrorError> {
-        let fingerprint = fingerprint(&(session, first_turn, last_turn));
+        let fingerprint = fingerprint(&(session, first_turn, last_turn))?;
         let after = match page.token.as_str() {
             "" => None,
             token => Some(open_token(token, fingerprint)?),
@@ -357,6 +497,111 @@ impl Mirror {
     }
 }
 
+/// What the mirror's state becomes with an append.
+struct Progress {
+    offset: u64,
+    source: String,
+    next_seq: u64,
+    turn: u32,
+    own_tools: OwnTools,
+    /// The backfill's place after this append; `None` once it is done.
+    backfill: Option<Cursor>,
+    raw: RawChange,
+}
+
+/// How an append changes the session's raw file.
+enum RawChange {
+    /// Nothing: the session's lines are not kept by this append (catch-up).
+    Keep,
+    /// The bytes go after the ones kept.
+    Append(Vec<u8>),
+    /// The bytes are the whole of a new file, which replaces the kept ones.
+    Restart(Vec<u8>),
+}
+
+/// A part of another machine's conversation file, for [`Mirror::take`].
+#[derive(Clone, Copy, Debug)]
+pub struct Chunk<'a> {
+    /// The byte of the machine's file `data` was read from; 0 when `rewritten`.
+    pub from: u64,
+    /// Complete scrubbed lines.
+    pub data: &'a [u8],
+    /// Where the next read starts.
+    pub next_offset: u64,
+    /// The file's identity as the machine answered.
+    pub source: &'a str,
+    /// The machine's file is a new one: `from` is not checked.
+    pub rewritten: bool,
+}
+
+/// Numbers `read` after the state's last entry, scrubbed; also returns the
+/// next `seq` and the turn of the last entry.
+fn number(state: &State, read: Vec<Entry>, scrubber: &Scrubber) -> (Vec<MirrorEntry>, u64, u32) {
+    let mut turn = state.turn;
+    let mut seq = state.next_seq;
+    let entries = read
+        .into_iter()
+        .map(|entry| {
+            if entry.new_turn {
+                turn += 1;
+            }
+            seq += 1;
+            MirrorEntry {
+                seq: seq - 1,
+                turn,
+                role: entry.role,
+                text: scrubber.scrub(&entry.text),
+                at: entry.at,
+            }
+        })
+        .collect();
+    (entries, seq, turn)
+}
+
+/// Appends the raw bytes and `entries`, saves the state they lead to and
+/// indexes the entries.
+fn commit(
+    index: &mut Index,
+    session: &str,
+    dir: &Path,
+    meta: &SavedMeta,
+    state: &State,
+    next: Progress,
+    entries: &[MirrorEntry],
+) -> Result<(), MirrorError> {
+    let mut raw = match next.raw {
+        RawChange::Keep => state.raw.clone(),
+        RawChange::Append(bytes) => Raw {
+            kept: true,
+            committed_len: state.raw.committed_len + raw::append(dir, &state.raw, &bytes)?,
+            ..state.raw.clone()
+        },
+        RawChange::Restart(bytes) => {
+            let generation = state.raw.generation + 1;
+            Raw {
+                kept: true,
+                generation,
+                committed_len: raw::start(dir, generation, &bytes)?,
+                ..Raw::default()
+            }
+        }
+    };
+    raw.backfill = next.backfill;
+    let written = session::append(dir, state.committed_len, entries)?;
+    let state = State {
+        committed_len: state.committed_len + written,
+        offset: next.offset,
+        next_seq: next.next_seq,
+        turn: next.turn,
+        own_tools: next.own_tools,
+        as_of: session::now(),
+        source: next.source,
+        raw,
+    };
+    session::save_state(dir, &state)?;
+    index.add(session, meta, &state.as_of, entries)
+}
+
 fn page_size(page: &PageAsk) -> u32 {
     if page.size == 0 {
         DEFAULT_PAGE
@@ -385,10 +630,16 @@ fn match_expression(words: &[String]) -> Option<String> {
     Some(expression)
 }
 
-fn fingerprint<T: Hash>(request: &T) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    request.hash(&mut hasher);
-    hasher.finish()
+/// A request's tag in its page tokens: FNV-1a 64 over the request's JSON.
+/// Both are fixed, so a token keeps opening across builds and toolchains
+/// (a std hasher may change between Rust releases).
+fn fingerprint<T: serde::Serialize>(request: &T) -> Result<u64, MirrorError> {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let bytes = serde_json::to_vec(request).map_err(|source| MirrorError::Request { source })?;
+    Ok(bytes.iter().fold(OFFSET_BASIS, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
+    }))
 }
 
 fn make_token(position: u64, fingerprint: u64) -> String {

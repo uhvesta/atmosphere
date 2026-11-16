@@ -46,7 +46,10 @@ impl Guard {
     pub(crate) fn check(&self, caller: &Caller, call: &Call) -> Result<Checked, Status> {
         let principal = principal(caller);
         let mut policy = lock(&self.policy);
+        // A Desk agent belongs to no channel: the policy answers it with
+        // the new-channel rules, and nothing is added for it (D182.3).
         if let Caller::Agent(agent) = caller
+            && !matches!(agent.session_kind(), SessionKind::Desk(_))
             && policy.channel_rules(&agent.session.channel).is_none()
             && let Err(error) = policy.add_channel(agent.session.channel.clone())
         {
@@ -110,7 +113,7 @@ pub(crate) fn principal(caller: &Caller) -> Principal {
         Caller::User(UserVia::CliLogin { .. }) => Principal::Cli(PresenceMethod::CliLogin),
         Caller::Agent(agent) => Principal::Agent(Agent {
             session: agent.session.clone(),
-            kind: SessionKind::Ordinary,
+            kind: agent.session_kind(),
         }),
         Caller::Script(script) => Principal::Script(script.token.clone()),
         Caller::Peer => Principal::Peer(PeerLink::HostToDaemon),

@@ -112,6 +112,23 @@ pub fn read_from(file: &Path, offset: u64, own_tools: &mut OwnTools) -> Result<R
     })
 }
 
+/// The entries of `data`, complete lines of a conversation file already
+/// read (by [`crate::read_lines`] on a machine, for the host's mirror). The
+/// parsing is [`read_from`]'s: same skips, same own-tool filtering. A last
+/// piece with no `\n` is not a complete line and is left out.
+pub fn parse_lines(data: &[u8], own_tools: &mut OwnTools) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    let mut rest = data;
+    while let Some(end) = rest.iter().position(|byte| *byte == b'\n') {
+        let (line, after) = rest.split_at(end + 1);
+        if let Ok(value) = serde_json::from_slice::<Value>(line) {
+            entries_of(&value, own_tools, &mut entries);
+        }
+        rest = after;
+    }
+    entries
+}
+
 /// Adds the entries of one parsed line to `out`.
 fn entries_of(line: &Value, own_tools: &mut OwnTools, out: &mut Vec<Entry>) {
     let is_user = match line.get("type").and_then(Value::as_str) {

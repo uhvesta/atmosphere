@@ -67,6 +67,12 @@ pub enum Problem {
     Unsupported {
         path: String,
     },
+    /// An end's machine can't be reached (its link is down). The transfer
+    /// is Failed in the engine, shown as waiting, and resumed when the
+    /// link is back.
+    Offline {
+        machine: String,
+    },
     /// An upload's stream ended; resume it.
     Interrupted,
     Io {
@@ -179,6 +185,11 @@ fn chain(error: &dyn std::error::Error) -> String {
 }
 
 fn io_problem(error: &EndError) -> Problem {
+    if let EndError::Offline { machine } = error {
+        return Problem::Offline {
+            machine: machine.clone(),
+        };
+    }
     Problem::Io {
         doing: error.doing().to_owned(),
         path: error.path().display().to_string(),
@@ -506,6 +517,7 @@ impl Transfers {
             files: Vec::new(),
             file_index: 0,
             offset: 0,
+            confirmed: 0,
             done_bytes: 0,
             total_bytes: 0,
             done_files: 0,
@@ -839,6 +851,7 @@ impl Transfers {
             self.update(id, journal, |s| {
                 s.rec.file_index = index + 1;
                 s.rec.offset = 0;
+                s.rec.confirmed = 0;
                 if entry.kind == Kind::File {
                     s.rec.done_files += 1;
                 }
@@ -856,11 +869,13 @@ impl Transfers {
         index: usize,
         before: u64,
         offset: u64,
+        confirmed: u64,
         journal: bool,
     ) -> Result<(), Halt> {
         self.update(id, journal, |s| {
             s.rec.file_index = index;
             s.rec.offset = offset;
+            s.rec.confirmed = confirmed;
             s.rec.done_bytes = before + offset;
         })?;
         Ok(())
@@ -913,19 +928,34 @@ impl Transfers {
         let source = &self.config.source;
         let end = &self.config.destination;
         let size = entry.size;
-        let (mut offset, current) = self.read(id, |r| (r.offset, r.done_bytes))?;
+        let (mut offset, mut confirmed, current) =
+            self.read(id, |r| (r.offset, r.confirmed, r.done_bytes))?;
         let before = current.saturating_sub(offset);
         if offset > size {
             offset = 0;
+        }
+        if confirmed > offset {
+            confirmed = 0;
         }
         let mut retried = false;
         loop {
             let mut hasher = Sha256::new();
             if offset > 0 && !self.prefix_matches(from, staged, offset, &mut hasher, buf) {
-                offset = 0;
+                // The destination may hold only what it confirmed.
                 hasher = Sha256::new();
+                if confirmed > 0
+                    && confirmed < offset
+                    && self.prefix_matches(from, staged, confirmed, &mut hasher, buf)
+                {
+                    offset = confirmed;
+                } else {
+                    offset = 0;
+                    hasher = Sha256::new();
+                }
             }
-            self.progress(id, index, before, offset, false)?;
+            // Whatever prefix matched is on the destination's disk.
+            confirmed = offset;
+            self.progress(id, index, before, offset, confirmed, false)?;
             let mut sink = end.open_write(staged, offset).map_err(dst)?;
             let mut reader = source.open_read(from, offset).map_err(src)?.take(size - offset);
             let mut since_sync = 0u64;
@@ -934,7 +964,7 @@ impl Transfers {
                     Want::Run => {}
                     other => {
                         sink.sync().map_err(dst)?;
-                        self.progress(id, index, before, offset, false)?;
+                        self.progress(id, index, before, offset, offset, false)?;
                         return Err(if other == Want::Pause {
                             Halt::Pause
                         } else {
@@ -946,6 +976,13 @@ impl Transfers {
                     Ok(n) => n,
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(error) => {
+                        if let Some(EndError::Offline { machine }) =
+                            error.get_ref().and_then(|inner| inner.downcast_ref::<EndError>())
+                        {
+                            return Err(src(EndError::Offline {
+                                machine: machine.clone(),
+                            }));
+                        }
                         return Err(src(EndError::Io {
                             doing: "read",
                             path: from.to_owned(),
@@ -964,11 +1001,12 @@ impl Transfers {
                 if since_sync >= self.config.sync_every_bytes {
                     sink.sync().map_err(dst)?;
                     point("transfer.chunk.synced");
-                    self.progress(id, index, before, offset, true)?;
+                    confirmed = offset;
+                    self.progress(id, index, before, offset, confirmed, true)?;
                     point("transfer.progress.journaled");
                     since_sync = 0;
                 } else {
-                    self.progress(id, index, before, offset, false)?;
+                    self.progress(id, index, before, offset, confirmed, false)?;
                 }
             }
             if offset != size {
@@ -977,6 +1015,7 @@ impl Transfers {
                 }));
             }
             sink.sync().map_err(dst)?;
+            confirmed = offset;
             drop(sink);
             self.update(id, false, |s| s.rec.phase = Phase::Verifying)?;
             let expected = digest_of(hasher);
@@ -998,6 +1037,7 @@ impl Transfers {
             retried = true;
             end.remove_tree(staged).map_err(dst)?;
             offset = 0;
+            confirmed = 0;
             self.update(id, false, |s| s.rec.phase = Phase::Running)?;
         }
     }
@@ -1071,6 +1111,7 @@ impl Transfers {
             r.phase = Phase::Done;
             r.problem = None;
             r.offset = 0;
+            r.confirmed = 0;
             r.done_bytes = r.total_bytes;
             r.done_files = r.total_files;
         });

@@ -161,6 +161,8 @@ impl Ui {
                     state.palette.clone(),
                     state.toasts.clone(),
                     state.session.fork.clone(),
+                    state.session.moving.clone(),
+                    state.session.archiving.clone(),
                     state.session.forking,
                     state.session.error.clone(),
                     state.desk.clone(),

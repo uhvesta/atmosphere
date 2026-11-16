@@ -1,4 +1,4 @@
-//! The sidebar (NV-1–5, NV-16–23): pinned sessions, then channels with
+//! The sidebar (NV-1–5, NV-16–23): the Pinned section, then channels with
 //! their sessions and forks nested under them. Only the rows in view are
 //! built, so five thousand sessions scroll as smoothly as five. With focus,
 //! the arrow keys move a cursor through the rows, ← and → fold and unfold,
@@ -65,7 +65,6 @@ fn row_id(row: &Row, index: usize) -> ElementId {
     match &row.key {
         Some(RowKey::Channel(id)) => ElementId::Name(format!("sidebar-channel-{}", id.0).into()),
         Some(RowKey::Session(id)) => ElementId::Name(format!("sidebar-session-{}", id.0).into()),
-        Some(RowKey::Pinned(id)) => ElementId::Name(format!("sidebar-pinned-{}", id.0).into()),
         None => ElementId::Name(format!("sidebar-section-{index}").into()),
     }
 }
@@ -192,7 +191,7 @@ fn draw_row(
                 body = body.child(chrome::icon(IconName::GitFork, faint, 12.));
             }
             let count = ui.read(|s| match &key {
-                RowKey::Session(id) | RowKey::Pinned(id) => inbox_count(s, id, *vip),
+                RowKey::Session(id) => inbox_count(s, id, *vip),
                 _ => 0,
             });
             body = body.child(chrome::status(*status)).child(
@@ -215,17 +214,6 @@ fn draw_row(
                             12.,
                         ))
                         .child(div().text_size(px(11.)).child(count.to_string())),
-                );
-            }
-            if matches!(key, RowKey::Pinned(_)) && *vip {
-                body = body.child(
-                    div()
-                        .rounded(px(3.))
-                        .px(px(4.))
-                        .bg(rgb(0xbf5af2))
-                        .text_size(px(9.5))
-                        .text_color(rgb(0xffffff))
-                        .child("VIP"),
                 );
             }
         }
@@ -279,7 +267,7 @@ pub(crate) fn nav(
         .flex()
         .items_center()
         .gap(px(7.))
-        .h(px(26.))
+        .h(px(25.))
         .mx(px(10.))
         .px(px(8.))
         .rounded(px(6.))
@@ -353,103 +341,6 @@ fn start(
         .test_support()
 }
 
-fn pinned_row(ui: &Rc<Ui>, entry: &Row, current: bool, look: Look) -> Option<AnyElement> {
-    let RowKey::Pinned(id) = entry.key.as_ref()? else {
-        return None;
-    };
-    let (session, pull) = ui.read(|s| {
-        (
-            s.workspace.session(id).cloned(),
-            s.workspace
-                .pulls
-                .iter()
-                .find(|p| p.session.as_ref() == Some(id))
-                .cloned(),
-        )
-    });
-    let session = session?;
-    let ui = ui.clone();
-    let id = id.clone();
-    let summary = pull.is_none() && !session.activity.is_empty();
-    Some(
-        div()
-            .id(SharedString::from(format!("sidebar-pinned-{id}")))
-            .role(Role::TreeItem)
-            .aria_label(session.title.clone())
-            .h(px(if summary { 36. } else { 26. }))
-            .flex_shrink_0()
-            .when(current, |x| {
-                x.bg(rgb(look.selection)).text_color(rgb(0xffffff))
-            })
-            .overflow_hidden()
-            .mx(px(10.))
-            .px(px(8.))
-            .rounded(px(6.))
-            .cursor_pointer()
-            .child(
-                row()
-                    .h(px(if summary { 18. } else { 26. }))
-                    .gap(px(7.))
-                    .child(if pull.is_some() {
-                        chrome::icon(IconName::GitPullRequest, look.accent, 12.).into_any_element()
-                    } else {
-                        chrome::status(session.status).into_any_element()
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(session.title),
-                    )
-                    .when(session.vip, |x| {
-                        x.child(
-                            div()
-                                .px(px(4.))
-                                .rounded(px(3.))
-                                .bg(rgb(0xbf5af2))
-                                .text_size(px(9.5))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(rgb(0xffffff))
-                                .child("VIP"),
-                        )
-                    })
-                    .children(pull.map(|p| {
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(rgb(look.secondary))
-                            .child(p.checks)
-                    })),
-            )
-            .when(summary, |x| {
-                x.child(
-                    div()
-                        .pl(px(25.))
-                        .h(px(12.))
-                        .line_height(px(12.))
-                        .whitespace_nowrap()
-                        .text_size(px(11.))
-                        .text_color(rgb(if session.status == Status::NeedsYou {
-                            0xff9f0a
-                        } else {
-                            look.secondary
-                        }))
-                        .child(format!("{} · {}", session.activity, session.active)),
-                )
-            })
-            .on_click(move |_, _, cx| {
-                ui.send(
-                    AppAction::Sidebar(SidebarAction::Activate(RowKey::Pinned(id.clone()))),
-                    cx,
-                )
-            })
-            .test_support()
-            .into_any_element(),
-    )
-}
-
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
@@ -477,11 +368,6 @@ impl Render for Sidebar {
             .iter()
             .position(|r| matches!(r.kind, RowKind::Section("Channels")))
             .unwrap_or(0);
-        let pinned: Vec<_> = if self.ui.read(|s| s.settings.preferences.show_pinned) {
-            rows[..channel_start].to_vec()
-        } else {
-            Vec::new()
-        };
         let mut lines = Vec::new();
         for (index, row) in rows.iter().skip(channel_start + 1).enumerate() {
             let bare = matches!(row.kind, RowKind::Channel { sessions: 0, .. })
@@ -547,11 +433,7 @@ impl Render for Sidebar {
         let (route, waiting, machines) = ui.read(|s| {
             (
                 s.route.clone(),
-                s.workspace
-                    .requests
-                    .iter()
-                    .filter(|r| r.answer.is_none())
-                    .count(),
+                humata2_inbox::waiting(&s.workspace),
                 s.workspace
                     .machines
                     .iter()
@@ -633,6 +515,7 @@ impl Render for Sidebar {
                     .role(Role::Button)
                     .aria_label("Search")
                     .mx(px(10.))
+                    .mt(px(-4.))
                     .mb(px(6.))
                     .h(px(26.))
                     .px(px(8.))
@@ -651,32 +534,20 @@ impl Render for Sidebar {
                     })
                     .test_support(),
             )
-            .child(div().h(px(if pinned.is_empty() { 0. } else { 8. })))
-            .children(pinned.iter().enumerate().map(|(index, entry)| {
-                if let Some(row) = pinned_row(
-                    ui,
-                    entry,
-                    match (&entry.key, &current) {
-                        (Some(RowKey::Pinned(a)), Some(RowKey::Session(b) | RowKey::Pinned(b))) => {
-                            a == b
-                        }
-                        _ => false,
-                    },
-                    look,
-                ) {
-                    return row;
-                }
-                draw_row(
-                    ui,
-                    &self.focus,
-                    entry,
-                    index,
-                    entry.key.is_some() && entry.key == cursor,
-                    entry.key.is_some() && entry.key == current,
-                    look,
-                    width,
-                )
-            }))
+            // FIND (NV-20 to NV-25): the host's pins, in the person's order.
+            .children({
+                let send_pinned: crate::sidebar_pinned::SendPinned = Rc::new({
+                    let ui = ui.clone();
+                    move |action, cx: &mut App| ui.send(AppAction::Pinned(action), cx)
+                });
+                let shown = current.as_ref().map(|key| match key {
+                    RowKey::Session(id) => humata2_clients::marks::Thing::Session(id.clone()),
+                    RowKey::Channel(id) => humata2_clients::marks::Thing::Channel(id.clone()),
+                });
+                ui.read(|s| {
+                    crate::sidebar_pinned::section(&s.pinned, &s.workspace, shown.as_ref(), look, &send_pinned)
+                })
+            })
             .child(div().h(px(4.)))
             .child(nav(
                 ui,

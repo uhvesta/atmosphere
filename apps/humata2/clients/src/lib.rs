@@ -27,7 +27,8 @@ use std::time::Duration;
 
 pub use clipboard::{Clipboard, FakeClipboard};
 pub use daemon::{
-    Daemon, DaemonError, EVENT_QUEUE, Event, Events, FakeDaemon, Operation, Reply, Terminals,
+    ArchivePlan, Daemon, DaemonError, EVENT_QUEUE, Event, Events, FakeDaemon, ForkOptions,
+    Operation, PastTurn, Reply, Terminals, UnpushedWork,
 };
 pub use comments::{CommentsClient, FakeComments};
 pub use desk::DeskClient;
@@ -52,6 +53,10 @@ pub struct Clients {
     pub desk: Arc<dyn DeskClient>,
     /// A session's review comments.
     pub comments: Arc<dyn CommentsClient>,
+    /// Search over every session's conversation, and reading a hit's turns.
+    pub history: Arc<dyn history::History>,
+    /// Pins and VIP marks, kept on the host.
+    pub marks: Arc<dyn marks::MarksClient>,
     /// Time, for latency, debouncing and save intervals.
     pub clock: Arc<dyn Clock>,
     /// Where Copy puts text.
@@ -75,6 +80,10 @@ pub struct Fakes {
     pub daemon: FakeDaemon,
     /// The review comments.
     pub comments: FakeComments,
+    /// Conversation search.
+    pub history: history::FakeHistory,
+    /// Pins and VIP marks.
+    pub marks: marks::FakeMarks,
     /// The clipboard.
     pub clipboard: FakeClipboard,
     /// The file system.
@@ -93,12 +102,15 @@ impl Clients {
     /// Fakes holding `workspace`, on `clock`, with no latency.
     #[must_use]
     pub fn fake(workspace: Workspace, clock: Arc<dyn Clock>) -> (Self, Fakes) {
+        let marks = marks::FakeMarks::seeded_from(&workspace);
         let daemon = FakeDaemon::new(workspace, clock.clone());
         // An add in the dialog makes the machine in the fake workspace.
         let fake_machines = machines::FakeMachines::new().adding_through(Arc::new(daemon.clone()));
         Self::with_fakes(Fakes {
             daemon,
             comments: FakeComments::new(),
+            history: history::FakeHistory::new(),
+            marks,
             clipboard: FakeClipboard::default(),
             files: FakeFileSystem::default(),
             file_manager: FakeFileManager::default(),
@@ -117,6 +129,8 @@ impl Clients {
             terminals: Arc::new(fakes.daemon.clone()),
             desk: Arc::new(fakes.daemon.clone()),
             comments: Arc::new(fakes.comments.clone()),
+            history: Arc::new(fakes.history.clone()),
+            marks: Arc::new(fakes.marks.clone()),
             clock,
             clipboard: Arc::new(fakes.clipboard.clone()),
             files: Arc::new(fakes.files.clone()),
@@ -136,6 +150,7 @@ impl Clients {
         // The demo has the Desk of frame 36, so the installed app shows it.
         let mut workspace = fixture::design();
         fixture::desk(&mut workspace);
+        let marks = marks::FakeMarks::seeded_from(&workspace);
         let daemon = FakeDaemon::new(workspace, clock.clone())
             .with_latency(Duration::from_millis(120))
             .with_step(Duration::from_millis(350));
@@ -144,6 +159,8 @@ impl Clients {
             terminals: Arc::new(daemon.clone()),
             desk: Arc::new(daemon.clone()),
             comments: Arc::new(FakeComments::new()),
+            history: Arc::new(history::FakeHistory::new()),
+            marks: Arc::new(marks),
             clock,
             clipboard: Arc::new(FakeClipboard::default()),
             files: Arc::new(FakeFileSystem::default()),

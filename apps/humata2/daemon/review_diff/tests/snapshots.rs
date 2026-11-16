@@ -96,6 +96,30 @@ fn without_a_review_since_last_review_says_there_is_none() {
     assert!(matches!(result, Err(DiffError::NoSnapshot { .. })));
 }
 
+/// D198: never reviewed means everything is unreviewed, so a repo with no
+/// snapshot shows what changed since origin/main and says it isn't reviewed.
+#[test]
+fn without_a_review_since_last_review_shows_everything_since_origin_main() {
+    let repo = Repo::new();
+    repo.write("a.txt", "1\n");
+    repo.commit_all("base");
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.write("a.txt", "1\n2\n");
+    repo.commit_all("the agent's commit");
+    repo.write("new.txt", "made by the agent\n");
+    let spec = RepoSpec::since_last_review("api");
+    let shown = diff(&repo, &spec);
+    assert_eq!(paths(&shown), ["a.txt", "new.txt"]);
+    assert!(shown.label.contains("not reviewed yet"), "{}", shown.label);
+    assert_eq!(added(&hunks(&repo, &shown, "a.txt", &spec)), ["2"]);
+
+    reviewed(&repo);
+    repo.write("new.txt", "made by the agent\nand after\n");
+    let since = diff(&repo, &spec);
+    assert_eq!(paths(&since), ["new.txt"]);
+    assert!(!since.label.contains("not reviewed yet"), "{}", since.label);
+}
+
 #[test]
 fn only_the_last_twenty_unpinned_snapshots_are_kept() {
     let repo = Repo::new();

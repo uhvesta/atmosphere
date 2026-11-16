@@ -26,6 +26,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::bridge::Ui;
 use crate::chrome;
+use crate::code_editor::EditorView;
 use crate::comment_cards::{self, StartReattach};
 use crate::theme::Look;
 use crate::widgets::{self, col, row};
@@ -232,7 +233,64 @@ pub(crate) struct Documents {
     seen: Option<(SessionId, u32, u32, String)>,
     /// The detached comment whose new line the next click picks.
     reattach: Rc<RefCell<Option<CommentId>>>,
+    /// The Diff panel's code views, by `repo/path`.
+    diff_views: RefCell<HashMap<String, DiffView>>,
+    /// The editors of changed code files, by repository and path.
+    editors: RefCell<HashMap<(String, String), EditorView>>,
+    pub(crate) conversation: crate::conversation_tab::ConversationScroll,
     _typing: Subscription,
+}
+
+/// What the Diff panel remembers about one file's code view so a rewrap can
+/// keep its top line in place.
+#[derive(Clone)]
+pub(crate) struct DiffView {
+    pub(crate) handle: ScrollHandle,
+    anchor: Rc<RefCell<Option<TopAnchor>>>,
+}
+
+/// The row at the top of the view: its child index, how far into it the view
+/// starts as a fraction of its height, and the panel width it was seen at.
+#[derive(Clone, Copy)]
+struct TopAnchor {
+    width: f32,
+    child: usize,
+    fraction: f32,
+}
+
+impl DiffView {
+    /// Called with the bounds of the code body's children on every frame.
+    /// While the width stays, notes which child is at the top; when it
+    /// changes under wrap, moves the offset so that child is at the top
+    /// again and asks for one more frame.
+    pub(crate) fn keep_top(&self, width: f32, wrap: bool, children: &[Bounds<Pixels>], cx: &mut App) {
+        let view_top = self.handle.bounds().origin.y;
+        let scroll_top = -self.handle.offset().y;
+        let held = *self.anchor.borrow();
+        if let Some(held) = held.filter(|held| wrap && (held.width - width).abs() > 0.5) {
+            if let Some(child) = children.get(held.child) {
+                // Bounds are as drawn, offset included.
+                let content = child.origin.y - view_top + scroll_top;
+                let target = content + child.size.height * held.fraction;
+                let mut offset = self.handle.offset();
+                offset.y = -target.max(px(0.));
+                self.handle.set_offset(offset);
+                *self.anchor.borrow_mut() = Some(TopAnchor { width, ..held });
+                cx.refresh_windows();
+                return;
+            }
+        }
+        let found = children.iter().enumerate().rev().find(|(_, child)| child.origin.y <= view_top);
+        *self.anchor.borrow_mut() = found.map(|(child, bounds)| {
+            let height = f32::from(bounds.size.height);
+            let into = f32::from(view_top - bounds.origin.y);
+            TopAnchor {
+                width,
+                child,
+                fraction: if height > 0. { (into / height).clamp(0., 1.) } else { 0. },
+            }
+        });
+    }
 }
 
 impl Documents {
@@ -276,8 +334,32 @@ impl Documents {
             comment_input,
             seen: None,
             reattach: Rc::new(RefCell::new(None)),
+            diff_views: RefCell::new(HashMap::new()),
+            editors: RefCell::new(HashMap::new()),
+            conversation: Default::default(),
             _typing: typing,
         }
+    }
+
+    /// The scroll state of the Diff panel's code view for `name`.
+    pub(crate) fn diff_view(&self, name: &str) -> DiffView {
+        self.diff_views
+            .borrow_mut()
+            .entry(name.to_owned())
+            .or_insert_with(|| DiffView {
+                handle: ScrollHandle::new(),
+                anchor: Rc::new(RefCell::new(None)),
+            })
+            .clone()
+    }
+
+    /// The editor state of a changed code file, kept across frames.
+    pub(crate) fn editor_view(&self, repo: &str, path: &str) -> EditorView {
+        self.editors
+            .borrow_mut()
+            .entry((repo.to_owned(), path.to_owned()))
+            .or_insert_with(EditorView::new)
+            .clone()
     }
 
     /// The comment box's text field, shared by every file view.

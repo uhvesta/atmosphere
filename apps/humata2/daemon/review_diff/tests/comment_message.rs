@@ -133,20 +133,14 @@ fn place_nearest_of_two() {
 }
 
 #[test]
-fn place_changed_returns_what_is_there() {
-    match place(&q(&["a", "b"]), 2, &["1", "2", "3", "4"]) {
-        Placement::Changed { now } => assert_eq!(now, q(&["2", "3"])),
-        _ => panic!("expected Changed"),
-    }
+fn place_no_shared_words_is_gone() {
+    assert!(matches!(place(&q(&["a", "b"]), 2, &["1", "2", "3", "4"]), Placement::Gone));
 }
 
 #[test]
-fn place_file_shorter_than_anchor() {
-    match place(&q(&["a", "b"]), 5, &["1"]) {
-        Placement::Changed { now } => assert!(now.is_empty()),
-        _ => panic!("expected Changed"),
-    }
-    assert!(matches!(place(&q(&["a", "b", "c"]), 1, &["a"]), Placement::Changed { .. }));
+fn place_file_shorter_than_anchor_with_too_few_words_is_gone() {
+    assert!(matches!(place(&q(&["a", "b"]), 5, &["1"]), Placement::Gone));
+    assert!(matches!(place(&q(&["a", "b", "c"]), 1, &["a"]), Placement::Gone));
 }
 
 #[test]

@@ -1,6 +1,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use humata2_clients::model::MachineId;
+use humata2_hosts::HostsAction;
 use tca::Effect;
 
 use crate::{App, AppAction, AppState, ToastAction};
@@ -312,10 +314,30 @@ pub enum ReportAction {
 }
 
 impl App {
+    /// Reads, once, the daemon version of each machine the app has none for,
+    /// so a report lists it. Nothing repeats: a read that fails leaves the
+    /// version unknown until the next report.
+    fn read_daemon_versions(&self, state: &AppState) -> Effect<AppAction> {
+        let missing: Vec<MachineId> = state
+            .workspace
+            .machines
+            .iter()
+            .map(|machine| machine.id.clone())
+            .filter(|machine| state.daemon_version(machine).is_none())
+            .collect();
+        Effect::merge(missing.into_iter().map(|machine| {
+            let call = self.clients.machines.detail(&machine);
+            Effect::future(async move { AppAction::Hosts(HostsAction::Health(machine, call.await)) })
+        }))
+    }
+
     pub(super) fn report(&self, state: &mut AppState, action: ReportAction) -> Effect<AppAction> {
         let clock = self.clients.clock.clone();
         match action {
-            ReportAction::Started => state.report.recording = true,
+            ReportAction::Started => {
+                state.report.recording = true;
+                return self.read_daemon_versions(state);
+            }
             ReportAction::Saved { form, open } => {
                 if form.kind == ReportKind::Recording {
                     state.report.recording = false;

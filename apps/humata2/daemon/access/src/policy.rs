@@ -11,6 +11,7 @@ use std::time::SystemTime;
 
 use crate::call::{BoardAct, BoardRef, Call, GrantTarget, PathScope, Place, Root, Target};
 use crate::capability::{AwayRule, Capability as C, Capability, ChannelRules, Decision, Tier};
+use crate::desk::{is_desk_channel, switch_allows};
 use crate::error::{AnswerError, CheckError, PolicyError};
 use crate::ids::{ChannelId, GrantId, MachineId, RequestId, SessionId};
 use crate::principal::{
@@ -155,6 +156,9 @@ impl Policy {
         if decision == Decision::Never {
             return Ok(never(channel, need.capability));
         }
+        if switch_allows(&agent.kind, need.capability) {
+            return Ok(allowed_now(Source::DeskSwitch));
+        }
         if let Some(grant) = self.covering_grant(agent, &need) {
             return Ok(allowed_now(Source::Grant(grant)));
         }
@@ -202,6 +206,9 @@ impl Policy {
         if decision == Decision::Never {
             return Ok(never(channel, need.capability));
         }
+        if switch_allows(&agent.kind, need.capability) {
+            return Ok(carry_out(Source::DeskSwitch, reach, context, away));
+        }
         if let Some(grant) = self.covering_grant(agent, &need) {
             return Ok(carry_out(Source::Grant(grant), reach, context, away));
         }
@@ -212,11 +219,20 @@ impl Policy {
     }
 
     fn rules(&self, channel: &ChannelId) -> Result<&ChannelRules, CheckError> {
-        self.channels
-            .get(channel)
+        self.rules_of(channel)
             .ok_or_else(|| CheckError::UnknownChannel {
                 channel: channel.clone(),
             })
+    }
+
+    /// The rules a channel id is governed by. The Desk channel id has no
+    /// rules of its own: it takes the new-channel defaults (D182.3).
+    fn rules_of(&self, channel: &ChannelId) -> Option<&ChannelRules> {
+        if is_desk_channel(channel) {
+            Some(&self.new_channels)
+        } else {
+            self.channels.get(channel)
+        }
     }
 
     fn covering_grant(&self, agent: &Agent, need: &Need) -> Option<GrantId> {
@@ -253,12 +269,11 @@ impl Policy {
                 return Err(AnswerError::NeedsHost);
             }
         }
-        let rules =
-            self.channels
-                .get(&request.channel)
-                .ok_or_else(|| AnswerError::UnknownChannel {
-                    channel: request.channel.clone(),
-                })?;
+        let rules = self
+            .rules_of(&request.channel)
+            .ok_or_else(|| AnswerError::UnknownChannel {
+                channel: request.channel.clone(),
+            })?;
         match rules.decision(request.capability) {
             None => {
                 return Err(AnswerError::NotARule {
@@ -309,7 +324,7 @@ impl Policy {
         if grant.on_host || grant.granted_by != Some(PresenceMethod::ApprovalPassphrase) {
             return Err(PolicyError::NotAMachineGrant { grant: grant.id });
         }
-        if !self.channels.contains_key(&grant.channel) {
+        if self.rules_of(&grant.channel).is_none() {
             return Err(PolicyError::UnknownChannel {
                 channel: grant.channel.clone(),
             });
@@ -433,8 +448,7 @@ impl Policy {
     /// True while the grant's rule is Never: it stays listed but does not
     /// apply until the rule changes back (IN-22).
     pub fn is_suspended(&self, grant: &Grant) -> bool {
-        self.channels
-            .get(&grant.channel)
+        self.rules_of(&grant.channel)
             .and_then(|rules| rules.decision(grant.capability))
             .is_none_or(|decision| decision == Decision::Never)
     }
@@ -466,7 +480,7 @@ impl Policy {
         let mut grants = BTreeMap::new();
         let mut next_grant = state.next_grant.max(1);
         for grant in state.grants {
-            if !channels.contains_key(&grant.channel) {
+            if !is_desk_channel(&grant.channel) && !channels.contains_key(&grant.channel) {
                 return Err(PolicyError::UnknownChannel {
                     channel: grant.channel,
                 });
@@ -617,15 +631,24 @@ fn other_channel(channel: &ChannelId) -> Resolved {
     })
 }
 
+/// True when `channel` is the agent's own. A Desk session belongs to no
+/// channel, so no channel is its own and two Desk sessions are not
+/// channel-mates (D182.3).
+fn same_channel(agent: &Agent, channel: &ChannelId) -> bool {
+    !matches!(agent.kind, SessionKind::Desk(_)) && channel == &agent.session.channel
+}
+
 /// `resolved` if `channel` is the agent's own, else refused.
 fn in_channel(agent: &Agent, channel: &ChannelId, resolved: Resolved) -> Resolved {
-    if channel == &agent.session.channel {
+    if same_channel(agent, channel) {
         resolved
     } else {
         other_channel(channel)
     }
 }
 
+/// True when `session` is the parent of a context-only fork, whose clones
+/// the fork works in as its own (D185, D187).
 fn is_parent(agent: &Agent, session: &SessionId) -> bool {
     matches!(&agent.kind, SessionKind::ContextOnlyFork { parent } if parent == session)
 }
@@ -639,7 +662,7 @@ fn resolve_agent(agent: &Agent, call: &Call) -> Result<Resolved, CheckError> {
         Call::ReadSession(session) => {
             if session.id == me.id {
                 Resolved::Owned
-            } else if session.channel == me.channel {
+            } else if same_channel(agent, &session.channel) {
                 need(C::ChannelRead)
             } else {
                 need(C::GlobalRead)
@@ -659,7 +682,7 @@ fn read_place(agent: &Agent, place: &Place) -> Resolved {
         Root::Clone(owner) => {
             if owner.id == me.id || is_parent(agent, &owner.id) {
                 Resolved::Owned
-            } else if owner.channel != me.channel {
+            } else if !same_channel(agent, &owner.channel) {
                 other_channel(&owner.channel)
             } else if place.machine == me.machine {
                 need_files(C::FilesReadOtherSession, place)
@@ -668,7 +691,7 @@ fn read_place(agent: &Agent, place: &Place) -> Resolved {
             }
         }
         Root::Shared(channel) | Root::ChannelFolder(channel) | Root::MainClone { channel, .. } => {
-            if channel != &me.channel {
+            if !same_channel(agent, channel) {
                 other_channel(channel)
             } else if place.machine != me.machine {
                 need_files(C::FilesReadOtherMachine, place)
@@ -697,19 +720,14 @@ fn write_place(agent: &Agent, place: &Place) -> Resolved {
             machine: place.machine.clone(),
         }),
         Root::Clone(owner) => {
-            if owner.id == me.id {
+            if owner.id == me.id || is_parent(agent, &owner.id) {
                 Resolved::Owned
-            } else if is_parent(agent, &owner.id) {
-                refuse(Refusal::ParentReadOnly {
-                    fork: me.id.clone(),
-                    parent: owner.id.clone(),
-                })
             } else {
                 not_its()
             }
         }
         Root::Shared(channel) => {
-            if channel != &me.channel {
+            if !same_channel(agent, channel) {
                 other_channel(channel)
             } else if place.machine == me.machine {
                 need(C::SharedWrite)
@@ -753,8 +771,8 @@ fn board_need(agent: &Agent, board: &BoardRef, act: &BoardAct) -> Resolved {
     };
     match board {
         BoardRef::Global => elsewhere(),
-        BoardRef::Channel(channel) if channel != &me.channel => elsewhere(),
-        BoardRef::Session(session) if session.channel != me.channel => elsewhere(),
+        BoardRef::Channel(channel) if !same_channel(agent, channel) => elsewhere(),
+        BoardRef::Session(session) if !same_channel(agent, &session.channel) => elsewhere(),
         BoardRef::Channel(_) => match act {
             BoardAct::Read => need(C::ChannelRead),
             BoardAct::Add => need(C::ChannelBoardAdd),
@@ -780,7 +798,9 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
     }
     let me = &agent.session;
     let resolved = match (capability, target) {
-        (C::ChannelRead, Target::Channel(channel)) if channel == &me.channel => need(C::ChannelRead),
+        (C::ChannelRead, Target::Channel(channel)) if same_channel(agent, channel) => {
+            need(C::ChannelRead)
+        }
         (C::ChannelRead | C::GlobalRead, Target::Channel(_) | Target::Global) => need(C::GlobalRead),
         (
             C::ViewsPrepare | C::ReviewDraft | C::InboxAsk | C::PrReviewStart | C::TrashRestore
@@ -850,7 +870,9 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
             SessionKind::Review { push_allowed: false } => refuse(Refusal::ReviewSessionPush {
                 session: me.id.clone(),
             }),
-            SessionKind::Ordinary | SessionKind::ContextOnlyFork { .. } => {
+            SessionKind::Ordinary
+            | SessionKind::ContextOnlyFork { .. }
+            | SessionKind::Desk(_) => {
                 need_exactly(C::GitPush, GrantTarget::RepoBranch(branch.clone()))
             }
         },

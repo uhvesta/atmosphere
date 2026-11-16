@@ -35,6 +35,9 @@ Button "Add a machine…"
 ListItem "This Mac"
 ListItem "devbox-1" selected
   Button "Free space…" disabled
+text "gh 2.83"
+text "claude 2.4"
+text "codex 0.98"
 ListItem "gpu-box"
   Button "Reconnect"
 Button "Free space…" disabled

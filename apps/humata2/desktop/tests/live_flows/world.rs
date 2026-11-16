@@ -88,6 +88,18 @@ while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; do
     )
 }
 
+/// GitHub as the tests see it: logs each call beside itself, answers no
+/// open pull requests, and opens PR 7.
+const FAKE_GH: &str = r#"#!/bin/sh
+here=$(dirname "$0")
+echo "$*" >> "$here/gh.log"
+case "$1 $2" in
+  "pr list") echo '[]' ;;
+  "pr create") echo "https://github.com/owner/api/pull/7" ;;
+  *) echo "fake gh: unexpected $*" >&2; exit 1 ;;
+esac
+"#;
+
 pub struct World {
     dir: tempfile::TempDir,
     daemon: Option<Child>,
@@ -119,6 +131,12 @@ impl World {
         }]);
         std::fs::write(root.join("agents.json"), spec.to_string())
             .map_err(io("write agents.json"))?;
+        // GitHub is a fake `gh` (the admin daemon reads HUMATA2_GH): it logs
+        // each call to gh.log, finds no open pull request and opens PR 7.
+        let gh = root.join("gh");
+        std::fs::write(&gh, FAKE_GH).map_err(io("write the fake gh"))?;
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))
+            .map_err(io("make the fake gh runnable"))?;
         let mut world = Self { dir, daemon: None };
         world.spawn_daemon().await?;
         Ok(world)
@@ -184,6 +202,7 @@ impl World {
             .arg("--shell")
             .arg("/bin/sh")
             .arg("--shell-arg=-i")
+            .env("HUMATA2_GH", root.join("gh"))
             .env("PS1", "$ ")
             .env("ENV", "/dev/null")
             .spawn()
@@ -213,6 +232,8 @@ impl World {
             daemon: Arc::new(daemon.clone()),
             desk: Arc::new(daemon.clone()),
             comments: Arc::new(LiveComments::new(&daemon)),
+            history: Arc::new(humata2_clients_live::history::LiveHistory::new(&daemon)),
+            marks: Arc::new(humata2_clients_live::marks::LiveMarks::new(&daemon)),
             terminals: Arc::new(daemon),
             clock: Arc::new(SystemClock::new()),
             clipboard: Arc::new(humata2_clients::FakeClipboard::default()),
@@ -243,6 +264,37 @@ impl World {
         git(&["-C", &work_text, "commit", "-m", "first"])?;
         git(&["-C", &work_text, "push", &bare_text, "main"])?;
         Ok(format!("{owner}/{name}"))
+    }
+
+    /// The branches the bare remote `owner/name` has.
+    pub fn remote_branches(&self, owner: &str, name: &str) -> Vec<String> {
+        let bare = self
+            .dir
+            .path()
+            .join("remotes")
+            .join(owner)
+            .join(format!("{name}.git"));
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&bare)
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+            .output()
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Each call the app's daemon made to `gh`, one line each.
+    pub fn gh_calls(&self) -> Vec<String> {
+        std::fs::read_to_string(self.dir.path().join("gh.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// What a reboot does: the daemon and every holder and agent started in

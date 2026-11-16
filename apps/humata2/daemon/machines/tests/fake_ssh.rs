@@ -391,6 +391,27 @@ fn removing_a_machine_takes_humata_off_it_and_forgets_it() {
     assert_clean(&host, &machine);
 }
 
+/// LD-12: forgetting a lost machine drops it from this host without
+/// reaching it: no entry, no pinned host key and no enrollment key are left,
+/// so adding it again is a new machine. Humata stays on the lost machine.
+#[test]
+fn forgetting_an_unreachable_machine_drops_it_here_without_reaching_it() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
+    machine.set("down");
+    let calls = machine.ssh_calls();
+
+    host.machines().forget("box-1").unwrap();
+
+    assert_eq!(host.machines().list().unwrap(), []);
+    assert!(!host.pinned(), "the host key is still pinned");
+    assert_eq!(host.peer_key(), None, "the host still keeps an enrollment key");
+    assert_eq!(machine.ssh_calls(), calls, "forgetting reached the machine");
+    assert!(machine.unit_installed(), "the lost machine was changed");
+    assert!(matches!(host.machines().forget("box-1"), Err(ManageError::NotFound { .. })));
+}
+
 /// How many commands a whole add runs, scan included.
 fn add_calls() -> usize {
     let host = Host::new();

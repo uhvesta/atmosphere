@@ -13,6 +13,7 @@
 //! ```text
 //! <root>/mirror/<session>/entries.log   the session's entries, append-only (user data)
 //! <root>/mirror/<session>/...           the rest of the session's saved state (user data)
+//! <root>/mirror/<session>/raw-<n>.jsonl the raw lines of a session on another machine (user data, D195)
 //! <root>/search/index.db                the full-text index (derived, rebuilt from mirror/)
 //! ```
 //!
@@ -39,11 +40,19 @@
 mod error;
 mod index;
 mod mirror;
+mod raw;
 mod scrub;
 mod session;
+mod source;
 mod transcript;
+mod turns;
 
 pub use error::MirrorError;
-pub use mirror::{FORMAT_VERSION, Hit, Mirror, MirrorEntry, Page, PageAsk, Query, SessionMeta};
+pub use mirror::{
+    Chunk, FORMAT_VERSION, Hit, Mirror, MirrorEntry, Page, PageAsk, Query, RawConversation,
+    SessionMeta,
+};
 pub use scrub::Scrubber;
-pub use transcript::{Entry, OwnTools, Read, Role, read_from};
+pub use source::{Lines, MAX_CHUNK, read_lines};
+pub use transcript::{Entry, OwnTools, Read, Role, parse_lines, read_from};
+pub use turns::{TurnMark, turns_of};

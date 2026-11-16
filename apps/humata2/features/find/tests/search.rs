@@ -337,6 +337,7 @@ fn picking_a_hit_opens_its_turn() {
         A::Delegate(FindDelegate::OpenTurn {
             session: SessionId::new("s-2"),
             turn: 4,
+            seq: csv[0].seq,
         }),
         |_| {},
     );

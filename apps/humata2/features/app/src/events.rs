@@ -51,6 +51,9 @@ impl App {
                 }
                 upsert(&mut workspace.requests, request, |a, b| a.id == b.id);
             }
+            Event::RequestGone(id) => {
+                workspace.requests.retain(|request| request.id != id);
+            }
             Event::Rules { channel, rules } => {
                 workspace.rules.insert(channel, rules);
             }
@@ -59,6 +62,14 @@ impl App {
             }
             Event::Transfer(transfer) => {
                 upsert(&mut workspace.transfers, transfer, |a, b| a.id == b.id);
+            }
+            Event::Item { item, details } => {
+                workspace.item_details.insert(item.id.clone(), details);
+                upsert(&mut workspace.items, item, |a, b| a.id == b.id);
+            }
+            Event::ItemGone(id) => {
+                workspace.items.retain(|item| item.id != id);
+                workspace.item_details.remove(&id);
             }
             Event::Restart(restart) => return self.heard_restart(state, restart),
             Event::ChannelSetup(setup) => return self.heard_setup(state, setup),

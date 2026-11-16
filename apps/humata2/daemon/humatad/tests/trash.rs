@@ -24,7 +24,7 @@ async fn world() -> (Daemon, PathBuf) {
             id: CHANNEL.to_owned(),
             name: "trash".to_owned(),
             folder: CHANNEL_FOLDER.to_owned(),
-            branch_prefix: String::new(),
+            branch_prefix: None,
             default_agent: "zsh".to_owned(),
             repos: Vec::new(),
             machines: Vec::new(),

@@ -196,36 +196,56 @@ impl Trash {
         Ok(items)
     }
 
+    /// Whether the item's deleted content holds `relative`, such as the
+    /// records file only a deleted channel's folder carries.
+    pub fn holds(&self, id: &str, relative: &Path) -> Result<bool, TrashError> {
+        let _guard = self.guard();
+        let content = self.item_folder(id)?.join(CONTENT);
+        if fs::symlink_metadata(&content).is_err() {
+            return Err(TrashError::NoSuchItem { id: id.to_owned() });
+        }
+        Ok(fs::symlink_metadata(content.join(relative)).is_ok())
+    }
+
     /// Puts an item back where it was deleted from.
     pub fn restore(&self, id: &str) -> Result<PathBuf, TrashError> {
+        self.restore_at(id, None)
+    }
+
+    /// Puts an item back at `target` instead of where it was deleted from,
+    /// for an item whose old place was taken since. Never overwrites.
+    pub fn restore_to(&self, id: &str, target: &Path) -> Result<PathBuf, TrashError> {
+        self.restore_at(id, Some(target))
+    }
+
+    fn restore_at(&self, id: &str, target: Option<&Path>) -> Result<PathBuf, TrashError> {
         let _guard = self.guard();
         let item = self.read_item(id)?;
         let dir = self.item_folder(id)?;
-        if fs::symlink_metadata(&item.original).is_ok() {
-            return Err(TrashError::Occupied {
-                path: item.original,
-            });
+        let place = match target {
+            Some(target) => std::path::absolute(target).map_err(io("resolve", target))?,
+            None => item.original,
+        };
+        if fs::symlink_metadata(&place).is_ok() {
+            return Err(TrashError::Occupied { path: place });
         }
-        if let Some(parent) = item.original.parent() {
+        if let Some(parent) = place.parent() {
             make_dirs(parent, 0o755).map_err(io("create the folder", parent))?;
         }
-        if let Err(source) = rename(&dir.join(CONTENT), &item.original) {
+        if let Err(source) = rename(&dir.join(CONTENT), &place) {
             return Err(if source.kind() == ErrorKind::CrossesDevices {
-                TrashError::OtherDisk {
-                    path: item.original,
-                    source,
-                }
+                TrashError::OtherDisk { path: place, source }
             } else {
-                io("restore", &item.original)(source)
+                io("restore", &place)(source)
             });
         }
-        if let Some(parent) = item.original.parent() {
+        if let Some(parent) = place.parent() {
             sync_dir(parent).map_err(io("save", parent))?;
         }
         sync_dir(&dir).map_err(io("save", &dir))?;
         point("trash.restore.moved");
         self.remove_item(id)?;
-        Ok(item.original)
+        Ok(place)
     }
 
     /// Removes an item for good: renamed first (the commit point), then

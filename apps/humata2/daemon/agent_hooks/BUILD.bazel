@@ -1,0 +1,40 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# What each agent's hooks send and expect (HOOKS, D191-D193): reads a
+# permission hook's stdin payload into the card the Inbox shows, writes the
+# answer the way that agent reads it, and makes the hook config humatad puts
+# in its state folder for each agent. Pure: no daemon, no network, no files.
+rust_library(
+    name = "agent_hooks",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_agent_hooks",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:toml",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        compile_data = glob(["testdata/**"]),
+        deps = [
+            ":agent_hooks",
+            "@crates//:serde_json",
+            "@crates//:tempfile",
+            "@crates//:toml",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

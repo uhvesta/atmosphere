@@ -2,6 +2,8 @@ use crate::error::NameError;
 
 const MAX_SLUG: usize = 40;
 const FALLBACK_SLUG: &str = "session";
+/// The folder Desk sessions live under (D182.2); no channel may take it.
+const DESK_FOLDER: &str = "desk";
 
 /// Lowercase, runs of non-alphanumerics become one `-`, no leading or
 /// trailing `-` (CH-2).
@@ -10,6 +12,12 @@ pub fn channel_folder(name: &str) -> Result<String, NameError> {
     if folder.is_empty() {
         return Err(NameError::NoLettersOrDigits {
             name: name.to_string(),
+        });
+    }
+    if folder == DESK_FOLDER {
+        return Err(NameError::Reserved {
+            name: name.to_string(),
+            folder,
         });
     }
     Ok(folder)
@@ -61,6 +69,32 @@ pub fn pick_branch(prefix: &str, slug: &str, taken: impl Fn(&str) -> bool) -> Br
     }
 }
 
+/// Whether git accepts `name` as a branch name (the rules of
+/// `git check-ref-format --branch`, for names that are not `-`-led).
+pub fn valid_branch_name(name: &str) -> bool {
+    if name.is_empty()
+        || name == "@"
+        || name.starts_with('-')
+        || name.starts_with('/')
+        || name.ends_with('/')
+        || name.ends_with('.')
+        || name.contains("..")
+        || name.contains("//")
+        || name.contains("@{")
+    {
+        return false;
+    }
+    if name.chars().any(|c| c.is_control() || c.is_whitespace() || "~^:?*[\\".contains(c)) {
+        return false;
+    }
+    name.split('/').all(|part| !part.starts_with('.') && !part.ends_with(".lock"))
+}
+
+/// Whether `prefix` can begin a valid branch name; an empty one can.
+pub fn valid_prefix(prefix: &str) -> bool {
+    prefix.is_empty() || valid_branch_name(&format!("{prefix}x"))
+}
+
 fn hyphenate(text: &str) -> String {
     let mut out = String::new();
     let mut pending = false;
@@ -83,6 +117,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn branch_names_follow_git_rules() {
+        for good in ["a", "me/fix-it", "team/refunds", "v1.2/x"] {
+            assert!(valid_branch_name(good), "{good}");
+        }
+        for bad in ["", "no..dots", "a b", "-x", "x/", "/x", "a//b", "x.lock", "a/.b", "@", "a@{b", "a~b", "a:b"] {
+            assert!(!valid_branch_name(bad), "{bad}");
+        }
+        assert!(valid_prefix("") && valid_prefix("me/") && !valid_prefix("a b/") && !valid_prefix("/"));
+    }
+
+    #[test]
     fn channel_folder_hyphenates() {
         assert_eq!(
             channel_folder("  Payments  Rewrite!! ").unwrap(),
@@ -95,6 +140,15 @@ mod tests {
     fn channel_folder_rejects_empty() {
         assert!(channel_folder("  --  ").is_err());
         assert!(channel_folder("").is_err());
+    }
+
+    #[test]
+    fn channel_folder_refuses_the_desk_folder() {
+        assert!(matches!(
+            channel_folder(" Desk "),
+            Err(NameError::Reserved { .. })
+        ));
+        assert_eq!(channel_folder("Desk work").unwrap(), "desk-work");
     }
 
     #[test]

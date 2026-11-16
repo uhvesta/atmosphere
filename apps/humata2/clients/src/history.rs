@@ -33,6 +33,9 @@ pub struct SearchHit {
     /// The turn that matched, counted from 1; 0 is what came before the
     /// first prompt.
     pub turn: u32,
+    /// The matching entry's place in the session's conversation, counted
+    /// from 0: [`Turn::seq`] of the piece that matched (D186).
+    pub seq: u64,
     /// The text around the match, as plain text.
     pub snippet: String,
     /// When the host last caught up with this session, RFC 3339: results

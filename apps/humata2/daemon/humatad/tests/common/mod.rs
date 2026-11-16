@@ -133,7 +133,12 @@ impl Daemon {
     }
 
     /// [`Self::start_with`] with environment variables for this start only.
-    pub async fn start_with_env(build: Build, dir: TempDir, extra: &[&str], env: &[(&str, &str)]) -> Self {
+    pub async fn start_with_env(
+        build: Build,
+        dir: TempDir,
+        extra: &[&str],
+        env: &[(&str, &str)],
+    ) -> Self {
         Self::launched(build, dir, extra, env).await
     }
 
@@ -201,6 +206,23 @@ impl Daemon {
                 panic!("humatad2 never started listening within {WAIT:?}: {process}");
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Waits until the daemon's process ends by itself (a stop point killed
+    /// it), however long the work before that point takes; `limit` is a
+    /// safety net, as long as that work can take on a loaded machine.
+    #[allow(dead_code)]
+    pub async fn stopped(&mut self, limit: Duration) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let waited = tokio::time::timeout(limit, tokio::task::spawn_blocking(move || child.wait())).await;
+        assert!(waited.is_ok(), "humatad2 never stopped within {limit:?}");
+        let deadline = Instant::now() + WAIT;
+        while std::os::unix::net::UnixStream::connect(&self.socket).is_ok() {
+            assert!(Instant::now() < deadline, "a stopped humatad2's socket never stopped answering");
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -821,6 +843,8 @@ pub fn start_request(
         repos: Vec::new(),
         first_message: String::new(),
         board_item: None,
+        branch: String::new(),
+        rebuild: None,
     }
 }
 
@@ -852,6 +876,27 @@ pub async fn get_session(daemon: &Daemon, id: &pb::SessionId) -> pb::Session {
         .await
         .unwrap()
         .into_inner()
+}
+
+/// The session's agent runs: Working, or ProbablyIdle when it has been
+/// quiet a while (a loaded machine gets there sooner).
+#[allow(dead_code)]
+pub fn is_running(session: &pb::Session) -> bool {
+    [pb::SessionStatus::Working as i32, pb::SessionStatus::ProbablyIdle as i32].contains(&session.status)
+}
+
+/// Polls until the session's agent runs (`is_running`), and returns it.
+#[allow(dead_code)]
+pub async fn wait_running(daemon: &Daemon, id: &pb::SessionId) -> pb::Session {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let session = get_session(daemon, id).await;
+        if is_running(&session) {
+            return session;
+        }
+        assert!(Instant::now() < deadline, "session {} never ran; it is {:?}", id.value, session.status());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// Polls until the session has `status`, and returns it.
@@ -1183,4 +1228,64 @@ pub async fn start_world_with(extra: &[&str]) -> (Daemon, World) {
     args.extend(extra.iter().map(|arg| (*arg).to_owned()));
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     (Daemon::start_with(Build::Admin, dir, &refs).await, world)
+}
+
+impl Daemon {
+    /// The daemon's process id, while it runs.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(Child::id)
+    }
+
+    /// Sends SIGTERM, as a service manager does, and waits within [`WAIT`]
+    /// for the daemon to exit. One still running then is killed, and the
+    /// test fails.
+    pub async fn terminate(&mut self) -> std::process::ExitStatus {
+        let mut child = self.child.take().expect("the daemon is running");
+        let pid = i32::try_from(child.id())
+            .ok()
+            .and_then(Pid::from_raw)
+            .expect("a process id");
+        rustix::process::kill_process(pid, Signal::TERM).expect("SIGTERM reaches the daemon");
+        let waited = tokio::task::spawn_blocking(move || child.wait());
+        match tokio::time::timeout(WAIT, waited).await {
+            Ok(status) => status
+                .expect("the wait finished")
+                .expect("the daemon's status"),
+            Err(_) => {
+                let _ = rustix::process::kill_process(pid, Signal::KILL);
+                panic!("humatad2 was still running {WAIT:?} after SIGTERM");
+            }
+        }
+    }
+}
+
+/// Starts a second `humatad2 serve` on `state`, with a socket of its own
+/// in `dir`, and waits within [`WAIT`] for it to exit: for a daemon that
+/// must refuse to start. Returns its exit status and what it wrote to
+/// stderr.
+pub async fn serve_and_exit(dir: &Path, state: &Path) -> (std::process::ExitStatus, String) {
+    let mut command = tokio::process::Command::new(binary("HUMATAD2"));
+    command
+        .arg("serve")
+        .arg("--admin")
+        .arg("--socket")
+        .arg(dir.join("second.sock"))
+        .arg("--state")
+        .arg(state)
+        .arg("--root")
+        .arg(dir)
+        .arg("--holder")
+        .arg(binary("HUMATA2_HOLDER"))
+        .arg("--shell")
+        .arg("/bin/sh")
+        .arg("--shell-arg=-i")
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(WAIT, command.output())
+        .await
+        .expect("the second daemon was still running")
+        .expect("the second daemon ran");
+    (
+        output.status,
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }

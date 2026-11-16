@@ -1,0 +1,23 @@
+{
+    "id": "evt_1e3ad247c001NF41FCuThaaq3D",
+    "created": 1794821137532,
+    "type": "session.step.failed",
+    "location": {
+        "directory": "/work/proj"
+    },
+    "data": {
+        "sessionID": "ses_e1c52e7e9ffesHyRT9YEoxd0RG",
+        "assistantMessageID": "msg_1e3ad188a001D7T0T96mC46LE5",
+        "error": {
+            "type": "aborted",
+            "message": "Step interrupted"
+        },
+        "snapshot": "5d5a816dabc99c14f9997c3b2b408ff4247c1014",
+        "files": []
+    },
+    "durable": {
+        "aggregateID": "ses_e1c52e7e9ffesHyRT9YEoxd0RG",
+        "seq": 14,
+        "version": 1
+    }
+}

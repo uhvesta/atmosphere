@@ -1,11 +1,15 @@
 //! Each command as calls on the daemon (CLI.md §5).
 
 mod boards;
+mod desk;
 mod files;
+mod hook;
 mod hosts;
 mod inbox;
 mod login;
 mod looking;
+mod opencode;
+mod search;
 mod sessions;
 mod settings;
 mod streams;
@@ -158,8 +162,16 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
         Command::Vip { thing } => hosts::mark(ctx, &thing, None, Some(true)).await,
         Command::Unvip { thing } => hosts::mark(ctx, &thing, None, Some(false)).await,
         Command::Pinned { command } => hosts::pinned(ctx, command).await,
+        Command::Sessions(command) => search::sessions(ctx, command).await,
+        Command::Desk(command) => desk::desk(ctx, command).await,
         Command::Report(command) => hosts::report(ctx, command).await,
         Command::Turn { state } => turn::turn(ctx, state, std::time::SystemTime::now()).await,
+        Command::Hook { agent, event } => hook::hook(ctx, &agent, event).await,
+        Command::Opencode {
+            conversation,
+            state,
+            program,
+        } => opencode::opencode(ctx, conversation, state, program).await,
     }
 }
 
@@ -222,6 +234,7 @@ pub fn operation(command: &Command) -> &'static str {
             SessionCommand::Note { .. } => "session.note",
             SessionCommand::Ask { .. } => "session.ask",
             SessionCommand::Type { .. } => "session.type",
+            SessionCommand::Read { .. } => "session.read",
         },
         Command::Shell { .. } => "machine.shell",
         Command::Conversation { .. } => "session.conversation",
@@ -351,12 +364,16 @@ pub fn operation(command: &Command) -> &'static str {
             None => "pinned.list",
             Some(PinnedCommand::Reorder { .. }) => "pinned.reorder",
         },
+        Command::Sessions(SessionsCommand::Search { .. }) => "session.search",
+        Command::Desk(DeskCommand::Keep { .. }) => "desk.keep_folder",
         Command::Report(command) => match command {
             ReportCommand::Record { .. } => "report.record",
             ReportCommand::Stop => "report.stop",
             ReportCommand::Snapshot { .. } => "report.snapshot",
         },
         Command::Turn { .. } => "session.report_turn",
+        Command::Hook { .. } => "session.hook",
+        Command::Opencode { .. } => "session.opencode",
     }
 }
 

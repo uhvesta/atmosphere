@@ -177,6 +177,8 @@ async fn start_with(
         // Machines, providers and skills over the same connection (HO-1, MP-2, SK-2).
         machines: Arc::new(LiveMachines::new(&daemon)),
         comments: Arc::new(LiveComments::new(&daemon)),
+        history: Arc::new(humata2_clients_live::history::LiveHistory::new(&daemon)),
+        marks: Arc::new(humata2_clients_live::marks::LiveMarks::new(&daemon)),
         terminals: Arc::new(daemon),
         clock: Arc::new(SystemClock::new()),
         clipboard: Arc::new(FakeClipboard::default()),

@@ -8,13 +8,14 @@
 
 pub mod comments;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
-use humata2_clients::Workspace;
-use humata2_clients::model::{Comment, DiffLine, SessionId};
+use humata2_clients::{Daemon, DaemonError, Workspace};
+use humata2_clients::model::{Comment, DiffBase, DiffLine, PushChoice, RepoDiff, SessionId, Status};
 use serde::{Deserialize, Serialize};
-use tca::{Effect, Reducer};
+use tca::{Clock, Effect, Reducer};
 
 use comments::HandOver;
 
@@ -69,6 +70,35 @@ pub struct ReviewSaved {
     pub legacy_drafts: BTreeMap<SessionId, (Anchor, String)>,
 }
 
+/// What the page knows about its reads of one session's changes (D179).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Fetch {
+    /// A read is in flight.
+    pub loading: bool,
+    /// Something asked for another read while one was in flight.
+    pub queued: bool,
+    /// When the diff shown was read, on the clock.
+    pub read_at: Option<Duration>,
+    /// Why the last read or Mark reviewed failed, as the panel says it.
+    pub error: Option<String>,
+    /// The last diff read.
+    pub diffs: Option<Vec<RepoDiff>>,
+}
+
+/// Where pushing one repository of a session's changes stands (RV-2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PushState {
+    /// The push is running.
+    Pushing,
+    /// Pushed; `pull_request` is the pull request open for its branch, if any.
+    Pushed {
+        /// The pull request's number.
+        pull_request: Option<u32>,
+    },
+    /// The push didn't finish: why, and what to do.
+    Failed(String),
+}
+
 /// The review page's state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ReviewState {
@@ -84,6 +114,14 @@ pub struct ReviewState {
     pub wrap: bool,
     /// What is saved.
     pub saved: ReviewSaved,
+    /// What each session's changes are compared with; none means origin/main.
+    pub base: HashMap<SessionId, DiffBase>,
+    /// The reads of each session's changes.
+    pub fetch: HashMap<SessionId, Fetch>,
+    /// Whether the base menu under the Diff header is open (RV-1).
+    pub base_menu: bool,
+    /// Where each repository's push of a session's changes stands.
+    pub pushes: HashMap<(SessionId, String), PushState>,
 }
 
 /// What the review page asks its parent to do.
@@ -91,6 +129,9 @@ pub struct ReviewState {
 pub enum Delegate {
     /// These comments older builds saved are the daemon's to keep now.
     HandOver(HandOver),
+    /// The daemon read these changes for the session: they replace what
+    /// the app holds for it.
+    Fetched(SessionId, Vec<RepoDiff>),
 }
 
 /// What happens on the review page.
@@ -112,13 +153,158 @@ pub enum ReviewAction {
     ToggleWrap,
     /// The daemon took this saved comment: forget it.
     HandedOver(SessionId, Comment),
+    /// Compare the open session's changes with another base (RV-1).
+    PickBase(DiffBase),
+    /// Open the base menu, or close it if it is open (RV-1).
+    ToggleBaseMenu,
+    /// Close the base menu.
+    CloseBaseMenu,
+    /// Mark the open session's changes reviewed (RV-6).
+    MarkReviewed,
+    /// Read the open session's changes again.
+    Retry,
+    /// Commit, push and open a pull request for one repository of the open
+    /// session's changes (RV-2).
+    Push {
+        /// The repository, as `owner/name`.
+        repo: String,
+    },
+    /// A push of one repository ended.
+    Pushed {
+        /// The session pushed.
+        session: SessionId,
+        /// The repository pushed.
+        repo: String,
+        /// The pull request the push opened or found, or why it failed.
+        result: Result<Option<u32>, String>,
+    },
+    /// A read of a session's changes ended.
+    Fetched {
+        session: SessionId,
+        base: DiffBase,
+        result: Result<Vec<RepoDiff>, String>,
+    },
+    /// Marking a session reviewed ended.
+    Reviewed {
+        session: SessionId,
+        result: Result<(), String>,
+    },
     /// For the parent.
     Delegate(Delegate),
 }
 
 /// The review page's reducer.
 #[derive(Clone)]
-pub struct Review;
+pub struct Review {
+    daemon: Arc<dyn Daemon>,
+    clock: Arc<dyn Clock>,
+}
+
+impl Review {
+    /// A reducer that reads changes from `daemon` and stamps reads on `clock`.
+    #[must_use]
+    pub fn new(daemon: Arc<dyn Daemon>, clock: Arc<dyn Clock>) -> Self {
+        Self { daemon, clock }
+    }
+
+    /// Reads `session`'s changes, or queues a read behind the one in flight.
+    fn fetch(&self, state: &mut ReviewState, session: &SessionId) -> Effect<ReviewAction> {
+        let fetch = state.fetch.entry(session.clone()).or_default();
+        if fetch.loading {
+            fetch.queued = true;
+            return Effect::none();
+        }
+        fetch.loading = true;
+        let base = state.base.get(session).cloned().unwrap_or_default();
+        let reply = self.daemon.diffs(session, &base);
+        let session = session.clone();
+        Effect::future(async move {
+            ReviewAction::Fetched {
+                session,
+                base,
+                result: reply.await.map_err(|error| error.to_string()),
+            }
+        })
+    }
+
+    /// Pushes one repository of `session`'s changes: plans the push, then
+    /// commits and pushes it and opens its pull request if it has none.
+    fn push(&self, state: &ReviewState, session: SessionId, repo: String) -> Effect<ReviewAction> {
+        let daemon = self.daemon.clone();
+        let title = state
+            .workspace
+            .sessions
+            .iter()
+            .find(|each| each.id == session)
+            .map(|each| each.title.clone())
+            .unwrap_or_default();
+        Effect::future(async move {
+            let result = push_repo(daemon.as_ref(), &session, &repo, &title)
+                .await
+                .map_err(|error| error.to_string());
+            ReviewAction::Pushed {
+                session,
+                repo,
+                result,
+            }
+        })
+    }
+}
+
+/// Pushes `repo` as the session's current plan has it: commits its
+/// uncommitted files when it has any, and opens a pull request when its
+/// branch has none. Returns the pull request for the branch, if there is one.
+async fn push_repo(
+    daemon: &dyn Daemon,
+    session: &SessionId,
+    repo: &str,
+    title: &str,
+) -> Result<Option<u32>, DaemonError> {
+    let plan = daemon.plan_push(session).await?;
+    let Some(found) = plan.repos.into_iter().find(|each| each.repo == repo) else {
+        return Err(DaemonError::Refused {
+            what: format!("Pushing {repo}"),
+            reason: format!(
+                "{repo} has no changes in the session's plan now. Read the changes again, then push it from there"
+            ),
+        });
+    };
+    let choice = PushChoice {
+        repo: found.repo,
+        commit_message: if found.dirty_files > 0 {
+            format!("Changes from {title}")
+        } else {
+            String::new()
+        },
+        open_pull_request: found.open_pull_request.is_none(),
+        title: title.to_owned(),
+        body: String::new(),
+    };
+    let number = daemon.push(session, &plan.token, vec![choice]).await?;
+    Ok(number.or(found.open_pull_request))
+}
+
+fn working(workspace: &Workspace, session: &SessionId) -> bool {
+    workspace
+        .sessions
+        .iter()
+        .any(|each| &each.id == session && each.status == Status::Working)
+}
+
+/// Makes `diffs` the changes the workspace holds for `session`.
+fn replace_diffs(workspace: &mut Arc<Workspace>, session: &SessionId, diffs: &[RepoDiff]) {
+    let same = workspace
+        .diffs
+        .iter()
+        .filter(|diff| &diff.session == session)
+        .eq(diffs.iter());
+    if same {
+        return;
+    }
+    let workspace = Arc::make_mut(workspace);
+    workspace.diffs.retain(|diff| &diff.session != session);
+    workspace.diffs.extend(diffs.iter().cloned());
+}
 
 impl Reducer for Review {
     type State = ReviewState;
@@ -138,8 +324,101 @@ impl Reducer for Review {
                 }
             }
             ReviewAction::Show(workspace) => {
+                let turn_ended = state.session.clone().filter(|session| {
+                    working(&state.workspace, session) && !working(&workspace, session)
+                });
                 state.workspace = workspace;
-                return prepare(state);
+                let shown: Vec<(SessionId, Vec<RepoDiff>)> = state
+                    .fetch
+                    .iter()
+                    .filter_map(|(session, fetch)| Some((session.clone(), fetch.diffs.clone()?)))
+                    .collect();
+                for (session, diffs) in &shown {
+                    replace_diffs(&mut state.workspace, session, diffs);
+                }
+                let mut effects = vec![prepare(state)];
+                if let Some(session) = turn_ended {
+                    effects.push(self.fetch(state, &session));
+                }
+                return Effect::merge(effects);
+            }
+            ReviewAction::PickBase(base) => {
+                state.base_menu = false;
+                if let Some(session) = state.session.clone() {
+                    state.base.insert(session.clone(), base);
+                    return self.fetch(state, &session);
+                }
+            }
+            ReviewAction::Retry => {
+                if let Some(session) = state.session.clone() {
+                    return self.fetch(state, &session);
+                }
+            }
+            ReviewAction::ToggleBaseMenu => state.base_menu = !state.base_menu,
+            ReviewAction::CloseBaseMenu => state.base_menu = false,
+            ReviewAction::MarkReviewed => {
+                state.base_menu = false;
+                if let Some(session) = state.session.clone() {
+                    let reply = self.daemon.mark_reviewed(&session);
+                    return Effect::future(async move {
+                        ReviewAction::Reviewed {
+                            session,
+                            result: reply.await.map_err(|error| error.to_string()),
+                        }
+                    });
+                }
+            }
+            ReviewAction::Reviewed { session, result } => match result {
+                Ok(()) => return self.fetch(state, &session),
+                Err(error) => state.fetch.entry(session).or_default().error = Some(error),
+            },
+            ReviewAction::Push { repo } => {
+                if let Some(session) = state.session.clone() {
+                    let key = (session.clone(), repo.clone());
+                    if state.pushes.get(&key) == Some(&PushState::Pushing) {
+                        return Effect::none();
+                    }
+                    state.pushes.insert(key, PushState::Pushing);
+                    return self.push(state, session, repo);
+                }
+            }
+            ReviewAction::Pushed {
+                session,
+                repo,
+                result,
+            } => {
+                let outcome = match result {
+                    Ok(pull_request) => PushState::Pushed { pull_request },
+                    Err(error) => PushState::Failed(error),
+                };
+                state.pushes.insert((session, repo), outcome);
+            }
+            ReviewAction::Fetched { session, base, result } => {
+                let current = state.base.get(&session).cloned().unwrap_or_default();
+                let fetch = state.fetch.entry(session.clone()).or_default();
+                fetch.loading = false;
+                let queued = std::mem::take(&mut fetch.queued);
+                let mut effects = Vec::new();
+                if base == current {
+                    match result {
+                        Ok(diffs) => {
+                            fetch.error = None;
+                            fetch.read_at = Some(self.clock.now());
+                            fetch.diffs = Some(diffs.clone());
+                            replace_diffs(&mut state.workspace, &session, &diffs);
+                            effects.push(prepare(state));
+                            effects.push(Effect::send(ReviewAction::Delegate(Delegate::Fetched(
+                                session.clone(),
+                                diffs,
+                            ))));
+                        }
+                        Err(error) => fetch.error = Some(error),
+                    }
+                }
+                if queued {
+                    effects.push(self.fetch(state, &session));
+                }
+                return Effect::merge(effects);
             }
             ReviewAction::Restore(saved) => {
                 state.saved = saved;
@@ -157,10 +436,17 @@ impl Reducer for Review {
             }
             ReviewAction::Open(session) => {
                 if state.session.as_ref() != Some(&session) {
-                    state.session = Some(session);
+                    state.session = Some(session.clone());
                     state.rows = None;
+                    state.base_menu = false;
                 }
-                return prepare(state);
+                // Opening again while its read is in flight asks for
+                // nothing new: the files may not have changed since it
+                // started, unlike a turn end or Mark reviewed.
+                if state.fetch.get(&session).is_some_and(|fetch| fetch.loading) {
+                    return prepare(state);
+                }
+                return Effect::merge(vec![prepare(state), self.fetch(state, &session)]);
             }
             ReviewAction::Prepared(generation, rows) => {
                 if generation == state.generation {

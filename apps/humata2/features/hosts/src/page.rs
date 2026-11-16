@@ -65,6 +65,8 @@ pub struct MachinePageState {
     pub loading: bool,
     /// The skills preview, when open.
     pub skills: Option<SkillsDialog>,
+    /// The "…" menu, when open.
+    pub menu_open: bool,
     /// The variable being set.
     pub variable: Option<VariableEdit>,
     /// Why something else (a removal, a clash pick) failed, as text.
@@ -95,6 +97,15 @@ pub enum Delegate {
     Toast(String),
 }
 
+/// The items of the "…" menu that run an action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuPick {
+    /// Sync skills.
+    SyncSkills,
+    /// Reconnect now.
+    ReconnectNow,
+}
+
 /// What happens on the page.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MachinePageAction {
@@ -108,6 +119,12 @@ pub enum MachinePageAction {
     SelectTab(Tab),
     /// Reconnect now.
     ReconnectNow,
+    /// Open the "…" menu.
+    OpenMenu,
+    /// Close the "…" menu without picking.
+    CloseMenu,
+    /// Pick an item of the "…" menu: runs what its button ran, then closes it.
+    PickMenu(MenuPick),
     /// Open a shell.
     OpenShell,
     /// New session on this machine.
@@ -212,6 +229,16 @@ impl Reducer for MachinePage {
                 }
             }
             A::SelectTab(tab) => state.tab = tab,
+            A::OpenMenu => state.menu_open = true,
+            A::CloseMenu => state.menu_open = false,
+            A::PickMenu(pick) => {
+                state.menu_open = false;
+                let action = match pick {
+                    MenuPick::SyncSkills => A::SyncSkills,
+                    MenuPick::ReconnectNow => A::ReconnectNow,
+                };
+                return self.reduce(state, action);
+            }
             A::ReconnectNow => {
                 if let Some(machine) = state.machine.clone() {
                     return delegate(Delegate::Reconnect(machine));

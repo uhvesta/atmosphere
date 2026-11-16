@@ -49,7 +49,7 @@ impl Fixture {
                 id: "ch_test".to_owned(),
                 name: "Test".to_owned(),
                 folder: "test".to_owned(),
-                branch_prefix: String::new(),
+                branch_prefix: None,
                 default_agent: "zsh".to_owned(),
                 repos: Vec::new(),
                 machines: Vec::new(),

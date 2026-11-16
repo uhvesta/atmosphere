@@ -1,5 +1,7 @@
-use humata2_clients::model::Scope;
-use humata2_palette::Command;
+use humata2_clients::model::{MachineId, Scope, SessionId};
+use humata2_find::PinnedAction;
+use humata2_palette::{Command, PullRef};
+use humata2_settings::SettingsAction;
 use humata2_session::SessionAction;
 use humata2_sidebar::SidebarAction;
 use tca::{Effect, Reducer};
@@ -73,6 +75,23 @@ impl App {
                 let open = self.child(state, AppAction::Session(SessionAction::OpenFile));
                 Effect::merge([go, select, open])
             }
+            Command::Back => self.go_back(state),
+            Command::ShowShortcuts => self.show_shortcuts(state),
+            Command::Views => self.navigate(state, Route::Views),
+            Command::Machine(id) => self.navigate(state, Route::Machine(id)),
+            Command::ChannelBoard(id) => self.navigate(state, Route::Board(Scope::Channel(id))),
+            // The palette asks for the machine itself and sends MoveTo.
+            Command::MoveSession => Effect::none(),
+            Command::MoveTo { session, machine } => self.move_session(state, session, machine),
+            Command::ReviewPull(pull) => self.review_pull(state, &pull),
+            Command::SettingsSection(section) => {
+                let go = self.navigate(state, Route::Settings);
+                go.and(self.child(state, AppAction::Settings(SettingsAction::Section(section))))
+            }
+            Command::SettingsRow(row) => {
+                let go = self.navigate(state, Route::Settings);
+                go.and(self.child(state, AppAction::Settings(SettingsAction::Reveal(row))))
+            }
             Command::Record => {
                 forget(state, &Command::Record);
                 self.report(state, ReportAction::Request(ReportRequest::Toggle))
@@ -88,6 +107,49 @@ impl App {
             Command::OpenLastReport => {
                 forget(state, &Command::OpenLastReport);
                 self.report(state, ReportAction::OpenLast)
+            }
+            Command::Pin { thing, on } => self.child(
+                state,
+                AppAction::Pinned(PinnedAction::Toggle {
+                    thing: thing.to_thing(),
+                    pin: on,
+                }),
+            ),
+            Command::Vip { thing, on } => self.child(
+                state,
+                AppAction::Pinned(PinnedAction::Vip {
+                    thing: thing.to_thing(),
+                    on,
+                }),
+            ),
+        }
+    }
+
+    fn move_session(&self, state: &mut AppState, session: SessionId, machine: MachineId) -> Effect<AppAction> {
+        let desk = state.workspace.session(&session).is_some_and(humata2_clients::desk::is_desk);
+        if desk {
+            return self.child(state, AppAction::Desk(humata2_desk::DeskAction::Move(session, machine)));
+        }
+        // A channel session moves through its own Move dialog (frames 63/64): the
+        // palette already picked the machine, so open the session, pick it and confirm.
+        let go = self.navigate(state, Route::Session(session));
+        let start = self.child(state, AppAction::Session(SessionAction::StartMove));
+        let pick = self.child(state, AppAction::Session(SessionAction::MovePick(machine)));
+        let confirm = self.child(state, AppAction::Session(SessionAction::ConfirmMove));
+        Effect::merge([go, start, pick, confirm])
+    }
+
+    fn review_pull(&self, state: &mut AppState, pull: &PullRef) -> Effect<AppAction> {
+        // SEAM: PR-1/PR-4's Review a pull request dialog isn't built; until it is, open the
+        // session already reviewing this PR, as Pull does, else say what to do.
+        let found = state.workspace.pulls.iter()
+            .find(|p| p.number == pull.number && p.repo == format!("{}/{}", pull.owner, pull.repo))
+            .and_then(|p| p.session.clone());
+        match found {
+            Some(session) => self.navigate(state, Route::Session(session)),
+            None => {
+                let clock = self.clients.clock.clone();
+                state.toast(format!("No session here reviews {}/{}#{}. Start a session to review it.", pull.owner, pull.repo, pull.number), &clock)
             }
         }
     }

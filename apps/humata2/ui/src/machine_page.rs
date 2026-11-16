@@ -317,29 +317,60 @@ fn header(
                         .test_support(),
                 )
                 .child(div().flex_1())
-                // The actions the frame's ⋯ stands for, until the app has a menu to hold them.
+                // The frame's ⋯ menu holds Sync skills and Reconnect now.
                 .child(
-                    row()
-                        .id("machine-menu")
-                        .role(Role::Toolbar)
-                        .aria_label("More")
-                        .gap(px(4.))
-                        .child(widgets::ghost(
-                            ui,
-                            "machine-sync-skills",
-                            "Sync skills",
-                            wrap(MachinePageAction::SyncSkills),
-                        ))
-                        // While the link-down row shows, Reconnect now lives there (HO-5).
-                        .children((context.online || state.detail.is_none()).then(|| {
-                            widgets::ghost(
+                    div()
+                        .relative()
+                        .child(
+                            widgets::ghost_in(
+                                look,
                                 ui,
-                                "machine-reconnect-menu",
-                                "Reconnect now",
-                                wrap(MachinePageAction::ReconnectNow),
+                                "machine-menu",
+                                "",
+                                wrap(MachinePageAction::OpenMenu),
                             )
-                        }))
-                        .test_support(),
+                            .icon(IconName::Ellipsis)
+                            .accessibility_label("More"),
+                        )
+                        .when(state.menu_open, |menu| {
+                            menu.child(crate::action_menu::scrim(
+                                ui,
+                                "machine-menu-scrim",
+                                wrap(MachinePageAction::CloseMenu),
+                            ))
+                            .child(
+                                crate::action_menu::card("machine-menu-card", 180., look)
+                                    .top(px(34.))
+                                    .right(px(0.))
+                                    .child(
+                                        widgets::ghost_in(
+                                            look,
+                                            ui,
+                                            "machine-sync-skills",
+                                            "Sync skills",
+                                            wrap(MachinePageAction::PickMenu(
+                                                humata2_hosts::page::MenuPick::SyncSkills,
+                                            )),
+                                        )
+                                        .w_full(),
+                                    )
+                                    // While the link-down row shows, Reconnect now lives here (HO-5).
+                                    .children((context.online || state.detail.is_none()).then(
+                                        || {
+                                            widgets::ghost_in(
+                                                look,
+                                                ui,
+                                                "machine-reconnect-menu",
+                                                "Reconnect now",
+                                                wrap(MachinePageAction::PickMenu(
+                                                    humata2_hosts::page::MenuPick::ReconnectNow,
+                                                )),
+                                            )
+                                            .w_full()
+                                        },
+                                    )),
+                            )
+                        }),
                 )
                 .child(
                     widgets::push_quiet(
@@ -762,7 +793,7 @@ fn right(
                     row()
                         .gap(px(8.))
                         .child(
-                            widgets::primary(
+                            widgets::primary_in(look,
                                 ui,
                                 "machine-variable-send",
                                 if edit.sending { "Storing…" } else { "Set value" },
@@ -962,7 +993,7 @@ fn skills_sheet(
                 .disabled(dialog.syncing),
             )
             .child(
-                widgets::primary(
+                widgets::primary_in(look,
                     ui,
                     "machine-skills-sync",
                     if dialog.syncing { "Syncing…" } else { "Sync" },

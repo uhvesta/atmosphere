@@ -50,7 +50,7 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                 .child(div().child(toast.text.clone()))
                 .when(toast.action.is_some(), |x| {
                     x.child(
-                        widgets::ghost(
+                        widgets::ghost_in(look,
                             ui,
                             SharedString::from(format!("toast-undo-{}", toast.id)),
                             match &toast.action {
@@ -69,7 +69,7 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                 })
                 .when(toast.action.is_none(), |x| {
                     x.child(
-                        widgets::ghost(
+                        widgets::ghost_in(look,
                             ui,
                             ("toast-dismiss", toast.id as usize),
                             "",

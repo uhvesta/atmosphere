@@ -13,6 +13,7 @@ use humata2_views::ViewsAction;
 use crate::{
     bridge::Ui,
     chrome,
+    code_editor,
     theme::Look,
     widgets::{self, col, row},
 };
@@ -116,6 +117,11 @@ fn tab_row(
                     title.clone(),
                     chrome::icon(IconName::Sparkles, 0xbf5af2, 12.).into_any_element(),
                     format!("view-tab-{group}-{index}"),
+                ),
+                Tab::Conversation => (
+                    "Conversation".to_owned(),
+                    chrome::icon(IconName::FileText, look.secondary, 12.).into_any_element(),
+                    format!("conversation-tab-{group}-{index}"),
                 ),
             };
             let ui2 = ui.clone();
@@ -288,19 +294,9 @@ fn notice(
 }
 
 fn menu(ui: &Rc<Ui>, group: usize, look: Look) -> Stateful<Div> {
-    col()
-        .id("new-terminal-menu")
-        .absolute()
+    crate::action_menu::card("new-terminal-menu", 280., look)
         .top(px(32.))
         .left(px(8.))
-        .w(px(280.))
-        .p(px(5.))
-        .gap(px(2.))
-        .bg(rgb(look.card))
-        .border_1()
-        .border_color(rgb(look.line))
-        .rounded(px(7.))
-        .shadow_lg()
         .children(Agent::ALL.into_iter().map(|agent| {
             let name = if agent == Agent::Shell {
                 "New terminal"
@@ -361,10 +357,12 @@ fn menu(ui: &Rc<Ui>, group: usize, look: Look) -> Stateful<Div> {
 }
 
 fn file_body(
+    ui: &Rc<Ui>,
     state: &AppState,
     session: &Session,
     repo: &str,
     path: &str,
+    documents: &crate::document_tab::Documents,
     look: Look,
 ) -> AnyElement {
     let content =
@@ -372,6 +370,22 @@ fn file_body(
             .session
             .file_contents
             .get(&(session.id.clone(), repo.to_owned(), path.to_owned()));
+    if let (Some(Ok(text)), Some(diff)) = (
+        content,
+        code_editor::diff(state, &session.id, repo, path),
+    ) {
+        return code_editor::body(
+            ui,
+            state,
+            session,
+            repo,
+            path,
+            text,
+            diff,
+            documents,
+            look,
+        );
+    }
     col()
         .id("session-file")
         .role(Role::Document)
@@ -495,13 +509,13 @@ pub(crate) fn body(
                         .px(px(11.))
                         .bg(rgb(look.fill))
                         .text_size(px(12.)))
-                            .child(widgets::ghost(
+                            .child(widgets::ghost_in(look,
                             ui,
                             "offer-later",
                             "Later",
                             AppAction::Views(ViewsAction::Later(offer.title.clone())),
                         ))
-                        .child(widgets::ghost(
+                        .child(widgets::ghost_in(look,
                             ui,
                             "offer-dismiss",
                             "Not now",
@@ -510,7 +524,7 @@ pub(crate) fn body(
                 }),
         )
         .children(state.session.error.clone().map(|error| {
-            widgets::error_banner(
+            widgets::error_banner_in(look,
                 ui,
                 "session-error",
                 error,
@@ -566,7 +580,9 @@ pub(crate) fn body(
                                 Some(Tab::File { repo, path }) => documents
                                     .body(ui, state, session, repo, path, look)
                                     .filter(|_| is_markdown(path))
-                                    .unwrap_or_else(|| file_body(state, session, repo, path, look)),
+                                    .unwrap_or_else(|| {
+                                        file_body(ui, state, session, repo, path, documents, look)
+                                    }),
                                 Some(Tab::View(title)) => {
                                     let view = state
                                         .workspace
@@ -673,10 +689,16 @@ pub(crate) fn body(
                                     let body = terminals.body(&session.id, *tab, group, notice, cx);
                                     col().flex_1().min_h_0().bg(rgb(look.term)).child(body).into_any_element()
                                 }
+                                Some(Tab::Conversation) => crate::conversation_tab::body(ui, state, session, look, &documents.conversation),
                                 None => div().into_any_element(),
                             })
                             .when(state.session.terminal_menu == Some(group), |g| {
-                                g.child(menu(ui, group, look).test_support())
+                                g.child(crate::action_menu::scrim(
+                                    ui,
+                                    "close-terminal-menu-scrim",
+                                    AppAction::Session(SessionAction::TerminalMenu(None)),
+                                ))
+                                .child(menu(ui, group, look).test_support())
                             })
                     }),
             ),
@@ -755,7 +777,7 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
                         )
                     })
                     .child(
-                        widgets::ghost(
+                        widgets::ghost_in(look,
                             ui,
                             "show-queued",
                             if state.session.queue_expanded {
@@ -808,7 +830,7 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
                                     .disabled(state.session.sending),
                                 )
                                 .child(
-                                    widgets::ghost(
+                                    widgets::ghost_in(look,
                                         ui,
                                         SharedString::from(format!("remove-queued-{index}")),
                                         "Remove",

@@ -67,6 +67,12 @@ service SessionService {
   // says what turn it is in. Anyone else is refused. Repeating the state it
   // has is a no-op.
   rpc ReportTurn(ReportTurnRequest) returns (ReportTurnResponse);
+  // HOOKS, D191: the session's own agent's permission hook (`humata hook`)
+  // passes on the payload its agent wrote. The daemon raises one Inbox
+  // card and answers with keepalives, then once with the bytes the hook
+  // prints; empty bytes are no decision, and the agent's TUI asks. The
+  // card is withdrawn when the stream drops. Anyone else is refused.
+  rpc Hook(HookRequest) returns (stream HookReply);
 }
 
 message SessionRepo {
@@ -87,6 +93,10 @@ message Pointer {
   uint32 unpushed_commits = 7;
   uint32 dirty_files = 8;
   google.protobuf.Timestamp reported_at = 9;
+  // The dirty files' paths and the unpushed commits' subjects, as many as
+  // fit a report, so a forgotten machine's loss can be named (LD-11, SL-4).
+  repeated string dirty_paths = 10;
+  repeated string unpushed_subjects = 11;
 }
 
 message ForkOrigin {
@@ -108,6 +118,8 @@ message ArchiveSummary {
     string branch = 2;
     string last_pushed_sha = 3;
     repeated FileChange files = 4;
+    // LD-11: the subjects of the commits that were never pushed.
+    repeated string unpushed_subjects = 5;
   }
   google.protobuf.Timestamp archived_at = 1;
   repeated Repo repos = 2;
@@ -200,6 +212,31 @@ message StartSessionRequest {
   // A session's spec files, dropped with SM-2 (D104).
   reserved 10;
   reserved "spec_files";
+  // FC-15: a branch edited in the dialog, used as typed for every included
+  // repo with no prefix; empty: Humata picks from the title.
+  string branch = 11;
+  // SL-4: set only by the host, to place a session it rebuilds from its own
+  // records on this machine. Any other caller is refused.
+  RebuildFrom rebuild = 12;
+}
+
+// What the host gives a machine to rebuild a lost session on it: each repo
+// is cloned again at its branch (the last pushed sha, main if never pushed),
+// the conversation lines are written as the agent's conversation, the agent
+// resumes it and `first_message` tells it what was lost.
+message RebuildFrom {
+  message Repo {
+    RepoRef repo = 1;
+    string branch = 2;
+  }
+  repeated Repo repos = 1;
+  // The session's folder name under the channel's `sessions/`.
+  string folder = 2;
+  // Where the lost machine kept the session, so paths in the lines can be
+  // made this machine's own.
+  string old_folder = 3;
+  // The host's scrubbed copy of the conversation file, whole lines.
+  bytes conversation = 4;
 }
 
 message StartSessionResponse {
@@ -245,6 +282,8 @@ message RenameSessionRequest {
   SessionId id = 2;
   string title = 3;
   Revision expected_revision = 4;
+  // FC-17: also rename the branch from the new title; refused once pushed.
+  bool rename_branch = 5;
 }
 
 message StopSessionRequest {
@@ -289,6 +328,9 @@ message ForkSessionRequest {
   AgentId agent = 6;
   string model = 7;
   MachineId machine = 8;
+  // FC-15: used as typed for every repo of the fork, as StartSessionRequest.branch;
+  // empty: Humata picks one from the title. Context-only forks have no branch to name.
+  string branch = 9;
 }
 
 message ForkPreview {
@@ -517,3 +559,110 @@ message ReportTurnRequest {
 }
 
 message ReportTurnResponse {}
+
+message HookRequest {
+  // The agent as the hook command names it: claude, codex or copilot.
+  string agent = 1;
+  // The hook: permission.
+  string event = 2;
+  // What the agent wrote to the hook's stdin, as it is (at most 1 MiB).
+  bytes payload = 3;
+}
+
+message HookReply {
+  // Nothing yet: the hold goes on.
+  bool keepalive = 1;
+  // What the hook prints, sent once and last; empty is no decision.
+  bytes stdout = 2;
+}
+
+// D195: how a session crosses machines. The host's driver calls these on
+// the machine that has the session and on the one that gets it; no one else
+// may (the daemon refuses every caller but the host, as it does
+// HistoryService.ReadMirror). The folder and the staged files travel through
+// TransferEndService; these calls stage, check and tidy. Each is keyed by the
+// host's operation id and safe to repeat.
+service SessionCarryService {
+  // On the old machine: stages the session's records, the agent's files and
+  // the move manifest (MV-14) under the channel's `.carry/<operation>/stage`.
+  rpc Pack(CarryPackRequest) returns (CarryPackResponse);
+  // On the new machine: checks every item of the copy against the manifest,
+  // rewrites the old folder's path in the copy, places the agent's files and
+  // brings the records in, with the agent saved as one to resume.
+  rpc Unpack(CarryUnpackRequest) returns (CarryUnpackResponse);
+  // On the old machine, once the session runs on the new one: its folder and
+  // the agent's files go to the machine's trash and its records are dropped.
+  rpc Release(CarryReleaseRequest) returns (CarryReleaseResponse);
+  // On the new machine, for a move that failed or was undone before it
+  // switched: removes the copy, the agent's files and the records brought in.
+  // On the old machine it removes the staged files.
+  rpc Abort(CarryAbortRequest) returns (CarryAbortResponse);
+}
+
+message CarryPackRequest {
+  string operation = 1;
+  SessionId session = 2;
+  // Set: stage a fork of `session` for another machine (FK-8) instead of the session itself.
+  CarryFork fork = 3;
+}
+
+message CarryFork {
+  // The fork's own id, chosen by the host.
+  SessionId session = 1;
+  string title = 2;
+  ForkKind kind = 3;
+  uint32 before_turn = 4;
+  // As ForkSessionRequest.branch; empty: picked from the title.
+  string branch = 5;
+}
+
+message CarryPackResponse {
+  // The session's folder under the channel's folder, `sessions/<name>`.
+  string folder = 1;
+  // The staged files under the channel's folder.
+  string stage = 2;
+  // Equal for two packs of a session that didn't change in between.
+  string digest = 3;
+  uint32 files = 4;
+  uint64 bytes = 5;
+  // A staged fork: the branch its clones are on, and its conversation id (empty for a code-only fork).
+  string branch = 6;
+  string conversation_id = 7;
+  // The session's agent was running when it was packed: a move that is
+  // undone starts it again on the old machine, and a session the user had
+  // stopped stays stopped.
+  bool agent_running = 8;
+}
+
+message CarryUnpackRequest {
+  string operation = 1;
+  SessionId session = 2;
+  ChannelId channel = 3;
+}
+
+message CarryUnpackResponse {
+  uint32 files = 1;
+  uint64 bytes = 2;
+}
+
+message CarryReleaseRequest {
+  string operation = 1;
+  SessionId session = 2;
+}
+
+message CarryReleaseResponse {
+  // What went to the trash, as the trash describes it.
+  repeated string trashed = 1;
+}
+
+message CarryAbortRequest {
+  string operation = 1;
+  SessionId session = 2;
+  ChannelId channel = 3;
+  // The session's folder under the channel's, `sessions/<name>`.
+  string folder = 4;
+  // Whether this is the machine the session was going to (true) or leaving.
+  bool incoming = 5;
+}
+
+message CarryAbortResponse {}

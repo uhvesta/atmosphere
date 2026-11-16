@@ -120,6 +120,7 @@ impl Transfers {
             }],
             file_index: 0,
             offset: 0,
+            confirmed: 0,
             done_bytes: 0,
             total_bytes: request.size,
             done_files: 0,

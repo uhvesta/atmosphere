@@ -1,5 +1,5 @@
-//! SPEC flows 26.2 (start a session, on This Mac) and 26.8 (Mac reboot,
-//! the local part) against a real `humatad2` with a test agent that answers
+//! SPEC flows 26.2 (start a session, on This Mac), 26.3 (review a 3-repo
+//! diff, in `live_flows/review.rs`) and 26.8 (Mac reboot, the local part) against a real `humatad2` with a test agent that answers
 //! every line with `got: <line>`. The app is headless: no window is shown.
 //!
 //! Each test makes its own daemon in its own temp folder.
@@ -7,6 +7,10 @@
 
 #[path = "live_flows/files.rs"]
 mod files;
+#[path = "live_flows/find.rs"]
+mod find;
+#[path = "live_flows/review.rs"]
+mod review;
 #[path = "live_flows/world.rs"]
 mod world;
 
@@ -357,6 +361,17 @@ fn a_session_started_from_new_session_runs_and_answers_its_first_message() {
         (world, clients)
     });
     let mut app = App::open(&runtime, clients);
+    // The sheet picks its channel and machine from what the app has
+    // loaded, so wait for the first load to bring them.
+    app.wait_until("the channel and its machine to load", |app| {
+        app.ui.read(|state| {
+            state
+                .workspace
+                .channels
+                .first()
+                .is_some_and(|channel| state.workspace.channel_machines(&channel.id).any(|m| m.online))
+        })
+    });
 
     // New session opens the sheet on the first channel and This Mac. The
     // sidebar and the Home page both have a "New session" button, so this

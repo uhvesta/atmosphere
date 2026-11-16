@@ -57,7 +57,7 @@ fn settings_visit_keeps_both_tab_groups_and_layout_rows_work() {
     assert!(app.contains("add-tab-1"));
     app.send(AppAction::Switch(Route::Settings));
     app.click("settings-pinned");
-    assert!(!app.contains("sidebar-pinned-ledger"));
+    assert!(!app.contains("sidebar-pinned"));
     app.send(AppAction::Navigate(Route::Session(SessionId::new(
         "ledger",
     ))));
@@ -102,5 +102,36 @@ fn permission_request_alerts_can_be_toggled_without_removing_requests() {
     assert_eq!(
         app.ui.read(|state| state.workspace.waiting().count()),
         waiting
+    );
+}
+
+#[test]
+fn permission_requests_can_use_the_agents_own_prompt() {
+    use humata2_settings::{Section, SettingsAction};
+    let mut app = App::new(fixture::design());
+    app.send(AppAction::Switch(Route::Settings));
+    app.send(AppAction::Settings(SettingsAction::Section(
+        Section::Agents,
+    )));
+    assert_eq!(
+        app.ui.read(|state| state.settings.asks_in_inbox),
+        Some(true)
+    );
+    app.click("settings-asks-in-inbox");
+    assert_eq!(
+        app.ui.read(|state| state.settings.asks_in_inbox),
+        Some(false)
+    );
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.snapshot("29-permission-route");
+    app.send(AppAction::Settings(SettingsAction::Section(
+        Section::Notifications,
+    )));
+    app.send(AppAction::Settings(SettingsAction::Section(
+        Section::Agents,
+    )));
+    assert_eq!(
+        app.ui.read(|state| state.settings.asks_in_inbox),
+        Some(false)
     );
 }

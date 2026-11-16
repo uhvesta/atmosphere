@@ -508,7 +508,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
         .max_w(px(760.))
         .gap(px(20.))
         .children(state.desk.error.clone().map(|error| {
-            widgets::error_banner(ui, "desk-error", error, AppAction::Desk(A::DismissError))
+            widgets::error_banner_in(look, ui, "desk-error", error, AppAction::Desk(A::DismissError))
         }))
         .child(group(look, open_title, open_body));
     if !documents.is_empty() {

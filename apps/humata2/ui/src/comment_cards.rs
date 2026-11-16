@@ -101,7 +101,7 @@ pub(crate) fn card(
                 .children(label.map(|label| chip(look, label)))
                 .child(div().flex_1())
                 .children(comment.counts_as_draft().then(|| {
-                    widgets::ghost(
+                    widgets::ghost_in(look,
                         ui,
                         SharedString::from(format!("doc-edit-comment-{id}")),
                         "Edit",
@@ -114,7 +114,7 @@ pub(crate) fn card(
                 }))
                 .children((comment.status == Status::Addressed && !comment.anchor.detached).then(
                     || {
-                        widgets::ghost(
+                        widgets::ghost_in(look,
                             ui,
                             SharedString::from(format!("doc-resolve-comment-{id}")),
                             "Resolve",

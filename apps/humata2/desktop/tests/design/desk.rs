@@ -156,6 +156,38 @@ const OPEN: &[DeskSession] = &[
     DeskSession { state: St::Idle, title: "Tidy infra items", runs: "Terminal · This Mac", folder: "~/notes", repos: &[], when: "Nov 2" },
 ];
 
+/// The closed Desk sessions, most recently used first (D173 ruling 4): each
+/// says what becomes of its folder, and only a folder with days left has Keep.
+const CLOSED: &[(DeskSession, bool)] = &[
+    (DeskSession { state: St::Exited, title: "Sketch the release checklist", runs: "Codex · This Mac", folder: "deleted in 6 days", repos: &[], when: "Nov 14" }, true),
+    (DeskSession { state: St::Exited, title: "Notes cleanup", runs: "Terminal · This Mac", folder: "~/notes", repos: &[], when: "Nov 9" }, false),
+    (
+        DeskSession {
+            state: St::Exited,
+            title: "Port the cron jobs",
+            runs: "Codex · devbox-1",
+            folder: "not deleted · acme/api: 2 commits on port-cron never pushed",
+            repos: &["acme/api"],
+            when: "Nov 6",
+        },
+        false,
+    ),
+    (DeskSession { state: St::Exited, title: "Draft the onboarding doc", runs: "Claude Code · This Mac", folder: "scratch folder · kept", repos: &[], when: "Nov 3" }, false),
+];
+
+/// A closed row's actions: Keep then Reopen in a slot as wide as both, so a
+/// row without Keep leaves its space empty and "last used" lines up.
+fn closed_actions(look: Look, keep: bool) -> Div {
+    div()
+        .flex()
+        .justify_end()
+        .gap(px(6.))
+        .w(px(124.))
+        .flex_shrink_0()
+        .when(keep, |slot| slot.child(button(look, Kind::Secondary, "Keep")))
+        .child(button(look, Kind::Secondary, "Reopen"))
+}
+
 fn desk_row(look: Look, session: &DeskSession, action: Option<Div>) -> Div {
     div()
         .flex()
@@ -229,11 +261,7 @@ pub fn desk(look: Look) -> Div {
                 )
                 .child(
                     div().flex().flex_col().gap(px(6.)).child(label(look, "Closed · scratch folders go after 7 days")).child(
-                        card(look).overflow_hidden().child(desk_row(
-                            look,
-                            &DeskSession { state: St::Exited, title: "Sketch the release checklist", runs: "Codex · This Mac", folder: "deleted in 6 days", repos: &[], when: "Nov 14" },
-                            Some(div().flex().gap(px(6.)).child(button(look, Kind::Secondary, "Keep")).child(button(look, Kind::Secondary, "Reopen"))),
-                        )),
+                        card(look).overflow_hidden().children(CLOSED.iter().map(|(session, keep)| desk_row(look, session, Some(closed_actions(look, *keep))))),
                     ),
                 ),
         ),

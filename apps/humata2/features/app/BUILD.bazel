@@ -8,6 +8,7 @@ FEATURES = [
     "board",
     "desk",
     "files",
+    "find",
     "hosts",
     "inbox",
     "palette",
@@ -39,6 +40,7 @@ rust_library(
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
         srcs = [src],
+        compile_data = ["//apps/humata2/ui:src/keys.rs"],
         crate_root = src,
         deps = [
             ":app",

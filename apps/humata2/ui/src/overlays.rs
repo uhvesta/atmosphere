@@ -22,8 +22,12 @@ use crate::widgets::{self, col};
 mod add_machine;
 #[path = "overlay_desk.rs"]
 mod desk;
+#[path = "overlay_archive.rs"]
+mod archive;
 #[path = "overlay_fork.rs"]
 mod fork;
+#[path = "overlay_move.rs"]
+mod move_dialog;
 #[path = "overlay_new_channel.rs"]
 mod new_channel;
 #[path = "overlay_new_session.rs"]
@@ -39,8 +43,10 @@ mod toasts;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     AddMachine,
+    Archive,
     Desk,
     Fork,
+    Move,
     Palette,
     NewSession,
     NewChannel,
@@ -61,7 +67,7 @@ pub struct Overlays {
     ui: Rc<Ui>,
     query: Entity<InputState>,
     title: Entity<InputState>,
-    fork_title: Entity<InputState>,
+    fork_branch: Entity<InputState>,
     first_message: Entity<TextareaState>,
     first_message_placeholder: String,
     name: Entity<InputState>,
@@ -83,8 +89,8 @@ impl Overlays {
             InputState::new(window, cx).placeholder("Type a command, a channel or a session")
         });
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("What should it do?"));
-        let fork_title =
-            cx.new(|cx| InputState::new(window, cx).placeholder("What should the fork do?"));
+        let fork_branch =
+            cx.new(|cx| InputState::new(window, cx).placeholder("uhvesta/ledger-schema-2"));
         let first_message = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Optional. Typed into the agent once it starts.")
@@ -106,8 +112,8 @@ impl Overlays {
                 AppAction::NewSession(NewSessionAction::Create),
             ),
             (
-                &fork_title,
-                |text| AppAction::Session(SessionAction::ForkTitle(text)),
+                &fork_branch,
+                |text| AppAction::Session(SessionAction::ForkBranch(text)),
                 AppAction::Session(SessionAction::ConfirmFork),
             ),
             (
@@ -153,7 +159,7 @@ impl Overlays {
             ui,
             query,
             title,
-            fork_title,
+            fork_branch,
             first_message,
             first_message_placeholder: "Optional. Typed into the agent once it starts.".into(),
             name,
@@ -183,8 +189,9 @@ impl Overlays {
             Some(Kind::Palette) => self.query.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::NewSession) => self.title.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::Fork) => self
-                .fork_title
+                .fork_branch
                 .update(cx, |input, cx| input.focus(window, cx)),
+            Some(Kind::Move | Kind::Archive) => window.focus(&self.sheet, cx),
             Some(Kind::NewChannel) => self.name.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::Shortcuts) => window.focus(&self.sheet, cx),
             Some(Kind::Desk) => self.desk_focus(window, cx),
@@ -226,10 +233,10 @@ fn sheet(id: &'static str, label: &'static str, look: Look) -> Stateful<Div> {
         .shadow_lg()
 }
 
-fn field(label: &'static str, input: impl IntoElement) -> Div {
+fn field(look: Look, label: &'static str, input: impl IntoElement) -> Div {
     col()
         .gap_1()
-        .child(widgets::dim(label).text_size(px(12.)))
+        .child(widgets::dim_in(look, label).text_size(px(12.)))
         .child(input)
 }
 
@@ -243,9 +250,11 @@ impl Render for Overlays {
                 state.toasts.clone(),
             )
         });
-        let (fork, forking, fork_error, parent) = self.ui.read(|state| {
+        let (fork, moving, archiving, forking, fork_error, parent) = self.ui.read(|state| {
             (
                 state.session.fork.clone(),
+                state.session.moving.clone(),
+                state.session.archiving.clone(),
                 state.session.forking,
                 state.session.error.clone(),
                 state
@@ -262,6 +271,8 @@ impl Render for Overlays {
         let shown = top
             .as_ref()
             .map(kind)
+            .or_else(|| archiving.as_ref().map(|_| Kind::Archive))
+            .or_else(|| moving.as_ref().map(|_| Kind::Move))
             .or_else(|| fork.as_ref().map(|_| Kind::Fork))
             .or_else(|| self.desk_open().then_some(Kind::Desk))
             .or_else(|| add_machine.is_some().then_some(Kind::AddMachine));
@@ -276,6 +287,16 @@ impl Render for Overlays {
                 self.new_channel(&sheet_state, look, &ui, window, cx)
             }
             Overlay::Shortcuts => self.shortcuts(look, &ui),
+        });
+        let content = content.or_else(|| {
+            archiving
+                .as_ref()
+                .map(|confirm| self.archive_dialog(confirm, fork_error.clone(), look, &ui))
+        });
+        let content = content.or_else(|| {
+            moving
+                .clone()
+                .map(|draft| self.move_dialog(draft, fork_error.clone(), parent.clone(), look, &ui))
         });
         let content = content.or_else(|| {
             fork.map(|fork| self.fork(fork, forking, fork_error, parent, look, &ui, window, cx))
@@ -318,7 +339,9 @@ impl Render for Overlays {
                             .flex()
                             .justify_center()
                             .pt(px(match shown {
-                                Some(Kind::Palette) => 110.,
+                                Some(Kind::Palette | Kind::Move) => 110.,
+                                Some(Kind::Archive) => 120.,
+                                Some(Kind::Fork) => 24.,
                                 Some(Kind::NewSession | Kind::Desk) => 70.,
                                 Some(Kind::AddMachine) => 60.,
                                 _ => 96.,

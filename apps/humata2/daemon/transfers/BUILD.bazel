@@ -63,6 +63,17 @@ rust_test(
     ],
 )
 
+# A destination whose link is lost part way: the copy goes on from what
+# the machine confirmed (FM-8).
+rust_test(
+    name = "link_lost_test",
+    srcs = ["tests/link_lost.rs"],
+    deps = [
+        ":transfers",
+        "@crates//:tempfile",
+    ],
+)
+
 rust_test(
     name = "storage_test",
     srcs = ["tests/storage.rs"],

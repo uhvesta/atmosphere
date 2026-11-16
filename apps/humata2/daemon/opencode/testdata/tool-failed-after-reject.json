@@ -1,0 +1,23 @@
+{
+    "id": "evt_1e3b87458001o7UOdsoIWanBA3",
+    "created": 1794821878872,
+    "type": "session.tool.failed",
+    "location": {
+        "directory": "/work/proj"
+    },
+    "data": {
+        "sessionID": "ses_e1c47bb90ffeSr6HZj1V3136Gk",
+        "assistantMessageID": "msg_1e3b844da001rxIGLMl0LLt2g6",
+        "id": "call_f1bcfc99bdf84a93a31cfd33",
+        "error": {
+            "type": "permission.rejected",
+            "message": "use staging"
+        },
+        "executed": false
+    },
+    "durable": {
+        "aggregateID": "ses_e1c47bb90ffeSr6HZj1V3136Gk",
+        "seq": 15,
+        "version": 2
+    }
+}

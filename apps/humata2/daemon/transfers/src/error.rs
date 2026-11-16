@@ -97,6 +97,14 @@ pub enum EndError {
         #[source]
         source: TrashError,
     },
+
+    /// The machine holding this end can't be reached right now. Not a
+    /// failure of the transfer: it continues once the link is back (FM-8,
+    /// FM-13).
+    #[error(
+        "{machine} can't be reached right now; the transfer continues by itself when its link is back"
+    )]
+    Offline { machine: String },
 }
 
 impl EndError {
@@ -107,6 +115,7 @@ impl EndError {
             | Self::Exists { path }
             | Self::Unsupported { path, .. }
             | Self::Trash { path, .. } => path,
+            Self::Offline { .. } => Path::new(""),
         }
     }
 
@@ -117,6 +126,7 @@ impl EndError {
             Self::Exists { .. } => "create",
             Self::Unsupported { .. } => "transfer",
             Self::Trash { .. } => "move to the trash",
+            Self::Offline { .. } => "reach the machine",
         }
     }
 }

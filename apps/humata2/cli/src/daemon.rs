@@ -335,6 +335,7 @@ pub mod rpc {
         SEND_NOTE = "SendNote" -> "SendNoteResponse",
         ASK_SESSION = "AskSession" -> "AskSessionResponse",
         REPORT_TURN = "ReportTurn" -> "ReportTurnResponse",
+        HOOK = "Hook" -> "HookReply",
     });
 
     service!(settings, "SettingsService" {
@@ -354,6 +355,15 @@ pub mod rpc {
         SET_MARKS = "SetMarks" -> "Marks",
         LIST_PINNED = "ListPinned" -> "ListPinnedResponse",
         REORDER_PINNED = "ReorderPinned" -> "ListPinnedResponse",
+    });
+
+    service!(history, "HistoryService" {
+        SEARCH_SESSIONS = "SearchSessions" -> "SearchSessionsResponse",
+        READ_TURNS = "ReadTurns" -> "ReadTurnsResponse",
+    });
+
+    service!(desk, "DeskService" {
+        KEEP_DESK_FOLDER = "KeepDeskFolder" -> "DeskSession",
     });
 
     service!(terminal, "TerminalService" {
@@ -497,6 +507,7 @@ pub mod rpc {
         session::SEND_NOTE,
         session::ASK_SESSION,
         session::REPORT_TURN,
+        session::HOOK,
         settings::GET_SETTINGS,
         settings::UPDATE_SETTINGS,
         settings::GET_CHANNEL_SETTINGS,
@@ -507,6 +518,9 @@ pub mod rpc {
         marks::SET_MARKS,
         marks::LIST_PINNED,
         marks::REORDER_PINNED,
+        history::SEARCH_SESSIONS,
+        history::READ_TURNS,
+        desk::KEEP_DESK_FOLDER,
         terminal::OPEN_MACHINE_SHELL,
         terminal::ATTACH,
         terminal::TYPE,

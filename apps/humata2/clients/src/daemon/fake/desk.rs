@@ -158,7 +158,9 @@ fn start_now(inner: &mut Inner, new: NewDeskSession) -> Result<SessionId, Daemon
                     "the folder path is empty. Pick a folder and try again",
                 ));
             }
-            Folder::Picked { path: path.to_owned() }
+            Folder::Picked {
+                path: path.to_owned(),
+            }
         }
     };
     let mut repos: Vec<String> = Vec::new();
@@ -324,7 +326,11 @@ fn clean_up_now(
             .map_or_else(|| id.to_string(), |session| session.title.clone());
         inner.workspace.sessions.retain(|session| &session.id != id);
         inner.workspace.desk.sessions.remove(id);
-        inner.workspace.desk.documents.retain(|doc| &doc.session != id);
+        inner
+            .workspace
+            .desk
+            .documents
+            .retain(|doc| &doc.session != id);
         inner.workspace.desk.folder_bytes.remove(id);
         inner
             .workspace
@@ -401,7 +407,11 @@ fn copy_now(
     let length = inner
         .workspace
         .file_contents
-        .get(&(document.session.clone(), String::new(), document.path.clone()))
+        .get(&(
+            document.session.clone(),
+            String::new(),
+            document.path.clone(),
+        ))
         .map_or(0, String::len);
     let entry = FileEntry {
         machine: machine.clone(),

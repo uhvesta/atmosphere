@@ -225,7 +225,9 @@ pub struct ChannelRecord {
     pub name: String,
     /// Where the channel's clones live, unique per channel.
     pub folder: String,
-    pub branch_prefix: String,
+    /// None: the channel has none of its own (the setting applies); an
+    /// empty one is its own choice of no prefix (FC-12).
+    pub branch_prefix: Option<String>,
     pub default_agent: String,
     /// In the order the user gave.
     pub repos: Vec<ChannelRepo>,

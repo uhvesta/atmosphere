@@ -1,0 +1,1 @@
+{"sessionId":"c0p1-session","timestamp":1763251200000,"cwd":"/work/api","hook_event_name":"permissionRequest","toolName":"bash","toolInput":{"command":"rm -rf build","description":"Clean the build folder"}}

@@ -391,7 +391,7 @@ pub enum FileManagerError {
         what: String,
     },
     /// Anything else went wrong.
-    #[error("{what} failed: {message}. Try again; if it keeps failing, check the machine's link on the Hosts page")]
+    #[error("{what} failed: {}. Try again; if it keeps failing, check the machine's link on the Hosts page", .message.trim_end_matches('.'))]
     Failed {
         /// What was being done.
         what: String,

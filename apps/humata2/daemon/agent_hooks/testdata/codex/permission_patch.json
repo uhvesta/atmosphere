@@ -1,0 +1,1 @@
+{"session_id":"019a-thread","transcript_path":null,"cwd":"/work/api","hook_event_name":"PermissionRequest","model":"gpt-5.5-codex","turn_id":"turn-8","permission_mode":"on-request","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/login.rs\n@@\n-let a = 1;\n+let a = 2;\n*** End Patch\n"}}

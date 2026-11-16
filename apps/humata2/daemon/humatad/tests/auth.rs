@@ -107,7 +107,9 @@ async fn on_an_admin_daemon_a_call_with_no_credential_is_the_user() {
     let Some(pb::actor::Actor::User(user)) = me.actor.and_then(|actor| actor.actor) else {
         panic!("expected the user");
     };
-    assert_eq!(user.via(), pb::user_actor::Via::CliOnHost);
+    // Under --admin the token-less caller is the app's authority (D41), so
+    // whoami reads the same via the recordings use.
+    assert_eq!(user.via(), pb::user_actor::Via::App);
     assert!(tabs.is_ok(), "{tabs:?}");
 }
 

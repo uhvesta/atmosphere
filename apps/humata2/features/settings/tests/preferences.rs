@@ -14,7 +14,10 @@ fn preferences_change_without_losing_other_choices() {
     store.send(A::SetFontSize(3), |s| s.preferences.font_size = 10);
     store.send(A::TogglePinned, |s| s.preferences.show_pinned = false);
     store.send(A::Section(Section::Agents), |s| s.section = Section::Agents);
-    store.send(A::ToggleWrap, |s| s.preferences.wrap_diffs = true);
+    // Opening Agents reads where permission asks go (D199).
+    store.receive(A::AsksShown(Ok(true)), |s| s.asks_in_inbox = Some(true));
+    store.receive(A::CodexTrustShown(Ok(false)), |_| {});
+    store.send(A::ToggleWrap, |s| s.preferences.wrap_diffs = false);
     store.finish();
 }
 #[test]

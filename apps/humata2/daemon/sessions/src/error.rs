@@ -8,6 +8,11 @@ pub enum NameError {
          give the channel a name with at least one letter or digit"
     )]
     NoLettersOrDigits { name: String },
+    #[error(
+        "the name {name:?} would make the folder {folder:?}, which Desk sessions use; \
+         give the channel another name, such as {name:?} with a word added"
+    )]
+    Reserved { name: String, folder: String },
 }
 
 /// A git step that failed.
@@ -132,6 +137,10 @@ pub enum StartError {
         #[source]
         source: GitError,
     },
+    #[error("{branch:?} is not a name git accepts for a branch; use letters, digits, `-`, `_`, `.` and `/`, with no spaces, `..`, `~`, `^`, `:`, `?`, `*`, `[` or `\\`")]
+    BadBranch { branch: String },
+    #[error("the branch {branch:?} is already used; use another name, such as {suggestion:?}")]
+    BranchTaken { branch: String, suggestion: String },
     #[error("the session folder {path} already exists; start the session with another title")]
     FolderExists { path: PathBuf },
     #[error(

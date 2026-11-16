@@ -30,11 +30,14 @@ humata2-app-peer = { path = "../app_peer" }
 humata2-chunk = { path = "../../chunk" }
 humata2-holder = { workspace = true }
 humata2-machines = { path = "../machines" }
+humata2-marks = { path = "../marks" }
+humata2-mirror = { path = "../mirror" }
 humata2-mcp = { path = "../mcp" }
 humata2-review-diff = { path = "../review_diff" }
 humata2-revive = { workspace = true }
 humata2-store = { workspace = true }
 hyper-util = { workspace = true }
+notify = { workspace = true }
 prost = { workspace = true }
 protoc-gen-prost = { workspace = true }
 protoc-gen-tonic = { workspace = true }

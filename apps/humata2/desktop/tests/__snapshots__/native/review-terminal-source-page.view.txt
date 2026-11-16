@@ -57,9 +57,10 @@ Button "New terminal"
 Tab "rfc-brin.md" selected
   Button "Close tab"
 Button "New terminal"
-RadioButton "Preview"
-RadioButton "Source"
-RadioButton "Side by side" selected
+RadioGroup "Show the file as"
+  RadioButton "Preview"
+  RadioButton "Source"
+  RadioButton "Side by side" selected
 Button "Join tab groups"
 Button "Join tab groups"
 Log "Terminal output" description="~/Humata/desk/brin-rfc $ humata desk move devbox-1\nCopying 3 files to devbox-1… done\nclaude restarts on devbox-1 with its conversation.\n~/Humata/desk/brin-rfc $ humata desk add acme/ledger acme/api\nCloned acme/ledger (main) into ./ledger\nCloned acme/api (main) into ./api\n~/Humata/desk/brin-rfc $ humata desk keep\nThis folder stays after the session closes.\n~/Humata/desk/brin-rfc $\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n"

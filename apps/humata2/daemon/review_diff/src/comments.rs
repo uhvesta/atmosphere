@@ -189,6 +189,8 @@ pub enum CommentError {
     AlreadyResolved { id: String },
     #[error("comment {id} is {status}, not resolved; only a resolved comment can be reopened")]
     NotResolved { id: String, status: CommentStatus },
+    #[error("comment {id} has lost its lines; re-attach it to a passage or drop it before sending")]
+    Detached { id: String },
     #[error("comment {id} is archived; unarchive it first")]
     Archived { id: String },
     #[error("delivery {key} is not waiting on an answer; only an unconfirmed delivery can be sent again")]
@@ -381,6 +383,9 @@ impl CommentLedger {
                     id: c.id.clone(),
                     status: c.status,
                 });
+            }
+            if c.anchor.detached {
+                return Err(CommentError::Detached { id: c.id.clone() });
             }
             if self.in_delivery(&c.id) {
                 return Err(CommentError::InDelivery { id: c.id.clone() });
@@ -723,9 +728,10 @@ impl CommentLedger {
         true
     }
 
-    /// The anchored lines changed or are gone (SM-7, SM-16, SM-17). Returns
-    /// whether anything changed.
-    pub fn changed(&mut self, id: &str, now: Vec<String>, at: i64) -> bool {
+    /// The anchored lines changed but are still there, at `first..=last`
+    /// (SM-7, SM-16, SM-17). A sent comment becomes addressed at those
+    /// lines. Returns whether anything changed.
+    pub fn changed(&mut self, id: &str, first: u32, last: u32, now: Vec<String>, at: i64) -> bool {
         let Ok(i) = self.index(id) else {
             return false;
         };
@@ -736,7 +742,40 @@ impl CommentLedger {
         match c.status {
             CommentStatus::Sent => {
                 c.status = CommentStatus::Addressed;
+                c.anchor.first = first;
+                c.anchor.last = last;
                 c.addressed = Some(Addressed { at, now });
+            }
+            CommentStatus::Draft | CommentStatus::Waiting => {
+                if c.anchor.detached {
+                    return false;
+                }
+                c.anchor.detached = true;
+            }
+            CommentStatus::Addressed | CommentStatus::Resolved => return false,
+        }
+        c.revision += 1;
+        true
+    }
+
+    /// The anchored lines are gone (SM-7, D190). A sent comment returns to a
+    /// detached draft, sent_at and addressed cleared, so it is sent anew once
+    /// re-attached; a draft or waiting comment is detached. Returns whether
+    /// anything changed.
+    pub fn gone(&mut self, id: &str) -> bool {
+        let Ok(i) = self.index(id) else {
+            return false;
+        };
+        let c = &mut self.comments[i];
+        if c.archived.is_some() {
+            return false;
+        }
+        match c.status {
+            CommentStatus::Sent => {
+                c.status = CommentStatus::Draft;
+                c.anchor.detached = true;
+                c.sent_at = None;
+                c.addressed = None;
             }
             CommentStatus::Draft | CommentStatus::Waiting => {
                 if c.anchor.detached {
@@ -772,13 +811,15 @@ impl CommentLedger {
             .collect()
     }
 
-    /// Drafts that are not archived (SM-15).
+    /// Drafts that are not archived or detached (SM-15).
     #[must_use]
     pub fn draft_count(&self) -> u32 {
         let n = self
             .comments
             .iter()
-            .filter(|c| c.status == CommentStatus::Draft && c.archived.is_none())
+            .filter(|c| {
+                c.status == CommentStatus::Draft && c.archived.is_none() && !c.anchor.detached
+            })
             .count();
         u32::try_from(n).unwrap_or(u32::MAX)
     }

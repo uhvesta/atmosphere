@@ -1,0 +1,1 @@
+{"command":"env | grep -i opencode | sed s/=.*/=REDACTED/","names_visible_to_shell_tool":["HOME","OLDPWD","OPENCODE","OPENCODE_SERVER_PASSWORD","OPENCODE_SESSION_ID","OPENCODE_TERMINAL","PWD","XDG_CACHE_HOME","XDG_CONFIG_HOME","XDG_DATA_HOME","XDG_STATE_HOME"],"note":"values redacted; serve was started with OPENCODE_SERVER_PASSWORD in its env and the tool shell inherited it"}

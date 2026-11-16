@@ -19,6 +19,8 @@ pub struct FindState {
     /// The hits of the last search that answered, best first. They stay
     /// while the next search is on its way.
     pub hits: Arc<Vec<SearchHit>>,
+    /// The next page's token, empty when there's no more.
+    pub next_page: String,
     /// Whether a search is on its way.
     pub loading: bool,
     /// What went wrong with the last search.
@@ -37,6 +39,8 @@ pub enum FindDelegate {
         session: SessionId,
         /// The turn, counted from 1.
         turn: u32,
+        /// The matching entry's place in the session's conversation (D186).
+        seq: u64,
     },
 }
 
@@ -44,14 +48,28 @@ pub enum FindDelegate {
 #[derive(Clone, Debug, PartialEq)]
 pub enum FindAction {
     /// The query changed. With fewer than two characters, spaces not
-    /// counted, nothing is searched and the hits and the error are
-    /// cleared; otherwise its first page is asked for, and the error is
-    /// cleared.
+    /// counted, nothing is searched and the hits, the next page and the
+    /// error are cleared; otherwise its first page is asked for, and the
+    /// error is cleared.
     Query(String),
     /// A search answered. A reply for another generation than the state's
     /// is dropped, so a slow reply never replaces a newer query's hits. A
     /// failure shows as the error and clears the hits.
     Loaded {
+        /// The generation of the query it answers.
+        generation: u64,
+        /// The hits and the next page's token, or why there are none.
+        result: Result<SearchPage, DaemonError>,
+    },
+    /// Ask for the next page. It does nothing when [`FindState::next_page`]
+    /// is empty or a search is on its way (`loading`). Otherwise the page
+    /// is asked for and answers with [`FindAction::MoreLoaded`].
+    More,
+    /// The next page answered. A reply for another generation than the
+    /// state's is dropped. On success its hits are added after the hits
+    /// shown; on failure the error shows and the hits and the next page's
+    /// token are kept, so the same page can be asked for again.
+    MoreLoaded {
         /// The generation of the query it answers.
         generation: u64,
         /// The hits and the next page's token, or why there are none.
@@ -91,6 +109,7 @@ impl Reducer for Find {
                 if !long_enough {
                     state.query = query;
                     state.hits = Arc::new(Vec::new());
+                    state.next_page = String::new();
                     state.loading = false;
                     return Effect::none();
                 }
@@ -108,11 +127,41 @@ impl Reducer for Find {
                 }
                 state.loading = false;
                 match result {
-                    Ok((hits, _next)) => state.hits = Arc::new(hits),
+                    Ok((hits, next)) => {
+                        state.hits = Arc::new(hits);
+                        state.next_page = next;
+                    }
                     Err(error) => {
                         state.error = Some(error.to_string());
                         state.hits = Arc::new(Vec::new());
+                        state.next_page = String::new();
                     }
+                }
+                Effect::none()
+            }
+            FindAction::More => {
+                if state.next_page.is_empty() || state.loading {
+                    return Effect::none();
+                }
+                state.loading = true;
+                let generation = state.generation;
+                let search = self.history.search(&state.query, &state.next_page);
+                Effect::future(async move {
+                    FindAction::MoreLoaded { generation, result: search.await }
+                })
+            }
+            FindAction::MoreLoaded { generation, result } => {
+                if generation != state.generation {
+                    return Effect::none();
+                }
+                state.loading = false;
+                match result {
+                    Ok((hits, next)) => {
+                        let all: Vec<SearchHit> = state.hits.iter().cloned().chain(hits).collect();
+                        state.hits = Arc::new(all);
+                        state.next_page = next;
+                    }
+                    Err(error) => state.error = Some(error.to_string()),
                 }
                 Effect::none()
             }
@@ -120,6 +169,7 @@ impl Reducer for Find {
                 Some(hit) => Effect::send(FindAction::Delegate(FindDelegate::OpenTurn {
                     session: hit.session.clone(),
                     turn: hit.turn,
+                    seq: hit.seq,
                 })),
                 None => Effect::none(),
             },

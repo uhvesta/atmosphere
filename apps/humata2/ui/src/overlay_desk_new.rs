@@ -262,7 +262,7 @@ impl Overlays {
             .children(
                 form.error
                     .clone()
-                    .map(|error| widgets::error_banner(ui, "new-desk-error", error, AppAction::Escape)),
+                    .map(|error| widgets::error_banner_in(look, ui, "new-desk-error", error, AppAction::Escape)),
             )
             .child(
                 row()

@@ -19,6 +19,29 @@ pub struct AgentKind {
     /// Where this agent's turn ends come from (SE-21, D169).
     #[serde(default)]
     pub turn_end: TurnEnd,
+    /// What the agent's conversation file holds, so its turns can be read
+    /// for a fork before one (FK-3). None unless the kind says otherwise.
+    #[serde(default)]
+    pub conversation_format: ConversationFormat,
+}
+
+/// The format of an agent's conversation file.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConversationFormat {
+    /// Not read: the agent has no turns to fork before, only forks from now.
+    #[default]
+    None,
+    /// Claude's JSONL, one JSON object per line, whose turns are read by
+    /// `humata2_mirror::turns_of`.
+    ClaudeJsonl,
+}
+
+impl ConversationFormat {
+    /// Whether the turns of a conversation in this format can be read.
+    pub fn reads_turns(self) -> bool {
+        self == Self::ClaudeJsonl
+    }
 }
 
 /// Where an agent's turn ends are learned from.
@@ -65,6 +88,35 @@ impl AgentKind {
     }
 }
 
+/// OpenCode, run by the `humata opencode` wrapper (D201, D201a), which
+/// starts its server, attaches its TUI to the conversation's session, and
+/// reports turns and asks as the session's agent. It starts and resumes the
+/// same way: the session is named after the conversation. Its conversation
+/// lives in OpenCode's own database, so there is no file to read.
+fn opencode() -> AgentKind {
+    let args: Vec<String> = [
+        "HUMATA_SOCKET={humata_socket}",
+        "{humata}",
+        "opencode",
+        "--conversation",
+        "{conversation}",
+        "--state",
+        "{state}/opencode/{conversation}.json",
+    ]
+    .map(String::from)
+    .into();
+    AgentKind {
+        name: "opencode".into(),
+        // Sets the socket the wrapper talks to, with no shell between.
+        program: "/usr/bin/env".into(),
+        start_args: args.clone(),
+        resume_args: args,
+        conversation_file: String::new(),
+        turn_end: TurnEnd::Hooks,
+        conversation_format: ConversationFormat::None,
+    }
+}
+
 fn dashed(folder: &str) -> String {
     folder.replace(['/', '.'], "-")
 }
@@ -78,25 +130,29 @@ pub struct Agents {
 impl Agents {
     pub fn builtin() -> Self {
         Self {
-            kinds: vec![AgentKind {
-                name: "claude".into(),
-                program: "claude".into(),
-                start_args: vec![
-                    "--session-id".into(),
-                    "{conversation}".into(),
-                    "--settings".into(),
-                    "{hooks}".into(),
-                ],
-                resume_args: vec![
-                    "--resume".into(),
-                    "{conversation}".into(),
-                    "--settings".into(),
-                    "{hooks}".into(),
-                ],
-                conversation_file: "{home}/.claude/projects/{folder_dashed}/{conversation}.jsonl"
-                    .into(),
-                turn_end: TurnEnd::Hooks,
-            }],
+            kinds: vec![
+                AgentKind {
+                    name: "claude".into(),
+                    program: "claude".into(),
+                    start_args: vec![
+                        "--session-id".into(),
+                        "{conversation}".into(),
+                        "--settings".into(),
+                        "{hooks}".into(),
+                    ],
+                    resume_args: vec![
+                        "--resume".into(),
+                        "{conversation}".into(),
+                        "--settings".into(),
+                        "{hooks}".into(),
+                    ],
+                    conversation_file:
+                        "{home}/.claude/projects/{folder_dashed}/{conversation}.jsonl".into(),
+                    turn_end: TurnEnd::Hooks,
+                    conversation_format: ConversationFormat::ClaudeJsonl,
+                },
+                opencode(),
+            ],
         }
     }
 
@@ -112,6 +168,43 @@ impl Agents {
         for kind in &mut self.kinds {
             for arg in kind.start_args.iter_mut().chain(&mut kind.resume_args) {
                 *arg = arg.replace("{hooks}", &file);
+            }
+        }
+        self
+    }
+
+    /// Every `{codex_hooks}` in a kind's args becomes `codex`, the value of
+    /// Codex's `-c hooks=…`, and every `{copilot_plugin}` the folder of the
+    /// plugin with Copilot's hooks (HOOKS, D193). Each is one argument, so
+    /// no shell ever splits it.
+    pub fn with_agent_hooks(mut self, codex: &str, copilot_plugin: &Path) -> Self {
+        let plugin = copilot_plugin.to_string_lossy();
+        for kind in &mut self.kinds {
+            for arg in kind.start_args.iter_mut().chain(&mut kind.resume_args) {
+                *arg = arg
+                    .replace("{codex_hooks}", codex)
+                    .replace("{copilot_plugin}", &plugin);
+            }
+        }
+        self
+    }
+
+    /// Every `{humata}` in a kind's args becomes `humata`, the CLI beside
+    /// the daemon, every `{humata_socket}` the daemon's socket, and every
+    /// `{state}` its state folder: what the `humata opencode` wrapper is run
+    /// with (D201a).
+    pub fn with_wrapper(mut self, humata: &Path, socket: &Path, state: &Path) -> Self {
+        let (humata, socket, state) = (
+            humata.to_string_lossy(),
+            socket.to_string_lossy(),
+            state.to_string_lossy(),
+        );
+        for kind in &mut self.kinds {
+            for arg in kind.start_args.iter_mut().chain(&mut kind.resume_args) {
+                *arg = arg
+                    .replace("{humata_socket}", &socket)
+                    .replace("{humata}", &humata)
+                    .replace("{state}", &state);
             }
         }
         self
@@ -186,6 +279,34 @@ mod tests {
     }
 
     #[test]
+    fn opencode_runs_through_humatas_wrapper_on_this_daemon() {
+        let agents = Agents::builtin().with_wrapper(
+            Path::new("/opt/humata/humata"),
+            Path::new("/state dir/humatad.sock"),
+            Path::new("/state dir"),
+        );
+        let kind = agents.get("opencode").expect("OpenCode is built in");
+        assert_eq!(kind.turn_end, TurnEnd::Hooks);
+        let plan = kind.launch(Path::new("/home/me"), Path::new("/work"), "abc");
+        assert_eq!(
+            plan.argv,
+            [
+                "/usr/bin/env",
+                "HUMATA_SOCKET=/state dir/humatad.sock",
+                "/opt/humata/humata",
+                "opencode",
+                "--conversation",
+                "abc",
+                "--state",
+                "/state dir/opencode/abc.json",
+            ]
+        );
+        // Resuming names the same session.
+        assert_eq!(plan.resume_argv, plan.argv);
+        assert!(!kind.conversation_format.reads_turns());
+    }
+
+    #[test]
     fn unknown_agent_is_an_error() {
         assert!(matches!(
             Agents::builtin().get("nope"),
@@ -214,10 +335,48 @@ mod tests {
         let json = br#"[{"name":"a","program":"p","start_args":["{hooks}"],"resume_args":[],
             "conversation_file":"x","turn_end":"hooks"},
             {"name":"b","program":"p","start_args":[],"resume_args":[],"conversation_file":"x"}]"#;
-        let agents = Agents::from_json(json).unwrap().with_hooks(Path::new("/h.json"));
+        let agents = Agents::from_json(json)
+            .unwrap()
+            .with_hooks(Path::new("/h.json"));
         assert_eq!(agents.get("a").unwrap().turn_end, TurnEnd::Hooks);
         assert_eq!(agents.get("a").unwrap().start_args, ["/h.json"]);
         assert_eq!(agents.get("b").unwrap().turn_end, TurnEnd::Output);
+    }
+
+    #[test]
+    fn codex_and_copilot_hooks_fill_their_placeholders() {
+        let json =
+            br#"[{"name":"codex","program":"codex","start_args":["-c","hooks={codex_hooks}"],
+            "resume_args":["resume","-c","hooks={codex_hooks}"],"conversation_file":"x"},
+            {"name":"copilot","program":"copilot","start_args":["--plugin-dir","{copilot_plugin}"],
+            "resume_args":[],"conversation_file":"x"}]"#;
+        let agents = Agents::from_json(json)
+            .unwrap()
+            .with_agent_hooks("{ Stop = [] }", Path::new("/state dir/copilot-plugin"));
+        let codex = agents.get("codex").unwrap();
+        assert_eq!(codex.start_args, ["-c", "hooks={ Stop = [] }"]);
+        assert_eq!(codex.resume_args, ["resume", "-c", "hooks={ Stop = [] }"]);
+        assert_eq!(
+            agents.get("copilot").unwrap().start_args,
+            ["--plugin-dir", "/state dir/copilot-plugin"]
+        );
+    }
+
+    #[test]
+    fn conversation_format_is_read_from_json_and_is_none_by_default() {
+        let json = br#"[{"name":"a","program":"p","start_args":[],"resume_args":[],
+            "conversation_file":"x","conversation_format":"claude-jsonl"},
+            {"name":"b","program":"p","start_args":[],"resume_args":[],"conversation_file":"x"}]"#;
+        let agents = Agents::from_json(json).unwrap();
+        assert!(agents.get("a").unwrap().conversation_format.reads_turns());
+        assert!(!agents.get("b").unwrap().conversation_format.reads_turns());
+        assert!(
+            Agents::builtin()
+                .get("claude")
+                .unwrap()
+                .conversation_format
+                .reads_turns()
+        );
     }
 
     #[test]

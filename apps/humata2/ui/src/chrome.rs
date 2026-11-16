@@ -37,15 +37,17 @@ pub(crate) fn action(
 pub(crate) fn status(value: Status) -> Div {
     let dot = div().size(px(8.)).rounded_full().flex_shrink_0();
     let dot = match value {
-        Status::Working => dot.bg(rgb(0x30d158)),
-        Status::NeedsYou => dot.bg(rgb(0xff9f0a)),
-        Status::Idle | Status::ProbablyIdle => dot.border_1().border_color(rgb(0x8e8e93)),
-        Status::Offline => dot.bg(rgb(0x8e8e93)),
+        Status::Working => dot.bg(rgb(crate::theme::GREEN)),
+        Status::NeedsYou => dot.bg(rgb(crate::theme::ORANGE)),
+        Status::Idle | Status::ProbablyIdle => {
+            dot.border_1().border_color(rgb(crate::theme::GREY))
+        }
+        Status::Offline => dot.bg(rgb(crate::theme::GREY)),
         Status::Exited { .. } => {
             return div()
                 .size(px(10.))
                 .flex_shrink_0()
-                .child(icon(IconName::X, 0xff453a, 10.));
+                .child(icon(IconName::X, crate::theme::RED_STATUS, 10.));
         }
     };
     div()

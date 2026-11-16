@@ -14,6 +14,8 @@ pub mod saved;
 mod commands;
 mod desk;
 mod events;
+mod find;
+mod home;
 mod machines;
 mod new_channel;
 mod new_session;
@@ -31,6 +33,7 @@ pub use report::{
     PinTarget, PinnedComment, Point, Rect, ReportAction, ReportForm, ReportKind, ReportRequest,
     ReportState, Shape, Stroke,
 };
+pub use home::{NeedsRow, NeedsYou, needs_you};
 pub use restart::{RestartAction, RestartGroups, restart_groups};
 pub use route::Route;
 pub use toast::{Toast, ToastAction};
@@ -39,10 +42,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_board::{Board, BoardAction, BoardState};
-use humata2_clients::model::{ChannelId, ItemId, Scope, SessionId};
+use humata2_clients::model::{ChannelId, ItemId, MachineId, Scope, SessionId};
 use humata2_clients::{Clients, DaemonError, Event, Workspace};
 use humata2_desk::{Desk, DeskAction, DeskState};
 use humata2_files::{Files, FilesAction, FilesState};
+use humata2_find::{Find, FindAction, FindState, PinnedAction, PinnedSection, PinnedState};
 use humata2_hosts::{Hosts, HostsAction, HostsState};
 use humata2_inbox::{Inbox, InboxAction, InboxState};
 use humata2_palette::{Palette, PaletteAction, PaletteState};
@@ -123,6 +127,10 @@ pub struct AppState {
     pub hosts: HostsState,
     /// Files.
     pub files: FilesState,
+    /// Search over every session's conversation (LD-23, LD-24).
+    pub find: FindState,
+    /// The sidebar's Pinned section (NV-20 to NV-25).
+    pub pinned: PinnedState,
     /// Settings.
     pub settings: SettingsState,
     /// The palette.
@@ -140,6 +148,27 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The daemon version the app has for `machine`: what the hosts page
+    /// last read from it, else what the workspace reports. `None` when
+    /// neither knows it.
+    #[must_use]
+    pub fn daemon_version(&self, machine: &MachineId) -> Option<String> {
+        let read = self
+            .hosts
+            .health
+            .get(machine)
+            .map(|detail| detail.daemon_version.as_str());
+        let reported = self
+            .workspace
+            .machine_health
+            .get(machine)
+            .map(|health| health.daemon.as_str());
+        read.into_iter()
+            .chain(reported)
+            .find(|version| !version.is_empty())
+            .map(str::to_owned)
+    }
+
     /// The app as it starts: what the last run saved, restored before the
     /// first frame, waiting for the workspace. Unreadable saved state is
     /// reported once and the app starts on Home.
@@ -182,6 +211,8 @@ impl AppState {
             },
             desk: desk::restored(saved.desk_sort),
             files: FilesState::default(),
+            find: FindState::default(),
+            pinned: PinnedState::default(),
             settings: SettingsState::default(),
             palette: PaletteState::default(),
             views: ViewsState::default(),
@@ -203,6 +234,8 @@ impl AppState {
             }
         }
         state.settings.preferences = saved.preferences;
+        // Settings › Show pinned (ST-18) decides whether the Pinned section shows.
+        state.pinned.shown = state.settings.preferences.show_pinned;
         state.settings.has_key = clients
             .keychain
             .has(humata2_settings::KEY_NAME)
@@ -363,6 +396,10 @@ pub enum AppAction {
     Hosts(HostsAction),
     /// Files.
     Files(FilesAction),
+    /// Search over conversations.
+    Find(FindAction),
+    /// The Pinned section.
+    Pinned(PinnedAction),
     /// Settings.
     Settings(SettingsAction),
     /// The palette.
@@ -394,6 +431,8 @@ pub struct App {
     desk: Desk,
     hosts: Hosts,
     files: Files,
+    find: Find,
+    pinned: PinnedSection,
     settings: Settings,
 }
 
@@ -404,13 +443,15 @@ impl App {
         Self {
             saver: Saver::new(clients.storage.clone()),
             sessions: Sessions::new(clients.clone()),
-            review: Review,
+            review: Review::new(clients.daemon.clone(), clients.clock.clone()),
             comments: Comments::new(clients.comments.clone(), clients.clock.clone()),
             inbox: Inbox::new(clients.clone()),
             board: Board::new(clients.clone()),
             desk: Desk::new(clients.desk.clone()),
             hosts: Hosts::new(clients.clone()),
             files: Files::new(clients.clone()),
+            find: Find::new(clients.history.clone()),
+            pinned: PinnedSection::new(clients.marks.clone()),
             settings: Settings::new(clients.clone()),
             clients,
         }
@@ -462,6 +503,14 @@ impl App {
                 .files
                 .reduce(&mut state.files, action)
                 .map(AppAction::Files),
+            AppAction::Find(action) => self
+                .find
+                .reduce(&mut state.find, action)
+                .map(AppAction::Find),
+            AppAction::Pinned(action) => self
+                .pinned
+                .reduce(&mut state.pinned, action)
+                .map(AppAction::Pinned),
             AppAction::Settings(action) => self
                 .settings
                 .reduce(&mut state.settings, action)
@@ -545,11 +594,20 @@ impl App {
             AppAction::Board(BoardAction::Delegate(delegate)) => match delegate {
                 B::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
                 B::Toast(text) => state.toast(text.clone(), &clock),
+                B::Refresh => self.load(),
             },
             AppAction::Hosts(HostsAction::Delegate(delegate)) => match delegate {
                 H::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
                 H::Toast(text) => state.toast(text.clone(), &clock),
             },
+            AppAction::Review(ReviewAction::Delegate(R::Fetched(session, diffs))) => {
+                let workspace = Arc::make_mut(&mut state.workspace);
+                workspace.diffs.retain(|diff| &diff.session != session);
+                workspace.diffs.extend(diffs.iter().cloned());
+                // The session page opens changed files from these (§26.20).
+                let shared = state.workspace.clone();
+                self.child(state, AppAction::Session(SessionAction::Show(shared)))
+            }
             AppAction::Review(ReviewAction::Delegate(R::HandOver(hand))) => {
                 self.child(state, AppAction::Comments(CommentsAction::HandOver(hand.clone())))
             }
@@ -575,6 +633,8 @@ impl App {
             }
             AppAction::Palette(PaletteAction::Delegate(delegate)) => match delegate {
                 P::Run(command) => self.run(state, command.clone()),
+                P::Hit(index) => self.child(state, AppAction::Find(FindAction::Open(*index))),
+                P::MoreHits => self.child(state, AppAction::Find(FindAction::More)),
                 P::Closed => {
                     state
                         .overlays
@@ -582,6 +642,8 @@ impl App {
                     Effect::none()
                 }
             },
+            AppAction::Find(FindAction::Delegate(delegate)) => self.find_delegate(state, delegate),
+            AppAction::Pinned(PinnedAction::Delegate(delegate)) => self.pinned_delegate(state, delegate),
             AppAction::Desk(action) => self.desk_delegate(state, action),
             _ => Effect::none(),
         }
@@ -601,8 +663,16 @@ impl Reducer for App {
 
     fn reduce(&self, state: &mut AppState, action: AppAction) -> Effect<AppAction> {
         let effect = self.handle(state, action);
+        // Show pinned may have changed: the Pinned section follows it.
+        state.pinned.shown = state.settings.preferences.show_pinned;
+        let (count, more) = (state.find.hits.len(), !state.find.next_page.is_empty());
+        let hits = if (state.palette.hits, state.palette.more_hits) == (count, more) {
+            Effect::none()
+        } else {
+            self.child(state, AppAction::Palette(PaletteAction::Hits { count, more }))
+        };
         let save = self.persist(state);
-        effect.and(save)
+        effect.and(hits).and(save)
     }
 }
 
@@ -614,7 +684,8 @@ impl App {
             AppAction::Launch => {
                 let saved = state.last_saved.comments.clone();
                 let restore = self.child(state, AppAction::Comments(CommentsAction::Restore(saved)));
-                Effect::merge([restore, self.load(), self.follow()])
+                let pinned = self.child(state, AppAction::Pinned(PinnedAction::Start));
+                Effect::merge([restore, self.load(), self.follow(), pinned])
             }
             AppAction::StartNewDeskSession => self.start_new_desk_session(state),
             AppAction::Session(SessionAction::Archive) => self.archive_or_close(state),
@@ -659,7 +730,8 @@ impl App {
             AppAction::Undone { toast, result } => self.toast_undone(state, toast, result),
             AppAction::Retry => {
                 state.load = Load::Loading;
-                Effect::merge([self.load(), self.follow()])
+                let pinned = self.child(state, AppAction::Pinned(PinnedAction::Start));
+                Effect::merge([self.load(), self.follow(), pinned])
             }
             AppAction::Navigate(route) => self.navigate(state, route),
             AppAction::Switch(route) => self.switch(state, route),
@@ -846,6 +918,12 @@ impl App {
                     effect
                 }
             }
+            AppAction::Palette(PaletteAction::Query(query)) => {
+                // The palette's query is search's too (KP-1, LD-23).
+                let palette =
+                    self.child(state, AppAction::Palette(PaletteAction::Query(query.clone())));
+                palette.and(self.child(state, AppAction::Find(FindAction::Query(query))))
+            }
             AppAction::Restart(change) => self.change_restart(state, change),
             AppAction::AddMachine(change) => self.add_machine(state, change),
             AppAction::MachinePage(change) => self.machine_page(state, change),
@@ -857,6 +935,8 @@ impl App {
             | AppAction::Board(_)
             | AppAction::Hosts(_)
             | AppAction::Files(_)
+            | AppAction::Find(_)
+            | AppAction::Pinned(_)
             | AppAction::Settings(_)
             | AppAction::Palette(_)
             | AppAction::Views(_)

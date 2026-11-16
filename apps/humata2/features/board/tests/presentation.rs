@@ -70,6 +70,12 @@ fn drawer_rejects_unknown_items_and_new_items_keep_the_requested_column() {
     store.send(A::Open(ItemId::new("PAY-3")), |s| {
         s.drawer = Some(ItemId::new("PAY-3"))
     });
+    // Opening reads the item's history (D177).
+    store.receive_matching(
+        "the item's history",
+        |a| matches!(a, A::History(id, Ok(_)) if id == &ItemId::new("PAY-3")),
+        |s| s.history = s.workspace.item_details[&ItemId::new("PAY-3")].history.clone(),
+    );
     assert_eq!(
         store.state().opened().unwrap().depends_on,
         vec![ItemId::new("PAY-2")]
@@ -78,6 +84,7 @@ fn drawer_rejects_unknown_items_and_new_items_keep_the_requested_column() {
     store.send(A::Close, |s| {
         s.drawer = None;
         s.expanded = false;
+        s.history = Vec::new();
     });
     store.send(A::StartNewIn(S::Backlog), |s| {
         s.new_title = Some(String::new());

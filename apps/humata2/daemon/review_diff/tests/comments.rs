@@ -360,13 +360,14 @@ fn archiving_a_held_comment_makes_it_a_draft_and_a_batch_member_is_refused() {
 #[test]
 fn changed_addresses_sent_comments_and_keeps_both_passages() {
     let mut l = sent_one();
-    assert!(l.changed("c-1", vec!["new".to_owned()], 40));
+    assert!(l.changed("c-1", 7, 8, vec!["new".to_owned()], 40));
     let c = l.comment("c-1").unwrap();
     assert_eq!(c.status, CommentStatus::Addressed);
+    assert_eq!((c.anchor.first, c.anchor.last), (7, 8));
     assert_eq!(c.anchor.quoted, ids(&["a", "b"]));
     assert_eq!(c.addressed.as_ref().unwrap().now, ids(&["new"]));
     // Addressed never changes again on its own.
-    assert!(!l.changed("c-1", vec![], 41));
+    assert!(!l.changed("c-1", 1, 1, vec![], 41));
     assert_eq!(l.comment("c-1").unwrap().addressed.as_ref().unwrap().at, 40);
 }
 
@@ -376,20 +377,24 @@ fn changed_detaches_drafts_but_leaves_resolved_and_archived_alone() {
     l.add(anchor("c.rs"), "third", 3);
     l.resolve("c-2", CommentAuthor::User, None, 4, None).unwrap();
     l.archive("c-3", 5).unwrap();
-    assert!(l.changed("c-1", vec![], 6));
+    assert!(l.changed("c-1", 3, 4, vec![], 6));
     assert!(l.comment("c-1").unwrap().anchor.detached);
     assert_eq!(l.comment("c-1").unwrap().status, CommentStatus::Draft);
-    assert!(!l.changed("c-2", vec![], 6));
-    assert!(!l.changed("c-3", vec![], 6));
+    assert!(!l.changed("c-2", 3, 4, vec![], 6));
+    assert!(!l.changed("c-3", 3, 4, vec![], 6));
     assert!(!l.comment("c-3").unwrap().anchor.detached);
-    // A detached comment can still be sent, and re-attaching clears it.
-    let k = l.begin(&ids(&["c-1"]), "m".to_owned(), 7).unwrap().key.clone();
+    // A detached comment can't be sent until it is re-attached.
+    assert!(matches!(
+        l.begin(&ids(&["c-1"]), "m".to_owned(), 7),
+        Err(CommentError::Detached { .. })
+    ));
+    assert!(!l.reattach("c-1", anchor("a.rs"), None).unwrap().anchor.detached);
+    let k = l.begin(&ids(&["c-1"]), "m".to_owned(), 8).unwrap().key.clone();
     assert!(matches!(
         l.reattach("c-1", anchor("a.rs"), None),
         Err(CommentError::InDelivery { .. })
     ));
-    l.settle(&k, Typed::No, 8).unwrap();
-    assert!(!l.reattach("c-1", anchor("a.rs"), None).unwrap().anchor.detached);
+    l.settle(&k, Typed::No, 9).unwrap();
 }
 
 #[test]
@@ -401,7 +406,7 @@ fn moved_only_renumbers() {
     assert_eq!((c.anchor.first, c.anchor.last), (10, 11));
     assert_eq!(c.status, CommentStatus::Sent);
     assert!(c.addressed.is_none());
-    l.changed("c-2", vec![], 5);
+    l.changed("c-2", 3, 4, vec![], 5);
     assert!(l.comment("c-2").unwrap().anchor.detached);
     assert!(l.moved("c-2", 1, 2));
     assert!(!l.comment("c-2").unwrap().anchor.detached);

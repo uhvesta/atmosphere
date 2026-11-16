@@ -878,6 +878,7 @@ A frame changes only with the owner's OK (D76). SPEC already follows the newer d
 8. **05 Info:** "Claude Code · Opus" shows a model Humata no longer picks; drop it unless the agent reports it.
 9. **01, 02, 16:** made-up data only: the header says Working while the sidebar row is orange (01, 02), and the header keeps the parent's title when a fork is selected (16).
 10. **18 and other session lists:** a Last used column (D99 already says so).
+11. **57, 59 Add machine login, machine page:** wrap the login step's two lines inside the dialog, draw the login terminal at a fixed height, fill the disk bar to the used share, give variable chips Set value and Remove with New variable beneath (D176, HO-7).
 - **Frames still missing** (SPEC defines the screen, no frame draws it): New channel and clone progress, the channel's Inbox and Agent access tabs, Add machine and the interactive login, the machine page, Storage, the file manager and transfers, Fork (D102), Move, Archive with unpushed work, an archived session, the PR review dialog, review session and Submit review, a prepared view's tab and its Showing bar, "Couldn't resume" and the restart report line, comment states (D101), Delete channel, Clean up…, the comment box in a diff.
 
 ## D114: The queued-message list under the terminal (proposed by minion C1). Provisional
@@ -1377,6 +1378,7 @@ The daemon had no feed of its comments, and the app never polls, so `CommentsCli
 - **4. The closed sessions (frames 36, 40, 55):** the Desk has four closed sessions in every frame, so the page behind Clean up… lists the four the dialog lists. `fixture::desk` holds all four and `fixture::clean_up` goes. A closed row says what becomes of its folder: "deleted in N days"; "scratch folder · kept"; a picked folder's path; "not deleted · <the unpushed work>". Rows without Keep leave its space empty so "last used" lines up. The dialog stays as drawn.
 - **Left as approved, flagged by the advisor:** Clean up… pre-ticks a kept scratch folder (D141's tick rule; Keep stops the timer, Clean up is the manual delete, the trash holds it 30 days).
 - **Frames redrawn in the drawing code (main records):** 36–43 and 55 (the sidebar's 8); 36, 40, 55 (four Closed rows); 37 (panel, terminal line, rail); 38 (cursor, rail); 39, 41–43 (rail).
+- **Drawn and recorded (2026-11-15):** all four rulings are in the drawing code; goldens 36-43 and 55 were recorded by minion DESK on the advisor's approval.
 - **Reverse:** each ruling stands alone: point `DeskState::board` back at `ItemStatus::ALL`; delete the request and pass the old literals; hide the cursor in the fixture; move the three closed sessions back under a `clean_up` fixture.
 
 ## D174: An approved agent skills sync is refused as a whole when one machine needs a plan (minion MACH, agreed by the main agent, 2026-11-15). Provisional
@@ -1390,12 +1392,389 @@ The daemon had no feed of its comments, and the app never polls, so `CommentsCli
 - **Why:** a plain host is expected to work with keys; changing the error's kind would change what scripts branch on.
 - **Reverse:** map `ManageError::LoginNeeded` to `LoginNeedsUser` in `daemon/humatad/src/machine_service.rs` (`error_of`) and let `LoginOpen.operation` find an SSH add (its undo unpins the host key today, so the login would need the key kept).
 
-## D176: The Add machine login step wraps its text; frame 57 draws it past the dialog (minion MACH, 2026-11-15). Provisional
+## D176: The Add machine login step wraps its text; frame 57 draws it past the dialog (minion MACH, ruled by a Fable advisor, 2026-11-15). Decided
 - **Problem:** frame 57 (`desktop/tests/__snapshots__/design/57-add-machine-login.png`) draws two lines, the reason the terminal opened and the "Reconnecting will need you" notice, running past the dialog's right edge. That is a mistake in how the frame is drawn, not a look to copy.
 - **Pick:** the app wraps both lines inside the dialog (`ui/src/overlay_add_machine.rs`). The frame is left as it is until the owner OKs redrawing it (D76).
 - **Also differs from the frames on purpose:** the login terminal is a real terminal with a fixed height, where the frame's box is as tall as its text; the machine page's disk bar fills to the used share (the frame under-draws it); a variable's chip carries Set value and Remove, and New variable sits under them (HO-7), which frame 59 doesn't draw.
 - **Recommendation:** redraw frames 57 and 59 from the app when the owner next reviews frames.
+- **Ruling (Fable advisor):** all four picks stand: the wrap (a drawing error in frame 57), the fixed-height terminal (a live terminal can't shrink to its text and the dialog mustn't jump), the disk bar agreeing with its numbers, and the variable chip's Set value and Remove (HO-7). Frames 57 and 59 join D113's list until the owner OKs the redraw (D76).
 - **Reverse:** drop the wrap on the two text boxes.
+
+## D177: The item drawer's list edits, ask wording and stale writes (minion BOARD, advised by a Fable agent, 2026-11-15). Provisional
+- **List edits without changing frame 22:** the Sessions and Depends on rows get a trailing "+" ("Add session", "Add dependency"); each session line and dependency chip gets an "×" ("Remove session <name>", "Remove dependency <ID>"). They are always in the accessibility tree and the tab order, painted only on hover or keyboard focus, and take no layout space at rest. The old "link" picking mode goes once the "+" picker lands.
+- **Picker:** one popover under the row, a filter field over a list; arrows, Enter adds, Esc closes; stays open for more adds. Sessions: the item's channel's sessions (a Global item: all, grouped by channel). Dependencies: any item as "ID Title", leaving out itself, existing edges and anything that would close a loop.
+- **Ask wording (BD-15):** a move is frame 22's "<Agent> asks to move this to X" with Move to X / Keep in Y; an edit is "<Agent> asks to edit this" with Apply edit / Keep as is and one "Field: before → after" line per change under the quoted reason; a delete is "<Agent> asks to delete this" with Delete item / Keep item, the first in the destructive style. Open session always.
+- **SL-7 in the app:** drags send no revision (D155). The list edits send none either, since lists never conflict (D155); a refusal refreshes the item and leaves the picker open to redo. No title or description editor in the drawer this milestone (the golden draws none): deferred to the owner's next wave.
+- **History** is read when a drawer opens (one call), not with every item at load.
+- **Reverse:** a visible "Edit" button per row; the editor when the owner OKs a frame for it.
+
+## D178: The live Inbox client, bounded waits, the tab's socket, the card's operation id and the session panel's card (minion ASK, batch 5, 2026-11-15). Provisional
+- **Live client (`clients/live/src/inbox.rs`):** the IN-22 grant target each pending request offers is kept by request id in the client's state, so Always allow sends that exact target (the app's model carries only its words). Answers carry the revision last seen; a stale one is refused by the daemon and shown as such. Rules and grant events re-read that channel's rules.
+- **`--wait N` (CLI.md §6):** a call the daemon answers `pending` at once (RequestAccess, AskUser, a deferred call) waits up to N seconds on WaitForAnswer, then exits 12 with the request still waiting. `--wait 0` never waits; with no `--wait`, a terminal waits until answered and `--json` not at all (`cli/src/call.rs` `Ctx::wait`).
+- **HUMATA_SOCKET:** a session tab's shell gets the daemon's socket (made absolute) beside its session token, on open and when a restart brings the tab back, so `humata` in the tab reaches the daemon that started it even off the default socket. Machine shells get neither. (`identity::tab_env`)
+- **Operation id (TP-16, IN-9.2):** `InboxRequest.operation` (field 21) is named by the daemon from the gRPC method it routed, never from anything the agent sends: the service's area, then the method in snake case without the area's word (`ChannelService/ListChannels` → `channel.list`, `InboxService/RequestAccess` → `inbox.request_access`). Most match the CLI's and MCP's ids; some don't (the CLI calls an ask-ahead `inbox.request`).
+- **Session Inbox panel:** draws the shared IN-9 card (`request_card::card`, narrow) for the picked request (or the first). The others fold to a title, age and who line that select on click, as design golden 03 draws. The card's who line names the daemon's operation id, or else the rule's tool name. Its tick is a CheckBox. (Revised the same day: drawing every card open pushed the second request's buttons out of view.)
+- **Reverse:** operation id: a client-sent header, or a table in the daemon from method to the MCP id; socket: drop the second pair in `tab_env`; panel: bring back `panel_inbox::request_card`.
+
+## D179: Live diffs are fetched per session when a review surface needs them, not in load (minion REVIEW, batch 11, ruled by a Fable advisor, 2026-11-15). Provisional
+- **Pick:** `Daemon::diffs(session, base)` and `Daemon::mark_reviewed(session)` on the client trait. The Review reducer fetches the open session's diffs when its page opens, again when its turn ends (it leaves Working) while it is open, and after the user changes the base (RV-1) or marks it reviewed (RV-6). `load()` stays cheap: the live client reads no diffs in it. One fetch per session in flight; a later trigger queues one more; the old diff stays on screen until the new one lands. TR-12 already says working-tree changes are read when needed, not watched.
+- **Failure:** shown only in that session's Diff panel body, never as a toast, mark or Inbox item, and never as "No changes yet". If nothing was fetched before, the panel names the error with Try again. If an earlier diff exists, the panel keeps it under one line, "Couldn't refresh. Showing the diff from <time>", with Try again. While the session is still being set up, the panel shows a quiet line saying its clone is being made.
+- **Known limit:** the live client reads every file's hunks with the list. Fable's advice is the list first and hunks for the files shown; that is left for when big diffs are benched.
+- **Reverse:** fill `workspace.diffs` in `LiveDaemon::load()` from `session_diffs` and drop the trait methods.
+
+## D180: Agent access gets one row for changing the Global board and other channels' boards, Ask me by default (asked by main, ruled by the owner's advisor, 2026-11-15; closes D155's open frame question). Decided (owner's advisor)
+- **Problem:** D155 brought back `CAPABILITY_GLOBAL_BOARD_WRITE` and left its row in the Agent access list waiting for the owner's OK, since the list is a design golden (D76). The row was drawn anyway in freeze 1: frame 49 (`desktop/tests/design/channel_tabs.rs` and its PNG), SPEC IN-17 and `clients/src/fixture/rules.rs` all carry it. It needs a ruling on whether it stays, what it says, its default and its place.
+- **Pick:** it gets a row, and the row as drawn stands.
+  - **Label:** "Global board, or other channels' boards: change". It pairs with the row above it, "…: read". "Change" means add, edit, move and delete, whoever made the item, as the daemon checks it (`board_need` in `daemon/access/src/policy.rs`). A denial names the rule as "change the global board or other channels' boards" (`Capability::label`).
+  - **Description:** none. No row in the list has one, and the pair of rows says it. The tab's header line already explains Allow, Ask me and Never.
+  - **Default:** Ask me. The power includes deleting other people's items on boards outside the agent's channel, so nothing happens until the person approves; the sibling "Channel board: edit, move or delete anyone else's items" is Ask me for the same reason. All three settings are offered. An approval may be made standing for one board (Always allow, IN-22), shown as a grant line under the row like the one frame 49 draws under "Read another session's files".
+  - **Place:** eighth row, straight after "Global board, or other channels and their boards: read" and before "Write into shared/ on its machine". The board rows stay together, own board to channel board to everything else, with read before change. The list is grouped by subject, not by default, as the channel board's Ask me row already shows.
+  - **Settings › Agent access (ST-4):** the same row, same place, same default, since it is the same list. Frame 29 draws only the nav entry, so it doesn't change.
+  - **Desk (DK-4, DK-10):** the "Read and change every channel's board" switch allows both rows, read and change. DK-10 still says "the row"; it should say the two rows.
+- **Frames:** nothing to redraw. Frame 49 already shows the row with Ask me selected; this ruling is the OK D155 was waiting for. If Settings › Agent access is ever drawn as its own frame, it draws this list unchanged.
+- **Gives up:** the verbs aren't spelled out as they are in the channel board rows, so a reader has to take "change" to include add and delete. A Never default for the delete alone isn't possible while one capability covers all four; a channel that wants that sets the row to Never.
+- **Reverse:** reword to "…: add, edit, move or delete items" in SPEC IN-17, the frame, the fixture and `Capability::label`, and re-record frame 49; or split delete into its own capability with its own row, Never by default.
+
+## D181: Context-only and before-turn forks (advised by a Fable agent, 2026-11-15). Settled
+
+**Part 1 superseded by D185** (context-only forks share and edit the parent's code); parts 2 and 3 stand, GiveOwnCopy included.
+
+1. **Context-only fork (FK-7, IN-20).** The fork's cwd is its own session folder, created empty and with no clone records. Its branch is picked at fork time and reused by GiveOwnCopy. Humata's own calls refuse writes to the parent's clones through `SessionKind::ContextOnlyFork` (`Refusal::ParentReadOnly`), which is now wired from the fork origin, not always `Ordinary`. Agent file tools hit a blocking PreToolUse hook on `Write|Edit|MultiEdit|NotebookEdit`. It canonicalises `file_path` and exits 2 with "ask for your own copy" when the path is under `HUMATA_READ_ONLY_CLONES`, which the launch env sets. The check is local, so it can't fail open with the daemon down. **Bash is not covered**: blocking it needs containment, which is an owner decision if wanted. chmod, read-only mounts and seatbelt were rejected. Claude gets `--add-dir <parent clone>` to read without prompts.
+2. **Turns (FK-3).** ListTurns parses the agent's conversation file with the mirror's rule (a `user` line with text, not meta, not sidechain); one `humata2_mirror` function gives index, first line, time and offset. A before-turn fork copies the byte prefix up to turn n. Only agent kinds that name a conversation format (`claude-jsonl`) can fork at a turn; others list no turns and refuse. `before_turn = 1` and values past the last turn are refused. The code is not rolled back (FK-2: "as they are right now"); the preview and the FK-10 line say so. `before_turn` is stored in ForkOrigin.
+3. **Order.** A seam first (`before_turn` on ForkRequest, `ForkCopy::ContextOnly`); then turns and context-only; GiveOwnCopy last, gated `OwnSessionManage`, copying through `.partial`, with no relaunch and the agent pid kept. FK-6 (another agent), FK-8 and the UI come later. The proto copies all repos for GiveOwnCopy; the `<repo>` argument in CLI.md and MCP.md is the doc mismatch to fix.
+- **Reverse:** each part stands alone. Containment for Bash would replace the hook; a per-turn code snapshot would add rollback.
+
+## D183: Mark reviewed sits in the Diff panel's base menu, and a failed refresh names no time (minion REVIEW, batch 11, 2026-11-15). Provisional
+- **Pick:** the "against <base>" chip opens a menu: origin/main, Uncommitted only, Since I last reviewed, Since the fork from its parent (forks only), the branches of the channel's other sessions, then **Mark reviewed** (RV-1, RV-6). Frames 01, 39 and 41–43 draw only the chip, so the panel adds no button they don't have. A failed refresh says "Couldn't refresh. Showing the last diff read." with Try again. D179 asked for the read's time, but the reducer's clock counts from launch and has no time of day.
+- **Gives up:** Mark reviewed is one click further than the prototype's footer button, and the refresh line doesn't say how old the diff is.
+- **Reverse:** move Mark reviewed to the footer beside Send comments and re-record the frames that draw the footer; give the Review reducer a wall clock and say "from <HH:MM>".
+
+## D182: Daemon Desk sessions: record shape, DeskService, Desk access kind, close and the 7-day delete (asked by minion DESK, ruled by a Fable advisor, 2026-11-15). Provisional
+- **Problem:** the app's Desk (DK-1–DK-14) runs only on the fake daemon; humatad serves none of it. Seven picks were asked: record shape, API, access, close and the 7 days, the scratch name, the CLI, the workspace. Four facts in the code shape the answers: the policy compares channels by id and loads rules and grants by channel; ArchiveSession frees the session folder after its undo window; DeleteSession is not built; no session records "last used" yet.
+- **Pick:**
+  1. **Record: agreed, with changes.** A Desk session is a `SessionRecord` with channel `desk` and `folder` set to its path, plus one `desk_sessions` row. Why: tabs, resume, conversation, pins, Inbox and restart recovery are reused as they are.
+     - Drop `name` from the row: it is the last part of `folder`, and one source is enough.
+     - Add `deleted_unix_ms` (a tombstone) and `held_work` (the work that made the 7-day delete skip it).
+     - Closed lives only in this row. Never write an `ArchiveRow` for a Desk session: `finish_archives_after` and `free_folder` would free its folder.
+     - Reserve `desk` in `names::channel_folder` and as a channel id. StartDeskSession refuses when a channel already owns `<root>/desk`.
+  2. **API: a new `humata.v1.DeskService`, agreed, but declare only what batch 1 serves.** Why: Close must not go through ArchiveSession, and a Desk start has no channel, branch or clones to thread through `start_fresh`.
+     - Eight calls: StartDeskSession, CloseDeskSession, ReopenDeskSession, KeepDeskFolder, SetDeskAccess, ListDeskSessions, PlanDeskCleanUp, CleanUpDesk.
+     - AddDeskRepo, RemoveDeskRepo, MoveDeskSession and CopyDeskDocument are added to the proto when they are built. Until then the live client keeps answering "not in this release" itself.
+     - Start takes an idempotency key, so a retry never makes `plan-q4-2`. It answers the session and the folder's final path.
+     - List sends facts, not labels: kind, kept, the two switches, `last_used_unix_ms`, `closed_unix_ms`, `delete_at_unix_ms` (unset when kept, picked or held) and `held_work`. It runs no git.
+     - The clean-up token is a digest of the closed sessions listed and the work each holds; sizes are not in it. CleanUpDesk recomputes it, and on a mismatch deletes nothing and answers the new list (NV-27). There is no plan map and no expiry.
+     - Every call is user-only (app, or CLI with presence) and refuses peers. The one exception is Keep on the caller's own session (pick 6). No call asks through the Inbox in batch 1.
+  3. **Access: `SessionKind::Desk { boards, channels_and_machines }`, agreed; no pseudo-channel per session.**
+     - **Never wins.** DK-10 calls the switches grants, and the policy's order is Never, then grants, then the rule (IN-22). A switch that is on by default must not undo an explicit Never. The refusal names the new-channel default as the rule to change.
+     - A switch that is on allows, after the Never check: `boards` covers GlobalRead and GlobalBoardWrite; `channels_and_machines` covers ChannelCreate and MachineProvision, never MachineRemove. It gets a `Source` of its own so the record says why.
+     - A switch that is off adds nothing: the new-channel default decides, and it does not force Ask.
+     - One private lookup in the policy maps the channel id `desk` to the new-channel rules. `check_agent`, `check_ask_ahead`, `approve`, `replay_grant`, `from_state` and `is_suspended` all use it. Without it a stored Desk grant stops the policy loading after a restart; test that it loads.
+     - For a Desk agent no channel is its own. Every `== me.channel` test in `policy.rs` goes through one helper that is false for `SessionKind::Desk`, or two Desk sessions become channel-mates (ChannelRead, FilesReadOtherSession, notes, stop). Test with two Desk sessions.
+     - A Desk session has no board. Its scratch folder is its own place (`Root::Clone`, IN-16).
+     - Only the user calls SetDeskAccess (IN-23). It applies from the agent's next call (IN-21).
+     - Close ends the session's standing grants, as Archive does.
+  4. **Close and the 7 days: agreed, with changes.**
+     - Close takes the session's lock, stops the agent as `stop_agent` does, shuts every other tab's holder, sets `closed_unix_ms` and leaves the folder.
+     - Reopen clears closed and resumes through `run_resume`. A Terminal session gets a new shell. It refuses when the folder is gone.
+     - While a Desk session is closed, ResumeSession and new tabs refuse and name Reopen.
+     - SessionService's Archive, Restore, Fork, PreviewFork, GiveOwnCopy, Push and Move refuse a Desk session and name the Desk action.
+     - Expiry is a wall-clock sweep, not one sleep to the deadline: a monotonic sleep may not count the time the Mac is asleep. It runs at start, after each Close and hourly.
+     - Under the session's lock it re-reads the row and acts only on a closed, unkept, scratch, undeleted session past `closed + 7d`.
+     - The work check looks at the folder and the git folders directly under it. Work found is written to `held_work`, the session is skipped and it is checked again next sweep (LD-17).
+     - Delete, for expiry and Clean up alike: the scratch folder goes to the machine's Bin (30 days, LD-7), and the row gets `deleted_unix_ms`, which hides the session from every list.
+     - The delete removes only a direct child of `<root>/desk`, after canonicalising and refusing symlinks, whatever the row says. It has the same tests as `remove_session_folder`.
+     - The test hook `HUMATA2_DESK_EXPIRE_MS` is agreed, admin builds only.
+  5. **Scratch name: the client's name is not sent at all.** The daemon derives it from the title with `names::branch_slug` (FC-13, falling back to `session`) and has the last word (D148). Why: a field the daemon ignores misleads, and one slug function can't drift from the branch rule.
+     - `-2`, `-3` are added when the folder exists on disk or any desk row, tombstoned ones included, holds the name.
+     - The folder is claimed with a single `create_dir` at 0700; "already exists" means try the next suffix.
+     - A picked folder must be absolute, exist, be a directory and, once canonicalised, sit outside the whole Humata root, not only outside the channel trees.
+     - Humata never deletes, trashes or moves a picked folder. Clean up tombstones the session and leaves the folder.
+  6. **CLI: `humata desk keep [<session>]`, agreed, but not behind OwnSessionManage.** Why: an Ask would make the person approve a command they typed, and a keep only stops a delete, so it widens nothing.
+     - The user may keep any Desk session from the app or the CLI with presence; outside a session the argument is required.
+     - Inside a Desk session's tree (agent or person, the daemon can't tell them apart) the caller may keep that session's own scratch folder with no rule and no ask (IN-16).
+     - Any other session's agent is refused. Nobody can un-keep; Clean up is the user's delete.
+  7. **Workspace: agreed.** The live client fills `Workspace.desk` from ListDeskSessions and takes Desk sessions from ListSessions, which hides tombstoned ones.
+     - Days left are derived from `delete_at_unix_ms`, not from a 7 in the client.
+     - Every desk change sends the session's Updated event.
+     - `documents` and `clone_branches` stay empty in batch 1; sizes come only from PlanDeskCleanUp.
+  8. **Batch 1 serves:**
+     - the eight calls, on the Mac's own machine;
+     - scratch or picked folders, running an agent or Terminal; a start with repos or on another machine is refused naming that part, and starts nothing;
+     - the sweep, the Desk kind and the two policy helpers, the reserved name, and the SessionService refusals;
+     - `humata desk keep`;
+     - the live `DeskClient` for start, close, reopen, keep, set_access, clean_up_list and clean_up;
+     - `last_used_unix_ms`, stamped by Start, Reopen, Close, Keep and SetDeskAccess.
+- **Gives up:**
+  - In batch 1 the live Desk has no repos, Move, Documents or Copy to a channel, and no Desk sessions on other machines.
+  - A deleted session's folder can be restored from the trash as a folder, but the session can't be brought back until DeleteSession and its restore are built.
+  - Its record and conversation file stay on disk, hidden, until then.
+  - "Last used" does not move on typing or opening until SE-26 has a home for every session.
+  - An agent can't close or start Desk sessions, even with an ask.
+  - An agent can make its own scratch folder outlive the 7 days; the Closed row says "kept" and Clean up pre-ticks it (D173).
+  - A boards switch that is on does nothing where the new-channel default is Never, and the Info panel doesn't say so until the agent is refused.
+  - A picked folder is not reachable through Humata's own file calls for the agent.
+- **Reverse:**
+  - Drop the `desk_sessions` table and the service; nothing else stores Desk state.
+  - To let a switch beat Never, move its check above the Never check in `check_agent`.
+  - To gate keep, send the own-session case through OwnSessionManage.
+  - A name field in the dialog becomes one optional field on StartDeskSession.
+  - The tombstone becomes a real delete when DeleteSession lands; restore clears the flag.
+  - The four later calls are additive in the proto.
+
+## D184: A context-only fork's shell commands are not blocked; the user is told (advised by a Fable agent, 2026-11-15). Settled
+
+**Superseded by D185**: there is nothing to warn about.
+
+SEC-6 containment isn't built (`contained: false`), so a context-only fork's Bash tool can still write the parent's clones. Accept that as SEC-5 already does for every uncontained session, and say so where the user decides: an uncontained context-only fork carries a shell-write warning flag in the fork dialog's state and its Info panel's state. Ordinary sessions, code + context forks, contained context-only forks and a fork after **Give it its own copy** carry none. A Bash PreToolUse check was rejected: it can't tell reads from writes and is easy to walk past. Holding the milestone for containment was rejected too. SPEC FK-7, SEC-3 and SEC-6 are amended to match. When SEC-6 lands, a contained context-only fork's shell reads of the parent's clones succeed and its writes fail.
+- **Reverse:** build SEC-6 containment for context-only forks first, and drop the warning.
+
+## D185: A context-only fork works in its parent's code and may edit it (owner, 2026-11-15). Decided (owner)
+- **Owner:** "convo only copy being able to edit code is intended cause what if i wanna run 2 agents on the same source code is the idea, code + convo is what if i want my own code and my own convo, neither is what if i want a fresh agent session AT this source code though tbh that's just convo only copy + a `/clear` basically".
+- **Pick:** the kinds are defined by what is copied. **Code + context** copies both: own clones on a new branch, and the conversation. **Context only** copies the conversation and shares the code: the fork's cwd is the parent's clones and it reads and writes them like the parent, so two agents can work on one tree. **Code only** stays: own clones and a fresh agent. A fresh agent in the parent's own code gets no separate kind; it is a context-only fork followed by `/clear` (reversible pick by main).
+- **Supersedes:** q3, the read-only rule in FK-2, FK-7 and IN-20, D181 part 1 (own empty folder, `Refusal::ParentReadOnly`, the PreToolUse write block), and D184 (the shell-write warning; there is nothing to warn about). Give it its own copy (FK-9) stays: it moves a context-only fork onto its own clones.
+- **Gives up:** nothing stops two agents in one tree from editing the same file at once; the diff and Changes panels show both agents' edits together.
+- **Reverse:** bring back FK-7's write refusal for context-only forks.
+
+## D186: A search hit opens a read-only Conversation tab on the matching entry (minion FIND, ruled by a Fable agent, 2026-11-15). Provisional
+- **Problem:** LD-24 says a hit "opens that turn", but sessions are terminals: there is no turn-to-row mapping, scrollback is bounded, and the machine may be offline (LD-23).
+- **Pick:** picking a hit navigates to the session (Back still works) and shows one `Conversation` tab in the focused tab group, read from the host's mirror. It is plain, selectable text grouped by turn, with roles You, the agent's name and Tool; tool text is monospace and there is no composer. It lands on the hit's entry (`seq`, carried on `SearchHit`), scrolled into view and marked. The first read is the hit's turn ±2; **Show earlier turns** and **Show later turns** each add 5. A failed read shows Retry. One tab per session: a new hit re-targets it. It has ✕, and it isn't in the + menu yet. The target is saved in `SessionView`; entries are re-read on restore. No golden changes. It is the same surface LD-3 calls "its conversation" for archived sessions.
+- **Not taken:** scrolling the terminal (no mapping; fails offline); a side panel or popover (changes every session golden, lost on Back); Markdown rendering and query highlighting; live-following.
+- **Reverse:** remove `Tab::Conversation`, its state, actions and view. A saved UI holding the tab must then load as no tab (tolerant deserialiser).
+- **Docs to follow:** SE-8, LD-24, LD-3 wording.
+
+## D187: How a context-only fork works in its parent's code, and how Give it its own copy moves it (FORK manager, 2026-11-15). Settled (reversible)
+1. A context-only fork launches in its parent's session folder, so its cwd holds the parent's clones. Its `repos` list the parent's clones (same path and branch, not main clones). Its conversation is a copy under its own id. Humata's access treats the parent's clones as the fork's own (IN-16), and there is no refusal.
+2. **Give it its own copy** copies the parent's clones as they are now into the fork's own folder on a new branch, moves the conversation file to the path the agent keys on for the new folder (as FK-12 does), then resumes the agent there. The agent's conversation is kept, but its process is new: the cwd can't change under a running agent.
+- **Reverse:** keep the agent running in the parent's tree and only tell it the new paths.
+
+## D188: The Fork dialog's Context only card text after D185 (FORK manager; picked by a Fable 5.2 high subagent; re-record OK'd by main under D185, 2026-11-15). Settled (reversible)
+- The card reads "An agent that knows the conversation and works in this session's files, with no copies, so its edits land here." Its title stays "Context only".
+- Why: it has the same shape as the sibling cards, contrasts with their "New copies", and ends on the consequence.
+- Golden 62-fork-dialog was re-recorded.
+
+## D189: The host reads other machines' conversations from its saved offset; the relay allowlist gains HistoryService/ReadMirror (amends D139) (minion FIND, ruled by a Fable agent, 2026-11-15). Provisional
+- **Problem:** the host mirrors only its own sessions (D170), so search (LD-8, LD-23) finds nothing an agent said on another machine. peer.proto has a push path for this (`MirrorChunk`, `UplinkAck.mirror`, `UplinkResume`), but nothing builds it. The link process keeps no store (D139), so it can't find or read a conversation file. A push would also need send offsets and resend windows on the machine beside the offset the host already saves.
+- **Pick: the host pulls, as designed, with the changes below.** One new unary call, `HistoryService/ReadMirror`, goes through the relay. The machine's socket daemon reads complete lines of the session's conversation file from the offset the host gives, scrubs them (LD-21) and answers. The host's mirror keeps the one offset, in the session's `state.json`. The push messages in peer.proto stay unbuilt.
+- **Amends D139:** the relay allowlist grows by one method, `HistoryService/ReadMirror`. Why: the conversation file and the host variable values are both on the machine and known only to its socket daemon, and the relay is the only way the host reaches that daemon. `SearchSessions` and `ReadTurns` stay off the list. D144's rules are unchanged, and its list of what a same-user process holding the key can reach gains this call. That process can already read the conversation files as they are, so it gains nothing.
+- **Why this fits the spec:** the read is keyed by an offset and resumes from it over the machine's existing link (LD-8, TR-4). Nothing polls (TR-7, TR-9): the host reads when a machine's link comes up and when the machine's pushed session report arrives. Values are replaced on the machine before the bytes reach the link process (LD-21, SEC-1, HO-13).
+- **Changes to the design (the implementer follows these):**
+  1. **Caller.** The handler's first step refuses every caller but `Caller::User(UserVia::Host)` with permission denied: the app, a CLI login, an agent, a script and `Caller::Peer` are all refused. A test covers each. The relay's allowlist test names `SearchSessions` and `ReadTurns` as refused. `HistoryService` goes at `ROUTED[9]`, after EventService, and the off-list refusal's text names the new call.
+  2. **No path from the request.** The only file opened is the `conversation_file` of the session's agent row in the machine's own store. `source` is compared for equality and never read as a path.
+  3. **Scrubbing fails closed.** The handler gets its `Scrubber` from one function that returns a `Result`. When the machine can't read its host variable values, the call fails and sends nothing; it never falls back to an empty scrubber. Until SetHostVariable is built that function returns an empty one.
+  4. **What is scrubbed.** Every string, every object key, and every number whose text holds a value (the number becomes the scrubbed string). A line that isn't JSON is left out and the offset moves past it.
+  5. **A read always moves forward.** The machine treats `max_bytes` of 0, or more than 1 MiB, as 1 MiB, and `data` is at most 1 MiB before encoding (TR-11). When a complete line follows `offset`, the read takes at least that line, however long it is. A line whose scrubbed form is over 1 MiB has each string longer than 64 KiB cut to its first 64 KiB and a note of the bytes left out. If it is still over 1 MiB it is left out, the offset moves past it, and the machine logs the session and the line's size. So `more` always comes with a `next_offset` past `offset`. The host stops and logs if an answer says `more` without moving.
+  6. **Compression (TR-11, TR-13).** The request carries `repeated ChunkCodec accept_codecs = 5`. The response carries `ChunkCodec codec = 7`, `uint32 raw_size = 8` and `optional uint32 crc32 = 9`, as `FileChunk` does. The host lists its codecs as `remote_end.rs` does, and the machine picks one as `files.rs` does.
+  7. **The file's identity** (`source`) is the machine's id, the device, the inode and the birth time when the file system gives one. It never holds the size or a modification or change time: those move on every append, and every read would then look like a rewrite. An empty `source` matches only at offset 0.
+  8. **A rewritten file is one mirror write.** On `rewritten` the host saves the new `source`, sets the source offset to 0 and appends the data in one call and one state write, with `from` 0. There is no separate `restart_source` followed by a `take` at the old offset: that `take` would be dropped as stale. What was mirrored before stays (LD-9), and seq and turn numbers go on.
+  9. **Triggers only.** A read that fails is logged and waits for the next link-up or session report. There is no retry, timer or backoff. The host subscribes to both before its first pass.
+  10. **One machine never holds up another (TR-6).** Reads for another machine run in a task of their own for each machine, one session at a time. The follower that mirrors this host's sessions never waits on one.
+  11. **Docs.** A comment on `MirrorChunk`, `MirrorOffset` and `UplinkAck.mirror` in peer.proto says they are unused and names this decision; GRPC.md §8 names ReadMirror as a call only the relay makes. Both are main's files.
+  12. **Tests beyond the design's three:** a truncated file and a replaced file each keep the old entries and add the new ones; a line over 1 MiB doesn't stop the lines after it; a value in a key, in a number and in a string that JSON escapes is replaced. They check what is mirrored, not wording.
+- **Gives up:**
+  - The mirror of another machine's session moves when the machine reports on the session (a turn ends, the agent stops or resumes) and when its link comes up, not line by line. This host's sessions already work that way (D170).
+  - A report can arrive before the agent has written its last line; that line is mirrored on the next report.
+  - When an agent rewrites its conversation into a new file, the entries are mirrored a second time.
+  - A text over 64 KiB inside a line over 1 MiB is cut; a pasted image is the usual cause, and the mirror keeps no images anyway.
+  - The host learns the length in bytes of what a machine's file holds, so roughly how long a replaced value was. peer.proto's comment had offsets count scrubbed bytes.
+  - A file swapped in place for a longer one with the same identity is not noticed. That takes an outside tool, since agents only append.
+  - This host's own sessions keep the truncation gap they have today; the same identity check can close it later.
+- **Open, for the lane that builds moves and restores (MV-2, LD-4):** a move or restore puts a copy of the conversation on a machine. That code must set the mirror's source offset to the copy's length, or the carried history is mirrored twice.
+- **Later, with no change to the call:** the machine watches each live conversation file (TR-12) and publishes that it grew, as one more trigger.
+- **Not taken:** the push path (reasons under Problem); letting the host scrub (values would leave the machine, against SEC-1); a path or file name in the request.
+- **Reverse:** take `HistoryService/ReadMirror` off `LISTED_METHODS` and `ROUTED` in `daemon/humatad/src/relay.rs`, and drop the handler and the host's remote branch in `history_service.rs`. A swap to the push path changes only the host's follower and the machine's handler; the mirror's `take` stays.
+
+## D190: A sent comment whose passage is gone becomes a detached draft (minion REVIEW, advised by a Fable agent, 2026-11-15). Provisional
+
+- **Problem:** SM-7 says a comment whose passage is gone offers Re-attach or Drop, and flow 26.20 re-attaches a sent comment and sends it again. But `place()` reported "gone" as "changed", so a sent comment became Addressed with an empty "after". Sending refuses anything but drafts, so re-attach-and-send could not happen. The "after" was also read at the old line numbers, so lines added above an edited passage showed unrelated text.
+- **Pick:** After the Same and Moved checks, `place()` scores each window of the quote's length by the words it shares with the quote (maximal alphanumeric runs, case kept, as a multiset). The best window wins, ties going to the window nearest the anchor, then the earlier one. If at least half the quote's words survive, the passage is Changed at that window, and its lines are the "after". Otherwise, or when the file is empty, it is Gone. A quote with no words is Changed if its lines are still inside the file, else Gone.
+- **Ledger:**
+  - A Sent comment whose passage changed becomes Addressed, with the anchor moved to the window and the quote kept as the "before".
+  - A Sent comment whose passage is gone becomes a detached Draft: `sent_at` and `addressed` are cleared; text, replies and id are kept. This mirrors `reopen`, and the re-send is a fresh delivery.
+  - A Draft or Waiting comment detaches.
+  - Addressed, Resolved and archived comments never change (SM-17).
+  - A detached comment can't be sent (`Detached`: re-attach or drop it first), and it isn't counted in the draft count.
+- **Not taken:** keeping "gone" as Addressed with an empty "after" (contradicts SM-7 and flow 26.20, and "Resolve N addressed" would sweep it away).
+- **Open:** a deleted file still leaves its comments as they are, because the pass skips files it can't read.
+- **Reverse:** drop `Placement::Gone` and `CommentLedger::gone`, and send everything to `changed` again.
+
+## D191: An agent's permission hook holds a stream to its own daemon, which raises one Inbox card (minion HOOKS, advised by a Fable agent, 2026-11-16)
+
+- **Problem:** Claude Code, Codex and Copilot each run a blocking PermissionRequest hook before their TUI asks to run a tool. Answering in the Inbox has to reach that hook. The ways open were reusing `AskUser` (a question card), a new streaming call with an approval card, and a CLI that knows each agent's payload versus one that forwards it.
+- **Pick:**
+  1. **Transport:** a new server-streaming `SessionService.Hook { agent, event, payload bytes }`, for `Caller::Agent` only. It sends keepalives, then once the bytes the hook prints. `humata hook <agent> permission` reads stdin (1 MiB cap), forwards it, prints what comes back and always exits 0; with the daemon down it prints nothing.
+  2. **Per-agent knowledge sits in the daemon,** in the pure crate `daemon/agent_hooks` (`humata2_agent_hooks`): payload parsing, the answer each agent reads, and the hook config. One build holds all three, so the CLI and the daemon can't disagree. Payloads it can't read whole (another shape, a guessed field, a Copilot sandbox bypass, an unknown event, over the cap) give empty output: no decision, never allow or deny.
+  3. **The card:** kind SESSION, title "<agent> wants to run <tool>", a `CommandPreview` with the whole command, patch or tool input, and Approve / Deny. A deny note goes to the agent as its message. No "Always allow": the agent's own rules are a different thing from a Humata grant (deferred). The Inbox entry gets a real discriminator (`permission`) rather than another meaning of `access: None`; Answer all skips these cards.
+  4. **Lifetime:** the card exists while a hook holds the stream. When the last stream for it drops (the agent killed the hook, the TUI took over), the daemon withdraws it as CALL_ENDED. An answer commits only while a stream is alive, else it gets the withdrawn error. A rerun of the same ask (session plus a hash of tool and input, plus Codex's turn id) attaches to the pending card. Cards are not saved when raised, so a restart leaves none pending; their answers and withdrawals are saved as history.
+  5. **Status:** D169's async `turn needs-input` hook stays beside the blocking one. Both start together, so its report is older than the next PostToolBatch and loses to it.
+- **Not taken:** `AskUser` (labels a Bash approval a question; a reply that means deny; unary, so a killed hook can't withdraw); a CLI that parses payloads (skew between CLI and daemon splits one feature).
+- **Risks pinned:** clap exits 2 on an unknown subcommand and Codex and Copilot read exit 2 as a deny, so every hook command ends `|| true`, with stdout kept. Only PermissionRequest is hooked, not PreToolUse too, so one ask is one card.
+- **Open:** a remote machine's agent reaches its own machine's daemon; carrying the normalized card over the host link is for the remote-work lane. Until then a remote machine's hook gets no decision, and the TUI asks.
+- **Reverse:** drop the Hook RPC, `humata hook`, `inbox/permission.rs`, the `permission` field and the blocking hook entries; the async status hooks stay.
+
+## D192: The permission hook holds for an hour, the daemon ending it first (minion HOOKS, advised by a Fable agent, 2026-11-16)
+
+- **Problem:** Copilot's hook timeout defaults to 30 s and Claude's and Codex's to 600 s. A short hold withdraws the card before a push is read; the fallback after it is the TUI prompt, where a user who is away is stuck anyway.
+- **Pick:** every agent's config states `timeout` (`timeoutSec` for Copilot) explicitly: 3600 s for the permission hook, 10 s for turn hooks (3 s for Codex's Interrupt, its cap). The daemon ends the stream with no decision at 3590 s (`DAEMON_HOLD`); the CLI caps its own wait at 3595 s, so the daemon always ends first. No Setting.
+- **Gives up:** answering in the TUI while the hold runs. If that hurts, add "Answer in terminal" to the card before shortening the hold. If an agent clamps the timeout, its kill fails open and the dropped stream withdraws the card.
+- **Reverse:** change `HOLD_SECONDS` in `humata2_agent_hooks`.
+
+## D193: Codex hooks go in by `-c` without the trust bypass; Copilot's by a session plugin (minion HOOKS, advised by a Fable agent, 2026-11-16). Provisional
+
+- **Codex:** launched with `-c hooks=<inline table>` (the session-flags layer). Codex runs a non-managed hook only once the user has trusted it, so the user runs `/hooks` in Codex once and trusts Humata's. `--dangerously-bypass-hook-trust` is not used: it also runs the user's own untrusted hooks. A per-session `CODEX_HOME` is not used: it moves auth and writes trust into a folder Humata owns. The command is kept stable (the `humata` path, the socket, the timeouts), since any change costs every user a re-trust. Settings › Agents shows a fixable step on the Codex row ("Run /hooks in Codex once and trust Humata's hooks") until a hook from this command is heard, and again when the command changes; no guessed status.
+- **Copilot:** launched with `--plugin-dir <state>/copilot-plugin`, holding `plugin.json` and `hooks.json` to the documented schema. `COPILOT_HOME` is not used (it moves auth and state). Revert to output only if a live launch shows Copilot warning or prompting about the plugin.
+- **Both:** the kinds keep `turn_end: output` until a live check shows the hooks run; the status rule already lets a heard hook win over the fallback. The live checks are owed (GAPS_REVIEW).
+- **Reverse:** drop `{codex_hooks}` and `{copilot_plugin}` from the kinds' args.
+
+## D194: A deleted channel's records travel in its trash item as a store-made side file (minion FORK, advised by a Fable agent, 2026-11-16). Provisional
+
+- **Records:** before trashing, the store copies the channel's rows (channel, sessions with their details, tabs and agents, board items, rules, ...) into `<channel folder>/.humata-deleted.sqlite`, with the same schema and stamped with `user_version`. One transaction then removes them from the store, and `Trash::put` takes the folder. Restoring a Channel item moves the folder back, migrates the side file with the store's own migrations, imports it in one transaction with every session archived, and removes the file. A restored folder that holds the file but has no channel row is finished at start. Not "mark deleted" (every reader would have to skip such rows, `channels.folder` UNIQUE would block reuse, and emptying the trash by hand would orphan rows). Not JSON (store records aren't serde, and the schema can drift in 30 days). A test fails when a schema table is neither copied nor declared global. `board_prefixes` and `board_counters` stay, so item keys are never reused. DeleteSession (LD-5) can reuse this.
+- **Requests:** pending requests are withdrawn with `WITHDRAW_REASON_CHANNEL_DELETED` before the snapshot, and stay withdrawn after a restore.
+- **Name reuse:** a channel in the trash doesn't hold its name. If its folder is taken at restore, it comes back as the first free `<folder>-2` (name and folder), with session paths rewritten at import. This needs a restore-to-path in `Trash`.
+- **Other machines (first cut):** refused with not_built while another of the channel's machines has live sessions or is offline (the plan names it in `offline_machines`; the fix is to bring it online or forget it). Online machines with no live sessions send their channel folder to their own trash through the forwarded file delete. `trash_item` is the host's.
+- **Reverse:** a store-side "deleted" mark instead, with a trash-sweep hook.
+
+## D195: Sessions cross machines through a host-only carry service and the host's journal (minion FORK, advised by a Fable agent, 2026-11-16). Provisional
+
+- **Calls:** a new `SessionCarryService` in sessions.proto (Pack, Unpack, Release, Materialize) refuses every caller but `UserVia::Host`, with one test for each caller, as D189.1 does. Pack and Release aren't user actions, so they don't go in SessionService. TransferEndService answers users (D162). peer.proto's calls run in the link process, which has no store (D139). Each call is keyed by the host's operation id and safe to repeat. This amends D139.
+- **Engine:** a separate transfers engine instance, kept out of the tray. A move shows its step on the session (MV-4), and Cancel goes through the operation, which undoes it (MV-3). `<state>/carry` holds journals and manifests only. The host relays the carried bytes and saves none (SEC-1).
+- **Rebuild's conversation:** the mirror keeps the raw scrubbed lines, but only for other machines' sessions, with the codec named (TR-13). Rebuild resumes from those lines (SL-4, 26.23). FK-6's transcript and summary are the fallback when:
+  - the agent can't resume,
+  - a line was left out (D189.5), or
+  - the resume check fails.
+  Sessions mirrored before this change are backfilled. The lost-work note says that `‹NAME›` stands for a host variable.
+- **Context-only fork onto another machine (FK-8):** allowed, with no mount. The working folder starts empty, and the first typed line names the parent's machine, its folder and the file tools. Writing to another machine's files needs a new Ask capability beside FILES_READ_OTHER_MACHINE, with its Settings switch. This part is deferred until after the first cut.
+- **Crash mid-move:** the host's journal decides, in the restart report format (MV-14).
+  - The machines never resume a session paused for a move on their own, and never delete an incoming copy on their own. The host's abort does both.
+  - If the host was killed between "resume there" and "switched", it asks the target. An agent running there means the host finishes the move; otherwise it aborts.
+  - The source resumes only after the target acknowledges the abort, or when the journal shows resume was never sent.
+  - If the target's link drops mid-copy, the host aborts and resumes the source (MV-3).
+- **Fork copy:** a snapshot into staging on the source first. Copying a live clone gives a torn `.git` and stale hashes, or keeps the parent paused through link drops. A fork carries the branch and the uncommitted files, without ignored files. Only a move keeps ignored files (MV-13). LD-19 checks the free space on both machines and names the one that is short.
+- **Desk:** a fork stays refused (D108.3, DK-12). A Desk move is owed (DK-3, MV-1, D108.6): the scratch folder is carried, a picked folder is copied and left, there is no branch, and any online machine can take it. It stays refused in the first cut and comes in a later slice on the same carry.
+- **Order:** rig, pointers, raw mirror lines, Forget, carry core, carry service, host driver, Move, remote fork (code and code+context), remote archive and restore, RemoveMachine, Rebuild, then context-only and own-copy elsewhere, then the Desk move.
+  - Restore always takes the conversation from the host (LD-4), never from the source.
+  - Never cut: the manifest hashes, undo, crash recovery, LD-19, and MV-13's store rows.
+- **Reverse:** each pick stands alone.
+
+## D196: Branch prefix settings, an edited branch at start, and "Rename the branch too" (minion FORK, advised by a Fable agent, 2026-11-16). Provisional
+
+- **SettingsService serves only `branch_prefix` for now.**
+  - Reads give the defaults for every other section. A write that sets any other section refuses the whole call with not_built, naming the section.
+  - **Storage:** a new settings table (key, value, revision), added in a new migration step. No row means the default.
+  - **Empty channel override:** `channels` gains `branch_prefix_set`, so an empty per-channel override is possible (FC-12). Existing non-empty rows get 1. `ChannelRecord.branch_prefix` becomes `Option<String>`.
+  - **Default prefix:** the host's `gh` login plus "/", cached in memory and refreshed with the check facts. It is never stored. A start never waits on gh and never fails because of it.
+  - **Access:** writes are user-only with presence (`require_present(SettingsChange)`); agents are refused with user_only. `expected_revision` is checked. A prefix that can't begin a valid ref is invalid_field.
+  - **Owed:** the SettingsChanged event.
+- **Edited branch at start (FC-15):** `StartSessionRequest.branch = 11` is used as typed for every included repo, with no prefix added.
+  - A bad ref name is invalid_field.
+  - A taken name is name_taken, with the free name as the suggestion. Humata never adds a suffix silently.
+  - The folder stays the title's slug.
+  - **Owed:** the same field on ForkSessionRequest.
+- **Rename the branch too (FC-17):** `RenameSessionRequest.rename_branch = 5`.
+  - The new name follows the same rule, built from the new title. The session's own branch doesn't count as taken, and the same name changes nothing.
+  - Any pushed repo refuses the whole call with FAILED_PRECONDITION invalid_field on `rename_branch`, naming the repos. Pushed means an upstream is set, or `refs/remotes/origin/<branch>` exists. This is checked on the session's machine at call time.
+  - An offline machine gives machine_offline, and nothing is renamed, the title included.
+  - The order is: the branches first (rolled back on failure), then one record write. The folder keeps its name.
+  - The dialog offers the tick when every `pointers[].upstream` is empty.
+  - Review, Desk and context-only fork sessions refuse the tick.
+- **Which prefix:** the channel's override if set (even empty), else the global setting, else the gh default. It is resolved at each preview, start, fork and branch rename. Existing branches never change.
+- **Reverse:** drop the two proto fields and return SettingsService to `not_built.rs`.
+
+## D197: Until the Review a pull request dialog exists, a pasted PR offers Review this PR only when a session already reviews it (minion FIND, main, 2026-11-16). Provisional
+- **Problem:** KP-4/PR-1 say a pasted PR link offers **Review this PR**, which opens Review a pull request (frame 67). That dialog belongs to the PR milestone, which is blocked (REVIEW, ASK, FRAMES2) and needs a host-side `gh` fetch (PR-3). Offered for any PR, the entry could only toast "start a session to review it": a control that does nothing (actionable UIs only).
+- **Pick:** the palette offers Review this PR for a pasted PR only when a session here already reviews that PR (`workspace.pulls[].session`); picking it opens that session. Other pasted PRs offer no review entry and search as usual.
+- **Undo:** the PR milestone brings the entry back for every pasted PR, opening the dialog.
+
+## D198: "Since I last reviewed" in a repo never reviewed shows everything since origin/main (minion REVIEW, advised by a Fable agent, 2026-11-16). Provisional
+- **Problem:** Flow 26.3 picks "Since I last reviewed" in a fresh session and expects three repo groups with totals. The daemon refused instead ("no review of <repo> yet … press Mark reviewed first"), so the panel showed an error and no diff.
+- **Pick:** when the session has no snapshot of a repo and origin/main resolves, "Since I last reviewed" diffs that repo from its merge base with origin/main, as the origin/main base does. The base chip still reads "Since I last reviewed", and the repo's comparing label starts "not reviewed yet:". Repos that have a snapshot still diff from it. Without origin/main the old refusal stands.
+- **Undo:** drop the fallback in `review_diff` `Checkout::base_tree`/`summary`; the flow then presses Mark reviewed first.
+
+## D199: Settings › Agents › "Ask for permission in the Inbox", one switch that is on by default (minion HOOKS, owner's request via main, 2026-11-16). Provisional
+- **Problem:** with D191, every agent's permission ask waits in the Inbox. Some people want their agents to ask in the agent's own prompt, as they did before Humata.
+- **Pick:** one switch in Settings › Agents, styled like the other toggle rows (title, subtitle, toggle on the right). It is checked against golden 29-settings.png: the frame shows only Layout and has no per-agent rows, so this is one switch for every agent, not one per agent. The setting lives on the host (`SettingsService`, `Settings.agents.permissions_in_agent`, store key `agents.permissions_in_agent`). Proto3 makes false the default, which is the Inbox. When the switch is off, the daemon answers every permission `Hook` at once with no decision and raises no card, so the agent's own prompt asks. The hook stays installed. The daemon reads the setting at each ask, so running sessions follow a change with no restart. Turn ends and needs-input notices don't change. Opening Settings › Agents reads the daemon's value. A refused change goes back to the old value and says why. The setting shares the one Settings revision (the newest of its sections' saves).
+- **Undo:** drop `AgentSettings` from settings.proto and the check in `hook_of`. Asks then always go to the Inbox.
+
+## D200: A sent batch of comments is pasted, then submitted with return (minion REVIEW, 2026-11-16). Provisional
+- **Problem:** SM-9 types a batch as one bracketed paste, and RV-5 says Send N comments "sends" it as one message and marks the session working. But nothing pressed return, so the paste sat in the agent's input line and live flow 26.3 never saw the agent get the comments.
+- **Pick:** the daemon's terminal sink types the paste, waits 100 ms (an agent CLI reads a return right behind a paste as part of it, as with the start-fresh seed), then types `\r`, each keyed once (`<key>`, `<key>/return`). If the return fails, the batch is Unconfirmed, and sending it again presses only return because the paste's key has already arrived. After a restart, "arrived" still checks the paste's key, so a batch whose return was lost reads as sent.
+- **Undo:** drop the return in `review/sink.rs` `TerminalSink::paste`; the user then presses Enter in the terminal.
+
+## D201: OpenCode runs as its own TUI attached to a per-session server that a `humata opencode` wrapper starts, and the daemon is a second client of that server (minion HOOKS, advised by a Fable agent, 2026-11-16). Provisional
+- **Problem:** OpenCode v2 (pinned for tests at v2.3.0, published 2026-11-13) dropped the TUI's own port. The v1 routes are gone too, and every route is now under `/api` (facts in HOOKS-research.md › OpenCode, verified against v2.3.0). Humata still needs turn ends and Inbox permission asks from it without guessing, while the TUI stays the agent.
+- **Pick:**
+  - **Process:**
+    - OpenCode becomes a built-in kind whose program is `humata opencode`.
+    - The wrapper runs `opencode serve --hostname 127.0.0.1 --port 0` with stdin from /dev/null. It reads the `server listening on <url>` line, keeps draining serve's output to a capped log, and runs the TUI as `opencode --server <url> -s <id>`.
+    - Both processes stay in the holder's process group, so they survive daemon restarts and close with the PTY.
+    - The wrapper kills serve when the TUI exits. If serve dies, it ends the TUI and exits non-zero.
+  - **Password:** fresh random per start. It goes to serve as `OPENCODE_SERVER_PASSWORD` and to the TUI as `OPENCODE_PASSWORD`, by env only.
+    - It is written with the url, the OpenCode session id, serve's pid and a format version to `<session state>/opencode.json`, 0600, atomically.
+    - The daemon reads that file after a restart.
+  - **Conversation:** OpenCode mints its own `ses_…` id. The wrapper creates the session (`POST /api/session`, with metadata naming Humata's conversation) and records the id. On resume it checks the id still exists, and creates and re-maps the session if it doesn't.
+  - **Rules:** none. The user's own OpenCode config decides what asks.
+  - **Link:** each session gets a task in humatad that subscribes to `GET /api/event`.
+    - Turns:
+      - `session.execution.started` on any session of that server means Working.
+      - When nothing is active after `succeeded`, `interrupted` or `failed`, that means Idle.
+      - `permission.asked` means NeedsInput.
+    - Cards: `permission.asked` raises an Inbox card unless D199's switch is off.
+    - Answers:
+      - Allow replies `once`; "Always allow" stays deferred.
+      - Deny replies `reject` with the note as `message`.
+      - No answer sends no reply, so the TUI's own ask stays.
+    - Withdrawals: when the TUI answers first (`permission.replied`, or a 404 on our reply), the card is withdrawn.
+    - On connect it opens SSE first, then reconciles with `GET /api/session/active` and the pending asks, deduped by id.
+    - `turn_end: server` is a new `TurnEnd` variant. The output-quiet fallback applies while the link is down.
+  - **Input:**
+    - Stop uses `POST /api/session/{id}/interrupt`, falling back to the PTY when the link is down.
+    - Prompts stay typed into the PTY: one send path for every agent, and nothing beside the TUI drives the conversation.
+  - **Binary:** the user's `opencode` on PATH, so their login and data are used. Below 2.3.0, or with no URL in time, the wrapper runs the plain TUI on the output fallback and records a check fact that names the version found and the upgrade.
+  - **HTTP:** `hyper` (client, http1), `http-body-util` and `hyper-util`, at the versions already in Cargo.lock, in one small crate shared by the wrapper and the daemon.
+- **Accepted:** the agent's tools run as the same user and could read the password, the same boundary as `humata hook`. `/health` and the web UI are open on loopback; only `/api` is guarded, and nothing binds beyond 127.0.0.1.
+- **Known gap:** `/new` in the TUI moves off the mapped session, so resume returns to the old one.
+- **Undo:** drop the built-in kind and the link. A user-supplied OpenCode kind stays on the output fallback.
+- **Amended the same day (D201a, advised by a second Fable agent):** the wrapper runs the link itself, not humatad.
+  - **Calls:** it holds `HUMATA_SESSION_TOKEN`, so it calls the daemon as the session's agent.
+    - Turns go through `ReportTurn`, as `humata turn` does, and the kind's `turn_end` is `hooks`, so there is no new `TurnEnd` variant and no proto.
+    - Each `permission.asked` opens the existing `SessionService.Hook` stream with agent `opencode` and the ask as payload. `agent_hooks` parses it, and renders the decision as OpenCode's reply body (empty: no reply).
+    - The card key includes OpenCode's permission id, so a reopened stream finds the same card and two identical asks get two cards.
+  - **Withdrawal:** `permission.replied` (the TUI answered first), a 404 on the reply or the run ending drops the stream, and the daemon withdraws the card as it does for every hook. D199 is read per ask as before.
+  - **Reconnecting:** a transport error on the stream reopens it with backoff while the ask is still pending. An empty final reply (D199 off, or the hold ran out) is never reopened.
+  - **Turn after an answer:** the wrapper reports Working on `permission.replied`, since no `execution.started` follows a reply.
+  - **The link's own failures:** it reconnects SSE and reconciles from the active sessions and the pending asks. A failure of the link never ends the TUI.
+  - **Session id:** OpenCode keeps an id it is given when it starts `ses_` (round 3), and a repeat create returns the same session. So the wrapper names the session `ses_` plus the first 26 hex digits of Humata's pinned conversation id, creates it idempotently on every start, and attaches the TUI with `-s`. There is no mapping to keep, and resume is the same command.
+  - **Accepted (round 3):**
+    - Tools inherit serve's env, so the model can read `OPENCODE_SERVER_PASSWORD`. That password guards only this loopback server and dies with it.
+    - Serve shares the user's OpenCode database, so Humata's sessions also show in their own OpenCode lists.
+    - `--service` is never used, so the user's default TUI never attaches to Humata's server.
+  - **Stop:** always typed into the PTY, as for every agent. The daemon has no HTTP client and reads no password file. The state file is the wrapper's own, for resume and for killing a leftover serve.
+  - **Why:** it reuses the hooks path built for D191 (identity, cards, D199, hold, withdrawal) instead of a second way to raise cards inside the daemon, and the daemon stays out of OpenCode's server.
+
+## D202: Settings › Agents shows Codex's trust step until Humata hears one of its hooks (minion HOOKS, advised by a Fable agent, 2026-11-16). Provisional
+- **Problem:** D193 runs Codex's hooks only once the user trusts them in Codex's `/hooks`. Until they do, Codex sends no turn ends and no Inbox asks, and nothing says why.
+- **Pick:**
+  - **The fingerprint:** a sha256 of the exact `-c hooks=…` value the daemon fills in. It includes the `humata` path, the socket and the timeouts, because Codex keys its trust on the hook's hash.
+  - **Heard:** a `Hook` RPC or a `ReportTurn` from a session whose kind's args carry that value. Either one stores the fingerprint under `agents.codex_hooks.heard`. Turn hooks count as heard because a permissive Codex may never ask.
+  - **Shown:** the daemon sets `AgentSettings.codex_hooks_need_trust` (output only; writes ignore it) while some kind carries the value and the stored fingerprint differs from it. A changed command shows the step again with no extra logic.
+  - **In the app:** while the flag is set, Settings › Agents shows one more row, "Trust Humata's hooks in Codex", with the fix "Start a Codex session and run /hooks once, then trust Humata's". The row has no dismiss: it clears when a hook is heard and is re-read whenever Agents opens.
+  - **Narrowed from the Fable pick:** the step shows from the start, not from the first launch. That spares a launch record in session_service.rs, and starting a Codex session is part of the fix.
+- **Undo:** drop the field and `session_service/codex_trust.rs`. The step then never shows.
+
+## D203: The relay allowlist gains SessionCarryService, for the host only (amends D139) (minion FORK, 2026-11-16). Provisional
+- **Problem:** Move takes a session from this Mac to a box or from box to box, and both ends are machines. Only each machine's socket daemon has the session's clone, holder and conversation file, and the host reaches it only through the relay (D139).
+- **Pick:** the relay allowlist grows by one service, SessionCarryService (`Pack`, `Unpack`, `Release`, `Abort`), so it lists 30 methods. A machine honours these only from the host's proven relay connection (D144), never from the user or an agent on its own socket. D144's other rules are unchanged.
+- **Why not the peer link's PeerService:** carry needs the machine's store and holders, and the link process has none (D139).
+- **Reverse:** remove the service from the allowlist and from serve registration. Move then fails with a clear error and nothing else changes.
+
+## D204: The relay allowlist gains SessionService/RenameSession (amends D139) (minion FORK, 2026-11-16). Provisional
+- **Problem:** renaming a box session's branch has to rename the branch in the session's clone, and that clone exists only on the box.
+- **Pick:** the host relays `RenameSession` to the box's socket daemon, so the allowlist grows by one method. D144's rules are unchanged. A same-user process holding the key could already change that clone directly, so this gives it nothing new.
+- **Reverse:** remove the method from the allowlist. Renaming then changes only the host's record, and the box keeps the old branch name.
+
+## D205: The relay allowlist gains PlanArchive, ArchiveSession and RestoreSession (amends D139) (minion FORK, 2026-11-16). Provisional
+- **Problem:** archiving a box session, restoring it, and removing a machine that still has live sessions all have to stop agents and pack or unpack work that exists only on the box.
+- **Pick:** the host relays these three SessionService methods to the box's socket daemon. D144's rules are unchanged. MV-9 still applies on the box: archiving over unpushed work asks first.
+- **Reverse:** remove the three methods from the allowlist. Archive, restore and removal then work only for this Mac's own sessions, and for a box session they fail with an error that names the box.
 
 ## D206: A reusable terminal replica shares a persistent host; SSH reattaches its existing holder (proposed by minion C1, owner request, 2026-11-16). Provisional
 
@@ -1408,3 +1787,9 @@ The daemon had no feed of its comments, and the app never polls, so `CommentsCli
 - **Permissions:** D199 remains the host-wide choice between Inbox and the agent's own prompt for future asks. Separate local `permission_request_alerts`, default off and saved with UI preferences, controls extra in-app toasts only. It never grants, denies, removes or reroutes an approval. Existing held Inbox asks remain pending when D199 changes.
 - **Adoption boundary:** the standalone experiment is not a replacement for the main daemon's terminal API. Mac browser stress/reload and Linux painting/clipboard/reload pass with optimized assets on the unchanged 721 MiB VM. Debug viewer reloads OOM-killed Chromium, so release acceptance uses `-c opt`. Full platform/agent trust/IME/long-duration certification remains separate work.
 - **Undo:** remove the experiment packages and their narrow Bazel/toolchain/index wiring; retain the main app's existing terminal transport. The permission alert field can be ignored by older UI saves; D199 is independent.
+
+## D207: The host alone recovers a move when a box restarts mid-move (minion FORK, Fable pick, 2026-11-16). Provisional
+- **Problem:** a box that restarts mid-move cannot know whether the host is still driving the move: it has no journal, and links run host to box. A box-side drop of incoming stages could delete the only copy, or fail a move that would have finished.
+- **Pick:** a box does nothing to incoming stages at startup. The host's journal is the record. When the host's take-back on the target fails (the box is offline), the journal stays open, so the host retries the undo when that box's link comes back (a push, no polling). After a successful switch, the host also removes the target's stage, never its session. A paused agent on the source is saved Stopped, so a restart never resumes it.
+- **Gap:** if the host's journal itself is lost, the target's stages are orphaned. That becomes a doctor action the user confirms, never an automatic delete.
+- **Reverse:** a box-side startup rule that drops incoming stages whose agent isn't running.

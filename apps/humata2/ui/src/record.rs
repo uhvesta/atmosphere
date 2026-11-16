@@ -21,6 +21,7 @@ use gpui_kit::{ElementId, Pixels, Point, Window};
 use humata2_app::{
     AppAction, AppState, Overlay, PinTarget, PinnedComment, Rect, ReportForm, ReportKind,
 };
+use humata2_clients::model::{MachineId, MachineKind};
 use crate::record_video::{Sampler, SamplerError};
 use humata2_report::{
     Bounds, Captured, Comment, Context, Drawing, Element, Form, FormError, Gesture, Limits, Mark,
@@ -291,7 +292,7 @@ impl Recorder {
         state: &AppState,
         title: Option<String>,
     ) -> Result<(), ReportError> {
-        self.start(window_size(window), trees(window, state))
+        self.start(context(window_size(window), state), trees(window, state))
             .map_err(ReportError::Recorder)?;
         let mut inner = self.inner.borrow_mut();
         inner.title = title;
@@ -309,6 +310,7 @@ impl Recorder {
     pub fn finish(
         &self,
         window: &Window,
+        state: &AppState,
         title: Option<String>,
     ) -> Result<ReportForm, ReportError> {
         let folder = self.folder()?;
@@ -316,6 +318,12 @@ impl Recorder {
         let picture = render_masked(window, &self.secret_values());
         let kept = self.inner.borrow_mut().title.take();
         let video = self.inner.borrow_mut().video.take();
+        // Daemon versions read while the recording ran (a report reads the
+        // ones it lacks when it starts) are listed as well.
+        let versions = daemons(state);
+        if let Some(recording) = self.inner.borrow_mut().reports.recording_mut() {
+            recording.context_mut().daemons = versions;
+        }
         let captured = self.stop().map_err(ReportError::Recorder)?;
         let form = self.save(
             &folder,
@@ -347,7 +355,7 @@ impl Recorder {
         title: Option<String>,
     ) -> Result<ReportForm, ReportError> {
         let folder = self.folder()?;
-        let mut context = context(window_size(window));
+        let mut context = context(window_size(window), state);
         context.started_unix_ms = now_ms();
         let captured = humata2_report::snapshot(context, trees(window, state));
         let picture = render_masked(window, &self.secret_values());
@@ -434,10 +442,10 @@ impl Recorder {
     /// # Errors
     ///
     /// [`RecorderError::AlreadyRecording`] when one already runs.
-    pub fn start(&self, size: WindowSize, now: Trees) -> Result<(), RecorderError> {
+    pub fn start(&self, context: Context, now: Trees) -> Result<(), RecorderError> {
         let context = Context {
             started_unix_ms: now_ms(),
-            ..context(size)
+            ..context
         };
         let mut inner = self.inner.borrow_mut();
         inner.reports.start(context, now)?;
@@ -647,13 +655,73 @@ fn now_ms() -> u64 {
         .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn context(window: WindowSize) -> Context {
+/// The report's context for a window of `window` as `state` shows it: the
+/// app's version and OS, and the daemons, machines and sessions it has loaded.
+fn context(window: WindowSize, state: &AppState) -> Context {
+    let workspace = &state.workspace;
+    let machine_name = |id: &MachineId| {
+        workspace
+            .machines
+            .iter()
+            .find(|machine| machine.id == *id)
+            .map_or_else(|| id.as_str().to_owned(), |machine| machine.name.clone())
+    };
+    let machines = workspace
+        .machines
+        .iter()
+        .map(|machine| humata2_report::Machine {
+            name: machine.name.clone(),
+            kind: match &machine.kind {
+                MachineKind::ThisMac => "local",
+                MachineKind::Ssh { .. } => "ssh",
+                MachineKind::Provider { .. } => "provider",
+            }
+            .to_owned(),
+            state: if machine.online { "online" } else { "offline" }.to_owned(),
+        })
+        .collect();
+    let sessions = workspace
+        .sessions
+        .iter()
+        .map(|session| humata2_report::Session {
+            id: session.id.as_str().to_owned(),
+            title: session.title.clone(),
+            channel: workspace
+                .channels
+                .iter()
+                .find(|channel| channel.id == session.channel)
+                .map_or_else(
+                    || session.channel.as_str().to_owned(),
+                    |channel| channel.name.clone(),
+                ),
+            machine: machine_name(&session.machine),
+            agent: session.agent.name().to_owned(),
+        })
+        .collect();
     Context {
         app_version: env!("CARGO_PKG_VERSION").to_owned(),
         os: std::env::consts::OS.to_owned(),
         window,
+        daemons: daemons(state),
+        machines,
+        sessions,
         ..Context::default()
     }
+}
+
+/// Each machine's daemon version as the app has it now, for the report.
+fn daemons(state: &AppState) -> Vec<humata2_report::Daemon> {
+    state
+        .workspace
+        .machines
+        .iter()
+        .filter_map(|machine| {
+            Some(humata2_report::Daemon {
+                machine: machine.name.clone(),
+                version: state.daemon_version(&machine.id)?,
+            })
+        })
+        .collect()
 }
 
 /// `window`'s size in whole logical pixels.
@@ -1096,6 +1164,12 @@ pub fn keystroke_gesture(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use humata2_clients::model::{Machine, MachineHealth, MachineId, MachineKind};
+    use humata2_clients::{Clients, Workspace, fixture};
+    use tca::TestClock;
+
     use super::*;
 
     fn vars(list: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -1132,7 +1206,7 @@ mod tests {
 
     fn recording() -> Recorder {
         let recorder = Recorder::new();
-        let started = recorder.start(WindowSize::default(), Trees::default());
+        let started = recorder.start(Context::default(), Trees::default());
         assert!(started.is_ok());
         recorder
     }
@@ -1165,7 +1239,7 @@ mod tests {
         let recorder = Recorder::new();
         let feed = recorder.rpc_feed();
         feed.push(call(Instant::now(), "a/B"));
-        let started = recorder.start(WindowSize::default(), Trees::default());
+        let started = recorder.start(Context::default(), Trees::default());
         assert!(started.is_ok());
         assert!(rpcs(&recorder).is_empty());
     }
@@ -1339,6 +1413,64 @@ mod tests {
                 key: "enter".to_owned(),
                 target: None
             })
+        );
+    }
+
+    #[test]
+    fn the_report_context_lists_the_daemons_machines_and_sessions_the_app_has() {
+        let machine = Machine {
+            id: MachineId::new("this-mac"),
+            name: "This Mac".to_owned(),
+            kind: MachineKind::ThisMac,
+            online: true,
+            detail: String::new(),
+            last_seen: "now".to_owned(),
+            lost_at: None,
+        };
+        let mut session = fixture::standard().sessions.remove(0);
+        session.machine = machine.id.clone();
+        let workspace = Workspace {
+            machines: vec![machine.clone()],
+            sessions: vec![session.clone()],
+            machine_health: BTreeMap::from([(
+                machine.id.clone(),
+                MachineHealth {
+                    daemon: "2.0.3".to_owned(),
+                    ..MachineHealth::default()
+                },
+            )]),
+            ..Workspace::default()
+        };
+        let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+        let mut state = AppState::launch(&clients);
+        state.workspace = Arc::new(workspace);
+
+        let report = context(WindowSize::default(), &state);
+
+        assert_eq!(
+            report.daemons,
+            vec![humata2_report::Daemon {
+                machine: "This Mac".to_owned(),
+                version: "2.0.3".to_owned(),
+            }]
+        );
+        assert_eq!(
+            report.machines,
+            vec![humata2_report::Machine {
+                name: "This Mac".to_owned(),
+                kind: "local".to_owned(),
+                state: "online".to_owned(),
+            }]
+        );
+        assert_eq!(
+            report.sessions,
+            vec![humata2_report::Session {
+                id: session.id.as_str().to_owned(),
+                title: session.title.clone(),
+                channel: session.channel.as_str().to_owned(),
+                machine: "This Mac".to_owned(),
+                agent: session.agent.name().to_owned(),
+            }]
         );
     }
 

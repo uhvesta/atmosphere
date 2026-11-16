@@ -82,6 +82,8 @@ impl Overlays {
                     Command::Fork => IconName::GitFork,
                     Command::TerminalFullScreen => IconName::Maximize2,
                     Command::TogglePanel => IconName::Columns2,
+                    Command::Pin { .. } => IconName::Pin,
+                    Command::Vip { .. } => IconName::Bell,
                     _ => IconName::ArrowRight,
                 };
                 let mut item = row()
@@ -148,6 +150,23 @@ impl Overlays {
                 );
             }
         }
+        // FIND (LD-23, LD-24): every session's matching turns, under the palette's own entries.
+        let send_find: crate::palette_hits::SendFind = Rc::new({
+            let ui = ui.clone();
+            move |action, cx: &mut App| ui.send(AppAction::Find(action), cx)
+        });
+        // The cursor past the entries is on a hit, as a place in the hits.
+        let selected = palette.cursor.checked_sub(palette.entries.len());
+        list = list.children(ui.read(|s| {
+            // Moving a session asks for a machine, not a conversation.
+            if s.palette.asking.is_some() {
+                return None;
+            }
+            let offline = |machine: &humata2_clients::model::MachineId| {
+                s.workspace.machines.iter().any(|m| &m.id == machine && !m.online)
+            };
+            crate::palette_hits::conversations(&s.find, selected, &offline, look, &send_find)
+        }));
         if palette.entries.is_empty() {
             list = list.child(
                 div()
@@ -170,6 +189,25 @@ impl Overlays {
             .shadow_lg()
             .text_size(px(13.))
             .text_color(rgb(look.text))
+            // Up and Down move the cursor before the query input can take them.
+            .capture_key_down({
+                let ui = ui.clone();
+                move |event, _, cx| {
+                    let modifiers = &event.keystroke.modifiers;
+                    // macOS marks arrow keys with the function flag, so it
+                    // doesn't count as a modifier here.
+                    if modifiers.platform || modifiers.control || modifiers.alt || modifiers.shift {
+                        return;
+                    }
+                    let delta = match event.keystroke.key.as_str() {
+                        "down" => 1,
+                        "up" => -1,
+                        _ => return,
+                    };
+                    cx.stop_propagation();
+                    ui.send(AppAction::Palette(PaletteAction::Move(delta)), cx);
+                }
+            })
             .test_support()
             .child(
                 row()

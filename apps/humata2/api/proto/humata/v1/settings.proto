@@ -111,6 +111,20 @@ message Settings {
   NotificationSettings notifications = 9;
   Revision revision = 10;
   SecuritySettings security = 11;       // SEC-6
+  AgentSettings agents = 12;            // D199
+}
+
+// D199 Settings › Agents. Off (the default): an agent's permission ask
+// waits in the Inbox as a card. On: the daemon answers every permission
+// hook at once with no decision, so the agent's own prompt asks. The
+// hook stays installed; read at each ask, so running sessions follow a
+// change with no restart. Turn ends and needs-input notices don't change.
+message AgentSettings {
+  bool permissions_in_agent = 1;
+  // D202, output only (writes ignore it): some agent kind carries Codex's
+  // `-c hooks=…` and no hook from that exact command has reached the
+  // daemon yet, so the user still has to trust them in Codex's /hooks.
+  bool codex_hooks_need_trust = 2;
 }
 
 message SecuritySettings {
@@ -135,6 +149,7 @@ message UpdateSettingsRequest {
   Revision expected_revision = 9;
   PresenceProof presence = 10;
   SecuritySettings security = 11;
+  AgentSettings agents = 12;
 }
 
 message ChannelSettings {

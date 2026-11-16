@@ -296,6 +296,10 @@ impl Relayed {
         pb::session_service_client::SessionServiceClient::new(self.channel.clone())
     }
 
+    pub(crate) fn carry(&self) -> pb::session_carry_service_client::SessionCarryServiceClient<Channel> {
+        pb::session_carry_service_client::SessionCarryServiceClient::new(self.channel.clone())
+    }
+
     pub(crate) fn channels(&self) -> pb::channel_service_client::ChannelServiceClient<Channel> {
         pb::channel_service_client::ChannelServiceClient::new(self.channel.clone())
     }

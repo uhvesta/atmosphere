@@ -114,6 +114,10 @@ operations! {
     FileRead => "file_read", "file.read";
     /// `FileService.FindFiles` in the caller's session.
     FilesFind => "files_find", "file.find";
+    /// `HistoryService.SearchSessions`.
+    SessionsSearch => "sessions_search", "session.search";
+    /// `HistoryService.ReadTurns`.
+    SessionRead => "session_read", "session.read";
     /// `FileService.WriteFile`.
     FileWrite => "file_write", "file.write";
     /// `FileService.CreateFolder`.
@@ -939,6 +943,29 @@ fn definition(operation: Operation) -> Definition {
             Effect::Read,
             object(vec![req("query", string())]),
         ),
+        Op::SessionsSearch => define(
+            "Search the conversations of your channel, or of another channel with the user's approval: every word must match, the last also as a prefix. A hit names the session, machine, agent and turn.",
+            Effect::Read,
+            asks(vec![
+                req("query", string().max_length(1_000)),
+                opt("channel", string().describe("A channel id; default: your own")),
+                opt("machine", machine()),
+                opt("agent", string().describe("An agent kind such as claude")),
+                opt("since", string().describe("RFC 3339 time, such as 2026-11-15T09:30:00Z")),
+                opt("until", string().describe("RFC 3339 time, such as 2026-11-15T09:30:00Z")),
+                opt("page_token", page_token()),
+            ]),
+        ),
+        Op::SessionRead => define(
+            "Read a session's conversation: its prompts, answers and tool calls, in order, with secrets scrubbed.",
+            Effect::Read,
+            asks(vec![
+                req("session", session()),
+                opt("first_turn", integer().at_least(0)),
+                opt("last_turn", integer().at_least(0)),
+                opt("page_token", page_token()),
+            ]),
+        ),
         Op::FileWrite => define(
             "Create or replace one file in your own clone or shared/. A replaced file goes to the trash.",
             Effect::Change,
@@ -1106,9 +1133,9 @@ fn definition(operation: Operation) -> Definition {
             asks(vec![req("repo", repo())]),
         ),
         Op::SessionOwnCopy => define(
-            "Give your session its own copy of a repository it shares. Usually asks the user first.",
+            "Give your session its own copy of the code it shares with its parent, on a new branch; your conversation goes on. Usually asks the user first.",
             Effect::Change,
-            asks(vec![req("repo", repo())]),
+            asks(vec![]),
         ),
         Op::SessionStop => session_end(
             "Stop a session; your own without session. Your own usually asks the user first; another session's is refused unless the user changed the rule.",

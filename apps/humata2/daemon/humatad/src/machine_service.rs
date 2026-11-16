@@ -44,6 +44,9 @@ use crate::peer_client::{self, CommandDial, Dial, LinkError, LinkEvent};
 use crate::peer_reports::PeerReports;
 use crate::status;
 
+mod forget;
+pub(crate) use forget::Forgetting;
+
 /// How long a removal plan stays good.
 const PLAN_LIFETIME: Duration = Duration::from_secs(10 * 60);
 
@@ -95,6 +98,8 @@ pub(crate) struct Work {
     /// `read_at`, while the machine can't be asked. One per machine, kept
     /// only until the machine is removed; nothing polls (LD-14).
     probes: Mutex<HashMap<String, (pb::MachineHealth, Vec<pb::MachineFolder>)>>,
+    /// Forget machine's plans and its part of the sessions (LD-11).
+    pub(crate) forgetting: forget::Forgetful,
 }
 
 /// How long GetMachine waits for a machine's probe before it shows the last
@@ -263,6 +268,7 @@ impl Work {
             relay_links: Links::default(),
             reports: PeerReports::default(),
             probes: Mutex::new(HashMap::new()),
+            forgetting: forget::Forgetful::default(),
         };
         *lock(&work.shown) = work.listed().unwrap_or_default();
         work
@@ -1143,18 +1149,22 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         Ok(Response::new(operation))
     }
 
+    /// What forgetting a machine that is gone loses, from the last pointers
+    /// (LD-11), and the token ForgetMachine takes. Never dials the machine.
     async fn plan_forget_machine(
         &self,
-        _request: Request<pb::PlanForgetMachineRequest>,
+        request: Request<pb::PlanForgetMachineRequest>,
     ) -> Result<Response<pb::ForgetMachinePlan>, Status> {
-        Err(status::not_built("humata.v1.MachineService.PlanForgetMachine"))
+        self.plan_forget_of(request).await
     }
 
+    /// Archives the gone machine's sessions as lost and takes it out of every
+    /// channel: the user only, present (LD-11).
     async fn forget_machine(
         &self,
-        _request: Request<pb::ForgetMachineRequest>,
+        request: Request<pb::ForgetMachineRequest>,
     ) -> Result<Response<pb::ForgetMachineResponse>, Status> {
-        Err(status::not_built("humata.v1.MachineService.ForgetMachine"))
+        self.forget_of(request).await
     }
 
     async fn plan_change_root(

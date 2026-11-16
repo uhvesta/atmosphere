@@ -19,7 +19,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use humata2_chunk::{CHUNK_MAX, Codec, Decoder, Encoder, Link, Sample};
+use humata2_chunk::{CHUNK_MAX, Decoder, Encoder, Link, Sample};
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use humata2_transfers::{End, EndError, Entry, Kind, Problem, Sink, Snapshot, State, TrashError};
@@ -261,6 +261,15 @@ impl RemoteEnd {
     }
 }
 
+/// Whether the client built `status` itself from a transport error. Tonic
+/// gives every status made from an error a source; a status the machine
+/// answered arrives over the wire with none. A broken connection reaches the
+/// call at the same moment as the link supervisor, on another task, so the
+/// links table may not say down yet: the status itself is the evidence.
+fn built_locally(status: &Status) -> bool {
+    std::error::Error::source(status).is_some()
+}
+
 /// `status` as an [`EndError`]: gone and taken as such, a link that is down
 /// (or went down in the call) as offline, the rest as what the machine said.
 fn failure(
@@ -280,7 +289,9 @@ fn failure(
         },
         Code::AlreadyExists => EndError::Exists { path: path.to_owned() },
         Code::Unavailable => shared.offline(machine, generation),
-        Code::Cancelled | Code::Unknown | Code::Aborted | Code::Internal | Code::DeadlineExceeded if link_down => {
+        Code::Cancelled | Code::Unknown | Code::Aborted | Code::Internal | Code::DeadlineExceeded
+            if link_down || built_locally(status) =>
+        {
             shared.offline(machine, generation)
         }
         _ if status::error_of(status)
@@ -497,7 +508,11 @@ impl End for RemoteEnd {
                 ),
             });
         }
-        let target = parse(to).map(|(_, location)| location);
+        // On the machine the location is its own, as in `call`.
+        let target = parse(to).map(|(_, mut location)| {
+            location.machine = None;
+            location
+        });
         let request = pb::MoveEntryRequest {
             from: Some(call.location.clone()),
             to: target,
@@ -1100,6 +1115,26 @@ mod tests {
         assert!(matches!(make(Code::InvalidArgument), EndError::Io { .. }));
     }
 
+    #[tokio::test]
+    async fn a_broken_connection_is_offline_even_before_the_link_is_marked_down() {
+        // The call hears the broken connection before the supervisor marks
+        // the link down: the links still say Up.
+        let links = Links::default();
+        let shared = Shared::default();
+        let _ = shared.links.set(links.clone());
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        let generation = links.up("box-1", channel);
+        let path = Path::new("/@humata/box-1/aa/x");
+        let broken = Status::from_error(Box::new(io::Error::new(io::ErrorKind::BrokenPipe, "connection reset")));
+        assert!(
+            matches!(failure(&shared, generation, &broken, "box-1", "write", path), EndError::Offline { .. }),
+            "a transport failure is the link, so the transfer waits for the machine"
+        );
+        // What the machine itself answered stays its answer.
+        let said = Status::new(Code::Internal, "the disk said no");
+        assert!(matches!(failure(&shared, generation, &said, "box-1", "write", path), EndError::Io { .. }));
+    }
+
     #[test]
     fn a_move_stays_one_rename_only_inside_one_root_of_one_machine() {
         let a = virtual_path("box-1", &at(clone_of("se_1"), "a/f"));
@@ -1142,6 +1177,10 @@ mod tests {
             links.clone(),
             Arc::new(move |machine| sink.lock().expect("the list").push(machine.to_owned())),
         ));
+        // On this one-thread runtime the task runs only when the test
+        // yields: let it subscribe before the links change, so every change
+        // is one it follows rather than a state it reads at the start.
+        tokio::task::yield_now().await;
         let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
         links.up("box-1", channel.clone());
         links.down("box-1");

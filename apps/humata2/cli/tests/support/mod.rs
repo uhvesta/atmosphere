@@ -87,9 +87,10 @@ impl FakeDaemon {
 
     /// What a server or bidi stream on `rpc` sends before it closes.
     pub fn stream(&self, rpc: Rpc, messages: &[&dyn MessageBytes]) -> &Self {
-        self.streams
-            .borrow_mut()
-            .insert(rpc.path, messages.iter().map(|message| message.bytes()).collect());
+        self.streams.borrow_mut().insert(
+            rpc.path,
+            messages.iter().map(|message| message.bytes()).collect(),
+        );
         self
     }
 
@@ -122,7 +123,10 @@ impl FakeDaemon {
     }
 
     pub fn called(&self, rpc: Rpc) -> bool {
-        self.calls.borrow().iter().any(|(path, _)| *path == rpc.path)
+        self.calls
+            .borrow()
+            .iter()
+            .any(|(path, _)| *path == rpc.path)
     }
 
     pub fn reports(&self) -> Vec<ReportRequest> {
@@ -142,7 +146,11 @@ impl FakeDaemon {
     }
 
     fn replies_for(&self, rpc: Rpc) -> Replies {
-        let messages = self.streams.borrow_mut().remove(rpc.path).unwrap_or_default();
+        let messages = self
+            .streams
+            .borrow_mut()
+            .remove(rpc.path)
+            .unwrap_or_default();
         let (send, replies) = mpsc::channel(messages.len().max(1));
         for message in messages {
             let _ = send.try_send(Ok(message));
@@ -355,13 +363,19 @@ pub async fn run_interrupted(daemon: &FakeDaemon, console: &FakeConsole, words: 
 }
 
 pub fn session(value: &str) -> Option<pb::SessionId> {
-    Some(pb::SessionId { value: value.into() })
+    Some(pb::SessionId {
+        value: value.into(),
+    })
 }
 
 pub fn channel(value: &str) -> Option<pb::ChannelId> {
-    Some(pb::ChannelId { value: value.into() })
+    Some(pb::ChannelId {
+        value: value.into(),
+    })
 }
 
 pub fn machine(value: &str) -> Option<pb::MachineId> {
-    Some(pb::MachineId { value: value.into() })
+    Some(pb::MachineId {
+        value: value.into(),
+    })
 }

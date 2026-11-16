@@ -73,9 +73,10 @@ Tab "zsh"
 Tab "rfc-brin.md" selected
   Button "Close tab"
 Button "New terminal"
-RadioButton "Preview" selected
-RadioButton "Source"
-RadioButton "Side by side"
+RadioGroup "Show the file as"
+  RadioButton "Preview" selected
+  RadioButton "Source"
+  RadioButton "Side by side"
 Document "rfc-brin.md preview"
   Document "rfc-brin.md"
     Heading "Heading 1, level 1"

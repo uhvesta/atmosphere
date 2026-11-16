@@ -16,22 +16,20 @@ use humata2_clients::model::{Agent, ChannelId, SessionId, Status};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
-/// Which row a key or click is about. A pinned session appears twice, so
-/// its key says which copy.
+/// Which row a key or click is about. The host's pins are not rows here:
+/// the Pinned section draws them from the host's list.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RowKey {
     /// A channel.
     Channel(ChannelId),
     /// A session in its channel's tree.
     Session(SessionId),
-    /// A session in the Pinned section.
-    Pinned(SessionId),
 }
 
 /// What a row shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowKind {
-    /// A section title: "Pinned" or "Channels".
+    /// A section title: "Channels".
     Section(&'static str),
     /// A channel.
     Channel {
@@ -97,8 +95,8 @@ pub struct SidebarState {
     pub desk: Arc<Vec<Row>>,
     /// Whether the view is drawing the Desk rows right now (only while the
     /// Desk page or a Desk session shows). The app sets it; while it is
-    /// set, ↑ and ↓ walk through `desk` too, between the pinned rows and the
-    /// channels, in the order they are drawn.
+    /// set, ↑ and ↓ walk through `desk` too, before the channels, in the
+    /// order they are drawn.
     pub desk_shown: bool,
     /// The keyboard cursor.
     pub cursor: Option<RowKey>,
@@ -224,7 +222,7 @@ impl Reducer for Sidebar {
 fn open(key: &RowKey) -> Effect<SidebarAction> {
     Effect::send(SidebarAction::Delegate(match key {
         RowKey::Channel(id) => Delegate::OpenChannel(id.clone()),
-        RowKey::Session(id) | RowKey::Pinned(id) => Delegate::OpenSession(id.clone()),
+        RowKey::Session(id) => Delegate::OpenSession(id.clone()),
     }))
 }
 
@@ -255,7 +253,7 @@ impl SidebarState {
                     self.folding.channels.insert(id.clone());
                 }
             }
-            RowKey::Session(id) | RowKey::Pinned(id) => {
+            RowKey::Session(id) => {
                 if !self.folding.sessions.remove(id) {
                     self.folding.sessions.insert(id.clone());
                 }
@@ -273,8 +271,8 @@ impl SidebarState {
     }
 
     /// Where ↑ or ↓ goes when the Desk rows are showing and the cursor is on
-    /// a row: the neighbour in drawing order (pinned rows, the Desk rows,
-    /// then the channels). `None` leaves the move to the tree alone.
+    /// a row: the neighbour in drawing order (the Desk rows, then the
+    /// channels). `None` leaves the move to the tree alone.
     fn walk_with_desk(&self, movement: Move) -> Option<RowKey> {
         if !self.desk_shown || self.desk.is_empty() {
             return None;
@@ -379,27 +377,6 @@ impl SidebarState {
     fn rebuild(&mut self) {
         let workspace = &self.workspace;
         let mut rows = Vec::new();
-        let pinned: Vec<_> = workspace
-            .sessions
-            .iter()
-            .filter(|session| session.pinned && !session.archived)
-            .collect();
-        if !pinned.is_empty() {
-            rows.push(Row {
-                key: None,
-                depth: 0,
-                kind: RowKind::Section("Pinned"),
-                expanded: None,
-            });
-            for session in pinned {
-                rows.push(session_row(
-                    RowKey::Pinned(session.id.clone()),
-                    0,
-                    session,
-                    None,
-                ));
-            }
-        }
         rows.push(Row {
             key: None,
             depth: 0,

@@ -176,7 +176,8 @@ fn selected_host_and_layout_preferences_restore_without_closing_saved_groups() {
         s.settings.preferences.theme = Theme::Light
     });
     store.send(AppAction::Settings(T::TogglePinned), |s| {
-        s.settings.preferences.show_pinned = false
+        s.settings.preferences.show_pinned = false;
+        s.pinned.shown = false;
     });
     saved::Saver::new(clients.storage.clone())
         .save(1, &store.state().saved())

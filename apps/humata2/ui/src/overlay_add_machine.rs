@@ -21,7 +21,9 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
 use humata2_clients::machines::{LoginReason, StepKind, StepStatus, UnattendedMethod};
-use humata2_hosts::add::{AddMachineAction, AddMachineState, Choice, Step, Unattended, login_intro};
+use humata2_hosts::add::{
+    AddMachineAction, AddMachineState, Choice, Step, Unattended, login_intro,
+};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -208,7 +210,9 @@ impl AddMachineDialog {
 
     /// Puts the keyboard in the dialog's first input, as the dialog opens.
     pub(crate) fn focus(&self, window: &mut Window, cx: &mut App) {
-        self.host.input.update(cx, |input, cx| input.focus(window, cx));
+        self.host
+            .input
+            .update(cx, |input, cx| input.focus(window, cx));
     }
 
     fn param(
@@ -355,7 +359,14 @@ impl AddMachineDialog {
                 None => self.host.input.focus_handle(cx),
             };
             (
-                self.login(body, state, login.finishing, login.error.as_deref(), look, &ui),
+                self.login(
+                    body,
+                    state,
+                    login.finishing,
+                    login.error.as_deref(),
+                    look,
+                    &ui,
+                ),
                 handle,
             )
         } else {
@@ -826,14 +837,12 @@ impl AddMachineDialog {
                         }),
                 )
                 .child(
-                    col()
-                        .child(div().child(title))
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(rgb(look.secondary))
-                                .child(note),
-                        ),
+                    col().child(div().child(title)).child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(note),
+                    ),
                 )
                 .on_click(move |_, _, cx| ui.send(action.clone(), cx))
                 .test_support()
@@ -842,11 +851,7 @@ impl AddMachineDialog {
             row()
                 .gap(px(7.))
                 .child(chrome::icon(IconName::Check, GREEN, 12.))
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(headline),
-                ),
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(headline)),
         )
         .child(steps(look, &state.steps).test_support())
         .child(div().h(px(1.)).w_full().flex_shrink_0().bg(rgb(look.line)))
@@ -862,7 +867,9 @@ impl AddMachineDialog {
                     "add-machine-method-key",
                     method == UnattendedMethod::AddKey,
                     "Add a Humata key to authorized_keys".to_owned(),
-                    format!("Humata makes its own key and adds it on {name}. Reconnects won't ask you."),
+                    format!(
+                        "Humata makes its own key and adds it on {name}. Reconnects won't ask you."
+                    ),
                     AddMachineAction::ChooseMethod(UnattendedMethod::AddKey),
                 ))
                 // Only a provider has a token of its own to keep (MP-17).
@@ -1031,15 +1038,18 @@ fn host_menu(ui: &Rc<Ui>, state: &AddMachineState, look: Look, wrap: Wrap) -> im
         .shadow_lg()
         .occlude()
         .text_size(px(12.5))
-        .when(state.hosts.is_empty() && state.providers.is_empty(), |list| {
-            list.child(
-                div()
-                    .px(px(8.))
-                    .py(px(5.))
-                    .text_color(rgb(look.tertiary))
-                    .child("No hosts in ~/.ssh/config. Type one instead."),
-            )
-        })
+        .when(
+            state.hosts.is_empty() && state.providers.is_empty(),
+            |list| {
+                list.child(
+                    div()
+                        .px(px(8.))
+                        .py(px(5.))
+                        .text_color(rgb(look.tertiary))
+                        .child("No hosts in ~/.ssh/config. Type one instead."),
+                )
+            },
+        )
         .children(state.hosts.iter().map(|host| {
             let selected = matches!(&state.choice, Some(Choice::Host(name)) if name == &host.name);
             entry(
@@ -1049,16 +1059,19 @@ fn host_menu(ui: &Rc<Ui>, state: &AddMachineState, look: Look, wrap: Wrap) -> im
                 AddMachineAction::SelectHost(host.name.clone()),
             )
         }))
-        .when(!state.hosts.is_empty() && !state.providers.is_empty(), |list| {
-            list.child(
-                div()
-                    .h(px(1.))
-                    .mx(px(4.))
-                    .my(px(3.))
-                    .flex_shrink_0()
-                    .bg(rgb(look.line)),
-            )
-        })
+        .when(
+            !state.hosts.is_empty() && !state.providers.is_empty(),
+            |list| {
+                list.child(
+                    div()
+                        .h(px(1.))
+                        .mx(px(4.))
+                        .my(px(3.))
+                        .flex_shrink_0()
+                        .bg(rgb(look.line)),
+                )
+            },
+        )
         .children(state.providers.iter().map(|provider| {
             let selected = matches!(
                 &state.choice,
@@ -1087,9 +1100,7 @@ fn steps(look: Look, steps: &[Step]) -> Stateful<Div> {
         .children(steps.iter().enumerate().map(|(index, step)| {
             let mark = match step.status {
                 StepStatus::Done => chrome::icon(IconName::Check, GREEN, 12.).into_any_element(),
-                StepStatus::Failed => {
-                    chrome::icon(IconName::CircleX, RED, 12.).into_any_element()
-                }
+                StepStatus::Failed => chrome::icon(IconName::CircleX, RED, 12.).into_any_element(),
                 StepStatus::Running => div()
                     .size(px(9.))
                     .rounded_full()

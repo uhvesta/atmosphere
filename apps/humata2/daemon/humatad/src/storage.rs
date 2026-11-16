@@ -383,7 +383,7 @@ mod tests {
                 id: "ch_1".to_owned(),
                 name: "payments".to_owned(),
                 folder: "payments".to_owned(),
-                branch_prefix: String::new(),
+                branch_prefix: None,
                 default_agent: "zsh".to_owned(),
                 repos: ["api", "ledger"]
                     .map(|name| ChannelRepo {

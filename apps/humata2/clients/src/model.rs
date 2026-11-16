@@ -6,6 +6,7 @@
 //! only through [`crate::Workspace`], so swapping the source changes
 //! nothing above the clients.
 
+pub use crate::workspace::Workspace;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -738,6 +739,22 @@ impl Comment {
     }
 }
 
+/// What a session's changes are compared with (RV-1).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DiffBase {
+    /// The repository's main branch on its remote.
+    #[default]
+    OriginMain,
+    /// Only what isn't committed yet.
+    UncommittedOnly,
+    /// What changed after the last Mark reviewed (RV-6).
+    SinceLastReviewed,
+    /// What changed after the session was forked.
+    SinceFork,
+    /// Another session's branch.
+    OtherSession(SessionId),
+}
+
 /// A session's changes in one repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RepoDiff {
@@ -751,6 +768,50 @@ pub struct RepoDiff {
     pub files: Vec<FileDiff>,
     /// Comments on it.
     pub comments: Vec<Comment>,
+}
+
+/// What pushing a session would do, one repository at a time (RV-2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushPlan {
+    /// Proves the plan is current; a push spends it, so it works once.
+    pub token: String,
+    /// The repositories the session has changes in.
+    pub repos: Vec<PushRepo>,
+}
+
+/// One repository's branch and its changes, as a push would find them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushRepo {
+    /// The repository, as `owner/name`.
+    pub repo: String,
+    /// The branch the session's work is on.
+    pub branch: String,
+    /// Files with uncommitted changes.
+    pub dirty_files: u32,
+    /// Commits not yet on the remote branch.
+    pub unpushed_commits: u32,
+    /// Lines added against the base.
+    pub added: u32,
+    /// Lines removed against the base.
+    pub removed: u32,
+    /// The open pull request for this branch, when there is one.
+    pub open_pull_request: Option<u32>,
+}
+
+/// What to do with one repository of a push.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushChoice {
+    /// The repository, as `owner/name`.
+    pub repo: String,
+    /// Uncommitted files are committed with this message first; empty
+    /// means don't commit.
+    pub commit_message: String,
+    /// Whether to open a pull request after the push.
+    pub open_pull_request: bool,
+    /// The pull request's title.
+    pub title: String,
+    /// The pull request's body.
+    pub body: String,
 }
 
 /// Where a board item lives.
@@ -862,8 +923,31 @@ pub struct ItemDetails {
     pub sessions: Vec<SessionId>,
     pub request: Option<RequestId>,
     pub requested_status: Option<ItemStatus>,
+    /// A requested edit or delete (BD-15); a requested move is
+    /// `requested_status`.
+    pub requested_change: Option<ItemChange>,
     /// Day in the dashboard's fourteen-day reporting window, oldest first.
     pub done_day: Option<u8>,
+}
+
+/// An agent's requested change to an item other than a move (BD-15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ItemChange {
+    /// Fields change, each from before to after.
+    Edit(Vec<FieldChange>),
+    /// The item goes.
+    Delete,
+}
+
+/// One field of a requested edit, as the item stands now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldChange {
+    /// The field's name, such as `Title`.
+    pub field: String,
+    /// Its value now.
+    pub before: String,
+    /// Its value after the edit.
+    pub after: String,
 }
 
 /// A path inside one repository clone belonging to a session.

@@ -51,7 +51,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
-    fn file_service(&self) -> FileServiceClient<Wire> {
+    pub(crate) fn file_service(&self) -> FileServiceClient<Wire> {
         FileServiceClient::new(self.wire.clone())
     }
 

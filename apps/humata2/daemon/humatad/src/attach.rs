@@ -100,7 +100,8 @@ pub(crate) async fn start(
         writers: writers.watch(&tab.id),
         watching_writers: true,
         turns: crate::session_service::turn_changes(),
-        sent_status: 0,
+        moves: crate::session_service::moving_changes(),
+        sent: (0, 0),
         link: Link::new(events, control),
         client: Client::new(incoming),
         cursor,
@@ -116,7 +117,7 @@ pub(crate) async fn start(
         pieces,
     };
     let state = attached.state();
-    attached.sent_status = state.status;
+    attached.sent = (state.status, state.writable);
     first.push(ServerMessage::State(state));
     tokio::spawn(async move {
         if let Err(Ended::Failed(status)) = attached.run(first).await {
@@ -143,8 +144,11 @@ struct Attached {
     /// Counts every running agent's status change; the agent's tab shows its
     /// session's turn (D169).
     turns: watch::Receiver<u64>,
-    /// The status the last State this attach sent carried.
-    sent_status: i32,
+    /// Changes when a move starts or ends: the tab of a moving session is
+    /// read-only (MV-4).
+    moves: watch::Receiver<u64>,
+    /// The status and writable the last State this attach sent carried.
+    sent: (i32, i32),
     link: Link,
     client: Client,
     /// The offset after the last byte sent.
@@ -202,11 +206,8 @@ impl Attached {
                     Ok(()) => self.send_state().await?,
                     Err(_) => self.watching_writers = false,
                 },
-                Ok(()) = self.turns.changed() => {
-                    if self.state().status != self.sent_status {
-                        self.send_state().await?;
-                    }
-                }
+                Ok(()) = self.turns.changed() => self.send_changed_state().await?,
+                Ok(()) = self.moves.changed() => self.send_changed_state().await?,
             }
         }
     }
@@ -272,6 +273,11 @@ impl Attached {
                         "attach again without read_only to type into the tab",
                     )));
                 }
+                // Typing is disabled while the session moves; nothing is
+                // kept for later, as with a machine offline (MV-4, SE-16).
+                if self.moving() {
+                    return Ok(());
+                }
                 self.link
                     .control
                     .input(input.input_seq, &input.data)
@@ -329,8 +335,23 @@ impl Attached {
     /// Sends the tab's state, and remembers the status it showed.
     async fn send_state(&mut self) -> Result<(), Ended> {
         let state = self.state();
-        self.sent_status = state.status;
+        self.sent = (state.status, state.writable);
         self.send(ServerMessage::State(state)).await
+    }
+
+    /// Sends the tab's state if it isn't what the last one said.
+    async fn send_changed_state(&mut self) -> Result<(), Ended> {
+        let state = self.state();
+        if (state.status, state.writable) == self.sent {
+            return Ok(());
+        }
+        self.send_state().await
+    }
+
+    /// Whether this tab's session is being moved: it takes no input until
+    /// the agent resumes on the new machine (MV-4).
+    fn moving(&self) -> bool {
+        self.tab.session.as_deref().is_some_and(crate::session_service::is_moving)
     }
 
     fn state(&self) -> pb::TerminalState {
@@ -340,12 +361,15 @@ impl Attached {
         } else {
             writers
         };
+        let moving = self.moving();
         let writable = match (self.exited, self.read_only) {
+            _ if moving => pb::terminal_state::Writable::Moving,
             (Some(_), _) => pb::terminal_state::Writable::Exited,
             (None, true) => pb::terminal_state::Writable::ReadOnlyAttach,
             (None, false) => pb::terminal_state::Writable::Yes,
         };
         let status = match (self.exited, &self.tab.session) {
+            _ if moving => pb::SessionStatus::Moving,
             (Some(_), _) => pb::SessionStatus::Exited,
             // The agent's tab shows the turn its session shows (D169; none
             // for an agent with no turns); a shell has none.

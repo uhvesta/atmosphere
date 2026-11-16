@@ -34,16 +34,16 @@ rust_library(
     srcs = ["codegen/grpc.rs"],
     compile_data = [":tonic_gen"],
     crate_name = "humata2_grpc",
-    # The app's real daemon client speaks the same generated clients.
-    visibility = [
-        "//apps/humata2/cli:__pkg__",
-        "//apps/humata2/clients/live:__pkg__",
-    ],
     # The generated code is written for this edition.
     edition = "2021",
     rustc_env = {"HUMATA2_TONIC_RS": "$(execpath :tonic_gen)"},
     # Generated code: clippy has nothing to say that we could act on.
     tags = ["noclippy"],
+    # The app's real daemon client speaks the same generated clients.
+    visibility = [
+        "//apps/humata2/cli:__pkg__",
+        "//apps/humata2/clients/live:__pkg__",
+    ],
     deps = [
         "//apps/humata2/api/proto:humata2_rust",
         "@crates//:prost",
@@ -57,10 +57,13 @@ DAEMON_DEPS = [
     "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
+    "//apps/humata2/daemon/agent_hooks",
     "//apps/humata2/daemon/app_peer",
     "//apps/humata2/daemon/holder",
     "//apps/humata2/daemon/machines",
+    "//apps/humata2/daemon/marks",
     "//apps/humata2/daemon/mcp",
+    "//apps/humata2/daemon/mirror",
     "//apps/humata2/daemon/review_diff",
     "//apps/humata2/daemon/revive",
     "//apps/humata2/daemon/sessions",
@@ -69,6 +72,7 @@ DAEMON_DEPS = [
     "@crates//:clap",
     "@crates//:hmac",
     "@crates//:hyper-util",
+    "@crates//:notify",
     "@crates//:prost",
     "@crates//:rand",
     "@crates//:rustix",
@@ -176,6 +180,19 @@ rust_binary(
     deps = ["@crates//:rustix"],
 )
 
+# The tests that run on the multi-machine rig.
+RIG_TESTS = [
+    "fork_remote",
+    "forget_machine",
+    "move_session",
+    "pointers",
+    "rebuild_session",
+    "remote_archive",
+    "remote_rename",
+    "remove_machine_live",
+    "two_machines",
+]
+
 # Each test starts humatad2 and humata2_holder as the real binaries and
 # talks to them over gRPC on a socket of its own: the admin daemon with
 # --admin as HUMATAD2, and the release one as HUMATAD2_RELEASE for the
@@ -184,6 +201,10 @@ rust_binary(
 [
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        # The multi-machine rig (tests/common/remote_rig.rs) starts a host
+        # and fake boxes per test; under a full gate its tests outrun the
+        # 300 s of a medium test. Every wait in them has its own deadline.
+        size = "large" if src.removeprefix("tests/").removesuffix(".rs") in RIG_TESTS else "medium",
         srcs = [src] + glob(["tests/common/*.rs"]),
         crate_root = src,
         data = [

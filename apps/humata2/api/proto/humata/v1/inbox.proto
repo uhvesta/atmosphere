@@ -167,6 +167,9 @@ message InboxRequest {
   Revision revision = 19;
   // Set when state is WITHDRAWN.
   WithdrawReason withdraw_reason = 20;
+  // IN-9 item 2: the call as a dotted operation id, "channel.list" (TP-16).
+  // Named by the daemon from the method it routed, never by the agent.
+  string operation = 21;
 }
 
 message AlwaysOption {

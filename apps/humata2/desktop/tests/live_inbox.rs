@@ -19,7 +19,8 @@ use gpui_kit::{
 };
 use humata2_app::Route;
 use humata2_clients::model::{
-    Agent, Capability, ChannelId, MachineId, Request, RuleSetting, SessionId, SessionOptions,
+    Agent, Capability, ChannelId, MachineId, Preview, Request, RuleSetting, SessionId,
+    SessionOptions,
 };
 use humata2_clients::{Clients, Daemon, Event};
 use humata2_clients_live::{LiveComments, LiveDaemon, LiveOptions};
@@ -45,6 +46,13 @@ const SESSION: &str = "API rate limiter";
 /// The rule the agent's call falls under: reading other channels (D127.4:
 /// Allow unless the person sets it to Ask).
 const RULE: &str = "global_read";
+/// The line that makes the agent ask to run a tool through its blocking
+/// permission hook (HOOKS), as Claude Code does before it runs a command.
+const PERMISSION_LINE: &str = "ask to run the tests";
+/// What the agent asks to run.
+const ASKED_COMMAND: &str = "npm test -- --watch=false";
+/// Claude's PermissionRequest payload (agent_hooks/testdata/claude).
+const PERMISSION_ASK: &str = r#"{"session_id":"abc123","transcript_path":"/t.jsonl","cwd":"/work/api","permission_mode":"default","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"npm test -- --watch=false","description":"Run the test suite"}}"#;
 
 /// Why the daemon and its agent couldn't be set up. The test stops on any.
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +73,9 @@ enum WorldError {
     /// The daemon never listened.
     #[error("humatad2 never started listening on {}", socket.display())]
     NeverListened { socket: PathBuf },
+    /// The Claude settings the daemon wrote have no usable permission hook.
+    #[error("claude-hooks.json in the daemon's state folder: {why}")]
+    Hooks { why: String },
     /// Connecting to the daemon failed.
     #[error("couldn't connect to humatad2: {source}")]
     Connect {
@@ -106,6 +117,11 @@ fn git(args: &[&str]) -> Result<(), WorldError> {
 /// `stderr` and (last, by rename) `code`. While the call waits the script
 /// reads nothing, so anything typed into the terminal meanwhile is the
 /// next line it keeps.
+///
+/// On [`PERMISSION_LINE`] it runs, in the background as Claude Code does,
+/// the permission hook the daemon wrote (`out/hook.sh`, set up by
+/// [`World::permission_hook`]) on `out/ask.json`, and leaves its stdout in
+/// `hook.stdout` and then its exit code in `hook.code`.
 fn agent_script(conv: &Path, out: &Path, socket: &Path, humata: &Path) -> String {
     format!(
         r#"CONV_DIR='{conv}'
@@ -125,6 +141,12 @@ while IFS= read -r line; do
       printf '%s' "$?" > "$OUT/code.part"
       mv "$OUT/code.part" "$OUT/code"
       ;;
+    '{permission}')
+      rm -f "$OUT/hook.code"
+      ( /bin/sh "$OUT/hook.sh" < "$OUT/ask.json" > "$OUT/hook.stdout"
+        printf '%s' "$?" > "$OUT/hook.part"
+        mv "$OUT/hook.part" "$OUT/hook.code" ) &
+      ;;
   esac
   echo "got: $line"
 done
@@ -132,6 +154,7 @@ done
         conv = conv.display(),
         out = out.display(),
         call = CALL_LINE,
+        permission = PERMISSION_LINE,
         socket = socket.display(),
         humata = humata.display(),
     )
@@ -172,14 +195,21 @@ impl AgentFiles {
         self.read("code")?.trim().parse().ok()
     }
 
+    /// The permission hook's exit code, once it has returned.
+    fn hook_code(&self) -> Option<i32> {
+        self.read("hook.code")?.trim().parse().ok()
+    }
+
     fn describe(&self) -> String {
         format!(
-            "agent was typed {:?}\nagent call: started {:?}, exit code {:?}\n  stdout {:?}\n  stderr {:?}\n",
+            "agent was typed {:?}\nagent call: started {:?}, exit code {:?}\n  stdout {:?}\n  stderr {:?}\npermission hook: exit code {:?}, stdout {:?}\n",
             self.typed(),
             self.read("started"),
             self.read("code"),
             self.read("stdout"),
             self.read("stderr"),
+            self.read("hook.code"),
+            self.read("hook.stdout"),
         )
     }
 }
@@ -265,6 +295,9 @@ impl World {
             .arg(&root)
             .arg("--holder")
             .arg(binary("HUMATA2_HOLDER")?)
+            // The agents' hooks run this `humata` (D169, HOOKS).
+            .arg("--humata")
+            .arg(binary("HUMATA")?)
             .arg("--shell")
             .arg("/bin/sh")
             .arg("--shell-arg=-i")
@@ -286,6 +319,43 @@ impl World {
         Ok(())
     }
 
+    /// Sets the agent up to run the blocking permission hook the daemon
+    /// wrote into Claude's settings, on [`PERMISSION_ASK`].
+    fn permission_hook(&self) -> Result<(), WorldError> {
+        let file = self.dir.path().join("state").join("claude-hooks.json");
+        let text = std::fs::read_to_string(&file).map_err(io("read claude-hooks.json"))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&text).map_err(|source| WorldError::Hooks {
+                why: format!("not JSON: {source}"),
+            })?;
+        let command = json["hooks"]["PermissionRequest"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|group| group["hooks"].as_array())
+            .flatten()
+            .filter_map(|hook| hook["command"].as_str())
+            .find(|command| command.contains("hook claude permission"))
+            .ok_or_else(|| WorldError::Hooks {
+                why: "no blocking permission hook in PermissionRequest".to_owned(),
+            })?;
+        let out = self.agent().out;
+        std::fs::write(out.join("hook.sh"), format!("{command}\n")).map_err(io("write hook.sh"))?;
+        std::fs::write(out.join("ask.json"), PERMISSION_ASK).map_err(io("write ask.json"))
+    }
+
+    /// Ends every permission hook this test's agent runs, as when the person
+    /// answers in the agent's own prompt and the agent stops the hook.
+    fn stop_permission_hooks(&self) -> Result<(), WorldError> {
+        let humata = binary("HUMATA")?;
+        Command::new("pkill")
+            .arg("-f")
+            .arg(format!("{} hook claude permission", humata.display()))
+            .status()
+            .map_err(io("run pkill"))?;
+        Ok(())
+    }
+
     /// Clients on the live daemon, with fakes for what has no real client
     /// yet, as the app starts them.
     async fn clients(&self) -> Result<Clients, WorldError> {
@@ -298,6 +368,8 @@ impl World {
             daemon: Arc::new(daemon.clone()),
             desk: Arc::new(daemon.clone()),
             comments: Arc::new(LiveComments::new(&daemon)),
+            history: Arc::new(humata2_clients_live::history::LiveHistory::new(&daemon)),
+            marks: Arc::new(humata2_clients_live::marks::LiveMarks::new(&daemon)),
             terminals: Arc::new(daemon),
             clock: Arc::new(SystemClock::new()),
             clipboard: Arc::new(humata2_clients::FakeClipboard::default()),
@@ -811,6 +883,157 @@ fn a_request_allowed_from_the_requesters_session_returns_the_agents_waiting_call
         [AFTER_LINE],
         "answering types nothing into the agent's terminal"
     );
+
+    drop(app);
+    drop(world);
+}
+
+/// IN-17, IN-19: a rule changed in the channel's Agent access tab is the
+/// daemon's: a fresh load from the daemon reads it back.
+#[test]
+fn the_agent_access_tab_sets_the_channels_rule_on_the_daemon() {
+    let runtime = runtime();
+    let (world, clients, channel) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let (channel, _session) = running_session(&world, &clients).await;
+        (world, clients, channel)
+    });
+    let daemon = clients.daemon.clone();
+    let mut app = App::open(&runtime, clients, world.agent());
+    let rule = |state: &humata2_app::AppState| {
+        state
+            .workspace
+            .rules
+            .get(&channel)
+            .and_then(|rules| rules.iter().find(|rule| rule.capability == Capability::new(RULE)))
+            .cloned()
+    };
+    app.wait_until("the channel's rules to load", |app| {
+        app.ui.read(|state| rule(state).is_some())
+    });
+    let shown = app.ui.read(|state| rule(state)).expect("loaded");
+    assert_ne!(
+        shown.setting,
+        Some(RuleSetting::Ask),
+        "the rule starts as something other than Ask me"
+    );
+
+    app.click(Role::TreeItem, CHANNEL);
+    app.click(Role::Tab, "Agent access");
+    app.click(Role::RadioButton, &format!("{}: Ask me", shown.label));
+
+    app.wait_until("the daemon to keep the rule as Ask me", |app| {
+        let loaded = app.runtime.block_on(daemon.load()).expect("load from the daemon");
+        loaded
+            .rules
+            .get(&channel)
+            .and_then(|rules| rules.iter().find(|rule| rule.capability == Capability::new(RULE)))
+            .is_some_and(|rule| rule.setting == Some(RuleSetting::Ask))
+    });
+    app.wait_until("the tab to show Ask me chosen", |app| {
+        app.ui
+            .read(|state| rule(state).is_some_and(|rule| rule.setting == Some(RuleSetting::Ask)))
+    });
+}
+
+/// HOOKS: the agent's blocking permission hook waits as a card in the
+/// Inbox that shows the whole command. When the hook stops waiting (the
+/// person answered in the agent's own prompt), the card leaves the Inbox and
+/// the hook gives no decision. Asked again, Allow in the Inbox reaches the
+/// waiting hook as the agent's allow, and the card leaves.
+#[test]
+fn an_agents_permission_ask_waits_in_the_inbox_and_allow_reaches_its_hook() {
+    let runtime = runtime();
+    let (world, clients, session) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let (_channel, session) = running_session(&world, &clients).await;
+        (world, clients, session)
+    });
+    world.permission_hook().expect("set up the agent's permission hook");
+    let daemon = clients.daemon.clone();
+    let agent = world.agent();
+    let mut app = App::open(&runtime, clients, agent.clone());
+    app.wait_until("the session to be listed", |app| {
+        app.ui
+            .read(|state| state.workspace.session(&session).is_some())
+    });
+    assert!(app.waiting().is_empty(), "nothing waits before the agent asks");
+
+    // 1. The ask waits in the Inbox, from the agent's session, showing the
+    // whole command; the hook waits for the answer.
+    runtime
+        .block_on(daemon.send(&session, PERMISSION_LINE))
+        .expect("type the line that makes the agent ask");
+    app.wait_until("the Inbox to count the agent's ask", |app| {
+        app.waiting().len() == 1
+    });
+    let request = app.waiting().remove(0);
+    assert_eq!(request.session, session, "the requester is the agent's session");
+    assert!(!request.title.is_empty(), "the card says what is asked");
+    let shown = match &request.preview {
+        Preview::Command(command) => command.clone(),
+        other => panic!("the card shows a command, not {other:?}"),
+    };
+    assert!(shown.contains(ASKED_COMMAND), "the card shows the whole command: {shown:?}");
+    assert_eq!(agent.hook_code(), None, "the hook waits for the answer");
+
+    // 2. The hook stops waiting: the card goes, and the hook exits 0 with
+    // nothing printed, so the agent's own prompt decides.
+    world.stop_permission_hooks().expect("stop the hook");
+    app.wait_until("the hook to end", |app| app.agent.hook_code().is_some());
+    assert_eq!(agent.hook_code(), Some(0), "the hook never fails the agent");
+    assert_eq!(
+        agent.read("hook.stdout").unwrap_or_default().trim(),
+        "",
+        "a hook that stopped waiting gives no decision"
+    );
+    app.wait_until("the withdrawn card to leave the Inbox count", |app| {
+        app.waiting().is_empty()
+    });
+
+    // 3. Asked again, the person allows it from the global Inbox.
+    runtime
+        .block_on(daemon.send(&session, PERMISSION_LINE))
+        .expect("type the line that makes the agent ask again");
+    app.wait_until("the Inbox to count the new ask", |app| {
+        app.waiting().len() == 1
+    });
+    let request = app.waiting().remove(0);
+    app.click(Role::Link, "Inbox");
+    app.wait_until("the global Inbox to list the ask", |app| {
+        app.inside(Role::ListBoxOption, &request.title).is_some()
+    });
+    app.click(Role::ListBoxOption, &request.title);
+    app.wait_until("the ask's card", |app| {
+        app.inside(Role::Group, &request.title).is_some()
+    });
+    let card = app
+        .inside(Role::Group, &request.title)
+        .expect("shown after the wait");
+    assert!(
+        card.contains(&written(ASKED_COMMAND)),
+        "the card shows the command:\n{card}"
+    );
+    app.click(Role::Button, "Allow");
+    app.wait_until("the waiting hook to return", |app| {
+        app.agent.hook_code().is_some()
+    });
+    assert_eq!(agent.hook_code(), Some(0));
+    let printed = agent.read("hook.stdout").unwrap_or_default();
+    let printed: serde_json::Value = serde_json::from_str(&printed)
+        .unwrap_or_else(|error| panic!("the hook prints JSON ({error}): {printed:?}"));
+    assert_eq!(
+        printed["hookSpecificOutput"]["decision"]["behavior"], "allow",
+        "the agent reads an allow: {printed}"
+    );
+    app.wait_until("the answered ask to leave the Inbox count", |app| {
+        app.waiting().is_empty()
+    });
+    app.wait_until("the ask to leave the global Inbox", |app| {
+        app.inside(Role::ListBoxOption, &request.title).is_none()
+    });
 
     drop(app);
     drop(world);

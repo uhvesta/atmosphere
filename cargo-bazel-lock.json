@@ -1,5 +1,5 @@
 {
-  "checksum": "0022c54cf8b22f150c1b18287ab61cd4ff8a28b0af5c65dcfa10f39f85bd9aba",
+  "checksum": "f31fddc05e58de526b50bd16261654592e60c68cca2a100cf6b588da906a6afc",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -19342,6 +19342,67 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-opencode 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "base64 0.23.1",
+            "target": "base64"
+          },
+          {
+            "id": "http-body-util 0.1.5",
+            "target": "http_body_util"
+          },
+          {
+            "id": "hyper 1.12.0",
+            "target": "hyper"
+          },
+          {
+            "id": "hyper-util 0.1.21",
+            "target": "hyper_util"
+          },
+          {
+            "id": "rustix 1.1.6",
+            "target": "rustix"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_opencode",
+      "name": "humata2-opencode",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_opencode",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-palette 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -19925,6 +19986,10 @@
           {
             "id": "hyper-util 0.1.21",
             "target": "hyper_util"
+          },
+          {
+            "id": "notify 8.2.2",
+            "target": "notify"
           },
           {
             "id": "prost 0.14.5",
@@ -52962,6 +53027,8 @@
     "gpui-kit 0.9.1",
     "gpui-pre-apple 0.3.12",
     "hmac 0.13.0",
+    "http-body-util 0.1.5",
+    "hyper 1.12.0",
     "hyper-util 0.1.21",
     "image 0.25.10",
     "libc 0.2.191",
@@ -53044,6 +53111,7 @@
     "humata2-marks 0.0.0": "apps/humata2/daemon/marks",
     "humata2-mcp 0.0.0": "apps/humata2/daemon/mcp",
     "humata2-mirror 0.0.0": "apps/humata2/daemon/mirror",
+    "humata2-opencode 0.0.0": "apps/humata2/daemon/opencode",
     "humata2-palette 0.0.0": "apps/humata2/features/palette",
     "humata2-report 0.0.0": "apps/humata2/report",
     "humata2-review 0.0.0": "apps/humata2/features/review",

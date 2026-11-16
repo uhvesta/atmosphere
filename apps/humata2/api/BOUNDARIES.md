@@ -141,7 +141,7 @@ exactly one capability against one target. Tiers:
 
 | Tier | Meaning | Capabilities |
 | --- | --- | --- |
-| No rule (owned) | IN-16's set only: its own session (title, status, repos, branches), reading and writing its own clones, its own views and its own requests, comments sent to it (D21), its own port forwards. Not a rule; no setting turns it off. A context-only fork reads its parent's clones here but never writes them (IN-20) | none: checked as "the target is the caller's own" |
+| No rule (owned) | IN-16's set only: its own session (title, status, repos, branches), reading and writing its own clones, its own views and its own requests, comments sent to it (D21), its own port forwards. Not a rule; no setting turns it off. A context-only fork reads and writes its parent's clones here as its own (FK-7, D185) | none: checked as "the target is the caller's own" |
 | Default Allow | A rule, Allow for new channels (IN-17). The user may set Ask me or Never | OWN_BOARD_WRITE, CHANNEL_READ, CHANNEL_BOARD_ADD, CHANNEL_BOARD_EDIT_OWN, SHARED_WRITE, FILES_FETCH_LOCAL, VIEWS_PREPARE, REVIEW_DRAFT, INBOX_ASK, GLOBAL_READ (D127.4: reads are allowed by default) |
 | Ask me | A rule, Ask me for new channels; "Always allow …" may add an IN-22 grant | CHANNEL_BOARD_EDIT_OTHERS, FILES_READ_OTHER_SESSION, FILES_READ_OTHER_MACHINE, FILES_COPY_IN, SESSION_NOTE, SESSION_TYPE, SESSION_START_SAME_MACHINE, SESSION_START_OTHER_MACHINE, PR_REVIEW_START, OWN_SESSION_MANAGE, OWN_SESSION_END, SESSION_MOVE, GIT_PUSH, MACHINE_PROVISION, TRASH_RESTORE, CHANNEL_CREATE |
 | Ask me, no Allow | As Ask me, but the rule offers only Ask me and Never (D20); never low-risk, never approved on a machine while the Mac is away (HO-11) | NETWORK_REACH |
@@ -155,8 +155,6 @@ are a no-rule read. A rule stored under either is read as its new row.
 
 Hard limits that no rule or grant lifts:
 
-- A context-only fork never writes its parent's clones (IN-20, SEC-3):
-  `parent_read_only`.
 - Main clones are read-only to everyone but Humata's own fetch (FC-*):
   `main_clone_read_only`.
 - Every path resolves inside a Humata root after following symlinks, and
