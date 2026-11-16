@@ -533,7 +533,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Known gaps: there is no Settings › Security UI for tokens yet. §26.4 against a real daemon waits on FL. IN-22 grants ending on archive or delete wait on the ArchiveSession/DeleteSession RPCs. SE-29 (adding an agent to a session) belongs to no milestone yet.
 - Look at: `daemon/humatad/src/script_tokens.rs`, `daemon/store/src/script_tokens.rs`, `identity.rs` (the Caller matches), `tests/matrix.rs`.
 
-### (this commit): W1 batch 2 and LOOK1 batch 3, with D131 row dots (minions W1, LOOK1)
+### 13121e1d: W1 batch 2 and LOOK1 batch 3, with D131 row dots (minions W1, LOOK1)
 - W1 T6–T11: session, desk and sidebar frames redrawn (01–05, 07–09, 11, 15–17, 37–43, 46, 54, 62, 65). Try BRIN is Needs you everywhere (D131), including Home (25) and the restart Home. Frame 16's rail has no Inbox badge. Frame 49 shows comment resolving as "Always · no setting" (D128.2).
 - LOOK1 T12 and T10: the fake TUI's input box is anchored to the bottom and redrawn on resize. The exit and offline notices sit in the flow. Panel fixes. Each draft gets its own Send. `wrap_diffs` defaults to off. Native captures added for 07 and 08. The sidebar dot is the session's own status; forks' requests only feed the ✉ badge (D131).
 - Verified: the design, native (37), panels (13) and shell (2) snapshots were recorded and pass; desktop, ui and features pass (24 of 24); the earlier gate passed 45 of 45.
