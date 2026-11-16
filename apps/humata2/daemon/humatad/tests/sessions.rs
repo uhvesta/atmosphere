@@ -533,3 +533,106 @@ async fn stopping_a_session_withdraws_its_pending_requests() {
     };
     assert_eq!(ended.state(), pb::RequestState::Withdrawn);
 }
+
+/// The user answers `id` with an approval, and the agent waits for what the
+/// approved call returned: its type name and encoded response.
+async fn approve_and_wait(
+    daemon: &common::Daemon,
+    token: &str,
+    id: &pb::RequestId,
+) -> pb::WaitResponse {
+    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(daemon.channel().await);
+    inbox
+        .answer_request(pb::AnswerRequestRequest {
+            id: Some(id.clone()),
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut stream = inbox
+        .wait_for_answer(agent_request(
+            pb::WaitForAnswerRequest {
+                id: Some(id.clone()),
+                wait_seconds: 10,
+            },
+            token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    loop {
+        let message = tokio::time::timeout(common::WAIT, stream.message())
+            .await
+            .expect("the wait ended in time")
+            .unwrap()
+            .expect("the wait ended with an answer");
+        if !message.keepalive {
+            return message;
+        }
+    }
+}
+
+/// The request an agent's call is waiting on, from the pending error.
+fn pending_request(refused: &tonic::Status) -> pb::RequestId {
+    match common::error_of(refused).kind {
+        Some(pb::error::Kind::ApprovalPending(pending)) => pending.request.unwrap(),
+        other => panic!("expected approval_pending, got {other:?}"),
+    }
+}
+
+fn agent_request<T>(message: T, token: &str) -> tonic::Request<T> {
+    let mut request = tonic::Request::new(message);
+    request.metadata_mut().insert(
+        "humata-session-token",
+        tonic::metadata::MetadataValue::try_from(token).unwrap(),
+    );
+    request
+}
+
+/// Makes the channel's rule for `capability` Ask me.
+async fn ask_me(daemon: &common::Daemon, channel: &pb::ChannelId, capability: pb::Capability) {
+    pb::access_service_client::AccessServiceClient::new(daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: Some(channel.clone()),
+            capability: capability as i32,
+            decision: pb::Decision::Ask as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_rename_that_a_rule_sends_to_ask_runs_once_the_user_approves() {
+    let fix = Fixture::new().await;
+    let token = shell_token(&fix).await;
+    ask_me(
+        &fix.daemon,
+        fix.session.channel.as_ref().unwrap(),
+        pb::Capability::OwnSessionManage,
+    )
+    .await;
+
+    let refused = fix
+        .daemon
+        .session_service()
+        .await
+        .rename_session(agent_request(
+            pb::RenameSessionRequest {
+                id: Some(fix.id()),
+                title: "Renamed by agent".to_owned(),
+                ..Default::default()
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    let waited = approve_and_wait(&fix.daemon, &token, &pending_request(&refused)).await;
+
+    assert_eq!(waited.result_type, "humata.v1.Session");
+    let renamed = <pb::Session as prost::Message>::decode(waited.result.as_slice()).unwrap();
+    assert_eq!(renamed.title, "Renamed by agent");
+}

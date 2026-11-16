@@ -836,6 +836,19 @@ async fn an_agent_lists_the_channels_once_the_user_approves() {
     let mut mcp = fixture.mcp(&fixture.token).await;
     let mut inbox =
         pb::inbox_service_client::InboxServiceClient::new(fixture.daemon.channel().await);
+    // Reading other channels is allowed by default (D127.4); the user
+    // sets it to Ask me first.
+    pb::access_service_client::AccessServiceClient::new(fixture.daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: Some(pb::ChannelId {
+                value: "ch_test".to_owned(),
+            }),
+            capability: pb::Capability::GlobalRead as i32,
+            decision: pb::Decision::Ask as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 
     let asked = mcp
         .call(1, "channels_list", json!({ "wait_seconds": 0 }))

@@ -1739,7 +1739,7 @@ and frame 37 a Desk session's.
   | Channel board: add items | Allow |
   | Channel board: edit, move or delete items it created | Allow |
   | Channel board: edit, move or delete anyone else's items | Ask me |
-  | Global board, or other channels and their boards: anything | Ask me |
+  | Global board, or other channels and their boards: read (D127.4) | Allow |
   | Write into `shared/` on its machine | Allow |
   | Fetch files from `shared/`, the channel folder or a main clone on its machine into its own clone | Allow |
   | Prepare views for you (you choose whether to open them) | Allow |

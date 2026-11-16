@@ -27,7 +27,7 @@ use pb::invalid_field::Problem;
 use tokio::sync::oneshot;
 use tonic::{Code, Request, Response, Status};
 
-use crate::channel_service::{blocking, error_of, failed, timestamp_ms};
+use crate::channel_service::{Gated, answer_gated, blocking, error_of, failed, gate, timestamp_ms};
 use crate::guard::{Checked, Guard};
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
@@ -41,6 +41,7 @@ const TITLE_MAX: usize = 200;
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
 
+#[derive(Clone)]
 pub(crate) struct SessionSvc {
     guard: Arc<Guard>,
     operations: Arc<Operations>,
@@ -117,15 +118,437 @@ impl SessionSvc {
         }
     }
 
-    fn require(
+    /// `Some` when the rule for `capability` says Ask; an `approved` call
+    /// goes on.
+    fn gate(
         &self,
         caller: &Caller,
         capability: Capability,
         target: Target,
-    ) -> Result<(), Status> {
+        approved: bool,
+    ) -> Result<Option<Box<humata2_access::AccessRequest>>, Status> {
         Self::refuse_peer(caller)?;
-        self.guard
-            .require(caller, &Call::Use { capability, target })
+        gate(
+            &self.guard,
+            caller,
+            &Call::Use { capability, target },
+            approved,
+        )
+    }
+
+    async fn begin_session(
+        &self,
+        caller: &Caller,
+        request: pb::StartSessionRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::StartSessionResponse>, Status> {
+        Self::refuse_peer(caller)?;
+        let channel_id = request
+            .channel
+            .as_ref()
+            .map(|channel| channel.value.clone())
+            .filter(|channel| !channel.is_empty())
+            .ok_or_else(|| status::missing("channel"))?;
+        self.this_machine(request.machine.as_ref())?;
+        let channel = self.find_channel(&channel_id).await?;
+        let agent = self.agent_for(request.agent.as_ref(), &channel)?;
+        if let Some(asked) = self.gate(
+            caller,
+            Capability::SessionStartSameMachine,
+            Target::Start {
+                channel: ChannelId::new(channel.id.as_str()),
+                machine: humata2_access::MachineId::new(self.machine.as_str()),
+                agent: AgentId::new(agent.as_str()),
+            },
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        if let Some(operation) = self
+            .operations
+            .existing(caller, request.idempotency_key.as_ref())?
+        {
+            return Ok(Gated::Done(self.started_by(operation).await?));
+        }
+        let title = clean_title(&request.title)?;
+        let repos = choose_repos(&channel, &request.repos)?;
+
+        let mut keys = vec!["write_record".to_owned()];
+        let mut steps = vec![("write_record".to_owned(), "Saving the session".to_owned())];
+        for (_, name) in &repos {
+            keys.push(format!("clone:{name}"));
+            steps.push((format!("clone:{name}"), format!("Cloning {name}")));
+        }
+        keys.push("launch".to_owned());
+        keys.push("verify".to_owned());
+        steps.push(("launch".to_owned(), "Starting the agent".to_owned()));
+        steps.push(("verify".to_owned(), "Checking it started".to_owned()));
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
+                value: channel.id.clone(),
+            })),
+        };
+        let progress = match self.operations.start_steps(
+            caller,
+            pb::OperationKind::StartSession,
+            target,
+            &steps,
+            false,
+            request.idempotency_key,
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(operation) => {
+                return Ok(Gated::Done(self.started_by(operation).await?));
+            }
+        };
+        let operation = progress.operation();
+        let start = StartRequest {
+            channel: channel.id,
+            machine: self.machine.clone(),
+            title: if title.is_empty() {
+                "Session".to_owned()
+            } else {
+                title
+            },
+            agent: Some(agent),
+            model: Some(request.model).filter(|model| !model.is_empty()),
+            repos: Some(repos),
+            first_message: Some(request.first_message).filter(|message| !message.is_empty()),
+            operation: operation.id.as_ref().map(|id| id.value.clone()),
+            cols: COLS,
+            rows: ROWS,
+        };
+        let (ready, recorded) = oneshot::channel();
+        tokio::spawn(run_start(
+            self.starter.clone(),
+            self.tokens.clone(),
+            start,
+            progress,
+            keys,
+            ready,
+        ));
+        match recorded.await {
+            Ok(Ok(())) => Ok(Gated::Done(self.started_by(operation).await?)),
+            Ok(Err(refused)) => Err(refused),
+            Err(_) => Err(status::internal(
+                "the session's start stopped before it was recorded",
+                "",
+            )),
+        }
+    }
+
+    async fn preview_names(
+        &self,
+        caller: &Caller,
+        request: pb::PreviewBranchNamesRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::PreviewBranchNamesResponse>, Status> {
+        let channel = request
+            .channel
+            .map(|channel| channel.value)
+            .filter(|channel| !channel.is_empty())
+            .ok_or_else(|| status::missing("channel"))?;
+        if let Some(asked) = self.gate(
+            caller,
+            Capability::ChannelRead,
+            Target::Channel(ChannelId::new(channel.as_str())),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        self.this_machine(request.machine.as_ref())?;
+        self.find_channel(&channel).await?;
+        let slug = branch_slug(&request.title);
+        let (starter, title, id) = (self.starter.clone(), request.title, channel);
+        let names = blocking(move || starter.preview_branches(&id, &title))
+            .await?
+            .map_err(|error| {
+                let (code, failure) = start_error(&error);
+                status::failure(code, failure)
+            })?;
+        let names = names
+            .into_iter()
+            .filter(|((owner, name), _)| {
+                request.repos.is_empty()
+                    || request
+                        .repos
+                        .iter()
+                        .any(|r| &r.owner == owner && &r.name == name)
+            })
+            .map(
+                |((owner, name), branch)| pb::preview_branch_names_response::Name {
+                    repo: Some(pb::RepoRef { owner, name }),
+                    suffix_reason: if branch.folder == slug {
+                        String::new()
+                    } else {
+                        format!(
+                            "{slug} is already used by a branch or a session, so a number was added"
+                        )
+                    },
+                    branch: branch.name,
+                },
+            )
+            .collect();
+        Ok(Gated::Done(pb::PreviewBranchNamesResponse { names }))
+    }
+
+    async fn read_session(
+        &self,
+        caller: &Caller,
+        request: pb::GetSessionRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Session>, Status> {
+        Self::refuse_peer(caller)?;
+        let id = request
+            .id
+            .map(|id| id.value)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| status::missing("id"))?;
+        let loaded = self.load(&id).await?;
+        if let Some(asked) = gate(
+            &self.guard,
+            caller,
+            &Call::ReadSession(self.session_ref(&loaded.record)),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        Ok(Gated::Done(self.show(&loaded)))
+    }
+
+    async fn retitle(
+        &self,
+        caller: &Caller,
+        request: pb::RenameSessionRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Session>, Status> {
+        Self::refuse_peer(caller)?;
+        let id = request
+            .id
+            .map(|id| id.value)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| status::missing("id"))?;
+        let title = clean_title(&request.title)?;
+        if title.is_empty() {
+            return Err(status::missing("title"));
+        }
+        let mut loaded = self.load(&id).await?;
+        if let Caller::Agent(agent) = caller
+            && agent.session.id.as_str() != id
+        {
+            return Err(status::refused(&Refusal::UserOnly {
+                capability: Some(Capability::OwnSessionManage),
+            }));
+        }
+        if let Some(asked) = self.gate(
+            caller,
+            Capability::OwnSessionManage,
+            Target::Session(self.session_ref(&loaded.record)),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        let current = loaded.detail.as_ref().map_or(1, |detail| detail.revision);
+        if let Some(expected) = request.expected_revision
+            && expected.value != current
+        {
+            return Err(status::failure(
+                Code::Aborted,
+                pb::Error {
+                    message: format!("the session is at revision {current}, not {} as the change was made against", expected.value),
+                    fix: "read the session again, check the title still needs changing, and send the change again".to_owned(),
+                    retry: None,
+                    kind: Some(pb::error::Kind::RevisionConflict(pb::RevisionConflict {
+                        kind: pb::EntityKind::Session as i32,
+                        id,
+                        expected: Some(expected),
+                        actual: Some(pb::Revision { value: current }),
+                    })),
+                },
+            ));
+        }
+        if loaded.record.title != title {
+            loaded.record.title = title;
+            if let Some(detail) = loaded.detail.as_mut() {
+                detail.revision += 1;
+            }
+            let (store, record, detail) = (
+                self.starter.store.clone(),
+                loaded.record.clone(),
+                loaded.detail.clone(),
+            );
+            blocking(move || -> Result<(), StoreError> {
+                store.put_session(&record)?;
+                match detail {
+                    Some(detail) => store.put_session_detail(&detail),
+                    None => Ok(()),
+                }
+            })
+            .await?
+            .map_err(|error| status::store(error, &self.machine, "save the session's new title"))?;
+        }
+        Ok(Gated::Done(self.show(&loaded)))
+    }
+
+    async fn stop(
+        &self,
+        caller: &Caller,
+        request: pb::StopSessionRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Session>, Status> {
+        Self::refuse_peer(caller)?;
+        let id = request
+            .id
+            .map(|id| id.value)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| status::missing("id"))?;
+        let mut loaded = self.load(&id).await?;
+        let own = matches!(caller, Caller::Agent(agent) if agent.session.id.as_str() == id);
+        if let Some(asked) = self.gate(
+            caller,
+            if own {
+                Capability::OwnSessionEnd
+            } else {
+                Capability::SessionStopOther
+            },
+            Target::Session(self.session_ref(&loaded.record)),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        let Some(agent) = loaded.agent.as_mut() else {
+            return Ok(Gated::Done(self.show(&loaded)));
+        };
+        match agent.state {
+            AgentState::Launching => return Err(busy(&id, "still starting")),
+            AgentState::Resuming => return Err(busy(&id, "being resumed")),
+            AgentState::Exited { .. } | AgentState::Stopped | AgentState::ResumeFailed { .. } => {
+                return Ok(Gated::Done(self.show(&loaded)));
+            }
+            AgentState::Running { .. } => {}
+        }
+        // A holder already gone is as stopped as one that was asked to.
+        if let Err(error) = humata2_holder::shutdown(&agent.launch.holder_socket).await {
+            crate::log::say!(
+                "humatad2: stopping session {id}'s terminal: {}",
+                status::chain(&error)
+            );
+        }
+        agent.state = AgentState::Stopped;
+        agent.updated_unix_ms = now_ms();
+        let (store, saving) = (self.starter.store.clone(), agent.clone());
+        blocking(move || store.put_agent(&saving))
+            .await?
+            .map_err(|error| status::store(error, &self.machine, "save that the agent stopped"))?;
+        self.withdraw_requests_of(&id, pb::WithdrawReason::SessionStopped)
+            .await?;
+        Ok(Gated::Done(self.show(&loaded)))
+    }
+
+    async fn resume(
+        &self,
+        caller: &Caller,
+        request: pb::ResumeSessionRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Operation>, Status> {
+        Self::refuse_peer(caller)?;
+        let id = request
+            .id
+            .map(|id| id.value)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| status::missing("id"))?;
+        let loaded = self.load(&id).await?;
+        let own = matches!(caller, Caller::Agent(agent) if agent.session.id.as_str() == id);
+        if let Some(asked) = self.gate(
+            caller,
+            if own {
+                Capability::OwnSessionManage
+            } else {
+                Capability::SessionStopOther
+            },
+            Target::Session(self.session_ref(&loaded.record)),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        if request.mode == pb::resume_session_request::Mode::StartFreshWithSummary as i32 {
+            return Err(status::not_built(
+                "humata.v1.SessionService.ResumeSession(START_FRESH_WITH_SUMMARY)",
+            ));
+        }
+        if let Some(operation) = self
+            .operations
+            .existing(caller, request.idempotency_key.as_ref())?
+        {
+            return Ok(Gated::Done(operation));
+        }
+        let running = match loaded.agent.as_ref().map(|agent| agent.state) {
+            None => {
+                return Err(failed(
+                    Code::FailedPrecondition,
+                    &NoAgent { session: id },
+                    "start a new session",
+                    None,
+                ));
+            }
+            Some(AgentState::Launching) => return Err(busy(&id, "still starting")),
+            Some(AgentState::Resuming) => return Err(busy(&id, "already being resumed")),
+            Some(AgentState::Running { .. }) => {
+                let socket = loaded
+                    .agent
+                    .as_ref()
+                    .map(|agent| agent.launch.holder_socket.clone());
+                match socket {
+                    Some(socket) => humata2_holder::attach(&socket, u64::MAX)
+                        .await
+                        .ok()
+                        .is_some_and(|attached| attached.welcome.exited.is_none()),
+                    None => false,
+                }
+            }
+            Some(
+                AgentState::Exited { .. } | AgentState::Stopped | AgentState::ResumeFailed { .. },
+            ) => false,
+        };
+        let steps = [
+            ("launch".to_owned(), "Starting the agent again".to_owned()),
+            (
+                "verify".to_owned(),
+                "Checking it took up its conversation".to_owned(),
+            ),
+        ];
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Session(pb::SessionId {
+                value: id.clone(),
+            })),
+        };
+        let progress = match self.operations.start_steps(
+            caller,
+            pb::OperationKind::StartSession,
+            target,
+            &steps,
+            false,
+            request.idempotency_key,
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(operation) => return Ok(Gated::Done(operation)),
+        };
+        let operation = progress.operation();
+        if running {
+            progress.set_step("launch", pb::StepState::Skipped, None);
+            progress.set_step("verify", pb::StepState::Skipped, None);
+            progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
+                value: id,
+            })));
+        } else {
+            tokio::spawn(run_resume(
+                self.starter.clone(),
+                self.tokens.clone(),
+                loaded,
+                progress,
+            ));
+        }
+        Ok(Gated::Done(operation))
     }
 
     fn session_ref(&self, record: &SessionRecord) -> humata2_access::SessionRef {
@@ -807,96 +1230,21 @@ impl pb::session_service_server::SessionService for SessionSvc {
     ) -> Result<Response<pb::StartSessionResponse>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        Self::refuse_peer(&caller)?;
-        let channel_id = request
-            .channel
+        let key = request
+            .idempotency_key
             .as_ref()
-            .map(|channel| channel.value.clone())
-            .filter(|channel| !channel.is_empty())
-            .ok_or_else(|| status::missing("channel"))?;
-        self.this_machine(request.machine.as_ref())?;
-        let channel = self.find_channel(&channel_id).await?;
-        let agent = self.agent_for(request.agent.as_ref(), &channel)?;
-        self.require(
+            .map(|key| key.value.clone());
+        let first = self.begin_session(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            Capability::SessionStartSameMachine,
-            Target::Start {
-                channel: ChannelId::new(channel.id.as_str()),
-                machine: humata2_access::MachineId::new(self.machine.as_str()),
-                agent: AgentId::new(agent.as_str()),
-            },
-        )?;
-        if let Some(operation) = self
-            .operations
-            .existing(&caller, request.idempotency_key.as_ref())?
-        {
-            return Ok(Response::new(self.started_by(operation).await?));
-        }
-        let title = clean_title(&request.title)?;
-        let repos = choose_repos(&channel, &request.repos)?;
-
-        let mut keys = vec!["write_record".to_owned()];
-        let mut steps = vec![("write_record".to_owned(), "Saving the session".to_owned())];
-        for (_, name) in &repos {
-            keys.push(format!("clone:{name}"));
-            steps.push((format!("clone:{name}"), format!("Cloning {name}")));
-        }
-        keys.push("launch".to_owned());
-        keys.push("verify".to_owned());
-        steps.push(("launch".to_owned(), "Starting the agent".to_owned()));
-        steps.push(("verify".to_owned(), "Checking it started".to_owned()));
-        let target = pb::EntityRef {
-            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
-                value: channel.id.clone(),
-            })),
-        };
-        let progress = match self.operations.start_steps(
-            &caller,
-            pb::OperationKind::StartSession,
-            target,
-            &steps,
-            false,
-            request.idempotency_key,
-        )? {
-            Started::New(progress) => progress,
-            Started::Existing(operation) => {
-                return Ok(Response::new(self.started_by(operation).await?));
-            }
-        };
-        let operation = progress.operation();
-        let start = StartRequest {
-            channel: channel.id,
-            machine: self.machine.clone(),
-            title: if title.is_empty() {
-                "Session".to_owned()
-            } else {
-                title
-            },
-            agent: Some(agent),
-            model: Some(request.model).filter(|model| !model.is_empty()),
-            repos: Some(repos),
-            first_message: Some(request.first_message).filter(|message| !message.is_empty()),
-            operation: operation.id.as_ref().map(|id| id.value.clone()),
-            cols: COLS,
-            rows: ROWS,
-        };
-        let (ready, recorded) = oneshot::channel();
-        tokio::spawn(run_start(
-            self.starter.clone(),
-            self.tokens.clone(),
-            start,
-            progress,
-            keys,
-            ready,
-        ));
-        match recorded.await {
-            Ok(Ok(())) => Ok(Response::new(self.started_by(operation).await?)),
-            Ok(Err(refused)) => Err(refused),
-            Err(_) => Err(status::internal(
-                "the session's start stopped before it was recorded",
-                "",
-            )),
-        }
+            key,
+            "humata.v1.StartSessionResponse",
+            first,
+            move || async move { me.begin_session(&who, request, true).await },
+        )
+        .await
     }
 
     /// The branch each repository would get for the title (FC-15).
@@ -906,50 +1254,18 @@ impl pb::session_service_server::SessionService for SessionSvc {
     ) -> Result<Response<pb::PreviewBranchNamesResponse>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let channel = request
-            .channel
-            .map(|channel| channel.value)
-            .filter(|channel| !channel.is_empty())
-            .ok_or_else(|| status::missing("channel"))?;
-        self.require(
+        let key = None;
+        let first = self.preview_names(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            Capability::ChannelRead,
-            Target::Channel(ChannelId::new(channel.as_str())),
-        )?;
-        self.this_machine(request.machine.as_ref())?;
-        self.find_channel(&channel).await?;
-        let slug = branch_slug(&request.title);
-        let (starter, title, id) = (self.starter.clone(), request.title, channel);
-        let names = blocking(move || starter.preview_branches(&id, &title))
-            .await?
-            .map_err(|error| {
-                let (code, failure) = start_error(&error);
-                status::failure(code, failure)
-            })?;
-        let names = names
-            .into_iter()
-            .filter(|((owner, name), _)| {
-                request.repos.is_empty()
-                    || request
-                        .repos
-                        .iter()
-                        .any(|r| &r.owner == owner && &r.name == name)
-            })
-            .map(
-                |((owner, name), branch)| pb::preview_branch_names_response::Name {
-                    repo: Some(pb::RepoRef { owner, name }),
-                    suffix_reason: if branch.folder == slug {
-                        String::new()
-                    } else {
-                        format!(
-                            "{slug} is already used by a branch or a session, so a number was added"
-                        )
-                    },
-                    branch: branch.name,
-                },
-            )
-            .collect();
-        Ok(Response::new(pb::PreviewBranchNamesResponse { names }))
+            key,
+            "humata.v1.PreviewBranchNamesResponse",
+            first,
+            move || async move { me.preview_names(&who, request, true).await },
+        )
+        .await
     }
 
     async fn get_session(
@@ -957,19 +1273,19 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::GetSessionRequest>,
     ) -> Result<Response<pb::Session>, Status> {
         let caller = identity::caller(&request)?;
-        Self::refuse_peer(&caller)?;
-        let id = request
-            .into_inner()
-            .id
-            .map(|id| id.value)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| status::missing("id"))?;
-        let loaded = self.load(&id).await?;
-        self.guard.require(
+        let request = request.into_inner();
+        let key = None;
+        let first = self.read_session(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            &Call::ReadSession(self.session_ref(&loaded.record)),
-        )?;
-        Ok(Response::new(self.show(&loaded)))
+            key,
+            "humata.v1.Session",
+            first,
+            move || async move { me.read_session(&who, request, true).await },
+        )
+        .await
     }
 
     async fn list_sessions(
@@ -1041,70 +1357,22 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::RenameSessionRequest>,
     ) -> Result<Response<pb::Session>, Status> {
         let caller = identity::caller(&request)?;
-        Self::refuse_peer(&caller)?;
         let request = request.into_inner();
-        let id = request
-            .id
-            .map(|id| id.value)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| status::missing("id"))?;
-        let title = clean_title(&request.title)?;
-        if title.is_empty() {
-            return Err(status::missing("title"));
-        }
-        let mut loaded = self.load(&id).await?;
-        if let Caller::Agent(agent) = &caller
-            && agent.session.id.as_str() != id
-        {
-            return Err(status::refused(&Refusal::UserOnly {
-                capability: Some(Capability::OwnSessionManage),
-            }));
-        }
-        self.require(
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.retitle(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            Capability::OwnSessionManage,
-            Target::Session(self.session_ref(&loaded.record)),
-        )?;
-        let current = loaded.detail.as_ref().map_or(1, |detail| detail.revision);
-        if let Some(expected) = request.expected_revision
-            && expected.value != current
-        {
-            return Err(status::failure(
-                Code::Aborted,
-                pb::Error {
-                    message: format!("the session is at revision {current}, not {} as the change was made against", expected.value),
-                    fix: "read the session again, check the title still needs changing, and send the change again".to_owned(),
-                    retry: None,
-                    kind: Some(pb::error::Kind::RevisionConflict(pb::RevisionConflict {
-                        kind: pb::EntityKind::Session as i32,
-                        id,
-                        expected: Some(expected),
-                        actual: Some(pb::Revision { value: current }),
-                    })),
-                },
-            ));
-        }
-        if loaded.record.title != title {
-            loaded.record.title = title;
-            if let Some(detail) = loaded.detail.as_mut() {
-                detail.revision += 1;
-            }
-            let (store, record, detail) = (
-                self.starter.store.clone(),
-                loaded.record.clone(),
-                loaded.detail.clone(),
-            );
-            blocking(move || -> Result<(), StoreError> {
-                store.put_session(&record)?;
-                match detail {
-                    Some(detail) => store.put_session_detail(&detail),
-                    None => Ok(()),
-                }
-            })
-            .await?
-            .map_err(|error| status::store(error, &self.machine, "save the session's new title"))?;
-        }
-        Ok(Response::new(self.show(&loaded)))
+            key,
+            "humata.v1.Session",
+            first,
+            move || async move { me.retitle(&who, request, true).await },
+        )
+        .await
     }
 
     /// Ends the agent's program and its holder and saves the agent as
@@ -1115,51 +1383,22 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::StopSessionRequest>,
     ) -> Result<Response<pb::Session>, Status> {
         let caller = identity::caller(&request)?;
-        Self::refuse_peer(&caller)?;
-        let id = request
-            .into_inner()
-            .id
-            .map(|id| id.value)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| status::missing("id"))?;
-        let mut loaded = self.load(&id).await?;
-        let own = matches!(&caller, Caller::Agent(agent) if agent.session.id.as_str() == id);
-        self.require(
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.stop(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            if own {
-                Capability::OwnSessionEnd
-            } else {
-                Capability::SessionStopOther
-            },
-            Target::Session(self.session_ref(&loaded.record)),
-        )?;
-        let Some(agent) = loaded.agent.as_mut() else {
-            return Ok(Response::new(self.show(&loaded)));
-        };
-        match agent.state {
-            AgentState::Launching => return Err(busy(&id, "still starting")),
-            AgentState::Resuming => return Err(busy(&id, "being resumed")),
-            AgentState::Exited { .. } | AgentState::Stopped | AgentState::ResumeFailed { .. } => {
-                return Ok(Response::new(self.show(&loaded)));
-            }
-            AgentState::Running { .. } => {}
-        }
-        // A holder already gone is as stopped as one that was asked to.
-        if let Err(error) = humata2_holder::shutdown(&agent.launch.holder_socket).await {
-            crate::log::say!(
-                "humatad2: stopping session {id}'s terminal: {}",
-                status::chain(&error)
-            );
-        }
-        agent.state = AgentState::Stopped;
-        agent.updated_unix_ms = now_ms();
-        let (store, saving) = (self.starter.store.clone(), agent.clone());
-        blocking(move || store.put_agent(&saving))
-            .await?
-            .map_err(|error| status::store(error, &self.machine, "save that the agent stopped"))?;
-        self.withdraw_requests_of(&id, pb::WithdrawReason::SessionStopped)
-            .await?;
-        Ok(Response::new(self.show(&loaded)))
+            key,
+            "humata.v1.Session",
+            first,
+            move || async move { me.stop(&who, request, true).await },
+        )
+        .await
     }
 
     /// Starts the agent again with its pinned conversation (SE-15, PER-13):
@@ -1170,102 +1409,22 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::ResumeSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
-        Self::refuse_peer(&caller)?;
         let request = request.into_inner();
-        let id = request
-            .id
-            .map(|id| id.value)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| status::missing("id"))?;
-        let loaded = self.load(&id).await?;
-        let own = matches!(&caller, Caller::Agent(agent) if agent.session.id.as_str() == id);
-        self.require(
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.resume(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            if own {
-                Capability::OwnSessionManage
-            } else {
-                Capability::SessionStopOther
-            },
-            Target::Session(self.session_ref(&loaded.record)),
-        )?;
-        if request.mode == pb::resume_session_request::Mode::StartFreshWithSummary as i32 {
-            return Err(status::not_built(
-                "humata.v1.SessionService.ResumeSession(START_FRESH_WITH_SUMMARY)",
-            ));
-        }
-        if let Some(operation) = self
-            .operations
-            .existing(&caller, request.idempotency_key.as_ref())?
-        {
-            return Ok(Response::new(operation));
-        }
-        let running = match loaded.agent.as_ref().map(|agent| agent.state) {
-            None => {
-                return Err(failed(
-                    Code::FailedPrecondition,
-                    &NoAgent { session: id },
-                    "start a new session",
-                    None,
-                ));
-            }
-            Some(AgentState::Launching) => return Err(busy(&id, "still starting")),
-            Some(AgentState::Resuming) => return Err(busy(&id, "already being resumed")),
-            Some(AgentState::Running { .. }) => {
-                let socket = loaded
-                    .agent
-                    .as_ref()
-                    .map(|agent| agent.launch.holder_socket.clone());
-                match socket {
-                    Some(socket) => humata2_holder::attach(&socket, u64::MAX)
-                        .await
-                        .ok()
-                        .is_some_and(|attached| attached.welcome.exited.is_none()),
-                    None => false,
-                }
-            }
-            Some(
-                AgentState::Exited { .. } | AgentState::Stopped | AgentState::ResumeFailed { .. },
-            ) => false,
-        };
-        let steps = [
-            ("launch".to_owned(), "Starting the agent again".to_owned()),
-            (
-                "verify".to_owned(),
-                "Checking it took up its conversation".to_owned(),
-            ),
-        ];
-        let target = pb::EntityRef {
-            entity: Some(pb::entity_ref::Entity::Session(pb::SessionId {
-                value: id.clone(),
-            })),
-        };
-        let progress = match self.operations.start_steps(
-            &caller,
-            pb::OperationKind::StartSession,
-            target,
-            &steps,
-            false,
-            request.idempotency_key,
-        )? {
-            Started::New(progress) => progress,
-            Started::Existing(operation) => return Ok(Response::new(operation)),
-        };
-        let operation = progress.operation();
-        if running {
-            progress.set_step("launch", pb::StepState::Skipped, None);
-            progress.set_step("verify", pb::StepState::Skipped, None);
-            progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
-                value: id,
-            })));
-        } else {
-            tokio::spawn(run_resume(
-                self.starter.clone(),
-                self.tokens.clone(),
-                loaded,
-                progress,
-            ));
-        }
-        Ok(Response::new(operation))
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.resume(&who, request, true).await },
+        )
+        .await
     }
 
     async fn list_turns(

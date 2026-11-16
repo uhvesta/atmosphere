@@ -4,6 +4,11 @@
 //! daemon converts. The two deprecated proto values (D21) are not here:
 //! the daemon reads `GLOBAL_BOARD_WRITE` as [`Capability::GlobalRead`] and
 //! `OWN_COMMENTS_READ` as a read of the caller's own session.
+//!
+//! `GlobalRead` is Default Allow (D127.4: reads are allowed by default), so
+//! reading `GLOBAL_BOARD_WRITE` as it would let global board writes run
+//! unasked. When the board is built, global board writes must get their own
+//! Ask-tier capability (D127.4).
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -26,9 +31,10 @@ pub enum Capability {
     ReviewFocus,
     ReviewNote,
     ReviewOrder,
+    // Reads of other channels and the global board (D127.4).
+    GlobalRead,
     // Ask me.
     ChannelBoardEditOthers,
-    GlobalRead,
     FilesReadOtherSession,
     FilesReadOtherMachine,
     FilesCopyIn,
@@ -184,9 +190,9 @@ impl Capability {
             | Self::InboxAsk
             | Self::ReviewFocus
             | Self::ReviewNote
-            | Self::ReviewOrder => Tier::DefaultAllow,
+            | Self::ReviewOrder
+            | Self::GlobalRead => Tier::DefaultAllow,
             Self::ChannelBoardEditOthers
-            | Self::GlobalRead
             | Self::FilesReadOtherSession
             | Self::FilesReadOtherMachine
             | Self::FilesCopyIn

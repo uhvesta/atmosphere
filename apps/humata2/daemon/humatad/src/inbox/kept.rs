@@ -17,7 +17,6 @@ use humata2_store::{InboxRecord, Store};
 use humata2_store_proto::humata::store::v1 as stored;
 use prost::Message;
 
-use super::deferred::is_deferred;
 use super::{Entry, Held, State, withdraw};
 use crate::grant_target;
 use crate::guard::Guard;
@@ -42,6 +41,7 @@ pub(super) fn record(entry: &Entry, held: &Held) -> InboxRecord {
             .map(Message::encode_to_vec)
             .unwrap_or_default(),
         grant,
+        deferred: held.deferred,
     };
     let created = held.request.created_at.as_ref().map_or(0, |at| {
         at.seconds.saturating_mul(1000) + i64::from(at.nanos / 1_000_000)
@@ -155,7 +155,7 @@ fn restored(
         }
         _ => None,
     };
-    let deferred = is_deferred(&request);
+    let deferred = body.deferred;
     let mut held = Held {
         request,
         grant,

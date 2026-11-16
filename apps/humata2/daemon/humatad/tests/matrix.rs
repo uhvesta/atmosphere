@@ -55,6 +55,7 @@ const TABLE: &[(Tier, &str)] = &[
 struct World {
     daemon: Daemon,
     _world: common::World,
+    channel: pb::ChannelId,
     me: pb::SessionId,
     other: pb::SessionId,
     token: String,
@@ -74,14 +75,32 @@ impl World {
         let (me, _) = start_session(&daemon, &channel, "me").await;
         let (other, _) = start_session(&daemon, &channel, "other").await;
         let (token, attach) = shell_token(&daemon, &me).await;
+        let channel = channel.id.unwrap_or_default();
         Self {
             daemon,
             _world: world,
+            channel,
             me,
             other,
             token,
             _attach: attach,
         }
+    }
+
+    /// The user sets the channel's rule for reading other channels. The
+    /// default is Allow (D127.4), so the "Ask me" tier sets Ask first.
+    async fn ask_on_global_read(&self) {
+        let mut access =
+            pb::access_service_client::AccessServiceClient::new(self.daemon.channel().await);
+        access
+            .set_channel_rule(pb::SetChannelRuleRequest {
+                channel: Some(self.channel.clone()),
+                capability: pb::Capability::GlobalRead as i32,
+                decision: pb::Decision::Ask as i32,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
     }
 
     /// Everything in the Inbox, answered or not.
@@ -236,7 +255,10 @@ async fn mcp_call(mcp: &mut Mcp, world: &World, tier: Tier) -> Value {
         // User-only is reached through the Ask call that makes a request
         // for the agent to try to answer.
         // wait_seconds 0: answer pending at once instead of waiting (TP-11).
-        Tier::AskMe | Tier::UserOnly => mcp.call("channels_list", json!({ "wait_seconds": 0 })).await,
+        Tier::AskMe | Tier::UserOnly => {
+            world.ask_on_global_read().await;
+            mcp.call("channels_list", json!({ "wait_seconds": 0 })).await
+        }
         Tier::Never => {
             mcp.call("session_stop", json!({ "session": world.other.value }))
                 .await
@@ -365,7 +387,10 @@ async fn cli_args(world: &World, tier: Tier, local: &Path) -> Vec<String> {
                 .to_vec();
         }
         Tier::DefaultAllow => vec!["board", "add", "an item"],
-        Tier::AskMe | Tier::UserOnly => vec!["channels"],
+        Tier::AskMe | Tier::UserOnly => {
+            world.ask_on_global_read().await;
+            vec!["channels"]
+        }
         Tier::Never => vec!["session", "stop", world.other.value.as_str()],
     };
     args.into_iter().map(str::to_owned).collect()
@@ -466,6 +491,7 @@ async fn the_matrix_holds_for_an_agent_over_the_cli() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cli_call_that_asks_ends_pending_and_never_hangs_without_wait() {
     let world = World::start().await;
+    world.ask_on_global_read().await;
     let started = std::time::Instant::now();
 
     let (code, json) = humata_as_agent(&world.daemon, &world.token, &["channels"]).await;
@@ -486,6 +512,7 @@ async fn a_cli_call_that_asks_ends_pending_and_never_hangs_without_wait() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_denied_ask_ends_the_waiting_cli_call_as_denied() {
     let world = World::start().await;
+    world.ask_on_global_read().await;
     let waiter = tokio::spawn({
         let socket = world.daemon.socket.clone();
         let token = world.token.clone();

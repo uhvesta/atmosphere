@@ -53,6 +53,9 @@ message InboxEntry {
   repeated string keys = 2;
   bytes asked = 3;
   InboxGrant grant = 4;
+  // True for a request made by Inbox::defer: an ordinary call held for
+  // the person's answer.
+  bool deferred = 5;
 }
 
 // The grant an answer made, with what the policy keeps beside it.

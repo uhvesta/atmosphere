@@ -72,12 +72,6 @@ impl Outcome {
     }
 }
 
-/// Whether `request` is a deferred call's card: it has no preview of its
-/// own, which a question and an ask-ahead always do.
-pub(super) fn is_deferred(request: &pb::InboxRequest) -> bool {
-    request.preview.is_none()
-}
-
 /// Approved, but the call neither runs nor has a result: the process that
 /// held it restarted.
 pub(super) fn lost(held: &Held) -> bool {
@@ -101,14 +95,18 @@ pub(super) fn lost_error(request: &str) -> pb::Error {
     )
 }
 
-/// The card for a deferred call (IN-9). It offers no "Always let": the
-/// rule is the standing answer, and changing it is the user's to do.
+/// The card for a deferred call (IN-9, IN-10). It offers "Always allow" of
+/// the exact target IN-22 names for the call, when the call has one (IN-14).
 fn card(
     id: &str,
     agent: &crate::identity::AgentCaller,
     asked: &AccessRequest,
     decision: Option<Decision>,
 ) -> pb::InboxRequest {
+    let capability = crate::guard::capability(asked.capability) as i32;
+    let offered = asked.always_let.as_ref();
+    let target = offered.map(grant_target::target);
+    let target_label = offered.map_or_else(|| asked.capability.label().to_owned(), super::describe);
     pb::InboxRequest {
         id: Some(pb::RequestId {
             value: id.to_owned(),
@@ -124,8 +122,21 @@ fn card(
             agent.title,
             lowercase_first(asked.capability.label())
         ),
-        capability: crate::guard::capability(asked.capability) as i32,
+        preview: Some(pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::AccessAhead(
+                pb::AccessAheadPreview {
+                    capability,
+                    target: target.clone(),
+                    target_label: target_label.clone(),
+                },
+            )),
+        }),
+        capability,
         rule_decision: decision.map_or(pb::Decision::Unspecified, super::decision_of) as i32,
+        always: target.map(|target| pb::AlwaysOption {
+            label: format!("Always allow “{}” {target_label}", agent.title),
+            target: Some(target),
+        }),
         created_at: Some(attach::now()),
         revision: Some(pb::Revision { value: 1 }),
         ..Default::default()
@@ -297,5 +308,136 @@ impl Inbox {
                 held.outcome = Some(outcome);
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use humata2_access::{Call, Capability, MachineId, NetworkTarget, Target};
+    use humata2_grpc::humata::v1::inbox_service_server::InboxService;
+    use humata2_store::{SessionRecord, Store};
+
+    use super::*;
+    use crate::events::Feed;
+    use crate::guard::{Checked, Guard};
+    use crate::identity::{AgentCaller, UserVia};
+
+    const MACHINE: &str = "m1";
+
+    fn reach() -> Call {
+        Call::Use {
+            capability: Capability::NetworkReach,
+            target: Target::Network(NetworkTarget {
+                machine: MachineId::new(MACHINE),
+                host: "example.com".to_owned(),
+                port: 443,
+            }),
+        }
+    }
+
+    fn record() -> SessionRecord {
+        SessionRecord {
+            id: "se_a".to_owned(),
+            channel: "ch_a".to_owned(),
+            machine: MACHINE.to_owned(),
+            title: "asker".to_owned(),
+            agent: "claude".to_owned(),
+            folder: std::path::PathBuf::new(),
+            created_unix_ms: 0,
+        }
+    }
+
+    fn agent() -> Caller {
+        Caller::Agent(AgentCaller::of(&record(), MACHINE))
+    }
+
+    fn asked_of(guard: &Guard, caller: &Caller) -> AccessRequest {
+        match guard.check(caller, &reach()) {
+            Ok(Checked::Ask(asked)) => asked,
+            _ => panic!("the call should ask the user"),
+        }
+    }
+
+    async fn ran(flag: &AtomicBool) -> bool {
+        for _ in 0..200 {
+            if flag.load(Ordering::SeqCst) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn always_allow_on_a_deferred_call_runs_it_and_covers_the_next_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("store")).unwrap());
+        // An Inbox request is saved under its session, which must exist.
+        store.put_session(&record()).unwrap();
+        let guard = Arc::new(Guard::new(MACHINE, pb::DaemonRole::Host));
+        let inbox = Inbox::new(
+            guard.clone(),
+            store,
+            MACHINE.to_owned(),
+            Arc::new(Feed::default()),
+        );
+        let caller = agent();
+        let ran_flag = Arc::new(AtomicBool::new(false));
+        let flag = ran_flag.clone();
+        let run: Run = Box::new(move || {
+            Box::pin(async move {
+                flag.store(true, Ordering::SeqCst);
+                Ok(Deferred {
+                    result: Vec::new(),
+                    result_type: String::new(),
+                })
+            })
+        });
+
+        let pending = inbox
+            .defer(&caller, asked_of(&guard, &caller), None, run)
+            .await;
+        let id = status::error_of(&pending)
+            .and_then(|error| match error.kind {
+                Some(pb::error::Kind::ApprovalPending(pending)) => pending.request,
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the call should wait on a request: {pending:?}"));
+        let card = inbox
+            .get_request(user_request(pb::GetRequestRequest {
+                id: Some(id.clone()),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(card.preview.is_some());
+        let always = card.always.expect("the card offers Always allow");
+
+        let answer = user_request(pb::AnswerRequestRequest {
+            id: Some(id),
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::Always(pb::AlwaysLet {
+                    target: always.target,
+                })),
+            }),
+            ..Default::default()
+        });
+        let answered = inbox.answer_request(answer).await.unwrap().into_inner();
+
+        assert_eq!(answered.state(), pb::RequestState::Approved);
+        assert!(ran(&ran_flag).await, "the held call ran");
+        assert!(
+            matches!(guard.check(&caller, &reach()), Ok(Checked::Allowed)),
+            "the grant covers the next identical call"
+        );
+    }
+
+    fn user_request<T>(message: T) -> tonic::Request<T> {
+        let mut request = tonic::Request::new(message);
+        request.extensions_mut().insert(Caller::User(UserVia::App));
+        request
     }
 }

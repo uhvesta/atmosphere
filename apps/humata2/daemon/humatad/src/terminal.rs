@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use humata2_access::{Call, Capability, Target};
+use humata2_access::{AccessRequest, Call, Capability, Target};
 use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
 use humata2_holder::{HolderError, HolderSpec};
@@ -18,10 +18,12 @@ use tokio::sync::watch;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::attach::{self, AttachStream};
+use crate::channel_service::{Gated, answer_gated, gate};
 use crate::compression::Compression;
 use crate::guard::Guard;
 use crate::holders::{Holders, TypeFailed};
 use crate::identity::{self, Caller, Identities};
+use crate::inbox::Inbox;
 use crate::{paste, status};
 
 /// How long a holder gets to answer a first connection before a tab is
@@ -57,32 +59,56 @@ pub(crate) struct TerminalsConfig {
     pub(crate) identities: Arc<Identities>,
     /// Picks the codec an attach's output goes with.
     pub(crate) compression: Arc<Compression>,
+    /// Where a call a rule sends to Ask me waits for the user (D38.6).
+    pub(crate) inbox: Arc<Inbox>,
 }
 
+/// The service. Its state sits behind an `Arc` so a call waiting for the
+/// user's approval can own what it needs to run later.
 pub(crate) struct Terminals {
+    core: Arc<Core>,
+}
+
+pub(crate) struct Core {
     config: TerminalsConfig,
     remembered: Mutex<Remembered>,
     writers: Arc<Writers>,
     holders: Holders,
 }
 
+impl std::ops::Deref for Terminals {
+    type Target = Core;
+
+    fn deref(&self) -> &Core {
+        &self.core
+    }
+}
+
 impl Terminals {
     pub(crate) fn new(config: TerminalsConfig) -> Self {
         Self {
-            remembered: Mutex::new(Remembered::default()),
-            writers: Arc::new(Writers::default()),
-            holders: Holders::new(config.scrollback_bytes),
-            config,
+            core: Arc::new(Core {
+                remembered: Mutex::new(Remembered::default()),
+                writers: Arc::new(Writers::default()),
+                holders: Holders::new(config.scrollback_bytes),
+                config,
+            }),
         }
     }
+}
 
+impl Core {
     async fn find_session(&self, id: &str) -> Result<Option<SessionRecord>, Status> {
         let store = self.config.store.clone();
         let key = id.to_owned();
         match blocking(move || store.session(&key)).await? {
             Ok(found) => Ok(found),
             Err(StoreError::InvalidId { .. }) => Ok(None),
-            Err(error) => Err(status::store(error, &self.config.machine, "look up the session")),
+            Err(error) => Err(status::store(
+                error,
+                &self.config.machine,
+                "look up the session",
+            )),
         }
     }
 
@@ -96,7 +122,11 @@ impl Terminals {
         match blocking(move || store.tab(&key)).await? {
             Ok(found) => Ok(found),
             Err(StoreError::InvalidId { .. }) => Ok(None),
-            Err(error) => Err(status::store(error, &self.config.machine, "look up the tab")),
+            Err(error) => Err(status::store(
+                error,
+                &self.config.machine,
+                "look up the tab",
+            )),
         }
     }
 
@@ -144,6 +174,21 @@ impl Terminals {
         )
     }
 
+    /// `Some` when the rule for typing into `target` says Ask; an `approved`
+    /// call goes on.
+    fn gate_input(
+        &self,
+        caller: &Caller,
+        target: Target,
+        approved: bool,
+    ) -> Result<Option<Box<AccessRequest>>, Status> {
+        let call = Call::Use {
+            capability: Capability::TerminalInput,
+            target,
+        };
+        gate(&self.config.guard, caller, &call, approved)
+    }
+
     /// The tab text typed into a session goes to: its agent's, else its
     /// first shell.
     async fn typing_tab(&self, session: &str) -> Result<TabRecord, Status> {
@@ -183,10 +228,7 @@ impl Terminals {
             id: Some(pb::TabId {
                 value: tab.id.clone(),
             }),
-            session: tab
-                .session
-                .clone()
-                .map(|value| pb::SessionId { value }),
+            session: tab.session.clone().map(|value| pb::SessionId { value }),
             kind: match tab.kind {
                 TabKind::Agent => pb::tab::Kind::Agent,
                 TabKind::Shell => pb::tab::Kind::Shell,
@@ -218,7 +260,9 @@ impl Terminals {
             let (tab, record) = (id.clone(), record.clone());
             let token = blocking(move || identities.mint(&tab, &record))
                 .await?
-                .map_err(|error| status::store(error, &config.machine, "save the tab's session token"))?;
+                .map_err(|error| {
+                    status::store(error, &config.machine, "save the tab's session token")
+                })?;
             env.push((
                 OsString::from(humata2_mcp::TOKEN_VAR),
                 OsString::from(token),
@@ -329,24 +373,27 @@ impl Terminals {
             }
         }
     }
-}
 
-#[tonic::async_trait]
-impl pb::terminal_service_server::TerminalService for Terminals {
-    /// The tabs of `session`, or with no session, this machine's shells.
-    async fn list_tabs(
+    async fn tabs_listing(
         &self,
-        request: Request<pb::ListTabsRequest>,
-    ) -> Result<Response<pb::ListTabsResponse>, Status> {
-        let caller = identity::caller(&request)?;
-        let session = id_of(request.into_inner().session.map(|session| session.value));
+        caller: &Caller,
+        request: pb::ListTabsRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::ListTabsResponse>, Status> {
+        let session = id_of(request.session.map(|session| session.value));
         match &session {
             Some(session) => {
                 let record = self.session(session).await?;
                 let read = Call::ReadSession(identity::session_ref(&record, &self.config.machine));
-                self.config.guard.require(&caller, &read)?;
+                if let Some(asked) = gate(&self.config.guard, caller, &read, approved)? {
+                    return Ok(Gated::Ask(asked));
+                }
             }
-            None => self.check_input(&caller, Target::Global)?,
+            None => {
+                if let Some(asked) = self.gate_input(caller, Target::Global, approved)? {
+                    return Ok(Gated::Ask(asked));
+                }
+            }
         }
         let mut tabs = Vec::new();
         for tab in self.tabs().await? {
@@ -354,22 +401,24 @@ impl pb::terminal_service_server::TerminalService for Terminals {
                 tabs.push(self.describe(&tab).await);
             }
         }
-        Ok(Response::new(pb::ListTabsResponse { tabs }))
+        Ok(Gated::Done(pb::ListTabsResponse { tabs }))
     }
 
-    async fn open_shell_tab(
+    async fn shell_in_session(
         &self,
-        request: Request<pb::OpenShellTabRequest>,
-    ) -> Result<Response<pb::Tab>, Status> {
-        let caller = identity::caller(&request)?;
-        let request = request.into_inner();
+        caller: &Caller,
+        request: pb::OpenShellTabRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Tab>, Status> {
         let key = idempotency("OpenShellTab", request.idempotency_key);
         let session = id_of(request.session.map(|session| session.value))
             .ok_or_else(|| status::missing("session"))?;
         let session = self.session(&session).await?;
-        self.check_input(&caller, self.session_target(&session))?;
+        if let Some(asked) = self.gate_input(caller, self.session_target(&session), approved)? {
+            return Ok(Gated::Ask(asked));
+        }
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
-            return Ok(Response::new(tab));
+            return Ok(Gated::Done(tab));
         }
         if request.repo.is_some() {
             return Err(status::invalid_field(
@@ -379,21 +428,25 @@ impl pb::terminal_service_server::TerminalService for Terminals {
                 "leave repo unset to start in the session folder, then cd into the clone",
             ));
         }
-        let tab = self.open_shell(Some(&session), session.folder.clone()).await?;
+        let tab = self
+            .open_shell(Some(&session), session.folder.clone())
+            .await?;
         self.remember(key, Outcome::Tab(tab.clone()));
-        Ok(Response::new(tab))
+        Ok(Gated::Done(tab))
     }
 
-    async fn open_machine_shell(
+    async fn shell_on_machine(
         &self,
-        request: Request<pb::OpenMachineShellRequest>,
-    ) -> Result<Response<pb::Tab>, Status> {
-        let caller = identity::caller(&request)?;
-        self.check_input(&caller, Target::Global)?;
-        let request = request.into_inner();
+        caller: &Caller,
+        request: pb::OpenMachineShellRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Tab>, Status> {
+        if let Some(asked) = self.gate_input(caller, Target::Global, approved)? {
+            return Ok(Gated::Ask(asked));
+        }
         let key = idempotency("OpenMachineShell", request.idempotency_key);
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
-            return Ok(Response::new(tab));
+            return Ok(Gated::Done(tab));
         }
         if let Some(machine) = id_of(request.machine.map(|machine| machine.value))
             && machine != self.config.machine
@@ -401,30 +454,34 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             return Err(status::not_found(
                 pb::EntityKind::Machine,
                 &machine,
-                format!("machine {machine} isn't this one, and this daemon can't open shells elsewhere yet"),
+                format!(
+                    "machine {machine} isn't this one, and this daemon can't open shells elsewhere yet"
+                ),
                 "open the shell through that machine's own daemon",
             ));
         }
         let tab = self.open_shell(None, self.config.root.clone()).await?;
         self.remember(key, Outcome::Tab(tab.clone()));
-        Ok(Response::new(tab))
+        Ok(Gated::Done(tab))
     }
 
-    async fn close_tab(
+    async fn close_one(
         &self,
-        request: Request<pb::CloseTabRequest>,
-    ) -> Result<Response<pb::CloseTabResponse>, Status> {
-        let caller = identity::caller(&request)?;
-        let request = request.into_inner();
+        caller: &Caller,
+        request: pb::CloseTabRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::CloseTabResponse>, Status> {
         let key = idempotency("CloseTab", request.idempotency_key);
         let id = id_of(request.tab.map(|tab| tab.value)).ok_or_else(|| status::missing("tab"))?;
         let target = match self.find_tab(&id).await? {
             Some(tab) => self.tab_target(&tab).await?,
             None => Target::Global,
         };
-        self.check_input(&caller, target)?;
+        if let Some(asked) = self.gate_input(caller, target, approved)? {
+            return Ok(Gated::Ask(asked));
+        }
         if let Some(Outcome::Closed) = self.recall(key.as_deref()) {
-            return Ok(Response::new(pb::CloseTabResponse {}));
+            return Ok(Gated::Done(pb::CloseTabResponse {}));
         }
         let session = id_of(request.session.map(|session| session.value));
         let tab = self.tab(&id, session.as_deref()).await?;
@@ -451,7 +508,191 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         self.holders.forget(&tab.id);
         self.revoke(&tab.id).await;
         self.remember(key, Outcome::Closed);
-        Ok(Response::new(pb::CloseTabResponse {}))
+        Ok(Gated::Done(pb::CloseTabResponse {}))
+    }
+
+    async fn type_in(
+        &self,
+        caller: &Caller,
+        request: pb::TypeRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::TypeResponse>, Status> {
+        let key = idempotency("Type", request.idempotency_key);
+        let session = id_of(request.session.map(|session| session.value))
+            .ok_or_else(|| status::missing("session"))?;
+        let session = self.session(&session).await?;
+        if let Some(asked) = gate(
+            &self.config.guard,
+            caller,
+            &Call::Use {
+                capability: Capability::SessionType,
+                target: self.session_target(&session),
+            },
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        if let Some(Outcome::Typed(typed)) = self.recall(key.as_deref()) {
+            return Ok(Gated::Done(typed));
+        }
+        if request.when == pb::type_request::When::TurnEnds as i32 {
+            return Err(status::not_built(
+                "humata.v1.TerminalService.Type with when TURN_ENDS",
+            ));
+        }
+        let tab = match id_of(request.tab.map(|tab| tab.value)) {
+            Some(tab) => self.tab(&tab, Some(&session.id)).await?,
+            None => self.typing_tab(&session.id).await?,
+        };
+        self.type_into(&tab, request.text.as_bytes()).await?;
+        let typed = pb::TypeResponse {
+            queued: None,
+            typed: true,
+            turn_end_uncertain: false,
+        };
+        self.remember(key, Outcome::Typed(typed.clone()));
+        Ok(Gated::Done(typed))
+    }
+
+    async fn paste_in(
+        &self,
+        caller: &Caller,
+        request: pb::PasteImageRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::PasteImageResponse>, Status> {
+        let key = idempotency("PasteImage", request.idempotency_key);
+        let session = id_of(request.session.map(|session| session.value))
+            .ok_or_else(|| status::missing("session"))?;
+        let record = self.session(&session).await?;
+        if let Some(asked) = self.gate_input(caller, self.session_target(&record), approved)? {
+            return Ok(Gated::Ask(asked));
+        }
+        if let Some(Outcome::Paste(pasted)) = self.recall(key.as_deref()) {
+            return Ok(Gated::Done(pasted));
+        }
+        let extension = paste::check(request.format, &request.data)?;
+        let size_bytes = request.data.len() as u64;
+        let store = self.config.store.clone();
+        let folder = session.clone();
+        let saved = blocking(move || store.save_paste(&folder, extension, &request.data)).await?;
+        let path = match saved {
+            Ok(path) => path,
+            Err(StoreError::NoSession { .. } | StoreError::InvalidId { .. }) => {
+                return Err(no_session(&session));
+            }
+            Err(error) => {
+                return Err(status::store(
+                    error,
+                    &self.config.machine,
+                    "save the pasted image",
+                ));
+            }
+        };
+        let Some(path) = path.to_str().map(str::to_owned) else {
+            return Err(status::internal(
+                format!(
+                    "the pasted image was saved at {}, a path that isn't UTF-8",
+                    path.display()
+                ),
+                "",
+            ));
+        };
+        let pasted = pb::PasteImageResponse { path, size_bytes };
+        self.remember(key, Outcome::Paste(pasted.clone()));
+        Ok(Gated::Done(pasted))
+    }
+}
+
+#[tonic::async_trait]
+impl pb::terminal_service_server::TerminalService for Terminals {
+    /// The tabs of `session`, or with no session, this machine's shells.
+    async fn list_tabs(
+        &self,
+        request: Request<pb::ListTabsRequest>,
+    ) -> Result<Response<pb::ListTabsResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = None;
+        let first = self.tabs_listing(&caller, request.clone(), false).await;
+        let (core, who) = (self.core.clone(), caller.clone());
+        answer_gated(
+            &self.config.inbox,
+            &caller,
+            key,
+            "humata.v1.ListTabsResponse",
+            first,
+            move || async move { core.tabs_listing(&who, request, true).await },
+        )
+        .await
+    }
+
+    async fn open_shell_tab(
+        &self,
+        request: Request<pb::OpenShellTabRequest>,
+    ) -> Result<Response<pb::Tab>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.shell_in_session(&caller, request.clone(), false).await;
+        let (core, who) = (self.core.clone(), caller.clone());
+        answer_gated(
+            &self.config.inbox,
+            &caller,
+            key,
+            "humata.v1.Tab",
+            first,
+            move || async move { core.shell_in_session(&who, request, true).await },
+        )
+        .await
+    }
+
+    async fn open_machine_shell(
+        &self,
+        request: Request<pb::OpenMachineShellRequest>,
+    ) -> Result<Response<pb::Tab>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.shell_on_machine(&caller, request.clone(), false).await;
+        let (core, who) = (self.core.clone(), caller.clone());
+        answer_gated(
+            &self.config.inbox,
+            &caller,
+            key,
+            "humata.v1.Tab",
+            first,
+            move || async move { core.shell_on_machine(&who, request, true).await },
+        )
+        .await
+    }
+
+    async fn close_tab(
+        &self,
+        request: Request<pb::CloseTabRequest>,
+    ) -> Result<Response<pb::CloseTabResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.close_one(&caller, request.clone(), false).await;
+        let (core, who) = (self.core.clone(), caller.clone());
+        answer_gated(
+            &self.config.inbox,
+            &caller,
+            key,
+            "humata.v1.CloseTabResponse",
+            first,
+            move || async move { core.close_one(&who, request, true).await },
+        )
+        .await
     }
 
     type AttachStream = AttachStream;
@@ -482,11 +723,18 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         let target = self.tab_target(&tab).await?;
         match (&target, open.read_only) {
             (Target::Session(session), true) => {
-                self.config.guard.require(&caller, &Call::ReadSession(session.clone()))?;
+                // A stream can't be held and replayed once approved, so an Ask stays refused here.
+                self.config
+                    .guard
+                    .require(&caller, &Call::ReadSession(session.clone()))?;
             }
+            // Same: a stream can't wait in the Inbox, so Ask stays refused.
             _ => self.check_input(&caller, target)?,
         }
-        let codec = self.config.compression.pick(Link::Local, &open.accept_codecs);
+        let codec = self
+            .config
+            .compression
+            .pick(Link::Local, &open.accept_codecs);
         let stream = attach::start(&tab, &open, incoming, &self.writers, codec).await?;
         Ok(Response::new(stream))
     }
@@ -499,44 +747,30 @@ impl pb::terminal_service_server::TerminalService for Terminals {
     ) -> Result<Response<pb::TypeResponse>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let key = idempotency("Type", request.idempotency_key);
-        let session = id_of(request.session.map(|session| session.value))
-            .ok_or_else(|| status::missing("session"))?;
-        let session = self.session(&session).await?;
-        self.config.guard.require(
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.type_in(&caller, request.clone(), false).await;
+        let (core, who) = (self.core.clone(), caller.clone());
+        answer_gated(
+            &self.config.inbox,
             &caller,
-            &Call::Use {
-                capability: Capability::SessionType,
-                target: self.session_target(&session),
-            },
-        )?;
-        if let Some(Outcome::Typed(typed)) = self.recall(key.as_deref()) {
-            return Ok(Response::new(typed));
-        }
-        if request.when == pb::type_request::When::TurnEnds as i32 {
-            return Err(status::not_built(
-                "humata.v1.TerminalService.Type with when TURN_ENDS",
-            ));
-        }
-        let tab = match id_of(request.tab.map(|tab| tab.value)) {
-            Some(tab) => self.tab(&tab, Some(&session.id)).await?,
-            None => self.typing_tab(&session.id).await?,
-        };
-        self.type_into(&tab, request.text.as_bytes()).await?;
-        let typed = pb::TypeResponse {
-            queued: None,
-            typed: true,
-            turn_end_uncertain: false,
-        };
-        self.remember(key, Outcome::Typed(typed.clone()));
-        Ok(Response::new(typed))
+            key,
+            "humata.v1.TypeResponse",
+            first,
+            move || async move { core.type_in(&who, request, true).await },
+        )
+        .await
     }
 
     async fn cancel_queued_typing(
         &self,
         _request: Request<pb::CancelQueuedTypingRequest>,
     ) -> Result<Response<pb::CancelQueuedTypingResponse>, Status> {
-        Err(status::not_built("humata.v1.TerminalService.CancelQueuedTyping"))
+        Err(status::not_built(
+            "humata.v1.TerminalService.CancelQueuedTyping",
+        ))
     }
 
     async fn list_queued(
@@ -550,6 +784,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         &self,
         request: Request<pb::SendQueuedNowRequest>,
     ) -> Result<Response<pb::SendQueuedNowResponse>, Status> {
+        // Not built: nothing to run once approved, so Ask stays refused.
         self.check_input(&identity::caller(&request)?, Target::Global)?;
         Err(status::not_built("humata.v1.TerminalService.SendQueuedNow"))
     }
@@ -560,37 +795,21 @@ impl pb::terminal_service_server::TerminalService for Terminals {
     ) -> Result<Response<pb::PasteImageResponse>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let key = idempotency("PasteImage", request.idempotency_key);
-        let session = id_of(request.session.map(|session| session.value))
-            .ok_or_else(|| status::missing("session"))?;
-        let record = self.session(&session).await?;
-        self.check_input(&caller, self.session_target(&record))?;
-        if let Some(Outcome::Paste(pasted)) = self.recall(key.as_deref()) {
-            return Ok(Response::new(pasted));
-        }
-        let extension = paste::check(request.format, &request.data)?;
-        let size_bytes = request.data.len() as u64;
-        let store = self.config.store.clone();
-        let folder = session.clone();
-        let saved = blocking(move || store.save_paste(&folder, extension, &request.data)).await?;
-        let path = match saved {
-            Ok(path) => path,
-            Err(StoreError::NoSession { .. } | StoreError::InvalidId { .. }) => {
-                return Err(no_session(&session));
-            }
-            Err(error) => {
-                return Err(status::store(error, &self.config.machine, "save the pasted image"));
-            }
-        };
-        let Some(path) = path.to_str().map(str::to_owned) else {
-            return Err(status::internal(
-                format!("the pasted image was saved at {}, a path that isn't UTF-8", path.display()),
-                "",
-            ));
-        };
-        let pasted = pb::PasteImageResponse { path, size_bytes };
-        self.remember(key, Outcome::Paste(pasted.clone()));
-        Ok(Response::new(pasted))
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.paste_in(&caller, request.clone(), false).await;
+        let (core, who) = (self.core.clone(), caller.clone());
+        answer_gated(
+            &self.config.inbox,
+            &caller,
+            key,
+            "humata.v1.PasteImageResponse",
+            first,
+            move || async move { core.paste_in(&who, request, true).await },
+        )
+        .await
     }
 }
 
@@ -656,7 +875,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Runs file work off the async threads.
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, Status> {
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Status> {
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))

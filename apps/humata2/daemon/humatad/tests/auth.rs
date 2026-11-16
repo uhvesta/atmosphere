@@ -7,7 +7,9 @@ mod common;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use common::{Attach, Build, Daemon, WAIT, error_of, folder, open, state_folder};
+use common::{
+    Attach, Build, Daemon, WAIT, error_of, folder, humata_in_tab, open, shell_token, state_folder,
+};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{SessionRecord, Store};
 use tonic::metadata::MetadataValue;
@@ -150,12 +152,71 @@ async fn a_session_token_works_on_the_release_daemon() {
             file.display()
         ))
         .await;
-    let token = read_when_written(&file).await;
+    read_when_written(&file).await;
+    // The release daemon takes no attach without a credential, so the shell
+    // runs a script that waits to call humata until the daemon has
+    // restarted. The script says it is running before the attach goes, so
+    // the typed line can't be lost with the attach.
+    let ready = daemon.dir.path().join("ready");
+    let go = daemon.dir.path().join("go");
+    let out = daemon.dir.path().join("whoami.json");
+    let part = daemon.dir.path().join("whoami.part");
+    let script = daemon.dir.path().join("whoami.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "touch '{ready}'\nwhile [ ! -e '{go}' ]; do sleep 0.1; done\nHUMATA_SOCKET='{socket}' '{humata}' --json whoami > '{part}' 2>/dev/null\nmv '{part}' '{out}'\n",
+            ready = ready.display(),
+            go = go.display(),
+            socket = daemon.socket.display(),
+            humata = common::binary("HUMATA").display(),
+            part = part.display(),
+            out = out.display(),
+        ),
+    )
+    .unwrap();
+    attach
+        .type_text(&format!("/bin/sh '{}'\r", script.display()))
+        .await;
+    common::wait_for_path(&ready).await;
     drop(attach);
 
     daemon.restart_as(Build::Release).await;
-    let me = who_am_i(&daemon, as_agent(pb::WhoAmIRequest {}, &token)).await;
-    let tabs = daemon
+    // The token is good in its own tab's tree, on the release daemon too.
+    std::fs::write(&go, "").unwrap();
+    common::wait_for_path(&out).await;
+    let text = std::fs::read_to_string(&out).unwrap();
+    let me: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+
+    assert_eq!(me["result"]["tier"], "agent", "{me}");
+}
+
+fn seed_session(dir: &Path) {
+    let store = Store::open(state_folder(dir).join("store")).unwrap();
+    store
+        .put_session(&SessionRecord {
+            id: SESSION.to_owned(),
+            channel: "ch_auth".to_owned(),
+            machine: String::new(),
+            title: "auth".to_owned(),
+            agent: "zsh".to_owned(),
+            folder: dir.to_owned(),
+            created_unix_ms: 0,
+        })
+        .unwrap();
+}
+
+/// SEC-15: a session's token from outside its tab's process tree is
+/// refused, and the same token inside the tab works.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_token_used_outside_its_tab_is_refused_and_works_inside_it() {
+    let dir = folder();
+    seed_session(dir.path());
+    let daemon = Daemon::start_build(Build::AdminForThisProcess, dir).await;
+    let (token, mut attach) = shell_token(&daemon, &session()).await;
+
+    let inside = humata_in_tab(&daemon, &mut attach, "whoami").await;
+    let refused = daemon
         .terminals()
         .await
         .list_tabs(as_agent(
@@ -165,15 +226,19 @@ async fn a_session_token_works_on_the_release_daemon() {
             &token,
         ))
         .await
-        .unwrap()
-        .into_inner()
-        .tabs;
+        .unwrap_err();
+    let after = humata_in_tab(&daemon, &mut attach, "whoami").await;
 
-    let Some(pb::actor::Actor::Agent(agent)) = me.actor.and_then(|actor| actor.actor) else {
-        panic!("expected the session's agent");
-    };
-    assert_eq!(agent.session, Some(session()));
-    assert!(tabs.iter().any(|listed| listed.id.as_ref() == Some(&tab)));
+    let error = error_of(&refused);
+    assert!(
+        matches!(error.kind, Some(pb::error::Kind::IdentityMismatch(_))),
+        "{refused:?}"
+    );
+    assert!(!error.fix.is_empty());
+    assert_eq!(inside["result"]["tier"], "agent", "{inside}");
+    // Misuse revoked the token, so even the session's own shell is refused
+    // until the session resumes and gets a new one.
+    assert_ne!(after["result"]["tier"], "agent", "{after}");
 }
 
 /// `path`'s contents once something non-empty is written there.
@@ -184,7 +249,11 @@ async fn read_when_written(path: &Path) -> String {
             Ok(text) if !text.is_empty() => return text,
             _ => {}
         }
-        assert!(Instant::now() < deadline, "{} was never written", path.display());
+        assert!(
+            Instant::now() < deadline,
+            "{} was never written",
+            path.display()
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

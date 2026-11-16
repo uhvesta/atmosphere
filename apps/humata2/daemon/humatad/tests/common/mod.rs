@@ -938,6 +938,30 @@ pub async fn shell_token(daemon: &Daemon, session: &pb::SessionId) -> (String, A
     }
 }
 
+/// `humata --json <args>` run by the shell of the tab `attach` is on, so it
+/// is in that tab's process tree and carries the token the shell was
+/// given. Returns the JSON it printed, or null if it printed none (a
+/// refused call may exit non-zero with nothing on stdout).
+pub async fn humata_in_tab(daemon: &Daemon, attach: &mut Attach, args: &str) -> serde_json::Value {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file = daemon.dir.path().join(format!("in-tab-{number}.json"));
+    let partial = daemon.dir.path().join(format!("in-tab-{number}.part"));
+    attach
+        .type_text(&format!(
+            "HUMATA_SOCKET='{}' '{}' --json {args} > '{}' 2>/dev/null; mv '{}' '{}'\r",
+            daemon.socket.display(),
+            binary("HUMATA").display(),
+            partial.display(),
+            partial.display(),
+            file.display(),
+        ))
+        .await;
+    wait_for_path(&file).await;
+    let text = std::fs::read_to_string(&file).unwrap();
+    serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)
+}
+
 /// `humata --json <args>` as the agent holding `token`; the exit code and
 /// the JSON printed.
 pub async fn humata_as_agent(

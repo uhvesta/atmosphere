@@ -250,7 +250,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             crate::log::say!(
                 "humatad2: warning: admin mode: a call with no credential acts as the user. This is a test daemon; don't use it as your real one"
             );
-            Authenticate::admin(identities.clone(), logins.clone(), identity::Admin::Anyone)
+            Authenticate::admin(
+                identities.clone(),
+                logins.clone(),
+                store.clone(),
+                Arc::new(Kernel),
+                identity::Admin::Anyone,
+            )
         }
         (false, Some(pid)) => {
             crate::log::say!(
@@ -259,13 +265,25 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             Authenticate::admin(
                 identities.clone(),
                 logins.clone(),
+                store.clone(),
+                Arc::new(Kernel),
                 identity::Admin::Process(pid),
             )
         }
-        (false, None) => Authenticate::new(identities.clone(), logins.clone()),
+        (false, None) => Authenticate::new(
+            identities.clone(),
+            logins.clone(),
+            store.clone(),
+            Arc::new(Kernel),
+        ),
     };
     #[cfg(not(feature = "admin"))]
-    let authenticate = Authenticate::new(identities.clone(), logins.clone());
+    let authenticate = Authenticate::new(
+        identities.clone(),
+        logins.clone(),
+        store.clone(),
+        Arc::new(Kernel),
+    );
     let guard = Arc::new(Guard::new(&machine, role));
     crate::rules_kept::restore(&store, &guard).map_err(DaemonError::RulesKept)?;
 
@@ -310,6 +328,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         restart::in_background(store.clone(), identities.clone(), starter.clone(), restored);
     last_good::keep(store.clone(), last_good::Quiet::default());
     let compression = Arc::new(Compression::new(&state));
+    let feed = Arc::new(Feed::default());
+    let inbox = Arc::new(Inbox::new(
+        guard.clone(),
+        store.clone(),
+        machine.clone(),
+        feed.clone(),
+    ));
     let terminals = Terminals::new(TerminalsConfig {
         store: store.clone(),
         machine: machine.clone(),
@@ -323,6 +348,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         guard: guard.clone(),
         identities: identities.clone(),
         compression: compression.clone(),
+        inbox: inbox.clone(),
     });
     let files = Files::new(
         store.clone(),
@@ -331,13 +357,6 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         compression.clone(),
         Link::Local,
     );
-    let feed = Arc::new(Feed::default());
-    let inbox = Arc::new(Inbox::new(
-        guard.clone(),
-        store.clone(),
-        machine.clone(),
-        feed.clone(),
-    ));
     let review =
         crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
     let access = Access::new(guard.clone(), feed.clone(), inbox.clone(), store.clone());

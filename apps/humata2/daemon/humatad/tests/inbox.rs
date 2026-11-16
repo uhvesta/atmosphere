@@ -983,15 +983,33 @@ async fn the_feed_tells_of_the_grant_an_approval_makes_and_its_revoking() {
 }
 
 // ----- Calls a rule sends to Ask wait in the Inbox (D38.6). The default
-// rule for reading other channels is Ask. ListChannels has no idempotency
+// rule for reading other channels is Allow (D127.4), so these tests set it
+// to Ask first. ListChannels has no idempotency
 // key, so the same-key repeat (TP-14) and a rule turned Never after the
 // ask (IN-21) are not covered here: the first needs a deferred call with a
 // key, the second needs SetChannelRule. -----
 
 impl Fixture {
-    /// The agent lists channels; the call is deferred and this returns the
-    /// request it waits on.
+    /// The user sets the channel's rule for reading other channels.
+    async fn set_global_read(&self, decision: pb::Decision) {
+        self.access()
+            .await
+            .set_channel_rule(pb::SetChannelRuleRequest {
+                channel: Some(pb::ChannelId {
+                    value: CHANNEL.to_owned(),
+                }),
+                capability: pb::Capability::GlobalRead as i32,
+                decision: decision as i32,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+    }
+
+    /// With the rule set to Ask, the agent lists channels; the call is
+    /// deferred and this returns the request it waits on.
     async fn list_channels_deferred(&self) -> pb::RequestId {
+        self.set_global_read(pb::Decision::Ask).await;
         let refused =
             pb::channel_service_client::ChannelServiceClient::new(self.daemon.channel().await)
                 .list_channels(self.as_agent(pb::ListChannelsRequest::default()))
@@ -1027,6 +1045,19 @@ async fn an_approved_deferred_call_runs_and_its_result_is_waited_for() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_agent_lists_channels_at_once_while_the_rule_is_left_at_its_default() {
+    let fixture = Fixture::start().await;
+
+    let listed =
+        pb::channel_service_client::ChannelServiceClient::new(fixture.daemon.channel().await)
+            .list_channels(fixture.as_agent(pb::ListChannelsRequest::default()))
+            .await;
+
+    assert!(listed.is_ok(), "{listed:?}");
+    assert!(common::pending_requests(&fixture.daemon).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_denied_deferred_call_never_runs() {
     let fixture = Fixture::start().await;
     let id = fixture.list_channels_deferred().await;
@@ -1052,4 +1083,68 @@ async fn the_user_lists_channels_without_asking() {
             .await;
 
     assert!(listed.is_ok());
+}
+
+// GlobalRead, the capability behind ListChannels, has no grant target
+// (IN-22), so its card offers no Always allow. A positive Always-allow test
+// needs a deferred call on a capability that has one; it is a unit test in
+// src/inbox/deferred.rs, which defers a network reach.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deferred_card_has_a_preview_and_offers_no_always_allow_without_a_target() {
+    let fixture = Fixture::start().await;
+    let id = fixture.list_channels_deferred().await;
+
+    let card = fixture.request(&id).await;
+    assert!(card.preview.is_some());
+    assert!(card.always.is_none());
+
+    let refused = fixture
+        .answer(
+            &id,
+            pb::request_answer::Answer::Always(pb::AlwaysLet {
+                target: Some(network("example.com", 443)),
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::InvalidArgument);
+    assert_eq!(
+        fixture.request(&id).await.state(),
+        pb::RequestState::Pending,
+        "a refused answer leaves the request waiting"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approving_a_deferred_call_once_makes_no_grant_so_the_next_call_asks_again() {
+    let fixture = Fixture::start().await;
+    let first = fixture.list_channels_deferred().await;
+    fixture.answer(&first, approve()).await.unwrap();
+    fixture.wait(&first).await;
+
+    let second = fixture.list_channels_deferred().await;
+
+    assert_ne!(first, second);
+    assert!(fixture.grants().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_a_restart_a_pending_deferred_request_is_withdrawn_and_an_ask_ahead_still_waits() {
+    let mut fixture = Fixture::start().await;
+    let deferred = fixture.list_channels_deferred().await;
+    let ahead = fixture
+        .ask_ahead(pb::Capability::NetworkReach, network("example.com", 443))
+        .await
+        .id
+        .unwrap();
+
+    fixture.daemon.restart().await;
+
+    let deferred = fixture.request(&deferred).await;
+    assert_eq!(deferred.state(), pb::RequestState::Withdrawn);
+    assert_eq!(deferred.withdraw_reason(), pb::WithdrawReason::CallEnded);
+    assert_eq!(
+        fixture.request(&ahead).await.state(),
+        pb::RequestState::Pending
+    );
 }

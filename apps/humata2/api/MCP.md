@@ -236,10 +236,10 @@ rule named until the user changes the rule (IN-18).
 
 | Tool | Op / gRPC | Capability (default) | Input → output | Side effects | Host away |
 | --- | --- | --- | --- | --- | --- |
-| `channels_list` | `channel.list` / ListChannels | GLOBAL_READ (Ask; Global board and other channels are one row, D21) | `{}` → `{channels:[{id, name, machines, sessions}]}` | none | stale |
-| `board_items_list` (global or another channel) | as 6.1 | GLOBAL_READ (Ask) | as 6.1 | none | stale |
+| `channels_list` | `channel.list` / ListChannels | GLOBAL_READ (Allow by default, D127.4; Global board and other channels are one row, D21) | `{}` → `{channels:[{id, name, machines, sessions}]}` | none | stale |
+| `board_items_list` (global or another channel) | as 6.1 | GLOBAL_READ (Allow by default, D127.4) | as 6.1 | none | stale |
 | `board_item_create/update/move/delete` on another's channel item | as 6.1 | CHANNEL_BOARD_EDIT_OTHERS (Ask) | as 6.1 | as 6.1 | per away rule |
-| `board_item_*` on the Global board or another channel's board | as 6.1 | GLOBAL_READ (Ask): "Global board, or other channels and their boards: anything" | as 6.1 | as 6.1 | per away rule |
+| `board_item_*` on the Global board or another channel's board | as 6.1 | GLOBAL_READ (reads Allow by default, D127.4; writes get their own Ask-tier capability when the board is built) | as 6.1 | as 6.1 | per away rule |
 | `files_list`, `file_read` in another session, same machine | as 6.1 | FILES_READ_OTHER_SESSION (Ask); also `humata attach --read-only` of another session (D21) | `location.session` set | none | per away rule (local) |
 | `files_list`, `file_read` on another machine | as 6.1 | FILES_READ_OTHER_MACHINE (Ask) | `location.machine` set | none | host |
 | `files_copy_in` | `file.copy_in` / StartTransfer | FILES_COPY_IN (Ask) | `{sources: Location[], destination: Location (own clone or shared/), on_existing?, reason?}` → `{transfer_id}` | copies into its own clone or `shared/` only (TP-4) | host (other machine) / per away rule (same machine) |

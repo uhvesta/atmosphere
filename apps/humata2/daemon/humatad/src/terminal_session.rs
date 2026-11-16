@@ -67,12 +67,13 @@ pub(crate) fn terminal_session(
     let terminal = process
         .terminal
         .ok_or(TerminalSessionError::NoTerminal { pid })?;
-    let leader = processes
-        .process(process.session)
-        .map_err(|source| TerminalSessionError::LeaderGone {
-            session: process.session,
-            source,
-        })?;
+    let leader =
+        processes
+            .process(process.session)
+            .map_err(|source| TerminalSessionError::LeaderGone {
+                session: process.session,
+                source,
+            })?;
     Ok(TerminalSession {
         session: process.session,
         leader_started: leader.started,
@@ -97,7 +98,7 @@ pub(crate) fn descends_from(
 
 /// `pid`, then its parent and theirs, up to init. Stops early at a
 /// process it can't read, which has exited.
-fn lineage(processes: &dyn Processes, pid: i32) -> impl Iterator<Item = i32> + '_ {
+pub(crate) fn lineage(processes: &dyn Processes, pid: i32) -> impl Iterator<Item = i32> + '_ {
     // More generations than any system has; guards against a loop.
     const GENERATIONS_MAX: usize = 4096;
     std::iter::successors(Some(pid), move |&pid| {
@@ -301,7 +302,11 @@ mod macos {
             ));
         }
         let session = getsid(Some(id))?;
-        let name = info.comm.iter().take_while(|byte| **byte != 0).map(|byte| *byte as u8);
+        let name = info
+            .comm
+            .iter()
+            .take_while(|byte| **byte != 0)
+            .map(|byte| *byte as u8);
         Ok(Process {
             parent: i32::try_from(info.ppid).map_err(io::Error::other)?,
             session: session.as_raw_pid(),
@@ -405,7 +410,10 @@ pub(crate) mod tests {
             terminal_session(&fake, 30),
             Err(TerminalSessionError::NoTerminal { pid: 30 })
         ));
-        assert_ne!(terminal_session(&fake, 31).unwrap(), terminal_session(&fake, 22).unwrap());
+        assert_ne!(
+            terminal_session(&fake, 31).unwrap(),
+            terminal_session(&fake, 22).unwrap()
+        );
     }
 
     #[test]

@@ -491,7 +491,7 @@ const DEFAULTS: &[(&str, Target, Expect)] = &[
     ("board_item_create", Target::OwnSessionBoard, Expect::Applied), // OWN_BOARD_WRITE
     ("board_item_create", Target::ChannelBoard, Expect::Applied), // CHANNEL_BOARD_ADD
     ("board_item_update", Target::OthersChannelItem, Expect::Pending), // CHANNEL_BOARD_EDIT_OTHERS
-    ("channels_list", Target::None, Expect::Pending), // GLOBAL_READ
+    ("channels_list", Target::None, Expect::Pending), // GLOBAL_READ, set to Ask first (default Allow, D127.4)
     ("session_fork", Target::Machine("gpu-box"), Expect::Pending), // SESSION_START_OTHER_MACHINE
     ("network_connect", Target::Host("db.internal", 5432), Expect::Pending), // NETWORK_REACH, D20
     ("session_stop", Target::OtherSession, Expect::Denied), // SESSION_STOP_OTHER: Never
@@ -620,7 +620,7 @@ call, and a cell may name its own call when the row's words need it (a
 | --- | --- | --- |
 | No rule | `file_write` into its own clone; `humata files put` | none |
 | Default Allow | `board_item_create` on the channel board; `humata board add` | `CHANNEL_BOARD_ADD` |
-| Ask me | `channels_list`; `humata channels` | `GLOBAL_READ` |
+| Ask me | `channels_list`; `humata channels` (the test sets `GLOBAL_READ` to Ask first; its default is Allow, D127.4) | `GLOBAL_READ` |
 | Never by default | `session_stop` of another session; `humata session stop` | `SESSION_STOP_OTHER` |
 | User-only | `inbox.answer`; `humata inbox approve` | `INBOX_ANSWER` |
 

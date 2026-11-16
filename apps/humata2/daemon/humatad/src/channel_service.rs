@@ -11,10 +11,11 @@
 //! daemon was told (`--default-agent`).
 
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use humata2_access::{Call, Capability, ChannelId, Refusal, Target};
+use humata2_access::{AccessRequest, Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::{GitError, NewChannel, SetupError, Starter, clone_mains, create_channel};
 use humata2_store::{ChannelRecord, MainClone, Store, StoreError};
@@ -63,6 +64,70 @@ async fn readable_channels(
 /// The longest channel name taken.
 const NAME_MAX: usize = 100;
 
+/// What a guarded handler body got to: the answer, or the rule that sent
+/// the call to Ask me before it could run (D38.6).
+pub(crate) enum Gated<T> {
+    Done(T),
+    Ask(Box<AccessRequest>),
+}
+
+/// Checks `call` for `caller`. `Ok(None)` means go on; `Ok(Some(..))` means
+/// the rule says Ask. An `approved` call (the user said yes in the Inbox)
+/// goes on without asking again.
+pub(crate) fn gate(
+    guard: &Guard,
+    caller: &Caller,
+    call: &Call,
+    approved: bool,
+) -> Result<Option<Box<AccessRequest>>, Status> {
+    if approved {
+        return Ok(None);
+    }
+    match guard.check(caller, call)? {
+        Checked::Allowed => Ok(None),
+        Checked::Ask(asked) => Ok(Some(Box::new(asked))),
+    }
+}
+
+/// Answers a unary call whose body ran as `first`. A body that stopped at an
+/// Ask puts the call in the Inbox, with `again` to run it once the user
+/// approves it: `again` must do the whole call afresh, with `approved` set,
+/// and own what it needs (TP-13). The response's full name is `type_name`.
+pub(crate) async fn answer_gated<T, Fut>(
+    inbox: &Inbox,
+    caller: &Caller,
+    key: Option<String>,
+    type_name: &'static str,
+    first: Result<Gated<T>, Status>,
+    again: impl FnOnce() -> Fut + Send + 'static,
+) -> Result<Response<T>, Status>
+where
+    T: Message,
+    Fut: Future<Output = Result<Gated<T>, Status>> + Send + 'static,
+{
+    match first? {
+        Gated::Done(done) => Ok(Response::new(done)),
+        Gated::Ask(asked) => {
+            let run: crate::inbox::Run = Box::new(move || {
+                Box::pin(async move {
+                    match again().await? {
+                        Gated::Done(done) => Ok(Deferred {
+                            result: done.encode_to_vec(),
+                            result_type: type_name.to_owned(),
+                        }),
+                        Gated::Ask(_) => Err(status::internal(
+                            "an approved call was sent to Ask me a second time",
+                            "repeat the call",
+                        )),
+                    }
+                })
+            });
+            Err(inbox.defer(caller, *asked, key, run).await)
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct ChannelSvc {
     guard: Arc<Guard>,
     operations: Arc<Operations>,
@@ -93,17 +158,22 @@ impl ChannelSvc {
         }
     }
 
-    fn require(
+    fn gate(
         &self,
         caller: &Caller,
         capability: Capability,
         target: Target,
-    ) -> Result<(), Status> {
+        approved: bool,
+    ) -> Result<Option<Box<AccessRequest>>, Status> {
         if matches!(caller, Caller::Peer) {
             return Err(status::refused(&Refusal::PeerCannotCall));
         }
-        self.guard
-            .require(caller, &Call::Use { capability, target })
+        gate(
+            &self.guard,
+            caller,
+            &Call::Use { capability, target },
+            approved,
+        )
     }
 
     async fn find(&self, id: &str) -> Result<ChannelRecord, Status> {
@@ -147,6 +217,145 @@ impl ChannelSvc {
             channel: Some(self.show(channel).await?),
             setup: Some(setup),
         })
+    }
+
+    /// The body of CreateChannel; `approved` once the user said yes to it.
+    async fn make_channel(
+        &self,
+        caller: &Caller,
+        request: pb::CreateChannelRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::CreateChannelResponse>, Status> {
+        if let Some(asked) =
+            self.gate(caller, Capability::ChannelCreate, Target::Global, approved)?
+        {
+            return Ok(Gated::Ask(asked));
+        }
+        if let Some(setup) = self
+            .operations
+            .existing(caller, request.idempotency_key.as_ref())?
+        {
+            return Ok(Gated::Done(self.answer(setup).await?));
+        }
+        let new = NewChannel {
+            name: clean_name(&request.name)?,
+            repos: clean_repos(&request.repos)?,
+            machines: self.machines(&request.machines)?,
+            branch_prefix: String::new(),
+            default_agent: self.default_agent.clone(),
+        };
+        let (store, layout) = (self.starter.store.clone(), self.starter.layout.clone());
+        let channel = blocking(move || create_channel(&store, &layout, new))
+            .await?
+            .map_err(|error| setup_status(error, &self.machine))?;
+
+        let mut steps = vec![("record".to_owned(), "Saving the channel".to_owned())];
+        for repo in &channel.repos {
+            let shown = format!("{}/{}", repo.owner, repo.name);
+            steps.push((format!("clone_main:{shown}"), clone_title(&shown)));
+        }
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
+                value: channel.id.clone(),
+            })),
+        };
+        let progress = match self.operations.start_steps(
+            caller,
+            pb::OperationKind::AddRepo,
+            target,
+            &steps,
+            false,
+            request.idempotency_key,
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(setup) => return Ok(Gated::Done(self.answer(setup).await?)),
+        };
+        progress.set_step("record", pb::StepState::Done, None);
+        let setup = progress.operation();
+        let (starter, record) = (self.starter.clone(), channel.clone());
+        tokio::task::spawn_blocking(move || clone_in_background(starter, record, progress));
+        Ok(Gated::Done(pb::CreateChannelResponse {
+            channel: Some(self.show(channel).await?),
+            setup: Some(setup),
+        }))
+    }
+
+    /// The body of GetChannel; `approved` once the user said yes to it.
+    async fn read_channel(
+        &self,
+        caller: &Caller,
+        request: pb::GetChannelRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Channel>, Status> {
+        let id = request.id.map(|id| id.value).filter(|id| !id.is_empty());
+        let id = id.ok_or_else(|| status::missing("id"))?;
+        if let Some(asked) = self.gate(
+            caller,
+            Capability::ChannelRead,
+            Target::Channel(ChannelId::new(id.as_str())),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        let channel = self.find(&id).await?;
+        Ok(Gated::Done(self.show(channel).await?))
+    }
+
+    /// The body of RenameChannel; `approved` once the user said yes to it.
+    async fn rename(
+        &self,
+        caller: &Caller,
+        request: pb::RenameChannelRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::Channel>, Status> {
+        let id = request.id.map(|id| id.value).filter(|id| !id.is_empty());
+        let id = id.ok_or_else(|| status::missing("id"))?;
+        let name = clean_name(&request.name)?;
+        if let Some(asked) = self.gate(
+            caller,
+            Capability::ChannelChange,
+            Target::Channel(ChannelId::new(id.as_str())),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        let expected = request.expected_revision.map(|revision| revision.value);
+        let (store, renaming, shown) = (self.starter.store.clone(), id.clone(), name.clone());
+        let renamed = blocking(move || store.rename_channel(&renaming, &shown, expected)).await?;
+        let channel = match renamed {
+            Ok(channel) => channel,
+            Err(StoreError::NoChannel { .. } | StoreError::InvalidId { .. }) => {
+                return Err(no_channel(&id));
+            }
+            Err(StoreError::StaleChannel {
+                expected, actual, ..
+            }) => {
+                return Err(status::failure(
+                    Code::Aborted,
+                    pb::Error {
+                        message: format!(
+                            "the channel is at revision {actual}, not {expected} as the change was made against"
+                        ),
+                        fix: "read the channel again, check the name still needs changing, and send the change again".to_owned(),
+                        retry: None,
+                        kind: Some(pb::error::Kind::RevisionConflict(pb::RevisionConflict {
+                            kind: pb::EntityKind::Channel as i32,
+                            id,
+                            expected: Some(pb::Revision { value: expected }),
+                            actual: Some(pb::Revision { value: actual }),
+                        })),
+                    },
+                ));
+            }
+            Err(error) => {
+                return Err(status::store(
+                    error,
+                    &self.machine,
+                    "save the channel's new name",
+                ));
+            }
+        };
+        Ok(Gated::Done(self.show(channel).await?))
     }
 
     fn machines(&self, wanted: &[pb::MachineId]) -> Result<Vec<String>, Status> {
@@ -473,54 +682,21 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
     ) -> Result<Response<pb::CreateChannelResponse>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        self.require(&caller, Capability::ChannelCreate, Target::Global)?;
-        if let Some(setup) = self
-            .operations
-            .existing(&caller, request.idempotency_key.as_ref())?
-        {
-            return Ok(Response::new(self.answer(setup).await?));
-        }
-        let new = NewChannel {
-            name: clean_name(&request.name)?,
-            repos: clean_repos(&request.repos)?,
-            machines: self.machines(&request.machines)?,
-            branch_prefix: String::new(),
-            default_agent: self.default_agent.clone(),
-        };
-        let (store, layout) = (self.starter.store.clone(), self.starter.layout.clone());
-        let channel = blocking(move || create_channel(&store, &layout, new))
-            .await?
-            .map_err(|error| setup_status(error, &self.machine))?;
-
-        let mut steps = vec![("record".to_owned(), "Saving the channel".to_owned())];
-        for repo in &channel.repos {
-            let shown = format!("{}/{}", repo.owner, repo.name);
-            steps.push((format!("clone_main:{shown}"), clone_title(&shown)));
-        }
-        let target = pb::EntityRef {
-            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
-                value: channel.id.clone(),
-            })),
-        };
-        let progress = match self.operations.start_steps(
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.make_channel(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            pb::OperationKind::AddRepo,
-            target,
-            &steps,
-            false,
-            request.idempotency_key,
-        )? {
-            Started::New(progress) => progress,
-            Started::Existing(setup) => return Ok(Response::new(self.answer(setup).await?)),
-        };
-        progress.set_step("record", pb::StepState::Done, None);
-        let setup = progress.operation();
-        let (starter, record) = (self.starter.clone(), channel.clone());
-        tokio::task::spawn_blocking(move || clone_in_background(starter, record, progress));
-        Ok(Response::new(pb::CreateChannelResponse {
-            channel: Some(self.show(channel).await?),
-            setup: Some(setup),
-        }))
+            key,
+            "humata.v1.CreateChannelResponse",
+            first,
+            move || async move { me.make_channel(&who, request, true).await },
+        )
+        .await
     }
 
     async fn get_channel(
@@ -528,19 +704,18 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         request: Request<pb::GetChannelRequest>,
     ) -> Result<Response<pb::Channel>, Status> {
         let caller = identity::caller(&request)?;
-        let id = request
-            .into_inner()
-            .id
-            .map(|id| id.value)
-            .filter(|id| !id.is_empty());
-        let id = id.ok_or_else(|| status::missing("id"))?;
-        self.require(
+        let request = request.into_inner();
+        let first = self.read_channel(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            Capability::ChannelRead,
-            Target::Channel(ChannelId::new(id.as_str())),
-        )?;
-        let channel = self.find(&id).await?;
-        Ok(Response::new(self.show(channel).await?))
+            None,
+            "humata.v1.Channel",
+            first,
+            move || async move { me.read_channel(&who, request, true).await },
+        )
+        .await
     }
 
     /// Every channel the caller may read: all for the user, an agent's own
@@ -591,51 +766,21 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
     ) -> Result<Response<pb::Channel>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let id = request.id.map(|id| id.value).filter(|id| !id.is_empty());
-        let id = id.ok_or_else(|| status::missing("id"))?;
-        let name = clean_name(&request.name)?;
-        self.require(
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self.rename(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
             &caller,
-            Capability::ChannelChange,
-            Target::Channel(ChannelId::new(id.as_str())),
-        )?;
-        let expected = request.expected_revision.map(|revision| revision.value);
-        let (store, renaming, shown) = (self.starter.store.clone(), id.clone(), name.clone());
-        let renamed = blocking(move || store.rename_channel(&renaming, &shown, expected)).await?;
-        let channel = match renamed {
-            Ok(channel) => channel,
-            Err(StoreError::NoChannel { .. } | StoreError::InvalidId { .. }) => {
-                return Err(no_channel(&id));
-            }
-            Err(StoreError::StaleChannel {
-                expected, actual, ..
-            }) => {
-                return Err(status::failure(
-                    Code::Aborted,
-                    pb::Error {
-                        message: format!(
-                            "the channel is at revision {actual}, not {expected} as the change was made against"
-                        ),
-                        fix: "read the channel again, check the name still needs changing, and send the change again".to_owned(),
-                        retry: None,
-                        kind: Some(pb::error::Kind::RevisionConflict(pb::RevisionConflict {
-                            kind: pb::EntityKind::Channel as i32,
-                            id,
-                            expected: Some(pb::Revision { value: expected }),
-                            actual: Some(pb::Revision { value: actual }),
-                        })),
-                    },
-                ));
-            }
-            Err(error) => {
-                return Err(status::store(
-                    error,
-                    &self.machine,
-                    "save the channel's new name",
-                ));
-            }
-        };
-        Ok(Response::new(self.show(channel).await?))
+            key,
+            "humata.v1.Channel",
+            first,
+            move || async move { me.rename(&who, request, true).await },
+        )
+        .await
     }
 
     async fn search_git_hub_repos(

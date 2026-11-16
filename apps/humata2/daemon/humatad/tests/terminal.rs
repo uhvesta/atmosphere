@@ -45,7 +45,9 @@ async fn typed_input_comes_back_as_contiguous_output() {
 
     let seq = attach.type_text(SAY_HELLO).await;
     attach.wait_for("hello").await;
-    attach.wait_until(|attach| attach.accepted.contains(&seq)).await;
+    attach
+        .wait_until(|attach| attach.accepted.contains(&seq))
+        .await;
 
     assert_eq!(attach.snapshots, 1);
     let state = attach.states.first().unwrap();
@@ -164,7 +166,10 @@ async fn the_size_a_writer_attaches_with_reaches_the_shell() {
     attach.wait_for("30 100").await;
 
     attach
-        .send(ClientMessage::Resize(pb::TerminalResize { cols: 90, rows: 20 }))
+        .send(ClientMessage::Resize(pb::TerminalResize {
+            cols: 90,
+            rows: 20,
+        }))
         .await;
     attach.type_text("stty size\n").await;
     attach.wait_for("20 90").await;
@@ -231,7 +236,10 @@ async fn a_closed_tab_is_gone() {
         .unwrap();
 
     assert!(list(&daemon).await.is_empty());
-    let refused = Attach::try_start(&daemon, open(&tab, 0)).await.err().unwrap();
+    let refused = Attach::try_start(&daemon, open(&tab, 0))
+        .await
+        .err()
+        .unwrap();
     assert_eq!(not_found(&refused), pb::EntityKind::Tab);
 }
 
@@ -240,7 +248,10 @@ async fn attaching_past_the_end_is_refused() {
     let daemon = Daemon::start().await;
     let tab = machine_shell(&daemon).await;
 
-    let refused = Attach::try_start(&daemon, open(&tab, u64::MAX)).await.err().unwrap();
+    let refused = Attach::try_start(&daemon, open(&tab, u64::MAX))
+        .await
+        .err()
+        .unwrap();
 
     let (field, problem) = invalid_field(&refused);
     assert_eq!(field, "open.from_offset");
@@ -284,13 +295,23 @@ async fn writers_hear_about_each_other() {
     let mut second = Attach::start(&daemon, open(&tab, 0)).await;
     second.wait_until(|attach| !attach.states.is_empty()).await;
     first
-        .wait_until(|attach| attach.states.last().is_some_and(|state| state.other_writers == 1))
+        .wait_until(|attach| {
+            attach
+                .states
+                .last()
+                .is_some_and(|state| state.other_writers == 1)
+        })
         .await;
 
     assert_eq!(second.states[0].other_writers, 1);
     drop(second);
     first
-        .wait_until(|attach| attach.states.last().is_some_and(|state| state.other_writers == 0))
+        .wait_until(|attach| {
+            attach
+                .states
+                .last()
+                .is_some_and(|state| state.other_writers == 0)
+        })
         .await;
 }
 
@@ -422,4 +443,183 @@ async fn typing_into_a_shell_that_exited_is_refused() {
     let refused = type_into_session(&daemon, SAY_HELLO).await.unwrap_err();
 
     assert_ne!(refused.code(), tonic::Code::Ok);
+}
+
+/// The user answers `id` with an approval, and the agent waits for what the
+/// approved call returned: its type name and encoded response.
+async fn approve_and_wait(
+    daemon: &common::Daemon,
+    token: &str,
+    id: &pb::RequestId,
+) -> pb::WaitResponse {
+    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(daemon.channel().await);
+    inbox
+        .answer_request(pb::AnswerRequestRequest {
+            id: Some(id.clone()),
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut stream = inbox
+        .wait_for_answer(agent_request(
+            pb::WaitForAnswerRequest {
+                id: Some(id.clone()),
+                wait_seconds: 10,
+            },
+            token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    loop {
+        let message = tokio::time::timeout(common::WAIT, stream.message())
+            .await
+            .expect("the wait ended in time")
+            .unwrap()
+            .expect("the wait ended with an answer");
+        if !message.keepalive {
+            return message;
+        }
+    }
+}
+
+/// The request an agent's call is waiting on, from the pending error.
+fn pending_request(refused: &tonic::Status) -> pb::RequestId {
+    match common::error_of(refused).kind {
+        Some(pb::error::Kind::ApprovalPending(pending)) => pending.request.unwrap(),
+        other => panic!("expected approval_pending, got {other:?}"),
+    }
+}
+
+fn agent_request<T>(message: T, token: &str) -> tonic::Request<T> {
+    let mut request = tonic::Request::new(message);
+    request.metadata_mut().insert(
+        "humata-session-token",
+        tonic::metadata::MetadataValue::try_from(token).unwrap(),
+    );
+    request
+}
+
+/// Makes the channel's rule for `capability` Ask me.
+async fn ask_me(daemon: &common::Daemon, channel: &pb::ChannelId, capability: pb::Capability) {
+    pb::access_service_client::AccessServiceClient::new(daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: Some(channel.clone()),
+            capability: capability as i32,
+            decision: pb::Decision::Ask as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+}
+
+/// The session token a shell tab of `session` was given.
+async fn session_token(daemon: &common::Daemon, session: &pb::SessionId) -> String {
+    let tab = daemon
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: None,
+            session: Some(session.clone()),
+            repo: None,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id
+        .unwrap();
+    let file = daemon.dir.path().join(format!("token-{}", session.value));
+    let mut attach = common::Attach::start(daemon, common::open(&tab, 0)).await;
+    attach
+        .type_text(&format!(
+            "printf '%s' \"$HUMATA_SESSION_TOKEN\" > {}\r",
+            file.display()
+        ))
+        .await;
+    let deadline = std::time::Instant::now() + common::WAIT;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(&file)
+            && !text.is_empty()
+        {
+            return text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the token was never written"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_typing_into_another_session_that_a_rule_sends_to_ask_runs_once_approved() {
+    let dir = folder();
+    let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
+    for (id, title) in [(TYPING_SESSION, "typing"), ("se_typist", "typist")] {
+        store
+            .put_session(&SessionRecord {
+                id: id.to_owned(),
+                channel: "ch_typing".to_owned(),
+                machine: String::new(),
+                title: title.to_owned(),
+                agent: "sh".to_owned(),
+                folder: dir.path().to_owned(),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+    }
+    drop(store);
+    let daemon = Daemon::start_in(dir).await;
+    let target = daemon
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: None,
+            session: Some(typing_session()),
+            repo: None,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id
+        .unwrap();
+    let mut watching = Attach::start(&daemon, open(&target, 0)).await;
+    let token = session_token(
+        &daemon,
+        &pb::SessionId {
+            value: "se_typist".to_owned(),
+        },
+    )
+    .await;
+    ask_me(
+        &daemon,
+        &pb::ChannelId {
+            value: "ch_typing".to_owned(),
+        },
+        pb::Capability::SessionType,
+    )
+    .await;
+
+    let refused = daemon
+        .terminals()
+        .await
+        .r#type(agent_request(
+            pb::TypeRequest {
+                session: Some(typing_session()),
+                text: SAY_HELLO.to_owned(),
+                ..Default::default()
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    let waited = approve_and_wait(&daemon, &token, &pending_request(&refused)).await;
+
+    assert_eq!(waited.result_type, "humata.v1.TypeResponse");
+    let typed = <pb::TypeResponse as prost::Message>::decode(waited.result.as_slice()).unwrap();
+    assert!(typed.typed);
+    watching.wait_for("hello").await;
 }

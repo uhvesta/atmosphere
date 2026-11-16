@@ -936,7 +936,10 @@ A frame changes only with the owner's OK (D76). SPEC already follows the newer d
 4. **Owner decided 2026-11-15:** reads are allowed by default. GlobalRead (an agent's ListChannels, session info) defaults to Allow unless the person sets Ask or Never; writes and destructive calls still ask. (Batch 1 shipped the default as Ask; batch 2 changes it, and TESTING §5.5's "Ask me" tier uses a set rule instead.)
 5. Reads carry no idempotency key, so a repeated read asks again; TP-14 (same key, same request) holds only for calls with a key. **Reverse:** match a pending read by caller and card.
 6. Rules are stored as raw ChannelRules/DefaultRules proto bytes in store tables `access_channel_rules` and `access_default_rules`, restored at start. Only channels with a rule set are saved; deleting a channel doesn't drop its row yet. Rules reads are user-only; agents see their own access through Explain.
-7. Deferred cards have no preview and no Always allow yet (IN-10, IN-14 in batch 2).
+7. Deferred cards show an AccessAheadPreview and offer Always allow (IN-10, IN-14; batch 2). The store marks such a request with `InboxEntry.deferred` instead of a "no preview" marker.
 8. An added agent (SE-29) is refused at the interceptor by a 4th word in the token file, not a `Caller` variant; WhoAmI shows it as unauthenticated. End to end it needs `TabKind::AddedAgent` and an OpenAgentTab RPC (later seam).
 9. SEC-15 (process-tree check) moves to ASK batch 2: turning it on breaks tests that use a tab token from the test process.
 10. mcp.rs encodes file bytes with a small base64 of its own (no base64 crate in the daemon's deps).
+11. Batch 2: SEC-15 checks that a tab token comes from a process in that tab's process tree. On a mismatch the tab's token is revoked and IDENTITY_MISUSED is logged; `--admin` test daemons skip the check. **Follow-up:** cache the holder pid.
+12. Batch 2: channel, session and terminal handlers that write defer to the Inbox; streams never defer. `Terminals` wraps `Arc<Core>` (Deref) so a deferred call can run later.
+13. Follow-ups: global board writes need their own Ask capability when BOARD is built; grants end on archive/delete later.

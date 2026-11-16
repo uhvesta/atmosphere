@@ -6,7 +6,7 @@ mod support;
 use std::collections::BTreeSet;
 
 use humata2_access::{
-    Agent, BoardAct, BoardRef, Call, Capability, ChannelId, CheckError, DeniedSource, Decision,
+    Agent, BoardAct, BoardRef, Call, Capability, ChannelId, CheckError, Decision, DeniedSource,
     Entry, ErrorKind, Fix, GrantTarget, NetworkTarget, Place, Policy, PolicyError, PresenceMethod,
     Principal, Refusal, RepoBranch, RepoRef, Root, Rules, ScriptToken, SessionId, SessionKind,
     SessionRef, Source, Target, Tier, Verdict,
@@ -91,7 +91,11 @@ fn a_fork_reads_its_parent_but_does_not_write_it() {
 fn main_clones_are_read_only_for_everyone() {
     for principal in [as_agent(a()), Principal::App] {
         let refusal = refused(&principal, &write(main_clone("src/lib.rs")));
-        assert_eq!(refusal.kind(), ErrorKind::MainCloneReadOnly, "{principal:?}");
+        assert_eq!(
+            refusal.kind(),
+            ErrorKind::MainCloneReadOnly,
+            "{principal:?}"
+        );
         assert_eq!(refusal.fix(), Fix::UseOwnFolders);
     }
     // Copying into one is a write to it.
@@ -120,7 +124,11 @@ fn nothing_outside_humatas_folders_for_anyone() {
         Principal::Cli(PresenceMethod::CliLogin),
     ] {
         let refusal = refused(&principal, &read(outside()));
-        assert_eq!(refusal.kind(), ErrorKind::OutsideHumataFolders, "{principal:?}");
+        assert_eq!(
+            refusal.kind(),
+            ErrorKind::OutsideHumataFolders,
+            "{principal:?}"
+        );
         assert_eq!(refusal.fix(), Fix::UseOwnFolders);
     }
 }
@@ -157,10 +165,7 @@ fn an_agent_writes_only_its_own_folders() {
 fn a_review_session_pushes_only_when_the_user_lets_it() {
     let refusal = refused(&review(false), &push());
     assert_eq!(refusal.kind(), ErrorKind::Denied(DeniedSource::HardLimit));
-    assert_eq!(
-        refusal.fix(),
-        Fix::UserAllowsReviewPush { session: a().id }
-    );
+    assert_eq!(refusal.fix(), Fix::UserAllowsReviewPush { session: a().id });
     assert!(allowed(Source::ReviewPushSetting).met_by(&check(
         &policy(),
         &review(true),
@@ -168,7 +173,12 @@ fn a_review_session_pushes_only_when_the_user_lets_it() {
         &on_mac(),
     )));
     // An ordinary session asks.
-    assert!(asks(Capability::GitPush).met_by(&check(&policy(), &as_agent(a()), &push(), &on_mac())));
+    assert!(asks(Capability::GitPush).met_by(&check(
+        &policy(),
+        &as_agent(a()),
+        &push(),
+        &on_mac()
+    )));
 }
 
 #[test]
@@ -208,17 +218,34 @@ fn a_never_rule_names_the_rule_to_change() {
 #[test]
 fn another_channel_is_read_with_global_read_and_otherwise_refused() {
     let agent = as_agent(a());
-    let policy = policy();
-    for call in [
+    let mut policy = policy();
+    let reads = [
         Call::ReadSession(x()),
         Call::Board {
             board: BoardRef::Channel(search()),
             act: BoardAct::Read,
         },
         use_on(Capability::ChannelRead, Target::Channel(search())),
-    ] {
+    ];
+    // Reads are allowed by default (D127.4).
+    for call in &reads {
         assert!(
-            asks(Capability::GlobalRead).met_by(&check(&policy, &agent, &call, &on_mac())),
+            allowed(Source::Rule).met_by(&check(&policy, &agent, call, &on_mac())),
+            "{call:?}"
+        );
+    }
+    // The user sets Ask me: the same reads ask.
+    policy
+        .set_rule(
+            &user(),
+            &Rules::Channel(payments()),
+            Capability::GlobalRead,
+            Decision::Ask,
+        )
+        .expect("a rule the capability offers");
+    for call in &reads {
+        assert!(
+            asks(Capability::GlobalRead).met_by(&check(&policy, &agent, call, &on_mac())),
             "{call:?}"
         );
     }
@@ -247,7 +274,12 @@ fn board_items_an_agent_made_are_its_to_edit() {
             created_by: Some(created_by),
         },
     };
-    assert!(allowed(Source::Rule).met_by(&check(&policy, &as_agent(a()), &edit(a().id), &on_mac())));
+    assert!(allowed(Source::Rule).met_by(&check(
+        &policy,
+        &as_agent(a()),
+        &edit(a().id),
+        &on_mac()
+    )));
     let asked = request(check(&policy, &as_agent(a()), &edit(b().id), &on_mac()));
     assert_eq!(asked.capability, Capability::ChannelBoardEditOthers);
     assert_eq!(
@@ -445,11 +477,15 @@ fn a_deleted_channel_takes_its_rules_and_grants_with_it() {
 #[test]
 fn the_capability_list_matches_the_trace_matrix() {
     let all: BTreeSet<Capability> = Capability::ALL.into_iter().collect();
-    assert_eq!(all.len(), Capability::ALL.len(), "no capability is listed twice");
+    assert_eq!(
+        all.len(),
+        Capability::ALL.len(),
+        "no capability is listed twice"
+    );
     let count = |tier: Tier| all.iter().filter(|c| c.tier() == tier).count();
     // TRACE.md §2's rows.
-    assert_eq!(count(Tier::DefaultAllow), 12);
-    assert_eq!(count(Tier::AskMe), 17);
+    assert_eq!(count(Tier::DefaultAllow), 13);
+    assert_eq!(count(Tier::AskMe), 16);
     assert_eq!(count(Tier::AskNoAllow), 1);
     assert_eq!(count(Tier::NeverByDefault), 3);
     assert_eq!(count(Tier::UserOnly), 11);

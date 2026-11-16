@@ -490,3 +490,12 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: `bazel run //apps/humata2/desktop:design_test_record` then `bazel test //apps/humata2/desktop:design_test` pass; frames 01–43 unchanged byte for byte.
 - Known gaps: 48 reuses frame 26's request card, so it changes if D113 redraws 26. The `desktop/tests/design/` folder is not rustfmt-formatted (pre-existing; left as is).
 - Look at: `desktop/tests/design/{new_channel,resume,channel_tabs,comments,cleanup}.rs`; the 12 PNGs.
+
+### (this commit): ASK batch 2: SEC-15, deferred cards with previews, more handlers wait in the Inbox, reads allowed by default (minion ASK)
+- SEC-15: a tab token used from outside its tab's process tree is refused, the token revoked and IDENTITY_MISUSED logged; `--admin` test daemons skip it.
+- Deferred cards carry AccessAheadPreview and Always allow; the store flag `InboxEntry.deferred` (store.proto field 5) marks them.
+- Channel, session and terminal writes defer to the Inbox; streams don't.
+- D127.4 (owner, 2026-11-15): GlobalRead defaults to Allow; SPEC IN-17, TESTING §5.5, BOUNDARIES and MCP.md updated.
+- Verified: `bazel test //apps/humata2/daemon/... //apps/humata2/cli:all` 73/73 pass (lint included).
+- Known gaps: the holder pid isn't cached (SEC-15 walks the process tree per call); global board writes have no Ask capability yet (BOARD); grants don't end on archive/delete.
+- Look at: `daemon/humatad/src/identity.rs`, `inbox/deferred.rs`, `terminal.rs`; `tests/auth.rs` release-daemon test.

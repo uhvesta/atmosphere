@@ -184,3 +184,142 @@ async fn a_restarted_daemon_still_lists_the_channel() {
     assert_eq!(found.folder, channel.folder);
     assert_eq!(found.repos, vec![repo_ref("acme", "api")]);
 }
+
+/// The user answers `id` with an approval, and the agent waits for what the
+/// approved call returned: its type name and encoded response.
+async fn approve_and_wait(
+    daemon: &common::Daemon,
+    token: &str,
+    id: &pb::RequestId,
+) -> pb::WaitResponse {
+    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(daemon.channel().await);
+    inbox
+        .answer_request(pb::AnswerRequestRequest {
+            id: Some(id.clone()),
+            answer: Some(pb::RequestAnswer {
+                answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
+            }),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let mut stream = inbox
+        .wait_for_answer(agent_request(
+            pb::WaitForAnswerRequest {
+                id: Some(id.clone()),
+                wait_seconds: 10,
+            },
+            token,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    loop {
+        let message = tokio::time::timeout(common::WAIT, stream.message())
+            .await
+            .expect("the wait ended in time")
+            .unwrap()
+            .expect("the wait ended with an answer");
+        if !message.keepalive {
+            return message;
+        }
+    }
+}
+
+/// The request an agent's call is waiting on, from the pending error.
+fn pending_request(refused: &tonic::Status) -> pb::RequestId {
+    match common::error_of(refused).kind {
+        Some(pb::error::Kind::ApprovalPending(pending)) => pending.request.unwrap(),
+        other => panic!("expected approval_pending, got {other:?}"),
+    }
+}
+
+fn agent_request<T>(message: T, token: &str) -> tonic::Request<T> {
+    let mut request = tonic::Request::new(message);
+    request.metadata_mut().insert(
+        "humata-session-token",
+        tonic::metadata::MetadataValue::try_from(token).unwrap(),
+    );
+    request
+}
+
+/// Makes the channel's rule for `capability` Ask me.
+async fn ask_me(daemon: &common::Daemon, channel: &pb::ChannelId, capability: pb::Capability) {
+    pb::access_service_client::AccessServiceClient::new(daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: Some(channel.clone()),
+            capability: capability as i32,
+            decision: pb::Decision::Ask as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+}
+
+/// The session token a shell tab of `session` was given.
+async fn session_token(daemon: &common::Daemon, session: &pb::SessionId) -> String {
+    let tab = daemon
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: None,
+            session: Some(session.clone()),
+            repo: None,
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id
+        .unwrap();
+    let file = daemon.dir.path().join(format!("token-{}", session.value));
+    let mut attach = common::Attach::start(daemon, common::open(&tab, 0)).await;
+    attach
+        .type_text(&format!(
+            "printf '%s' \"$HUMATA_SESSION_TOKEN\" > {}\r",
+            file.display()
+        ))
+        .await;
+    let deadline = std::time::Instant::now() + common::WAIT;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(&file)
+            && !text.is_empty()
+        {
+            return text;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the token was never written"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_channel_rename_that_a_rule_sends_to_ask_runs_once_the_user_approves() {
+    let (daemon, world) = start_world().await;
+    world.remote("acme", "api");
+    let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (session, _) = common::start_session(&daemon, &channel, "Fix login").await;
+    common::wait_status(&daemon, &session, pb::SessionStatus::Working).await;
+    let token = session_token(&daemon, &session).await;
+    ask_me(&daemon, &id_of(&channel), pb::Capability::ChannelChange).await;
+
+    let refused = daemon
+        .channel_service()
+        .await
+        .rename_channel(agent_request(
+            pb::RenameChannelRequest {
+                id: channel.id.clone(),
+                name: "Payments v2".to_owned(),
+                ..Default::default()
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    let waited = approve_and_wait(&daemon, &token, &pending_request(&refused)).await;
+
+    assert_eq!(waited.result_type, "humata.v1.Channel");
+    let renamed = <pb::Channel as prost::Message>::decode(waited.result.as_slice()).unwrap();
+    assert_eq!(renamed.name, "Payments v2");
+}

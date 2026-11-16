@@ -4,11 +4,14 @@
 //! login (`cli_login`) from the terminal session it bound is the user. A
 //! call with no credential is refused, except WhoAmI and logging in, which
 //! answer it as unauthenticated; a test daemon built with the `admin`
-//! feature and run with `--admin` takes it for the user instead. Only
+//! feature and run with `--admin` takes it for the user instead. A session
+//! token is good only from the process tree of its tab's holder; used from
+//! anywhere else it is refused and replaced at the session's next resume
+//! (SEC-15). Only
 //! hashes of the session tokens are kept, in a 0600 file in the state, so
 //! tabs that outlive a daemon restart keep theirs.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -26,6 +29,7 @@ use tonic::{Request, Status};
 use crate::cli_login::CliLogins;
 use crate::error::DaemonError;
 use crate::status;
+use crate::terminal_session::{self, Processes};
 
 /// The gRPC metadata key a session token travels in.
 pub(crate) const TOKEN_HEADER: &str = "humata-session-token";
@@ -389,10 +393,8 @@ impl Identities {
         self.save(&tokens)
     }
 
-    fn find(&self, token: &str) -> Option<(AgentCaller, TabIdentity)> {
-        lock(&self.tokens)
-            .get(&digest(token))
-            .map(|holder| (holder.caller.clone(), holder.identity))
+    fn find(&self, token: &str) -> Option<Holder> {
+        lock(&self.tokens).get(&digest(token)).cloned()
     }
 
     fn save(&self, tokens: &HashMap<String, Holder>) -> Result<(), StoreError> {
@@ -419,6 +421,9 @@ impl Identities {
 pub(crate) struct Authenticate {
     identities: Arc<Identities>,
     logins: Arc<CliLogins>,
+    /// Where the tabs and their holders' pids are, to place a token's use.
+    store: Arc<Store>,
+    processes: Arc<dyn Processes>,
     /// Admin mode: a call with no credential is the user. Test daemons
     /// only; release builds don't have the feature, so not the code.
     #[cfg(feature = "admin")]
@@ -437,10 +442,17 @@ pub(crate) enum Admin {
 }
 
 impl Authenticate {
-    pub(crate) fn new(identities: Arc<Identities>, logins: Arc<CliLogins>) -> Self {
+    pub(crate) fn new(
+        identities: Arc<Identities>,
+        logins: Arc<CliLogins>,
+        store: Arc<Store>,
+        processes: Arc<dyn Processes>,
+    ) -> Self {
         Self {
             identities,
             logins,
+            store,
+            processes,
             #[cfg(feature = "admin")]
             admin: None,
         }
@@ -449,10 +461,18 @@ impl Authenticate {
     /// Takes a call with no credential from `who` for the user, as a test
     /// daemon run with `--admin` or `--admin-pid` does.
     #[cfg(feature = "admin")]
-    pub(crate) fn admin(identities: Arc<Identities>, logins: Arc<CliLogins>, who: Admin) -> Self {
+    pub(crate) fn admin(
+        identities: Arc<Identities>,
+        logins: Arc<CliLogins>,
+        store: Arc<Store>,
+        processes: Arc<dyn Processes>,
+        who: Admin,
+    ) -> Self {
         Self {
             identities,
             logins,
+            store,
+            processes,
             admin: Some(who),
         }
     }
@@ -472,8 +492,59 @@ impl Authenticate {
     }
 }
 
-impl Interceptor for Authenticate {
-    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
+impl Authenticate {
+    /// Whether the process at the other end may use `holder`'s token: it
+    /// must be in the process tree of the holder of the tab the token was
+    /// minted for (SEC-15). Fails closed: no pid, no holder, a tab that is
+    /// gone, or a process that can't be read all refuse. A misused token
+    /// is revoked, so the session gets a new one when it next resumes.
+    fn token_is_in_its_tree(&self, holder: &Holder, pid: Option<i32>) -> Result<(), Status> {
+        // An `--admin` test daemon lets the test process stand in for any
+        // tab's shell. `--admin-pid` and release daemons enforce.
+        #[cfg(feature = "admin")]
+        if matches!(self.admin, Some(Admin::Anyone)) {
+            return Ok(());
+        }
+        let holder_pid = match self.store.tab(&holder.tab) {
+            Ok(Some(tab)) => i32::try_from(tab.holder_pid).ok().filter(|pid| *pid > 0),
+            Ok(None) => None,
+            Err(error) => {
+                return Err(status::internal(
+                    format!(
+                        "couldn't read tab {} to check who is using its session token: {}",
+                        holder.tab,
+                        status::chain(&error)
+                    ),
+                    "",
+                ));
+            }
+        };
+        if pid
+            .zip(holder_pid)
+            .is_some_and(|(pid, holder_pid)| in_tree(&*self.processes, pid, holder_pid))
+        {
+            return Ok(());
+        }
+        let session = holder.caller.session.id.as_str();
+        crate::log::say!(
+            "humatad2: IDENTITY_MISUSED: session {session}'s token was used from process {}, outside its terminal's process tree; the token is revoked and replaced when the session next resumes",
+            pid.map_or_else(|| "unknown".to_owned(), |pid| pid.to_string())
+        );
+        if let Err(error) = self.identities.revoke(&holder.tab) {
+            crate::log::say!(
+                "humatad2: couldn't revoke tab {}'s misused token: {}",
+                holder.tab,
+                status::chain(&error)
+            );
+        }
+        Err(token_outside_its_session(session))
+    }
+
+    fn authenticate(
+        &self,
+        mut request: Request<()>,
+        pid: Option<i32>,
+    ) -> Result<Request<()>, Status> {
         let open = request.extensions().get::<OpenToAnyone>().is_some();
         let session = request.metadata().get(TOKEN_HEADER);
         let login = request.metadata().get(LOGIN_HEADER);
@@ -483,17 +554,22 @@ impl Interceptor for Authenticate {
                 .ok()
                 .and_then(|token| self.identities.find(token))
             {
-                Some((agent, TabIdentity::Session)) => Some(Caller::Agent(agent)),
-                // An added agent may ask who it is; nothing else. It
-                // answers as a caller with no credential, so it learns
-                // why its other calls are refused.
-                Some((_, TabIdentity::AddedAgent))
-                    if request.extensions().get::<AddedAgentMayCall>().is_some() =>
-                {
-                    None
-                }
-                Some((agent, TabIdentity::AddedAgent)) => {
-                    return Err(added_agent_refused(agent.session.id.as_str()));
+                Some(holder) => {
+                    self.token_is_in_its_tree(&holder, pid)?;
+                    match holder.identity {
+                        TabIdentity::Session => Some(Caller::Agent(holder.caller)),
+                        // An added agent may ask who it is; nothing else.
+                        // It answers as a caller with no credential, so it
+                        // learns why its other calls are refused.
+                        TabIdentity::AddedAgent
+                            if request.extensions().get::<AddedAgentMayCall>().is_some() =>
+                        {
+                            None
+                        }
+                        TabIdentity::AddedAgent => {
+                            return Err(added_agent_refused(holder.caller.session.id.as_str()));
+                        }
+                    }
                 }
                 None => return Err(status::identity_mismatch()),
             },
@@ -503,7 +579,7 @@ impl Interceptor for Authenticate {
             // a stale login can still log in again.
             (None, Some(value)) => {
                 let checked = match value.to_str() {
-                    Ok(token) => self.logins.caller(token, peer_pid(&request)),
+                    Ok(token) => self.logins.caller(token, pid),
                     Err(_) => Err(crate::cli_login::LoginUnusable::Unknown),
                 };
                 match checked {
@@ -512,7 +588,7 @@ impl Interceptor for Authenticate {
                     Err(unusable) => return Err(status::login_unusable(&unusable)),
                 }
             }
-            (None, None) => self.without_credential(peer_pid(&request)),
+            (None, None) => self.without_credential(pid),
         };
         match caller {
             Some(caller) => {
@@ -525,6 +601,44 @@ impl Interceptor for Authenticate {
         }
         Ok(request)
     }
+}
+
+impl Interceptor for Authenticate {
+    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+        let pid = peer_pid(&request);
+        self.authenticate(request, pid)
+    }
+}
+
+/// Whether `pid` is `holder_pid` or descends from it, or its terminal
+/// session's leader does: a process the holder's tab started, even one a
+/// double fork left with init as its parent, as long as it stayed in the
+/// tab's terminal session. One that has no terminal counts by parent
+/// chain alone.
+fn in_tree(processes: &dyn Processes, pid: i32, holder_pid: i32) -> bool {
+    let holders = HashSet::from([holder_pid]);
+    match terminal_session::terminal_session(processes, pid) {
+        Ok(session) => terminal_session::descends_from(processes, pid, &session, &holders),
+        Err(_) => terminal_session::lineage(processes, pid).any(|ancestor| ancestor == holder_pid),
+    }
+}
+
+/// A session's token used from outside its terminal's process tree
+/// (SEC-15).
+fn token_outside_its_session(session: &str) -> Status {
+    status::failure(
+        tonic::Code::Unauthenticated,
+        status::error(
+            format!(
+                "session {session}'s token was used from a process that isn't in that session's terminal, so humatad2 refused the call and revoked the token"
+            ),
+            "run humata from inside the session's own terminal tab, where it picks the token up itself; to act as yourself from another terminal, run `humata login`. The session gets a new token the next time it resumes, so restart the session if its own tools now fail",
+            pb::error::Kind::IdentityMismatch(pb::IdentityMismatch {
+                claimed: None,
+                claimed_machine: None,
+            }),
+        ),
+    )
 }
 
 /// A new random token, and the hash that is all the daemon keeps of it.
@@ -569,21 +683,41 @@ mod tests {
         }
     }
 
+    /// A holder (30) that started a shell (31), which ran a command (32);
+    /// a command (33) that double-forked away from it, left under init in
+    /// the shell's terminal session; and an unrelated process (40).
+    fn processes() -> Fake {
+        let mut fake = Fake::default();
+        fake.add(1, 0, 1, None);
+        fake.add(30, 1, 30, None);
+        fake.add(31, 30, 31, Some(8));
+        fake.add(32, 31, 31, Some(8));
+        fake.add(33, 1, 31, Some(8));
+        fake.add(40, 1, 40, Some(9));
+        fake.add(41, 40, 40, Some(9));
+        fake
+    }
+
     struct Rig {
         _dir: tempfile::TempDir,
         file: PathBuf,
-        store: Store,
+        store: Arc<Store>,
         identities: Arc<Identities>,
         authenticate: Authenticate,
     }
 
     fn rig() -> Rig {
         let dir = tempfile::tempdir().unwrap();
-        let store = Store::open(dir.path().join("store")).unwrap();
+        let store = Arc::new(Store::open(dir.path().join("store")).unwrap());
         let file = dir.path().join("tokens");
         let identities = Arc::new(Identities::load(file.clone(), &store, "ma_here").unwrap());
         let logins = Arc::new(CliLogins::new(Box::new(Fake::default()), None));
-        let authenticate = Authenticate::new(identities.clone(), logins);
+        let authenticate = Authenticate::new(
+            identities.clone(),
+            logins,
+            store.clone(),
+            Arc::new(processes()),
+        );
         Rig {
             _dir: dir,
             file,
@@ -591,6 +725,21 @@ mod tests {
             identities,
             authenticate,
         }
+    }
+
+    fn put_tab(rig: &Rig, id: &str, holder_pid: u32) {
+        rig.store.put_session(&record()).unwrap();
+        rig.store
+            .put_tab(&humata2_store::TabRecord {
+                id: id.to_owned(),
+                session: Some("se_main".to_owned()),
+                kind: humata2_store::TabKind::Shell,
+                title: "shell".to_owned(),
+                holder_socket: PathBuf::new(),
+                holder_pid,
+                created_unix_ms: 0,
+            })
+            .unwrap();
     }
 
     fn call(token: &str, who_am_i: bool) -> Request<()> {
@@ -607,32 +756,85 @@ mod tests {
 
     #[test]
     fn an_added_agents_call_is_refused_but_it_may_ask_who_it_is() {
-        let mut rig = rig();
+        let rig = rig();
+        put_tab(&rig, "tab_added", 30);
         let token = rig
             .identities
             .mint_as("tab_added", &record(), TabIdentity::AddedAgent)
             .unwrap();
 
-        let refused = rig.authenticate.call(call(&token, false)).unwrap_err();
+        let refused = rig
+            .authenticate
+            .authenticate(call(&token, false), Some(31))
+            .unwrap_err();
         assert_eq!(refused.code(), tonic::Code::PermissionDenied);
         let error = status::error_of(&refused).unwrap();
         assert!(!error.fix.is_empty());
 
-        let answered = rig.authenticate.call(call(&token, true)).unwrap();
+        let answered = rig
+            .authenticate
+            .authenticate(call(&token, true), Some(31))
+            .unwrap();
         assert!(caller_if_any(&answered).unwrap().is_none());
     }
 
     #[test]
-    fn a_session_token_is_that_sessions_agent() {
-        let mut rig = rig();
+    fn a_session_token_is_that_sessions_agent_inside_its_tabs_tree() {
+        let rig = rig();
+        put_tab(&rig, "tab_main", 30);
         let token = rig.identities.mint("tab_main", &record()).unwrap();
 
-        let accepted = rig.authenticate.call(call(&token, false)).unwrap();
+        // The shell, its command, and a double-forked one in its terminal
+        // session.
+        for pid in [31, 32, 33] {
+            let accepted = rig
+                .authenticate
+                .authenticate(call(&token, false), Some(pid))
+                .unwrap();
+            assert!(matches!(
+                caller(&accepted).unwrap(),
+                Caller::Agent(agent) if agent.session.id.as_str() == "se_main"
+            ));
+        }
+    }
 
+    #[test]
+    fn a_session_token_from_outside_its_tree_is_refused_and_revoked() {
+        let rig = rig();
+        put_tab(&rig, "tab_main", 30);
+        let token = rig.identities.mint("tab_main", &record()).unwrap();
+
+        let refused = rig
+            .authenticate
+            .authenticate(call(&token, false), Some(41))
+            .unwrap_err();
+
+        let error = status::error_of(&refused).unwrap();
         assert!(matches!(
-            caller(&accepted).unwrap(),
-            Caller::Agent(agent) if agent.session.id.as_str() == "se_main"
+            error.kind,
+            Some(pb::error::Kind::IdentityMismatch(_))
         ));
+        assert!(!error.fix.is_empty());
+        // The token is gone, for its rightful holder too, until a resume.
+        assert!(rig.identities.find(&token).is_none());
+        assert!(
+            rig.authenticate
+                .authenticate(call(&token, false), Some(31))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_session_token_is_refused_when_the_caller_or_holder_is_unknown() {
+        for (holder_pid, pid) in [(30, None), (0, Some(31)), (30, Some(999))] {
+            let rig = rig();
+            put_tab(&rig, "tab_main", holder_pid);
+            let token = rig.identities.mint("tab_main", &record()).unwrap();
+
+            let refused = rig.authenticate.authenticate(call(&token, false), pid);
+
+            assert!(refused.is_err(), "holder {holder_pid}, caller {pid:?}");
+        }
     }
 
     #[test]
@@ -658,7 +860,7 @@ mod tests {
         let reloaded = Identities::load(rig.file.clone(), &rig.store, "ma_here").unwrap();
 
         assert_eq!(
-            reloaded.find(&token).map(|(_, kind)| kind),
+            reloaded.find(&token).map(|holder| holder.identity),
             Some(TabIdentity::AddedAgent)
         );
     }

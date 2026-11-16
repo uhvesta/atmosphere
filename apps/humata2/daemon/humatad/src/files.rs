@@ -115,7 +115,11 @@ impl Files {
 
     /// Claims `key` for an upload to `target`. `Ok(Err(entry))` is the
     /// result of the upload that already used it.
-    fn claim(&self, key: Option<pb::IdempotencyKey>, target: &Target) -> Result<Result<Running<'_>, pb::FileEntry>, Status> {
+    fn claim(
+        &self,
+        key: Option<pb::IdempotencyKey>,
+        target: &Target,
+    ) -> Result<Result<Running<'_>, pb::FileEntry>, Status> {
         let key = key
             .map(|key| key.value)
             .filter(|key| !key.is_empty())
@@ -128,7 +132,10 @@ impl Files {
                     return Err(status::failure(
                         Code::Aborted,
                         status::error(
-                            format!("an upload of {} with this idempotency key is still running", target.shown),
+                            format!(
+                                "an upload of {} with this idempotency key is still running",
+                                target.shown
+                            ),
                             "wait for it to finish, then retry with the same key to get its result",
                             pb::error::Kind::InvalidField(pb::InvalidField {
                                 field: "header.idempotency_key".to_owned(),
@@ -154,7 +161,10 @@ impl Files {
         use pb::file_location::Root as R;
 
         let location = location.ok_or_else(|| status::missing("location"))?;
-        if let Some(machine) = location.machine.as_ref().filter(|machine| !machine.value.is_empty())
+        if let Some(machine) = location
+            .machine
+            .as_ref()
+            .filter(|machine| !machine.value.is_empty())
             && machine.value != self.machine
         {
             return Err(status::invalid_field(
@@ -303,7 +313,10 @@ impl pb::file_service_server::FileService for Files {
         Err(status::not_built("humata.v1.FileService.ListDirectory"))
     }
 
-    async fn stat(&self, _request: Request<pb::StatRequest>) -> Result<Response<pb::FileEntry>, Status> {
+    async fn stat(
+        &self,
+        _request: Request<pb::StatRequest>,
+    ) -> Result<Response<pb::FileEntry>, Status> {
         Err(status::not_built("humata.v1.FileService.Stat"))
     }
 
@@ -319,20 +332,24 @@ impl pb::file_service_server::FileService for Files {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let target = self.place(request.location, "humata.v1.FileService.ReadFile")?;
-        self.guard.require(&caller, &Call::ReadFiles(target.place.clone()))?;
+        // The reply is a stream that can't be held and replayed after an approval, so Ask stays refused.
+        self.guard
+            .require(&caller, &Call::ReadFiles(target.place.clone()))?;
         let codec = self.compression.pick(self.link, &request.accept_codecs);
         let (send, chunks) = mpsc::channel(READ_AHEAD);
         let offset = request.offset;
         let max_bytes = request.max_bytes;
         let compression = self.compression.clone();
         let link = self.link;
-        tokio::task::spawn_blocking(move || match read(&target, offset, max_bytes, codec, &send) {
-            Ok(Some(sample)) => compression.record(link, sample),
-            Ok(None) => {}
-            Err(status) => {
-                let _ = send.blocking_send(Err(status));
-            }
-        });
+        tokio::task::spawn_blocking(
+            move || match read(&target, offset, max_bytes, codec, &send) {
+                Ok(Some(sample)) => compression.record(link, sample),
+                Ok(None) => {}
+                Err(status) => {
+                    let _ = send.blocking_send(Err(status));
+                }
+            },
+        );
         Ok(Response::new(Box::pin(ReceiverStream::new(chunks))))
     }
 
@@ -354,7 +371,9 @@ impl pb::file_service_server::FileService for Files {
             _ => return Err(status::missing("header")),
         };
         let target = self.place(header.location, "humata.v1.FileService.WriteFile")?;
-        self.guard.require(&caller, &Call::WriteFiles(target.place.clone()))?;
+        // The upload is a stream that can't be held and replayed after an approval, so Ask stays refused.
+        self.guard
+            .require(&caller, &Call::WriteFiles(target.place.clone()))?;
         let running = match self.claim(header.idempotency_key.clone(), &target)? {
             Ok(running) => running,
             // Written already: the rest of this upload isn't read.
@@ -461,7 +480,10 @@ impl pb::file_service_server::FileService for Files {
         Err(status::not_built("humata.v1.FileService.CreateFolder"))
     }
 
-    async fn rename(&self, _request: Request<pb::RenameRequest>) -> Result<Response<pb::FileEntry>, Status> {
+    async fn rename(
+        &self,
+        _request: Request<pb::RenameRequest>,
+    ) -> Result<Response<pb::FileEntry>, Status> {
         Err(status::not_built("humata.v1.FileService.Rename"))
     }
 
@@ -506,7 +528,10 @@ fn read(
         return Err(status::invalid_field(
             "offset",
             Problem::OutOfRange,
-            format!("offset {offset} is past the end of {}, which has {size} bytes", target.shown),
+            format!(
+                "offset {offset} is past the end of {}, which has {size} bytes",
+                target.shown
+            ),
             "resume from the offset of the last chunk received, or 0",
         ));
     }
@@ -526,13 +551,18 @@ fn read(
     loop {
         let want = (CHUNK_MAX as u64).min(end - at);
         let mut data = Vec::with_capacity(want as usize);
-        (&mut file).take(want).read_to_end(&mut data).map_err(failed)?;
+        (&mut file)
+            .take(want)
+            .read_to_end(&mut data)
+            .map_err(failed)?;
         let read = data.len() as u64;
         hasher.update(&data);
         // A file that shrank while being read ends where it ends now.
         let last = at + read >= end || read < want;
         let whole = last && (at + read >= size || read < want);
-        let chunk = encoder.encode(data).map_err(|error| chunk_failure(&error, &target.shown))?;
+        let chunk = encoder
+            .encode(data)
+            .map_err(|error| chunk_failure(&error, &target.shown))?;
         let message = pb::FileChunk {
             offset: at,
             data: chunk.data,
@@ -566,10 +596,15 @@ fn hash_prefix(file: &mut File, len: u64, hasher: &mut Sha256) -> io::Result<()>
     let mut buffer = vec![0; 64 << 10];
     let mut left = len;
     while left > 0 {
-        let want = buffer.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+        let want = buffer
+            .len()
+            .min(usize::try_from(left).unwrap_or(usize::MAX));
         let read = file.read(&mut buffer[..want])?;
         if read == 0 {
-            return Err(io::Error::new(ErrorKind::UnexpectedEof, "the file shrank while being read"));
+            return Err(io::Error::new(
+                ErrorKind::UnexpectedEof,
+                "the file shrank while being read",
+            ));
         }
         hasher.update(&buffer[..read]);
         left -= read as u64;
@@ -621,7 +656,10 @@ impl Upload {
 
     fn take(&mut self, chunk: pb::FileChunk) -> Result<(), Status> {
         let header = compression::chunk_header(&chunk).ok_or_else(|| {
-            chunk_failure(&ChunkError::UnknownCodec { wire: chunk.codec }, &self.shown())
+            chunk_failure(
+                &ChunkError::UnknownCodec { wire: chunk.codec },
+                &self.shown(),
+            )
         })?;
         let raw = self
             .decoder
@@ -695,7 +733,9 @@ impl Drop for Upload {
 }
 
 /// Runs `work` on a blocking thread.
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, Status> {
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Status> {
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|error| status::internal(format!("a file worker stopped: {error}"), ""))
@@ -707,7 +747,9 @@ fn outside(path: &str) -> Status {
         status::error(
             format!("{path:?} leaves the clone, by \"..\", an absolute path or a symlink"),
             "name a file inside the clone, relative to the repository's root",
-            pb::error::Kind::OutsideHumataFolders(pb::OutsideHumataFolders { path: path.to_owned() }),
+            pb::error::Kind::OutsideHumataFolders(pb::OutsideHumataFolders {
+                path: path.to_owned(),
+            }),
         ),
     )
 }
