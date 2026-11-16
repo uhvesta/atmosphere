@@ -74,3 +74,33 @@ fn settings_visit_keeps_both_tab_groups_and_layout_rows_work() {
     app.click("settings-long-lines-Wrap");
     assert!(app.ui.read(|s| s.review.wrap));
 }
+
+#[test]
+fn permission_request_alerts_can_be_toggled_without_removing_requests() {
+    use humata2_settings::{Section, SettingsAction};
+    let mut app = App::new(fixture::design());
+    let waiting = app.ui.read(|state| state.workspace.waiting().count());
+    app.send(AppAction::Switch(Route::Settings));
+    app.send(AppAction::Settings(SettingsAction::Section(
+        Section::Notifications,
+    )));
+    assert!(
+        !app.ui
+            .read(|state| state.settings.preferences.permission_request_alerts)
+    );
+    app.click("settings-permission-alerts");
+    assert!(
+        app.ui
+            .read(|state| state.settings.preferences.permission_request_alerts)
+    );
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.click("settings-permission-alerts");
+    assert!(
+        !app.ui
+            .read(|state| state.settings.preferences.permission_request_alerts)
+    );
+    assert_eq!(
+        app.ui.read(|state| state.workspace.waiting().count()),
+        waiting
+    );
+}

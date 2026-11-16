@@ -18,6 +18,7 @@ _TOOLCHAIN_TRIPLES = {
 # macros). Their order in MODULE.bazel's register_toolchains makes musl win
 # for musl platforms.
 _CROSS_TARGETS = {
+    "wasm32-unknown-unknown": ["@platforms//os:none", "@platforms//cpu:wasm32"],
     "aarch64-apple-darwin": ["@platforms//os:macos", "@platforms//cpu:aarch64"],
     "x86_64-apple-darwin": ["@platforms//os:macos", "@platforms//cpu:x86_64"],
     "aarch64-unknown-linux-gnu": ["@platforms//os:linux", "@platforms//cpu:aarch64"],

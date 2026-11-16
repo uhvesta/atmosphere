@@ -26,7 +26,10 @@ ENGINES = {
         crate_features = config["features"] + (["test-support"] if variant else []),
         crate_name = "humata2_engine",
         visibility = ["//apps/humata2:__subpackages__"],
-        deps = config["deps"] + ["@crates//:thiserror"] + select({
+        deps = (select({
+            "@platforms//cpu:wasm32": ["@crates_gpui_web//:gpui-kit"],
+            "//conditions:default": config["deps"],
+        }) if engine == "_fast" else config["deps"]) + ["@crates//:thiserror"] + select({
             "@platforms//os:macos": list(config["macos_deps"].keys()),
             "//conditions:default": [],
         }),

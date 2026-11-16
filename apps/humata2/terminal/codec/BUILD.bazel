@@ -1,0 +1,45 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "codec",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "terminal_codec",
+    visibility = [
+        "//apps/humata2/terminal/host:__pkg__",
+        "//apps/humata2/terminal/wire:__pkg__",
+    ],
+    deps = [
+        "@crates//:flate2",
+        "@crates//:lz4_flex",
+        "@crates//:serde",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "codec_test",
+    crate = ":codec",
+    deps = ["@crates//:serde_json"],
+)
+
+rust_test(
+    name = "dense_test",
+    srcs = ["tests/dense.rs"],
+    tags = ["manual"],
+    deps = [
+        ":codec",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
+
+filegroup(
+    name = "markdown",
+    srcs = ["README.md"],
+    tags = ["markdown"],
+)

@@ -373,7 +373,20 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 .child(dim(
                     look,
                     "Requests that need you appear in Inbox and beside the session in the sidebar.",
-                ));
+                ))
+                .child(card(look).child(setting(
+                    look,
+                    "Permission request alerts",
+                    "Show brief alerts for new permission requests. Choose where approvals appear in Agents.",
+                    toggle(
+                        ui,
+                        "settings-permission-alerts",
+                        prefs.permission_request_alerts,
+                        A::TogglePermissionRequestAlerts,
+                        look,
+                    )
+                    .into_any_element(),
+                )));
         }
         Section::Keyboard => {
             body = body

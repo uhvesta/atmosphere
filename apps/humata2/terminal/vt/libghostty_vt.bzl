@@ -199,6 +199,15 @@ def _libghostty_vt_impl(repository_ctx):
     # the repository holds only what the build uses.
     _run(repository_ctx, "Keeping libghostty-vt's headers", ["mv", "macos_aarch64/include", "include"])
     for platform, _ in _TARGETS:
+        # Rust's native link metadata can also emit -lghostty-vt. Keep the
+        # searched directory static-only, including for unsandboxed manual
+        # targets: an undeclared dylib/so otherwise silently wins that search.
+        library_dir = repository_ctx.path(platform + "/lib")
+        if not repository_ctx.path(platform + "/lib/libghostty-vt.a").exists:
+            fail("The pinned Ghostty build omitted its static archive for " + platform + ". Inspect the build output; do not substitute a shared library.")
+        for artifact in library_dir.readdir():
+            if artifact.basename != "libghostty-vt.a":
+                repository_ctx.delete(artifact)
         repository_ctx.delete(platform + "/include")
         repository_ctx.delete(platform + "/share")
     _run(repository_ctx, "Keeping Ghostty's license", ["cp", src + "/LICENSE", "LICENSE"])

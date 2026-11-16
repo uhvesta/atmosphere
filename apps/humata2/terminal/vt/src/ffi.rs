@@ -19,6 +19,12 @@ pub const REJECTED: GhosttyResult = -7;
 pub const UNSUPPORTED: GhosttyResult = -8;
 
 #[repr(C)]
+pub struct SnapshotDecoderImpl {
+    _private: [u8; 0],
+}
+pub type GhosttySnapshotDecoder = *mut SnapshotDecoderImpl;
+
+#[repr(C)]
 pub struct TerminalImpl {
     _private: [u8; 0],
 }
@@ -55,10 +61,27 @@ pub type GhosttyKeyEvent = *mut KeyEventImpl;
 pub type GhosttyMouseEncoder = *mut MouseEncoderImpl;
 pub type GhosttyMouseEvent = *mut MouseEventImpl;
 
-/// `GhosttyAllocator`; this crate always passes NULL for the default one.
+/// The pinned allocator.h vtable. Alignment is log2(bytes).
+#[repr(C)]
+pub struct GhosttyAllocatorVtable {
+    pub alloc: unsafe extern "C" fn(*mut c_void, usize, u8, usize) -> *mut c_void,
+    pub resize:
+        Option<unsafe extern "C" fn(*mut c_void, *mut c_void, usize, u8, usize, usize) -> bool>,
+    pub remap: Option<
+        unsafe extern "C" fn(*mut c_void, *mut c_void, usize, u8, usize, usize) -> *mut c_void,
+    >,
+    pub free: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, u8, usize),
+    pub reserved: [*const c_void; 4],
+}
+
+// SAFETY: this immutable function table has no mutable state; reserved slots are NULL.
+unsafe impl Sync for GhosttyAllocatorVtable {}
+
+/// Kept at a stable address for the lifetime of every native allocation.
 #[repr(C)]
 pub struct GhosttyAllocator {
-    _private: [u8; 0],
+    pub ctx: *mut c_void,
+    pub vtable: *const GhosttyAllocatorVtable,
 }
 
 #[repr(C)]
@@ -83,6 +106,7 @@ pub const TERMINAL_OPT_COLOR_BACKGROUND: GhosttyTerminalOption = 13;
 pub const TERMINAL_OPT_COLOR_CURSOR: GhosttyTerminalOption = 14;
 pub const TERMINAL_OPT_COLOR_PALETTE: GhosttyTerminalOption = 15;
 pub const TERMINAL_OPT_SELECTION: GhosttyTerminalOption = 22;
+pub const TERMINAL_OPT_CONTINUATION_MAX_BYTES: GhosttyTerminalOption = 32;
 pub const TERMINAL_OPT_CLIPBOARD_WRITE: GhosttyTerminalOption = 27;
 pub const TERMINAL_OPT_CLIPBOARD_READ: GhosttyTerminalOption = 39;
 
@@ -566,6 +590,12 @@ unsafe extern "C" {
         buf_len: usize,
         out_written: *mut usize,
     ) -> GhosttyResult;
+    pub fn ghostty_grid_ref_hyperlink_uri(
+        grid_ref: *const GhosttyGridRef,
+        buf: *mut u8,
+        buf_len: usize,
+        out_written: *mut usize,
+    ) -> GhosttyResult;
     pub fn ghostty_grid_ref_style(
         grid_ref: *const GhosttyGridRef,
         out_style: *mut GhosttyStyle,
@@ -800,3 +830,67 @@ mod tests {
         assert_eq!(size_of::<GhosttyBuffer>(), 24);
     }
 }
+
+// snapshot.h: binary full-state snapshots. The stream format is separately versioned.
+pub const SNAPSHOT_DECODER_OPT_MAX_CONTINUATION_BYTES: i32 = 1;
+pub const SNAPSHOT_DECODER_OPT_RETAIN_CONTINUATION: i32 = 2;
+pub const SNAPSHOT_DECODER_OPT_COMPRESS_HISTORY: i32 = 3;
+pub const SNAPSHOT_DECODER_DATA_SOURCE_OFFSET: i32 = 2;
+unsafe extern "C" {
+    pub fn ghostty_snapshot_encode_buf(
+        terminal: GhosttyTerminal,
+        buf: *mut u8,
+        buf_len: usize,
+        out_written: *mut usize,
+    ) -> GhosttyResult;
+    pub fn ghostty_snapshot_decoder_new_buf(
+        allocator: *const GhosttyAllocator,
+        decoder: *mut GhosttySnapshotDecoder,
+        ptr: *const u8,
+        len: usize,
+    ) -> GhosttyResult;
+    pub fn ghostty_snapshot_decoder_set(
+        decoder: GhosttySnapshotDecoder,
+        option: i32,
+        value: *const c_void,
+    ) -> GhosttyResult;
+    pub fn ghostty_snapshot_decoder_decode(
+        decoder: GhosttySnapshotDecoder,
+        terminal: *mut GhosttyTerminal,
+    ) -> GhosttyResult;
+    pub fn ghostty_snapshot_decoder_get(
+        decoder: GhosttySnapshotDecoder,
+        data: i32,
+        out: *mut c_void,
+    ) -> GhosttyResult;
+    pub fn ghostty_snapshot_decoder_free(decoder: GhosttySnapshotDecoder);
+}
+
+// These values are independently checked against the pinned C headers by
+// wasm_abi.c during the Bazel repository build. Native sizes differ where
+// pointers/size_t are involved, so don't reuse the 64-bit test expectations.
+#[cfg(target_arch = "wasm32")]
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(size_of::<GhosttyString>() == 8);
+    assert!(size_of::<GhosttyAllocator>() == 8);
+    assert!(size_of::<GhosttyAllocatorVtable>() == 32);
+    assert!(size_of::<GhosttyPointCoordinate>() == 8);
+    assert!(size_of::<GhosttyPoint>() == 24);
+    assert!(size_of::<GhosttyGridRef>() == 8);
+    assert!(size_of::<GhosttySelection>() == 20);
+    assert!(size_of::<GhosttyStyleColor>() == 4);
+    assert!(size_of::<GhosttyStyle>() == 16);
+    assert!(size_of::<GhosttyTerminalScrollViewport>() == 24);
+    assert!(size_of::<GhosttyMouseEncoderSize>() == 36);
+    assert!(size_of::<GhosttyTerminalModeConfig>() == 4);
+    assert!(size_of::<GhosttyClipboardContent>() == 16);
+    assert!(size_of::<GhosttyClipboardWrite>() == 32);
+    assert!(size_of::<GhosttyClipboardRead>() == 36);
+    assert!(offset_of!(GhosttyClipboardWrite, name) == 12);
+    assert!(offset_of!(GhosttyClipboardRead, name) == 16);
+    assert!(size_of::<GhosttyRenderStateRowSelection>() == 8);
+    assert!(size_of::<GhosttyRenderStateCursor>() == 20);
+    assert!(size_of::<GhosttyRenderStateColors>() == 784);
+    assert!(size_of::<GhosttyBuffer>() == 12);
+};

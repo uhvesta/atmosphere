@@ -1,34 +1,40 @@
+use gpui_kit::prelude::FluentBuilder as _;
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui_kit::{
-    App, BorderStyle, Bounds, ClipboardItem, ContentMask, Context, DispatchPhase,
-    ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, Font, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, MouseButton as GpuiButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    NavigationDirection, ParentElement, Pixels, Point, Render, Rgba, ScrollEvent, ShapedLine,
-    SharedString, Styled, Subscription, Task,
-    TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window, WindowTextSystem, canvas, div,
-    fill, font, outline, point, px, size,
-};
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::{
+    App, AppContext as _, BorderStyle, Bounds, ClipboardItem, ContentMask, Context, DispatchPhase,
+    ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, Font, FontStyle, FontWeight,
+    Global, Hsla, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent,
+    MouseButton as GpuiButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
+    NoAction, ParentElement, Pixels, Point, Render, Rgba, ScrollEvent, ShapedLine, SharedString,
+    Styled, Subscription, Task, TextAlign, TextRun, UTF16Selection, UnderlineStyle, Window,
+    WindowTextSystem, canvas, div, fill, font, outline, point, px, size,
+};
 use terminal_grid::{
-    CursorShape, Dirty, Grid, KeyAction, KeyEvent, MouseAction, MouseButton, MouseEvent,
-    Rgb, Scrollbar, Size, Underline, ViewportPoint,
+    CursorShape, Dirty, Grid, KeyAction, KeyEvent, MouseAction, MouseButton, MouseEvent, Rgb,
+    Scrollbar, Size, Underline, ViewportPoint,
 };
 
-use crate::cursor::{CursorPlan, plan_cursor};
 use crate::boxes::{self, Area};
+use crate::cursor::{CursorPlan, plan_cursor};
 use crate::frame::{Decoration, Drawn, Fill, LineKind, Piece, plan_row};
 use crate::host::{CellSize, ScrollTo, TerminalHost};
 use crate::keys::{KeyIntent, Platform, intent, mods};
 use crate::paste::Paste;
+use crate::pending_input::{Input as PendingInputEvent, PendingInput};
 use crate::selection::{Granularity, extend};
 use crate::theme::Theme;
 
 /// How long a blinking cursor stays on, and then off, as in `Ghostty`.
 const BLINK: Duration = Duration::from_millis(600);
+
+const TERMINAL_CONTEXT: &str = "HumataTerminal";
+struct TerminalKeyBindings;
+impl Global for TerminalKeyBindings {}
 
 /// How wide the scrollbar is drawn, and how far from the right edge a
 /// press grabs it, in pixels.
@@ -39,9 +45,17 @@ const SCROLLBAR_MIN_THUMB: f32 = 16.0;
 
 /// Find highlights, drawn under the text: every match, and the current one
 /// brighter. Translucent, so the program's colors still show through.
-const MARK_COLOR: Rgb = Rgb { r: 0xe5, g: 0xc0, b: 0x7b };
+const MARK_COLOR: Rgb = Rgb {
+    r: 0xe5,
+    g: 0xc0,
+    b: 0x7b,
+};
 const MARK_ALPHA: f32 = 0.35;
-const CURRENT_MARK_COLOR: Rgb = Rgb { r: 0xff, g: 0x9e, b: 0x3b };
+const CURRENT_MARK_COLOR: Rgb = Rgb {
+    r: 0xff,
+    g: 0x9e,
+    b: 0x3b,
+};
 const CURRENT_MARK_ALPHA: f32 = 0.75;
 
 /// A cell of the whole history: column `col` of row `row`, 0 being the
@@ -79,6 +93,19 @@ pub struct FrameStats {
     pub paint_failures: u64,
 }
 
+/// Input routing counters without key values or committed text.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct InputStats {
+    pub focus_gains: u64,
+    pub focus_losses: u64,
+    pub mouse_downs: u64,
+    pub key_downs: u64,
+    pub unfocused_key_downs: u64,
+    pub key_ups: u64,
+    pub unfocused_key_ups: u64,
+    pub text_commits: u64,
+}
+
 /// A terminal, drawn from any [`Grid`]: one quad per run of background,
 /// one shaped line per piece of text, and the cursor on top.
 ///
@@ -93,6 +120,7 @@ pub struct TerminalView<G: Grid + 'static> {
     focus_handle: FocusHandle,
     frame: Rc<RefCell<Frame>>,
     stats: FrameStats,
+    input_stats: InputStats,
     /// The cell a left-button drag started on, while the button is down.
     anchor: Option<ViewportPoint>,
     /// Whether the drag has left its first cell, so a click alone selects
@@ -106,6 +134,8 @@ pub struct TerminalView<G: Grid + 'static> {
     /// While the scrollbar's thumb is dragged, where in it the pointer
     /// grabbed it, in pixels from its top.
     scrollbar_grab: Option<f32>,
+    link_pressed: bool,
+    hovered_link: Option<(ViewportPoint, String)>,
     /// Find highlights, sorted.
     marks: Vec<Mark>,
     marks_changed: bool,
@@ -115,6 +145,8 @@ pub struct TerminalView<G: Grid + 'static> {
     /// Text the input method is composing, drawn at the cursor until it
     /// commits.
     preedit: Option<String>,
+    pending_input: PendingInput,
+    canceled_key_releases: Vec<terminal_grid::Key>,
     /// Scrolled distance short of a whole row, in pixels.
     scroll_remainder: f32,
     /// Whether a blinking cursor is in its visible half. A timer flips it,
@@ -144,6 +176,7 @@ struct Frame {
     /// Whether the thumb is being dragged, so it stays drawn when the
     /// drag reaches the newest output.
     scrollbar_held: bool,
+    link_underline: Option<(u16, u16, u16)>,
     preedit: Option<ShapedPreedit>,
     background: Rgb,
     rows: Vec<ShapedRow>,
@@ -254,15 +287,26 @@ impl<G: Grid + 'static> TerminalView<G> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        if !cx.has_global::<TerminalKeyBindings>() {
+            cx.bind_keys([
+                KeyBinding::new("tab", NoAction, Some(TERMINAL_CONTEXT)),
+                KeyBinding::new("shift-tab", NoAction, Some(TERMINAL_CONTEXT)),
+            ]);
+            cx.set_global(TerminalKeyBindings);
+        }
         let focus_handle = cx.focus_handle();
         let focus = [
             cx.on_focus(&focus_handle, window, |this: &mut Self, _, cx| {
+                this.input_stats.focus_gains = this.input_stats.focus_gains.saturating_add(1);
                 this.host.focus(&mut this.grid, true);
                 this.restart_blink();
                 cx.notify();
             }),
             cx.on_blur(&focus_handle, window, |this: &mut Self, _, cx| {
+                this.input_stats.focus_losses = this.input_stats.focus_losses.saturating_add(1);
                 this.host.focus(&mut this.grid, false);
+                this.preedit = None;
+                this.cancel_buffered_input();
                 cx.notify();
             }),
         ];
@@ -274,15 +318,20 @@ impl<G: Grid + 'static> TerminalView<G> {
             focus_handle,
             frame: Rc::new(RefCell::new(Frame::default())),
             stats: FrameStats::default(),
+            input_stats: InputStats::default(),
             anchor: None,
             selecting: false,
             granularity: Granularity::Cell,
             block: false,
             scrollbar_grab: None,
+            link_pressed: false,
+            hovered_link: None,
             marks: Vec::new(),
             marks_changed: false,
             cursor_blink: true,
             preedit: None,
+            pending_input: PendingInput::default(),
+            canceled_key_releases: Vec::new(),
             scroll_remainder: 0.0,
             blink_on: true,
             blink_task: None,
@@ -290,6 +339,11 @@ impl<G: Grid + 'static> TerminalView<G> {
             requested: None,
             _focus: focus,
         }
+    }
+
+    /// Bounded input metadata for host diagnostics; never contains typed text.
+    pub fn input_stats(&self) -> InputStats {
+        self.input_stats
     }
 
     pub fn grid(&self) -> &G {
@@ -302,6 +356,22 @@ impl<G: Grid + 'static> TerminalView<G> {
         &mut self.grid
     }
 
+    /// Replace validated state without committing stale composition or anchors.
+    pub fn replace_grid(&mut self, grid: G, cx: &mut Context<Self>) {
+        self.cancel_buffered_input();
+        self.grid = grid;
+        self.anchor = None;
+        self.selecting = false;
+        self.scrollbar_grab = None;
+        self.hovered_link = None;
+        self.preedit = None;
+        self.marks.clear();
+        self.marks_changed = true;
+        self.theme_changed = true;
+        self.requested = None;
+        cx.notify();
+    }
+
     pub fn theme(&self) -> &Theme {
         &self.theme
     }
@@ -311,13 +381,31 @@ impl<G: Grid + 'static> TerminalView<G> {
         if theme != self.theme {
             self.theme = theme;
             self.theme_changed = true;
+            self.requested = None;
             cx.notify();
         }
     }
 
+    /// Re-submit this viewport's desired geometry after its transport gains control.
+    pub fn request_fit(&mut self, cx: &mut Context<Self>) {
+        self.requested = None;
+        cx.notify();
+    }
+
+    /// Focuses terminal input and installs its IME handler in this input effect,
+    /// including programmatic handoffs from find bars and terminal tabs.
+    pub fn focus_input(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus_handle, cx);
+        window.defer(cx, |window, cx| window.draw(cx).clear(cx));
+    }
+
     /// The size of a cell, once a frame has been drawn.
     pub fn cell_size(&self) -> Option<CellSize> {
-        self.frame.borrow().metrics.as_ref().map(|metrics| metrics.cell)
+        self.frame
+            .borrow()
+            .metrics
+            .as_ref()
+            .map(|metrics| metrics.cell)
     }
 
     /// Highlights `marks`, such as find matches, wherever they scroll into
@@ -355,6 +443,12 @@ impl<G: Grid + 'static> TerminalView<G> {
         self.preedit.as_deref()
     }
 
+    /// The rendered viewport in window coordinates, for host overlays and hit testing.
+    pub fn viewport_bounds(&self) -> Bounds<Pixels> {
+        let frame = self.frame.borrow();
+        Bounds::new(frame.origin, frame.extent)
+    }
+
     /// What the last frame cost.
     pub fn stats(&self) -> FrameStats {
         FrameStats {
@@ -370,9 +464,12 @@ impl<G: Grid + 'static> TerminalView<G> {
         let mut frame = frame.borrow_mut();
         let text_system = window.text_system().clone();
 
-        let mut full =
-            self.theme_changed || self.marks_changed || self.grid.dirty() == Dirty::Full;
-        if frame.metrics.as_ref().is_none_or(|metrics| !metrics.fits(&self.theme)) {
+        let mut full = self.theme_changed || self.marks_changed || self.grid.dirty() == Dirty::Full;
+        if frame
+            .metrics
+            .as_ref()
+            .is_none_or(|metrics| !metrics.fits(&self.theme))
+        {
             frame.metrics = Some(Metrics::measure(&self.theme, &text_system));
             full = true;
         }
@@ -382,7 +479,9 @@ impl<G: Grid + 'static> TerminalView<G> {
         let size = self.grid.size();
         if frame.size != size {
             frame.size = size;
-            frame.rows.resize_with(usize::from(size.rows), ShapedRow::default);
+            frame
+                .rows
+                .resize_with(usize::from(size.rows), ShapedRow::default);
             full = true;
         }
         let colors = self.grid.colors();
@@ -397,6 +496,38 @@ impl<G: Grid + 'static> TerminalView<G> {
             // Marks sit on history rows, so scrolling moves them.
             full = true;
         }
+        frame.link_underline = self.hovered_link.as_ref().and_then(|(at, uri)| {
+            if self.grid.hyperlink(*at).as_deref() != Some(uri.as_str()) {
+                return None;
+            }
+            let mut start = at.x;
+            let mut end = at.x;
+            while start > 0
+                && self
+                    .grid
+                    .hyperlink(ViewportPoint {
+                        x: start - 1,
+                        y: at.y,
+                    })
+                    .as_deref()
+                    == Some(uri.as_str())
+            {
+                start -= 1;
+            }
+            while end + 1 < size.cols
+                && self
+                    .grid
+                    .hyperlink(ViewportPoint {
+                        x: end + 1,
+                        y: at.y,
+                    })
+                    .as_deref()
+                    == Some(uri.as_str())
+            {
+                end += 1;
+            }
+            Some((at.y, start, end))
+        });
         frame.scrollbar = scrollbar;
         frame.scrollbar_color = colors.foreground;
         let top = scrollbar.map_or(0, |bar| bar.offset);
@@ -433,49 +564,59 @@ impl<G: Grid + 'static> TerminalView<G> {
             }
         }
 
-        frame.cursor = plan_cursor(&self.grid, focused, self.blink_on, self.theme.cursor_text, &style)
-            .map(|plan| {
-                let text = plan.text.as_ref().map(|(text, color)| {
-                    shape(
-                        Piece {
-                            col: plan.col,
-                            text: text.clone(),
-                            style: crate::frame::TextStyle {
-                                color: *color,
-                                alpha: 1.0,
-                                bold: false,
-                                italic: false,
-                            },
+        frame.cursor = plan_cursor(
+            &self.grid,
+            focused,
+            self.blink_on,
+            self.theme.cursor_text,
+            &style,
+        )
+        .map(|plan| {
+            let text = plan.text.as_ref().map(|(text, color)| {
+                shape(
+                    Piece {
+                        col: plan.col,
+                        text: text.clone(),
+                        style: crate::frame::TextStyle {
+                            color: *color,
+                            alpha: 1.0,
+                            bold: false,
+                            italic: false,
                         },
-                        &metrics,
-                        &text_system,
-                    )
-                });
-                ShapedCursor { plan, text }
+                    },
+                    &metrics,
+                    &text_system,
+                )
             });
+            ShapedCursor { plan, text }
+        });
 
         let cursor = self.grid.cursor();
-        frame.preedit = self.preedit.as_ref().filter(|text| !text.is_empty()).map(|text| {
-            let piece = Piece {
-                col: cursor.x,
-                text: text.clone(),
-                style: crate::frame::TextStyle {
+        frame.preedit = self
+            .preedit
+            .as_ref()
+            .filter(|text| !text.is_empty())
+            .map(|text| {
+                let piece = Piece {
+                    col: cursor.x,
+                    text: text.clone(),
+                    style: crate::frame::TextStyle {
+                        color: colors.foreground,
+                        alpha: 1.0,
+                        bold: false,
+                        italic: false,
+                    },
+                };
+                let text = shape(piece, &metrics, &text_system);
+                let cols = (f32::from(text.width) / metrics.cell.width).ceil().max(1.0) as u16;
+                ShapedPreedit {
+                    col: cursor.x,
+                    row: cursor.y,
+                    cols,
+                    text,
                     color: colors.foreground,
-                    alpha: 1.0,
-                    bold: false,
-                    italic: false,
-                },
-            };
-            let text = shape(piece, &metrics, &text_system);
-            let cols = (f32::from(text.width) / metrics.cell.width).ceil().max(1.0) as u16;
-            ShapedPreedit {
-                col: cursor.x,
-                row: cursor.y,
-                cols,
-                text,
-                color: colors.foreground,
-            }
-        });
+                }
+            });
 
         self.grid.clear_dirty();
         self.theme_changed = false;
@@ -519,12 +660,14 @@ impl<G: Grid + 'static> TerminalView<G> {
             return;
         };
         let cols = (f32::from(bounds.size.width) / cell.width).floor().max(1.0);
-        let rows = (f32::from(bounds.size.height) / cell.height).floor().max(1.0);
+        let rows = (f32::from(bounds.size.height) / cell.height)
+            .floor()
+            .max(1.0);
         let wanted = Size {
             cols: cols.min(f32::from(u16::MAX)) as u16,
             rows: rows.min(f32::from(u16::MAX)) as u16,
         };
-        if wanted == self.grid.size() || self.requested == Some(wanted) {
+        if self.requested == Some(wanted) {
             return;
         }
         self.requested = Some(wanted);
@@ -540,8 +683,12 @@ impl<G: Grid + 'static> TerminalView<G> {
             height: 1.0,
         });
         let size = self.grid.size();
-        let col = (x / cell.width).floor().clamp(0.0, f32::from(size.cols.saturating_sub(1)));
-        let row = (y / cell.height).floor().clamp(0.0, f32::from(size.rows.saturating_sub(1)));
+        let col = (x / cell.width)
+            .floor()
+            .clamp(0.0, f32::from(size.cols.saturating_sub(1)));
+        let row = (y / cell.height)
+            .floor()
+            .clamp(0.0, f32::from(size.rows.saturating_sub(1)));
         ViewportPoint {
             x: col as u16,
             y: row as u16,
@@ -574,7 +721,140 @@ impl<G: Grid + 'static> TerminalView<G> {
         }
     }
 
-    fn key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+    fn cancel_buffered_input(&mut self) {
+        for key in self.pending_input.queued_presses() {
+            if !self.canceled_key_releases.contains(&key) {
+                self.canceled_key_releases.push(key);
+            }
+        }
+        self.pending_input.clear();
+    }
+    /// Cancel a platform read and its following typeahead after authority changes.
+    pub fn cancel_pending_clipboard(&mut self, cx: &mut Context<Self>) {
+        if !self.pending_input.is_empty() {
+            self.cancel_buffered_input();
+            cx.notify();
+        }
+    }
+    pub fn has_pending_clipboard(&self) -> bool {
+        !self.pending_input.is_empty()
+    }
+    fn input_buffer_failed(&mut self, error: crate::InputBufferError, cx: &mut Context<Self>) {
+        self.cancel_buffered_input();
+        self.host.input_buffer_failed(error);
+        cx.notify();
+    }
+    fn begin_clipboard_read(&mut self, cx: &mut Context<Self>) -> Option<u64> {
+        match self.pending_input.begin_clipboard() {
+            Ok(id) => {
+                cx.notify();
+                Some(id)
+            }
+            Err(error) => {
+                self.input_buffer_failed(error, cx);
+                None
+            }
+        }
+    }
+    fn send_input(&mut self, input: PendingInputEvent, cx: &mut Context<Self>) {
+        if !self.pending_input.is_empty() {
+            let key = match &input {
+                PendingInputEvent::Key {
+                    intent: KeyIntent::Send { key, .. },
+                    action: KeyAction::Press | KeyAction::Repeat,
+                } => Some(*key),
+                _ => None,
+            };
+            if let Err(error) = self.pending_input.push(input) {
+                self.input_buffer_failed(error, cx);
+                if let Some(key) = key {
+                    self.canceled_key_releases.push(key);
+                }
+            }
+            return;
+        }
+        self.deliver_input(input);
+    }
+    fn deliver_input(&mut self, input: PendingInputEvent) {
+        match input {
+            PendingInputEvent::Key {
+                intent:
+                    KeyIntent::Send {
+                        key,
+                        mods,
+                        consumed_mods,
+                        text,
+                        unshifted,
+                    },
+                action,
+            } => self.host.key(
+                &mut self.grid,
+                KeyEvent {
+                    key,
+                    action,
+                    mods,
+                    consumed_mods,
+                    text: &text,
+                    unshifted,
+                    composing: false,
+                },
+            ),
+            PendingInputEvent::Text(text) => self.host.text(&mut self.grid, &text),
+            PendingInputEvent::Clipboard {
+                result: Some(Ok(Some(paste))),
+                ..
+            } => self.host.paste(&mut self.grid, paste),
+            _ => {}
+        }
+    }
+    fn clipboard_read_completed(
+        &mut self,
+        id: u64,
+        result: Result<Option<ClipboardItem>, gpui_kit::ClipboardReadError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.focus_handle.is_focused(window) {
+            self.cancel_buffered_input();
+            return;
+        }
+        let result = result.map(|item| item.and_then(|item| Paste::from_clipboard(&item)));
+        match self.pending_input.complete(id, result) {
+            Ok(false) => return,
+            Err(error) => {
+                self.input_buffer_failed(error, cx);
+                return;
+            }
+            Ok(true) => {}
+        }
+        while let Some(input) = self.pending_input.pop_ready() {
+            if let PendingInputEvent::Clipboard {
+                result: Some(Err(error)),
+                ..
+            } = input
+            {
+                self.cancel_buffered_input();
+                self.host.clipboard_read_failed(error);
+                break;
+            }
+            let paste = matches!(&input, PendingInputEvent::Clipboard { .. });
+            self.deliver_input(input);
+            if paste && (self.host.paste_is_pending() || !self.host.paste_input_accepted()) {
+                self.cancel_buffered_input();
+                break;
+            }
+        }
+        self.restart_blink();
+        cx.notify();
+    }
+
+    fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus_handle.is_focused(window) {
+            self.input_stats.unfocused_key_downs =
+                self.input_stats.unfocused_key_downs.saturating_add(1);
+            return;
+        }
+        self.input_stats.key_downs = self.input_stats.key_downs.saturating_add(1);
         if self.preedit.is_some() {
             // The input method is composing: the key is its to take.
             return;
@@ -588,11 +868,32 @@ impl<G: Grid + 'static> TerminalView<G> {
                 }
             }
             KeyIntent::Paste => {
-                if let Some(paste) = cx
-                    .read_from_clipboard()
-                    .and_then(|item| Paste::from_clipboard(&item))
-                {
-                    self.host.paste(&mut self.grid, paste);
+                if let Some(item) = cx.read_from_clipboard() {
+                    if let Some(paste) = Paste::from_clipboard(&item) {
+                        if self.pending_input.is_empty() {
+                            self.host.paste(&mut self.grid, paste);
+                        } else if let Some(id) = self.begin_clipboard_read(cx) {
+                            self.clipboard_read_completed(id, Ok(Some(item)), window, cx);
+                        }
+                    }
+                } else {
+                    let Some(id) = self.begin_clipboard_read(cx) else {
+                        cx.stop_propagation();
+                        return;
+                    };
+                    // Web clipboard permission must be requested during this gesture.
+                    // Completion may arrive after focus moved to another terminal.
+                    let read = cx.read_from_clipboard_async();
+                    let target = window.window_handle();
+                    cx.spawn(async move |view, cx| {
+                        let result = read.await;
+                        let _ = cx.update_window(target, |_, window, cx| {
+                            let _ = view.update(cx, |this, cx| {
+                                this.clipboard_read_completed(id, result, window, cx);
+                            });
+                        });
+                    })
+                    .detach();
                 }
             }
             KeyIntent::Send {
@@ -607,15 +908,21 @@ impl<G: Grid + 'static> TerminalView<G> {
                 } else {
                     KeyAction::Press
                 };
-                self.host.key(&mut self.grid, KeyEvent {
-                    key,
-                    action,
-                    mods,
-                    consumed_mods,
-                    text: &text,
-                    unshifted,
-                    composing: false,
-                });
+                self.canceled_key_releases
+                    .retain(|canceled| *canceled != key);
+                self.send_input(
+                    PendingInputEvent::Key {
+                        intent: KeyIntent::Send {
+                            key,
+                            mods,
+                            consumed_mods,
+                            text,
+                            unshifted,
+                        },
+                        action,
+                    },
+                    cx,
+                );
             }
         }
         self.restart_blink();
@@ -623,7 +930,13 @@ impl<G: Grid + 'static> TerminalView<G> {
         cx.notify();
     }
 
-    fn key_up(&mut self, event: &KeyUpEvent, cx: &mut Context<Self>) {
+    fn key_up(&mut self, event: &KeyUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus_handle.is_focused(window) {
+            self.input_stats.unfocused_key_ups =
+                self.input_stats.unfocused_key_ups.saturating_add(1);
+            return;
+        }
+        self.input_stats.key_ups = self.input_stats.key_ups.saturating_add(1);
         if let KeyIntent::Send {
             key,
             mods,
@@ -632,22 +945,48 @@ impl<G: Grid + 'static> TerminalView<G> {
             ..
         } = intent(&event.keystroke, self.platform)
         {
-            self.host.key(&mut self.grid, KeyEvent {
-                key,
-                action: KeyAction::Release,
-                mods,
-                consumed_mods,
-                text: "",
-                unshifted,
-                composing: false,
-            });
+            if self.canceled_key_releases.contains(&key) {
+                self.canceled_key_releases
+                    .retain(|canceled| *canceled != key);
+                cx.stop_propagation();
+                return;
+            }
+            self.send_input(
+                PendingInputEvent::Key {
+                    intent: KeyIntent::Send {
+                        key,
+                        mods,
+                        consumed_mods,
+                        text: String::new(),
+                        unshifted,
+                    },
+                    action: KeyAction::Release,
+                },
+                cx,
+            );
             cx.stop_propagation();
             cx.notify();
         }
     }
 
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus(&self.focus_handle, cx);
+        self.input_stats.mouse_downs = self.input_stats.mouse_downs.saturating_add(1);
+        self.focus_input(window, cx);
+        let link_modifier = if self.platform == Platform::Mac {
+            event.modifiers.platform
+        } else {
+            event.modifiers.control
+        };
+        if event.button == GpuiButton::Left && link_modifier && !event.modifiers.shift {
+            if let Some(uri) = self.grid.hyperlink(self.cell_at(event.position)) {
+                self.host.open_link(uri);
+                self.link_pressed = true;
+                self.anchor = None;
+                cx.stop_propagation();
+                cx.notify();
+                return;
+            }
+        }
         if event.button == GpuiButton::Left && self.press_scrollbar(event.position) {
             cx.notify();
             return;
@@ -729,7 +1068,8 @@ impl<G: Grid + 'static> TerminalView<G> {
         let last = bar.total.saturating_sub(bar.len);
         let row = (fraction as f64 * last as f64).round() as u64;
         if row != bar.offset {
-            self.host.scroll_to(&mut self.grid, ScrollTo::Row(row.min(last)));
+            self.host
+                .scroll_to(&mut self.grid, ScrollTo::Row(row.min(last)));
         }
     }
 
@@ -737,6 +1077,17 @@ impl<G: Grid + 'static> TerminalView<G> {
     /// grid. A drag that leaves the grid keeps selecting, clamped to its
     /// edge.
     fn mouse_move(&mut self, event: &MouseMoveEvent, inside: bool, cx: &mut Context<Self>) {
+        let at = self.cell_at(event.position);
+        let link = inside
+            .then(|| self.grid.hyperlink(at).map(|uri| (at, uri)))
+            .flatten();
+        if self.hovered_link != link {
+            self.hovered_link = link;
+            cx.notify();
+        }
+        if self.link_pressed {
+            return;
+        }
         if self.scrollbar_grab.is_some() {
             if event.dragging() {
                 let (_, y) = self.local(event.position);
@@ -779,6 +1130,12 @@ impl<G: Grid + 'static> TerminalView<G> {
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, cx: &mut Context<Self>) {
+        if event.button == GpuiButton::Left && self.link_pressed {
+            self.link_pressed = false;
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if event.button == GpuiButton::Left && self.scrollbar_grab.take().is_some() {
             self.frame.borrow_mut().scrollbar_held = false;
             cx.notify();
@@ -839,10 +1196,17 @@ impl<G: Grid + 'static> Render for TerminalView<G> {
             .id("terminal")
             .test_support()
             .track_focus(&self.focus_handle)
+            .key_context(TERMINAL_CONTEXT)
+            .when(self.hovered_link.is_some(), |d| d.cursor_pointer())
             .size_full()
+            .relative()
             .overflow_hidden()
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| this.key_down(event, cx)))
-            .on_key_up(cx.listener(|this, event: &KeyUpEvent, _, cx| this.key_up(event, cx)))
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.key_down(event, window, cx)
+            }))
+            .on_key_up(
+                cx.listener(|this, event: &KeyUpEvent, window, cx| this.key_up(event, window, cx)),
+            )
             .on_mouse_down(
                 GpuiButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -889,6 +1253,7 @@ impl<G: Grid + 'static> Render for TerminalView<G> {
                         let _ = view.update(cx, |this, cx| this.fit(bounds, cx));
                     },
                     move |bounds, (), window, cx| {
+                        let mouse_bounds = bounds.intersect(&window.content_mask().bounds);
                         let mut frame = painted.borrow_mut();
                         window.with_content_mask(Some(ContentMask { bounds }), |window| {
                             paint(&mut frame, bounds, window, cx);
@@ -903,14 +1268,40 @@ impl<G: Grid + 'static> Render for TerminalView<G> {
                         // element, so a drag past the edge keeps selecting.
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                             if phase == DispatchPhase::Bubble {
-                                let inside = bounds.contains(&event.position);
-                                let _ = moved.update(cx, |this, cx| this.mouse_move(event, inside, cx));
+                                let inside = mouse_bounds.contains(&event.position);
+                                let _ =
+                                    moved.update(cx, |this, cx| this.mouse_move(event, inside, cx));
                             }
                         });
                     },
                 )
                 .size_full(),
             )
+            .children(self.hovered_link.as_ref().map(|(_, uri)| {
+                div()
+                    .id("terminal-link-hint")
+                    .test_support()
+                    .absolute()
+                    .bottom_0()
+                    .left_0()
+                    .max_w_full()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .px(px(6.))
+                    .py(px(3.))
+                    .text_size(px(11.))
+                    .bg(hsla(self.grid.colors().background, 1.0))
+                    .text_color(hsla(self.grid.colors().foreground, 1.0))
+                    .child(format!(
+                        "{}-click to open · {}",
+                        if self.platform == Platform::Mac {
+                            "⌘"
+                        } else {
+                            "Ctrl"
+                        },
+                        uri
+                    ))
+            }))
     }
 }
 
@@ -933,7 +1324,10 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
         let y = u16::try_from(y).unwrap_or(u16::MAX);
         for fill_run in &row.fills {
             let extent = size(px(f32::from(fill_run.cols) * cell.width), px(cell.height));
-            window.paint_quad(fill(Bounds::new(at(fill_run.col, y), extent), hsla(fill_run.color, 1.0)));
+            window.paint_quad(fill(
+                Bounds::new(at(fill_run.col, y), extent),
+                hsla(fill_run.color, 1.0),
+            ));
         }
         for &(col, cols, current) in &row.marks {
             let extent = size(px(f32::from(cols) * cell.width), px(cell.height));
@@ -945,7 +1339,17 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
             window.paint_quad(fill(Bounds::new(at(col, y), extent), hsla(color, alpha)));
         }
         for (col, line) in &row.lines {
-            if line.paint(at(*col, y), px(cell.height), TextAlign::Left, None, window, cx).is_err() {
+            if line
+                .paint(
+                    at(*col, y),
+                    px(cell.height),
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                )
+                .is_err()
+            {
                 failures += 1;
             }
         }
@@ -957,6 +1361,16 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
         }
     }
 
+    if let Some((row, start, end)) = frame.link_underline {
+        let position = at(start, row);
+        window.paint_quad(fill(
+            Bounds::new(
+                point(position.x, position.y + px(cell.height - 2.)),
+                size(px(f32::from(end - start + 1) * cell.width), px(1.)),
+            ),
+            hsla(frame.scrollbar_color, 1.0),
+        ));
+    }
     if let Some(cursor) = &frame.cursor {
         let plan = &cursor.plan;
         let top_left = at(plan.col, plan.row);
@@ -964,9 +1378,14 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
         let color = hsla(plan.color, 1.0);
         match plan.shape {
             CursorShape::Block => {
-                window.paint_quad(fill(Bounds::new(top_left, size(px(width), px(cell.height))), color));
+                window.paint_quad(fill(
+                    Bounds::new(top_left, size(px(width), px(cell.height))),
+                    color,
+                ));
                 if let Some(text) = &cursor.text
-                    && text.paint(top_left, px(cell.height), TextAlign::Left, None, window, cx).is_err()
+                    && text
+                        .paint(top_left, px(cell.height), TextAlign::Left, None, window, cx)
+                        .is_err()
                 {
                     failures += 1;
                 }
@@ -980,7 +1399,10 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
             }
             CursorShape::Bar => {
                 let thickness = (metrics.thickness * 2.0).min(cell.width);
-                window.paint_quad(fill(Bounds::new(top_left, size(px(thickness), px(cell.height))), color));
+                window.paint_quad(fill(
+                    Bounds::new(top_left, size(px(thickness), px(cell.height))),
+                    color,
+                ));
             }
             CursorShape::Underline => {
                 let thickness = metrics.thickness * 2.0;
@@ -1021,7 +1443,10 @@ fn paint(frame: &mut Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mu
         let x = origin.x + bounds.size.width - px(SCROLLBAR_WIDTH + 2.0);
         window.paint_quad(
             fill(
-                Bounds::new(point(x, origin.y + px(top)), size(px(SCROLLBAR_WIDTH), px(height))),
+                Bounds::new(
+                    point(x, origin.y + px(top)),
+                    size(px(SCROLLBAR_WIDTH), px(height)),
+                ),
                 hsla(frame.scrollbar_color, 0.35),
             )
             .corner_radii(px(SCROLLBAR_WIDTH / 2.0)),
@@ -1045,7 +1470,8 @@ fn thumb(bar: Scrollbar, extent: f32) -> Option<(f32, f32)> {
         return None;
     }
     let total = bar.total as f64;
-    let height = ((bar.len as f64 / total) as f32 * extent).clamp(SCROLLBAR_MIN_THUMB.min(extent), extent);
+    let height =
+        ((bar.len as f64 / total) as f32 * extent).clamp(SCROLLBAR_MIN_THUMB.min(extent), extent);
     let last = bar.total.saturating_sub(bar.len).max(1) as f64;
     let top = (bar.offset as f64 / last) as f32 * (extent - height);
     Some((top.clamp(0.0, extent - height), height))
@@ -1064,8 +1490,16 @@ fn row_marks(marks: &[Mark], row: u64, cols: u16) -> Vec<(u16, u16, bool)> {
         .take_while(|mark| mark.start.row <= row)
         .filter(|mark| mark.end.row >= row)
         .map(|mark| {
-            let from = if mark.start.row == row { mark.start.col } else { 0 };
-            let to = if mark.end.row == row { mark.end.col } else { right };
+            let from = if mark.start.row == row {
+                mark.start.col
+            } else {
+                0
+            };
+            let to = if mark.end.row == row {
+                mark.end.col
+            } else {
+                right
+            };
             let (from, to) = (from.min(right), to.min(right));
             (from, to.saturating_sub(from) + 1, mark.current)
         })
@@ -1081,13 +1515,21 @@ fn utf16_len(text: &str) -> usize {
 /// only the text being composed, which the view draws at the cursor and
 /// sends to the host once committed.
 impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
+    fn accepts_text_input(&self, window: &mut Window, _: &mut Context<Self>) -> bool {
+        self.focus_handle.is_focused(window)
+    }
+
     fn text_for_range(
         &mut self,
         range: Range<usize>,
         adjusted: &mut Option<Range<usize>>,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<String> {
+        if !self.focus_handle.is_focused(window) {
+            *adjusted = None;
+            return None;
+        }
         let preedit = self.preedit.as_deref().unwrap_or_default();
         let units: Vec<u16> = preedit.encode_utf16().collect();
         let end = range.end.min(units.len());
@@ -1099,9 +1541,12 @@ impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
     fn selected_text_range(
         &mut self,
         _: bool,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
+        if !self.focus_handle.is_focused(window) {
+            return None;
+        }
         let end = self.preedit.as_deref().map_or(0, utf16_len);
         Some(UTF16Selection {
             range: end..end,
@@ -1109,7 +1554,14 @@ impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
         })
     }
 
-    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+    fn marked_text_range(
+        &self,
+        window: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        if !self.focus_handle.is_focused(window) {
+            return None;
+        }
         self.preedit.as_deref().map(|text| 0..utf16_len(text))
     }
 
@@ -1123,13 +1575,17 @@ impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
         &mut self,
         _: Option<Range<usize>>,
         text: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.focus_handle.is_focused(window) {
+            return;
+        }
+        self.input_stats.text_commits = self.input_stats.text_commits.saturating_add(1);
         self.preedit = None;
         let text: String = text.chars().filter(|c| !c.is_control()).collect();
         if !text.is_empty() {
-            self.host.text(&mut self.grid, &text);
+            self.send_input(PendingInputEvent::Text(text), cx);
         }
         self.restart_blink();
         cx.notify();
@@ -1140,9 +1596,12 @@ impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
         _: Option<Range<usize>>,
         text: &str,
         _: Option<Range<usize>>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.focus_handle.is_focused(window) {
+            return;
+        }
         self.preedit = (!text.is_empty()).then(|| text.to_owned());
         cx.notify();
     }
@@ -1151,9 +1610,12 @@ impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
         &mut self,
         _: Range<usize>,
         element_bounds: Bounds<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        if !self.focus_handle.is_focused(window) {
+            return None;
+        }
         // The candidate window opens under the cursor.
         let cell = self.cell_size()?;
         let cursor = self.grid.cursor();
@@ -1176,7 +1638,12 @@ impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
     }
 }
 
-fn paint_decoration(decoration: &Decoration, top_left: Point<Pixels>, metrics: &Metrics, window: &mut Window) {
+fn paint_decoration(
+    decoration: &Decoration,
+    top_left: Point<Pixels>,
+    metrics: &Metrics,
+    window: &mut Window,
+) {
     let cell = metrics.cell;
     let width = f32::from(decoration.cols) * cell.width;
     let thickness = metrics.thickness;
@@ -1228,7 +1695,12 @@ fn paint_decoration(decoration: &Decoration, top_left: Point<Pixels>, metrics: &
             }
         }
         LineKind::Strikethrough => {
-            line(window, (cell.height / 2.0 - thickness / 2.0).round(), 0.0, width);
+            line(
+                window,
+                (cell.height / 2.0 - thickness / 2.0).round(),
+                0.0,
+                width,
+            );
         }
         LineKind::Overline => line(window, 0.0, 0.0, width),
     }
@@ -1249,8 +1721,14 @@ fn paint_drawn(drawn: &Drawn, top_left: Point<Pixels>, metrics: &Metrics, window
     };
     for rect in boxes::rects(drawn.drawing, area, metrics.thickness * scale) {
         let origin = point(px(rect.left / scale), px(rect.top / scale));
-        let extent = size(px((rect.right - rect.left) / scale), px((rect.bottom - rect.top) / scale));
-        window.paint_quad(fill(Bounds::new(origin, extent), hsla(drawn.color, drawn.alpha * rect.alpha)));
+        let extent = size(
+            px((rect.right - rect.left) / scale),
+            px((rect.bottom - rect.top) / scale),
+        );
+        window.paint_quad(fill(
+            Bounds::new(origin, extent),
+            hsla(drawn.color, drawn.alpha * rect.alpha),
+        ));
     }
 }
 
@@ -1290,3 +1768,7 @@ fn terminal_button(button: GpuiButton) -> MouseButton {
         GpuiButton::Navigate(NavigationDirection::Forward) => MouseButton::Nine,
     }
 }
+
+#[cfg(test)]
+#[path = "clipboard_tests.rs"]
+mod clipboard_tests;

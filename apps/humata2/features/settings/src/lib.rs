@@ -38,6 +38,8 @@ pub struct Preferences {
     pub show_pinned: bool,
     /// Ask before Approve all when something can't be undone.
     pub confirm_destructive: bool,
+    /// Show extra app alerts when an agent requests permission.
+    pub permission_request_alerts: bool,
 }
 
 impl Default for Preferences {
@@ -49,6 +51,7 @@ impl Default for Preferences {
             default_agent: Agent::Claude,
             confirm_destructive: true,
             show_pinned: true,
+            permission_request_alerts: false,
         }
     }
 }
@@ -108,6 +111,8 @@ pub enum SettingsAction {
     ToggleWrap,
     /// Ask before risky bulk answers or not.
     ToggleConfirm,
+    /// Enable or disable extra permission-request alerts.
+    TogglePermissionRequestAlerts,
     /// Pick the default agent.
     SetAgent(Agent),
     /// The key box changed.
@@ -164,6 +169,9 @@ impl Reducer for Settings {
             SettingsAction::ToggleWrap => preferences.wrap_diffs = !preferences.wrap_diffs,
             SettingsAction::ToggleConfirm => {
                 preferences.confirm_destructive = !preferences.confirm_destructive;
+            }
+            SettingsAction::TogglePermissionRequestAlerts => {
+                preferences.permission_request_alerts = !preferences.permission_request_alerts;
             }
             SettingsAction::SetAgent(agent) => preferences.default_agent = agent,
             SettingsAction::Access(_) => {}

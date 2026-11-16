@@ -1,0 +1,33 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "provider",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "terminal_provider",
+    visibility = [
+        "//apps/humata2/terminal/client:__pkg__",
+        "//apps/humata2/terminal/host:__pkg__",
+    ],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "provider_test",
+    crate = ":provider",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
+
+filegroup(
+    name = "markdown",
+    srcs = ["README.md"],
+    tags = ["markdown"],
+)

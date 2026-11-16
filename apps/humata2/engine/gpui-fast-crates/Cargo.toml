@@ -29,3 +29,7 @@ image = { version = "=0.25.10", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui-fast-apple = { version = "=0.1.14", features = ["font-kit", "test-support"] }
+
+# Browser exports must use the same bindgen crate identity as gpui-fast-web.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.127"

@@ -25,7 +25,10 @@ pub use clipboard::{ClipboardTarget, clipboard_read_reply};
 pub use error::{Error, Status};
 pub use terminal::{DecMode, Event, Match, Point, Scroll, Terminal};
 pub use terminal_grid::{
-    Cell, CellWidth, Color, Colors, Cursor, CursorShape, CursorStyle, Dirty, Grid, Key,
-    KeyAction, KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, OptionAsAlt, Rgb, Row,
-    Scrollbar, Size, Span, Underline, ViewportPoint,
+    Cell, CellWidth, Color, Colors, Cursor, CursorShape, CursorStyle, Dirty, Grid, Key, KeyAction,
+    KeyEvent, Mods, MouseAction, MouseButton, MouseEvent, OptionAsAlt, Rgb, Row, Scrollbar, Size,
+    Span, Underline, ViewportPoint,
 };
+
+/// Engine and envelope identifier to carry beside opaque checkpoint bytes.
+pub const CHECKPOINT_FORMAT: &str = "libghostty-vt/1.0.1;gvtc/1";

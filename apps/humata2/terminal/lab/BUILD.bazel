@@ -1,0 +1,245 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("//apps/humata2/testing:defs.bzl", "humata2_snapshot_test")
+
+rust_library(
+    name = "lib",
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "terminal_lab",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/terminal/embed",
+        "//apps/humata2/terminal/pane:terminal_pane",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
+rust_binary(
+    name = "terminal_lab",
+    srcs = ["src/main.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        ":lib",
+        "//apps/humata2/engine",
+        "//apps/humata2/terminal/session",
+        "@crates//:gpui-kit",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+humata2_snapshot_test(
+    name = "app_test",
+    srcs = ["tests/app.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "SHELL": "/bin/sh",
+    },
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        ":lib",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/terminal/embed",
+        "//apps/humata2/terminal/pane:terminal_pane",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/testing/snapshot",
+        "@crates//:gpui-kit",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+humata2_snapshot_test(
+    name = "app_ssh_test",
+    srcs = ["tests/app.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "SHELL": "/bin/sh",
+    },
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        ":lib",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/terminal/embed",
+        "//apps/humata2/terminal/pane:terminal_pane",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/testing/snapshot",
+        "@crates//:gpui-kit",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+rust_library(
+    name = "lib_fast",
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "terminal_lab",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/terminal/embed:embed_fast",
+        "//apps/humata2/terminal/pane:terminal_pane_fast",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "@crates//:tokio",
+        "@crates_gpui_fast//:gpui-kit",
+    ],
+)
+
+rust_binary(
+    name = "terminal_lab_fast",
+    srcs = ["src/main.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        ":lib_fast",
+        "//apps/humata2/engine:engine_fast",
+        "//apps/humata2/terminal/session",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates_gpui_fast//:gpui-kit",
+    ],
+)
+
+humata2_snapshot_test(
+    name = "app_fast_test",
+    srcs = ["tests/app.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "SHELL": "/bin/sh",
+    },
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        ":lib_fast",
+        "//apps/humata2/engine:engine_fast_test_support",
+        "//apps/humata2/terminal/embed:embed_fast",
+        "//apps/humata2/terminal/pane:terminal_pane_fast",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/testing/snapshot:snapshot_fast",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates_gpui_fast//:gpui-kit",
+    ],
+)
+
+humata2_snapshot_test(
+    name = "app_fast_ssh_test",
+    srcs = ["tests/app.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+        "SHELL": "/bin/sh",
+    },
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        ":lib_fast",
+        "//apps/humata2/engine:engine_fast_test_support",
+        "//apps/humata2/terminal/embed:embed_fast",
+        "//apps/humata2/terminal/pane:terminal_pane_fast",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/testing/snapshot:snapshot_fast",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates_gpui_fast//:gpui-kit",
+    ],
+)
+
+# Ordinary SSH clipboard acceptance; isolated headless clipboard, no personal shell config.
+[
+    rust_test(
+        name = "clipboard_ssh" + engine + "_test",
+        srcs = ["tests/clipboard_ssh.rs"],
+        data = ["//apps/humata2/daemon/holder:humata2_holder"],
+        env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+        tags = [
+            "external",
+            "manual",
+        ],
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            ":lib" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            "//apps/humata2/terminal/session",
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            gpui,
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for engine, gpui in {
+        "": "@crates//:gpui-kit",
+        "_fast": "@crates_gpui_fast//:gpui-kit",
+    }.items()
+]
+
+# Explicit acceptance test against the owner's installed Neovim, not a pinned build dependency.
+[
+    humata2_snapshot_test(
+        name = "neovim" + engine + "_test",
+        srcs = ["tests/neovim.rs"],
+        data = ["//apps/humata2/daemon/holder:humata2_holder"],
+        env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+        tags = ["manual"],
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            ":lib" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            "//apps/humata2/terminal/embed:embed" + engine,
+            "//apps/humata2/terminal/pane:terminal_pane" + engine,
+            "//apps/humata2/terminal/session",
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "//apps/humata2/testing/snapshot:snapshot" + engine,
+            gpui,
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for engine, gpui in {
+        "": "@crates//:gpui-kit",
+        "_fast": "@crates_gpui_fast//:gpui-kit",
+    }.items()
+]
+
+[
+    humata2_snapshot_test(
+        name = "interactive" + engine + "_test",
+        srcs = ["tests/interactive.rs"],
+        data = ["//apps/humata2/daemon/holder:humata2_holder"],
+        env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+        tags = ["manual"],
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            ":lib" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            "//apps/humata2/terminal/embed:embed" + engine,
+            "//apps/humata2/terminal/pane:terminal_pane" + engine,
+            "//apps/humata2/terminal/session",
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "//apps/humata2/testing/snapshot:snapshot" + engine,
+            gpui,
+            "@crates//:tempfile",
+            "@crates//:tokio",
+        ],
+    )
+    for engine, gpui in {
+        "": "@crates//:gpui-kit",
+        "_fast": "@crates_gpui_fast//:gpui-kit",
+    }.items()
+]

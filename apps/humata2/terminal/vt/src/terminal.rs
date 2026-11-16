@@ -12,6 +12,7 @@ use crate::error::{Error, Status, check};
 use crate::ffi;
 use crate::render::RenderState;
 
+mod checkpoint;
 mod view_support;
 
 pub use view_support::DecMode;
@@ -61,7 +62,10 @@ pub enum Event {
     /// `text` asks to clear it. Nothing was written: the host decides,
     /// since over SSH the program may not be the user's to trust, and the
     /// program gets no answer either way.
-    ClipboardWrite { target: ClipboardTarget, text: String },
+    ClipboardWrite {
+        target: ClipboardTarget,
+        text: String,
+    },
     /// The program asked to read a clipboard (OSC 52 with `?`). It has had
     /// no answer: the host may ask the user, then write
     /// [`clipboard_read_reply`](crate::clipboard_read_reply) to the pty,
@@ -152,6 +156,8 @@ pub struct Terminal {
     mouse_encoder: Owned<ffi::MouseEncoderImpl>,
     render: RenderState,
     raw: Owned<ffi::TerminalImpl>,
+    // The native terminal retains this allocator pointer. Drop after raw.
+    _checkpoint_allocator: Option<Box<checkpoint::AllocationBudget>>,
     sink: SinkBox,
     cols: u16,
     rows: u16,
@@ -175,40 +181,47 @@ impl Terminal {
     /// combining marks stay in one cell as Ghostty draws them.
     pub fn new(cols: u16, rows: u16, scrollback_lines: usize) -> Result<Self, Error> {
         let create = |source| Error::Create { cols, rows, source };
+        if cols == 0 || rows == 0 {
+            check(ffi::INVALID_VALUE).map_err(create)?;
+        }
+        checkpoint::validate_grid(cols, rows)?;
         let raw = Owned::new(
             // SAFETY: NULL selects the default allocator.
             |out| unsafe { ffi::ghostty_terminal_new(ptr::null(), out, cols, rows) },
             ffi::ghostty_terminal_free,
         )
         .map_err(create)?;
+        let mut terminal = Self::wrap(raw, cols, rows).map_err(create)?;
+        terminal.configure(scrollback_lines)?;
+        terminal.feed(b"\x1b[?2027h");
+        Ok(terminal)
+    }
+
+    fn wrap(raw: Owned<ffi::TerminalImpl>, cols: u16, rows: u16) -> Result<Self, Status> {
         let key_encoder = Owned::new(
             // SAFETY: as above.
             |out| unsafe { ffi::ghostty_key_encoder_new(ptr::null(), out) },
             ffi::ghostty_key_encoder_free,
-        )
-        .map_err(create)?;
+        )?;
         let mouse_encoder = Owned::new(
             // SAFETY: as above.
             |out| unsafe { ffi::ghostty_mouse_encoder_new(ptr::null(), out) },
             ffi::ghostty_mouse_encoder_free,
-        )
-        .map_err(create)?;
-        let render = RenderState::new().map_err(create)?;
-        let mut terminal = Terminal {
+        )?;
+        let render = RenderState::new()?;
+        Ok(Terminal {
             key_encoder,
             mouse_encoder,
             render,
             raw,
+            _checkpoint_allocator: None,
             sink: SinkBox::new(),
             cols,
             rows,
             cell_width: 1,
             cell_height: 1,
             option_as_alt: OptionAsAlt::Off,
-        };
-        terminal.configure(scrollback_lines)?;
-        terminal.feed(b"\x1b[?2027h");
-        Ok(terminal)
+        })
     }
 
     fn configure(&mut self, scrollback_lines: usize) -> Result<(), Error> {
@@ -233,6 +246,22 @@ impl Terminal {
             (&raw const scrollback_lines).cast(),
         )?;
 
+        let continuation = checkpoint::CONTINUATION_LIMIT;
+        set(
+            "continuation tracking",
+            ffi::TERMINAL_OPT_CONTINUATION_MAX_BYTES,
+            (&raw const continuation).cast(),
+        )?;
+        self.configure_callbacks()
+    }
+
+    fn configure_callbacks(&mut self) -> Result<(), Error> {
+        let raw = self.raw.ptr;
+        let set = |what: &'static str, option, value: *const c_void| {
+            // SAFETY: each option receives the header-documented type, copied by the engine.
+            check(unsafe { ffi::ghostty_terminal_set(raw, option, value) })
+                .map_err(|source| Error::Configure { what, source })
+        };
         // Callbacks and userdata are passed as the pointers themselves.
         set(
             "event handler",
@@ -303,17 +332,22 @@ impl Terminal {
         cell_width: u32,
         cell_height: u32,
     ) -> Result<(), Error> {
-        // SAFETY: the handle is live.
-        check(unsafe {
-            ffi::ghostty_terminal_resize(self.raw.ptr, cols, rows, cell_width, cell_height)
-        })
-        .map_err(|source| Error::Resize {
+        let fail = |source| Error::Resize {
             cols,
             rows,
             cell_width,
             cell_height,
             source,
-        })?;
+        };
+        if cols == 0 || rows == 0 || cell_width == 0 || cell_height == 0 {
+            return check(ffi::INVALID_VALUE).map_err(fail);
+        }
+        checkpoint::validate_grid(cols, rows)?;
+        // SAFETY: the handle is live.
+        check(unsafe {
+            ffi::ghostty_terminal_resize(self.raw.ptr, cols, rows, cell_width, cell_height)
+        })
+        .map_err(fail)?;
         self.cols = cols;
         self.rows = rows;
         self.cell_width = cell_width;
@@ -492,7 +526,11 @@ impl Terminal {
         };
         // SAFETY: MODE reads and writes a GhosttyTerminalModeConfig.
         let result = unsafe {
-            ffi::ghostty_terminal_get(self.raw.ptr, ffi::TERMINAL_DATA_MODE, (&raw mut mode).cast())
+            ffi::ghostty_terminal_get(
+                self.raw.ptr,
+                ffi::TERMINAL_DATA_MODE,
+                (&raw mut mode).cast(),
+            )
         };
         result == ffi::SUCCESS && mode.value
     }
@@ -519,7 +557,14 @@ impl Terminal {
         encode(|buf, len, written| {
             // SAFETY: `data` and `buf` hold the lengths given.
             unsafe {
-                ffi::ghostty_paste_encode(data.as_mut_ptr(), data.len(), bracketed, buf, len, written)
+                ffi::ghostty_paste_encode(
+                    data.as_mut_ptr(),
+                    data.len(),
+                    bracketed,
+                    buf,
+                    len,
+                    written,
+                )
             }
         })
         .map_err(|source| Error::Paste { source })
@@ -577,6 +622,26 @@ impl Terminal {
             .map_err(|source| Error::Render { source })
     }
 
+    /// Whether the active screen has a selection, without formatting or
+    /// copying its potentially large contents.
+    pub fn has_selection(&self) -> Result<bool, Error> {
+        let mut selection = ffi::GhosttySelection::EMPTY;
+        // SAFETY: the live terminal writes only the fixed-size selection
+        // descriptor. No borrowed grid reference escapes this call.
+        let result = unsafe {
+            ffi::ghostty_terminal_get(
+                self.raw.ptr,
+                ffi::TERMINAL_DATA_SELECTION,
+                (&raw mut selection).cast(),
+            )
+        };
+        if result == ffi::NO_VALUE {
+            return Ok(false);
+        }
+        check(result).map_err(|source| Error::Selection { source })?;
+        Ok(true)
+    }
+
     /// The selection's text as plain text, wrapped lines joined and
     /// trailing blanks trimmed.
     fn copy_text(&self, selection: &ffi::GhosttySelection) -> Result<String, Error> {
@@ -595,7 +660,10 @@ impl Terminal {
             (ffi::FORMATTER_OPT_EMIT, (&raw const plain).cast::<c_void>()),
             (ffi::FORMATTER_OPT_UNWRAP, (&raw const yes).cast()),
             (ffi::FORMATTER_OPT_TRIM, (&raw const yes).cast()),
-            (ffi::FORMATTER_OPT_SELECTION, ptr::from_ref(selection).cast()),
+            (
+                ffi::FORMATTER_OPT_SELECTION,
+                ptr::from_ref(selection).cast(),
+            ),
         ] {
             // SAFETY: each value is the type its option documents.
             check(unsafe { ffi::ghostty_formatter_set(formatter.ptr, option, value) })
@@ -937,6 +1005,11 @@ impl Terminal {
 /// come from that snapshot, so they are cheap and see nothing written
 /// since the last [`Grid::sync`].
 impl Grid for Terminal {
+    fn hyperlink(&self, at: ViewportPoint) -> Option<String> {
+        self.hyperlink_uri(at)
+            .or_else(|| terminal_grid::plain_link(self, at))
+    }
+
     fn sync(&mut self) {
         // This fails only when libghostty-vt is out of memory. The last
         // snapshot stays and the next frame tries again; call

@@ -47,8 +47,54 @@ pub(crate) fn check(result: ffi::GhosttyResult) -> Result<(), Status> {
 }
 
 /// What went wrong in a call on a [`Terminal`](crate::Terminal).
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "The restored terminal could not fit a {requested}-byte allocation within its {limit}-byte memory budget. Preserve the checkpoint and reduce retained history; damaged checkpoints must be restored from a compatible backup."
+    )]
+    CheckpointMemoryLimit {
+        requested: usize,
+        limit: usize,
+        #[source]
+        source: Status,
+    },
+    #[error(
+        "The {cols}x{rows} terminal grid is unsupported. Use dimensions from 1 to {max_dimension} with at most {max_cells} cells; preserve any saved checkpoint."
+    )]
+    GridLimit {
+        cols: u16,
+        rows: u16,
+        max_dimension: u16,
+        max_cells: usize,
+    },
+    #[error(
+        "The checkpoint's page capacity estimate is {requested} bytes, above the conservative {limit}-byte restore budget. Reduce retained history or restore a compatible backup; preserve the existing checkpoint."
+    )]
+    CheckpointPageLimit { requested: u64, limit: u64 },
+    #[error(
+        "Couldn't {operation} the terminal checkpoint. Preserve the previous checkpoint and retry with a compatible engine; an unfinished control sequence may exceed the configured continuation limit."
+    )]
+    Checkpoint {
+        operation: &'static str,
+        #[source]
+        source: Status,
+    },
+    #[error(
+        "The terminal checkpoint needs {required} bytes, above the configured {limit}-byte limit. Reduce retained history or raise the limit; preserve the existing checkpoint."
+    )]
+    CheckpointTooLarge { required: usize, limit: usize },
+    #[error(
+        "Couldn't allocate {bytes} bytes for the terminal checkpoint. Close other terminals or reduce retained history, and preserve the previous checkpoint."
+    )]
+    CheckpointAllocation {
+        bytes: usize,
+        #[source]
+        source: std::collections::TryReserveError,
+    },
+    #[error(
+        "The terminal checkpoint is incompatible or damaged ({reason}). Preserve it and restore a compatible backup; do not reinterpret it as terminal output."
+    )]
+    CheckpointHeader { reason: &'static str },
     #[error(
         "Couldn't create a {cols}x{rows} terminal. Both sizes must be at least 1; if they \
          are, the system is probably out of memory, so close other terminals and try again."

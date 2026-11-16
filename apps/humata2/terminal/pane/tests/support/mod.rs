@@ -53,6 +53,7 @@ pub enum Told {
     Failed,
     Pwd(String),
     Split,
+    Link(String),
 }
 
 pub struct Opened {
@@ -90,6 +91,7 @@ pub fn open(cx: &mut TestAppContext, scrollback: usize) -> Opened {
                 PaneEvent::TitleChanged(title) => Told::Title(title.clone()),
                 PaneEvent::PwdChanged(pwd) => Told::Pwd(pwd.clone()),
                 PaneEvent::Bell => Told::Bell,
+                PaneEvent::OpenLink(uri) => Told::Link(uri.clone()),
                 PaneEvent::ClipboardWrite { text, .. } => Told::ClipboardWrite(text.clone()),
                 PaneEvent::ClipboardReadRequested { .. } => Told::ClipboardRead,
                 PaneEvent::PasteImage { .. } => Told::PasteImage,

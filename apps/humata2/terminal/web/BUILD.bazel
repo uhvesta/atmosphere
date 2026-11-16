@@ -1,0 +1,107 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load(":bundle.bzl", "wasm_bundle")
+
+platform(
+    name = "wasm32",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+)
+
+ENGINES = {"_fast": "@crates_gpui_web"}
+
+[
+    rust_shared_library(
+        name = "application" + engine,
+        srcs = [
+            "src/lib.rs",
+            "src/lifecycle.rs",
+        ],
+        crate_name = "terminal_web",
+        platform = ":wasm32",
+        rustc_flags = [
+            "-C",
+            "link-arg=-zstack-size=8388608",
+            "-C",
+            "link-arg=--strip-debug",
+        ],
+        deps = [
+            "//apps/humata2/terminal/client:client" + engine,
+            "//apps/humata2/engine:engine" + engine,
+            crates + "//:gpui-kit",
+            "@crates//:serde",
+            "@crates//:serde_json",
+            crates + "//:wasm-bindgen",
+            crates + "//:log",
+        ],
+    )
+    for engine, crates in ENGINES.items()
+]
+
+wasm_bundle(
+    name = "bundle",
+    index = "index.html",
+    licenses = ["//apps/humata2/terminal/client:licenses"],
+    visibility = [
+        "//apps/humata2/terminal/demo:__pkg__",
+        "//apps/humata2/terminal/host:__pkg__",
+    ],
+    wasm = ":application_fast",
+)
+
+exports_files(
+    ["tools.bzl"],
+    visibility = ["//:__pkg__"],
+)
+
+exports_files(
+    ["browser_smoke.mjs"],
+    visibility = [
+        "//apps/humata2/terminal/demo:__pkg__",
+        "//apps/humata2/terminal/platform_test:__pkg__",
+    ],
+)
+
+sh_test(
+    name = "incoming_queue_test",
+    srcs = ["queue_test.sh"],
+    data = [
+        "queue_test.mjs",
+        "src/lib.rs",
+    ],
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "browser_smoke_test",
+    timeout = "long",
+    srcs = ["browser_smoke.sh"],
+    data = [
+        "browser_smoke.mjs",
+        ":bundle",
+    ],
+    tags = [
+        "external",
+        "manual",
+    ],
+)
+
+# Acceptance against an already built and deployed external server.
+sh_test(
+    name = "browser_runtime_test",
+    timeout = "long",
+    srcs = ["browser_smoke.sh"],
+    data = ["browser_smoke.mjs"],
+    tags = [
+        "external",
+        "manual",
+    ],
+)
+
+rust_test(
+    name = "lifecycle_test",
+    srcs = ["src/lifecycle.rs"],
+    crate_name = "terminal_browser_lifecycle",
+)

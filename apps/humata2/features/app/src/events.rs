@@ -10,6 +10,7 @@ impl App {
     pub(super) fn apply(&self, state: &mut AppState, event: Event) -> Effect<AppAction> {
         let workspace = Arc::make_mut(&mut state.workspace);
         let mut snapshot = None;
+        let mut permission_alert = None;
         match event {
             Event::Output { session, tab, line } => {
                 return self.child(
@@ -38,6 +39,16 @@ impl App {
                 upsert(&mut workspace.sessions, session, |a, b| a.id == b.id);
             }
             Event::Request(request) => {
+                if state.settings.preferences.permission_request_alerts
+                    && request.answer.is_none()
+                    && !matches!(request.kind, humata2_clients::model::RequestKind::Question)
+                    && !workspace
+                        .requests
+                        .iter()
+                        .any(|saved| saved.id == request.id)
+                {
+                    permission_alert = Some(format!("Permission requested: {}", request.title));
+                }
                 upsert(&mut workspace.requests, request, |a, b| a.id == b.id);
             }
             Event::Rules { channel, rules } => {
@@ -54,6 +65,9 @@ impl App {
             Event::Resync => return self.load(),
         }
         let mut effects = vec![self.show(state)];
+        if let Some(text) = permission_alert {
+            effects.push(state.toast(text, &self.clients.clock));
+        }
         if let Some(id) = snapshot {
             effects.push(self.child(state, AppAction::Session(SessionAction::Snapshot(id))));
         }

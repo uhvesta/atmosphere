@@ -2,6 +2,40 @@ use terminal_grid::{Grid, KeyEvent, Mods, MouseEvent, Size, ViewportPoint};
 
 use crate::paste::Paste;
 
+/// Why an asynchronous paste's following input was canceled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputBufferError {
+    Capacity {
+        events: usize,
+        bytes: usize,
+        max_events: usize,
+        max_bytes: usize,
+    },
+    ReadSequenceExhausted {
+        last_id: u64,
+    },
+}
+impl std::fmt::Display for InputBufferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Capacity {
+                events,
+                bytes,
+                max_events,
+                max_bytes,
+            } => write!(
+                f,
+                "The pending clipboard paste and following input were canceled because {events} events/{bytes} bytes exceed the {max_events}-event/{max_bytes}-byte buffer limit. Paste a smaller value or wait for clipboard access before adding more input. Retype only the unsent input."
+            ),
+            Self::ReadSequenceExhausted { last_id } => write!(
+                f,
+                "The clipboard read identifier space is exhausted after {last_id} reads. Reload or reopen the viewer before pasting again; waiting input was canceled."
+            ),
+        }
+    }
+}
+impl std::error::Error for InputBufferError {}
+
 /// Where to move the viewport in the history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScrollTo {
@@ -40,6 +74,11 @@ pub trait TerminalHost<G: Grid> {
     /// arrive here; they become [`TerminalHost::copy`] and
     /// [`TerminalHost::paste`].
     fn key(&mut self, grid: &mut G, event: KeyEvent<'_>);
+
+    /// Modifier-clicked URL. Hosts decide which URL schemes may be opened.
+    fn open_link(&mut self, uri: String) {
+        let _ = uri;
+    }
 
     /// The mouse moved, or a button was pressed or released, over the
     /// grid. Return `true` when the program takes the mouse (it turned on
@@ -91,6 +130,28 @@ pub trait TerminalHost<G: Grid> {
     /// which asks before sending text that could run commands.
     fn paste(&mut self, grid: &mut G, paste: Paste) {
         let _ = (grid, paste);
+    }
+
+    /// An explicitly requested asynchronous clipboard read failed. The embedder
+    /// surfaces permission, secure-context or unsupported-content guidance.
+    fn clipboard_read_failed(&mut self, error: gpui_kit::ClipboardReadError) {
+        let _ = error;
+    }
+
+    /// A paste awaits explicit user confirmation; buffered keys must not approve it.
+    fn paste_is_pending(&self) -> bool {
+        false
+    }
+
+    /// Whether the most recent paste was accepted for local delivery. This is
+    /// not a PTY-written receipt. False cancels queued keys after that paste.
+    fn paste_input_accepted(&self) -> bool {
+        true
+    }
+
+    /// Buffered typeahead was canceled rather than exceeding a pending-paste budget.
+    fn input_buffer_failed(&mut self, error: InputBufferError) {
+        let _ = error;
     }
 
     /// The view's size changed to fit `size` cells of `cell` pixels.

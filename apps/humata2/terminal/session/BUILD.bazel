@@ -1,0 +1,74 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+rust_library(
+    name = "session",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "terminal_session",
+    visibility = [
+        "//apps/humata2/terminal/demo:__pkg__",
+        "//apps/humata2/terminal/embed:__pkg__",
+        "//apps/humata2/terminal/host:__pkg__",
+        "//apps/humata2/terminal/lab:__pkg__",
+    ],
+    deps = [
+        "//apps/humata2/daemon/holder",
+        "//apps/humata2/terminal/wire",
+        "@crates//:libc",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "session_unit_test",
+    crate = ":session",
+    deps = ["@crates//:tempfile"],
+)
+
+rust_test(
+    name = "session_test",
+    srcs = ["tests/session.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    deps = [
+        ":session",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "metadata_test",
+    srcs = ["tests/metadata.rs"],
+    deps = [
+        ":session",
+        "@crates//:libc",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+rust_test(
+    name = "ssh_test",
+    srcs = ["tests/ssh.rs"],
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    deps = [
+        ":session",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "markdown",
+    srcs = ["README.md"],
+    tags = ["markdown"],
+)

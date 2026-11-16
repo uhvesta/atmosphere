@@ -32,6 +32,8 @@ struct Log {
     focus: Vec<bool>,
     scrolled_to: Vec<ScrollTo>,
     texts: Vec<String>,
+    mouse_moves: usize,
+    links: Vec<String>,
 }
 
 /// A host over a [`FakeGrid`]: selecting selects in the grid, copying
@@ -92,6 +94,15 @@ impl TerminalHost<FakeGrid> for TestHost {
         self.0.borrow_mut().scrolled_to.push(to);
     }
 
+    fn open_link(&mut self, uri: String) {
+        self.0.borrow_mut().links.push(uri);
+    }
+    fn mouse(&mut self, _: &mut FakeGrid, event: terminal_grid::MouseEvent) -> bool {
+        if event.action == terminal_grid::MouseAction::Motion {
+            self.0.borrow_mut().mouse_moves += 1;
+        }
+        false
+    }
     fn text(&mut self, _: &mut FakeGrid, text: &str) {
         self.0.borrow_mut().texts.push(text.to_owned());
     }
@@ -541,4 +552,225 @@ fn marks_in_view_draw_their_rows_again(cx: &mut TestAppContext) {
         assert!(view.read(cx).stats().rows_rebuilt >= 2);
     })
     .expect("the test window is open");
+}
+
+struct ClippedPair {
+    left: View,
+    right: View,
+}
+impl gpui_kit::Render for ClippedPair {
+    fn render(
+        &mut self,
+        _: &mut Window,
+        _: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::prelude::*;
+        gpui_kit::div()
+            .size_full()
+            .flex()
+            .child(
+                gpui_kit::div()
+                    .w(px(240.))
+                    .h_full()
+                    .flex_shrink_0()
+                    .overflow_hidden()
+                    .child(
+                        gpui_kit::div()
+                            .w(px(640.))
+                            .h_full()
+                            .child(self.left.clone()),
+                    ),
+            )
+            .child(
+                gpui_kit::div()
+                    .w(px(240.))
+                    .h_full()
+                    .flex_shrink_0()
+                    .child(self.right.clone()),
+            )
+    }
+}
+fn clipped_pair(
+    cx: &mut TestAppContext,
+) -> (
+    AnyWindowHandle,
+    View,
+    View,
+    Rc<RefCell<Log>>,
+    Rc<RefCell<Log>>,
+) {
+    let left_log = Rc::new(RefCell::new(Log::default()));
+    let right_log = Rc::new(RefCell::new(Log::default()));
+    let (window, pair) = cx.update(|cx| {
+        gpui_kit::init(cx);
+        gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                    Point::default(),
+                    size(px(480.), px(280.)),
+                ))),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                let mut grid = FakeGrid::new(80, 10);
+                grid.write(40, 0, "https://hidden.test", &Cell::default());
+                let left = cx.new(|cx| {
+                    TerminalView::new(
+                        grid,
+                        TestHost(left_log.clone()),
+                        Theme::default(),
+                        window,
+                        cx,
+                    )
+                });
+                let right = cx.new(|cx| {
+                    TerminalView::new(
+                        grid_with(&["right terminal"]),
+                        TestHost(right_log.clone()),
+                        Theme::default(),
+                        window,
+                        cx,
+                    )
+                });
+                cx.new(|_| ClippedPair { left, right })
+            },
+        )
+        .unwrap()
+    });
+    cx.update_window(window, |_, w, _| w.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    let (left, right) = cx.update(|cx| {
+        let pair = pair.read(cx);
+        (pair.left.clone(), pair.right.clone())
+    });
+    cx.update_window(window, |_, w, cx| {
+        w.render_frame(cx);
+        focus(&left, w, cx);
+    })
+    .unwrap();
+    (window, left, right, left_log, right_log)
+}
+
+#[gpui_kit::test]
+fn clipped_grid_does_not_hover_report_or_open_a_link_under_the_other_pane(cx: &mut TestAppContext) {
+    let (window, left, right, left_log, _) = clipped_pair(cx);
+    cx.update_window(window, |_, w, cx| {
+        let view = left.read(cx);
+        let bounds = view.viewport_bounds();
+        let cell = view.cell_size().unwrap();
+        let at = point(
+            bounds.origin.x + px(42.5 * cell.width),
+            bounds.origin.y + px(0.5 * cell.height),
+        );
+        assert!(at.x > px(240.) && at.x < px(480.));
+        left_log.borrow_mut().mouse_moves = 0;
+        w.dispatch_event(
+            gpui_kit::PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: at,
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        w.render_frame(cx);
+        assert!(
+            w.try_find("terminal-link-hint").is_none(),
+            "a clipped link must not expose its hover hint in the adjacent pane"
+        );
+        assert_eq!(
+            left_log.borrow().mouse_moves,
+            0,
+            "a clipped grid must not report the adjacent pane's mouse motion"
+        );
+        let modifiers = Modifiers {
+            platform: true,
+            control: true,
+            ..Default::default()
+        };
+        w.dispatch_event(
+            gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                position: at,
+                button: gpui_kit::MouseButton::Left,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        w.dispatch_event(
+            gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                position: at,
+                button: gpui_kit::MouseButton::Left,
+                modifiers,
+                click_count: 1,
+            }),
+            cx,
+        );
+        assert!(right.read(cx).focus_handle(cx).is_focused(w));
+        assert!(
+            left_log.borrow().links.is_empty(),
+            "the invisible left link must not open when clicking the right pane"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn focus_handoff_routes_immediate_text_and_rejects_stale_ime_callbacks(cx: &mut TestAppContext) {
+    use gpui_kit::EntityInputHandler;
+    let (window, left, right, left_log, right_log) = clipped_pair(cx);
+    cx.update(|cx| {
+        cx.update_window(window, |_, w, cx| {
+            let bounds = right.read(cx).viewport_bounds();
+            let at = point(bounds.origin.x + px(20.), bounds.origin.y + px(30.));
+            w.dispatch_event(
+                gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                    position: at,
+                    button: gpui_kit::MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            w.dispatch_event(
+                gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                    position: at,
+                    button: gpui_kit::MouseButton::Left,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+            // No test render_frame, executor wait or animation frame after the click.
+        })
+        .unwrap()
+    });
+    cx.update(|cx| {
+        cx.update_window(window, |_, w, cx| {
+            // Force the test platform's IME path rather than TerminalView's raw
+            // key encoder; the commit must use the currently registered handler.
+            right.update(cx, |view, cx| {
+                view.replace_and_mark_text_in_range(None, "composition", None, w, cx)
+            });
+            let mut key = gpui_kit::Keystroke::parse_with_os("a", cx.platform_info().os).unwrap();
+            key.key_char = Some("a".into());
+            w.dispatch_keystroke(key, cx);
+            assert_eq!(right_log.borrow().texts, vec!["a"]);
+            assert!(left_log.borrow().texts.is_empty());
+            left.update(cx, |view, cx| {
+                view.replace_text_in_range(None, "stale", w, cx);
+                view.replace_and_mark_text_in_range(None, "stale composition", None, w, cx);
+                assert!(view.preedit().is_none());
+                assert!(view.selected_text_range(false, w, cx).is_none());
+            });
+            assert!(
+                left_log.borrow().texts.is_empty(),
+                "an old platform handler must not write to an unfocused terminal"
+            );
+        })
+        .unwrap()
+    });
 }

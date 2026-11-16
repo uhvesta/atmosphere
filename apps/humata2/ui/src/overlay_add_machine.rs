@@ -79,7 +79,10 @@ struct LoginPty {
 
 impl Pty for LoginPty {
     fn write(&mut self, bytes: &[u8]) {
-        let _ = self.tx.send(Io::Input(bytes.to_vec()));
+        let _ = self.write_accepted(bytes);
+    }
+    fn write_accepted(&mut self, bytes: &[u8]) -> bool {
+        self.tx.send(Io::Input(bytes.to_vec())).is_ok()
     }
     fn resize(&mut self, size: Size, _: CellSize) {
         let _ = self.tx.send(Io::Resize(size.cols, size.rows));

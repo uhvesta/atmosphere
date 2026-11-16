@@ -15,14 +15,18 @@ GPUI_KIT = {
         crate_name = "terminal_view",
         visibility = [
             "//apps/humata2/desktop:__subpackages__",
+            "//apps/humata2/terminal/client:__pkg__",
+            "//apps/humata2/terminal/embed:__pkg__",
             "//apps/humata2/terminal/pane:__pkg__",
             "//apps/humata2/ui:__subpackages__",
             "//apps/humata2/ui-prototype:__pkg__",
         ],
         deps = [
             "//apps/humata2/terminal/grid:terminal_grid",
-            gpui_kit,
-        ],
+        ] + (select({
+            "@platforms//cpu:wasm32": ["@crates_gpui_web//:gpui-kit"],
+            "//conditions:default": [gpui_kit],
+        }) if engine == "_fast" else [gpui_kit]),
     )
     for engine, gpui_kit in GPUI_KIT.items()
 ]

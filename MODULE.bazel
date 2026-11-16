@@ -99,6 +99,7 @@ crate.from_cargo(
     # //bazel/platforms. rules_rust matches crate selects on OS and CPU only,
     # so the gnu triples also cover the musl platforms.
     supported_platform_triples = [
+        "wasm32-unknown-unknown",
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
         "aarch64-unknown-linux-gnu",
@@ -118,13 +119,48 @@ crate.from_cargo(
     lockfile = "//apps/humata2/engine/gpui-fast-crates:cargo-bazel-lock.json",
     manifests = ["//apps/humata2/engine/gpui-fast-crates:Cargo.toml"],
     supported_platform_triples = [
+        "wasm32-unknown-unknown",
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
         "aarch64-unknown-linux-gnu",
         "x86_64-unknown-linux-gnu",
     ],
 )
-use_repo(crate, "crates", "crates_gpui_fast")
+
+# Browser GUI dependencies exclude native test-support (proptest/wait-timeout).
+# Native Fast targets retain their independent feature set above.
+crate.from_cargo(
+    name = "crates_gpui_web",
+    cargo_lockfile = "//apps/humata2/terminal/web/deps:Cargo.lock",
+    lockfile = "//apps/humata2/terminal/web/deps:cargo-bazel-lock.json",
+    manifests = ["//apps/humata2/terminal/web/deps:Cargo.toml"],
+    supported_platform_triples = [
+        "wasm32-unknown-unknown",
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ],
+)
+use_repo(crate, "crates", "crates_gpui_fast", "crates_gpui_web")
+
+# Keep the build script and Wasm library on the same reverse-mapping schema.
+# The generated tables otherwise reference a type cfg'd out on wasm32.
+crate.annotation(
+    crate = "mime_guess",
+    crate_features = ["rev-mappings"],
+    repositories = ["crates_gpui_web"],
+)
+
+# The pinned browser dispatcher requires this one unstable stdarch intrinsic.
+# Limit the opt-in to its exact crate/version in the experimental Web index.
+crate.annotation(
+    crate = "wasm_thread",
+    repositories = ["crates_gpui_web"],
+    rustc_env = {"RUSTC_BOOTSTRAP": "wasm_thread"},
+    rustc_flags = ["-Zallow-features=stdarch_wasm_atomic_wait"],
+    version = "=0.3.3",
+)
 
 # Markdown source and fenced code blocks use the same portable highlighter
 # on the ordinary and Fast UI backends.
@@ -351,6 +387,14 @@ ghostty_kit(name = "ghostty_kit")
 libghostty_vt = use_repo_rule("//apps/humata2/terminal/vt:libghostty_vt.bzl", "libghostty_vt")
 
 libghostty_vt(name = "libghostty_vt")
+
+# Same pinned terminal core for the browser portability proof.
+libghostty_vt_wasm = use_repo_rule("//apps/humata2/terminal/vt:libghostty_vt_wasm.bzl", "libghostty_vt_wasm")
+
+libghostty_vt_wasm(name = "libghostty_vt_wasm")
+
+wasm_tools = use_extension("//apps/humata2/terminal/web:tools.bzl", "wasm_tools")
+use_repo(wasm_tools, "terminal_wasm_bindgen")
 
 # Claude Code, one repository per platform, each fetched only when a build
 # for that platform uses it. See apps/humata/claude/claude.bzl.

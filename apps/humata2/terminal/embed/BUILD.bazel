@@ -1,0 +1,24 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+ENGINES = {
+    "": "@crates//:gpui-kit",
+    "_fast": "@crates_gpui_fast//:gpui-kit",
+}
+
+[
+    rust_library(
+        name = "embed" + engine,
+        srcs = glob(["src/*.rs"]),
+        crate_name = "terminal_embed",
+        visibility = ["//apps/humata2/terminal/lab:__pkg__"],
+        deps = [
+            "//apps/humata2/terminal/session",
+            "//apps/humata2/terminal/pane:terminal_pane" + engine,
+            "//apps/humata2/terminal/view:terminal_view" + engine,
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            gpui_kit,
+            "@crates//:tokio",
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]

@@ -19,6 +19,19 @@ fn enter_sends_a_carriage_return() {
 }
 
 #[test]
+fn tab_and_shift_tab_send_terminal_navigation_keys_without_text() {
+    let mut terminal = terminal();
+    assert_eq!(key(&mut terminal, KeyEvent::press(Key::Tab)), b"\t");
+    assert_eq!(
+        key(
+            &mut terminal,
+            KeyEvent::press(Key::Tab).with_mods(Mods::SHIFT)
+        ),
+        b"\x1b[Z"
+    );
+}
+
+#[test]
 fn arrows_follow_the_cursor_key_mode() {
     let mut terminal = terminal();
     assert_eq!(key(&mut terminal, KeyEvent::press(Key::ArrowUp)), b"\x1b[A");

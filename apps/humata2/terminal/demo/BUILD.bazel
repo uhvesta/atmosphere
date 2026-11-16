@@ -1,0 +1,91 @@
+load("@rules_rust//rust:defs.bzl", "rust_test")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_binary(
+    name = "live",
+    srcs = ["live.sh"],
+    args = [
+        "$(rlocationpath //apps/humata2/terminal/host:terminal_host)",
+        "$(rlocationpath //apps/humata2/terminal/web:bundle)",
+    ],
+    data = [
+        "live.py",
+        "//apps/humata2/terminal/host:terminal_host",
+        "//apps/humata2/terminal/web:bundle",
+    ],
+)
+
+# Refresh the stable entry point only after actual browser acceptance succeeds.
+sh_test(
+    name = "milestone_test",
+    timeout = "long",
+    srcs = ["milestone.sh"],
+    args = [
+        "$(rlocationpath :live)",
+        "$(rlocationpath //apps/humata2/terminal/host:terminal_host)",
+        "$(rlocationpath //apps/humata2/terminal/web:bundle)",
+        "$(rlocationpath //apps/humata2/terminal/web:browser_smoke.mjs)",
+    ],
+    data = [
+        ":live",
+        "//apps/humata2/terminal/host:terminal_host",
+        "//apps/humata2/terminal/web:browser_smoke.mjs",
+        "//apps/humata2/terminal/web:bundle",
+    ],
+    tags = [
+        "external",
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+)
+
+# Runtime deployment of artifacts already built through Bazel, useful with an
+# isolated runtime output base while the shared compiler server is occupied.
+sh_binary(
+    name = "publish_built",
+    srcs = ["publish_built.sh"],
+    data = ["live.py"],
+)
+
+sh_binary(
+    name = "send_text",
+    srcs = ["send_text.sh"],
+    data = ["send_text.mjs"],
+)
+
+# Input/stress acceptance against private fixture shells, never the live demo.
+# Artifact paths must come from a completed Bazel build (runtime-only runner).
+sh_test(
+    name = "fixture_runtime_test",
+    timeout = "long",
+    srcs = ["fixture.sh"],
+    data = [
+        "fixture.mjs",
+        "send_text.mjs",
+        "//apps/humata2/terminal/platform_test:linux_runner",
+        "//apps/humata2/terminal/web:browser_smoke.mjs",
+    ],
+    tags = [
+        "external",
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+)
+
+# Public native SDK consumer: owns its PTY and confirms exit before cleanup.
+rust_test(
+    name = "native_api_test",
+    srcs = ["native_api_test.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    deps = [
+        "//apps/humata2/terminal/host",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/wire",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)

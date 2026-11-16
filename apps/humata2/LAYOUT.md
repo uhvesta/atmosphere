@@ -34,6 +34,19 @@ There is no separate model package: the domain types the app shows live in `clie
 | `desktop` | `humata2` binary | The app: windows, menus, wiring. Its tests (`shell_test`, `panels_test`, `native_test`, `design_test`) draw the window headless; `design_test` holds the design goldens (D76). |
 | `skills` | — | Agent skills the app ships (`order-humata-review`, `render-humata-review`). |
 
+## Terminal experiment (real local and SSH PTYs)
+| Package | Crate | What it holds |
+|---|---|---|
+| `terminal/session` | `terminal_session` | UI-independent holder attachments, input acknowledgements/resize and saved descriptors/layout; legacy private journals or memory-only host mode, over local/SSH Unix sockets. |
+| `terminal/wire` | `terminal_wire` | Platform-neutral ordered session messages, binary checkpoint identity, bounded history policy and explicit recovery metadata. |
+| `terminal/codec` | `terminal_codec` | Bounded pluggable checkpoint envelopes, LZ4/Zlib codecs and explicit preference/fallback policy, shared by native and Wasm. |
+| `terminal/provider` | `terminal_provider` | Pure versioned structured provider-event adapters with no transcript scanning or notification side effects. |
+| `terminal/host` | `terminal_host` | Persistent authoritative terminal runtime and authenticated loopback WebSocket/static gateway; owns local/SSH sessions, memory state and bounded private disk checkpoints. |
+| `terminal/client` | `terminal_replica`, `terminal_client` | Standalone single-terminal GPUI component with caller transport/checkpoint/hooks; optional shared workspace chrome and native WebSocket adapter. |
+| `terminal/web` | Wasm application/bundle | Browser build of that same GPUI workspace; talks only to the local host server, which also owns SSH connections. Optimized Mac stress/refresh and Linux painting/clipboard/reload pass on the dedicated small VM. |
+| `terminal/embed` | `terminal_embed` | Reusable GPUI terminal content over a real session; bounded background I/O, replay, focus notification and the existing TerminalPane. |
+| `terminal/lab` | `terminal_lab`, `terminal_lab` binary | Standalone macOS experiment with tab movement, two groups, detach/resume and text paste. Headless tests use actual PTYs locally and in a dedicated small Lima VM over SSH; see its README. Main desktop transport remains unchanged. |
+
 ## Daemon and boundaries
 | Package | Crate | What it holds |
 |---|---|---|

@@ -3349,6 +3349,7 @@ dependencies = [
  "gpui-fast-apple",
  "gpui-kit",
  "image",
+ "wasm-bindgen",
 ]
 
 [[package]]

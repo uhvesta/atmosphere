@@ -1,0 +1,116 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+rust_library(
+    name = "host",
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "terminal_host",
+    visibility = ["//apps/humata2/terminal/demo:__pkg__"],
+    deps = [
+        "//apps/humata2/terminal/codec",
+        "//apps/humata2/terminal/provider",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/terminal/wire",
+        "@crates//:axum",
+        "@crates//:flate2",
+        "@crates//:futures-util",
+        "@crates//:libc",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_binary(
+    name = "terminal_host",
+    srcs = ["src/main.rs"],
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    visibility = ["//apps/humata2/terminal/demo:__pkg__"],
+    deps = [
+        ":host",
+        "//apps/humata2/terminal/session",
+        "//apps/humata2/terminal/wire",
+        "@crates//:serde_json",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "host_test",
+    crate = ":host",
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    deps = [
+        "@crates//:base64",
+        "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "host_ssh_test",
+    args = [
+        "--ignored",
+        "local_and_ssh_sessions_share_host_and_survive_restart",
+    ],
+    crate = ":host",
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    deps = [
+        "@crates//:base64",
+        "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "spawn_ssh_test",
+    args = [
+        "--ignored",
+        "ssh_sibling_has_fresh_pid_same_remote_os_and_observed_directory",
+    ],
+    crate = ":host",
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    deps = [
+        "@crates//:base64",
+        "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "ssh_reconnect_test",
+    args = [
+        "--ignored",
+        "ssh_outage_and_route_change_reattach_existing_holder_without_input_replay",
+    ],
+    crate = ":host",
+    data = ["//apps/humata2/daemon/holder:humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
+    tags = [
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    deps = [
+        "@crates//:base64",
+        "@crates//:tempfile",
+        "@crates//:tokio-tungstenite",
+    ],
+)

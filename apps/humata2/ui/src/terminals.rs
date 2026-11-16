@@ -36,9 +36,14 @@ struct ClientPty {
 }
 impl Pty for ClientPty {
     fn write(&mut self, bytes: &[u8]) {
-        if self.writable.get() {
-            let _ = self.tx.send(Io::Input(self.key.clone(), bytes.to_vec()));
-        }
+        let _ = self.write_accepted(bytes);
+    }
+    fn write_accepted(&mut self, bytes: &[u8]) -> bool {
+        self.writable.get()
+            && self
+                .tx
+                .send(Io::Input(self.key.clone(), bytes.to_vec()))
+                .is_ok()
     }
     fn resize(&mut self, size: Size, _: CellSize) {
         if self.writable.get() {

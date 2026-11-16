@@ -3,6 +3,22 @@
 use ghostty_vt::{Match, Point, Terminal};
 
 #[test]
+fn selection_presence_tracks_creation_and_clearing() {
+    let mut terminal = Terminal::new(20, 4, 10000).unwrap();
+    terminal.feed(b"selected text");
+    assert!(!terminal.has_selection().unwrap());
+    terminal
+        .select(
+            ghostty_vt::ViewportPoint { x: 0, y: 0 },
+            ghostty_vt::ViewportPoint { x: 7, y: 0 },
+        )
+        .unwrap();
+    assert!(terminal.has_selection().unwrap());
+    terminal.clear_selection().unwrap();
+    assert!(!terminal.has_selection().unwrap());
+}
+
+#[test]
 fn a_selection_across_a_wrapped_line_copies_as_one_line() {
     let mut terminal = Terminal::new(10, 5, 100).expect("a terminal");
     terminal.feed(b"hello world, wrapped\r\nnext line");

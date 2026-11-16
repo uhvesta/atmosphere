@@ -17,6 +17,8 @@ mod colors;
 #[cfg(feature = "fake")]
 mod fake;
 mod input;
+mod links;
+pub use links::plain_link;
 
 pub use cell::{Cell, CellWidth, Color, Row, Underline};
 pub use colors::{Colors, Rgb, default_palette};
@@ -137,6 +139,11 @@ pub trait Grid {
     /// Where the cursor is in the viewport. It isn't visible when the
     /// program hid it or the viewport is scrolled away from it.
     fn cursor(&self) -> Cursor;
+
+    /// A link under a viewport cell. Engines may prefer explicit OSC 8 metadata.
+    fn hyperlink(&self, at: ViewportPoint) -> Option<String> {
+        plain_link(self, at)
+    }
 
     /// The cursor's shape and whether it blinks.
     fn cursor_style(&self) -> CursorStyle;

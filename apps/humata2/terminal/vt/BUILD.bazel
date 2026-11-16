@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 # Safe Rust over libghostty-vt, Ghostty's terminal core (D10): the grid,
 # scrollback, cursor, title, selection, search, paste, clipboard requests,
@@ -8,11 +9,27 @@ rust_library(
     name = "ghostty_vt",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "ghostty_vt",
+    link_deps = select({
+        ":wasm32": ["@libghostty_vt_wasm//:libghostty_vt"],
+        "//conditions:default": ["@libghostty_vt"],
+    }),
     visibility = ["//apps/humata2:__subpackages__"],
     deps = [
         "//apps/humata2/terminal/grid:terminal_grid",
         "@crates//:thiserror",
-        "@libghostty_vt",
+    ],
+)
+
+exports_files(
+    ["wasm_abi.c"],
+    visibility = ["//visibility:private"],
+)
+
+config_setting(
+    name = "wasm32",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
     ],
 )
 
@@ -27,7 +44,10 @@ rust_test(
         srcs = [src],
         deps = [":ghostty_vt"],
     )
-    for src in glob(["tests/*.rs"])
+    for src in glob(
+        ["tests/*.rs"],
+        exclude = ["tests/checkpoint_fixture.rs"],
+    )
 ]
 
 filegroup(
@@ -35,6 +55,7 @@ filegroup(
     srcs = [
         "BUILD.bazel",
         "libghostty_vt.bzl",
+        "libghostty_vt_wasm.bzl",
     ],
     tags = ["starlark"],
 )
@@ -43,4 +64,27 @@ filegroup(
     name = "markdown",
     srcs = ["README.md"],
     tags = ["markdown"],
+)
+
+rust_binary(
+    name = "checkpoint_fixture",
+    testonly = True,
+    srcs = ["tests/checkpoint_fixture.rs"],
+    deps = [":ghostty_vt"],
+)
+
+sh_test(
+    name = "wasm_checkpoint_test",
+    srcs = ["tests/wasm_checkpoint.sh"],
+    data = [
+        "tests/wasm_checkpoint.mjs",
+        ":checkpoint_fixture",
+        "@libghostty_vt_wasm//:wasm_module",
+    ],
+    env = {
+        "GHOSTTY_WASM": "$(rootpath @libghostty_vt_wasm//:wasm_module)",
+        "NATIVE_FIXTURE": "$(rootpath :checkpoint_fixture)",
+    },
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
 )

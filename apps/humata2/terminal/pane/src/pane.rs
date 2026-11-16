@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ghostty_vt::{ClipboardTarget, Event, Grid as _, Scroll, Terminal, clipboard_read_reply};
+use ghostty_vt::{ClipboardTarget, Grid as _, Scroll, Terminal, clipboard_read_reply};
 use gpui_kit::Pixels;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
@@ -51,6 +51,8 @@ pub struct TerminalPane {
     shared: Rc<RefCell<Shared>>,
     find: Option<FindBar>,
     refind_scheduled: bool,
+    shortcut_events: u64,
+    find_shortcuts: u64,
     /// Whether the last frame showed the paste prompt.
     prompt_shown: bool,
     /// Output held while the pane is hidden (NV-34), parsed when it is
@@ -103,6 +105,8 @@ impl TerminalPane {
             shared,
             find: None,
             refind_scheduled: false,
+            shortcut_events: 0,
+            find_shortcuts: 0,
             prompt_shown: false,
             hidden: None,
             unfitted: Some(Vec::new()),
@@ -113,9 +117,31 @@ impl TerminalPane {
         }
     }
 
+    /// A restored host replica already has authoritative dimensions. Parse
+    /// immediately so buffered output cannot cross an ordered host resize.
+    pub fn use_authoritative_size(&mut self, cx: &mut Context<Self>) {
+        if let Some(bytes) = self.unfitted.take() {
+            self.parse(&bytes, cx);
+        }
+        cx.notify();
+    }
+
     /// The view, for its theme, cursor blink and stats.
     pub fn view(&self) -> &Entity<TerminalView<Terminal>> {
         &self.view
+    }
+
+    /// Apply an already validated terminal while retaining local UI drafts.
+    pub fn replace_terminal(&mut self, terminal: Terminal, cx: &mut Context<Self>) {
+        self.view
+            .update(cx, |view, cx| view.replace_grid(terminal, cx));
+        self.parse(&[], cx);
+    }
+
+    /// Focuses terminal text/IME input before the next platform input event.
+    pub fn focus_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.view
+            .update(cx, |view, cx| view.focus_input(window, cx));
     }
 
     /// Output from the program. The terminal parses it; replies to the
@@ -178,19 +204,9 @@ impl TerminalPane {
             terminal.drain_events()
         });
         for event in events {
-            match event {
-                Event::Reply(bytes) => self.shared.borrow_mut().send(&bytes),
-                Event::TitleChanged(title) => cx.emit(PaneEvent::TitleChanged(title)),
-                Event::PwdChanged(pwd) => cx.emit(PaneEvent::PwdChanged(pwd)),
-                Event::Bell => cx.emit(PaneEvent::Bell),
-                Event::ClipboardWrite { target, text } => {
-                    cx.emit(PaneEvent::ClipboardWrite { target, text });
-                }
-                Event::ClipboardReadRequested { target } => {
-                    cx.emit(PaneEvent::ClipboardReadRequested { target });
-                }
-            }
+            self.shared.borrow_mut().engine_event(event);
         }
+        self.take_events(cx);
         if self.find.is_some() && !self.refind_scheduled {
             // New output can add or move matches. Search once for all the
             // output that arrives before the app is next idle.
@@ -243,6 +259,8 @@ impl TerminalPane {
             shared.connected = connected;
             if !connected {
                 shared.pending_paste = None;
+                self.view
+                    .update(cx, |view, cx| view.cancel_pending_clipboard(cx));
             }
             cx.notify();
         }
@@ -261,6 +279,11 @@ impl TerminalPane {
     /// A paste waiting for the user to agree to it.
     pub fn pending_paste(&self) -> Option<PendingPaste> {
         self.shared.borrow().pending_paste.clone()
+    }
+
+    /// Whether a paste awaits confirmation, without copying its text.
+    pub fn has_pending_paste(&self) -> bool {
+        self.shared.borrow().pending_paste.is_some()
     }
 
     /// Sends the waiting paste after all.
@@ -386,8 +409,7 @@ impl TerminalPane {
             self.view
                 .update(cx, |view, cx| view.set_marks(Vec::new(), cx));
         }
-        let focus = self.view.read(cx).focus_handle(cx);
-        window.focus(&focus, cx);
+        self.focus_input(window, cx);
         cx.notify();
     }
 
@@ -412,6 +434,11 @@ impl TerminalPane {
             current: find.current,
             error: find.error.clone(),
         })
+    }
+
+    /// Whether find is open, without copying its query.
+    pub fn is_find_open(&self) -> bool {
+        self.find.is_some()
     }
 
     /// Moves to the next match up, toward older output (Enter).
@@ -560,10 +587,15 @@ impl TerminalPane {
     }
 
     /// The pane's own shortcuts, taken before the program sees the key.
+    /// Keyboard routing counters for the embedding application's diagnostics.
+    pub fn shortcut_stats(&self) -> (u64, u64) {
+        (self.shortcut_events, self.find_shortcuts)
+    }
     fn shortcut(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.shortcut_events = self.shortcut_events.saturating_add(1);
         let m = event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
-        let mac = cfg!(target_os = "macos");
+        let mac = cx.platform_info().is_mac();
         let (find, again) = if mac {
             (
                 m.platform && !m.control && !m.alt && key == "f" && !m.shift,
@@ -585,6 +617,7 @@ impl TerminalPane {
             cx.emit(PaneEvent::SplitRequested);
             cx.stop_propagation();
         } else if find {
+            self.find_shortcuts = self.find_shortcuts.saturating_add(1);
             self.open_find(window, cx);
             cx.stop_propagation();
         } else if again && self.find.is_some() {

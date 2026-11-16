@@ -31,7 +31,9 @@ mod selection;
 mod theme;
 mod view;
 
-pub use host::{CellSize, ScrollTo, TerminalHost};
+pub use host::{CellSize, InputBufferError, ScrollTo, TerminalHost};
 pub use paste::Paste;
 pub use theme::Theme;
-pub use view::{FrameStats, HistoryPoint, Mark, TerminalView};
+pub use view::{FrameStats, HistoryPoint, InputStats, Mark, TerminalView};
+
+mod pending_input;

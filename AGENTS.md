@@ -18,3 +18,8 @@
 
 - Test that code behaves as expected in isolation: given these inputs, it produces this result or this error.
 - Don't write tests that restate the implementation, such as asserting on the exact wording of a message or that a function calls another one. They break when the code changes, not when behavior does.
+
+## Terminal experiment
+
+- The local SSH test server is OpenSSH inside the dedicated, no-mount `h2-terminal-c1` Lima VM. Use the root `terminal-ssh-demo.sh` helper and follow [SSH demo setup](apps/humata2/terminal/platform_test/SSH_DEMO.md). It is a real remote shell, not simulated terminal output.
+- Desktop and browser mirror the same local terminal host, including its SSH-backed sessions. Preserve live holders when refreshing viewers or upgrading that host. The [terminal handoff](apps/humata2/terminal/lab/HANDOFF.md) records current verification and continuation state.

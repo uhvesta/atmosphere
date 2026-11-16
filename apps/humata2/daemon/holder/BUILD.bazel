@@ -17,14 +17,23 @@ rust_library(
         exclude = ["src/main.rs"],
     ),
     crate_name = "humata2_holder",
-    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+        "//apps/humata2/terminal/session:__pkg__",
+    ],
     deps = HOLDER_DEPS + ["//apps/humata2/daemon/durable"],
 )
 
 rust_binary(
     name = "humata2_holder",
     srcs = ["src/main.rs"],
-    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+        "//apps/humata2/terminal/demo:__pkg__",
+        "//apps/humata2/terminal/host:__pkg__",
+        "//apps/humata2/terminal/lab:__pkg__",
+        "//apps/humata2/terminal/session:__pkg__",
+    ],
     deps = [
         ":holder",
         "@crates//:clap",

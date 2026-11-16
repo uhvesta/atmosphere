@@ -189,7 +189,7 @@ impl AssetSource for SharedAssets {
     }
 }
 
-/// Initializes gpui-kit in `cx` and registers the resources' fonts. Call it
+/// Registers the resources' fonts, then initializes gpui-kit in `cx`. Call it
 /// first in the app's launch callback, and nowhere else: [`headless`] calls
 /// it too.
 ///
@@ -197,16 +197,18 @@ impl AssetSource for SharedAssets {
 ///
 /// [`EngineError::Fonts`] when a bundled font can't be loaded.
 pub fn init(cx: &mut App, resources: &Resources) -> Result<(), EngineError> {
-    gpui_kit::init(cx);
-    if resources.fonts.is_empty() {
-        return Ok(());
+    // Component initialization measures its default font immediately. Web
+    // platforms have no system fonts, so bundled families must exist first.
+    if !resources.fonts.is_empty() {
+        cx.text_system()
+            .add_fonts(resources.fonts.clone())
+            .map_err(|source| EngineError::Fonts {
+                count: resources.fonts.len(),
+                source: source.into(),
+            })?;
     }
-    cx.text_system()
-        .add_fonts(resources.fonts.clone())
-        .map_err(|source| EngineError::Fonts {
-            count: resources.fonts.len(),
-            source: source.into(),
-        })
+    gpui_kit::init(cx);
+    Ok(())
 }
 
 /// The desktop application, with the resources' assets.

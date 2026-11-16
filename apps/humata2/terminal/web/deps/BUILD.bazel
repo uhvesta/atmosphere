@@ -1,0 +1,8 @@
+exports_files(
+    [
+        "Cargo.toml",
+        "Cargo.lock",
+        "cargo-bazel-lock.json",
+    ],
+    visibility = ["//:__pkg__"],
+)

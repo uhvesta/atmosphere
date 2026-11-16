@@ -1,0 +1,86 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+sh_binary(
+    name = "ssh_demo",
+    srcs = ["ssh_demo.sh"],
+    target_compatible_with = ["@platforms//os:macos"],
+    visibility = ["//:__pkg__"],
+)
+
+sh_test(
+    name = "ssh_demo_status_test",
+    srcs = ["ssh_demo_status.sh"],
+    data = ["ssh_demo.sh"],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+sh_test(
+    name = "linux_graphics_probe_test",
+    srcs = ["linux_graphics_probe.sh"],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+sh_test(
+    name = "prepare_linux_browser_test",
+    timeout = "long",
+    srcs = ["prepare_linux_browser.sh"],
+    data = ["prepare_remote.sh"],
+    tags = [
+        "external",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+sh_test(
+    name = "linux_browser_test",
+    timeout = "long",
+    srcs = ["linux_browser.sh"],
+    data = [
+        "remote_browser.sh",
+        "sanitize.mjs",
+        "//apps/humata2/terminal/web:browser_smoke.mjs",
+    ],
+    tags = [
+        "exclusive",
+        "external",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+filegroup(
+    name = "linux_runner",
+    srcs = [
+        "linux_browser.sh",
+        "remote_browser.sh",
+        "sanitize.mjs",
+    ],
+    visibility = ["//apps/humata2/terminal/demo:__pkg__"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
+
+filegroup(
+    name = "markdown",
+    srcs = [
+        "README.md",
+        "SSH_DEMO.md",
+    ],
+    tags = ["markdown"],
+)

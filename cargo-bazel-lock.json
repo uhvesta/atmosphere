@@ -1,5 +1,5 @@
 {
-  "checksum": "e62e199b9c396202b42bcbad332c811b56a390c341c36e2b592e233996f466a4",
+  "checksum": "0022c54cf8b22f150c1b18287ab61cd4ff8a28b0af5c65dcfa10f39f85bd9aba",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -19678,6 +19678,10 @@
           {
             "id": "axum 0.8.9",
             "target": "axum"
+          },
+          {
+            "id": "base64 0.23.1",
+            "target": "base64"
           },
           {
             "id": "flate2 1.1.11",
@@ -52948,6 +52952,7 @@
   },
   "direct_deps": [
     "axum 0.8.9",
+    "base64 0.23.1",
     "bzip2 0.6.1",
     "clap 4.6.7",
     "console_error_panic_hook 0.1.7",

@@ -1,0 +1,124 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+ENGINES = {
+    "": "@crates//:gpui-kit",
+    "_fast": "@crates_gpui_fast//:gpui-kit",
+}
+
+filegroup(
+    name = "licenses",
+    srcs = [
+        "assets/LICENSE-Inter.txt",
+        "assets/LICENSE-JetBrainsMono.txt",
+    ],
+    visibility = ["//apps/humata2/terminal/web:__pkg__"],
+)
+
+rust_test(
+    name = "outbox_test",
+    crate = ":client",
+)
+
+[
+    rust_library(
+        name = "terminal_replica" + engine,
+        srcs = ["src/replica.rs"],
+        crate_name = "terminal_replica",
+        deps = [
+            "//apps/humata2/terminal/pane:terminal_pane" + engine,
+            "//apps/humata2/terminal/provider",
+            "//apps/humata2/terminal/view:terminal_view" + engine,
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "//apps/humata2/terminal/wire",
+            "@crates//:thiserror",
+        ] + (select({
+            "@platforms//cpu:wasm32": ["@crates_gpui_web//:gpui-kit"],
+            "//conditions:default": [gpui],
+        }) if engine == "_fast" else [gpui]),
+    )
+    for engine, gpui in ENGINES.items()
+]
+
+[
+    rust_library(
+        name = "client" + engine,
+        srcs = ["src/lib.rs"],
+        compile_data = glob(["assets/*"]),
+        crate_name = "terminal_client",
+        visibility = ["//apps/humata2/terminal/web:__pkg__"],
+        deps = [
+            ":terminal_replica" + engine,
+            "//apps/humata2/engine:engine" + engine,
+            "//apps/humata2/terminal/pane:terminal_pane" + engine,
+            "//apps/humata2/terminal/view:terminal_view" + engine,
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "//apps/humata2/terminal/wire",
+            "@crates//:serde_json",
+            "@crates//:thiserror",
+        ] + (select({
+            "@platforms//cpu:wasm32": ["@crates_gpui_web//:gpui-kit"],
+            "//conditions:default": [gpui],
+        }) if engine == "_fast" else [gpui]),
+    )
+    for engine, gpui in ENGINES.items()
+]
+
+[
+    rust_binary(
+        name = "native" + engine,
+        srcs = [
+            "src/main.rs",
+            "src/native.rs",
+        ],
+        crate_root = "src/main.rs",
+        data = [":licenses"],
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            ":client" + engine,
+            "//apps/humata2/engine:engine" + engine,
+            gpui,
+            "@crates//:futures-util",
+            "@crates//:thiserror",
+            "@crates//:tokio",
+            "@crates//:tokio-tungstenite",
+        ],
+    )
+    for engine, gpui in ENGINES.items()
+]
+
+[
+    rust_test(
+        name = "replica" + engine + "_test",
+        srcs = ["tests/replica.rs"],
+        compile_data = glob(["assets/*"]),
+        deps = [
+            ":client" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            "//apps/humata2/terminal/pane:terminal_pane" + engine,
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "//apps/humata2/terminal/wire",
+            gpui,
+            "@crates//:serde_json",
+        ],
+    )
+    for engine, gpui in ENGINES.items()
+]
+
+[
+    rust_test(
+        name = "component" + engine + "_test",
+        srcs = ["tests/component.rs"],
+        compile_data = glob(["assets/*"]),
+        deps = [
+            ":terminal_replica" + engine,
+            "//apps/humata2/engine:engine" + engine + "_test_support",
+            "//apps/humata2/terminal/pane:terminal_pane" + engine,
+            "//apps/humata2/terminal/provider",
+            "//apps/humata2/terminal/view:terminal_view" + engine,
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "//apps/humata2/terminal/wire",
+            gpui,
+        ],
+    )
+    for engine, gpui in ENGINES.items()
+]

@@ -30,6 +30,7 @@ members = [
     "apps/humata2/ui-prototype",
     "apps/humata2/terminal/grid",
     "apps/humata2/terminal/view",
+    "apps/humata2/terminal/host",
     "apps/humata2/diff",
     "apps/humata2/review",
     # Humata 2's desktop app on fake clients (UI before gate G).

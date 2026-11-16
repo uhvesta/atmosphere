@@ -59,6 +59,34 @@ impl DecMode {
 }
 
 impl Terminal {
+    /// The OSC 8 URI at a viewport cell, supplied by the terminal engine.
+    pub(super) fn hyperlink_uri(&self, at: ViewportPoint) -> Option<String> {
+        let reference = self
+            .grid_ref_at(ffi::POINT_TAG_VIEWPORT, at.x, u32::from(at.y))
+            .ok()?;
+        let mut len = 0;
+        // SAFETY: a fresh reference, with a valid size output; NULL requests size only.
+        let result = unsafe {
+            ffi::ghostty_grid_ref_hyperlink_uri(&reference, std::ptr::null_mut(), 0, &mut len)
+        };
+        if result != ffi::OUT_OF_SPACE || len == 0 || len > 1024 * 1024 {
+            return None;
+        }
+        let mut bytes = vec![0; len];
+        // SAFETY: the reference remains live and bytes has the requested capacity.
+        check(unsafe {
+            ffi::ghostty_grid_ref_hyperlink_uri(
+                &reference,
+                bytes.as_mut_ptr(),
+                bytes.len(),
+                &mut len,
+            )
+        })
+        .ok()?;
+        bytes.truncate(len);
+        String::from_utf8(bytes).ok()
+    }
+
     /// What Option does on a Mac, as set with
     /// [`Terminal::set_option_as_alt`].
     pub fn option_as_alt(&self) -> OptionAsAlt {
@@ -85,7 +113,11 @@ impl Terminal {
         };
         // SAFETY: MODE reads and writes a GhosttyTerminalModeConfig.
         let result = unsafe {
-            ffi::ghostty_terminal_get(self.raw.ptr, ffi::TERMINAL_DATA_MODE, (&raw mut config).cast())
+            ffi::ghostty_terminal_get(
+                self.raw.ptr,
+                ffi::TERMINAL_DATA_MODE,
+                (&raw mut config).cast(),
+            )
         };
         result == ffi::SUCCESS && config.value
     }
@@ -94,7 +126,11 @@ impl Terminal {
     /// corners, as Option-drag does. [`terminal_grid::Grid::selection`]
     /// reports the same columns on each row and
     /// [`Terminal::selected_text`] copies them a row a line.
-    pub fn select_rectangle(&mut self, start: ViewportPoint, end: ViewportPoint) -> Result<(), Error> {
+    pub fn select_rectangle(
+        &mut self,
+        start: ViewportPoint,
+        end: ViewportPoint,
+    ) -> Result<(), Error> {
         let fail = |source| Error::Selection { source };
         let selection = ffi::GhosttySelection {
             start: self

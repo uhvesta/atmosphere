@@ -22,6 +22,9 @@ ENGINES = {
         visibility = [
             "//apps/humata2/desktop:__subpackages__",
             "//apps/humata2/features/session:__pkg__",
+            "//apps/humata2/terminal/client:__pkg__",
+            "//apps/humata2/terminal/embed:__pkg__",
+            "//apps/humata2/terminal/lab:__pkg__",
             "//apps/humata2/ui:__subpackages__",
         ],
         deps = [
@@ -30,8 +33,10 @@ ENGINES = {
             "//apps/humata2/terminal/vt:ghostty_vt",
             "@crates//:regex",
             "@crates//:thiserror",
-            config["gpui_kit"],
-        ],
+        ] + (select({
+            "@platforms//cpu:wasm32": ["@crates_gpui_web//:gpui-kit"],
+            "//conditions:default": [config["gpui_kit"]],
+        }) if engine == "_fast" else [config["gpui_kit"]]),
     )
     for engine, config in ENGINES.items()
 ]

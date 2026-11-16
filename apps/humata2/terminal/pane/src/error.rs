@@ -16,8 +16,14 @@ pub enum FindError {
 
 /// Something the terminal engine refused while the pane drove it. The
 /// session goes on; only the one action is lost.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum PaneError {
+    #[error("{source}")]
+    BufferedInput {
+        #[source]
+        source: terminal_view::InputBufferError,
+    },
+
     #[error("The key wasn't sent to the program: {source} Press it again.")]
     Key {
         #[source]
@@ -34,6 +40,30 @@ pub enum PaneError {
     Paste {
         #[source]
         source: ghostty_vt::Error,
+    },
+
+    #[error(
+        "The clipboard is unavailable: {source}. In a browser, use HTTPS or localhost and check that clipboard access is supported, then paste again."
+    )]
+    ClipboardUnavailable {
+        #[source]
+        source: gpui_kit::ClipboardReadError,
+    },
+
+    #[error(
+        "The paste was not read: {source}. Allow clipboard access for this site or application, then paste again."
+    )]
+    ClipboardDenied {
+        #[source]
+        source: gpui_kit::ClipboardReadError,
+    },
+
+    #[error(
+        "The clipboard contents could not be pasted: {source}. Copy plain text and paste again."
+    )]
+    ClipboardUnsupported {
+        #[source]
+        source: gpui_kit::ClipboardReadError,
     },
 
     #[error("The terminal couldn't scroll its history: {source}")]

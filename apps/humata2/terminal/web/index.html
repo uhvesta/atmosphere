@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Humata · Remote terminal</title><link rel="icon" href="data:,">
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#17181b;color:#dedfe3;font:13px system-ui}canvas{display:block}#loading{position:absolute;inset:0;display:grid;place-content:center;text-align:center;gap:12px;padding:30px}#loading small{color:#98989e}</style>
+</head>
+<body><div id="loading">Starting the GPUI terminal viewer…<small>Programs and files stay on the terminal host.</small></div>
+<script type="module">
+const loading=document.getElementById('loading');
+window.terminalViewer={phase:'starting',errors:[]};
+const fail=error=>{window.terminalViewer.phase='failed';window.terminalViewer.errors.push(String(error));loading.style.display='grid';loading.textContent=`Could not start the terminal viewer: ${error}. Reload after checking the build and browser graphics support.`;};
+window.addEventListener('error',e=>fail(e.error||e.message));window.addEventListener('unhandledrejection',e=>fail(e.reason));
+try{
+  const terminal=await import('./terminal_web.js');await terminal.default();window.terminalInspect=terminal.inspect;
+  let running=false,readyFrame=0;
+  const ready=()=>{if(!running||window.terminalViewer.phase==='failed')return;const canvas=document.querySelector('canvas');if(canvas&&canvas.width>1&&canvas.height>1){readyFrame=requestAnimationFrame(()=>{if(!running)return;readyFrame=requestAnimationFrame(()=>{if(!running)return;loading.style.display='none';window.terminalViewer.phase='running';});});}else readyFrame=requestAnimationFrame(ready);};
+  const start=()=>{if(running)return;running=true;loading.style.display='grid';window.terminalViewer.phase='starting';terminal.run();readyFrame=requestAnimationFrame(ready);};
+  const stop=()=>{if(!running)return;running=false;cancelAnimationFrame(readyFrame);terminal.shutdown();window.terminalViewer.phase='stopped';console.info('Terminal viewer stopped',{canvases:document.querySelectorAll('canvas').length});};
+  window.addEventListener('pagehide',stop);
+  window.addEventListener('pageshow',event=>{if(event.persisted)start();});
+  start();
+}catch(error){fail(error);}
+</script></body></html>
