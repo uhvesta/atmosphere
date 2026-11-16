@@ -539,3 +539,9 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: the design, native (37), panels (13) and shell (2) snapshots were recorded and pass; desktop, ui and features pass (24 of 24); the earlier gate passed 45 of 45.
 - Known gaps: native 07 still differs from golden 07 (Inbox 6 vs 7, the Desk row, the Diff badge, the board mock data). Open in LOOK1's Lane: the clients model fields for ASK, folders folded by default, the journal's second line, the offline notice time. SPEC still has "until redrawn" notes in IN-9, IN-14, ST-18 and SE-2.
 - Look at: PNGs 01, 16, 25, 49; `ui/src/sidebar.rs`; `clients/src/fixture/design_session.rs`; `clients/src/daemon/fake/terminals.rs` (the resize redraw).
+
+### (this commit): TIDY batch 2: the Swift-era code is removed (minion TIDY)
+- D9 (owner, 2026-11-15): `app` (Swift), `bindgen`, `core` and `rehearsal` are deleted; git history keeps them. The root `Cargo.toml` drops their members and the uniffi, uniffi_bindgen and camino deps; Cargo.lock and cargo-bazel-lock.json were repinned with `CARGO_BAZEL_REPIN=1 bazel mod tidy`. LAYOUT.md says so.
+- Verified: the gate over api/proto, daemon, cli, clients, features, ui, terminal/pane, terminal/view and desktop:humata2 passes, 111 of 111 (machines_test's feed timing flaked once under load and passed alone).
+- Known gaps: `HUMATA2_BUNDLE_ID` in `apps/lifr/identity.bzl` is now unused.
+- Look at: `Cargo.toml`, `LAYOUT.md`.

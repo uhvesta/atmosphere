@@ -2,7 +2,7 @@
 
 Every package lives under `apps/humata2/` unless noted. Visibility is the narrowest that works: a feature is visible only to the app crates and their tests, and a daemon crate only to the daemon binaries and their tests.
 
-The earlier H2-0/H2-1 code (`app` (Swift), `bindgen`, `core`, `rehearsal`) is left alone until D9 is answered. The GUI binary is therefore `desktop`, not `app`. `prototype/` and `ui-prototype/` are retired references, not part of the build the app uses.
+The earlier H2-0/H2-1 code (`app` (Swift), `bindgen`, `core`, `rehearsal`) was deleted under D9; git history keeps it. The GUI binary is `desktop`. `prototype/` and `ui-prototype/` are retired references, not part of the build the app uses.
 
 Packages built "once per engine" (D49, D57) have a plain target on ordinary GPUI and a `_fast` twin on GPUI Fast, for example `:diff_view` and `:diff_view_fast`.
 
