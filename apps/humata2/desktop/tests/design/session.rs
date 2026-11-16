@@ -805,14 +805,19 @@ fn board_panel(look: Look, full: bool) -> Div {
                 .gap(px(6.))
                 .p(px(10.))
                 .text_size(px(12.5))
-                .child(label(look, "In progress · 2"))
-                .child(item("PAY-3", "Ledger schema", Some(St::NeedsYou)))
-                .child(item("PAY-7", "Refund retries", Some(St::Working)))
+                // The same items as the expanded board (frame 12), active
+                // lanes first and Done last; empty lanes are left out (L14).
+                .child(label(look, "In progress · 1"))
+                .child(item("PAY-3", "Ledger schema v2", Some(St::Working)))
+                .child(div().pt(px(6.)).child(label(look, "In review · 1")))
+                .child(item("PAY-5", "API rate limiter", Some(St::Idle)))
                 .child(div().pt(px(6.)).child(label(look, "To do · 2")))
-                .child(item("PAY-9", "Backfill progress bar", None))
-                .child(item("PAY-11", "Drop ledger_entries", None))
-                .child(div().pt(px(6.)).child(label(look, "Done · 5")))
-                .child(item("PAY-2", "Currency codes", None).opacity(0.6)),
+                .child(item("PAY-9", "Backfill progress bar", Some(St::Working)))
+                .child(item("PAY-7", "Refund retry with backoff", None))
+                .child(div().pt(px(6.)).child(label(look, "Backlog · 1")))
+                .child(item("PAY-12", "Multi-currency ledgers", None))
+                .child(div().pt(px(6.)).child(label(look, "Done · 1")))
+                .child(item("PAY-2", "Currency codes table", None).opacity(0.6)),
         ))
 }
 

@@ -56,10 +56,24 @@ pub struct TerminalPane {
     /// Output held while the pane is hidden (NV-34), parsed when it is
     /// shown or when it grows past [`HIDDEN_LIMIT`]; `None` while shown.
     hidden: Option<Vec<u8>>,
+    /// Output that came before the pane was first drawn, so before the
+    /// view fitted the grid to its bounds. It is parsed just after that
+    /// first draw, at the real size, as a program attached to a sized pty
+    /// would have drawn it; `None` from then on.
+    unfitted: Option<Vec<u8>>,
+    /// Whether a draw has asked to parse `unfitted` after it.
+    fit_flush_scheduled: bool,
+    /// Draws so far that ended before the view could measure its cells.
+    unmeasured_draws: u8,
     /// Whether the pane draws its own disconnected banner.
     offline_banner: bool,
     _view_changes: Subscription,
 }
+
+/// The most draws a pane waits for its cell size before it parses the
+/// output it holds at whatever size it has, so a pane that is never
+/// fitted still shows what it was sent.
+const UNMEASURED_DRAW_LIMIT: u8 = 3;
 
 /// The most output a hidden pane holds unparsed. Past it the terminal
 /// parses what it holds, still drawing nothing, so a busy hidden pane
@@ -91,6 +105,9 @@ impl TerminalPane {
             refind_scheduled: false,
             prompt_shown: false,
             hidden: None,
+            unfitted: Some(Vec::new()),
+            fit_flush_scheduled: false,
+            unmeasured_draws: 0,
             offline_banner: true,
             _view_changes: view_changes,
         }
@@ -113,6 +130,17 @@ impl TerminalPane {
             }
             return;
         }
+        if let Some(held) = &mut self.unfitted {
+            held.extend_from_slice(bytes);
+            if held.len() > HIDDEN_LIMIT {
+                // Never drawn yet and still busy: parse at the size it has.
+                let held = std::mem::take(held);
+                self.unfitted = None;
+                self.parse(&held, cx);
+            }
+            cx.notify();
+            return;
+        }
         self.parse(bytes, cx);
     }
 
@@ -124,7 +152,10 @@ impl TerminalPane {
     pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         match (visible, self.hidden.take()) {
             (true, Some(held)) => {
-                self.parse(&held, cx);
+                match &mut self.unfitted {
+                    Some(unfitted) => unfitted.extend_from_slice(&held),
+                    None => self.parse(&held, cx),
+                }
                 cx.notify();
             }
             (true, None) => {}
@@ -264,6 +295,26 @@ impl TerminalPane {
             }
             cx.notify();
         });
+    }
+
+    /// Parses the output that came before the first draw, once a draw has
+    /// measured the cells and so fitted the grid to the pane, or after
+    /// [`UNMEASURED_DRAW_LIMIT`] draws that could not.
+    fn flush_unfitted(&mut self, cx: &mut Context<Self>) {
+        self.fit_flush_scheduled = false;
+        if self.view.read(cx).cell_size().is_none() {
+            self.unmeasured_draws = self.unmeasured_draws.saturating_add(1);
+            if self.unmeasured_draws < UNMEASURED_DRAW_LIMIT {
+                cx.notify();
+                return;
+            }
+        }
+        if let Some(held) = self.unfitted.take()
+            && !held.is_empty()
+        {
+            self.parse(&held, cx);
+        }
+        cx.notify();
     }
 
     fn take_events(&mut self, cx: &mut Context<Self>) {
@@ -773,6 +824,14 @@ impl Render for TerminalPane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.hidden.is_some() {
             return div().id("terminal-pane").size_full().into_any_element();
+        }
+        if self.unfitted.is_some() && !self.fit_flush_scheduled {
+            // This draw fits the grid; parse what came before once it has.
+            self.fit_flush_scheduled = true;
+            let pane = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = pane.update(cx, |pane, cx| pane.flush_unfitted(cx));
+            });
         }
         let shared = self.shared.borrow();
         let connected = shared.connected;

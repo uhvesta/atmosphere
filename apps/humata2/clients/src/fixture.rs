@@ -158,12 +158,16 @@ pub fn standard() -> Workspace {
             session: SessionId::new("s-auth"),
             body: "Three files to read first: refresh.rs, client.rs, retry.rs.".to_owned(),
             accepted: false,
+            note: "Three files to read first".to_owned(),
+            prepared: "5 min ago".to_owned(),
         },
         PreparedView {
             title: "Board: login milestones".to_owned(),
             session: SessionId::new("s-login"),
             body: "The login milestone with its blocked task first.".to_owned(),
             accepted: true,
+            note: "The login milestone, blocked task first".to_owned(),
+            prepared: "1 h ago".to_owned(),
         },
     ];
     workspace.skills = [

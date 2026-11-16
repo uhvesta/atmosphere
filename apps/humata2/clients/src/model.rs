@@ -104,6 +104,9 @@ pub struct Machine {
     pub detail: String,
     /// When it was last seen, as people read it.
     pub last_seen: String,
+    /// While the app's link to it is lost: the clock time it was lost,
+    /// such as "14:02". `None` while connected or when nobody knows.
+    pub lost_at: Option<String>,
 }
 
 /// Health information reported by a host, never inferred from the UI.
@@ -323,6 +326,14 @@ pub struct Session {
     /// What happened to it when its host came back (PER-26), until the
     /// person opens it.
     pub recovery: Option<Recovery>,
+    /// The model its agent runs, such as "Opus", when the agent says.
+    pub model: Option<String>,
+    /// How it survives a restart, as its host reports it: who holds the
+    /// terminal, how the agent comes back, what scrollback is kept.
+    pub restart_detail: Option<String>,
+    /// What its agent may do, one paragraph each, as the daemon's access
+    /// rules give it; empty when not reported.
+    pub permissions: Vec<String>,
 }
 
 /// What happened to a session when its host came back (PER-13–16, PER-26).
@@ -451,7 +462,7 @@ pub struct Request {
     pub preview: Preview,
     /// What the agent was doing when it asked.
     pub doing: String,
-    /// The rule "Always let …" would make.
+    /// The rule "Always allow …" would make.
     pub rule: String,
     /// Whether what it does can be undone.
     pub undoable: bool,
@@ -862,6 +873,10 @@ pub struct PreparedView {
     pub body: String,
     /// Whether the person opted in to it.
     pub accepted: bool,
+    /// Its one-line summary, for the Journal.
+    pub note: String,
+    /// When it was prepared, as people read it.
+    pub prepared: String,
 }
 
 /// A skill the `/` menu offers in the composer (SE-24).

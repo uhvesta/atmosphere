@@ -455,19 +455,21 @@ fn session_lifecycle_and_full_screen_reference_images() {
             app.send(AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)));
             app.send(AppAction::Pane(PaneAction::Drag(PaneId::Panel, 0.)));
         }
+        // Every frame's Ledger has one sent comment and this saved draft, so
+        // the Diff rail reads 2 (frames 01–13).
+        app.send(AppAction::Review(
+            humata2_review::ReviewAction::StartComment(humata2_review::Anchor {
+                path: "src/client.rs".into(),
+                line: 43,
+            }),
+        ));
+        app.send(AppAction::Review(
+            humata2_review::ReviewAction::CommentText(
+                "Keep insert_legacy until the backfill ends.".into(),
+            ),
+        ));
+        app.send(AppAction::Review(humata2_review::ReviewAction::SaveComment));
         if panel == Some(Panel::Changes) {
-            app.send(AppAction::Review(
-                humata2_review::ReviewAction::StartComment(humata2_review::Anchor {
-                    path: "src/client.rs".into(),
-                    line: 43,
-                }),
-            ));
-            app.send(AppAction::Review(
-                humata2_review::ReviewAction::CommentText(
-                    "Keep insert_legacy until the backfill ends.".into(),
-                ),
-            ));
-            app.send(AppAction::Review(humata2_review::ReviewAction::SaveComment));
             app.send(AppAction::Review(
                 humata2_review::ReviewAction::SelectFile {
                     repo: "api".into(),

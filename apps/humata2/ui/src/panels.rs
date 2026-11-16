@@ -883,15 +883,24 @@ fn board(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Loo
                 ItemStatus::Done,
             ]
         } else {
-            vec![ItemStatus::InProgress, ItemStatus::Todo, ItemStatus::Done]
+            // L14: beside the terminal, active lanes first and Done last,
+            // leaving out lanes with nothing in them.
+            vec![
+                ItemStatus::InProgress,
+                ItemStatus::InReview,
+                ItemStatus::Todo,
+                ItemStatus::Backlog,
+                ItemStatus::Done,
+            ]
         };
+        let used = |status: &ItemStatus| items.iter().any(|item| item.status == *status);
         for status in ItemStatus::ALL {
-            if statuses.contains(&status) {
-                continue;
-            }
-            if items.iter().any(|item| item.status == status) {
+            if !statuses.contains(&status) && used(&status) {
                 statuses.push(status);
             }
+        }
+        if !full {
+            statuses.retain(used);
         }
         statuses
     };
@@ -1048,6 +1057,24 @@ fn board_item(
     card
 }
 fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
+    // VW-10: every view prepared in the session and its forks, newest
+    // first (the workspace lists them newest first).
+    let views: Vec<_> = state
+        .session
+        .open
+        .as_ref()
+        .map(|open| {
+            let family: Vec<&SessionId> = std::iter::once(open)
+                .chain(state.workspace.forks(open).map(|fork| &fork.id))
+                .collect();
+            state
+                .workspace
+                .views
+                .iter()
+                .filter(|view| family.contains(&&view.session))
+                .collect()
+        })
+        .unwrap_or_default();
     col()
         .size_full()
         .child(header(ui, Panel::Journal, full, None, look))
@@ -1060,28 +1087,31 @@ fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
                 .gap(px(8.))
                 .p(px(10.))
                 .text_size(px(12.5))
-                .children(
-                    state
-                        .workspace
-                        .journal
-                        .iter()
-                        .filter(|entry| entry.session.as_ref() == state.session.open.as_ref())
-                        .map(|entry| {
-                            card(look)
-                                .p(px(10.))
-                                .gap(px(2.))
-                                .child(
-                                    row()
-                                        .gap(px(6.))
-                                        .child(icon(IconName::Sparkles, 0xbf5af2, 12.))
-                                        .child(
-                                            text(entry.text.clone())
-                                                .font_weight(FontWeight::SEMIBOLD),
-                                        ),
-                                )
-                                .child(secondary(look, entry.at.clone()))
-                        }),
-                ),
+                .children(views.iter().map(|view| {
+                    let note = if view.note.is_empty() {
+                        view.prepared.clone()
+                    } else if view.prepared.is_empty() {
+                        view.note.clone()
+                    } else {
+                        format!("{} · {}", view.note, view.prepared)
+                    };
+                    card(look)
+                        .p(px(10.))
+                        .gap(px(2.))
+                        .child(
+                            row()
+                                .gap(px(6.))
+                                .child(icon(IconName::Sparkles, 0xbf5af2, 12.))
+                                .child(text(view.title.clone()).font_weight(FontWeight::SEMIBOLD)),
+                        )
+                        .when(!note.is_empty(), |card| card.child(secondary(look, note)))
+                }))
+                .when(views.is_empty(), |list| {
+                    list.child(secondary(
+                        look,
+                        "No views yet. Ask the agent to prepare one, such as \"prepare the PR review for me\".",
+                    ))
+                }),
         )
 }
 
@@ -1428,10 +1458,12 @@ fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look
                 click_ui.send(AppAction::Navigate(Route::Session(id.clone())), cx)
             })
     });
-    let recovery = session.recovery.as_ref().map_or_else(
-        || "Recovery has not been reported for this session.".to_owned(),
-        |recovery| recovery.label(),
-    );
+    let recovery = match (&session.recovery, &session.restart_detail) {
+        (Some(recovery), Some(detail)) => format!("{}. {detail}", recovery.label()),
+        (Some(recovery), None) => recovery.label(),
+        (None, Some(detail)) => detail.clone(),
+        (None, None) => "Recovery has not been reported for this session.".to_owned(),
+    };
     // The session's own repository (its main clone) first, then the others.
     let mut clones: Vec<&str> = Vec::new();
     if !session.repo.is_empty() {
@@ -1472,10 +1504,16 @@ fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look
     let details = col()
         .child(kv(
             "Agent",
-            text(if session.agent == humata2_clients::model::Agent::Claude {
-                "Claude Code"
-            } else {
-                session.agent.name()
+            text({
+                let agent = if session.agent == humata2_clients::model::Agent::Claude {
+                    "Claude Code"
+                } else {
+                    session.agent.name()
+                };
+                session
+                    .model
+                    .as_ref()
+                    .map_or_else(|| agent.to_owned(), |model| format!("{agent} · {model}"))
             }),
         ))
         .child(kv(
@@ -1507,10 +1545,18 @@ fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look
                 .child(icon(IconName::Bot, look.accent, 12.))
                 .child(text("What this agent may do").font_weight(FontWeight::SEMIBOLD)),
         )
-        .child(secondary(
-            look,
-            "Permission rules have not been reported for this session.",
-        ))
+        .when(session.permissions.is_empty(), |card| {
+            card.child(secondary(
+                look,
+                "Permission rules have not been reported for this session.",
+            ))
+        })
+        .children(
+            session
+                .permissions
+                .iter()
+                .map(|line| secondary(look, line.clone())),
+        )
         .child(
             Button::new("session-channel-rules")
                 .accessibility_label("Channel rules")

@@ -9,6 +9,7 @@ pub(super) fn machines() -> Vec<Machine> {
             online: true,
             detail: "macOS 26.7 · M4 Max · 64 GB".to_owned(),
             last_seen: "now".to_owned(),
+            lost_at: None,
         },
         Machine {
             id: MachineId::new("gpu-box"),
@@ -19,6 +20,7 @@ pub(super) fn machines() -> Vec<Machine> {
             online: true,
             detail: "Ubuntu 26.04 · RTX 6090 · 128 GB".to_owned(),
             last_seen: "now".to_owned(),
+            lost_at: None,
         },
         Machine {
             id: MachineId::new("ci-runner"),
@@ -29,6 +31,7 @@ pub(super) fn machines() -> Vec<Machine> {
             online: false,
             detail: "Debian 13 · 16 vCPU".to_owned(),
             last_seen: "14 min ago".to_owned(),
+            lost_at: None,
         },
     ]
 }

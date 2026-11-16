@@ -972,3 +972,9 @@ A session's dot is Needs you when that session itself has an unanswered request,
 
 ## D132: Script tokens' smaller picks (proposed by minion ASK, 2026-11-15). Provisional
 For SEC-14 script tokens: a script may not subscribe to events. A lifetime of 0 days means 30, and more than 90 is refused. Idempotency replay comes only from memory while the daemon runs. A script sees only its own operations. An unusable token on an open method counts as no credential. Expired tokens stay listed until they are revoked. Capabilities the daemon doesn't know are dropped when the tokens load. The Actor gains `ScriptActor { token_id, name }`, and test daemons take `--script-token-seconds` so tests can see a token expire.
+
+## L14: The side-panel board lists active lanes first (minion LOOK1, 2026-11-15). Provisional
+The compact board in a session's side panel lists In progress, In review, To do, Backlog, Done, and only lanes that hold items; the full-screen board keeps every lane in workflow order. Golden 07 now shows frame 12's items so the two frames agree. Reverse: drop the compact branch in `ui/src/panels.rs` `board()`.
+
+## L15: A terminal pane lays out early output at its drawn size (minion LOOK1, 2026-11-15). Provisional
+Output that reaches a pane before its first draw is parsed once a draw has measured the cells and fitted the grid, so a session whose program never redraws (offline, exited) shows its output at the real size. After 3 draws without a cell size, or past 1 MiB held, it parses at the size it has, so a pane can never stay blank. Reverse: drop `unfitted` in `terminal/pane/src/pane.rs`.

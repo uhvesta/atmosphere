@@ -539,18 +539,22 @@ pub(crate) fn body(
                                             ),
                                         )),
                                         (_, Status::Offline) => {
-                                            let machine = state
+                                            let found = state
                                                 .workspace
                                                 .machines
                                                 .iter()
-                                                .find(|x| x.id == session.machine)
-                                                .map_or("the machine", |x| x.name.as_str());
+                                                .find(|x| x.id == session.machine);
+                                            let machine = found.map_or("the machine", |x| x.name.as_str());
+                                            let lost = found
+                                                .and_then(|x| x.lost_at.as_deref())
+                                                .map(|at| format!(" at {at}"))
+                                                .unwrap_or_default();
                                             Some(notice(
                                                 look,
                                                 IconName::WifiOff,
                                                 0x8e8e93,
                                                 format!(
-                                                    "Lost the connection to {machine}. The agent keeps running there; this view catches up when it is back."
+                                                    "Lost the connection to {machine}{lost}. The agent keeps running there; this view catches up when it is back."
                                                 ),
                                                 None,
                                             ))

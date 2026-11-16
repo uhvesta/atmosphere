@@ -409,6 +409,9 @@ pub(super) fn create_session(
                 terminal_agents: Default::default(),
                 archived: false,
                 recovery: None,
+                model: None,
+                restart_detail: None,
+                permissions: Vec::new(),
             });
             if !options.first_message.is_empty() {
                 if let Some(session)=inner.workspace.sessions.last_mut(){session.transcript.push(Line {from:Speaker::You,text:options.first_message.clone()});session.status=Status::Working;session.turn=Turn::Running;}

@@ -24,6 +24,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             online: true,
             detail: "Ubuntu 24.04".into(),
             last_seen: "now".into(),
+            lost_at: (ledger_status == Status::Offline).then(|| "14:02".into()),
         },
         Machine {
             id: MachineId::new("gpu-box"),
@@ -34,6 +35,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             online: false,
             detail: "Ubuntu 24.04 · RTX 4090 · 64 GB".into(),
             last_seen: "12 min ago".into(),
+            lost_at: None,
         },
     ];
     workspace.machines.push(Machine {
@@ -45,6 +47,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         online: false,
         detail: "Ubuntu 24.04 · provider".into(),
         last_seen: "stopped".into(),
+        lost_at: None,
     });
     for (id, system, used, free, latency, stopped) in [
         ("this-mac", "macOS 26.7 · arm64", 42, 210, None, false),
@@ -198,7 +201,16 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             value.agent = Agent::Claude;
         }
         match id {
-            "ledger" => value.started = "Today 11:40".into(),
+            "ledger" => {
+                value.started = "Today 11:40".into();
+                value.restart_detail = Some(
+                    "humatad holds this terminal on devbox-1, not the app. After a reboot it runs claude --resume 7f3a… in the same folder. 10,000 lines of scrollback kept on disk there.".into(),
+                );
+                value.permissions = vec![
+                    "Owns this session, its board (4 items), its clones and the 2 items it created. Everything else goes to the Inbox.".into(),
+                    "Not contained: it can read and write anything you can on devbox-1.".into(),
+                ];
+            }
             "brin" => value.started = "Today 12:05".into(),
             "partial-brin" => {
                 value.agent = Agent::Codex;
@@ -405,17 +417,48 @@ pub fn design_session(ledger_status: Status) -> Workspace {
     }
     // While Ledger works it has not asked to move PAY-3 yet (D128.5): its
     // family's only request is its fork's push.
+    // Refund retries asks instead, so the Inbox still holds 7 (frames 01, 07).
     if ledger_status == Status::Working {
         workspace.requests.retain(|r| r.id.as_str() != "move-pay-3");
+        let mut tests = request(
+            "refund-tests",
+            "refund",
+            "payments-rewrite",
+            RequestKind::Command,
+            "Run the refund integration tests",
+        );
+        tests.asked = "4m".into();
+        tests.preview = Preview::Command("make test-refunds".into());
+        tests.reason = "The retry path changed; the integration suite covers it.".into();
+        workspace.requests.push(tests);
     }
     workspace.file_contents.insert((SessionId::new("ledger"), "api".into(), "src/client.rs".into()),
         "use crate::ledger::{Entry, Ledger};\n\npub fn insert_entry(ledger: &mut Ledger, entry: Entry) {\n    ledger.insert(entry.clone());\n    ledger.insert_legacy(entry);\n}\n".into());
-    if ledger_status == Status::NeedsYou {
-        workspace.views.push(PreparedView {
-            title: "Review: ledger schema".into(), session: SessionId::new("ledger"),
-            body: "A guided walk through the 3 files, risky parts first.\n\n1. api/src/client.rs — keep the dual write in one transaction.\n2. migrations/0042_accounts.sql — check the account key.\n3. backfill.sql — batches, timings and rollback.".into(), accepted: false,
-        });
-    }
+    // Ledger's views, newest first. The review is offered while Ledger
+    // needs the person (frames 03/04) and was opened before otherwise.
+    workspace.views.push(PreparedView {
+        title: "Review: ledger schema".into(), session: SessionId::new("ledger"),
+        body: "A guided walk through the 3 files, risky parts first.\n\n1. api/src/client.rs — keep the dual write in one transaction.\n2. migrations/0042_accounts.sql — check the account key.\n3. backfill.sql — batches, timings and rollback.".into(),
+        accepted: ledger_status != Status::NeedsYou,
+        note: "A guided walk through the 3 files, risky parts first".into(),
+        prepared: "14m".into(),
+    });
+    workspace.views.push(PreparedView {
+        title: "Backfill plan".into(),
+        session: SessionId::new("ledger"),
+        body: "Batches, timings and the rollback for moving ledger_entries into entries.".into(),
+        accepted: true,
+        note: "Batches, timings and the rollback".into(),
+        prepared: "1h".into(),
+    });
+    workspace.views.push(PreparedView {
+        title: "Index benchmark".into(),
+        session: SessionId::new("ledger"),
+        body: "BRIN against B-tree on posted_at over 48k rows.".into(),
+        accepted: true,
+        note: "BRIN vs B-tree on 48k rows".into(),
+        prepared: "yesterday".into(),
+    });
     workspace.pulls = vec![
         PullRequest {
             number: 482,

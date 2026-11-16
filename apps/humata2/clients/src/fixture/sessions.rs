@@ -68,6 +68,9 @@ pub(super) fn session(
         terminal_agents: Default::default(),
         archived: false,
         recovery: None,
+        model: None,
+        restart_detail: None,
+        permissions: Vec::new(),
     }
 }
 

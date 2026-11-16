@@ -6,13 +6,13 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
-- **State:** walking the DAG. Done: D0, P0, FL-D, FRAMES1, FRAMES2 (43f7fff2). Lanes open: LOOK1 (UI, T12 batch 3 next),
-  ASK (batch 3 app side gated green, uncommitted; can't close before FL), W1 (docs, D113 redraws).
+- **State:** walking the DAG. Done: D0, P0, FL-D, FRAMES1, FRAMES2, W1, TIDY. Lanes open: LOOK1 (UI; batches 4–5
+  committed, re-audit of 01–17 next, then close), ASK (can't close before FL). Everything else waits on LOOK1.
 - **Owner, 2026-11-15:** opinions go to a Fable advisor, not the owner (D128); the owner still sees golden changes as
   before/after images. W1 answers logged: D103–D112 settled, D9 delete, only the VM tier stays out of 1.0.
-- **Next:** gate 5 (record design EXACT, native, panels, shell) → commit LOOK1 batches 1–2 (not closing) → commit ASK
-  batch 3 → resume LOOK1 T12. W1 redraws in files LOOK1 doesn't hold; session.rs items after LOOK1's commit.
-- **Not ours in the tree:** `ui-prototype/` (another session), `.claude/`.
+- **Next:** LOOK1 re-audit 01–17 → close LOOK1 → open FL, BUG, LOOK2 (lane limit 3; ASK keeps its lane).
+- **Not ours in the tree:** `ui-prototype/` (another session), `.claude/`, `terminal/{embed,lab,session}/`, the terminal
+  experiment's BUILD edits (`daemon/holder`, `terminal/pane`, `terminal/view`) and its LAYOUT/OVERVIEW/C1_HANDOFF hunks.
 - **Lane limit:** 3 managers (2 build, 1 docs).
 - **Last pushed:** 3ad37e47 (origin/main).
 
@@ -32,7 +32,7 @@ Each agent edits only its own lane; the main agent edits the rest.
 | minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | done (9ec5b5ed) |
 | minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | done (59340201) |
 | minion W1 | Opus 5.5 | manager | milestone W1 (docs lane, D113 redraws; agent a4944fb04f53415e9, fresh) | 2026-11-15 | done (W1 closed) |
-| minion TIDY | Opus 5.5 | manager | milestone TIDY (daemon lane; spec mode removal, D9 folder deletion as its own batch; agent af1e27564f8ff1689) | 2026-11-15 | active |
+| minion TIDY | Opus 5.5 | manager | milestone TIDY (daemon lane; spec mode removal, D9 folder deletion as its own batch; agent af1e27564f8ff1689) | 2026-11-15 | done (4a636632, d17f0d4e) |
 | minion FRAMES2 | Opus 5.5 | manager | milestone FRAMES2 (docs lane, draft frames 56–71) | 2026-11-15 | done (43f7fff2) |
 | minion LOOK1 | Opus 5.5 | manager | milestone LOOK1 (UI lane; agent af7e2efa98ee6c9aa, fresh after e07e8653) | 2026-11-15 | active |
 
@@ -45,7 +45,7 @@ Files a lane is editing. No two lanes claim the same file.
 | C1 | `clients/src/{daemon,fixture,workspace}.rs`, `clients/tests/fake_daemon.rs`, `desktop/tests/native.rs`, `desktop/tests/__snapshots__/native/`, `features/app/src/lib.rs`, `features/session/src/lib.rs`, `ui/BUILD.bazel`, `ui/src/{lib,overlays,pages,session_tabs,shell}.rs`, its OVERVIEW pickup block |
 | P0 | `LAYOUT.md`, `api/{BOUNDARIES,MCP,GRPC}.md` ("Always let" → "Always allow"); `features/app/src/` (lib.rs and new sibling files); `clients/BUILD.bazel`, `clients/src/{daemon,fixture}.rs`, new `clients/src/{daemon,fixture}/`; `ui/src/overlays.rs` and new `ui/src/overlay_*.rs` (all clean in git status when claimed; not panels.rs, native.rs, ui/src/lib.rs) |
 | ASK | batch 4: `clients/src/fixture/rules.rs`, `daemon/store/src/{schema,lib,script_tokens}.rs`, `daemon/humatad/src/{script_tokens,cli_login,error,identity,guard,access_service,daemon,events,session_service,inbox,machine_service,channel_service,status,review,mcp,operations}.rs`, `daemon/humatad/tests/{matrix.rs,common/mod.rs}` (additive), `cli/src/**` (only if the matrix needs a CLI fix), `workflow/milestones/ASK.md` Lane |
-| LOOK1 | `features/review/src/lib.rs`, `features/review/tests/`, `features/session/src/{lib,message}.rs`, `features/session/tests/queue.rs`, `features/app/src/messages.rs`, `features/app/tests/messages.rs`, `ui/src/{panels,session_tabs,sidebar,terminals,theme,chrome}.rs`, `features/sidebar/`, `clients/src/fixture/{design_session,sessions,requests,terminal,machines,items,journal,files}.rs`, `terminal/pane/src/pane.rs`, `clients/src/daemon/fake/terminals.rs`, `terminal/view/src/frame.rs` (not its BUILD.bazel), `features/settings/src/lib.rs` + `features/settings/tests/preferences.rs` (wrap_diffs default only), `desktop/tests/design/{session,comments}.rs` (owner-approved golden fixes for frames 01/05/50), `desktop/tests/{native,panels,shell}.rs`, `desktop/tests/__snapshots__/{native,panels,shell}/`, OVERVIEW block "Pick up here (minion LOOK1)", `workflow/milestones/LOOK1.md` Lane (takes over C1's row) |
+| LOOK1 | `features/review/src/lib.rs`, `features/review/tests/`, `features/session/src/{lib,message}.rs`, `features/session/tests/queue.rs`, `features/app/src/messages.rs`, `features/app/tests/messages.rs`, `ui/src/{panels,session_tabs,sidebar,terminals,theme,chrome}.rs`, `features/sidebar/`, `clients/src/fixture/{design_session,sessions,requests,terminal,machines,items,journal,files}.rs`, `terminal/pane/src/{pane,host}.rs`, `terminal/pane/tests/unfitted.rs`, `clients/src/daemon/fake/{terminals,machines,sessions}.rs`, `clients/src/fixture.rs` (views and machines literals only), `clients/src/model.rs` (Session/Recovery/PreparedView display fields, ASK idle; main OK 2026-11-15), `terminal/view/src/frame.rs` (not its BUILD.bazel), `features/settings/src/lib.rs` + `features/settings/tests/preferences.rs` (wrap_diffs default only), `desktop/tests/design/{session,comments}.rs` (owner-approved golden fixes for frames 01/05/50), `desktop/tests/{native,panels,shell}.rs`, `desktop/tests/__snapshots__/{native,panels,shell}/`, OVERVIEW block "Pick up here (minion LOOK1)", `workflow/milestones/LOOK1.md` Lane (takes over C1's row) |
 
 ## Lanes
 
@@ -56,7 +56,6 @@ Each lane's plan, tasks and workers live in its milestone file
 |---|---|---|---|---|
 | ASK | `milestones/ASK.md` | minion ASK | tokens, caller, matrix | batch 4: D128.2 done; SEC-14 script tokens (daemon) |
 | LOOK1 | `milestones/LOOK1.md` | minion LOOK1 | send-core, send-ui, audit | batch 1: direct/individual comment Send (D126), frame audit 01–17 |
-| TIDY | `milestones/TIDY.md` | minion TIDY | (manager picks) | batch 1: spec mode out of proto/MCP/CLI/docs; batch 2: delete app/, bindgen/, core/, rehearsal/ (D9) |
 | FRAMES2 | `milestones/FRAMES2.md` | minion FRAMES2 | none | done (43f7fff2) |
 | P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
 
@@ -120,3 +119,4 @@ Newest last. One line per event: spawns, reports, gates, commits, decisions.
 - 2026-11-15 main: committed LOOK1 batches 1–2 + ASK batch 3 together (shared files) as e07e8653, hash-fill 98f71e90, pushed. W1's pages/overlays/channel edits (after gate 5) left uncommitted. terminal/{embed,lab,session} and three BUILD visibility edits are another session's, left alone. Fresh managers: LOOK1 (T12 batch 3, T10, Send-per-draft 01/11), ASK (D128.2, SEC-14), W1 (log its edits, continue). Owner: managers may ask a Fable (high) advisor directly.
 - 2026-11-15 main: D129 (Linux goldens via web, Fable) + SPEC NV-11/CH-12 committed ff18004b. Gate 6 (design record) green; W1 batch 1 committed (frames 18, 26, 27, 29–32, 48, 71; 33 retired), pushed 69552a55. W1 now on T6–T9 in session.rs/desk.rs.
 - 2026-11-15 main: ASK batch 4 (script tokens, D132) gate 45/45, committed 21cbef1d, pushed. Fable judge → D131 (row dot = session's own status; forks only feed the badge; row_status dropped). Gates 8–9: design, native 37, panels 13, shell 2, desktop/ui/features 24 all green. Committed W1 batch 2 + LOOK1 batch 3 as 13121e1d, pushed; before/after images sent. Closed W1. Opened TIDY (minion TIDY). LOOK1 on its 01–17 audit, may take clients/src/model.rs while ASK idles (ASK waits on FL).
+- 2026-11-15 main: TIDY gate fixed (tests/common spec_files) and passed with LOOK1 batches 4–5: 111 tests (machines_test flaked once, passes alone), design/native 37/panels 13/shell 2 recorded. Committed TIDY batch 2 (4a636632, D9 deletion + repin) and batch 1 (d17f0d4e, spec mode + wording); TIDY closed. Golden 07 before/after sent to the owner (L14). LOOK1 batches 4–5 committed.

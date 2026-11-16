@@ -21,6 +21,7 @@ pub(super) fn reconnect(
                 })?;
             found.online = true;
             found.last_seen = "now".to_owned();
+            found.lost_at = None;
             let machine = found.clone();
             inner.emit(Event::Machine(machine));
             let mut outcomes = Vec::new();
@@ -85,6 +86,7 @@ pub(super) fn add_machine(daemon: &FakeDaemon, address: &str) -> Reply<MachineId
             online: true,
             detail: "Ubuntu 24.04 · ssh".into(),
             last_seen: "now".into(),
+            lost_at: None,
         });
         inner.workspace.machine_health.insert(
             id.clone(),
