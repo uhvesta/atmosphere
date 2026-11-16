@@ -97,6 +97,17 @@ store.receive(Action::Added, |_| {});
   of panicking, and `settle` runs the effects that are ready, as after a
   `TestClock` is advanced.
 
+## Examples
+
+[`examples/`](examples/README.md) has one realistic feature per file, each
+with its tests, from a child on one field of its parent to a whole app
+root. The pattern under all of them is a parent handing a child its part of
+the state, then lifting the child's effect into its own actions:
+
+```rust
+ListAction::Sort(action) => self.sort.reduce(&mut list.sort, action).map(ListAction::Sort),
+```
+
 ## How it differs from the Swift library
 
 It borrows the ideas, not the Swift. There are no macros, key paths or

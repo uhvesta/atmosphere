@@ -31,6 +31,19 @@ rust_test(
     for src in glob(["tests/*.rs"])
 ]
 
+# Examples: each file is one feature with its reducers and its tests.
+[
+    rust_test(
+        name = "%s_example_test" % src.removeprefix("examples/").removesuffix(".rs"),
+        srcs = [src],
+        deps = [
+            ":tca",
+            "@crates//:tokio",
+        ],
+    )
+    for src in glob(["examples/*.rs"])
+]
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],
@@ -39,6 +52,9 @@ filegroup(
 
 filegroup(
     name = "markdown",
-    srcs = ["README.md"],
+    srcs = [
+        "README.md",
+        "examples/README.md",
+    ],
     tags = ["markdown"],
 )
