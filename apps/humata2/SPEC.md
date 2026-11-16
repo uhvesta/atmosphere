@@ -642,8 +642,7 @@ review) are in §11.
   deleted 7 days after its session closes (DK-11) unless the user keeps it
   (**Keep folder** in the folder bar, **Keep** on the Desk page, or `humata
   desk keep`). `desk` is a reserved folder name: no channel's folder can be
-  `desk`. (Frames 37–40 print the root as `~/humata`; they are to be redrawn
-  with `~/Humata`, D108.)
+  `desk`.
 - **DK-3** The folder bar above the tabs shows the folder (with a "scratch"
   chip for a scratch folder), a machine picker, a chip per repo with ✕,
   **Add repo** and **Keep folder** (frames 37, 39). Picking another machine,
@@ -1711,9 +1710,7 @@ and frame 37 a Desk session's.
   **Allow** approves this request and also adds a grant for the requesting
   session and exactly the target IN-22 names for this kind of action,
   nothing wider. Its label says what it covers ("Always allow connecting to
-  staging-db:5432 for this session"). Frames 03 and 26 word it "Allow this
-  for the rest of the session"; until they are redrawn that wording stands,
-  with this same narrow meaning. A kind of action with no target in IN-22
+  staging-db:5432 for this session"). A kind of action with no target in IN-22
   shows no checkbox. The agent cannot choose a wider scope. The grant is
   listed and removable in Agent access (IN-19).
 - **IN-15** Answering a request removes it from every scope's pending list at
