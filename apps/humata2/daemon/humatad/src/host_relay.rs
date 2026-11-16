@@ -288,9 +288,6 @@ impl Relayed {
         pb::trash_service_client::TrashServiceClient::new(self.channel.clone())
     }
 
-    pub(crate) fn diff(&self) -> pb::diff_service_client::DiffServiceClient<Channel> {
-        pb::diff_service_client::DiffServiceClient::new(self.channel.clone())
-    }
 
     pub(crate) fn session(&self) -> pb::session_service_client::SessionServiceClient<Channel> {
         pb::session_service_client::SessionServiceClient::new(self.channel.clone())
@@ -300,17 +297,11 @@ impl Relayed {
         pb::session_carry_service_client::SessionCarryServiceClient::new(self.channel.clone())
     }
 
-    pub(crate) fn channels(&self) -> pb::channel_service_client::ChannelServiceClient<Channel> {
-        pb::channel_service_client::ChannelServiceClient::new(self.channel.clone())
-    }
 
     pub(crate) fn operation(&self) -> pb::operation_service_client::OperationServiceClient<Channel> {
         pb::operation_service_client::OperationServiceClient::new(self.channel.clone())
     }
 
-    pub(crate) fn events(&self) -> pb::event_service_client::EventServiceClient<Channel> {
-        pb::event_service_client::EventServiceClient::new(self.channel.clone())
-    }
 }
 
 /// A fresh request for `message`, carrying `id` as the host-assigned id when
