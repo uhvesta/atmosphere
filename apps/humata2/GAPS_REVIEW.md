@@ -527,7 +527,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Known gaps: W1's T6–T9 (frames 01–05, 16 and 37–40 in session.rs and desk.rs) are still open.
 - Look at: `desktop/tests/design/pages.rs` (`request_card`, `inbox_page`), PNGs 26, 27 and 29.
 
-### (this commit): ASK batch 4: SEC-14 script tokens in the daemon (minion ASK)
+### 21cbef1d: ASK batch 4: SEC-14 script tokens in the daemon (minion ASK)
 - Script tokens are stored in a new store table, and the daemon loads them when it starts. A call that carries one acts as `ScriptActor { token_id, name }`. A script is never the user and never a session, so user-only and agent-only paths refuse it. D132 records the smaller picks. Comment resolving has no setting in the fixture rules (D128.2), and the `global_read` proto comment now says it defaults to Allow.
 - Verified: humatad2, humatad2_admin, the humata CLI, and the clients/features/ui/terminal tests all pass, 45 of 45: unit, matrix, auth, inbox, access, cli_login, mcp, sessions and store tests.
 - Known gaps: there is no Settings › Security UI for tokens yet. §26.4 against a real daemon waits on FL. IN-22 grants ending on archive or delete wait on the ArchiveSession/DeleteSession RPCs. SE-29 (adding an agent to a session) belongs to no milestone yet.
