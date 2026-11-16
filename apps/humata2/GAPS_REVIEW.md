@@ -507,7 +507,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Look at: `desktop/tests/design/{machines,machine_page,files,fork_move,archive,pr_review,views}.rs`; the 16 PNGs.
 
 
-### (this commit): LOOK1 batches 1–2 and ASK batch 3 (minions LOOK1, ASK)
+### e07e8653: LOOK1 batches 1–2 and ASK batch 3 (minions LOOK1, ASK)
 - LOOK1: direct and per-comment Send (D126), the frame audit fixes the owner approved for 01, 05 and 50, ledger strip with Inbox 2, Info lists both forks, "N messages waiting to send" caption and chip, design record now uses `Tolerance::EXACT`.
 - ASK batch 3 (app on fakes): IN-9 request card, the Agent access tab in Settings and channels, the fake daemon's access rules, `I::OpenRequest` navigation, and a headless §26.4 flow test.
 - Decisions: D127 items 14–16 and D128 (CH-24 → FORK, SEC-14 → ASK, SEC-6 → AWAY, plus a containment suite in LINUX).
