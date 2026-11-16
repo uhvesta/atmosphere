@@ -15,9 +15,9 @@ use super::HostLink;
 use super::policy_copy;
 use crate::grant_target;
 
-const REQUEST: &str = "inbox.request";
-const ANSWER: &str = "inbox.answer";
-const WITHDRAWN: &str = "inbox.withdrawn";
+pub(crate) const REQUEST: &str = "inbox.request";
+pub(crate) const ANSWER: &str = "inbox.answer";
+pub(crate) const WITHDRAWN: &str = "inbox.withdrawn";
 
 /// Why the journal couldn't be written or read.
 #[derive(Debug, thiserror::Error)]
@@ -74,6 +74,29 @@ pub(crate) async fn record(
         .map_err(|source| JournalError::Task { source })
         .and_then(|appended| appended);
     match appended {
+        Ok(()) => link.journal_written(),
+        Err(error) => crate::log::say!(
+            "humatad2: warning: this change to the Inbox wasn't added to the journal for the host: {}",
+            crate::status::chain(&error)
+        ),
+    }
+}
+
+/// As [`record`], for the Inbox's start-up, which isn't async.
+pub(crate) fn record_now(
+    store: &Store,
+    link: &HostLink,
+    session: &str,
+    before: pb::RequestState,
+    request: &pb::InboxRequest,
+) {
+    if link.on_host() {
+        return;
+    }
+    let Some(operation) = operation_of(before, request) else {
+        return;
+    };
+    match append(store, session, operation, request) {
         Ok(()) => link.journal_written(),
         Err(error) => crate::log::say!(
             "humatad2: warning: this change to the Inbox wasn't added to the journal for the host: {}",

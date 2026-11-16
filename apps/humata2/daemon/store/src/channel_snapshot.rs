@@ -109,6 +109,7 @@ const GLOBAL: &[&str] = &[
     "settings",
     "board_prefixes",
     "board_counters",
+    "machine_journal",
 ];
 
 /// Who a side file holds.

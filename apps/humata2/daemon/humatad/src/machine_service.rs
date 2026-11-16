@@ -95,6 +95,9 @@ pub(crate) struct Work {
     /// The policy copy each link sends its machine (AW-8); set once by
     /// `serve` before any link starts.
     pub(crate) policy: std::sync::OnceLock<Arc<crate::away::PolicySource>>,
+    /// The Inbox each link replays its machine's journal into (D226); set
+    /// once by `serve` before any link starts.
+    pub(crate) inbox: std::sync::OnceLock<Arc<crate::inbox::Inbox>>,
     /// Each machine's live link, for the services that relay calls to it
     /// (D139). Told at the same hook as `skills`.
     relay_links: Links,
@@ -272,6 +275,7 @@ impl Work {
             plans: Mutex::new(HashMap::new()),
             skills: std::sync::OnceLock::new(),
             policy: std::sync::OnceLock::new(),
+            inbox: std::sync::OnceLock::new(),
             relay_links: Links::default(),
             reports: PeerReports::default(),
             probes: Mutex::new(HashMap::new()),
@@ -396,8 +400,13 @@ impl Work {
         });
         let report = Box::new(move |event: LinkEvent<'_>| tell_link(&work, &name, event));
         let key_file = self.machines.peer_key(machine);
-        let policy = self.policy.get().cloned();
-        let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report, sink, policy));
+        let host = self
+            .policy
+            .get()
+            .cloned()
+            .zip(self.inbox.get().cloned())
+            .map(|(policy, inbox)| peer_client::HostSide { policy, inbox });
+        let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report, sink, host));
         if let Some(before) = lock(&self.links).insert(machine.to_owned(), task.abort_handle()) {
             before.abort();
         }

@@ -414,6 +414,14 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE channels ADD COLUMN branch_prefix_set INTEGER NOT NULL DEFAULT 0;
     UPDATE channels SET branch_prefix_set = 1 WHERE branch_prefix <> '';
 ",
+    "
+    -- How far the host has applied each machine's Inbox journal (D226): one
+    -- mark per machine, written with the Inbox row the entry made.
+    CREATE TABLE machine_journal (
+        machine TEXT PRIMARY KEY,
+        applied_through INTEGER NOT NULL
+    ) STRICT;
+",
 ];
 
 /// The schema this build writes and reads.

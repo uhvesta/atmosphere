@@ -103,7 +103,8 @@ impl Uplinks {
                                 continue;
                             }
                             resumed = true;
-                            sent_through = sent_through.max(through);
+                            // A host that resumes lower gets the entries again.
+                            sent_through = through;
                             if !send_journal(&store, &to_host, &mut sent_through).await {
                                 break;
                             }

@@ -9,6 +9,7 @@
 mod deferred;
 mod kept;
 pub(crate) mod permission;
+mod replay;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -36,6 +37,7 @@ use crate::status;
 
 use deferred::Outcome;
 pub(crate) use deferred::{BoardAsk, Deferred, Run};
+pub(crate) use replay::Replayed;
 
 /// How often a wait says it is still waiting (MCP.md §5).
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -555,6 +557,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let _ = self.withdraw_unheld(entry).await;
         let current = entry.request.borrow().request.clone();
         still_open(&current)?;
+        held_on_machine(&current)?;
         if let Some(expected) = request.expected_revision {
             let actual = current.revision.clone().unwrap_or_default();
             if expected.value != actual.value {
@@ -610,7 +613,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 continue;
             };
             let current = entry.request.borrow().request.clone();
+            // A request held on its machine is answered there (D226).
             if current.state != pb::RequestState::Pending as i32
+                || current.journal.is_some()
                 || !in_scope(scope.as_ref(), entry, &current)
             {
                 skipped.push(id);
@@ -1240,6 +1245,32 @@ fn approved_at_once(grant: Option<pb::Grant>) -> pb::WaitResponse {
 }
 
 /// Fails when `request` can no longer be answered (IN-15).
+/// A mirror of a request its machine holds can't be answered on the host
+/// yet: the answer is made on that machine.
+fn held_on_machine(request: &pb::InboxRequest) -> Result<(), Status> {
+    let Some(position) = &request.journal else {
+        return Ok(());
+    };
+    let machine = position
+        .machine
+        .as_ref()
+        .map(|machine| machine.value.clone())
+        .unwrap_or_default();
+    let id = request.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+    Err(status::failure(
+        Code::Unavailable,
+        status::error(
+            format!("request {id} is held on {machine}, so it is answered there: the Mac can't pass an answer to it yet"),
+            format!("answer it on {machine} with `humata login` and the approval passphrase; its answer shows here as soon as {machine} is linked"),
+            pb::error::Kind::MachineOffline(pb::MachineOffline {
+                machine: position.machine.clone(),
+                machine_name: machine,
+                since: None,
+            }),
+        ),
+    ))
+}
+
 fn still_open(request: &pb::InboxRequest) -> Result<(), Status> {
     let id = request.id.clone();
     let value = id.as_ref().map(|id| id.value.clone()).unwrap_or_default();

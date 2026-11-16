@@ -95,7 +95,7 @@ pub(super) fn restore(guard: &Guard, store: &Store, machine: &str) -> State {
     let mut grants = Vec::new();
     let mut next_grant = 1;
     for record in records {
-        let Some((entry, grant, changed)) = restored(guard, store, machine, &record) else {
+        let Some((entry, grant, changed, before)) = restored(guard, store, machine, &record) else {
             crate::log::say!(
                 "humatad2: warning: Inbox request {} in the store is unreadable, so it's left out; its agent can ask again",
                 record.id
@@ -109,12 +109,19 @@ pub(super) fn restore(guard: &Guard, store: &Store, machine: &str) -> State {
         if let Some(grant) = grant {
             grants.push(grant);
         }
-        if changed && let Err(error) = store.put_inbox_request(&self::record(&entry, &held)) {
-            crate::log::say!(
-                "humatad2: warning: couldn't save Inbox request {} as withdrawn: {}",
-                entry.id,
-                crate::status::chain(&error)
-            );
+        if changed {
+            match store.put_inbox_request(&self::record(&entry, &held)) {
+                // The host's mirror hears of it too (D226).
+                Ok(()) if held.request.state() == pb::RequestState::Withdrawn => {
+                    crate::away::record_journal_now(store, &guard.host_link(), &entry.session, before, &held.request);
+                }
+                Ok(()) => {}
+                Err(error) => crate::log::say!(
+                    "humatad2: warning: couldn't save Inbox request {} as withdrawn: {}",
+                    entry.id,
+                    crate::status::chain(&error)
+                ),
+            }
         }
         state.add(entry);
     }
@@ -141,7 +148,7 @@ fn restored(
     store: &Store,
     machine: &str,
     record: &InboxRecord,
-) -> Option<(Entry, Option<Grant>, bool)> {
+) -> Option<(Entry, Option<Grant>, bool, pb::RequestState)> {
     let body = stored::InboxEntry::decode(record.entry.as_slice()).ok()?;
     let request = pb::InboxRequest::decode(body.request.as_slice()).ok()?;
     let asked = if body.asked.is_empty() {
@@ -156,6 +163,7 @@ fn restored(
         _ => None,
     };
     let deferred = body.deferred;
+    let before = request.state();
     let mut held = Held {
         request,
         grant,
@@ -215,7 +223,7 @@ fn restored(
         // Only settled permission cards are saved: nothing holds them now.
         permission: false,
     };
-    Some((entry, standing, changed))
+    Some((entry, standing, changed, before))
 }
 
 /// What the policy asks the user for `session`'s ask-ahead on `target`,
@@ -279,4 +287,66 @@ fn policy_grant(
         on_host: granted.on_host,
         granted_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use humata2_store::SessionRecord;
+
+    use super::*;
+
+    const MACHINE: &str = "ma_box";
+
+    /// A pending request of a call that waited, as a restart finds it.
+    fn store_with_a_waiting_call(directory: &std::path::Path) -> Store {
+        let store = Store::open(directory).unwrap();
+        store
+            .put_session(&SessionRecord {
+                id: "se_a".to_owned(),
+                channel: "ch_a".to_owned(),
+                machine: MACHINE.to_owned(),
+                title: "asker".to_owned(),
+                agent: "claude".to_owned(),
+                folder: PathBuf::new(),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        let request = pb::InboxRequest {
+            id: Some(pb::RequestId {
+                value: "rq_1".to_owned(),
+            }),
+            state: pb::RequestState::Pending as i32,
+            ..Default::default()
+        };
+        let held = Held {
+            deferred: true,
+            ..Held::new(request)
+        };
+        let entry = Entry::new("rq_1".to_owned(), "se_a".to_owned(), None, None, None, held.clone());
+        store.put_inbox_request(&record(&entry, &held)).unwrap();
+        store
+    }
+
+    #[test]
+    fn a_request_withdrawn_at_start_up_is_in_the_machines_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store_with_a_waiting_call(directory.path());
+        let guard = Guard::new(MACHINE, pb::DaemonRole::Machine);
+        let state = restore(&guard, &store, MACHINE);
+        assert_eq!(state.requests[0].request.borrow().request.state(), pb::RequestState::Withdrawn);
+        let kept = store.journal().entries().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].kind, "inbox.withdrawn");
+    }
+
+    #[test]
+    fn the_host_keeps_no_journal_of_a_request_it_withdraws_at_start_up() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store_with_a_waiting_call(directory.path());
+        let guard = Guard::new(MACHINE, pb::DaemonRole::Host);
+        restore(&guard, &store, MACHINE);
+        assert!(store.journal().entries().unwrap().is_empty());
+    }
 }

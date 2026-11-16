@@ -1,13 +1,43 @@
 //! The Inbox's requests and the grants their answers made (D96), so a
 //! restart keeps what an agent asked and what the user let it do.
 
-use rusqlite::{Row, params};
+use rusqlite::{Row, Transaction, params};
 
-use crate::store::check_id;
+use crate::store::{Inner, check_id};
 use crate::{InboxRecord, Store, StoreError, blob};
 
 /// The blob version an entry is kept as.
 const ENTRY_VERSION: u16 = 1;
+
+const DOING: &str = "save an Inbox request";
+
+/// Writes `request`'s row inside `transaction`, replacing one with its id.
+/// The caller has checked the ids.
+pub(crate) fn put_row(inner: &Inner, transaction: &Transaction<'_>, request: &InboxRecord) -> Result<(), StoreError> {
+    let encoded = blob::encode(blob::Type::InboxEntry, ENTRY_VERSION, &request.entry)?;
+    let placed = blob::place(&inner.blobs, encoded)?;
+    transaction
+        .execute(
+            "INSERT INTO inbox_requests
+                 (id, session, created_unix_ms, updated_unix_ms, entry, entry_file)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (id) DO UPDATE SET
+                 session = excluded.session,
+                 created_unix_ms = excluded.created_unix_ms,
+                 updated_unix_ms = excluded.updated_unix_ms,
+                 entry = excluded.entry, entry_file = excluded.entry_file",
+            params![
+                request.id,
+                request.session,
+                request.created_unix_ms,
+                request.updated_unix_ms,
+                placed.inline(),
+                placed.file()
+            ],
+        )
+        .map(drop)
+        .map_err(inner.failed(DOING))
+}
 
 /// A request's row before its blob is read.
 struct Stored {
@@ -37,31 +67,8 @@ impl Store {
         check_id(&request.id)?;
         check_id(&request.session)?;
         let inner = self.inner();
-        let doing = "save an Inbox request";
-        let encoded = blob::encode(blob::Type::InboxEntry, ENTRY_VERSION, &request.entry)?;
-        inner.write_for_session("inbox.put", doing, Some(&request.session), |transaction| {
-            let placed = blob::place(&inner.blobs, encoded)?;
-            transaction
-                .execute(
-                    "INSERT INTO inbox_requests
-                         (id, session, created_unix_ms, updated_unix_ms, entry, entry_file)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT (id) DO UPDATE SET
-                         session = excluded.session,
-                         created_unix_ms = excluded.created_unix_ms,
-                         updated_unix_ms = excluded.updated_unix_ms,
-                         entry = excluded.entry, entry_file = excluded.entry_file",
-                    params![
-                        request.id,
-                        request.session,
-                        request.created_unix_ms,
-                        request.updated_unix_ms,
-                        placed.inline(),
-                        placed.file()
-                    ],
-                )
-                .map(drop)
-                .map_err(inner.failed(doing))
+        inner.write_for_session("inbox.put", DOING, Some(&request.session), |transaction| {
+            put_row(inner, transaction, request)
         })
     }
 

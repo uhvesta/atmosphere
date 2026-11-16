@@ -660,6 +660,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             let _ = work.skills.set(skills.clone());
             // AW-8: each link sends its machine the policy copy.
             let _ = work.policy.set(policy_copy.clone());
+            // D226: each link replays its machine's Inbox journal into the host's Inbox.
+            let _ = work.inbox.set(inbox.clone());
             // LD-11: forgetting a machine archives its sessions through the SessionService.
             work.forgetting.set(Arc::new(session_svc.clone()));
             // FM-8, FM-9: transfers reach other machines over their links.

@@ -25,6 +25,7 @@ mod inbox;
 mod journal;
 mod last_good;
 mod lifecycle;
+mod machine_journal;
 mod previous;
 mod records;
 mod remote_reports;

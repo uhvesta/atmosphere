@@ -10,7 +10,10 @@ mod passphrase;
 mod policy_copy;
 mod uplink;
 
-pub(crate) use journal::record as record_journal;
+pub(crate) use journal::{
+    ANSWER as JOURNAL_ANSWER, REQUEST as JOURNAL_REQUEST, WITHDRAWN as JOURNAL_WITHDRAWN, record as record_journal,
+    record_now as record_journal_now,
+};
 pub(crate) use link::HostLink;
 pub(crate) use lockout::{CheckError, Checked, check_passphrase};
 pub(crate) use passphrase::{set_approval_passphrase, verifier};

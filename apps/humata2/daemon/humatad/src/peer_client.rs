@@ -28,11 +28,13 @@ use pb::peer_unproven::Reason;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 use tonic::transport::{Channel, Endpoint, Uri};
 
 use crate::away::PolicySource;
+use crate::inbox::{Inbox, Replayed};
 use crate::daemon::{API_MAJOR, API_MINOR};
 use crate::link_proof::{EnrollmentKey, HOST_NONCE_MIN, KeyError, MACHINE_NONCE_BYTES, Side};
 use crate::status;
@@ -49,6 +51,10 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 const RETRY_FIRST: Duration = Duration::from_secs(5);
 /// The longest wait between dials (HO-5: every 5–30 s).
 const RETRY_MOST: Duration = Duration::from_secs(30);
+
+/// How long the host waits after its store fails to take a journal entry
+/// before it asks the machine for the entries again (D226).
+const HELD_RETRY: Duration = Duration::from_secs(30);
 
 /// How many minor versions behind the host a machine may be (GRPC.md §8).
 const MINOR_BEHIND: u32 = 2;
@@ -146,6 +152,25 @@ impl AsyncWrite for ChildPipe {
     }
 }
 
+/// What the host does with a link besides keeping it up: it sends the
+/// machine its policy copy (AW-8) and takes the machine's Inbox journal
+/// into its own Inbox (D226).
+pub(crate) struct HostSide {
+    pub(crate) policy: Arc<PolicySource>,
+    pub(crate) inbox: Arc<Inbox>,
+}
+
+/// Whether the host is applying the machine's journal.
+#[derive(Clone, Copy)]
+enum Gate {
+    Open,
+    /// The host's store failed on entry `seq`. Nothing is applied until the
+    /// machine sends `seq` again after the host's next Resume at `until`
+    /// (`resumed`), so an entry already on the way, which comes after it,
+    /// is dropped rather than applied out of order.
+    Held { seq: u64, until: Instant, resumed: bool },
+}
+
 /// A link that is up: both ends proved, the Uplink open.
 pub(crate) struct Up {
     machine: String,
@@ -170,14 +195,17 @@ impl Up {
 
     /// Resolves when the link ends, with why. Each message the machine
     /// sends on the Uplink goes to `sink` (D139: status and pointer
-    /// reports); no journal or mirror is kept yet. With a `policy`, the
-    /// machine is sent its policy copy now and again each time it changes
+    /// reports), except its journal entries: with a `host`, those are
+    /// applied to the host's Inbox in order and acked (D226). The machine
+    /// is also sent its policy copy now and again each time it changes
     /// (AW-8).
-    pub(crate) async fn closed(mut self, sink: &Sink, policy: Option<&Arc<PolicySource>>) -> LinkError {
+    pub(crate) async fn closed(mut self, sink: &Sink, host: Option<&HostSide>) -> LinkError {
+        let policy = host.map(|host| &host.policy);
         let mut changes = policy.map(|policy| policy.changes());
         if let Some(policy) = policy {
             self.send_copy(policy).await;
         }
+        let mut gate = Gate::Open;
         loop {
             let changed = async {
                 match changes.as_mut() {
@@ -185,11 +213,25 @@ impl Up {
                     None => std::future::pending().await,
                 }
             };
+            let retry = async {
+                match gate {
+                    Gate::Open => std::future::pending().await,
+                    Gate::Held { until, .. } => tokio::time::sleep_until(until).await,
+                }
+            };
             let next = tokio::select! {
                 message = self.from_machine.message() => Next::Message(message),
                 still = changed => Next::Changed(still),
+                () = retry => Next::Retry,
             };
             match next {
+                Next::Message(Ok(Some(pb::MachineToHost {
+                    message: Some(pb::machine_to_host::Message::Journal(entry)),
+                }))) => {
+                    if let Some(host) = host {
+                        self.replayed(&host.inbox, entry, &mut gate).await;
+                    }
+                }
                 Next::Message(Ok(Some(message))) => sink(message),
                 Next::Message(Ok(None)) => return LinkError::Ended { machine: self.machine },
                 Next::Message(Err(source)) => {
@@ -205,8 +247,63 @@ impl Up {
                 }
                 // The daemon is ending; the link ends with it.
                 Next::Changed(false) => changes = None,
+                Next::Retry => {
+                    if let (Some(host), Gate::Held { seq, .. }) = (host, gate) {
+                        self.resume(&host.inbox).await;
+                        gate = Gate::Held {
+                            seq,
+                            until: Instant::now() + HELD_RETRY,
+                            resumed: true,
+                        };
+                    }
+                }
             }
         }
+    }
+
+    /// Applies one journal entry of the machine, and acks it once it is
+    /// applied or left out. When the host's store fails, nothing is acked
+    /// and the gate holds until the entry comes again.
+    async fn replayed(&self, inbox: &Inbox, entry: pb::JournalEntry, gate: &mut Gate) {
+        match *gate {
+            Gate::Held { seq, resumed, .. } if !resumed || entry.seq != seq => return,
+            _ => {}
+        }
+        let seq = entry.seq;
+        match inbox.replay(&self.machine, &entry).await {
+            Replayed::Held => {
+                *gate = Gate::Held {
+                    seq,
+                    until: Instant::now() + HELD_RETRY,
+                    resumed: false,
+                };
+            }
+            Replayed::Applied | Replayed::Rejected => {
+                *gate = Gate::Open;
+                let ack = pb::HostToMachine {
+                    message: Some(pb::host_to_machine::Message::Ack(pb::UplinkAck {
+                        journal_through: seq,
+                        ..pb::UplinkAck::default()
+                    })),
+                };
+                // A send fails only when the Uplink is ending, which `closed` sees.
+                let _ = self.to_machine.send(ack).await;
+            }
+        }
+    }
+
+    /// Asks the machine to send its journal again from the host's mark.
+    async fn resume(&self, inbox: &Inbox) {
+        let through = inbox.replayed_through(&self.machine).await;
+        let resume = pb::HostToMachine {
+            message: Some(pb::host_to_machine::Message::Resume(pb::UplinkResume {
+                from: Some(pb::UplinkAck {
+                    journal_through: through,
+                    ..pb::UplinkAck::default()
+                }),
+            })),
+        };
+        let _ = self.to_machine.send(resume).await;
     }
 
     /// Sends the machine its policy copy as it is now. One that can't be
@@ -245,11 +342,18 @@ enum Next {
     Message(Result<Option<pb::MachineToHost>, Status>),
     /// Whether the policy can still change.
     Changed(bool),
+    /// The wait after a failed journal write is over.
+    Retry,
+}
+
+#[cfg(test)]
+async fn open(pipe: Pipe, key: &EnrollmentKey, machine: &str) -> Result<Up, LinkError> {
+    open_from(pipe, key, machine, 0).await
 }
 
 /// Speaks gRPC over `pipe`, runs the handshake under `key`, and opens the
-/// Uplink.
-pub(crate) async fn open(pipe: Pipe, key: &EnrollmentKey, machine: &str) -> Result<Up, LinkError> {
+/// Uplink, asking the machine to send its journal after `through`.
+async fn open_from(pipe: Pipe, key: &EnrollmentKey, machine: &str, through: u64) -> Result<Up, LinkError> {
     let channel = channel_over(pipe, machine).await?;
     let mut peer = PeerServiceClient::new(channel.clone());
     let call_failed = |step: &'static str| {
@@ -298,10 +402,13 @@ pub(crate) async fn open(pipe: Pipe, key: &EnrollmentKey, machine: &str) -> Resu
     .map_err(|source| refused_or(source, machine, call_failed("ProveHost")))?;
 
     let (to_machine, outgoing) = mpsc::channel(16);
-    // Nothing is stored yet, so the host resumes from nothing.
+    // The host resumes from the entries it has applied.
     let resume = pb::HostToMachine {
         message: Some(pb::host_to_machine::Message::Resume(pb::UplinkResume {
-            from: Some(pb::UplinkAck::default()),
+            from: Some(pb::UplinkAck {
+                journal_through: through,
+                ..pb::UplinkAck::default()
+            }),
         })),
     };
     if to_machine.send(resume).await.is_err() {
@@ -396,18 +503,18 @@ pub(crate) async fn supervise(
     machine: String,
     report: Report,
     sink: Sink,
-    policy: Option<Arc<PolicySource>>,
+    host: Option<HostSide>,
 ) -> LinkError {
     let mut wait = RETRY_FIRST;
     loop {
-        let error = match connect(&*dial, &key_file, &machine).await {
+        let error = match connect(&*dial, &key_file, &machine, host.as_ref()).await {
             Ok(up) => {
                 report(LinkEvent::Up {
                     daemon_version: up.daemon_version(),
                     channel: up.channel(),
                 });
                 wait = RETRY_FIRST;
-                up.closed(&sink, policy.as_ref()).await
+                up.closed(&sink, host.as_ref()).await
             }
             Err(error) => error,
         };
@@ -424,13 +531,17 @@ pub(crate) async fn supervise(
     }
 }
 
-async fn connect(dial: &dyn Dial, key_file: &Path, machine: &str) -> Result<Up, LinkError> {
+async fn connect(dial: &dyn Dial, key_file: &Path, machine: &str, host: Option<&HostSide>) -> Result<Up, LinkError> {
     let key = EnrollmentKey::read(key_file).map_err(|source| LinkError::HostKey {
         machine: machine.to_owned(),
         source,
     })?;
     let pipe = dial.dial().await?;
-    open(pipe, &key, machine).await
+    let through = match host {
+        Some(host) => host.inbox.replayed_through(machine).await,
+        None => 0,
+    };
+    open_from(pipe, &key, machine, through).await
 }
 
 /// Why a peer link didn't come up or ended. `Display` says what failed;
