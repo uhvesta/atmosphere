@@ -515,7 +515,7 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Known gaps: LOOK1's T12 batch 3 and T10 (frames 07 and 08) are still open. ASK still has to apply D128.2 (own_comments_read shows as "Always · no setting") and the SEC-14 late batch, and it can't close before FL. W1's redraws of pages and overlays are not in this commit.
 - Look at: `ui/src/{request_card,access,session_tabs}.rs`, `features/settings/src/access.rs`, `clients/src/daemon/fake/access.rs`, `desktop/tests/design/session.rs`, design PNGs 01, 03, 05 and 50.
 
-### (this commit): D129 Linux goldens, NV-11 retired, CH-12 Last used (main)
+### 94ef952d: D129 Linux goldens, NV-11 retired, CH-12 Last used (main)
 - D129: pixel goldens are recorded on macOS and checked on web. Linux gets every non-image suite, the view-tree snapshots and an X11/Wayland launch smoke test. LINUX.md, ANYHOST.md and OVERVIEW were updated to match.
 - SPEC: NV-11 is retired (D128, frame 33 is gone) and CH-12 gains a Last used column (W1 pick).
 - Verified: docs only.
