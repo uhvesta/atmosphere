@@ -540,19 +540,19 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Known gaps: native 07 still differs from golden 07 (Inbox 6 vs 7, the Desk row, the Diff badge, the board mock data). Open in LOOK1's Lane: the clients model fields for ASK, folders folded by default, the journal's second line, the offline notice time. SPEC still has "until redrawn" notes in IN-9, IN-14, ST-18 and SE-2.
 - Look at: PNGs 01, 16, 25, 49; `ui/src/sidebar.rs`; `clients/src/fixture/design_session.rs`; `clients/src/daemon/fake/terminals.rs` (the resize redraw).
 
-### (this commit): TIDY batch 2: the Swift-era code is removed (minion TIDY)
+### 4a636632: TIDY batch 2: the Swift-era code is removed (minion TIDY)
 - D9 (owner, 2026-11-15): `app` (Swift), `bindgen`, `core` and `rehearsal` are deleted; git history keeps them. The root `Cargo.toml` drops their members and the uniffi, uniffi_bindgen and camino deps; Cargo.lock and cargo-bazel-lock.json were repinned with `CARGO_BAZEL_REPIN=1 bazel mod tidy`. LAYOUT.md says so.
 - Verified: the gate over api/proto, daemon, cli, clients, features, ui, terminal/pane, terminal/view and desktop:humata2 passes, 111 of 111 (machines_test's feed timing flaked once under load and passed alone).
 - Known gaps: `HUMATA2_BUNDLE_ID` in `apps/lifr/identity.bzl` is now unused.
 - Look at: `Cargo.toml`, `LAYOUT.md`.
 
-### (this commit): TIDY batch 1: spec mode removed, Allow wording; TIDY closed (minion TIDY)
+### d17f0d4e: TIDY batch 1: spec mode removed, Allow wording; TIDY closed (minion TIDY)
 - D104: `SetSpecMode`, `spec_mode` and `spec_files` are reserved in `sessions.proto`; the MCP tool `session_spec_mode`, `humata session spec`, the daemon handler and the SM-1, SM-2, SM-5 TRACE rows are gone; MCP.md and CLI.md updated. Proto comments, access errors and the inbox labels say "Always allow" and "Allow" instead of "Always let" and "Approve".
 - Verified: the same 111-test gate as batch 2.
 - Known gaps: `daemon/access/tests` still expect "Always let" in a few strings. The inbox label "Always allow “…” to everything" may read awkwardly. TRACE has no rows for SM-17–SM-21.
 - Look at: `api/proto/humata/v1/sessions.proto`, `daemon/humatad/src/inbox.rs`, `daemon/mcp/src/tools.rs`.
 
-### (this commit): LOOK1 batches 4–5: frame 07 board, early terminal output, model fields (minion LOOK1)
+### 4354c48f: LOOK1 batches 4–5: frame 07 board, early terminal output, model fields (minion LOOK1)
 - T13: the side-panel board lists only lanes that hold items, active first (L14); golden 07 shows frame 12's PAY items (before/after sent to the owner). The design fixture adds the refund-tests request while Ledger works (Inbox 7) and the native test saves the draft (Diff 2). A pane parses output that arrives before its first draw once a draw has fitted the grid, with a fallback after 3 unsized draws or 1 MiB (L15).
 - T14: `Machine.lost_at`, `Session.{model,restart_detail,permissions}` and `PreparedView.{note,prepared}` in the clients model. The offline notice gives the time the connection was lost; Info shows the model, the recovery detail and what the agent may do; Journal lists the prepared views of the session and its forks (VW-10) with the VW-11 hint when there are none.
 - Verified: the 111-test gate (incl. the new `terminal/pane:unfitted_test`), design, native 37, panels 13 and shell 2 recorded and passing, desktop 4 of 4.
