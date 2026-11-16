@@ -223,6 +223,50 @@ const MIGRATIONS: &[&str] = &[
         last_used_unix_ms INTEGER NOT NULL
     ) STRICT;
 ",
+    "
+    -- The user's review comments for a session's agent and the batches
+    -- typed into its terminal (SM-7-SM-21, D138): a row per comment, so a
+    -- change writes only the rows it changed. The comment and the batch are
+    -- the bytes the daemon encodes, kept as given; the number is the one in
+    -- the id (`c-<n>`, `d-<n>`), for order. delivery_state and state:
+    -- 0 in no batch, 1 sending, 2 unconfirmed. A session's go with it.
+    CREATE TABLE comments (
+        session TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        archived INTEGER NOT NULL DEFAULT 0,
+        delivery_state INTEGER NOT NULL DEFAULT 0,
+        updated_unix_ms INTEGER NOT NULL,
+        comment BLOB NOT NULL,
+        PRIMARY KEY (session, id)
+    ) STRICT;
+    CREATE INDEX comments_session_archived ON comments (session, archived);
+    CREATE TABLE comment_deliveries (
+        session TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        state INTEGER NOT NULL,
+        delivery BLOB NOT NULL,
+        PRIMARY KEY (session, key)
+    ) STRICT;
+    CREATE INDEX comment_deliveries_by_state ON comment_deliveries (state);
+    CREATE TABLE comment_numbers (
+        session TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+        last_comment INTEGER NOT NULL,
+        last_delivery INTEGER NOT NULL
+    ) STRICT;
+",
+    "
+    -- Conversations a session left behind when it started fresh (PER-15, D143):
+    -- never deleted, newest last.
+    CREATE TABLE previous_conversations (
+        session_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        path BLOB NOT NULL,
+        ended_unix_ms INTEGER NOT NULL,
+        PRIMARY KEY (session_id, conversation_id)
+    ) STRICT;
+",
 ];
 
 /// The schema this build writes and reads.

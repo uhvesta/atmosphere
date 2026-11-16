@@ -120,7 +120,10 @@ async fn bring_back(
 ) -> pb::LastStart {
     let tokens = Tokens::new(store.clone(), identities.clone());
     let env = |tab: &TabRecord| tokens.env(tab);
-    let mut start = pb::LastStart::default();
+    let mut start = pb::LastStart {
+        started_at: Some(crate::attach::now()),
+        ..pb::LastStart::default()
+    };
     if let Some(restored) = restored {
         start.restored_copy_taken_unix_ms = restored.copy_taken_unix_ms;
         start.restored_rows_changed = u32::try_from(restored.changes.len()).unwrap_or(u32::MAX);
@@ -217,6 +220,11 @@ fn resume_failed(reason: ResumeFailure, exit_code: Option<i32>) -> String {
 
 fn describe(reconciled: Reconciled, start: &mut pb::LastStart) {
     for (session, outcome) in reconciled.agents {
+        if let Ok(Revived::Resumed { .. }) = &outcome {
+            start.resumed.push(pb::SessionId {
+                value: session.clone(),
+            });
+        }
         if let Ok(Revived::ResumeFailed { reason, exit_code }) = &outcome {
             // PER-15, PER-29: nothing runs in its place, so the start names it.
             start.not_brought_back.push(pb::NotBroughtBack {

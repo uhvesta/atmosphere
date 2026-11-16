@@ -1,8 +1,9 @@
-//! DiffService, ReviewChatService, and the review chat's side of
-//! CommentService and ViewService (D66, SPEC RV-28–RV-34, PR-22–PR-26): a
-//! session's diffs, computed with `humata2_review_diff` in its clones on
-//! this machine, the reviewed snapshots Mark reviewed takes, the review
-//! chat's view of the review, and the notes and plans its agent leaves.
+//! DiffService, ReviewChatService, and CommentService and ViewService (D66,
+//! SPEC RV-28–RV-34, PR-22–PR-26, SM-7–SM-21): a session's diffs, computed
+//! with `humata2_review_diff` in its clones on this machine, the reviewed
+//! snapshots Mark reviewed takes, the review chat's view of the review, the
+//! notes and plans its agent leaves, and the user's comments for the
+//! agent (`comments`), typed into its terminal through a `CommentSink`.
 //!
 //! What a review showed is kept per session: the last GetDiff's files per
 //! repo, which MarkReviewed snapshots and the review chat's tools check
@@ -21,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use humata2_access::{Call, Capability, Entry, Place, RepoPath, Root, SessionRef, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_review_diff::{
-    AnchorError, Base, BaseContext, ChangeKind, ChatError, ChatTool, Checkout, Clones, Compare,
+    AnchorError, Base, BaseContext, ChangeKind, ChatError, ChatTool, Checkout, Clones, CommentLedger, Compare,
     DiffError, DiffSpec, FileRef, FileSummary, Matching, PlanError, Replaced, RepoDiff, RepoSpec,
     ReviewChat, Side, Undoable, UserNote, ViewState, Viewed, Whitespace, wire,
 };
@@ -37,10 +38,20 @@ use crate::guard::Guard;
 use crate::identity::{self, AgentCaller, Caller};
 use crate::status;
 
+mod comments;
+mod sink;
 mod views;
+
+pub(crate) use sink::{CommentSink, TerminalSink};
 
 /// At most this many lines of a selection go back with review_context.
 const SELECTED_LINES_MAX: u32 = 200;
+
+/// Comments per ListComments page when the caller names no size.
+const COMMENTS_PAGE_DEFAULT: usize = 50;
+
+/// The most comments in one ListComments page.
+const COMMENTS_PAGE_MAX: usize = 500;
 
 /// A review keeps the answers to this many calls with an idempotency key;
 /// a retry comes soon after its call, so older ones are forgotten.
@@ -62,6 +73,8 @@ struct Inner {
     /// Held while a view is read, changed and saved, so two calls on one
     /// view, or two with one idempotency key, don't both act.
     views: tokio::sync::Mutex<()>,
+    /// Where batches of the user's comments are typed (SM-9).
+    sink: Arc<dyn CommentSink>,
 }
 
 /// What a call with an idempotency key answered, so a repeat answers the
@@ -109,6 +122,13 @@ struct SessionReview {
     saving: tokio::sync::Mutex<()>,
     /// The notes as the event feed was last told of them, by id.
     told: Mutex<BTreeMap<String, pb::Comment>>,
+    /// The user's comments for the agent and the batches being typed.
+    comments: Mutex<CommentLedger>,
+    /// What of the comments was last saved, so a save writes only what
+    /// changed (their own table, not the review's blob).
+    comments_kept: Mutex<comments::Kept>,
+    /// Held while the comments are saved, so saves land in order.
+    comments_saving: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -122,7 +142,13 @@ struct Chat {
 }
 
 impl Review {
-    pub(crate) fn new(store: Arc<Store>, guard: Arc<Guard>, machine: String, feed: Arc<Feed>) -> Self {
+    pub(crate) fn new(
+        store: Arc<Store>,
+        guard: Arc<Guard>,
+        machine: String,
+        feed: Arc<Feed>,
+        sink: Arc<dyn CommentSink>,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 store,
@@ -131,6 +157,7 @@ impl Review {
                 feed,
                 sessions: Mutex::default(),
                 views: tokio::sync::Mutex::default(),
+                sink,
             }),
         }
     }
@@ -171,6 +198,10 @@ impl Review {
             Some(record) => restored(&record),
             None => SessionReview::default(),
         });
+        let (ledger, kept) = comments::load(&self.inner.store, session)
+            .map_err(|error| status::store(error, &self.inner.machine, "read the session's comments"))?;
+        *lock(&review.comments) = ledger;
+        *lock(&review.comments_kept) = kept;
         // The feed hears of changes from here on, not of notes made before.
         *lock(&review.told) = notes_now(&review, session);
         sessions.insert(session.to_owned(), review.clone());
@@ -391,6 +422,7 @@ impl pb::diff_service_server::DiffService for Review {
             None if moved => self.save(&record.id, &review).await?,
             None => {}
         }
+        self.refreshed_comments(&record, &review).await?;
         Ok(Response::new(pb::GetDiffResponse {
             any_changes: diffs.iter().any(|diff| !diff.files.is_empty()),
             repos: diffs.iter().map(wire::repo_diff_to_pb).collect(),
@@ -670,12 +702,13 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
 }
 
 /// The review chat's notes for the user (PR-23): CreateComment with the
-/// `note` destination, and EditComment and DropComment on those notes.
-/// Comments to send to the agent, PR drafts and the rest aren't built yet.
+/// `note` destination, and EditComment and DropComment on those notes; and
+/// the user's own comments for the agent (`comments`), whose ids are
+/// `<session>/c-<n>`. Pull request drafts aren't built yet.
 #[tonic::async_trait]
 impl pb::comment_service_server::CommentService for Review {
-    /// The review chat's notes, the only comments built yet. They have no
-    /// status (they are never sent), so a status filter lists none.
+    /// The review chat's notes, which have no status (they are never sent),
+    /// so a status filter lists none of them, and the user's comments.
     async fn list_comments(
         &self,
         request: Request<pb::ListCommentsRequest>,
@@ -686,7 +719,8 @@ impl pb::comment_service_server::CommentService for Review {
         let (record, session) = self.session(asked.as_ref())?;
         self.require(&caller, &Call::ReadSession(session))?;
         let review = self.review(&record.id)?;
-        let comments = if request.statuses.is_empty() {
+        let (user_comments, draft_count) = self.list_user_comments(&record, &review, &request).await?;
+        let mut comments: Vec<pb::Comment> = if request.statuses.is_empty() && !request.archived {
             lock(&review.chat)
                 .chat
                 .notes()
@@ -696,23 +730,34 @@ impl pb::comment_service_server::CommentService for Review {
         } else {
             Vec::new()
         };
+        comments.extend(user_comments);
+        let (size, token) = match request.page {
+            Some(page) => (page.page_size as usize, page.page_token),
+            None => (0, String::new()),
+        };
+        let size = match size {
+            0 => COMMENTS_PAGE_DEFAULT,
+            size => size.min(COMMENTS_PAGE_MAX),
+        };
+        let (comments, next_page_token) = page_of_comments(comments, size, &token)?;
         Ok(Response::new(pb::ListCommentsResponse {
             comments,
-            draft_count: 0,
-            page: None,
+            draft_count,
+            page: Some(pb::PageResponse { next_page_token }),
         }))
     }
 
     async fn create_comment(&self, request: Request<pb::CreateCommentRequest>) -> Result<Response<pb::Comment>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let is_note = matches!(
-            request.destination.as_ref().and_then(|destination| destination.destination.as_ref()),
-            Some(pb::comment_destination::Destination::Note(_))
-        );
+        let destination = request.destination.as_ref().and_then(|destination| destination.destination.as_ref());
+        if matches!(destination, Some(pb::comment_destination::Destination::Terminal(_))) {
+            return self.create_user_comment(&caller, request).await.map(Response::new);
+        }
+        let is_note = matches!(destination, Some(pb::comment_destination::Destination::Note(_)));
         if !is_note {
             return Err(status::not_built(
-                "humata.v1.CommentService.CreateComment for comments to the agent or a pull request",
+                "humata.v1.CommentService.CreateComment for a pull request",
             ));
         }
         let asked = request.session.clone().or_else(|| own_session(&caller));
@@ -776,6 +821,9 @@ impl pb::comment_service_server::CommentService for Review {
     async fn edit_comment(&self, request: Request<pb::EditCommentRequest>) -> Result<Response<pb::Comment>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
+        if comments::is_user_id(request.id.as_ref()) {
+            return self.edit_user_comment(&caller, request).await.map(Response::new);
+        }
         let (record, session, id) = self.note_session(&caller, request.id.as_ref())?;
         self.require_use(&caller, Capability::ReviewNote, &session)?;
         let review = self.review(&record.id)?;
@@ -807,6 +855,9 @@ impl pb::comment_service_server::CommentService for Review {
     ) -> Result<Response<pb::DropCommentResponse>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
+        if comments::is_user_id(request.id.as_ref()) {
+            return self.drop_user_comment(&caller, request).await.map(Response::new);
+        }
         let (record, session, id) = self.note_session(&caller, request.id.as_ref())?;
         self.require_use(&caller, Capability::ReviewNote, &session)?;
         let review = self.review(&record.id)?;
@@ -830,24 +881,74 @@ impl pb::comment_service_server::CommentService for Review {
 
     async fn reattach_comment(
         &self,
-        _request: Request<pb::ReattachCommentRequest>,
+        request: Request<pb::ReattachCommentRequest>,
     ) -> Result<Response<pb::Comment>, Status> {
-        Err(status::not_built("humata.v1.CommentService.ReattachComment"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        if !comments::is_user_id(request.id.as_ref()) {
+            return Err(status::not_built("humata.v1.CommentService.ReattachComment for a note"));
+        }
+        self.reattach_user_comment(&caller, request).await.map(Response::new)
     }
 
     async fn send_comments(
         &self,
-        _request: Request<pb::SendCommentsRequest>,
+        request: Request<pb::SendCommentsRequest>,
     ) -> Result<Response<pb::SendCommentsResponse>, Status> {
-        Err(status::not_built("humata.v1.CommentService.SendComments"))
+        let caller = identity::caller(&request)?;
+        self.send_user_comments(&caller, request.into_inner()).await.map(Response::new)
     }
 
-    async fn resolve_comment(&self, _request: Request<pb::ResolveCommentRequest>) -> Result<Response<pb::Comment>, Status> {
-        Err(status::not_built("humata.v1.CommentService.ResolveComment"))
+    async fn resolve_comment(&self, request: Request<pb::ResolveCommentRequest>) -> Result<Response<pb::Comment>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        if !comments::is_user_id(request.id.as_ref()) {
+            return Err(status::not_built("humata.v1.CommentService.ResolveComment for a note"));
+        }
+        self.resolve_user_comment(&caller, request).await.map(Response::new)
     }
 
-    async fn reopen_comment(&self, _request: Request<pb::ReopenCommentRequest>) -> Result<Response<pb::Comment>, Status> {
-        Err(status::not_built("humata.v1.CommentService.ReopenComment"))
+    async fn reopen_comment(&self, request: Request<pb::ReopenCommentRequest>) -> Result<Response<pb::Comment>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        if !comments::is_user_id(request.id.as_ref()) {
+            return Err(status::not_built("humata.v1.CommentService.ReopenComment for a note"));
+        }
+        self.reopen_user_comment(&caller, request).await.map(Response::new)
+    }
+
+    async fn take_back_comments(
+        &self,
+        request: Request<pb::TakeBackCommentsRequest>,
+    ) -> Result<Response<pb::TakeBackCommentsResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        self.take_back_user_comments(&caller, request.into_inner()).await.map(Response::new)
+    }
+
+    async fn resolve_addressed_comments(
+        &self,
+        request: Request<pb::ResolveAddressedCommentsRequest>,
+    ) -> Result<Response<pb::ResolveAddressedCommentsResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        self.resolve_addressed_user_comments(&caller, request.into_inner()).await.map(Response::new)
+    }
+
+    async fn reply_to_comment(&self, request: Request<pb::ReplyToCommentRequest>) -> Result<Response<pb::Comment>, Status> {
+        let caller = identity::caller(&request)?;
+        self.reply_to_user_comment(&caller, request.into_inner()).await.map(Response::new)
+    }
+
+    async fn archive_comment(&self, request: Request<pb::ArchiveCommentRequest>) -> Result<Response<pb::Comment>, Status> {
+        let caller = identity::caller(&request)?;
+        self.archive_user_comment(&caller, request.into_inner()).await.map(Response::new)
+    }
+
+    async fn unarchive_comment(
+        &self,
+        request: Request<pb::UnarchiveCommentRequest>,
+    ) -> Result<Response<pb::Comment>, Status> {
+        let caller = identity::caller(&request)?;
+        self.unarchive_user_comment(&caller, request.into_inner()).await.map(Response::new)
     }
 }
 
@@ -1066,6 +1167,52 @@ fn note_author(caller: &Caller) -> Result<&AgentCaller, Status> {
     }
 }
 
+/// Where a comment stands in ListComments order, from its wire id
+/// (`<session>/note-<n>` or `<session>/c-<n>`): notes first, then the
+/// user's comments, each by number. `None` when the id is neither.
+fn comment_key(id: &str) -> Option<(u8, u64)> {
+    let last = id.rsplit('/').next()?;
+    if let Some(n) = last.strip_prefix("note-") {
+        return n.parse().ok().map(|n| (0, n));
+    }
+    let n = last.strip_prefix("c-")?;
+    n.parse().ok().map(|n| (1, n))
+}
+
+/// Puts `comments` in ListComments order (an id that doesn't parse last),
+/// and cuts one page of at most `size` after the comment `token` names.
+/// Answers the page and the token for the next one, empty on the last.
+/// A token is a comment id; it still works when that comment is gone.
+fn page_of_comments(mut comments: Vec<pb::Comment>, size: usize, token: &str) -> Result<(Vec<pb::Comment>, String), Status> {
+    let key_of = |comment: &pb::Comment| {
+        comment
+            .id
+            .as_ref()
+            .and_then(|id| comment_key(&id.value))
+            .unwrap_or((u8::MAX, u64::MAX))
+    };
+    comments.sort_by_key(key_of);
+    let after = if token.is_empty() {
+        None
+    } else {
+        Some(comment_key(token).ok_or_else(|| {
+            status::invalid_field(
+                "page.page_token",
+                pb::invalid_field::Problem::BadFormat,
+                format!("{token:?} isn't a comment page token"),
+                "pass the next_page_token of the previous answer, or leave it empty for the first page",
+            )
+        })?)
+    };
+    let mut rest = comments.into_iter().filter(|comment| after.is_none_or(|after| key_of(comment) > after));
+    let page: Vec<pb::Comment> = rest.by_ref().take(size).collect();
+    let next_page_token = match (rest.next(), page.last()) {
+        (Some(_), Some(last)) => last.id.as_ref().map(|id| id.value.clone()).unwrap_or_default(),
+        _ => String::new(),
+    };
+    Ok((page, next_page_token))
+}
+
 /// Whether a note on `note` is on the file ListComments asked for; a file
 /// without a repo matches that path in any repo.
 fn on_file(note: &FileRef, file: &pb::RepoPath) -> bool {
@@ -1109,9 +1256,9 @@ fn changed_note(change: &humata2_review_diff::Change, session: &str) -> Option<p
     Some(comment)
 }
 
-/// The review's notes as Comments, by id.
+/// The review's notes and the user's comments as Comments, by id.
 fn notes_now(review: &SessionReview, session: &str) -> BTreeMap<String, pb::Comment> {
-    lock(&review.chat)
+    let mut now: BTreeMap<String, pb::Comment> = lock(&review.chat)
         .chat
         .notes()
         .map(|note| {
@@ -1119,7 +1266,9 @@ fn notes_now(review: &SessionReview, session: &str) -> BTreeMap<String, pb::Comm
             let id = comment.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
             (id, comment)
         })
-        .collect()
+        .collect();
+    now.extend(comments::all_now(&lock(&review.comments), session));
+    now
 }
 
 /// A note as a Comment, with its session and the agent that wrote it.

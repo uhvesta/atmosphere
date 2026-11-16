@@ -10,6 +10,7 @@ Navigation "Sidebar"
   Link "Home"
   Link "Inbox"
   Link "Board"
+  Link "Desk"
   Button "New channel"
   TreeItem "payments-rewrite" expanded
     Button "Fold"

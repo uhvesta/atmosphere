@@ -44,7 +44,9 @@ impl Clock for SystemClock {
     }
 
     fn sleep(&self, duration: Duration) -> BoxFuture<()> {
-        Box::pin(tokio::time::sleep(duration))
+        // Made on first poll: a reducer runs on the UI thread, outside any
+        // runtime, and its effects are polled on the store's runtime.
+        Box::pin(async move { tokio::time::sleep(duration).await })
     }
 }
 

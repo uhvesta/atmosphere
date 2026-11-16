@@ -49,6 +49,8 @@ impl App {
             Event::Transfer(transfer) => {
                 upsert(&mut workspace.transfers, transfer, |a, b| a.id == b.id);
             }
+            Event::Restart(restart) => return self.heard_restart(state, restart),
+            Event::ChannelSetup(setup) => return self.heard_setup(state, setup),
             Event::Resync => return self.load(),
         }
         let mut effects = vec![self.show(state)];

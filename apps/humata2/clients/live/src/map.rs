@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use humata2_clients::model::{
-    Agent, Channel, ChannelId, ForkKind, Machine, MachineId, MachineKind, Recovery, Session,
-    SessionId, Status, Turn,
+    Agent, Channel, ChannelId, ForkKind, Machine, MachineId, MachineKind, NotBroughtBack,
+    Recovery, Restart, ResumeFailure, Session, SessionId, Status, Turn,
 };
 use humata2_grpc::humata::v1 as pb;
 
@@ -160,6 +160,51 @@ fn status(session: &pb::Session) -> (Status, Option<Recovery>) {
     }
 }
 
+/// A timestamp's seconds and nanoseconds as Unix milliseconds.
+pub(crate) fn unix_ms(seconds: i64, nanos: i32) -> i64 {
+    seconds
+        .saturating_mul(1000)
+        .saturating_add(i64::from(nanos) / 1_000_000)
+}
+
+/// Why a resume failed; `None` when the daemon gave no reason it knows.
+fn resume_failure(failed: &pb::ResumeFailed) -> Option<ResumeFailure> {
+    use pb::resume_failed::Reason as R;
+    match R::try_from(failed.reason).unwrap_or(R::Unspecified) {
+        R::ConversationFileMissing => Some(ResumeFailure::ConversationMissing),
+        R::AgentStartedAnotherConversation => Some(ResumeFailure::OtherConversation),
+        R::AgentExited => Some(ResumeFailure::AgentExited(failed.exit_code)),
+        R::AgentNotInstalled => Some(ResumeFailure::AgentNotInstalled),
+        R::FolderMissing => Some(ResumeFailure::FolderMissing),
+        R::Unspecified => None,
+    }
+}
+
+/// What a host found when it last started, from its server info. `None`
+/// while the daemon is still bringing sessions back (no report yet).
+pub(crate) fn restart(machine: &MachineId, last: Option<&pb::LastStart>) -> Option<Restart> {
+    let last = last?;
+    Some(Restart {
+        machine: machine.clone(),
+        at_unix_ms: last
+            .started_at
+            .as_ref()
+            .map(|at| unix_ms(at.seconds, at.nanos))
+            .unwrap_or_default(),
+        report: (!last.report.is_empty()).then(|| last.report.clone()),
+        resumed: last.resumed.iter().map(|id| SessionId::new(id.value.clone())).collect(),
+        not_brought_back: last
+            .not_brought_back
+            .iter()
+            .map(|entry| NotBroughtBack {
+                session: (!entry.session.is_empty()).then(|| SessionId::new(entry.session.clone())),
+                tab: (!entry.tab.is_empty()).then(|| entry.tab.clone()),
+                problem: entry.problem.clone(),
+            })
+            .collect(),
+    })
+}
+
 /// A session; `tabs` are the session's tabs in [`order_tabs`] order.
 pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNames) -> Session {
     let (status, recovery) = status(session);
@@ -205,6 +250,7 @@ pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNam
         branch: first.map(|repo| repo.branch.clone()).unwrap_or_default(),
         started: String::new(),
         active: String::new(),
+        last_used: String::new(),
         activity: String::new(),
         transcript: Vec::new(),
         shells: tabs
@@ -215,6 +261,11 @@ pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNam
         terminal_agents: BTreeMap::new(),
         archived: session.status == pb::SessionStatus::Archived as i32,
         recovery,
+        resume_failed: session.resume_failed.as_ref().and_then(resume_failure),
+        interrupted_unix_ms: session
+            .interrupted_at
+            .as_ref()
+            .map(|at| unix_ms(at.seconds, at.nanos)),
         model: (!session.model.is_empty()).then(|| session.model.clone()),
         restart_detail: None,
         permissions: Vec::new(),
@@ -323,6 +374,76 @@ mod tests {
             &AgentNames::default(),
         );
         assert_eq!(mapped.shells, ["sh1", "sh2"]);
+    }
+
+    #[test]
+    fn a_failed_resume_carries_why_and_the_exit_code() {
+        let mut failed = pb_session(pb::SessionStatus::ResumeFailed);
+        failed.resume_failed = Some(pb::ResumeFailed {
+            reason: pb::resume_failed::Reason::AgentExited as i32,
+            exit_code: 7,
+            ..Default::default()
+        });
+        let mapped = session(&failed, &[], &AgentNames::default());
+        assert_eq!(mapped.resume_failed, Some(ResumeFailure::AgentExited(7)));
+
+        failed.resume_failed = Some(pb::ResumeFailed {
+            reason: pb::resume_failed::Reason::ConversationFileMissing as i32,
+            ..Default::default()
+        });
+        let mapped = session(&failed, &[], &AgentNames::default());
+        assert_eq!(mapped.resume_failed, Some(ResumeFailure::ConversationMissing));
+
+        let plain = session(&pb_session(pb::SessionStatus::Idle), &[], &AgentNames::default());
+        assert_eq!(plain.resume_failed, None);
+        assert_eq!(plain.interrupted_unix_ms, None);
+    }
+
+    #[test]
+    fn an_interruption_time_becomes_unix_ms() {
+        let mut interrupted = pb_session(pb::SessionStatus::Idle);
+        interrupted.interrupted_at = Some(Default::default());
+        if let Some(at) = interrupted.interrupted_at.as_mut() {
+            at.seconds = 1_700_000_000;
+            at.nanos = 250_000_000;
+        }
+        let mapped = session(&interrupted, &[], &AgentNames::default());
+        assert_eq!(mapped.interrupted_unix_ms, Some(1_700_000_000_250));
+    }
+
+    #[test]
+    fn a_restart_lists_resumed_sessions_and_what_was_not_brought_back() {
+        let machine = MachineId::new("ma_1");
+        assert_eq!(restart(&machine, None), None);
+        let last = pb::LastStart {
+            report: "/reports/r1".to_owned(),
+            resumed: vec![pb::SessionId {
+                value: "se_1".to_owned(),
+            }],
+            not_brought_back: vec![
+                pb::NotBroughtBack {
+                    session: "se_2".to_owned(),
+                    problem: "its agent is gone".to_owned(),
+                    ..Default::default()
+                },
+                pb::NotBroughtBack {
+                    tab: "tab_3".to_owned(),
+                    problem: "its folder is gone".to_owned(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mapped = restart(&machine, Some(&last));
+        let Some(mapped) = mapped else {
+            panic!("a last start maps to a restart");
+        };
+        assert_eq!(mapped.report.as_deref(), Some("/reports/r1"));
+        assert_eq!(mapped.resumed, [SessionId::new("se_1")]);
+        assert_eq!(mapped.not_brought_back[0].session, Some(SessionId::new("se_2")));
+        assert_eq!(mapped.not_brought_back[0].tab, None);
+        assert_eq!(mapped.not_brought_back[1].tab.as_deref(), Some("tab_3"));
+        assert_eq!(mapped.not_brought_back[1].session, None);
     }
 
     #[test]

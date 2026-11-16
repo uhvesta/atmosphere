@@ -16,7 +16,10 @@ mod saved;
 mod scrollback;
 mod server;
 
-pub use client::{Attachment, Control, Event, Events, HolderSpec, Spawned, attach, shutdown, spawn};
+pub use client::{
+    Attachment, Control, Event, Events, HolderSpec, KeyState, KeyedInput, Spawned, attach,
+    key_arrived, keyed_input, shutdown, spawn,
+};
 pub use error::HolderError;
 pub use protocol::Welcome;
 pub use saved::{SavedOutput, read_saved, saved_scrollback_path};

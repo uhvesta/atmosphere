@@ -58,6 +58,8 @@ pub struct SavedUi {
     pub selected_host: Option<MachineId>,
     /// Hosts that answered.
     pub connected: BTreeSet<MachineId>,
+    /// How the Desk's Open list is sorted.
+    pub desk_sort: humata2_desk::Sort,
 }
 
 impl SavedUi {

@@ -24,6 +24,7 @@ pub(super) fn answer(daemon: &FakeDaemon, request: &RequestId, answer: Answer) -
             }
             found.answer = Some(answer);
             let request = found.clone();
+            super::desk::used(inner, &request.session);
             if let (Some(Answer::Always { rule }), Some(asked_by)) =
                 (&request.answer, &request.asked_by)
             {

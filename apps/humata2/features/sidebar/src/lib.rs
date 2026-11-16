@@ -90,6 +90,11 @@ pub struct SidebarState {
     pub folding: Folding,
     /// The rows to draw, top to bottom.
     pub rows: Arc<Vec<Row>>,
+    /// The open Desk sessions, in the order they were started, for the view
+    /// to draw under its Desk row (DK-1). A row doesn't move when its session
+    /// is used (D148). Each is a session row at depth 1 with no forks to fold
+    /// (DK-12).
+    pub desk: Arc<Vec<Row>>,
     /// The keyboard cursor.
     pub cursor: Option<RowKey>,
     /// The session or channel the main area shows, highlighted.
@@ -322,6 +327,15 @@ impl SidebarState {
         }
     }
 
+    /// Whether a row with `key` is listed, in the tree or under the Desk.
+    fn lists(&self, key: &RowKey) -> bool {
+        self.index_of(key).is_some()
+            || self
+                .desk
+                .iter()
+                .any(|row| row.key.as_ref() == Some(key))
+    }
+
     fn index_of_cursor(&self) -> Option<usize> {
         self.cursor.as_ref().and_then(|key| self.index_of(key))
     }
@@ -424,10 +438,25 @@ impl SidebarState {
             }
         }
         self.rows = Arc::new(rows);
+        self.desk = Arc::new(
+            workspace
+                .sessions
+                .iter()
+                .filter(|session| {
+                    !session.archived
+                        && workspace
+                            .desk
+                            .sessions
+                            .get(&session.id)
+                            .is_some_and(|record| record.closed.is_none())
+                })
+                .map(|session| session_row(RowKey::Session(session.id.clone()), 1, session, None))
+                .collect(),
+        );
         if self
             .cursor
             .as_ref()
-            .is_some_and(|key| self.index_of(key).is_none())
+            .is_some_and(|key| !self.lists(key))
         {
             self.cursor = None;
         }

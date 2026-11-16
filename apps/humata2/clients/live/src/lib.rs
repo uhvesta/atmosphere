@@ -4,8 +4,10 @@
 
 mod connection;
 mod daemon;
+mod desk;
 mod events;
 mod map;
+mod setup;
 mod terminals;
 
 pub use connection::{ConnectError, LiveDaemon, LiveOptions};

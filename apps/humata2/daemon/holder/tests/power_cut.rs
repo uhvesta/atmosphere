@@ -1,13 +1,15 @@
 //! Cuts a holder's power while its program prints (PER-25): a holder
 //! started after the cut must resume at or past every offset a client was
-//! sent, and what it shows again must be what that client saw.
+//! sent, and what it shows again must be what that client saw, as far as
+//! that client had read: output is saved before it is sent, so the saved
+//! output can run past a client that was behind.
 //!
 //! The holder is built with power cuts playable: under
 //! `HUMATA2_POWER_CUT_ROOTS`, SIGUSR2 drops whatever it wrote and didn't
 //! sync, then kills it, as pulling the plug would.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use humata2_holder::{Event, HolderSpec, attach, read_saved, saved_scrollback_path, spawn};
 use rustix::process::{Pid, Signal};
@@ -48,7 +50,7 @@ enum CutAt {
     FirstOutput,
     /// Once this many bytes arrived, mid-burst.
     Bytes(usize),
-    /// After a pause long enough for a sync to have run.
+    /// Once output has kept arriving for long enough that a sync has run.
     AfterASync,
 }
 
@@ -66,6 +68,7 @@ async fn print_then_cut(dir: &Path, at: CutAt) -> Vec<u8> {
     let _control = attached.control;
     let mut events = attached.events;
     let mut seen = Vec::new();
+    let mut first_output = None;
     let mut cut = false;
     tokio::time::timeout(WAIT, async {
         // Reads until the holder is gone, so every byte it sent is counted.
@@ -77,16 +80,15 @@ async fn print_then_cut(dir: &Path, at: CutAt) -> Vec<u8> {
             if let Event::Output { offset, data } = event {
                 assert_eq!(offset, seen.len() as u64, "output skipped or repeated bytes");
                 seen.extend(data);
+                first_output.get_or_insert_with(Instant::now);
             }
             let due = match at {
                 CutAt::FirstOutput => !seen.is_empty(),
                 CutAt::Bytes(bytes) => seen.len() >= bytes,
-                CutAt::AfterASync => {
-                    if !seen.is_empty() && !cut {
-                        tokio::time::sleep(Duration::from_millis(1200)).await;
-                    }
-                    !seen.is_empty()
-                }
+                // Goes on reading while it waits, so what it was sent keeps
+                // up with what the holder saves and syncs.
+                CutAt::AfterASync => first_output
+                    .is_some_and(|since: Instant| since.elapsed() >= Duration::from_millis(1200)),
             };
             if due && !cut {
                 cut = true;
@@ -143,9 +145,18 @@ async fn check(at: CutAt) {
         "{at:?}: a client was sent up to {} but a new holder resumes at {resumes_at}",
         seen.len()
     );
+    // The saved output may run past what the client had read by the cut.
+    // Where both have bytes, they are the same bytes.
+    let both = seen.len().min(shown.len());
+    let differs_at = seen[..both]
+        .iter()
+        .zip(&shown[..both])
+        .position(|(sent, saved)| sent != saved);
     assert!(
-        seen.starts_with(&shown),
-        "{at:?}: the saved output isn't what the client was sent"
+        differs_at.is_none(),
+        "{at:?}: the saved output differs from what the client was sent, first at offset {differs_at:?} (sent {} bytes, saved {})",
+        seen.len(),
+        shown.len()
     );
     if matches!(at, CutAt::AfterASync) {
         assert!(!shown.is_empty(), "output synced before the cut was lost");

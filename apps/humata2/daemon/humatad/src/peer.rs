@@ -167,11 +167,17 @@ impl Interceptor for Gate {
 
 pub(crate) struct Peer {
     handshake: Arc<Handshake>,
+    /// Where synced skills go on this machine (SK-4); none when the link
+    /// process has no home folder to put them under.
+    skills: Option<crate::peer_skills::MachineSkills>,
 }
 
 impl Peer {
     pub(crate) fn new(handshake: Arc<Handshake>) -> Self {
-        Self { handshake }
+        Self {
+            handshake,
+            skills: crate::peer_skills::MachineSkills::from_env(),
+        }
     }
 }
 
@@ -409,9 +415,11 @@ impl pb::peer_service_server::PeerService for Peer {
 
     async fn apply_skills(
         &self,
-        _request: Request<Streaming<pb::SkillsMessage>>,
+        request: Request<Streaming<pb::SkillsMessage>>,
     ) -> Result<Response<pb::ApplySkillsResponse>, Status> {
-        Err(not_built("ApplySkills"))
+        crate::peer_skills::handle(self.skills.as_ref(), request.into_inner())
+            .await
+            .map(Response::new)
     }
 
     async fn probe(

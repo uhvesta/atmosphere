@@ -35,6 +35,7 @@ members = [
     "apps/humata2/clients/live",
     "apps/humata2/features/app",
     "apps/humata2/features/board",
+    "apps/humata2/features/desk",
     "apps/humata2/features/files",
     "apps/humata2/features/hosts",
     "apps/humata2/features/inbox",

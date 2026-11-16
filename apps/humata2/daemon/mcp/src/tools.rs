@@ -103,6 +103,11 @@ operations! {
     ReviewPrepare => "review_prepare", "review.prepare";
     /// `CommentService.ListComments` of the caller's session.
     CommentsList => "comments_list", "comment.list";
+    /// `CommentService.ReplyToComment` on a comment typed into the caller's
+    /// session.
+    CommentReply => "comment_reply", "comment.reply";
+    /// `CommentService.ResolveComment` with a reply.
+    CommentResolve => "comment_resolve", "comment.resolve";
     /// `FileService.ListDirectory`.
     FilesList => "files_list", "file.list";
     /// `FileService.ReadFile`.
@@ -299,6 +304,8 @@ pub(crate) fn capability_name(capability: Capability) -> &'static str {
         Capability::ReviewFocus => "review_focus",
         Capability::ReviewNote => "review_note",
         Capability::ReviewOrder => "review_order",
+        Capability::CommentReply => "comment_reply",
+        Capability::CommentResolve => "comment_resolve",
         Capability::ChannelBoardEditOthers => "channel_board_edit_others",
         Capability::GlobalRead => "global_read",
         Capability::FilesReadOtherSession => "files_read_other_session",
@@ -881,7 +888,7 @@ fn definition(operation: Operation) -> Definition {
             ]),
         ),
         Op::CommentsList => define(
-            "The user's comments on your session's changes.",
+            "List the comments the user sent to your session, with their ids, for comment_reply and comment_resolve.",
             Effect::Read,
             object(vec![
                 opt(
@@ -889,6 +896,22 @@ fn definition(operation: Operation) -> Definition {
                     array(one_of_strings(["sent", "queued", "addressed"])),
                 ),
                 opt("path", relative_path()),
+            ]),
+        ),
+        Op::CommentReply => define(
+            "Answer the user in the thread of a comment they sent to your session; find ids with comments_list. You still answer in your terminal as usual. This is a mechanical call: hand it to a cheap subagent if your CLI has subagents.",
+            Effect::Create,
+            object(vec![
+                req("comment_id", string()),
+                req("text", string().max_length(4000)),
+            ]),
+        ),
+        Op::CommentResolve => define(
+            "Mark a comment the user sent to your session as resolved, with a short note on what you did (required; it shows in the thread under your name). The user can reopen it. Hand this to a cheap subagent if your CLI has subagents.",
+            Effect::Change,
+            object(vec![
+                req("comment_id", string()),
+                req("reply", string().max_length(4000)),
             ]),
         ),
         Op::FilesList => define(

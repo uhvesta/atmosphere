@@ -7,7 +7,12 @@ use tca::{TestClock, TestStore};
 #[test]
 fn filters_select_the_first_visible_request_and_a_refresh_advances_it() {
     let mut workspace = fixture::design();
-    let answered = workspace.requests.last_mut().unwrap();
+    // The last request still waiting: the design workspace ends with two answered ones.
+    let answered = workspace
+        .requests
+        .iter_mut()
+        .rfind(|r| r.answer.is_none())
+        .unwrap();
     answered.answer = Some(Answer::Approved);
     let last = answered.id.clone();
     let first = workspace.requests[0].id.clone();
@@ -24,7 +29,14 @@ fn filters_select_the_first_visible_request_and_a_refresh_advances_it() {
         s.answered_only = true;
         s.selected = Some(last.clone());
     });
-    assert_eq!(store.state().shown().len(), 1);
+    assert_eq!(
+        store.state().shown().len(),
+        workspace
+            .requests
+            .iter()
+            .filter(|r| r.answer.is_some())
+            .count()
+    );
     store.send(A::SetHistory(History::All), |s| s.answered_only = false);
     assert_eq!(store.state().shown().len(), workspace.requests.len());
     store.send(A::SetHistory(History::Waiting), |s| {

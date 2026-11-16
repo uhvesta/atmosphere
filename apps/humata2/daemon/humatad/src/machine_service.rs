@@ -25,6 +25,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use humata2_access::{Call, MachineAction, MachineActionKind, MachineId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{
+    Action, ConfigError, IdentityError, Provider, SetupError,
     AddSsh, Builds, Drive, EntryState, HostEntry, Machines, ManageError, OpStep, StepEvent,
     SystemRunner,
 };
@@ -46,8 +47,6 @@ pub(crate) struct MachineSvc {
     guard: Arc<Guard>,
     work: Arc<Work>,
     operations: Arc<Operations>,
-    /// Removal plans handed out: token to machine, and when.
-    plans: Mutex<HashMap<String, (String, Instant)>>,
 }
 
 /// The wall clock, which tests set.
@@ -74,9 +73,58 @@ pub(crate) struct Work {
     /// Each machine's peer link supervisor, while one runs.
     links: Mutex<HashMap<String, AbortHandle>>,
     clock: Clock,
+    /// Removal plans handed out: token to machine, and when. Delete on a
+    /// provider's machine takes one too.
+    plans: Mutex<HashMap<String, (String, Instant)>>,
+    /// Skills sync, told each link that comes up or goes down (SK-3, SK-7);
+    /// set once by `serve` before any link starts.
+    pub(crate) skills: std::sync::OnceLock<Arc<crate::skills_service::SkillsHost>>,
 }
 
 impl Work {
+    /// Uses the removal plan `token` made for `machine`, once.
+    pub(crate) fn use_plan(&self, token: &str, machine: &str) -> Result<(), Status> {
+        let planned = lock(&self.plans)
+            .remove(token)
+            .filter(|(planned, made)| planned == machine && made.elapsed() < PLAN_LIFETIME);
+        if planned.is_some() {
+            return Ok(());
+        }
+        Err(status::failure(
+            Code::FailedPrecondition,
+            status::error(
+                format!("the removal plan for {machine} is unknown, used or older than ten minutes"),
+                "ask for a new plan (PlanRemoveMachine), check what it says, then remove with its token",
+                pb::error::Kind::PlanStale(pb::PlanStale { changes: Vec::new() }),
+            ),
+        ))
+    }
+
+    /// The provider commands `entry`'s provider defines, as the machine
+    /// page lists them (MP-2); none for an SSH machine or a provider no
+    /// longer configured.
+    fn defined_actions(&self, entry: &HostEntry) -> Vec<i32> {
+        let Some(record) = &entry.provider else {
+            return Vec::new();
+        };
+        let Ok((_, providers)) = read_providers(self.machines.hosts_file()) else {
+            return Vec::new();
+        };
+        let Some(provider) = providers.iter().find(|provider| provider.id() == record.id) else {
+            return Vec::new();
+        };
+        [
+            (Action::Start, pb::ProviderAction::Start),
+            (Action::Stop, pb::ProviderAction::Stop),
+            (Action::Status, pb::ProviderAction::Status),
+            (Action::Delete, pb::ProviderAction::Delete),
+        ]
+        .into_iter()
+        .filter(|(action, _)| provider.has(*action))
+        .map(|(_, shown)| shown as i32)
+        .collect()
+    }
+
     pub(crate) fn new(machines: Machines, builds: Box<dyn Builds + Send + Sync>, feed: Arc<Feed>, clock: Clock) -> Self {
         let work = Self {
             machines,
@@ -86,6 +134,8 @@ impl Work {
             shown: Mutex::new(BTreeMap::new()),
             links: Mutex::new(HashMap::new()),
             clock,
+            plans: Mutex::new(HashMap::new()),
+            skills: std::sync::OnceLock::new(),
         };
         *lock(&work.shown) = work.listed().unwrap_or_default();
         work
@@ -102,7 +152,7 @@ impl Work {
 
     /// Puts each machine that changed since the feed last told it on the
     /// feed: added, changed, or gone (with how it last looked).
-    fn publish_machines(&self) {
+    pub(crate) fn publish_machines(&self) {
         let mut shown = lock(&self.shown);
         let Ok(now) = self.listed() else {
             // The list will be read again at the next change.
@@ -127,7 +177,7 @@ impl Work {
 
     /// Runs `with` with a [`Drive`] that runs commands as child processes
     /// and hands each step's progress to `events`.
-    fn drive<R>(
+    pub(crate) fn drive<R>(
         &self,
         events: &mut dyn FnMut(StepEvent),
         cancelled: &dyn Fn() -> bool,
@@ -151,7 +201,7 @@ impl Work {
     }
 
     /// An add or reconnect reached `machine` (ONLINE) or failed.
-    fn saw(&self, machine: &str, reach: pb::Reachability) {
+    pub(crate) fn saw(&self, machine: &str, reach: pb::Reachability) {
         let now = (self.clock)();
         self.change(machine, |seen| {
             seen.reach = reach;
@@ -172,7 +222,7 @@ impl Work {
     fn link_changed(&self, machine: &str, event: &LinkEvent<'_>) {
         let now = (self.clock)();
         self.change(machine, |seen| match event {
-            LinkEvent::Up { daemon_version } => {
+            LinkEvent::Up { daemon_version, .. } => {
                 seen.reach = pb::Reachability::Online;
                 (*daemon_version).clone_into(&mut seen.daemon_version);
                 seen.last_seen_at = Some(now);
@@ -208,7 +258,7 @@ impl Work {
 
     /// Keeps `machine`'s link up through its link command, if the host
     /// holds its key (written when the machine was added or reconnected).
-    fn link_up(self: &Arc<Self>, machine: &str, runtime: &Handle) {
+    pub(crate) fn link_up(self: &Arc<Self>, machine: &str, runtime: &Handle) {
         if !self.machines.peer_key(machine).exists() {
             return;
         }
@@ -224,18 +274,24 @@ impl Work {
     }
 
     /// Stops keeping `machine`'s link up.
-    fn link_down(&self, machine: &str) {
+    pub(crate) fn link_down(&self, machine: &str) {
         if let Some(link) = lock(&self.links).remove(machine) {
             link.abort();
         }
+        if let Some(skills) = self.skills.get() {
+            skills.link_down(machine);
+        }
     }
 
-    fn machine(&self, entry: &HostEntry) -> pb::Machine {
+    pub(crate) fn machine(&self, entry: &HostEntry) -> pb::Machine {
         let seen = lock(&self.seen).get(&entry.name).cloned().unwrap_or_default();
         let reachability = match entry.state {
             EntryState::Adding | EntryState::Removing => pb::Reachability::Connecting,
             EntryState::Ready => seen.reach,
         };
+        // A machine reached only by a login the person gives shows that it
+        // needs them when its link is down (MP-16).
+        let reachability = crate::login_service::needs_login(self, entry, reachability);
         pb::Machine {
             id: Some(machine_id(&entry.name)),
             name: entry.name.clone(),
@@ -247,6 +303,9 @@ impl Work {
             last_seen_at: seen.last_seen_at.map(timestamp),
             next_retry_at: seen.next_retry_at.map(timestamp),
             root: entry.root.clone(),
+            provider: entry.provider.as_ref().map(|record| pb::ProviderId {
+                value: record.id.clone(),
+            }),
             ..pb::Machine::default()
         }
     }
@@ -258,11 +317,19 @@ fn tell_link(work: &Weak<Work>, machine: &str, event: LinkEvent<'_>) {
         return;
     };
     match &event {
-        LinkEvent::Up { daemon_version } => {
+        LinkEvent::Up { daemon_version, .. } => {
             crate::log::say!("humatad2: the peer link to {machine} is up, running humatad2 {daemon_version}");
         }
         LinkEvent::Down { error, .. } => {
             crate::log::say!("humatad2: {}; {}", status::chain(*error), error.fix());
+        }
+    }
+    // Skills hear of the link first, so the machine's channel is there by
+    // the time the feed shows it online.
+    if let Some(skills) = work.skills.get() {
+        match &event {
+            LinkEvent::Up { channel, .. } => skills.link_up(machine, (*channel).clone()),
+            LinkEvent::Down { .. } => skills.link_down(machine),
         }
     }
     work.link_changed(machine, &event);
@@ -328,7 +395,6 @@ impl MachineSvc {
             guard,
             work,
             operations,
-            plans: Mutex::new(HashMap::new()),
         }
     }
 
@@ -360,14 +426,29 @@ impl MachineSvc {
 }
 
 /// An operation's work, which may run more than once (Retry).
-type Job = Arc<dyn Fn(&Machines, &mut Drive<'_>) -> Result<Option<pb::operation::Result>, ManageError> + Send + Sync>;
+pub(crate) type Job = Arc<dyn Fn(&Machines, &mut Drive<'_>) -> Result<Option<pb::operation::Result>, ManageError> + Send + Sync>;
 
 fn launch(shared: Arc<Work>, progress: Progress, job: Job) {
-    let again = (shared.clone(), job.clone());
-    progress.rerun_with(Arc::new(move |progress| launch(again.0.clone(), progress, again.1.clone())));
+    launch_observed(shared, progress, job, None);
+}
+
+/// What sees each step event of an operation's work, besides the operation.
+pub(crate) type Observer = Arc<dyn Fn(&StepEvent) + Send + Sync>;
+
+/// As `launch`, with `observer` told each step event, on every run.
+pub(crate) fn launch_observed(shared: Arc<Work>, progress: Progress, job: Job, observer: Option<Observer>) {
+    let again = (shared.clone(), job.clone(), observer.clone());
+    progress.rerun_with(Arc::new(move |progress| {
+        launch_observed(again.0.clone(), progress, again.1.clone(), again.2.clone());
+    }));
     let id = progress.operation().id.map(|id| id.value).unwrap_or_default();
     tokio::task::spawn_blocking(move || {
-        let mut events = |event: StepEvent| progress.step(&event);
+        let mut events = |event: StepEvent| {
+            if let Some(observer) = &observer {
+                observer(&event);
+            }
+            progress.step(&event);
+        };
         let cancelled = || progress.cancelled();
         let result = shared.drive(&mut events, &cancelled, |machines, drive| job(machines, drive));
         match result {
@@ -378,22 +459,59 @@ fn launch(shared: Arc<Work>, progress: Progress, job: Job) {
     });
 }
 
-fn machine_id(name: &str) -> pb::MachineId {
+/// Why the providers file couldn't be read.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ProvidersFileError {
+    #[error(
+        "couldn't read the providers file {}: {source}. Check that it is yours and readable, then try again",
+        .path.display()
+    )]
+    Read {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("the providers file on disk isn't valid: {source}")]
+    Invalid {
+        #[source]
+        source: ConfigError,
+    },
+}
+
+/// Where the providers file is: beside `hosts.json` (MP-2).
+pub(crate) fn providers_path(hosts_file: &std::path::Path) -> std::path::PathBuf {
+    hosts_file.with_file_name("providers.toml")
+}
+
+/// The providers file's text (empty when there is none) and the providers
+/// it defines, without the built-in Lima example.
+pub(crate) fn read_providers(hosts_file: &std::path::Path) -> Result<(String, Vec<Provider>), ProvidersFileError> {
+    let path = providers_path(hosts_file);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => return Err(ProvidersFileError::Read { path, source }),
+    };
+    let providers = Provider::parse(&text).map_err(|source| ProvidersFileError::Invalid { source })?;
+    Ok((text, providers))
+}
+
+pub(crate) fn machine_id(name: &str) -> pb::MachineId {
     pb::MachineId { value: name.to_owned() }
 }
 
-fn machine_of(id: Option<pb::MachineId>) -> Result<String, Status> {
+pub(crate) fn machine_of(id: Option<pb::MachineId>) -> Result<String, Status> {
     id.map(|id| id.value)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| status::missing("id"))
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The reachability a failed connect leaves.
-fn reach_after(error: &ManageError) -> pb::Reachability {
+pub(crate) fn reach_after(error: &ManageError) -> pb::Reachability {
     match error {
         ManageError::HostKeyMismatch { .. } => pb::Reachability::HostKeyChanged,
         ManageError::LoginNeeded { .. } => pb::Reachability::NeedsLogin,
@@ -402,7 +520,7 @@ fn reach_after(error: &ManageError) -> pb::Reachability {
 }
 
 /// `error` as the API's Error. `operation` names the operation it failed.
-fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Error {
+pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Error {
     use pb::error::Kind;
     let message = status::chain(error);
     let (fix, kind) = match error {
@@ -467,9 +585,41 @@ fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Error {
                 address: String::new(),
             })),
         ),
+        ManageError::Step {
+            step: OpStep::Identity,
+            source: SetupError::Identity(IdentityError::Field { field, .. }),
+            ..
+        } => (
+            "fix the identity command in Settings › Machine providers so that field is right; what was made is still there (use Delete what was made)",
+            Some(Kind::ProviderIdentityInvalid(pb::ProviderIdentityInvalid {
+                provider: None,
+                field: field.clone(),
+                problem: pb::invalid_field::Problem::BadFormat as i32,
+            })),
+        ),
+        ManageError::Step {
+            step: step @ (OpStep::Create | OpStep::Identity),
+            output_tail,
+            source: SetupError::CommandFailed { exit, .. },
+            ..
+        } => (
+            "the step's output says why the provider's command failed; fix it in Settings › Machine providers, then try again (Delete what was made removes anything it left)",
+            Some(Kind::ProviderStepFailed(pb::ProviderStepFailed {
+                provider: None,
+                step: match step {
+                    OpStep::Create => pb::provider_step_failed::Step::Create,
+                    _ => pb::provider_step_failed::Step::Identity,
+                } as i32,
+                exit_code: match exit {
+                    humata2_machines::Exit::Code(code) => *code,
+                    _ => -1,
+                },
+                output_tail: output_tail.clone(),
+            })),
+        ),
         ManageError::Step { step, .. } => (
-            "the steps above say what failed; what the add had done was undone, so fix that and add the machine again",
-            operation.map(|operation| step_failed(operation, *step, &message, "nothing: what was done was undone")),
+            "the steps above say what failed; humatad2 was removed from the machine again, but anything a provider made is still there. Fix the cause and add the machine again",
+            operation.map(|operation| step_failed(operation, *step, &message, "humatad2 and its files were removed from the machine again")),
         ),
         ManageError::UninstallFailed { .. } => (
             "reconnect when the machine is back to finish removing it",
@@ -485,6 +635,42 @@ fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Error {
             "fix the permissions of the peer-keys folder in the state folder, then try again",
             None,
         ),
+        ManageError::Params { source } => {
+            let field = match source {
+                humata2_machines::ValuesError::Missing { param, .. }
+                | humata2_machines::ValuesError::Undeclared { param, .. }
+                | humata2_machines::ValuesError::Nul { param } => format!("params[{param}]"),
+            };
+            (
+                "give exactly the params the provider declares, each without a NUL byte",
+                Some(Kind::InvalidField(pb::InvalidField {
+                    field,
+                    problem: pb::invalid_field::Problem::BadFormat as i32,
+                })),
+            )
+        }
+        ManageError::RunOnUnsupported { .. } => (
+            "remove `run_on` from the provider in Settings › Machine providers",
+            None,
+        ),
+        ManageError::ProviderLoginNeeded { machine, .. } => (
+            "log in to the machine interactively (Open interactively), or make the provider's connect command log in without a prompt",
+            Some(Kind::LoginNeedsUser(pb::LoginNeedsUser {
+                provider: None,
+                machine: Some(machine_id(machine)),
+            })),
+        ),
+        ManageError::NotProviderMachine { .. } => ("pick a machine the provider made", None),
+        ManageError::ActionUndefined { .. } => ("add the command to the provider in Settings › Machine providers", None),
+        ManageError::ActionFailed { .. } => (
+            "the step's output says why; fix the command or the machine, then run it again",
+            None,
+        ),
+        ManageError::DeleteFailed { .. } => (
+            "delete what the provider made with its own tool; Humata no longer lists the machine",
+            None,
+        ),
+        ManageError::ProviderLinkLost { .. } => ("remove the machine and add it again", None),
         ManageError::Hosts(_) | ManageError::KnownHosts(_) => {
             ("fix the file the message names, then try again", None)
         }
@@ -514,13 +700,19 @@ fn step_failed(operation: &str, step: OpStep, cause: &str, left: &str) -> pb::er
 }
 
 /// `error` as the status a call returns.
-fn status_of(error: &ManageError) -> Status {
+pub(crate) fn status_of(error: &ManageError) -> Status {
     let code = match error {
-        ManageError::InvalidSshHost { .. } | ManageError::BadName { .. } => Code::InvalidArgument,
+        ManageError::InvalidSshHost { .. }
+        | ManageError::BadName { .. }
+        | ManageError::Params { .. }
+        | ManageError::RunOnUnsupported { .. }
+        | ManageError::ActionUndefined { .. }
+        | ManageError::NotProviderMachine { .. } => Code::InvalidArgument,
         ManageError::NameTaken { .. } => Code::AlreadyExists,
         ManageError::NotFound { .. } => Code::NotFound,
         ManageError::Busy { .. } => Code::Aborted,
         ManageError::NotReady { .. }
+        | ManageError::ProviderLoginNeeded { .. }
         | ManageError::HostKeyUnconfirmed { .. }
         | ManageError::HostKeyMismatch { .. }
         | ManageError::LoginNeeded { .. } => Code::FailedPrecondition,
@@ -572,6 +764,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let entry = self.work.machines.get(&name).map_err(|error| status_of(&error))?;
         Ok(Response::new(pb::MachineDetail {
             machine: Some(self.work.machine(&entry)),
+            actions: self.work.defined_actions(&entry),
             ..pb::MachineDetail::default()
         }))
     }
@@ -671,7 +864,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         self.require(&caller, &name, MachineActionKind::Remove)?;
         self.work.machines.get(&name).map_err(|error| status_of(&error))?;
         let token = format!("pl_{}", uuid::Uuid::new_v4().simple());
-        let mut plans = lock(&self.plans);
+        let mut plans = lock(&self.work.plans);
         plans.retain(|_, (_, made)| made.elapsed() < PLAN_LIFETIME);
         plans.insert(token.clone(), (name.clone(), Instant::now()));
         Ok(Response::new(pb::RemoveMachinePlan {
@@ -710,19 +903,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             .map(|plan| plan.value)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| status::missing("plan"))?;
-        let planned = lock(&self.plans)
-            .remove(&token)
-            .filter(|(machine, made)| *machine == name && made.elapsed() < PLAN_LIFETIME);
-        if planned.is_none() {
-            return Err(status::failure(
-                Code::FailedPrecondition,
-                status::error(
-                    format!("the removal plan for {name} is unknown, used or older than ten minutes"),
-                    "ask for a new plan (PlanRemoveMachine), check what it says, then remove with its token",
-                    pb::error::Kind::PlanStale(pb::PlanStale { changes: Vec::new() }),
-                ),
-            ));
-        }
+        self.work.use_plan(&token, &name)?;
         let target = pb::EntityRef {
             entity: Some(pb::entity_ref::Entity::Machine(machine_id(&name))),
         };

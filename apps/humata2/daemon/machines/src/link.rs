@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::QuoteError;
+use crate::hosts::StoredLink;
 use crate::identity::{SshAccess, SshTarget};
 use crate::known_hosts;
 use crate::name::MachineName;
@@ -80,6 +81,99 @@ impl Link {
 
     pub fn machine(&self) -> &MachineName {
         &self.machine
+    }
+
+    /// What `hosts.json` keeps so this link can be made again after a
+    /// restart (MP-1).
+    pub(crate) fn stored(&self) -> StoredLink {
+        match &self.how {
+            How::Connect { template, env } => StoredLink::Connect {
+                template: template.clone(),
+                env: env
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.clone(),
+                            match value {
+                                EnvValue::Value(value) => Some(value.clone()),
+                                EnvValue::HostVariable(_) => None,
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+            How::Ssh { target, .. } => {
+                let (ssh_config, port, user, identity_file) = match &target.access {
+                    SshAccess::Config { ssh_config } => (Some(ssh_config.clone()), None, None, None),
+                    SshAccess::Direct {
+                        port,
+                        user,
+                        identity_file,
+                    } => (None, Some(*port), Some(user.clone()), identity_file.clone()),
+                };
+                StoredLink::Ssh {
+                    host: target.host.clone(),
+                    ssh_config,
+                    port,
+                    user,
+                    identity_file,
+                }
+            }
+        }
+    }
+
+    /// The link `stored` describes, for `machine`. Its SSH host key is
+    /// the one pinned in `known_hosts`.
+    pub(crate) fn from_stored(machine: MachineName, stored: &StoredLink, known_hosts: &Path) -> Self {
+        match stored {
+            StoredLink::Connect { template, env } => Self::connect(
+                machine,
+                template.clone(),
+                env.iter()
+                    .map(|(name, value)| {
+                        (
+                            name.clone(),
+                            match value {
+                                Some(value) => EnvValue::Value(value.clone()),
+                                None => EnvValue::HostVariable(name.clone()),
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+            StoredLink::Ssh {
+                host,
+                ssh_config,
+                port,
+                user,
+                identity_file,
+            } => {
+                let access = match (ssh_config, port, user) {
+                    (Some(ssh_config), _, _) => SshAccess::Config {
+                        ssh_config: ssh_config.clone(),
+                    },
+                    (None, port, Some(user)) => SshAccess::Direct {
+                        port: port.unwrap_or(22),
+                        user: user.clone(),
+                        identity_file: identity_file.clone(),
+                    },
+                    // Hand-edited into nothing usable: no config and no
+                    // user. ssh then uses its defaults for the host.
+                    (None, _, None) => SshAccess::Config {
+                        ssh_config: "/dev/null".to_owned(),
+                    },
+                };
+                Self::ssh(
+                    machine,
+                    SshTarget {
+                        host: host.clone(),
+                        access,
+                        host_key: None,
+                    },
+                    known_hosts,
+                )
+            }
+        }
     }
 
     /// Whether this is a provider's `connect` command, which the user can

@@ -36,8 +36,6 @@ pub struct Preferences {
     pub default_agent: Agent,
     /// Show pinned rows at the top of the sidebar.
     pub show_pinned: bool,
-    /// Present the session as one or two tab groups.
-    pub split_groups: bool,
     /// Ask before Approve all when something can't be undone.
     pub confirm_destructive: bool,
 }
@@ -51,7 +49,6 @@ impl Default for Preferences {
             default_agent: Agent::Claude,
             confirm_destructive: true,
             show_pinned: true,
-            split_groups: true,
         }
     }
 }
@@ -97,8 +94,6 @@ pub enum SettingsAction {
     Section(Section),
     /// Show or hide pinned rows.
     TogglePinned,
-    /// One group or the bounded two-group presentation.
-    SplitGroups(bool),
     /// Saved preferences came back at launch.
     Restore(Preferences),
     /// Pick colors.
@@ -153,7 +148,6 @@ impl Reducer for Settings {
             }
             SettingsAction::Section(section) => state.section = section,
             SettingsAction::TogglePinned => preferences.show_pinned = !preferences.show_pinned,
-            SettingsAction::SplitGroups(split) => preferences.split_groups = split,
             SettingsAction::SetTheme(theme) => preferences.theme = theme,
             SettingsAction::FontSize(delta) => {
                 let size = preferences.font_size.saturating_add_signed(delta);

@@ -239,6 +239,15 @@ impl Operations {
             .cloned()
             .ok_or_else(|| no_operation(id))
     }
+
+    /// The handle to an operation `caller` may see, for work that finishes
+    /// it from elsewhere (the interactive login ends a create that stopped
+    /// needing one).
+    pub(crate) fn progress_of(&self, caller: &Caller, id: &str) -> Result<Progress, Status> {
+        Ok(Progress {
+            tracked: self.find(caller, id)?,
+        })
+    }
 }
 
 /// The handle the work updates its operation through.

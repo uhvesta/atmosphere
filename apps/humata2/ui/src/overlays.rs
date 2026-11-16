@@ -18,6 +18,8 @@ use crate::bridge::{Part, Ui};
 use crate::theme;
 use crate::widgets::{self, col};
 
+#[path = "overlay_desk.rs"]
+mod desk;
 #[path = "overlay_fork.rs"]
 mod fork;
 #[path = "overlay_new_channel.rs"]
@@ -34,6 +36,7 @@ mod toasts;
 /// Which overlay shows, to tell when another opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
+    Desk,
     Fork,
     Palette,
     NewSession,
@@ -61,6 +64,7 @@ pub struct Overlays {
     name: Entity<InputState>,
     repos: Entity<InputState>,
     sheet: FocusHandle,
+    desk: desk::Inputs,
     shown: Option<Kind>,
     restore: Option<FocusHandle>,
     restore_target: Option<crate::terminals::FocusTarget>,
@@ -138,6 +142,7 @@ impl Overlays {
                 }
             },
         ));
+        let desk = desk::Inputs::new(window, cx, &mut subscriptions);
         Self {
             ui,
             query,
@@ -148,6 +153,7 @@ impl Overlays {
             name,
             repos,
             sheet: cx.focus_handle(),
+            desk,
             shown: None,
             restore: None,
             restore_target: None,
@@ -174,6 +180,7 @@ impl Overlays {
                 .update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::NewChannel) => self.name.update(cx, |input, cx| input.focus(window, cx)),
             Some(Kind::Shortcuts) => window.focus(&self.sheet, cx),
+            Some(Kind::Desk) => self.desk_focus(window, cx),
             None => {
                 let same_target = self.restore_target.take().as_ref()
                     == Some(&self.ui.read(crate::terminals::focus_target));
@@ -244,7 +251,8 @@ impl Render for Overlays {
         let shown = top
             .as_ref()
             .map(kind)
-            .or_else(|| fork.as_ref().map(|_| Kind::Fork));
+            .or_else(|| fork.as_ref().map(|_| Kind::Fork))
+            .or_else(|| self.desk_open().then_some(Kind::Desk));
         self.follow_focus(shown, window, cx);
         let ui = self.ui.clone();
         let content = top.map(|top| match top {
@@ -260,6 +268,10 @@ impl Render for Overlays {
         let content = content.or_else(|| {
             fork.map(|fork| self.fork(fork, forking, fork_error, parent, look, &ui, window, cx))
         });
+        let content = match content {
+            Some(content) => Some(content),
+            None => self.desk(look, &ui, window, cx),
+        };
         let layer = div().absolute().top_0().left_0().size_full();
         let layer = match content {
             Some(content) => {
@@ -290,7 +302,7 @@ impl Render for Overlays {
                             .justify_center()
                             .pt(px(match shown {
                                 Some(Kind::Palette) => 110.,
-                                Some(Kind::NewSession) => 70.,
+                                Some(Kind::NewSession | Kind::Desk) => 70.,
                                 _ => 96.,
                             }))
                             .child(

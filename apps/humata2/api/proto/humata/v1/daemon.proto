@@ -3,6 +3,7 @@ syntax = "proto3";
 
 package humata.v1;
 
+import "google/protobuf/timestamp.proto";
 import "humata/v1/common.proto";
 
 service DaemonService {
@@ -65,6 +66,11 @@ message LastStart {
   int64 restored_copy_taken_unix_ms = 3;
   // Rows lost or rolled back by that restore, over all tables.
   uint32 restored_rows_changed = 4;
+  // When this daemon started (frame 47: "devbox-1 restarted at 09:12").
+  google.protobuf.Timestamp started_at = 5;
+  // The sessions whose agents were started again on their conversations
+  // ("3 sessions started again"); each id once.
+  repeated SessionId resumed = 6;
 }
 
 message NotBroughtBack {

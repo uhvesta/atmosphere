@@ -36,8 +36,20 @@ service CommentService {
   // terminal-bound drafts; PR drafts post with SubmitReview.
   rpc SendComments(SendCommentsRequest) returns (SendCommentsResponse);
   rpc ResolveComment(ResolveCommentRequest) returns (Comment);
+  // SM-18 Resolve N addressed: every addressed comment of one file, or of the
+  // session, resolved as the user. User only.
+  rpc ResolveAddressedComments(ResolveAddressedCommentsRequest) returns (ResolveAddressedCommentsResponse);
   // SM-11: back to draft.
   rpc ReopenComment(ReopenCommentRequest) returns (Comment);
+  // SE-23 Remove: comments Humata is holding (QUEUED) go back to drafts.
+  // For a batch whose delivery is unconfirmed, the whole batch goes back.
+  rpc TakeBackComments(TakeBackCommentsRequest) returns (TakeBackCommentsResponse);
+  // DK-9: the session's agent answers in a comment's thread.
+  rpc ReplyToComment(ReplyToCommentRequest) returns (Comment);
+  // SM-20, SM-21: user only. Archive hides a comment everywhere without
+  // marking it dealt with; its status is kept for Unarchive.
+  rpc ArchiveComment(ArchiveCommentRequest) returns (Comment);
+  rpc UnarchiveComment(UnarchiveCommentRequest) returns (Comment);
 }
 
 service PullRequestReviewService {
@@ -381,6 +393,9 @@ message CommentAnchor {
   bool detached = 6;
   // PR-16: the line changed since the draft.
   bool outdated = 7;
+  // RV-27: for a comment made in a diff, what it was compared against, as
+  // the user saw it named ("origin/main", "review 3"). Empty outside a diff.
+  string base = 8;
 }
 
 message CommentDestination {
@@ -414,6 +429,31 @@ message Comment {
   // PR-24: a note the review chat left; its change's id for Undo. In
   // the answer to CreateComment or EditComment, that call's change.
   string undo_id = 12;
+  // DK-9, SM-19: the thread under the comment, oldest first.
+  repeated CommentReply replies = 13;
+  // SM-19: who resolved it and when; set only while RESOLVED.
+  Timestamped resolved = 14;
+  // SM-20: set while archived. The status stays what it was; an archived
+  // comment is never sent and is left out of every count.
+  google.protobuf.Timestamp archived_at = 15;
+  // SM-18: for ADDRESSED, the anchored lines after the agent's change, one
+  // per line; anchor.quoted keeps them as they were.
+  string addressed_text = 16;
+  // SM-10: QUEUED, and Humata can't tell whether an earlier try reached the
+  // terminal (it restarted mid-send). The user sends it again or takes it
+  // back; Humata never types it again on its own.
+  bool delivery_unconfirmed = 17;
+  // When the terminal took it; unset until SENT.
+  google.protobuf.Timestamp sent_at = 18;
+}
+
+// One answer in a comment's thread (DK-9, SM-19).
+message CommentReply {
+  // Unique within the comment.
+  string id = 1;
+  Actor author = 2;
+  string text = 3;
+  google.protobuf.Timestamp at = 4;
 }
 
 message ListCommentsRequest {
@@ -422,6 +462,9 @@ message ListCommentsRequest {
   repeated CommentStatus statuses = 2;
   RepoPath file = 3;
   PageRequest page = 4;
+  // SM-21: only archived comments, of any status. Unset: archived ones are
+  // left out.
+  bool archived = 5;
 }
 
 message ListCommentsResponse {
@@ -480,12 +523,54 @@ message ResolveCommentRequest {
   IdempotencyKey idempotency_key = 1;
   CommentId id = 2;
   Revision expected_revision = 3;
+  // SM-19: what was done. Required from an agent; shown in the thread.
+  string reply = 4;
+}
+
+message ResolveAddressedCommentsRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // Unset: the whole session.
+  RepoPath file = 3;
+}
+
+message ResolveAddressedCommentsResponse {
+  // The comments this call resolved, as they are now. A repeat of the call
+  // resolves nothing more and answers with none.
+  repeated Comment comments = 1;
 }
 
 message ReopenCommentRequest {
   IdempotencyKey idempotency_key = 1;
   CommentId id = 2;
   Revision expected_revision = 3;
+}
+
+message TakeBackCommentsRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  repeated CommentId ids = 3;
+}
+
+message TakeBackCommentsResponse {
+  // Every comment that went back to a draft.
+  repeated Comment comments = 1;
+}
+
+message ReplyToCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
+  string text = 3;
+}
+
+message ArchiveCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
+}
+
+message UnarchiveCommentRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
 }
 
 // ---------------------------------------------------------------------------

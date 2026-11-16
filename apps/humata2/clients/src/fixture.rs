@@ -9,6 +9,7 @@
 //! [`large`] adds thousands of sessions, for the virtualized sidebar.
 
 mod channels;
+mod desk;
 mod design_session;
 mod diffs;
 mod files;
@@ -38,7 +39,9 @@ use requests::requests;
 use rules::rules;
 use sessions::{session, sessions};
 
+pub use desk::{clean_up, desk, empty};
 pub use design_session::design_session;
+pub(crate) use desk::session as desk_session;
 pub(crate) use terminal::{extra_terminal, terminal_line, terminal_screen};
 
 /// The standard workspace: a few of everything.
@@ -247,6 +250,22 @@ pub fn design() -> Workspace {
         .map(|channel| channel.id.clone())
         .collect();
     workspace.rules = rules(&channels);
+    workspace
+}
+
+/// A fresh install with its first channel just made (frame 35): [`empty`]
+/// plus `web-revamp` on This Mac, with no repos, no sessions and no board
+/// items.
+#[must_use]
+pub fn fresh_channel() -> Workspace {
+    let mut workspace = empty();
+    workspace.channels.push(Channel {
+        id: ChannelId::new("web-revamp"),
+        name: "web-revamp".to_owned(),
+        repos: Vec::new(),
+        machines: vec![MachineId::new("this-mac")],
+        purpose: String::new(),
+    });
     workspace
 }
 

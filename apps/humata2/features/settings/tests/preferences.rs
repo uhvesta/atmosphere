@@ -13,9 +13,6 @@ fn preferences_change_without_losing_other_choices() {
     store.send(A::FontSize(100), |s| s.preferences.font_size = 20);
     store.send(A::FontSize(-100), |s| s.preferences.font_size = 10);
     store.send(A::TogglePinned, |s| s.preferences.show_pinned = false);
-    store.send(A::SplitGroups(false), |s| {
-        s.preferences.split_groups = false
-    });
     store.send(A::Section(Section::Agents), |s| s.section = Section::Agents);
     store.send(A::ToggleWrap, |s| s.preferences.wrap_diffs = true);
     store.finish();

@@ -367,6 +367,110 @@ impl GrpcDaemon {
         Ok(applied(json!({ "views": views }), None))
     }
 
+    /// `comments_list`: the comments the user sent to the caller's session.
+    async fn comments_list(&self, call: Call) -> Result<Reply, ToolError> {
+        let asked: Vec<&str> = call
+            .arguments
+            .get("status")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let statuses: Vec<i32> = if asked.is_empty() {
+            vec![
+                pb::CommentStatus::Sent as i32,
+                pb::CommentStatus::Queued as i32,
+                pb::CommentStatus::Addressed as i32,
+            ]
+        } else {
+            asked
+                .iter()
+                .filter_map(|name| match *name {
+                    "sent" => Some(pb::CommentStatus::Sent as i32),
+                    "queued" => Some(pb::CommentStatus::Queued as i32),
+                    "addressed" => Some(pb::CommentStatus::Addressed as i32),
+                    _ => None,
+                })
+                .collect()
+        };
+        let session = self.own_session().await?;
+        let mut listed: Vec<pb::Comment> = Vec::new();
+        let mut page_token = String::new();
+        for _ in 0..COMMENT_PAGES_MAX {
+            let request = self.request(pb::ListCommentsRequest {
+                session: Some(session.clone()),
+                statuses: statuses.clone(),
+                file: None,
+                page: Some(pb::PageRequest { page_size: 0, page_token }),
+                archived: false,
+            })?;
+            let answer = self
+                .comments()
+                .list_comments(request)
+                .await
+                .map_err(|status| self.failed(&status))?
+                .into_inner();
+            listed.extend(answer.comments);
+            page_token = answer.page.map(|page| page.next_page_token).unwrap_or_default();
+            if page_token.is_empty() {
+                break;
+            }
+        }
+        let only = call.arguments.get("path").and_then(Value::as_str);
+        let comments: Vec<Value> = listed
+            .iter()
+            .filter(|comment| {
+                only.is_none_or(|path| {
+                    comment
+                        .anchor
+                        .as_ref()
+                        .and_then(|anchor| anchor.file.as_ref())
+                        .is_some_and(|file| file.path == path)
+                })
+            })
+            .map(review::comment_json)
+            .collect();
+        Ok(applied(json!({ "comments": comments }), None))
+    }
+
+    /// `comment_reply`: a reply in the thread of a comment sent to the
+    /// caller's session.
+    async fn comment_reply(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::ReplyToCommentRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(pb::CommentId {
+                value: text(&call.arguments, "comment_id"),
+            }),
+            text: text(&call.arguments, "text"),
+        })?;
+        let comment = self
+            .comments()
+            .reply_to_comment(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(review::comment_answer(&comment), None))
+    }
+
+    /// `comment_resolve`: resolve a comment sent to the caller's session,
+    /// with a note on what was done.
+    async fn comment_resolve(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::ResolveCommentRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(pb::CommentId {
+                value: text(&call.arguments, "comment_id"),
+            }),
+            expected_revision: None,
+            reply: text(&call.arguments, "reply"),
+        })?;
+        let comment = self
+            .comments()
+            .resolve_comment(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(review::comment_answer(&comment), None))
+    }
+
     /// A view's `content`: a board names the caller's own session or
     /// channel unless it names another session.
     async fn view_content(
@@ -865,6 +969,9 @@ impl Daemon for GrpcDaemon {
             Operation::ViewRevise => self.view_revise(call).await,
             Operation::ViewMarkReady => self.view_mark_ready(call).await,
             Operation::ViewsList => self.views_list(call).await,
+            Operation::CommentsList => self.comments_list(call).await,
+            Operation::CommentReply => self.comment_reply(call).await,
+            Operation::CommentResolve => self.comment_resolve(call).await,
             Operation::ChannelsList => self.channels_list().await,
             Operation::SessionInfo => self.session_info().await,
             Operation::SessionStop => self.session_stop(call).await,
@@ -1283,6 +1390,10 @@ fn pending_or(reply: Result<Reply, ToolError>) -> Result<Reply, ToolError> {
         reply => reply,
     }
 }
+
+/// `comments_list` stops after this many pages, so a token that never
+/// ends can't keep it asking.
+const COMMENT_PAGES_MAX: usize = 100;
 
 /// The detail `from_status` sets on an approval-pending error. Never
 /// reaches an agent: `pending_or` turns it into a reply.
@@ -1732,6 +1843,73 @@ mod review {
             Value::Null,
             |lines| json!({ "first": lines.first, "last": lines.last }),
         )
+    }
+
+    fn comment_status_name(status: i32) -> &'static str {
+        match pb::CommentStatus::try_from(status) {
+            Ok(pb::CommentStatus::Queued) => "queued",
+            Ok(pb::CommentStatus::Addressed) => "addressed",
+            Ok(pb::CommentStatus::Resolved) => "resolved",
+            _ => "sent",
+        }
+    }
+
+    /// What a reply or resolve tool answers with.
+    pub(super) fn comment_answer(comment: &pb::Comment) -> Value {
+        json!({
+            "comment_id": comment.id.as_ref().map(|id| id.value.clone()),
+            "status": comment_status_name(comment.status),
+            "replies": comment.replies.len(),
+        })
+    }
+
+    /// One comment as `comments_list` shows it.
+    pub(super) fn comment_json(comment: &pb::Comment) -> Value {
+        let mut out = Map::new();
+        out.insert(
+            "id".to_owned(),
+            json!(comment.id.as_ref().map(|id| id.value.clone())),
+        );
+        if let Some(anchor) = &comment.anchor {
+            if let Some(file) = &anchor.file {
+                let path = path_json(Some(file));
+                out.insert("repo".to_owned(), path["repo"].clone());
+                out.insert("path".to_owned(), path["path"].clone());
+            }
+            if let Some(lines) = &anchor.lines {
+                out.insert("lines".to_owned(), lines_json(Some(lines)));
+            }
+            if anchor.side != pb::DiffSide::Unspecified as i32 {
+                out.insert("side".to_owned(), json!(side_json(anchor.side)));
+            }
+            out.insert("quoted".to_owned(), json!(anchor.quoted));
+        }
+        out.insert("text".to_owned(), json!(comment.text));
+        out.insert(
+            "status".to_owned(),
+            json!(comment_status_name(comment.status)),
+        );
+        if comment.status == pb::CommentStatus::Addressed as i32
+            && !comment.addressed_text.is_empty()
+        {
+            out.insert("addressed_text".to_owned(), json!(comment.addressed_text));
+        }
+        let replies: Vec<Value> = comment
+            .replies
+            .iter()
+            .map(|reply| {
+                let by = match reply.author.as_ref().and_then(|actor| actor.actor.as_ref()) {
+                    Some(pb::actor::Actor::Agent(agent)) => agent
+                        .agent
+                        .as_ref()
+                        .map_or_else(|| "agent".to_owned(), |id| id.value.clone()),
+                    _ => "user".to_owned(),
+                };
+                json!({ "by": by, "text": reply.text })
+            })
+            .collect();
+        out.insert("replies".to_owned(), Value::Array(replies));
+        Value::Object(out)
     }
 
     fn side_json(side: i32) -> &'static str {

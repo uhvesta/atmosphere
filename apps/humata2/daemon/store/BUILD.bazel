@@ -35,6 +35,7 @@ rust_library(
     visibility = [
         "//apps/humata2/daemon/revive:__pkg__",
         "//apps/humata2/daemon/sessions:__pkg__",
+        "//apps/humata2/daemon/transfers:__pkg__",
     ],
     deps = STORE_DEPS + ["//apps/humata2/daemon/durable:durable_faults"],
 )

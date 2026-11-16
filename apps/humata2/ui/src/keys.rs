@@ -31,6 +31,8 @@ gpui_kit::actions!(
         GoInbox,
         /// ⌘3: the board.
         GoBoard,
+        /// ⌘,: Settings.
+        OpenSettings,
         /// ⌘L: the sidebar takes focus.
         FocusSidebar,
         /// ↑ in the sidebar.
@@ -61,7 +63,7 @@ pub const SIDEBAR: &str = "Sidebar";
 
 /// Every shortcut as people see it, for the Shortcuts sheet: keys, then
 /// what they do.
-pub const SHORTCUTS: [(&str, &str); 22] = [
+pub const SHORTCUTS: [(&str, &str); 18] = [
     ("⌘K", "Command palette"),
     ("⌘N", "New session"),
     ("⇧⌘N", "New channel"),
@@ -72,12 +74,8 @@ pub const SHORTCUTS: [(&str, &str); 22] = [
     ("⌥⌘←", "Collapse all, in the sidebar"),
     ("⌘0", "Hide or show the sidebar"),
     ("⌥⌘0", "Hide or show the side panel"),
-    ("⌘\\", "Split the focused pane side by side"),
-    ("⇧⌘\\", "Split the focused pane stacked"),
-    ("⌘W", "Close the focused pane"),
-    ("⌥⌘ ← → ↑ ↓", "Focus the next pane that way"),
-    ("⌘Z", "Undo a layout change, outside text fields"),
     ("⌘1 ⌘2 ⌘3", "Home, Inbox, Board"),
+    ("⌘,", "Settings"),
     ("⌘L", "Move focus to the sidebar"),
     ("↑ ↓ Home End", "Move in the sidebar"),
     ("← →", "Fold, unfold, parent, child"),
@@ -102,6 +100,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("cmd-1", GoHome, None),
         KeyBinding::new("cmd-2", GoInbox, None),
         KeyBinding::new("cmd-3", GoBoard, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-l", FocusSidebar, None),
         KeyBinding::new("alt-cmd-0", TogglePanel, None),
         KeyBinding::new("shift-cmd-r", ToggleRecording, None),

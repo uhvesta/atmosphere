@@ -152,13 +152,18 @@ pub(crate) struct Up {
     from_machine: tonic::Streaming<pb::MachineToHost>,
     /// Held so the host's side of the Uplink stays open.
     _to_machine: mpsc::Sender<pb::HostToMachine>,
-    _channel: Channel,
+    channel: Channel,
 }
 
 impl Up {
     /// The machine's humatad2 version, as its Hello said.
     pub(crate) fn daemon_version(&self) -> &str {
         &self.daemon_version
+    }
+
+    /// The link's connection, for more calls to the machine while it is up.
+    pub(crate) fn channel(&self) -> &Channel {
+        &self.channel
     }
 
     /// Resolves when the link ends, with why. What the machine sends on
@@ -261,7 +266,7 @@ pub(crate) async fn open(pipe: Pipe, key: &EnrollmentKey, machine: &str) -> Resu
         daemon_version: hello.daemon_version,
         from_machine,
         _to_machine: to_machine,
-        _channel: channel,
+        channel,
     })
 }
 
@@ -302,6 +307,8 @@ fn refused_or(source: Status, machine: &str, otherwise: impl FnOnce(Status) -> L
 pub(crate) enum LinkEvent<'a> {
     Up {
         daemon_version: &'a str,
+        /// The link's connection, good until the matching `Down`.
+        channel: &'a Channel,
     },
     /// `retry_in` is when the next dial is; none when the supervisor gives
     /// up, since another dial can't help.
@@ -324,6 +331,7 @@ pub(crate) async fn supervise(dial: Box<dyn Dial>, key_file: PathBuf, machine: S
             Ok(up) => {
                 report(LinkEvent::Up {
                     daemon_version: up.daemon_version(),
+                    channel: up.channel(),
                 });
                 wait = RETRY_FIRST;
                 up.closed().await

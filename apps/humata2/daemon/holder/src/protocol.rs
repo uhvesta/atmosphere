@@ -1,6 +1,13 @@
 //! The holder's wire format: frames of a big-endian `u32` length, a tag
 //! byte and the body. Only humatad2 and the holder of the same build speak
 //! it, so the version in `Hello` must match exactly.
+//!
+//! Keyed input (`KEYED_INPUT`, `KEY_QUERY` and their replies) was added
+//! without a new version: a holder started by an older build keeps
+//! running across upgrades, and an older holder answers a frame it
+//! doesn't know by closing the connection, which is how a client finds
+//! out it can't do keyed input. Older clients never send these frames,
+//! and a newer holder only sends them in reply, so nothing else changes.
 
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -9,11 +16,18 @@ pub(crate) const VERSION: u32 = 1;
 /// No frame is bigger: output and input are sent in `CHUNK`s.
 const MAX_FRAME: usize = 1 << 20;
 pub(crate) const CHUNK: usize = 64 << 10;
+/// The most one keyed input may hold: the holder buffers all of it before
+/// typing it, so it is bounded.
+pub(crate) const MAX_KEYED: usize = 4 << 20;
+/// The longest key, in bytes.
+pub(crate) const MAX_KEY: usize = 256;
 
 const HELLO: u8 = 1;
 const INPUT: u8 = 2;
 const RESIZE: u8 = 3;
 const SHUTDOWN: u8 = 4;
+const KEYED_INPUT: u8 = 5;
+const KEY_QUERY: u8 = 6;
 
 const WELCOME: u8 = 101;
 const OUTPUT: u8 = 102;
@@ -21,6 +35,8 @@ const TRIMMED: u8 = 103;
 const EXITED: u8 = 104;
 const INPUT_WRITTEN: u8 = 105;
 const REFUSED: u8 = 106;
+const KEYED_WRITTEN: u8 = 107;
+const KEY_ANSWER: u8 = 108;
 
 /// Where the terminal stands when a client attaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +56,11 @@ pub(crate) enum ClientFrame {
     Input { seq: u64, last: bool, data: Vec<u8> },
     Resize { cols: u16, rows: u16 },
     Shutdown,
+    /// A chunk of input to type once, all together, after its `last`
+    /// chunk. Typed once per `key`, however often it's sent.
+    KeyedInput { key: String, last: bool, data: Vec<u8> },
+    /// Asks whether a keyed input with `key` was typed.
+    KeyQuery { key: String },
 }
 
 pub(crate) enum ServerFrame {
@@ -49,6 +70,13 @@ pub(crate) enum ServerFrame {
     Exited { code: i32 },
     InputWritten { seq: u64 },
     Refused { message: String },
+    /// A keyed input was typed now, or (`repeat`) had been before.
+    KeyedWritten { repeat: bool },
+    /// Whether the keyed input asked about was typed, and which holder
+    /// process answers: `instance` differs between runs of a holder, even
+    /// for the same tab, so a client can tell a "no" from the holder that
+    /// was there from a "no" from a fresh one with an empty memory.
+    KeyAnswer { arrived: bool, instance: u64 },
 }
 
 #[derive(Debug)]
@@ -87,6 +115,12 @@ impl Frame {
     fn i32(mut self, value: i32) -> Self {
         self.0.extend_from_slice(&value.to_be_bytes());
         self
+    }
+
+    fn key(self, key: &str) -> Self {
+        // Callers keep keys within MAX_KEY.
+        let len = u16::try_from(key.len()).unwrap_or(u16::MAX);
+        self.u16(len).rest(key.as_bytes())
     }
 
     fn rest(mut self, bytes: &[u8]) -> Self {
@@ -133,6 +167,15 @@ impl<'a> Body<'a> {
         Ok(i32::from_be_bytes(self.take()?))
     }
 
+    fn key(&mut self) -> Result<String, FrameError> {
+        let len = usize::from(self.u16()?);
+        let Some((head, tail)) = self.0.split_at_checked(len) else {
+            return Err(FrameError::Malformed("a frame ended early"));
+        };
+        self.0 = tail;
+        String::from_utf8(head.to_vec()).map_err(|_| FrameError::Malformed("a key was not text"))
+    }
+
     fn rest(self) -> &'a [u8] {
         self.0
     }
@@ -162,6 +205,11 @@ impl ClientFrame {
             }
             Self::Resize { cols, rows } => Frame::new(RESIZE).u16(*cols).u16(*rows),
             Self::Shutdown => Frame::new(SHUTDOWN),
+            Self::KeyedInput { key, last, data } => Frame::new(KEYED_INPUT)
+                .key(key)
+                .u8(u8::from(*last))
+                .rest(data),
+            Self::KeyQuery { key } => Frame::new(KEY_QUERY).key(key),
         }
         .finish()
     }
@@ -185,6 +233,14 @@ impl ClientFrame {
                 rows: body.u16()?,
             },
             SHUTDOWN => Self::Shutdown,
+            KEYED_INPUT => {
+                return Ok(Self::KeyedInput {
+                    key: body.key()?,
+                    last: body.u8()? != 0,
+                    data: body.rest().to_vec(),
+                });
+            }
+            KEY_QUERY => Self::KeyQuery { key: body.key()? },
             _ => return Err(FrameError::Malformed("a client sent a frame of no known kind")),
         };
         body.end()?;
@@ -212,6 +268,10 @@ impl ServerFrame {
             Self::Exited { code } => Frame::new(EXITED).i32(*code),
             Self::InputWritten { seq } => Frame::new(INPUT_WRITTEN).u64(*seq),
             Self::Refused { message } => Frame::new(REFUSED).rest(message.as_bytes()),
+            Self::KeyedWritten { repeat } => Frame::new(KEYED_WRITTEN).u8(u8::from(*repeat)),
+            Self::KeyAnswer { arrived, instance } => {
+                Frame::new(KEY_ANSWER).u8(u8::from(*arrived)).u64(*instance)
+            }
         }
         .finish()
     }
@@ -245,6 +305,13 @@ impl ServerFrame {
             },
             EXITED => Self::Exited { code: body.i32()? },
             INPUT_WRITTEN => Self::InputWritten { seq: body.u64()? },
+            KEYED_WRITTEN => Self::KeyedWritten {
+                repeat: body.u8()? != 0,
+            },
+            KEY_ANSWER => Self::KeyAnswer {
+                arrived: body.u8()? != 0,
+                instance: body.u64()?,
+            },
             REFUSED => {
                 return Ok(Self::Refused {
                     message: String::from_utf8_lossy(body.rest()).into_owned(),
@@ -277,4 +344,75 @@ pub(crate) async fn read_frame(
         .await
         .map_err(FrameError::Io)?;
     Ok(Some(frame))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClientFrame, FrameError, ServerFrame};
+
+    fn body(encoded: &[u8]) -> &[u8] {
+        &encoded[4..]
+    }
+
+    #[test]
+    fn a_keyed_input_survives_the_wire() {
+        let sent = ClientFrame::KeyedInput {
+            key: "s1/d-4".to_owned(),
+            last: true,
+            data: b"hello\n".to_vec(),
+        };
+        let Ok(ClientFrame::KeyedInput { key, last, data }) =
+            ClientFrame::decode(body(&sent.encode()))
+        else {
+            panic!("decoded as something else");
+        };
+        assert_eq!((key.as_str(), last, data.as_slice()), ("s1/d-4", true, &b"hello\n"[..]));
+    }
+
+    #[test]
+    fn a_key_query_and_its_answers_survive_the_wire() {
+        let query = ClientFrame::KeyQuery { key: "k".to_owned() };
+        assert!(matches!(
+            ClientFrame::decode(body(&query.encode())),
+            Ok(ClientFrame::KeyQuery { key }) if key == "k"
+        ));
+        let answer = ServerFrame::KeyAnswer {
+            arrived: true,
+            instance: 77,
+        };
+        assert!(matches!(
+            ServerFrame::decode(body(&answer.encode())),
+            Ok(ServerFrame::KeyAnswer {
+                arrived: true,
+                instance: 77
+            })
+        ));
+        let written = ServerFrame::KeyedWritten { repeat: true };
+        assert!(matches!(
+            ServerFrame::decode(body(&written.encode())),
+            Ok(ServerFrame::KeyedWritten { repeat: true })
+        ));
+    }
+
+    #[test]
+    fn a_key_longer_than_its_frame_is_malformed() {
+        // Tag 6 (key query), a key length of 9, then 2 bytes.
+        let frame = [6, 0, 9, b'a', b'b'];
+        assert!(matches!(
+            ClientFrame::decode(&frame),
+            Err(FrameError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn a_frame_of_an_unknown_kind_is_rejected() {
+        assert!(matches!(
+            ClientFrame::decode(&[200]),
+            Err(FrameError::Malformed(_))
+        ));
+        assert!(matches!(
+            ServerFrame::decode(&[200]),
+            Err(FrameError::Malformed(_))
+        ));
+    }
 }

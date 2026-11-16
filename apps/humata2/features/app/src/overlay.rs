@@ -33,6 +33,12 @@ impl App {
             }
             return Effect::none();
         }
+        if state.desk.dialog_open() {
+            return self.child(
+                state,
+                AppAction::Desk(humata2_desk::DeskAction::CancelDialog),
+            );
+        }
         if state.navigation_overlay {
             state.navigation_overlay = false;
             return Effect::none();

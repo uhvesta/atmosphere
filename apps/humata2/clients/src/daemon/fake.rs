@@ -9,17 +9,19 @@ use crate::daemon::{Daemon, DaemonError, Event, Events, Operation, Reply, Termin
 use crate::fixture;
 use crate::model::{
     Agent, Answer, Capability, ChannelId, Comment, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
-    RequestId, RuleSetting, Scope, Session, SessionId, Speaker, Status, TransferId,
+    RequestId, RuleSetting, Scope, Session, SessionId, SetupId, Speaker, Status, TransferId,
 };
 use crate::workspace::Workspace;
 
 mod access;
 mod boards;
 mod channels;
+mod desk;
 mod inbox;
 mod machines;
 mod review;
 mod sessions;
+mod setup;
 mod terminals;
 mod transfers;
 
@@ -327,6 +329,10 @@ impl Daemon for FakeDaemon {
         sessions::resume(self, session)
     }
 
+    fn start_fresh(&self, session: &SessionId) -> Reply<()> {
+        sessions::start_fresh(self, session)
+    }
+
     fn fork(&self, session: &SessionId, kind: ForkKind, title: &str) -> Reply<SessionId> {
         sessions::fork(self, session, kind, title)
     }
@@ -373,6 +379,14 @@ impl Daemon for FakeDaemon {
         machines: Vec<MachineId>,
     ) -> Reply<ChannelId> {
         channels::create_channel(self, name, repos, machines)
+    }
+
+    fn cancel_setup(&self, setup: &SetupId) -> Reply<()> {
+        setup::cancel_setup(self, setup)
+    }
+
+    fn retry_setup(&self, setup: &SetupId) -> Reply<ChannelId> {
+        setup::retry_setup(self, setup)
     }
 
     fn move_item(&self, item: &ItemId, status: ItemStatus) -> Reply<()> {

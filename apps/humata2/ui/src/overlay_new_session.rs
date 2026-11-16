@@ -68,9 +68,32 @@ impl Overlays {
             widgets::send(ui, id, text, action)
                 .small()
                 .h(px(24.))
-                .px(px(10.))
+                .px(px(11.))
+                .font_weight(FontWeight::MEDIUM)
                 .bg(rgb(look.fill))
                 .text_color(rgb(look.text))
+        };
+        let popup = |id: ElementId, text: SharedString, action: AppAction| {
+            let ui = ui.clone();
+            row()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(text.clone())
+                .test_support()
+                .gap(px(6.))
+                .h(px(24.))
+                .pl(px(9.))
+                .pr(px(5.))
+                .rounded(px(6.))
+                .bg(rgb(look.fill))
+                .border_1()
+                .border_color(rgb(look.line))
+                .text_size(px(12.))
+                .flex_shrink_0()
+                .cursor_pointer()
+                .child(text)
+                .child(chrome::icon(IconName::ChevronsUpDown, look.secondary, 12.))
+                .on_click(move |_, _, cx| ui.send(action.clone(), cx))
         };
         let context = format!(
             "in # {}{}",
@@ -141,13 +164,18 @@ impl Overlays {
         }
         content = content.child(form_row(
             "Title",
-            Input::new(&self.title)
-                .small()
+            div()
                 .h(px(26.))
-                .aria_label("Title")
+                .child(
+                    Input::new(&self.title)
+                        .small()
+                        .min_h(px(26.))
+                        .focus_bordered(false)
+                        .aria_label("Title"),
+                )
                 .into_any_element(),
         ));
-        let agents = row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
+        let agents = row().flex_shrink_0().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
             Agent::ALL.into_iter().enumerate().map(|(index, agent)| {
                 let ui = ui.clone();
                 let name = match agent {
@@ -161,10 +189,10 @@ impl Overlays {
                     .aria_label(name)
                     .aria_selected(sheet_state.agent == agent)
                     .test_support()
-                    .px(px(8.))
+                    .px(px(12.))
                     .py(px(2.))
                     .text_size(px(11.5))
-                    .rounded(px(6.))
+                    .rounded(px(5.))
                     .when(sheet_state.agent == agent, |x| {
                         x.bg(rgb(look.card)).shadow_sm()
                     })
@@ -175,11 +203,20 @@ impl Overlays {
                     })
             }),
         );
-        content = content.child(form_row("Runs", agents.into_any_element()));
+        let runs = col()
+            .gap(px(6.))
+            .child(row().child(agents).child(div().flex_1()))
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(rgb(look.secondary))
+                    .child("An agent's own TUI, with its own defaults, or a plain shell"),
+            );
+        content = content.child(form_row("Runs", runs.into_any_element()));
         let machine_picker = row()
             .gap(px(8.))
             .child(
-                button(
+                popup(
                     "new-session-machine-picker".into(),
                     machine
                         .map_or("Choose a machine", |m| m.name.as_str())
@@ -188,8 +225,7 @@ impl Overlays {
                     AppAction::NewSession(NewSessionAction::Picker(Some(
                         NewSessionPicker::Machine,
                     ))),
-                )
-                .icon(IconName::ChevronsUpDown),
+                ),
             )
             .children(
                 machine
@@ -240,7 +276,7 @@ impl Overlays {
                             .w(px(120.))
                             .child(repo.rsplit('/').next().unwrap_or(repo).to_owned()),
                     )
-                    .child(button(
+                    .child(popup(
                         SharedString::from(format!("new-session-repo-{repo}")).into(),
                         if sheet_state.excluded_repos.contains(repo) {
                             "Leave this repo out".into()
@@ -284,11 +320,15 @@ impl Overlays {
                             .text_color(rgb(look.secondary))
                             .child(format!("Branch: {}", sheet_state.branch())),
                     )
-                    .child(button(
-                        "new-session-cancel".into(),
-                        "Cancel".into(),
-                        AppAction::Escape,
-                    ))
+                    .child(
+                        button(
+                            "new-session-cancel".into(),
+                            "Cancel".into(),
+                            AppAction::Escape,
+                        )
+                        .border_1()
+                        .border_color(rgb(look.line)),
+                    )
                     .child(
                         widgets::primary(
                             ui,
@@ -302,6 +342,8 @@ impl Overlays {
                         )
                         .small()
                         .h(px(24.))
+                        .px(px(11.))
+                        .font_weight(FontWeight::MEDIUM)
                         .bg(rgb(look.accent))
                         .text_color(rgb(0xffffff))
                         .disabled(sheet_state.creating),

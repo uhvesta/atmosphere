@@ -121,10 +121,12 @@ pub(crate) async fn start_live(
         .map_err(|source| LiveStartError::Connect { source })?;
     let clients = Clients {
         daemon: Arc::new(daemon.clone()),
+        desk: Arc::new(daemon.clone()),
         terminals: Arc::new(daemon),
         clock: Arc::new(SystemClock::new()),
         clipboard: Arc::new(FakeClipboard::default()),
         files: Arc::new(FakeFileSystem::default()),
+        file_manager: Arc::new(humata2_clients::FakeFileManager::default()),
         keychain: Arc::new(FakeKeychain::default()),
         storage,
     };

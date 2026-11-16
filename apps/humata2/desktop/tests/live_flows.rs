@@ -8,18 +8,19 @@
 #[path = "live_flows/world.rs"]
 mod world;
 
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
     AnyWindowHandle, Bounds, HeadlessAppContext, Role, WindowBounds, WindowOptions, point, px, size,
 };
-use humata2_app::{AppAction, Overlay, Route};
+use humata2_app::{AppAction, NewSession, Overlay, Route};
 use humata2_clients::model::{
     Agent, ChannelId, Recovery, Session, SessionId, SessionOptions, Status,
 };
-use humata2_clients::{Clients, Daemon};
+use humata2_clients::{Clients, Daemon, Event};
 use humata2_engine::Resources;
 use humata2_flow::{Action, Driver as _, FrameMode, GpuiDriver, Target};
 use humata2_ui::bridge::Ui;
@@ -38,16 +39,99 @@ fn runtime() -> Runtime {
         .expect("a runtime starts")
 }
 
+/// What the client pushed to the app, kept to explain a timeout.
+#[derive(Default)]
+struct Heard {
+    /// The last few events, summed up.
+    recent: VecDeque<String>,
+    /// Terminal bytes by (session, tab): how many, and the last of them.
+    bytes: BTreeMap<(String, usize), (usize, Vec<u8>)>,
+}
+
+const RECENT: usize = 40;
+const TAIL: usize = 400;
+
+impl Heard {
+    fn hear(&mut self, event: &Event) {
+        let summary = match event {
+            Event::TerminalData {
+                session,
+                tab,
+                offset,
+                bytes,
+            } => {
+                let (count, tail) = self
+                    .bytes
+                    .entry((session.as_str().to_owned(), *tab))
+                    .or_default();
+                *count += bytes.len();
+                tail.extend_from_slice(bytes);
+                let extra = tail.len().saturating_sub(TAIL);
+                tail.drain(..extra);
+                format!(
+                    "TerminalData {} tab {tab} at {offset}: {} bytes",
+                    session.as_str(),
+                    bytes.len()
+                )
+            }
+            Event::Session(session) => format!(
+                "Session {} {:?} status {:?} recovery {:?}",
+                session.id.as_str(),
+                session.title,
+                session.status,
+                session.recovery
+            ),
+            other => format!("{other:?}").chars().take(200).collect(),
+        };
+        self.recent.push_back(summary);
+        if self.recent.len() > RECENT {
+            self.recent.pop_front();
+        }
+    }
+
+    fn describe(&self) -> String {
+        let mut text = String::from("events the client pushed (last first):\n");
+        for line in self.recent.iter().rev() {
+            text.push_str(&format!("  {line}\n"));
+        }
+        for ((session, tab), (count, tail)) in &self.bytes {
+            text.push_str(&format!(
+                "terminal {session} tab {tab}: {count} bytes, ending {:?}\n",
+                String::from_utf8_lossy(tail)
+            ));
+        }
+        text
+    }
+}
+
 /// The app, headless, on the clients it was given.
 struct App<'r> {
     runtime: &'r Runtime,
     cx: HeadlessAppContext,
     window: AnyWindowHandle,
     ui: Rc<Ui>,
+    daemon: Arc<dyn Daemon>,
+    heard: Arc<Mutex<Heard>>,
 }
 
 impl<'r> App<'r> {
     fn open(runtime: &'r Runtime, clients: Clients) -> Self {
+        let daemon = clients.daemon.clone();
+        let heard = Arc::new(Mutex::new(Heard::default()));
+        {
+            let daemon = daemon.clone();
+            let heard = heard.clone();
+            runtime.spawn(async move {
+                let Ok(mut events) = daemon.events().await else {
+                    return;
+                };
+                while let Some(Ok(event)) = events.recv().await {
+                    if let Ok(mut heard) = heard.lock() {
+                        heard.hear(&event);
+                    }
+                }
+            });
+        }
         let mut cx = humata2_engine::headless(&Resources::new(humata2_ui::Assets))
             .expect("the headless context starts");
         cx.update(humata2_ui::init);
@@ -69,6 +153,8 @@ impl<'r> App<'r> {
             cx,
             window,
             ui,
+            daemon,
+            heard,
         };
         app.settle();
         app
@@ -115,6 +201,14 @@ impl<'r> App<'r> {
             .expect("the view can be read")
     }
 
+    /// Whether the New session sheet is open and `holds` is true of it.
+    fn sheet_holds(&self, holds: impl FnOnce(&NewSession) -> bool) -> bool {
+        self.ui.read(|state| match state.overlays.last() {
+            Some(Overlay::NewSession(sheet)) => holds(sheet),
+            _ => false,
+        })
+    }
+
     fn session_titled(&self, title: &str) -> Option<Session> {
         self.ui.read(|state| {
             state
@@ -134,9 +228,64 @@ impl<'r> App<'r> {
             if done(self) {
                 return;
             }
-            assert!(Instant::now() < until, "timed out waiting for {what}");
+            if Instant::now() >= until {
+                let why = self.diagnose();
+                panic!("timed out waiting for {what}\n{why}");
+            }
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    /// What the app, the client and the daemon hold now, for a timeout.
+    fn diagnose(&mut self) -> String {
+        let mut text = self.ui.read(|state| {
+            let mut text = format!(
+                "route {:?}\nload {:?}\noverlays {:?}\ntoasts {:?}\nsession error {:?}\nrestore error {:?}\n",
+                state.route,
+                state.load,
+                state.overlays,
+                state.toasts,
+                state.session.error,
+                state.restore_error
+            );
+            for session in &state.workspace.sessions {
+                text.push_str(&format!(
+                    "app session {} {:?} status {:?} recovery {:?}\n",
+                    session.id.as_str(),
+                    session.title,
+                    session.status,
+                    session.recovery
+                ));
+            }
+            for ((session, tab), bytes) in &state.session.terminal_bytes {
+                text.push_str(&format!(
+                    "app terminal {} tab {tab}: {} bytes\n",
+                    session.as_str(),
+                    bytes.len()
+                ));
+            }
+            text
+        });
+        if let Ok(heard) = self.heard.lock() {
+            text.push_str(&heard.describe());
+        }
+        let daemon = self.daemon.clone();
+        match self.runtime.block_on(daemon.load()) {
+            Ok(workspace) => {
+                for session in &workspace.sessions {
+                    text.push_str(&format!(
+                        "daemon session {} {:?} status {:?} recovery {:?}\n",
+                        session.id.as_str(),
+                        session.title,
+                        session.status,
+                        session.recovery
+                    ));
+                }
+            }
+            Err(error) => text.push_str(&format!("daemon load failed: {error}\n")),
+        }
+        text.push_str(&format!("view:\n{}\n", self.view()));
+        text
     }
 
     fn show_session(&mut self, id: &SessionId) {
@@ -218,8 +367,17 @@ fn a_session_started_from_new_session_runs_and_answers_its_first_message() {
     );
     app.click(Role::TextInput, "Title");
     app.type_text("Fix the ledger");
+    // What was typed must reach the sheet before Start session, or the
+    // session starts under the default title and the wait below can only
+    // say it timed out.
+    app.wait_until("the typed title to reach the sheet", |app| {
+        app.sheet_holds(|sheet| sheet.title == "Fix the ledger")
+    });
     app.click(Role::MultilineTextInput, "First message");
     app.type_text("hello agent");
+    app.wait_until("the typed first message to reach the sheet", |app| {
+        app.sheet_holds(|sheet| sheet.first_message == "hello agent")
+    });
     app.click(Role::Button, "Start session");
 
     app.wait_until("the session to be listed", |app| {

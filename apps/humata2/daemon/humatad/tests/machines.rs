@@ -377,8 +377,11 @@ async fn machine_feed(host: &Host, after: Option<u64>) -> tonic::Streaming<pb::E
         .into_inner()
 }
 
+/// The next event on `feed`. A machine's next change can be a whole add
+/// away (install over the fake ssh, then the link's dial), so this waits as
+/// long as `Host::watch` waits for an operation, not the short `WAIT`.
 async fn next_event(feed: &mut tonic::Streaming<pb::Event>) -> pb::Event {
-    tokio::time::timeout(WAIT, feed.message())
+    tokio::time::timeout(Duration::from_secs(60), feed.message())
         .await
         .expect("an event came")
         .unwrap()

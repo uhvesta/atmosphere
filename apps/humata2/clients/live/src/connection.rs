@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use humata2_clients::DaemonError;
-use humata2_clients::model::{Agent, MachineId};
+use humata2_clients::model::{Agent, ChannelId, MachineId};
 use humata2_grpc::humata::v1 as pb;
 use humata2_grpc::humata::v1::{
     channel_service_client::ChannelServiceClient, daemon_service_client::DaemonServiceClient,
@@ -124,6 +124,48 @@ pub(crate) struct State {
     /// size it last asked for: what is attached again once its session
     /// runs again.
     pub(crate) wanted: BTreeMap<(String, usize), Option<(u16, u16)>>,
+    /// Where each tab's output stands, by (session, tab index): see
+    /// `Placed`.
+    pub(crate) placed: BTreeMap<(String, usize), Placed>,
+    /// Whether this host's restart report has been pushed or loaded.
+    pub(crate) restart_known: bool,
+    /// Whether a server-info read for the restart report is in flight.
+    pub(crate) restart_reading: bool,
+    /// The channel name of each setup (operation id), for its events.
+    pub(crate) setup_names: BTreeMap<String, String>,
+    /// The channel each setup (operation id) makes, so a retry can name it.
+    pub(crate) setup_channels: BTreeMap<String, ChannelId>,
+}
+
+/// How a tab's output offsets, as its holders number them, map onto the
+/// bytes the app keeps for it. The app's offsets have no gaps and start at
+/// 0 with the first byte it got; a holder's may start later (it kept only
+/// the last of its output) and jump (a holder resumed after a reboot
+/// numbers its output from past what the one before it may have sent).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Placed {
+    /// How far the app's offsets lag the holder's: holder offset minus app
+    /// offset.
+    pub(crate) lag: u64,
+    /// The holder offset the app's bytes end at.
+    pub(crate) end: u64,
+}
+
+impl Placed {
+    /// Where bytes at holder offset `at` go in the app's offsets, and how
+    /// many of their first bytes the app already has (all of them when
+    /// they end before `end`). A jump past `end` is closed up, so what
+    /// follows a gap is shown rather than dropped.
+    pub(crate) fn place(&mut self, at: u64, len: u64) -> (u64, u64) {
+        if at > self.end {
+            self.lag += at - self.end;
+            self.end = at;
+        }
+        let skip = (self.end - at).min(len);
+        let app = self.end - self.lag;
+        self.end = self.end.max(at + len);
+        (app, skip)
+    }
 }
 
 pub(crate) struct Shared {
@@ -203,6 +245,12 @@ impl Shared {
             Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
         }
+    }
+
+    pub(crate) fn daemon_info(&self) -> DaemonServiceClient<Wire> {
+        DaemonServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
     }
 
     pub(crate) fn channels(&self) -> ChannelServiceClient<Wire> {
@@ -339,5 +387,31 @@ mod tests {
             status_error(&Status::invalid_argument("bad"), "the session", &machine),
             DaemonError::Refused { .. }
         ));
+    }
+
+    #[test]
+    fn a_holder_that_starts_late_is_placed_from_zero() {
+        let mut placed = Placed::default();
+        assert_eq!(placed.place(5_000, 10), (0, 0));
+        assert_eq!(placed.place(5_010, 4), (10, 0));
+    }
+
+    #[test]
+    fn output_after_a_jump_follows_what_came_before() {
+        let mut placed = Placed::default();
+        assert_eq!(placed.place(0, 100), (0, 0));
+        // A holder resumed after a reboot numbers on from past the old end.
+        assert_eq!(placed.place(1_048_676, 20), (100, 0));
+        assert_eq!(placed.place(1_048_696, 5), (120, 0));
+    }
+
+    #[test]
+    fn output_the_app_has_is_skipped() {
+        let mut placed = Placed::default();
+        assert_eq!(placed.place(0, 100), (0, 0));
+        // Replayed from the start: all of it is had.
+        assert_eq!(placed.place(0, 100).1, 100);
+        // Overlapping the end: only the new part goes on.
+        assert_eq!(placed.place(90, 20), (100, 10));
     }
 }

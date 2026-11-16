@@ -57,8 +57,6 @@ not_built! {
     BoardService => board_service_server,
     ActivityService => activity_service_server,
     FileService => file_service_server,
-    TransferService => transfer_service_server,
-    TrashService => trash_service_server,
     MachineService => machine_service_server,
     ProviderService => provider_service_server,
     SkillsService => skills_service_server,
@@ -78,10 +76,6 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(AuditService)
         .add_service(BoardService)
         .add_service(ActivityService)
-        .add_service(TransferService)
-        .add_service(TrashService)
-        .add_service(ProviderService)
-        .add_service(SkillsService)
         .add_service(BridgeService)
         .add_service(SettingsService)
         .add_service(AgentService)
@@ -90,10 +84,14 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(PullRequestReviewService)
 }
 
-/// Adds MachineService to a machine's `router`: only the host keeps
-/// machines, and the machine's daemon doesn't forward to it yet.
+/// Adds MachineService and ProviderService to a machine's `router`: only
+/// the host keeps machines and their providers, and the machine's daemon
+/// doesn't forward to them yet.
 pub(crate) fn register_host_only<L>(router: Router<L>) -> Router<L> {
-    router.add_service(MachineService)
+    router
+        .add_service(MachineService)
+        .add_service(ProviderService)
+        .add_service(SkillsService)
 }
 
 /// Adds to the peer link's `router` what it carries that isn't built yet:

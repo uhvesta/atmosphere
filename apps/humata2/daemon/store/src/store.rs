@@ -219,6 +219,12 @@ impl Store {
         self.inner.write("session.remove", "remove a session", |transaction| {
             transaction
                 .execute("DELETE FROM sessions WHERE id = ?1", [id])
+                .and_then(|_| {
+                    transaction.execute(
+                        "DELETE FROM previous_conversations WHERE session_id = ?1",
+                        [id],
+                    )
+                })
                 .map(drop)
         })?;
         self.inner.sweep().map(drop)

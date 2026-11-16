@@ -170,7 +170,11 @@ fn menus(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     cx.set_menus([
-        Menu::new("Humata").items([MenuItem::action("Quit Humata", Quit)]),
+        Menu::new("Humata").items([
+            MenuItem::action("Settings…", keys::OpenSettings),
+            MenuItem::separator(),
+            MenuItem::action("Quit Humata", Quit),
+        ]),
         Menu::new("File").items([
             MenuItem::action("New Session", keys::NewSession),
             MenuItem::action("New Channel", keys::NewChannel),

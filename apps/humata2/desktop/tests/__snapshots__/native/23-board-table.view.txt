@@ -8,6 +8,7 @@ Navigation "Sidebar"
   Link "Home"
   Link "Inbox"
   Link "Board" selected
+  Link "Desk"
   Button "New channel"
   TreeItem "payments-rewrite" expanded
     Button "Fold"
@@ -21,9 +22,8 @@ Navigation "Sidebar"
     Button "Fold"
   TreeItem "Benchmark BRIN"
   TreeItem "Upgrade Postgres 17"
-  TreeItem "pr-reviews" expanded
-    Button "Fold"
-  TreeItem "acme/api #482"
+  TreeItem "pr-reviews" collapsed
+    Button "Unfold"
   TreeItem "web"
     Button "Unfold"
   Link "This Mac"
@@ -31,14 +31,14 @@ Navigation "Sidebar"
   Link "gpu-box"
   Link "Settings"
 Splitter "Resize the sidebar"
+#board-filter-input
+  #input-4294967329
+    TextInput "Filter" value="" placeholder="Filter"
 Button "Scope: All channels"
+Button "New item"
 Tab "Board"
 Tab "Table" selected
 Tab "Dashboard"
-Button "New item"
-#board-filter-input
-  #input-4294967323
-    TextInput "Filter" value="" placeholder="Filter"
 ListItem "PAY-12 Multi-currency ledgers"
 ListItem "INF-4 Move CI to devbox runners"
 ListItem "PAY-9 Backfill progress bar"

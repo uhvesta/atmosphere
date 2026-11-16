@@ -1,7 +1,8 @@
-//! FileService on this machine's own files: ReadFile and WriteFile in a
-//! session's clones, in chunks of at most 1 MiB, each compressed with the
-//! codec the two ends agree on (TR-11, D65). Channel folders, `shared/`,
-//! main clones and the other methods aren't built yet.
+//! FileService on this machine's own files, in any root a location can
+//! name (`roots`): ReadFile and WriteFile in chunks of at most 1 MiB, each
+//! compressed with the codec the two ends agree on (TR-11, D65), and the
+//! file manager's operations (`ops`): list, stat, new folder, rename and
+//! move to the trash (FM-2, FM-3). FindFiles isn't built yet.
 //!
 //! Every file is read, encoded, decoded, hashed and written on a blocking
 //! thread, never on the runtime. Each finished transfer counts toward the
@@ -14,15 +15,14 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use humata2_access::{Call, Entry, Place, RepoPath, Root};
+use humata2_access::{Call, Entry};
 use humata2_chunk::{CHUNK_MAX, ChunkError, Codec, Decoder, Encoder, Link, Sample};
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::Store;
 use pb::invalid_field::Problem;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -35,6 +35,14 @@ use crate::grant_target;
 use crate::guard::Guard;
 use crate::identity;
 use crate::status;
+use crate::trash_service::Bin;
+
+mod ops;
+mod roots;
+
+use ops::Ops;
+pub(crate) use roots::{Roots, Target};
+use roots::io_failure;
 
 pub(crate) type ReadFileStream = Pin<Box<dyn Stream<Item = Result<pb::FileChunk, Status>> + Send>>;
 
@@ -45,9 +53,9 @@ const READ_AHEAD: usize = 2;
 const REMEMBERED_MAX: usize = 1024;
 
 pub(crate) struct Files {
-    store: Arc<Store>,
+    roots: Arc<Roots>,
     guard: Arc<Guard>,
-    machine: String,
+    ops: Ops,
     compression: Arc<Compression>,
     /// The link the callers are on: the socket's or the peer link's.
     link: Link,
@@ -97,16 +105,16 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl Files {
     pub(crate) fn new(
-        store: Arc<Store>,
+        roots: Arc<Roots>,
         guard: Arc<Guard>,
-        machine: String,
+        bin: Arc<Bin>,
         compression: Arc<Compression>,
         link: Link,
     ) -> Self {
         Self {
-            store,
+            ops: Ops::new(roots.clone(), guard.clone(), bin),
+            roots,
             guard,
-            machine,
             compression,
             link,
             uploads: Mutex::new(Uploads::default()),
@@ -154,170 +162,22 @@ impl Files {
             key,
         }))
     }
-
-    /// The file `location` names and the place the policy judges. Only a
-    /// session's clone on this machine is served yet.
-    fn place(&self, location: Option<pb::FileLocation>, method: &str) -> Result<Target, Status> {
-        use pb::file_location::Root as R;
-
-        let location = location.ok_or_else(|| status::missing("location"))?;
-        if let Some(machine) = location
-            .machine
-            .as_ref()
-            .filter(|machine| !machine.value.is_empty())
-            && machine.value != self.machine
-        {
-            return Err(status::invalid_field(
-                "location.machine",
-                Problem::NotAllowedHere,
-                format!(
-                    "this is machine {}, and files on machine {} aren't relayed through it yet",
-                    self.machine, machine.value
-                ),
-                "ask the daemon on that machine, or leave the machine out for this one",
-            ));
-        }
-        let clone = match location.root {
-            Some(R::SessionClone(clone)) => clone,
-            Some(R::ChannelShared(_) | R::MainClone(_) | R::ChannelFolder(_)) => {
-                return Err(status::not_built(&format!(
-                    "{method} outside a session's clone"
-                )));
-            }
-            None => return Err(status::missing("location.root")),
-        };
-        let id = clone
-            .session
-            .map(|session| session.value)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| status::missing("location.session_clone.session"))?;
-        let record = match self.store.session(&id) {
-            Ok(Some(record)) => record,
-            Ok(None) => {
-                return Err(status::not_found(
-                    pb::EntityKind::Session,
-                    &id,
-                    format!("no session {id} on this machine"),
-                    "check the session id; sessions on other machines can't be named here yet",
-                ));
-            }
-            Err(error) => return Err(status::store(error, &self.machine, "look up the session")),
-        };
-        let repo = clone
-            .repo
-            .filter(|repo| !repo.owner.is_empty() && !repo.name.is_empty())
-            .ok_or_else(|| status::missing("location.session_clone.repo"))?;
-        if repo.name.contains('/') || repo.name == "." || repo.name == ".." {
-            return Err(status::invalid_field(
-                "location.session_clone.repo.name",
-                Problem::BadFormat,
-                format!("{:?} isn't a repository name", repo.name),
-                "give the repository's name on GitHub, like api",
-            ));
-        }
-        if location.path.is_empty() {
-            return Err(status::missing("location.path"));
-        }
-        let path = RepoPath::new(location.path.as_str()).map_err(|_| outside(&location.path))?;
-        let policy_path = RepoPath::new(format!("{}/{}/{}", repo.owner, repo.name, path.as_str()))
-            .map_err(|_| outside(&location.path))?;
-        let session = identity::session_ref(&record, &self.machine);
-        Ok(Target {
-            place: Place {
-                machine: session.machine.clone(),
-                root: Root::Clone(session.clone()),
-                path: policy_path,
-                entry: Entry::File,
-            },
-            clone: record.folder.join(&repo.name),
-            path,
-            shown: location.path.clone(),
-            location: pb::FileLocation {
-                machine: Some(pb::MachineId {
-                    value: self.machine.clone(),
-                }),
-                root: Some(R::SessionClone(pb::SessionClone {
-                    session: Some(pb::SessionId { value: id }),
-                    repo: Some(repo),
-                })),
-                path: location.path,
-            },
-        })
-    }
-}
-
-/// A file in a session's clone.
-struct Target {
-    place: Place,
-    clone: PathBuf,
-    path: RepoPath,
-    /// The path as the caller gave it, for messages.
-    shown: String,
-    location: pb::FileLocation,
-}
-
-impl Target {
-    /// Names the file for idempotency keys.
-    fn key(&self) -> String {
-        format!("{:?}", self.location)
-    }
-
-    /// The file's path on disk, checked to stay in the clone once symlinks
-    /// are followed. `existing` is false for a file about to be written:
-    /// then only its folder must exist.
-    fn resolve(&self, existing: bool) -> Result<PathBuf, Status> {
-        let clone = fs::canonicalize(&self.clone).map_err(|error| match error.kind() {
-            ErrorKind::NotFound => status::not_found(
-                pb::EntityKind::File,
-                &self.shown,
-                format!("the session has no clone at {}", self.clone.display()),
-                "check the repository; the session may have been started without it",
-            ),
-            _ => io_failure(&error, "open the clone", &self.clone),
-        })?;
-        let full = self.clone.join(self.path.as_str());
-        let checked = if existing {
-            fs::canonicalize(&full)
-        } else {
-            let parent = full.parent().unwrap_or(&self.clone);
-            if fs::symlink_metadata(&full).is_ok_and(|meta| meta.file_type().is_symlink()) {
-                return Err(outside(&self.shown));
-            }
-            fs::canonicalize(parent).map(|parent| match full.file_name() {
-                Some(name) => parent.join(name),
-                None => parent,
-            })
-        };
-        let checked = checked.map_err(|error| match error.kind() {
-            ErrorKind::NotFound => status::not_found(
-                pb::EntityKind::File,
-                &self.shown,
-                format!("there is no {} in the clone", self.shown),
-                "check the path; it is relative to the repository's root",
-            ),
-            _ => io_failure(&error, "open", &full),
-        })?;
-        if !checked.starts_with(&clone) || checked == clone {
-            return Err(outside(&self.shown));
-        }
-        Ok(checked)
-    }
 }
 
 #[tonic::async_trait]
 impl pb::file_service_server::FileService for Files {
     async fn list_directory(
         &self,
-        _request: Request<pb::ListDirectoryRequest>,
+        request: Request<pb::ListDirectoryRequest>,
     ) -> Result<Response<pb::ListDirectoryResponse>, Status> {
-        Err(status::not_built("humata.v1.FileService.ListDirectory"))
+        self.ops.list_directory(request).await
     }
 
     async fn stat(
         &self,
-        _request: Request<pb::StatRequest>,
+        request: Request<pb::StatRequest>,
     ) -> Result<Response<pb::FileEntry>, Status> {
-        Err(status::not_built("humata.v1.FileService.Stat"))
+        self.ops.stat(request).await
     }
 
     type ReadFileStream = ReadFileStream;
@@ -331,7 +191,7 @@ impl pb::file_service_server::FileService for Files {
     ) -> Result<Response<ReadFileStream>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let target = self.place(request.location, "humata.v1.FileService.ReadFile")?;
+        let target = self.roots.target(request.location, "location", Entry::File)?;
         // The reply is a stream that can't be held and replayed after an approval, so Ask stays refused.
         self.guard
             .require(&caller, &Call::ReadFiles(target.place.clone()))?;
@@ -370,10 +230,11 @@ impl pb::file_service_server::FileService for Files {
             }) => header,
             _ => return Err(status::missing("header")),
         };
-        let target = self.place(header.location, "humata.v1.FileService.WriteFile")?;
+        let target = self.roots.target(header.location, "location", Entry::File)?;
         // The upload is a stream that can't be held and replayed after an approval, so Ask stays refused.
         self.guard
             .require(&caller, &Call::WriteFiles(target.place.clone()))?;
+        target.require_writable("location")?;
         let running = match self.claim(header.idempotency_key.clone(), &target)? {
             Ok(running) => running,
             // Written already: the rest of this upload isn't read.
@@ -475,30 +336,30 @@ impl pb::file_service_server::FileService for Files {
 
     async fn create_folder(
         &self,
-        _request: Request<pb::CreateFolderRequest>,
+        request: Request<pb::CreateFolderRequest>,
     ) -> Result<Response<pb::FileEntry>, Status> {
-        Err(status::not_built("humata.v1.FileService.CreateFolder"))
+        self.ops.create_folder(request).await
     }
 
     async fn rename(
         &self,
-        _request: Request<pb::RenameRequest>,
+        request: Request<pb::RenameRequest>,
     ) -> Result<Response<pb::FileEntry>, Status> {
-        Err(status::not_built("humata.v1.FileService.Rename"))
+        self.ops.rename(request).await
     }
 
     async fn move_to_trash(
         &self,
-        _request: Request<pb::MoveToTrashRequest>,
+        request: Request<pb::MoveToTrashRequest>,
     ) -> Result<Response<pb::MoveToTrashResponse>, Status> {
-        Err(status::not_built("humata.v1.FileService.MoveToTrash"))
+        self.ops.move_to_trash(request).await
     }
 
     async fn find_files(
         &self,
-        _request: Request<pb::FindFilesRequest>,
+        request: Request<pb::FindFilesRequest>,
     ) -> Result<Response<pb::FindFilesResponse>, Status> {
-        Err(status::not_built("humata.v1.FileService.FindFiles"))
+        self.ops.find_files(request).await
     }
 }
 
@@ -741,19 +602,6 @@ async fn blocking<T: Send + 'static>(
         .map_err(|error| status::internal(format!("a file worker stopped: {error}"), ""))
 }
 
-fn outside(path: &str) -> Status {
-    status::failure(
-        Code::PermissionDenied,
-        status::error(
-            format!("{path:?} leaves the clone, by \"..\", an absolute path or a symlink"),
-            "name a file inside the clone, relative to the repository's root",
-            pb::error::Kind::OutsideHumataFolders(pb::OutsideHumataFolders {
-                path: path.to_owned(),
-            }),
-        ),
-    )
-}
-
 fn exists(path: &str) -> Status {
     status::failure(
         Code::AlreadyExists,
@@ -777,10 +625,6 @@ fn chunk_failure(error: &ChunkError, path: &str) -> Status {
             }),
         ),
     )
-}
-
-fn io_failure(error: &io::Error, doing: &str, path: &Path) -> Status {
-    status::internal(format!("couldn't {doing} {}: {error}", path.display()), "")
 }
 
 fn hex(bytes: &[u8]) -> String {

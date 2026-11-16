@@ -6,6 +6,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # //apps/humata2/ui.
 FEATURES = [
     "board",
+    "desk",
     "files",
     "hosts",
     "inbox",

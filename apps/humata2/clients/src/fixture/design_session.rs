@@ -1,8 +1,8 @@
 use super::{diffs::lines, machines, requests::request, sessions::session};
 use crate::model::{
-    Agent, Channel, ChannelId, Comment, FileDiff, ForkKind, Item, ItemId, ItemKind, ItemStatus,
-    Line, LineKind, Machine, MachineId, MachineKind, PreparedView, Preview, PullRequest, RepoDiff,
-    RequestId, RequestKind, Scope, SessionFile, SessionId, Speaker, Status,
+    Agent, Answer, Channel, ChannelId, Comment, FileDiff, ForkKind, Item, ItemId, ItemKind,
+    ItemStatus, Line, LineKind, Machine, MachineId, MachineKind, PreparedView, Preview, PullRequest,
+    RepoDiff, RequestId, RequestKind, Scope, SessionFile, SessionId, Speaker, Status,
 };
 use crate::workspace::Workspace;
 
@@ -34,7 +34,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             },
             online: false,
             detail: "Ubuntu 24.04 · RTX 4090 · 64 GB".into(),
-            last_seen: "12 min ago".into(),
+            last_seen: "14:02".into(),
             lost_at: None,
         },
     ];
@@ -183,7 +183,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         let (activity, when) = match id {
             "ledger" => ("Asks to move PAY-3 to Done", "2m"),
             "refund" => ("Running cargo test -p refunds", "now"),
-            "brin" => ("Writing migrations/0043_brin.sql", "now"),
+            "brin" => ("Asks to push try-brin to origin", "9m"),
             "partial-brin" => ("Comparing partial BRIN on posted_at", "now"),
             "benchmark" => ("pgbench run 2 of 4", "1m"),
             "postgres" => ("Exited with code 1 after the dump step", "40m"),
@@ -203,6 +203,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         match id {
             "ledger" => {
                 value.started = "Today 11:40".into();
+                value.last_used = "Today 12:52".into();
                 value.restart_detail = Some(
                     "humatad holds this terminal on devbox-1, not the app. After a reboot it runs claude --resume 7f3a… in the same folder. 10,000 lines of scrollback kept on disk there.".into(),
                 );
@@ -211,25 +212,32 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                     "Not contained: it can read and write anything you can on devbox-1.".into(),
                 ];
             }
-            "brin" => value.started = "Today 12:05".into(),
+            "brin" => {
+                value.started = "Today 12:05".into();
+                value.last_used = "Today 13:02".into();
+            }
             // D131: Partial BRIN runs Claude Code on devbox-1 (frames 16, 18).
             "partial-brin" => {
                 value.started = "Today 12:31".into();
+                value.last_used = "Today 12:31".into();
                 value.fork = Some(ForkKind::Shared);
             }
             "schema-review" => {
                 value.agent = Agent::Claude;
                 value.started = "Today 12:50".into();
+                value.last_used = "Today 12:50".into();
                 value.fork = Some(ForkKind::Conversation);
             }
             "refund" => {
                 value.machine = MachineId::new("this-mac");
                 value.started = "Yesterday".into();
+                value.last_used = "Today 09:15".into();
             }
             "rate" => {
                 value.agent = Agent::Codex;
                 value.machine = MachineId::new("devbox-1");
                 value.started = "Mon".into();
+                value.last_used = "Tue".into();
             }
             _ => {}
         }
@@ -335,18 +343,20 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             "Review the new commits first?",
         ),
     ];
+    // Newest first within a channel (golden 26): the push asked 9m ago
+    // comes before the refund question asked 15m ago.
     for (id, session, channel, title) in [
-        (
-            "refund-command",
-            "refund",
-            "payments-rewrite",
-            "Run the integration tests",
-        ),
         (
             "rate-command",
             "rate",
             "payments-rewrite",
             "Write the API rate limit config",
+        ),
+        (
+            "refund-command",
+            "refund",
+            "payments-rewrite",
+            "Run the integration tests",
         ),
         (
             "benchmark-command",
@@ -405,6 +415,8 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 request.preview =
                     Preview::Text("Remove the Postgres 16 snapshots on devbox-1.".into());
             }
+            "review-question" => request.asked = "2h".into(),
+            "review-command" => request.asked = "3h".into(),
             _ => {}
         }
     }
@@ -438,6 +450,36 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         tests.reason = "The retry path changed; the integration suite covers it.".into();
         workspace.requests.push(tests);
     }
+    // Golden 27: the Inbox's All view also lists two requests answered
+    // earlier. They come last, after every waiting one.
+    let mut created = request(
+        "create-pay-9",
+        "ledger",
+        "payments-rewrite",
+        RequestKind::Command,
+        "Create PAY-9 Backfill progress bar",
+    );
+    created.asked = "40m".into();
+    created.answer = Some(Answer::Approved);
+    created.reason =
+        "The backfill runs for minutes; a progress bar is its own piece of work.".into();
+    created.preview = Preview::Text(
+        "Item  PAY-9 Backfill progress bar\nCreate in  To do\nBoard  payments-rewrite".into(),
+    );
+    let mut port = request(
+        "open-port-5432",
+        "benchmark",
+        "infra",
+        RequestKind::Command,
+        "Open port 5432 on gpu-box",
+    );
+    port.asked = "2h".into();
+    port.answer = Some(Answer::Denied {
+        reply: Some("use the read replica".into()),
+    });
+    port.reason = "The benchmark wants to reach Postgres on gpu-box from devbox-1.".into();
+    port.preview = Preview::Command("sudo ufw allow 5432/tcp".into());
+    workspace.requests.extend([created, port]);
     workspace.file_contents.insert((SessionId::new("ledger"), "api".into(), "src/client.rs".into()),
         "use crate::ledger::{Entry, Ledger};\n\npub fn insert_entry(ledger: &mut Ledger, entry: Entry) {\n    ledger.insert(entry.clone());\n    ledger.insert_legacy(entry);\n}\n".into());
     // Ledger's views, newest first. The review is offered while Ledger
@@ -592,7 +634,9 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             "infra",
             "BRIN benchmark harness",
             ItemStatus::Done,
-            Some("benchmark"),
+            // Golden 24: a finished item keeps its chip's words (the label
+            // below) but no row under the dashboard's By session.
+            None,
         ),
     ]
     .into_iter()
@@ -632,12 +676,15 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             ..Default::default()
         },
     );
-    for (id, day) in [("PAY-2", 10), ("INF-1", 13)] {
+    for (id, day, label) in [
+        ("PAY-2", 10, "Currency codes"),
+        ("INF-1", 13, "Benchmark BRIN"),
+    ] {
         workspace.item_details.insert(
             ItemId::new(id),
             crate::model::ItemDetails {
                 done_day: Some(day),
-                session_label: (id == "PAY-2").then(|| "Currency codes".into()),
+                session_label: Some(label.into()),
                 ..Default::default()
             },
         );

@@ -5,15 +5,37 @@ use crate::{
     theme::Look,
     widgets::{self, col, row},
 };
+use gpui_kit::assets::IconName;
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
-use humata2_clients::model::{Session, Status};
-use humata2_inbox::{History, InboxAction};
+use humata2_clients::model::{Answer, MachineKind, Session, Status};
+use humata2_inbox::{Bulk, History, InboxAction};
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
+
+/// The frames' 24 pt button: filled with the accent, or grey with a hairline.
+fn dress(button: Button, look: Look, primary: bool) -> Button {
+    let button = button
+        .small()
+        .h(px(24.))
+        .px(px(11.))
+        .rounded(px(6.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .flex_shrink_0();
+    if primary {
+        button.bg(rgb(look.accent)).text_color(rgb(0xffffff))
+    } else {
+        button
+            .bg(rgb(look.fill))
+            .text_color(rgb(look.text))
+            .border_1()
+            .border_color(rgb(look.line))
+    }
+}
 
 pub(crate) fn toolbar(
     ui: &Rc<Ui>,
@@ -46,29 +68,30 @@ pub(crate) fn toolbar(
         .when(state.route == Route::Inbox, |bar| {
             bar.child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(px(11.5))
                     .text_color(rgb(look.secondary))
                     .child(format!("{} waiting", state.workspace.waiting().count())),
             )
         })
         .child(div().flex_1())
-        .when(state.route == Route::Home, |bar| {
-            bar.child(
-                widgets::primary(
-                    ui,
-                    "home-new-session",
-                    "New session",
-                    AppAction::StartNewSession,
-                )
-                .small()
-                .h(px(24.))
-                .bg(rgb(look.accent))
-                .text_color(rgb(0xffffff)),
-            )
-        })
+        .when(
+            state.route == Route::Home && !state.workspace.channels.is_empty(),
+            |bar| {
+                bar.child(dress(
+                    widgets::primary(
+                        ui,
+                        "home-new-session",
+                        "New session",
+                        AppAction::StartNewSession,
+                    ),
+                    look,
+                    true,
+                ))
+            },
+        )
         .when(state.route == Route::Inbox, |bar| {
             bar.child(
-                row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
+                row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).flex_shrink_0().children(
                     [
                         ("Waiting", History::Waiting, !state.inbox.show_answered),
                         ("Answered", History::Answered, state.inbox.answered_only),
@@ -87,9 +110,9 @@ pub(crate) fn toolbar(
                             .aria_label(label)
                             .aria_selected(on)
                             .px(px(12.))
-                            .py(px(4.))
-                            .text_size(px(12.))
-                            .rounded(px(6.))
+                            .py(px(2.))
+                            .text_size(px(11.5))
+                            .rounded(px(5.))
                             .when(on, |x| x.bg(rgb(look.card)).shadow_sm())
                             .on_click(move |_, _, cx| {
                                 ui.send(AppAction::Inbox(InboxAction::SetHistory(history)), cx)
@@ -123,7 +146,13 @@ fn home_row(
     {
         format!("fork of {}", parent.title)
     } else {
-        format!("# {channel}")
+        // HM-1: a row names its machine when that isn't This Mac.
+        match state.workspace.machine(&session.machine) {
+            Some(machine) if !matches!(machine.kind, MachineKind::ThisMac) => {
+                format!("# {channel} · {}", machine.name)
+            }
+            _ => format!("# {channel}"),
+        }
     };
     let pull = state
         .workspace
@@ -163,7 +192,8 @@ fn home_row(
                 .flex_1()
                 .min_w_0()
                 .child(
-                    row()
+                    div()
+                        .flex()
                         .gap(px(8.))
                         .child(
                             div()
@@ -200,39 +230,163 @@ fn home_row(
             let url = open_url.clone();
             let session = session.id.clone();
             let exited = matches!(session_status(state, &session), Some(Status::Exited { .. }));
-            Button::new(SharedString::from(format!("{group}-action-{index}")))
-                .label(label)
-                .small()
-                .h(px(24.))
-                .px(px(10.))
-                .bg(rgb(if need && !exited {
-                    look.accent
-                } else {
-                    look.fill
-                }))
-                .text_color(rgb(if need && !exited { 0xffffff } else { look.text }))
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    if let Some(url) = &url {
-                        cx.open_url(url);
-                        return;
-                    }
-                    ui.send(AppAction::Navigate(Route::Session(session.clone())), cx);
-                    if exited {
-                        ui.send(AppAction::Session(SessionAction::Resume), cx);
-                    } else if need {
-                        ui.send(
-                            AppAction::Session(SessionAction::SetPanel(Some(Panel::Inbox))),
-                            cx,
-                        );
-                    }
-                })
+            dress(
+                Button::new(SharedString::from(format!("{group}-action-{index}"))).label(label),
+                look,
+                need && !exited,
+            )
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                if let Some(url) = &url {
+                    cx.open_url(url);
+                    return;
+                }
+                ui.send(AppAction::Navigate(Route::Session(session.clone())), cx);
+                if exited {
+                    ui.send(AppAction::Session(SessionAction::Resume), cx);
+                } else if need {
+                    ui.send(
+                        AppAction::Session(SessionAction::SetPanel(Some(Panel::Inbox))),
+                        cx,
+                    );
+                }
+            })
         }))
         .on_click(move |_, _, cx| ui2.send(AppAction::Navigate(Route::Session(id.clone())), cx))
         .test_support()
 }
 fn session_status(state: &AppState, id: &humata2_clients::model::SessionId) -> Option<Status> {
     state.workspace.session(id).map(|s| s.status)
+}
+
+fn card(look: Look) -> Div {
+    col()
+        .w_full()
+        .rounded(px(9.))
+        .border_1()
+        .border_color(rgb(look.line))
+        .bg(rgb(look.card))
+}
+
+/// A titled group on Home: its small heading over `body`.
+fn group(look: Look, title: String, body: Div) -> Div {
+    col()
+        .gap(px(6.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(look.secondary))
+                .child(title),
+        )
+        .child(body)
+}
+
+/// A group of session rows, or `none` in the card when there is no session.
+fn session_group(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    title: String,
+    id: &'static str,
+    sessions: &[&Session],
+    none: &'static str,
+    look: Look,
+) -> Div {
+    let body = if sessions.is_empty() {
+        card(look)
+            .px(px(14.))
+            .py(px(12.))
+            .text_color(rgb(look.tertiary))
+            .child(none)
+    } else {
+        card(look).overflow_hidden().children(
+            sessions
+                .iter()
+                .enumerate()
+                .map(|(index, session)| home_row(ui, state, session, id, index, look)),
+        )
+    };
+    group(look, title, body)
+}
+
+/// One row of Get set up: what to do, why, and the button that starts it.
+fn step(
+    look: Look,
+    glyph: IconName,
+    title: &'static str,
+    note: &'static str,
+    action: Button,
+) -> Div {
+    row()
+        .gap(px(12.))
+        .px(px(14.))
+        .py(px(12.))
+        .border_b_1()
+        .border_color(rgb(look.line))
+        .child(chrome::icon(glyph, look.accent, 15.))
+        .child(
+            col()
+                .flex_1()
+                .min_w_0()
+                .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.secondary))
+                        .child(note),
+                ),
+        )
+        .child(action)
+}
+
+/// What Home offers when there is no channel yet (DK-6, frame 34).
+fn get_set_up(ui: &Rc<Ui>, look: Look) -> Div {
+    group(
+        look,
+        "Get set up".to_owned(),
+        card(look)
+            .overflow_hidden()
+            .child(step(
+                look,
+                IconName::Plus,
+                "Make a channel",
+                "A project: its repos, the machines that work on it, its board and its sessions.",
+                dress(
+                    widgets::primary(
+                        ui,
+                        "first-channel-create",
+                        "New channel…",
+                        AppAction::StartNewChannel,
+                    ),
+                    look,
+                    true,
+                ),
+            ))
+            .child(step(
+                look,
+                IconName::Server,
+                "Add a machine",
+                "Run sessions on another computer over SSH. This Mac works already.",
+                dress(
+                    widgets::send(
+                        ui,
+                        "first-machine-add",
+                        "Add a machine…",
+                        AppAction::Hosts(humata2_hosts::HostsAction::StartAdd),
+                    ),
+                    look,
+                    false,
+                ),
+            )),
+    )
+}
+
+fn counted(name: &str, count: usize) -> String {
+    if count == 0 {
+        name.to_owned()
+    } else {
+        format!("{name} · {count}")
+    }
 }
 
 pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
@@ -250,6 +404,48 @@ pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
             matches!(s.status, Status::Idle | Status::ProbablyIdle) && !s.activity.is_empty()
         })
         .collect::<Vec<_>>();
+    let groups = col()
+        .w_full()
+        .max_w(px(720.))
+        .gap(px(20.))
+        // After a restart (frame 47): what couldn't be resumed and what came back idle.
+        .children(crate::restart_report::home_groups(ui, state, look))
+        .child(session_group(
+            ui,
+            state,
+            counted("Needs you", needs.len()),
+            "home-needs",
+            &needs,
+            "Nothing needs you.",
+            look,
+        ))
+        .child(session_group(
+            ui,
+            state,
+            counted("Working", working.len()),
+            "home-working",
+            &working,
+            "No sessions are running.",
+            look,
+        ));
+    let groups = if state.workspace.channels.is_empty() {
+        groups.child(get_set_up(ui, look)).child(
+            div()
+                .text_size(px(11.5))
+                .text_color(rgb(look.secondary))
+                .child("GitHub access comes from the gh CLI. There is no sign-in in Humata."),
+        )
+    } else {
+        groups.child(session_group(
+            ui,
+            state,
+            "Recent".to_owned(),
+            "home-recent",
+            &recent,
+            "Nothing recent yet.",
+            look,
+        ))
+    };
     col()
         .id("home")
         .size_full()
@@ -257,51 +453,103 @@ pub(crate) fn home(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElemen
         .p(px(24.))
         .items_center()
         .text_size(px(13.))
-        .child(
-            col().w_full().max_w(px(720.)).gap(px(20.)).children(
-                [
-                    (format!("Needs you · {}", needs.len()), "home-needs", needs),
-                    (
-                        format!("Working · {}", working.len()),
-                        "home-working",
-                        working,
-                    ),
-                    ("Recent".into(), "home-recent", recent),
-                ]
-                .into_iter()
-                .map(|(title, group, sessions)| {
-                    col()
-                        .gap(px(6.))
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(rgb(look.secondary))
-                                .child(title),
-                        )
-                        .child(
-                            col()
-                                .w_full()
-                                .rounded(px(9.))
-                                .border_1()
-                                .border_color(rgb(look.line))
-                                .bg(rgb(look.card))
-                                .overflow_hidden()
-                                .children(sessions.iter().enumerate().map(|(index, session)| {
-                                    home_row(ui, state, session, group, index, look)
-                                }))
-                                .when(sessions.is_empty(), |x| {
-                                    x.child(
-                                        div()
-                                            .p(px(12.))
-                                            .text_color(rgb(look.secondary))
-                                            .child("Nothing here right now."),
-                                    )
-                                }),
-                        )
-                }),
-            ),
-        )
+        .child(groups)
+}
+
+/// Allow all n and Deny all over the list (IN-6), or the question Allow all
+/// asks first when a waiting request can't be undone.
+fn bulk_strip(ui: &Rc<Ui>, confirm: Option<Bulk>, waiting: usize, look: Look) -> Div {
+    let bar = row()
+        .flex_wrap()
+        .gap(px(8.))
+        .px(px(14.))
+        .py(px(10.))
+        .flex_shrink_0()
+        .border_b_1()
+        .border_color(rgb(look.line));
+    let Some(bulk) = confirm else {
+        return bar
+            .child(dress(
+                widgets::send(
+                    ui,
+                    "inbox-allow-all",
+                    format!("Allow all {waiting}"),
+                    AppAction::Inbox(InboxAction::Bulk(Bulk::ApproveAll)),
+                ),
+                look,
+                false,
+            ))
+            .child(dress(
+                widgets::send(
+                    ui,
+                    "inbox-deny-all",
+                    "Deny all",
+                    AppAction::Inbox(InboxAction::Bulk(Bulk::DenyAll)),
+                ),
+                look,
+                false,
+            ));
+    };
+    let (question, yes) = match bulk {
+        Bulk::ApproveAll => (
+            format!("Allow all {waiting}? Some of them can't be undone once allowed."),
+            "Allow all",
+        ),
+        Bulk::DenyAll => (format!("Deny all {waiting}?"), "Deny all"),
+    };
+    bar.child(
+        div()
+            .w_full()
+            .text_size(px(11.5))
+            .text_color(rgb(look.secondary))
+            .child(question),
+    )
+    .child(dress(
+        widgets::primary(
+            ui,
+            "inbox-bulk-confirm",
+            yes,
+            AppAction::Inbox(InboxAction::ConfirmBulk),
+        ),
+        look,
+        true,
+    ))
+    .child(dress(
+        widgets::send(
+            ui,
+            "inbox-bulk-cancel",
+            "Cancel",
+            AppAction::Inbox(InboxAction::CancelBulk),
+        ),
+        look,
+        false,
+    ))
+}
+
+/// A row's second line: who asks and from which session, then how it was
+/// answered once it is (IN-7).
+fn asked_from(session: Option<&Session>, answer: Option<&Answer>) -> String {
+    let mut parts = Vec::new();
+    if let Some(session) = session {
+        parts.push(
+            if session.agent == humata2_clients::model::Agent::Claude {
+                "Claude Code"
+            } else {
+                session.agent.name()
+            }
+            .to_owned(),
+        );
+        parts.push(session.title.clone());
+    }
+    match answer {
+        None => {}
+        Some(Answer::Approved) => parts.push("approved".to_owned()),
+        Some(Answer::Always { .. }) => parts.push("always allowed".to_owned()),
+        Some(Answer::Denied { reply: None }) => parts.push("denied".to_owned()),
+        Some(Answer::Denied { reply: Some(note) }) => parts.push(format!("denied: {note}")),
+        Some(Answer::Replied { text }) => parts.push(format!("replied: {text}")),
+    }
+    parts.join(" · ")
 }
 
 pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
@@ -311,15 +559,14 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
         .selection()
         .filter(|r| shown.iter().any(|v| v.id == r.id))
         .or_else(|| shown.first().copied());
+    let waiting = shown.iter().filter(|r| r.answer.is_none()).count();
+    let strip = (waiting > 1 || state.inbox.confirm.is_some())
+        .then(|| bulk_strip(ui, state.inbox.confirm, waiting, look));
     let list = col()
         .id("global-inbox-list")
-        .w(px(330.))
-        .max_w(relative(0.48))
-        .flex_shrink_0()
-        .h_full()
+        .flex_1()
+        .min_h_0()
         .overflow_y_scroll()
-        .border_r_1()
-        .border_color(rgb(look.line))
         .children(state.workspace.channels.iter().filter_map(|channel| {
             let requests = shown
                 .iter()
@@ -358,11 +605,14 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                             .border_color(rgb(look.line))
                             .when(on, |x| x.bg(rgb(look.selection)))
                             .text_color(rgb(if on { 0xffffff } else { look.text }))
-                            .opacity(if request.answer.is_some() { 0.6 } else { 1. })
+                            .opacity(if request.answer.is_some() { 0.55 } else { 1. })
                             .child(
                                 row()
                                     .gap(px(6.))
-                                    .when(session.is_some_and(|s| s.vip), |x| {
+                                    .when(
+                                        // The VIP mark asks for attention: answered rows don't carry it.
+                                        request.answer.is_none() && session.is_some_and(|s| s.vip),
+                                        |x| {
                                         x.child(
                                             div()
                                                 .px(px(4.))
@@ -395,17 +645,7 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                                 div()
                                     .text_size(px(11.5))
                                     .text_color(rgb(if on { 0xffffff } else { look.secondary }))
-                                    .child(session.map_or_else(String::new, |s| {
-                                        format!(
-                                            "{} · {}",
-                                            if s.agent == humata2_clients::model::Agent::Claude {
-                                                "Claude Code"
-                                            } else {
-                                                s.agent.name()
-                                            },
-                                            s.title
-                                        )
-                                    })),
+                                    .child(asked_from(session, request.answer.as_ref())),
                             )
                             .on_click(move |_, _, cx| {
                                 ui.send(AppAction::Inbox(InboxAction::Select(id.clone())), cx)
@@ -418,7 +658,17 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
         .size_full()
         .items_stretch()
         .text_size(px(12.5))
-        .child(list)
+        .child(
+            col()
+                .w(px(330.))
+                .max_w(relative(0.48))
+                .flex_shrink_0()
+                .h_full()
+                .border_r_1()
+                .border_color(rgb(look.line))
+                .children(strip)
+                .child(list),
+        )
         .child(
             col()
                 .id("global-inbox-detail")

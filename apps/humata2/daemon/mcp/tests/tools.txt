@@ -13,6 +13,8 @@ channel_remove_machine
 channel_remove_repo
 channel_rename
 channels_list
+comment_reply
+comment_resolve
 comments_list
 file_fetch
 file_read

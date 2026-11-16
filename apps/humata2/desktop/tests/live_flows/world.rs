@@ -209,10 +209,12 @@ impl World {
         .map_err(|source| WorldError::Connect { source })?;
         Ok(Clients {
             daemon: Arc::new(daemon.clone()),
+            desk: Arc::new(daemon.clone()),
             terminals: Arc::new(daemon),
             clock: Arc::new(SystemClock::new()),
             clipboard: Arc::new(humata2_clients::FakeClipboard::default()),
             files: Arc::new(humata2_clients::FakeFileSystem::default()),
+            file_manager: Arc::new(humata2_clients::FakeFileManager::default()),
             keychain: Arc::new(humata2_clients::FakeKeychain::default()),
             storage: Arc::new(MemoryStorage::new()),
         })

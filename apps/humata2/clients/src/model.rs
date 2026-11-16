@@ -122,6 +122,88 @@ pub struct MachineHealth {
     pub stopped: bool,
 }
 
+/// Why an agent couldn't be resumed after a restart (PER-15, frame 46).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeFailure {
+    /// Its conversation file is gone.
+    ConversationMissing,
+    /// The agent started a different conversation than the one pinned.
+    OtherConversation,
+    /// The agent exited while resuming, with this code.
+    AgentExited(i32),
+    /// The agent isn't installed on the host any more.
+    AgentNotInstalled,
+    /// The session's folder is gone.
+    FolderMissing,
+}
+
+/// What a host found when it restarted (PER-29, frame 47).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Restart {
+    /// The host.
+    pub machine: MachineId,
+    /// When its daemon started, in Unix ms.
+    pub at_unix_ms: i64,
+    /// The restart report's folder, if it was written.
+    pub report: Option<String>,
+    /// Sessions started again on their conversations.
+    pub resumed: Vec<SessionId>,
+    /// Each agent or shell not brought back.
+    pub not_brought_back: Vec<NotBroughtBack>,
+}
+
+/// An agent or shell a restart didn't bring back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotBroughtBack {
+    /// The session, for an agent.
+    pub session: Option<SessionId>,
+    /// The tab, for a shell.
+    pub tab: Option<String>,
+    /// What went wrong and what to do, as one line.
+    pub problem: String,
+}
+
+/// A channel being set up: its folders and clones per host (frame 45).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelSetup {
+    /// The setup's id (the daemon's operation id).
+    pub id: SetupId,
+    /// The channel's name.
+    pub name: String,
+    /// One step per host and repository, in the daemon's order.
+    pub steps: Vec<SetupStep>,
+    /// Whether Cancel is offered.
+    pub cancellable: bool,
+}
+
+/// The id of a channel setup.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SetupId(pub String);
+
+/// One step of a channel setup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetupStep {
+    /// The host it runs on.
+    pub machine: MachineId,
+    /// The repository it clones, or `None` for "Folders made".
+    pub repo: Option<String>,
+    /// How far it got.
+    pub state: SetupState,
+}
+
+/// How far a setup step got.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SetupState {
+    /// Not started.
+    Waiting,
+    /// Running: percent done (0-100) and what it is doing, e.g. "Receiving objects".
+    Running { percent: u8, detail: String },
+    /// Done.
+    Done,
+    /// Failed, with the reason as one line.
+    Failed { reason: String },
+}
+
 /// The agent a session runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Agent {
@@ -313,6 +395,9 @@ pub struct Session {
     pub started: String,
     /// When it last wrote, as people read it.
     pub active: String,
+    /// When the person last used it (typed into it, opened it or answered it;
+    /// SE-26), as people read it. Empty when not known yet.
+    pub last_used: String,
     /// The most recent useful activity, shown on Home and in session tables.
     pub activity: String,
     /// What its terminal shows.
@@ -326,6 +411,10 @@ pub struct Session {
     /// What happened to it when its host came back (PER-26), until the
     /// person opens it.
     pub recovery: Option<Recovery>,
+    /// Why its resume failed, while it is failed (frame 46).
+    pub resume_failed: Option<ResumeFailure>,
+    /// When a host restart interrupted it, in Unix ms; `None` if none has.
+    pub interrupted_unix_ms: Option<i64>,
     /// The model its agent runs, such as "Opus", when the agent says.
     pub model: Option<String>,
     /// How it survives a restart, as its host reports it: who holds the

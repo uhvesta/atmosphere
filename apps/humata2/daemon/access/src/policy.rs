@@ -810,6 +810,12 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
         {
             need(capability)
         }
+        // Only on its own session's comments; any other target doesn't fit.
+        (C::CommentReply | C::CommentResolve, Target::Session(session))
+            if session.id == me.id =>
+        {
+            need(capability)
+        }
         (C::SessionMove, Target::Session(session)) => {
             in_channel(agent, &session.channel, need(C::SessionMove))
         }

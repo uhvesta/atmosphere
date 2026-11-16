@@ -186,10 +186,10 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | SM-15 | CommentService.ListComments | comments_list | — | |
 | SM-16 | Comment.addressed, COMMENT_STATUS_ADDRESSED | comments_list | — | |
 | SM-17 | CommentService.ResolveComment, ReopenComment | comments_list | — | re-anchoring and PR updates never reopen: internal |
-| SM-18 | CommentService.ResolveComment | comments_list | — | Resolve N addressed: no batch call yet (REVIEW adds it) |
-| SM-19 | — | `comment_resolve` (not yet in MCP.md) | — | REVIEW adds the tool, its reply note and access rule |
-| SM-20 | — (no ArchiveComment yet) | — | — | user-only; REVIEW adds the RPC |
-| SM-21 | CommentService.ListComments | — | — | Archived list and Unarchive: REVIEW adds them |
+| SM-18 | CommentService.ResolveComment, ResolveAddressedComments | comments_list | — | Resolve N addressed is one call, for a file or the session; user-only |
+| SM-19, DK-9 | CommentService.ResolveComment (reply), ReplyToComment | comment_resolve, comment_reply | — | each under its own rule (COMMENT_RESOLVE, COMMENT_REPLY), Default Allow, own session's comments only |
+| SM-20 | CommentService.ArchiveComment | — | — | user-only |
+| SM-21 | CommentService.ListComments (archived), UnarchiveComment | — | — | user-only |
 
 ### FM: file manager (15)
 

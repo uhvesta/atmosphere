@@ -640,6 +640,8 @@ fn capability_info(capability: Capability) -> pb::CapabilityInfo {
         | C::ReviewFocus
         | C::ReviewNote
         | C::ReviewOrder
+        | C::CommentReply
+        | C::CommentResolve
         | C::FilesReadOtherSession
         | C::FilesCopyIn
         | C::SessionNote

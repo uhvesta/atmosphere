@@ -8,6 +8,7 @@ Navigation "Sidebar"
   Link "Home"
   Link "Inbox"
   Link "Board"
+  Link "Desk"
   Button "New channel"
   TreeItem "payments-rewrite" selected expanded
     Button "Fold"
@@ -31,6 +32,8 @@ Navigation "Sidebar"
   Link "Settings"
 Splitter "Resize the sidebar"
 Button "New session"
+Button "Pin this channel" disabled
+Button "More channel actions" disabled
 Tab "Sessions"
 Tab "Inbox"
 Tab "Board"
@@ -45,4 +48,4 @@ Tab "Activity"
   Button "2 clones"
   Button "3 clones"
   Button "Add a GitHub repo…" disabled
-  Button "Add a machine…" disabled
+  Button "Add a machine…"

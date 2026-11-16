@@ -52,6 +52,7 @@ pub(super) fn write(daemon: &FakeDaemon, session: &SessionId, tab: usize, text: 
         format!("write {session} {tab} {text:?}"),
         move |inner| {
             inner.session_mut(&id)?;
+            super::desk::used(inner, &id);
             inner.output(&id, tab, Speaker::You, &format!("$ {text}"));
             let echo = match text.trim() {
                 "ls" => "notes.md  todo.txt".to_owned(),
@@ -99,6 +100,7 @@ pub(super) fn input(
                     .copied()
                     .unwrap_or(Agent::Shell)
             };
+            super::desk::used(inner, &id);
             let mut output = Vec::new();
             // This is a deterministic fake PTY, never a local command executor.
             let pending = inner.terminal_input.entry((id.clone(), tab)).or_default();

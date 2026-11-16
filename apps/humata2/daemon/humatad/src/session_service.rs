@@ -36,6 +36,7 @@ use crate::operations::{Operations, Progress, Started};
 use crate::restart::Tokens;
 use crate::status;
 
+mod start_fresh;
 mod watch;
 
 pub(crate) use watch::after_restart;
@@ -570,9 +571,9 @@ impl SessionSvc {
             return Ok(Gated::Ask(asked));
         }
         if request.mode == pb::resume_session_request::Mode::StartFreshWithSummary as i32 {
-            return Err(status::not_built(
-                "humata.v1.SessionService.ResumeSession(START_FRESH_WITH_SUMMARY)",
-            ));
+            return self
+                .start_fresh(caller, request.idempotency_key, loaded)
+                .await;
         }
         if let Some(operation) = self
             .operations
@@ -898,6 +899,20 @@ fn session_pb(
         revision: Some(pb::Revision {
             value: detail.map_or(1, |detail| detail.revision),
         }),
+        resume_failed: match state {
+            Some(AgentState::ResumeFailed { reason, exit_code }) => Some(pb::ResumeFailed {
+                session: Some(pb::SessionId {
+                    value: record.id.clone(),
+                }),
+                reason: resume_reason(*reason) as i32,
+                exit_code: exit_code.unwrap_or(0),
+            }),
+            _ => None,
+        },
+        // The agent record keeps every interruption, newest last.
+        interrupted_at: agent
+            .and_then(|agent| agent.interruptions.last())
+            .map(|interruption| timestamp_ms(interruption.at_unix_ms)),
         ..pb::Session::default()
     }
 }

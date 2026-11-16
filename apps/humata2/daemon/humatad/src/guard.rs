@@ -134,6 +134,8 @@ pub(crate) fn capability(capability: Capability) -> pb::Capability {
         C::ReviewFocus => P::ReviewFocus,
         C::ReviewNote => P::ReviewNote,
         C::ReviewOrder => P::ReviewOrder,
+        C::CommentReply => P::CommentReply,
+        C::CommentResolve => P::CommentResolve,
         C::ChannelBoardEditOthers => P::ChannelBoardEditOthers,
         C::GlobalRead => P::GlobalRead,
         C::FilesReadOtherSession => P::FilesReadOtherSession,

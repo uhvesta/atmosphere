@@ -42,6 +42,7 @@ pub fn title(state: &AppState) -> String {
         Route::Hosts => "Hosts".to_owned(),
         Route::Files => "Files".to_owned(),
         Route::Views => "Views".to_owned(),
+        Route::Desk => "Desk".to_owned(),
         Route::Settings => "Settings".to_owned(),
     }
 }
@@ -53,15 +54,15 @@ pub fn page(
     channel_filter: Entity<InputState>,
     board_inputs: &crate::board::Inputs,
     host_address: Entity<InputState>,
+    files_name: Entity<InputState>,
     terminals: &crate::terminals::Terminals,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     match &state.route {
-        Route::Home if state.workspace.channels.is_empty() => {
-            first_run(ui, Look::of(cx)).into_any_element()
-        }
         Route::Home => home(ui, state, Look::of(cx)).into_any_element(),
+        Route::Desk => crate::desk::page(ui, state, Look::of(cx)).into_any_element(),
+        Route::Files => crate::file_manager::page(ui, &state.files, &files_name, Look::of(cx)),
         Route::Settings => crate::settings::page(ui, state, Look::of(cx)).into_any_element(),
         Route::Hosts => crate::hosts::page(
             ui,
@@ -147,16 +148,25 @@ pub(crate) fn session_header(
         .gap(px(5.))
         .text_size(px(11.5))
         .text_color(rgb(look.secondary));
-    let event = AppAction::Switch(Route::Channel(session.channel.clone()));
+    let desk = state.is_desk_session(&session.id);
+    let event = AppAction::Switch(if desk {
+        Route::Desk
+    } else {
+        Route::Channel(session.channel.clone())
+    });
     let ui2 = ui.clone();
     crumbs = crumbs
         .child(
             div()
                 .id("session-channel")
                 .role(Role::Link)
-                .aria_label("Open channel")
+                .aria_label(if desk { "Open Desk" } else { "Open channel" })
                 .text_color(rgb(look.accent))
-                .child(format!("# {}", channel.map_or("", |x| x.name.as_str())))
+                .child(if desk {
+                    "Desk".to_owned()
+                } else {
+                    format!("# {}", channel.map_or("", |x| x.name.as_str()))
+                })
                 .on_click(move |_, _, cx| ui2.send(event.clone(), cx))
                 .test_support(),
         )
@@ -246,14 +256,16 @@ pub(crate) fn session_header(
                 .text_color(rgb(0xffffff)),
             )
         })
-        .child(chrome::action(
-            ui,
-            "session-fork",
-            "Fork",
-            IconName::GitFork,
-            AppAction::Session(SessionAction::StartFork(ForkKind::Worktree)),
-            look.secondary,
-        ))
+        .when(!desk, |bar| {
+            bar.child(chrome::action(
+                ui,
+                "session-fork",
+                "Fork",
+                IconName::GitFork,
+                AppAction::Session(SessionAction::StartFork(ForkKind::Worktree)),
+                look.secondary,
+            ))
+        })
         .child(chrome::action(
             ui,
             "terminal-full-screen",
@@ -300,15 +312,4 @@ fn session_body(
     cx: &mut App,
 ) -> Div {
     crate::session_tabs::body(ui, state, session, look, terminals, cx)
-}
-
-fn first_run(ui: &Rc<Ui>, look: Look) -> Div {
-    col().size_full().items_center().justify_center().p(px(20.)).text_size(px(13.)).text_color(rgb(look.text)).child(
-        col().w(px(460.)).max_w_full().items_center().gap(px(12.))
-            .child(chrome::icon(IconName::SquareTerminal,look.accent,40.))
-            .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Start with a channel"))
-            .child(div().text_color(rgb(look.secondary)).text_center().child("A channel is a project: its repos, the machines that work on it, its board and its sessions."))
-            .child(row().flex_wrap().justify_center().gap(px(10.)).pt(px(6.)).child(widgets::primary(ui,"first-channel-create","Create your first channel",AppAction::StartNewChannel).small().h(px(24.)).bg(rgb(look.accent)).text_color(rgb(0xffffff))).child(widgets::send(ui,"first-machine-add","Add a machine over SSH",AppAction::Hosts(humata2_hosts::HostsAction::StartAdd)).small().h(px(24.)).bg(rgb(look.fill)).text_color(rgb(look.text))))
-            .child(div().pt(px(8.)).text_size(px(11.5)).text_color(rgb(look.secondary)).text_center().child("GitHub access comes from the gh CLI. There is no sign-in in Humata."))
-    )
 }

@@ -146,6 +146,7 @@ impl Ui {
                         state.files.clone(),
                         state.settings.clone(),
                         state.views.clone(),
+                        state.desk.clone(),
                     ),
                 )
             },
@@ -161,6 +162,7 @@ impl Ui {
                     state.session.fork.clone(),
                     state.session.forking,
                     state.session.error.clone(),
+                    state.desk.clone(),
                 )
             },
             move |_| changed(),

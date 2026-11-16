@@ -5,6 +5,12 @@
 //! Which hosts were connected is saved; after a restart a host that was
 //! connected but doesn't answer says so next to its Connect button.
 
+pub mod add;
+pub mod page;
+
+pub use add::{AddMachine, AddMachineAction, AddMachineState};
+pub use page::{MachinePage, MachinePageAction, MachinePageState};
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

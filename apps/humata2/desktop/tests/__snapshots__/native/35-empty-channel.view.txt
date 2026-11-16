@@ -1,0 +1,30 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "web-revamp" selected
+    Button "Fold"
+  Link "This Mac"
+  Button "Add a machine…"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Button "New session"
+Button "More channel actions" disabled
+Tab "Sessions" selected
+Tab "Inbox"
+Tab "Board"
+Tab "Repos and machines"
+Tab "Agent access"
+Tab "Activity"
+#channel-empty
+  Button "Add a GitHub repo…" disabled
+  Button "Add a machine…"
+  Button "New session"

@@ -75,6 +75,9 @@ pub struct Daemon {
     build: Build,
     /// More `serve` arguments, as `--cli-login-seconds 2`.
     extra: Vec<String>,
+    /// Environment variables for the next launch only, as
+    /// `HUMATA2_STOP_AT`: a restart starts without them.
+    env_once: Vec<(String, String)>,
     pub socket: PathBuf,
     pub state: PathBuf,
     pub dir: TempDir,
@@ -95,10 +98,25 @@ impl Daemon {
 
     /// As [`Self::start_build`], with more `serve` arguments.
     pub async fn start_with(build: Build, dir: TempDir, extra: &[&str]) -> Self {
+        Self::launched(build, dir, extra, &[]).await
+    }
+
+    /// The admin test daemon with more environment variables, such as
+    /// `HUMATA2_STOP_AT`, for this start only: [`Self::restart`] starts it
+    /// again without them.
+    pub async fn start_env(dir: TempDir, env: &[(&str, &str)]) -> Self {
+        Self::launched(Build::Admin, dir, &[], env).await
+    }
+
+    async fn launched(build: Build, dir: TempDir, extra: &[&str], env: &[(&str, &str)]) -> Self {
         let mut daemon = Self {
             child: None,
             build,
             extra: extra.iter().map(|arg| (*arg).to_owned()).collect(),
+            env_once: env
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
             socket: dir.path().join("d.sock"),
             state: dir.path().join("state"),
             dir,
@@ -123,6 +141,7 @@ impl Daemon {
             Build::Release => {}
         }
         command.args(&self.extra);
+        command.envs(self.env_once.drain(..));
         let child = command
             .arg("--socket")
             .arg(&self.socket)

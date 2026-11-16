@@ -49,8 +49,11 @@ fn main() -> ExitCode {
     let saved = args
         .scrollback_file
         .unwrap_or_else(|| saved_scrollback_path(&args.socket));
+    // The host may own bounded compressed checkpoints instead of a raw transcript.
+    // Its holder still keeps the normal in-memory replay window.
+    let memory_only=std::env::var_os("HUMATA2_HOLDER_MEMORY_ONLY").is_some_and(|value|value=="1");
     let options = ServeOptions {
-        saved: Some(saved),
+        saved: (!memory_only).then_some(saved),
         socket: args.socket,
         program: PathBuf::from(program),
         args: command.collect(),

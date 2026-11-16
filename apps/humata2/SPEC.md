@@ -1746,6 +1746,7 @@ and frame 37 a Desk session's.
   | Prepare views for you (you choose whether to open them) | Allow |
   | Draft PR review comments (review sessions) | Allow |
   | Resolve comments sent to its own session, with a reply (SM-19) | Allow |
+  | Reply in the thread of comments sent to its own session (DK-9) | Allow |
   | Ask you a question, or ask ahead for access (IN-25, IN-26) | Allow |
   | Read another session's files (same machine) | Ask me |
   | Read files on another machine (bridged) | Ask me |

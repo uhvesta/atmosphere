@@ -206,10 +206,9 @@ impl Terminals {
                     if view.groups.is_empty() {
                         return view.tab == *tab;
                     }
-                    view.groups.iter().enumerate().any(|(group, tabs)| {
-                        (state.settings.preferences.split_groups || group == view.focused_group)
-                            && tabs.tabs.get(tabs.selected) == Some(&Tab::Terminal(*tab))
-                    })
+                    view.groups
+                        .iter()
+                        .any(|tabs| tabs.tabs.get(tabs.selected) == Some(&Tab::Terminal(*tab)))
                 });
             let connected = session.status != Status::Offline
                 && state

@@ -4,6 +4,7 @@
 //! whole (temporary file, fsync, rename, folder fsync), so a power cut
 //! leaves the old list or the new one.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -53,6 +54,51 @@ pub struct HostEntry {
     /// start or reconnect.
     #[serde(default)]
     pub undo_pending: bool,
+    /// Set for a machine a provider made or reaches (MP-1); an SSH machine
+    /// has none. Older files have none, which reads as a plain SSH machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ProviderMachine>,
+}
+
+/// What `hosts.json` keeps of a provider machine (MP-1): which provider,
+/// the params it was made with (never secrets: host variables are named,
+/// not kept), and how to reach it, written as soon as that is known so a
+/// restart can undo a cut-short create.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderMachine {
+    /// The provider's id in `providers.toml`.
+    pub id: String,
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
+    /// None until the provider's `create` and `identity` gave one.
+    #[serde(default)]
+    pub link: Option<StoredLink>,
+}
+
+/// A link as `hosts.json` keeps it. The host key of an identity provider's
+/// machine lives in Humata's own `known_hosts`, not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "how", rename_all = "snake_case")]
+pub enum StoredLink {
+    /// The provider's `connect` template as it was when the machine was
+    /// made, and the variables it gets (`None`: the host variable of that
+    /// name, whose value is never kept).
+    Connect {
+        template: String,
+        env: Vec<(String, Option<String>)>,
+    },
+    /// SSH, from the provider's identity.
+    Ssh {
+        host: String,
+        #[serde(default)]
+        ssh_config: Option<String>,
+        #[serde(default)]
+        port: Option<u16>,
+        #[serde(default)]
+        user: Option<String>,
+        #[serde(default)]
+        identity_file: Option<String>,
+    },
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -256,6 +302,7 @@ mod tests {
             arch: String::new(),
             staged: Vec::new(),
             undo_pending: false,
+            provider: None,
         }
     }
 
@@ -278,6 +325,31 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         // No temporary file is left beside it.
         assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_provider_machine_keeps_its_provider_and_an_older_file_reads_as_plain_ssh() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("hosts.json");
+        let hosts = Hosts::open(&path);
+        let mut made = entry("vm-1", EntryState::Ready);
+        made.provider = Some(ProviderMachine {
+            id: "lima".to_owned(),
+            params: BTreeMap::from([("cpus".to_owned(), "2".to_owned())]),
+            link: Some(StoredLink::Connect {
+                template: "limactl shell {name} {cmd}".to_owned(),
+                env: vec![("HUMATA_NAME".to_owned(), Some("vm-1".to_owned())), ("TOKEN".to_owned(), None)],
+            }),
+        });
+        hosts.put(made.clone()).unwrap();
+        assert_eq!(Hosts::open(&path).list().unwrap(), [made]);
+
+        fs::write(
+            &path,
+            br#"{"version":1,"machines":[{"name":"old","ssh_host":"me@old","root":"~/Humata","state":"ready"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(hosts.list().unwrap()[0].provider, None);
     }
 
     #[test]

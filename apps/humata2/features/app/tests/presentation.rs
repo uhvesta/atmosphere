@@ -178,9 +178,6 @@ fn selected_host_and_layout_preferences_restore_without_closing_saved_groups() {
     store.send(AppAction::Settings(T::TogglePinned), |s| {
         s.settings.preferences.show_pinned = false
     });
-    store.send(AppAction::Settings(T::SplitGroups(false)), |s| {
-        s.settings.preferences.split_groups = false
-    });
     saved::Saver::new(clients.storage.clone())
         .save(1, &store.state().saved())
         .expect("save preferences");

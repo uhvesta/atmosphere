@@ -47,6 +47,7 @@ pub struct Shell {
     applied_theme: Option<humata2_settings::Theme>,
     host_address: Entity<InputState>,
     _host_address_subscription: Subscription,
+    files_name: Entity<InputState>,
     _appearance: Subscription,
     viewport: f32,
     terminals: crate::terminals::Terminals,
@@ -100,6 +101,7 @@ impl Shell {
         let board_inputs = crate::board::Inputs::new(&ui, window, cx);
         let host_address =
             cx.new(|cx| InputState::new(window, cx).placeholder("user@host or SSH alias"));
+        let files_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let host_ui = ui.clone();
         let host_address_subscription = cx.subscribe(
             &host_address,
@@ -147,6 +149,7 @@ impl Shell {
             applied_theme: None,
             host_address,
             _host_address_subscription: host_address_subscription,
+            files_name,
             _appearance: appearance,
             viewport: 0.,
         }
@@ -435,6 +438,7 @@ impl Render for Shell {
                     self.channel_filter.clone(),
                     &self.board_inputs,
                     self.host_address.clone(),
+                    self.files_name.clone(),
                     &self.terminals,
                     window,
                     cx,
@@ -453,12 +457,12 @@ impl Render for Shell {
                     .into_any_element()
             } else {
                 self.ui.read(|state| {
-                    if state.workspace.channels.is_empty() && state.route == Route::Home {
-                        div().into_any_element()
-                    } else if matches!(state.route, Route::Settings) {
+                    if matches!(state.route, Route::Settings) {
                         crate::settings::toolbar(look).into_any_element()
                     } else if matches!(state.route, Route::Hosts) {
                         crate::hosts::toolbar(&ui, look).into_any_element()
+                    } else if matches!(state.route, Route::Desk) {
+                        crate::desk::toolbar(&ui, state, look).into_any_element()
                     } else if matches!(state.route, Route::Board(_)) {
                         crate::board::toolbar(&ui, state, &self.board_inputs, look)
                             .into_any_element()
@@ -531,6 +535,9 @@ impl Render for Shell {
             }))
             .on_action(cx.listener(|this, _: &keys::GoBoard, _, cx| {
                 this.send(AppAction::Switch(Route::Board(Scope::Global)), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::OpenSettings, _, cx| {
+                this.send(AppAction::Switch(Route::Settings), cx);
             }))
             .on_action(cx.listener(|this, _: &keys::FocusSidebar, window, cx| {
                 window.focus(&this.sidebar_focus, cx);

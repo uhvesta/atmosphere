@@ -40,10 +40,14 @@ fn button(
     Button::new(id)
         .small()
         .h(px(24.))
-        .px(px(10.))
+        .px(px(11.))
         .label(label)
         .bg(rgb(look.fill))
         .text_color(rgb(look.text))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .border_1()
+        .border_color(rgb(look.line))
         .on_click(move |_, _, cx| {
             cx.stop_propagation();
             ui.send(action.clone(), cx);
@@ -259,6 +263,7 @@ pub(crate) fn page(
                         .gap(px(6.))
                         .children(health.tools.iter().map(|tool| {
                             dim(look, tool.clone())
+                                .text_size(px(11.))
                                 .px(px(6.))
                                 .py(px(1.))
                                 .rounded(px(4.))
@@ -292,9 +297,14 @@ pub(crate) fn page(
                     Button::new("host-open-shell")
                         .small()
                         .h(px(24.))
+                        .px(px(11.))
                         .label("Open a shell")
                         .bg(rgb(look.fill))
                         .text_color(rgb(look.text))
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .border_1()
+                        .border_color(rgb(look.line))
                         .disabled(!machine.online)
                         .on_click(move |_, _, cx| new_session(&send, &id, true, cx)),
                 ),

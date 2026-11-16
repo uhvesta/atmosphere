@@ -4059,6 +4059,7 @@ version = "0.0.0"
 dependencies = [
  "humata2-board",
  "humata2-clients",
+ "humata2-desk",
  "humata2-files",
  "humata2-hosts",
  "humata2-inbox",
@@ -4159,6 +4160,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-desk"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "serde",
+ "tca-rust",
+]
+
+[[package]]
 name = "humata2-desktop"
 version = "0.0.0"
 dependencies = [
@@ -4209,6 +4219,7 @@ version = "0.0.0"
 dependencies = [
  "humata2-clients",
  "serde",
+ "serde_json",
  "tca-rust",
 ]
 
@@ -4413,6 +4424,7 @@ dependencies = [
  "humata2-app",
  "humata2-board",
  "humata2-clients",
+ "humata2-desk",
  "humata2-files",
  "humata2-hosts",
  "humata2-inbox",

@@ -164,9 +164,7 @@ fn tab_row(
                 .copied()
                 .unwrap_or(0);
             bar.when(
-                session.status == Status::Working
-                    && peers > 0
-                    && !(split && state.settings.preferences.split_groups),
+                session.status == Status::Working && peers > 0 && !split,
                 |bar| {
                     let label = format!(
                         "{peers} other{} can type here",
@@ -236,7 +234,7 @@ fn notice(
         .into_any_element()
 }
 
-fn menu(ui: &Rc<Ui>, group: usize, split_groups: bool, look: Look) -> Stateful<Div> {
+fn menu(ui: &Rc<Ui>, group: usize, look: Look) -> Stateful<Div> {
     col()
         .id("new-terminal-menu")
         .absolute()
@@ -278,23 +276,21 @@ fn menu(ui: &Rc<Ui>, group: usize, split_groups: bool, look: Look) -> Stateful<D
                     .child(name)
                     .test_support(),
                 )
-                .when(split_groups, |x| {
-                    x.child(
-                        send(
-                            ui,
-                            format!("split-terminal-{group}-{}", agent.command()),
-                            "Open in second group",
-                            SessionAction::OpenTerminal { agent, split: true },
-                            look,
-                        )
-                        .px(px(6.))
-                        .py(px(5.))
-                        .rounded(px(4.))
-                        .hover(move |x| x.bg(rgb(look.fill)))
-                        .child(chrome::icon(IconName::Columns2, look.secondary, 14.))
-                        .test_support(),
+                .child(
+                    send(
+                        ui,
+                        format!("split-terminal-{group}-{}", agent.command()),
+                        "Open in second group",
+                        SessionAction::OpenTerminal { agent, split: true },
+                        look,
                     )
-                })
+                    .px(px(6.))
+                    .py(px(5.))
+                    .rounded(px(4.))
+                    .hover(move |x| x.bg(rgb(look.fill)))
+                    .child(chrome::icon(IconName::Columns2, look.secondary, 14.))
+                    .test_support(),
+                )
         }))
         .child(
             send(
@@ -466,15 +462,12 @@ pub(crate) fn body(
                 AppAction::Session(SessionAction::DismissError),
             )
         }))
+        .children(crate::desk_bar::bar(ui, state, session, look))
         .child(
             row().flex_1().min_h_0().items_stretch().children(
                 groups
                     .iter()
                     .enumerate()
-                    .filter(|(group, _)| {
-                        state.settings.preferences.split_groups
-                            || *group == state.session.view().map_or(0, |v| v.focused_group)
-                    })
                     .map(|(group, tabs)| {
                         let selected = tabs.tabs.get(tabs.selected);
                         col()
@@ -561,6 +554,31 @@ pub(crate) fn body(
                                         }
                                         _ => None,
                                     };
+                                    // After a host restart (PER-15, PER-29, frame 46): the line that
+                                    // marks it under the old output and, when the agent couldn't be
+                                    // resumed, the card that says why, in place of the exit notice.
+                                    let (reboot, failed) = if *tab == 0 {
+                                        (
+                                            crate::resume_failed::reboot_line(state, session, look),
+                                            crate::resume_failed::note(ui, state, session, look),
+                                        )
+                                    } else {
+                                        (None, None)
+                                    };
+                                    let notice = if reboot.is_some() || failed.is_some() {
+                                        let usual = if failed.is_some() { None } else { notice };
+                                        Some(
+                                            col()
+                                                .w_full()
+                                                .gap(px(8.))
+                                                .children(reboot)
+                                                .children(failed)
+                                                .children(usual)
+                                                .into_any_element(),
+                                        )
+                                    } else {
+                                        notice
+                                    };
                                     terminals.set_offline_banner(
                                         &session.id,
                                         *tab,
@@ -573,10 +591,7 @@ pub(crate) fn body(
                                 None => div().into_any_element(),
                             })
                             .when(state.session.terminal_menu == Some(group), |g| {
-                                g.child(
-                                    menu(ui, group, state.settings.preferences.split_groups, look)
-                                        .test_support(),
-                                )
+                                g.child(menu(ui, group, look).test_support())
                             })
                     }),
             ),

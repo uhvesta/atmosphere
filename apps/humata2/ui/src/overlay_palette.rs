@@ -109,6 +109,9 @@ impl Overlays {
                 if index == 3 {
                     item = item.child(div().flex_1()).child(
                         div()
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .when(!selected, |x| x.bg(rgb(look.fill)))
                             .text_size(px(11.))
                             .text_color(rgb(color))
                             .child(entry.hint.clone()),
@@ -123,6 +126,18 @@ impl Overlays {
                             .text_size(px(11.5))
                             .text_color(rgb(color))
                             .child(entry.hint.clone()),
+                    );
+                }
+                if let Command::Session(id) = &entry.command
+                    && let Some(session) = palette.workspace.session(id)
+                    && !session.last_used.is_empty()
+                {
+                    item = item.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(11.))
+                            .text_color(rgb(if selected { 0xffffff } else { look.tertiary }))
+                            .child(format!("used {}", session.last_used)),
                     );
                 }
                 list = list.child(
@@ -167,8 +182,7 @@ impl Overlays {
                     .child(
                         Input::new(&self.query)
                             .aria_label("Search commands")
-                            .border_0()
-                            .bg(rgb(look.card))
+                            .appearance(false)
                             .text_size(px(16.)),
                     ),
             )

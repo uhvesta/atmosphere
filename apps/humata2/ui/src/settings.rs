@@ -136,7 +136,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
         .gap(px(14.));
     match state.settings.section {
         Section::Layout => {
-            let themes = row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
+            let themes = row().flex_shrink_0().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
                 [
                     (Theme::System, "System"),
                     (Theme::Light, "Light"),
@@ -153,12 +153,37 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                         .test_support()
                         .px(px(12.))
                         .py(px(2.))
-                        .rounded(px(6.))
+                        .rounded(px(5.))
+                        .text_size(px(11.5))
                         .when(prefs.theme == theme, |x| x.bg(rgb(look.card)).shadow_sm())
                         .child(name)
                         .cursor_pointer()
                         .on_click(move |_, _, cx| {
                             ui.send(AppAction::Settings(A::SetTheme(theme)), cx)
+                        })
+                }),
+            );
+            let long_lines = row().flex_shrink_0().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
+                [(true, "Wrap"), (false, "Scroll")].into_iter().map(|(wrap, name)| {
+                    let ui = ui.clone();
+                    let on = prefs.wrap_diffs == wrap;
+                    div()
+                        .id(SharedString::from(format!("settings-long-lines-{name}")))
+                        .role(Role::Tab)
+                        .aria_label(name)
+                        .aria_selected(on)
+                        .test_support()
+                        .px(px(12.))
+                        .py(px(2.))
+                        .rounded(px(5.))
+                        .text_size(px(11.5))
+                        .when(on, |x| x.bg(rgb(look.card)).shadow_sm())
+                        .child(name)
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| {
+                            if !on {
+                                ui.send(AppAction::Settings(A::ToggleWrap), cx)
+                            }
                         })
                 }),
             );
@@ -177,6 +202,14 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                             "Used by every terminal and the diff.",
                             row()
                                 .gap(px(6.))
+                                .h(px(24.))
+                                .px(px(5.))
+                                .rounded(px(6.))
+                                .bg(rgb(look.fill))
+                                .border_1()
+                                .border_color(rgb(look.line))
+                                .text_size(px(12.))
+                                .flex_shrink_0()
                                 .child(button(
                                     ui,
                                     "settings-font-minus",
@@ -184,7 +217,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                                     AppAction::Settings(A::FontSize(-1)),
                                     look,
                                 ))
-                                .child(dim(look, format!("Menlo {}", prefs.font_size)))
+                                .child(format!("Menlo {}", prefs.font_size))
                                 .child(button(
                                     ui,
                                     "settings-font-plus",
@@ -206,23 +239,18 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                                 look,
                             )
                             .into_any_element(),
+                        ))
+                        .child(setting(
+                            look,
+                            "Long lines",
+                            "Code in the diff, the editor, Files and reviews.",
+                            long_lines.into_any_element(),
                         )),
-                )
-                .child(dim(look, "Panes").font_weight(FontWeight::SEMIBOLD));
-            body=body.child(card(look).p(px(14.)).gap(px(10.)).children([(false,"Fixed","One tab group beside the session panel."),(true,"Simple","Two tab groups side by side in one session.")].into_iter().map(|(split,name,note)|{
-                let ui=ui.clone();row().id(SharedString::from(format!("settings-panes-{name}"))).role(Role::Button).aria_label(name).aria_selected(prefs.split_groups==split).test_support().items_start().gap(px(8.)).cursor_pointer().child(div().size(px(14.)).rounded_full().border_1().border_color(rgb(if prefs.split_groups==split{look.accent}else{look.secondary})).when(prefs.split_groups==split,|x|x.bg(rgb(look.accent)).child(div().m(px(4.)).size(px(4.)).rounded_full().bg(rgb(0xffffff))))).child(col().child(name).child(dim(look,note))).on_click(move|_,_,cx|ui.send(AppAction::Settings(A::SplitGroups(split)),cx))
-            }))).child(dim(look,"Switching to Fixed keeps both groups. Simple restores them when you widen the layout."));
+                );
         }
         Section::General => {
             body = body.child(
                 card(look)
-                    .child(setting(
-                        look,
-                        "Long lines",
-                        "Wrap code and diffs at the pane width.",
-                        toggle(ui, "settings-wrap", prefs.wrap_diffs, A::ToggleWrap, look)
-                            .into_any_element(),
-                    ))
                     .child(setting(
                         look,
                         "Confirm bulk approvals",

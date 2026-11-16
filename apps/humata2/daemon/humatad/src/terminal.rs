@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use humata2_access::{AccessRequest, Call, Capability, Target};
 use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
-use humata2_holder::{HolderError, HolderSpec};
+use humata2_holder::{HolderError, HolderSpec, KeyState, KeyedInput};
 use humata2_store::{SessionRecord, Store, StoreError, TabKind, TabRecord};
 use pb::invalid_field::Problem;
 use tokio::sync::watch;
@@ -76,6 +76,13 @@ pub(crate) struct Core {
     holders: Holders,
 }
 
+impl Terminals {
+    /// The shared state, for the review's comment sink.
+    pub(crate) fn core(&self) -> Arc<Core> {
+        self.core.clone()
+    }
+}
+
 impl std::ops::Deref for Terminals {
     type Target = Core;
 
@@ -93,6 +100,168 @@ impl Terminals {
                 holders: Holders::new(config.scrollback_bytes),
                 config,
             }),
+        }
+    }
+}
+
+/// What became of typing a batch of review comments (D138).
+pub(crate) enum CommentsTyped {
+    /// All of it reached the tab's shell.
+    Yes,
+    /// None of it was typed.
+    No(Status),
+    /// Some or all of it may have been typed.
+    Unknown(Status),
+}
+
+/// Where a session's comment batches are typed: the tab, and the holder
+/// process that held its terminal when the batch was begun.
+pub(crate) struct CommentsTarget {
+    pub(crate) tab: String,
+    /// The holder's instance (`humata2_holder::KeyState`), or 0 when it
+    /// can't confirm what it typed: an older holder, or one that didn't
+    /// answer.
+    pub(crate) holder: u64,
+}
+
+/// Whether a batch reached its tab, after a restart.
+pub(crate) enum CommentsArrived {
+    Yes,
+    No,
+    Unknown,
+}
+
+impl Core {
+    /// The tab a session's typing goes to (its agent's, else its first
+    /// shell) and its holder's instance, for the review's comment batches
+    /// (SM-9). A holder that can't answer in time gives `holder: 0`.
+    pub(crate) async fn comments_target(&self, session: &str) -> Result<CommentsTarget, Status> {
+        let tab = self.typing_tab(session).await?;
+        let asked = tokio::time::timeout(
+            TYPE_TIMEOUT,
+            humata2_holder::key_arrived(&tab.holder_socket, "instance"),
+        )
+        .await;
+        let holder = match asked {
+            Ok(Ok(KeyState::Arrived { holder } | KeyState::NotArrived { holder })) => holder,
+            _ => 0,
+        };
+        Ok(CommentsTarget {
+            tab: tab.id,
+            holder,
+        })
+    }
+
+    /// Types `text` into the target's tab, once for `key` when the holder
+    /// can remember keys. Without that (`target.holder == 0`, or a holder
+    /// that turns out not to know keyed input) it is plain typing, which
+    /// cannot be told apart from a second try after a restart.
+    pub(crate) async fn type_comments(
+        &self,
+        target: &CommentsTarget,
+        key: &str,
+        text: &[u8],
+    ) -> CommentsTyped {
+        let tab = match self.find_tab(&target.tab).await {
+            Ok(Some(tab)) => tab,
+            Ok(None) => return CommentsTyped::No(no_tab(&target.tab)),
+            Err(status) => return CommentsTyped::No(status),
+        };
+        if target.holder == 0 {
+            return self.type_plain(&tab, text).await;
+        }
+        let no_log = Path::new("");
+        let typed = tokio::time::timeout(
+            TYPE_TIMEOUT,
+            humata2_holder::keyed_input(&tab.holder_socket, key, text),
+        )
+        .await;
+        match typed {
+            Ok(Ok(KeyedInput::Written | KeyedInput::Repeat)) => {
+                CommentsTyped::Yes
+            }
+            Ok(Ok(KeyedInput::Unsupported)) => self.type_plain(&tab, text).await,
+            // Failed before anything could be typed.
+            Ok(Err(
+                error @ (HolderError::Connect { .. }
+                | HolderError::KeyTooLong { .. }
+                | HolderError::KeyedInputTooLarge { .. }),
+            )) => CommentsTyped::No(holder_failed("reach the tab's shell", &error, no_log)),
+            // A refused keyed write may have been partly typed.
+            Ok(Err(error)) => {
+                CommentsTyped::Unknown(holder_failed("type the comments into the tab", &error, no_log))
+            }
+            Err(_) => CommentsTyped::Unknown(status::internal(
+                format!(
+                    "tab {}'s shell didn't take the comments within {} seconds; some of them may have been typed",
+                    tab.id,
+                    TYPE_TIMEOUT.as_secs()
+                ),
+                "",
+            )),
+        }
+    }
+
+    /// After a restart: whether the batch `key` reached the target's tab.
+    /// Only the holder process that held the terminal when the batch was
+    /// begun can say it never arrived: a holder started again for the same
+    /// tab has an empty memory, so its "no" proves nothing and reads as
+    /// `Unknown`.
+    pub(crate) async fn comments_arrived(&self, target: &CommentsTarget, key: &str) -> CommentsArrived {
+        if target.holder == 0 {
+            return CommentsArrived::Unknown;
+        }
+        let tab = match self.find_tab(&target.tab).await {
+            Ok(Some(tab)) => tab,
+            _ => return CommentsArrived::Unknown,
+        };
+        let asked = tokio::time::timeout(
+            TYPE_TIMEOUT,
+            humata2_holder::key_arrived(&tab.holder_socket, key),
+        )
+        .await;
+        match asked {
+            Ok(Ok(KeyState::Arrived { holder })) if holder == target.holder => CommentsArrived::Yes,
+            Ok(Ok(KeyState::NotArrived { holder })) if holder == target.holder => CommentsArrived::No,
+            _ => CommentsArrived::Unknown,
+        }
+    }
+
+    /// Plain typing through the tab's holder link.
+    async fn type_plain(&self, tab: &TabRecord, text: &[u8]) -> CommentsTyped {
+        let no_log = Path::new("");
+        let link = match self.holders.link(&tab.id, &tab.holder_socket).await {
+            Ok(link) => link,
+            Err(error) => {
+                return CommentsTyped::No(holder_failed("reach the tab's shell", &error, no_log));
+            }
+        };
+        match tokio::time::timeout(TYPE_TIMEOUT, link.type_text(text)).await {
+            Ok(Ok(())) => CommentsTyped::Yes,
+            Ok(Err(TypeFailed::Exited)) => CommentsTyped::No(status::not_found(
+                pb::EntityKind::Tab,
+                &tab.id,
+                format!("tab {}'s shell exited before the comments reached it", tab.id),
+                "start the session's agent again, then send the comments",
+            )),
+            Ok(Err(failed @ TypeFailed::Refused { .. })) => {
+                CommentsTyped::No(status::internal(status::chain(&failed), ""))
+            }
+            Ok(Err(TypeFailed::Lost(error))) => {
+                CommentsTyped::Unknown(holder_failed("type the comments into the tab", &error, no_log))
+            }
+            Err(_) => {
+                // A late answer must not reach the next call.
+                self.holders.forget(&tab.id);
+                CommentsTyped::Unknown(status::internal(
+                    format!(
+                        "tab {}'s shell didn't take the comments within {} seconds; some of them may have been typed",
+                        tab.id,
+                        TYPE_TIMEOUT.as_secs()
+                    ),
+                    "",
+                ))
+            }
         }
     }
 }

@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use humata2_clients::model::{
     Agent, Answer, Capability, ChannelId, Comment, ForkKind, GrantId, ItemId,
-    ItemStatus, MachineId, Recovery, RequestId, RuleSetting, Scope, SessionId, SessionOptions,
-    TransferId,
+    ItemStatus, MachineId, Recovery, RequestId, Restart, RuleSetting, Scope, SessionId,
+    SessionOptions, SetupId, TransferId,
 };
-use humata2_clients::{Daemon, DaemonError, Events, Reply, Workspace};
+use humata2_clients::{Daemon, DaemonError, Event, Events, Reply, Workspace};
 use humata2_grpc::humata::v1 as pb;
 
 use crate::connection::{LiveDaemon, Shared, fresh_key, not_in_this_release};
-use crate::map;
+use crate::{map, setup};
 
 const PAGE_SIZE: u32 = 200;
 const POLL: Duration = Duration::from_millis(100);
@@ -22,8 +22,9 @@ impl Shared {
     /// refused with the daemon's words.
     async fn finish(&self, mut operation: pb::Operation, what: &str) -> Result<pb::Operation, DaemonError> {
         while operation.state == pb::OperationState::Running as i32 {
-            // On the client's runtime: the caller may be polled elsewhere.
-            let _ = self.spawn(tokio::time::sleep(POLL)).await;
+            // On the client's runtime: the caller may be polled elsewhere,
+            // and a tokio sleep needs the runtime from when it is made.
+            let _ = self.spawn(async { tokio::time::sleep(POLL).await }).await;
             let Some(id) = operation.id.clone() else {
                 break;
             };
@@ -46,6 +47,94 @@ impl Shared {
             what: what.to_owned(),
             reason,
         })
+    }
+
+    /// The daemon's last start: `None` while it isn't known yet (the
+    /// daemon is still bringing sessions back, or couldn't be read), then
+    /// the restart to show, if the start brought anything back or lost
+    /// anything. A clean start with nothing to bring back shows none.
+    async fn read_restart(&self) -> Option<Option<Restart>> {
+        let info = self
+            .daemon_info()
+            .get_server_info(pb::GetServerInfoRequest {})
+            .await
+            .ok()?
+            .into_inner();
+        let last = info.last_start.as_ref()?;
+        Some(map::restart(&self.machine, Some(last)).filter(|restart| {
+            !restart.resumed.is_empty()
+                || !restart.not_brought_back.is_empty()
+                || last.restored_copy_taken_unix_ms != 0
+        }))
+    }
+
+    /// Reads the restart report once if none is known yet: the daemon
+    /// publishes it only after it has brought its sessions back, so the
+    /// first session event after that is the cue. At most one read runs.
+    pub(crate) fn check_restart(self: &Arc<Self>) {
+        {
+            let mut state = self.state();
+            if state.restart_known || state.restart_reading {
+                return;
+            }
+            state.restart_reading = true;
+        }
+        let shared = self.clone();
+        self.spawn(async move {
+            let restart = shared.read_restart().await;
+            {
+                let mut state = shared.state();
+                state.restart_reading = false;
+                state.restart_known |= restart.is_some();
+            }
+            if let Some(Some(restart)) = restart {
+                shared.publish(Event::Restart(restart));
+            }
+        });
+    }
+
+    /// Shows a setup's operation to the app.
+    fn publish_setup(&self, operation: &pb::Operation) {
+        let id = operation.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+        let name = self.state().setup_names.get(&id).cloned().unwrap_or_default();
+        self.publish(Event::ChannelSetup(setup::setup(&name, operation, &self.machine)));
+    }
+
+    /// Follows a channel setup until it stops running, pushing each change.
+    /// A failed or cancelled one is refused with the daemon's words.
+    async fn watch_setup(&self, operation: pb::Operation) -> Result<pb::Operation, DaemonError> {
+        const WHAT: &str = "Setting up the channel";
+        self.publish_setup(&operation);
+        let mut last = operation;
+        if last.state == pb::OperationState::Running as i32 {
+            if let Some(id) = last.id.clone() {
+                let opened = self
+                    .operations()
+                    .watch_operation(pb::WatchOperationRequest {
+                        id: Some(id),
+                        from_version: last.version,
+                    })
+                    .await
+                    .map_err(|status| self.error(&status, WHAT))?;
+                let mut stream = opened.into_inner();
+                while last.state == pb::OperationState::Running as i32 {
+                    match stream.message().await {
+                        Ok(Some(update)) => {
+                            self.publish_setup(&update);
+                            last = update;
+                        }
+                        // The stream ended early: `finish` asks once more.
+                        Ok(None) => break,
+                        Err(status) => return Err(self.error(&status, WHAT)),
+                    }
+                }
+            }
+        }
+        let done = self.finish(last, WHAT).await;
+        if let Ok(operation) = &done {
+            self.publish_setup(operation);
+        }
+        done
     }
 
     async fn load(&self) -> Result<Workspace, DaemonError> {
@@ -97,10 +186,17 @@ impl Shared {
                 break;
             }
         }
+        let restart = self.read_restart().await;
+        {
+            let mut state = self.state();
+            state.restart_known = restart.is_some();
+        }
+        let restart = restart.flatten();
         Ok(Workspace {
             machines: vec![map::this_machine(self.machine.clone())],
             channels,
             sessions,
+            restarts: restart.into_iter().collect(),
             ..Workspace::default()
         })
     }
@@ -111,6 +207,7 @@ impl Shared {
         repos: Vec<String>,
         machines: Vec<MachineId>,
     ) -> Result<ChannelId, DaemonError> {
+        let shown_name = name.clone();
         let repos = repos
             .iter()
             .map(|text| map::parse_repo(text).ok_or_else(|| bad_repo(text)))
@@ -136,14 +233,20 @@ impl Shared {
             .await
             .map_err(|status| self.error(&status, "The channel"))?
             .into_inner();
-        if let Some(setup) = reply.setup {
-            self.finish(setup, "Setting up the channel").await?;
-        }
         let id = reply.channel.and_then(|channel| channel.id).ok_or_else(|| DaemonError::Refused {
             what: "The channel".to_owned(),
             reason: "the daemon didn't name the channel it made. Reload to see whether it exists".to_owned(),
         })?;
-        Ok(ChannelId::new(id.value))
+        let id = ChannelId::new(id.value);
+        if let Some(setup) = reply.setup {
+            if let Some(operation) = &setup.id {
+                let mut state = self.state();
+                state.setup_names.insert(operation.value.clone(), shown_name);
+                state.setup_channels.insert(operation.value.clone(), id.clone());
+            }
+            self.watch_setup(setup).await?;
+        }
+        Ok(id)
     }
 
     async fn create_session(
@@ -225,6 +328,59 @@ impl Shared {
         self.finish(operation, "Resuming the session").await.map(|_| ())
     }
 
+    async fn start_fresh(&self, session: SessionId) -> Result<(), DaemonError> {
+        let id = pb::SessionId {
+            value: session.as_str().to_owned(),
+        };
+        let operation = self
+            .sessions()
+            .resume_session(pb::ResumeSessionRequest {
+                idempotency_key: fresh_key(),
+                id: Some(id),
+                mode: pb::resume_session_request::Mode::StartFreshWithSummary as i32,
+            })
+            .await
+            .map_err(|status| self.error(&status, "Starting the session fresh"))?
+            .into_inner();
+        self.finish(operation, "Starting the session fresh").await.map(|_| ())
+    }
+
+    async fn cancel_setup(&self, setup: SetupId) -> Result<(), DaemonError> {
+        let operation = self
+            .operations()
+            .cancel_operation(pb::CancelOperationRequest {
+                id: Some(pb::OperationId { value: setup.0 }),
+                idempotency_key: fresh_key(),
+            })
+            .await
+            .map_err(|status| self.error(&status, "Stopping the setup"))?
+            .into_inner();
+        self.publish_setup(&operation);
+        Ok(())
+    }
+
+    /// Runs a failed setup's failed steps again; the caller returns as soon
+    /// as the daemon has taken it, and the progress arrives as events.
+    /// Runs a setup's failed steps again and follows it to the end; the
+    /// channel it makes, once it is done.
+    async fn retry_setup(&self, setup: SetupId) -> Result<ChannelId, DaemonError> {
+        let channel = self.state().setup_channels.get(&setup.0).cloned();
+        let operation = self
+            .operations()
+            .retry_operation(pb::RetryOperationRequest {
+                id: Some(pb::OperationId { value: setup.0 }),
+                idempotency_key: fresh_key(),
+            })
+            .await
+            .map_err(|status| self.error(&status, "Trying the setup again"))?
+            .into_inner();
+        self.watch_setup(operation).await?;
+        channel.ok_or_else(|| DaemonError::Refused {
+            what: "The channel".to_owned(),
+            reason: "its setup finished, but this app didn't start it, so it can't tell which channel it made. Reload to see it".to_owned(),
+        })
+    }
+
     async fn send(&self, session: SessionId, text: String) -> Result<(), DaemonError> {
         let id = pb::SessionId {
             value: session.as_str().to_owned(),
@@ -289,6 +445,24 @@ impl Daemon for LiveDaemon {
         let shared = self.shared.clone();
         let session = session.clone();
         Box::pin(async move { shared.resume(session).await })
+    }
+
+    fn start_fresh(&self, session: &SessionId) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.start_fresh(session).await })
+    }
+
+    fn cancel_setup(&self, setup: &SetupId) -> Reply<()> {
+        let shared = self.shared.clone();
+        let setup = setup.clone();
+        Box::pin(async move { shared.cancel_setup(setup).await })
+    }
+
+    fn retry_setup(&self, setup: &SetupId) -> Reply<ChannelId> {
+        let shared = self.shared.clone();
+        let setup = setup.clone();
+        Box::pin(async move { shared.retry_setup(setup).await })
     }
 
     fn fork(&self, _session: &SessionId, _kind: ForkKind, _title: &str) -> Reply<SessionId> {

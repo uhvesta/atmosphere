@@ -13,6 +13,11 @@ use tonic::Streaming;
 use crate::connection::{LiveDaemon, Shared, fresh_key};
 use crate::map;
 
+/// How many times a tab not listed yet is looked for, and how long apart:
+/// about two seconds in all.
+const TAB_TRIES: u32 = 20;
+const TAB_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Bytes the daemon may send before we acknowledge them.
 const WINDOW_BYTES: u32 = 4 << 20;
 
@@ -87,16 +92,29 @@ impl Shared {
         if let Some(tab) = cached {
             return Ok(tab);
         }
-        self.refresh_tabs(&pb_session(session))
-            .await?
-            .into_iter()
-            .nth(index)
-            .ok_or_else(|| DaemonError::Refused {
-                what: "The terminal".to_owned(),
-                reason: format!(
-                    "the session has no terminal tab {index}. Open the tab again from the session"
-                ),
-            })
+        // A session just started lists its tabs a moment after the app
+        // hears of it, so a tab not listed yet gets a few short tries
+        // before it is refused.
+        for _ in 0..TAB_TRIES {
+            if let Some(tab) = self
+                .refresh_tabs(&pb_session(session))
+                .await?
+                .into_iter()
+                .nth(index)
+            {
+                return Ok(tab);
+            }
+            // On the client's runtime: the caller may be polled elsewhere,
+            // and a tokio sleep needs the runtime from when it is made, so
+            // it is made inside the spawned task.
+            let _ = self.spawn(async { tokio::time::sleep(TAB_RETRY).await }).await;
+        }
+        Err(DaemonError::Refused {
+            what: "The terminal".to_owned(),
+            reason: format!(
+                "the session has no terminal tab {index}. Open the tab again from the session"
+            ),
+        })
     }
 
     /// The attach on tab `index`, starting it if there is none.
@@ -163,6 +181,27 @@ impl Shared {
 }
 
 impl Shared {
+    /// Pushes `bytes` a holder numbered from `at` as the app's next bytes
+    /// of the tab (`Placed`).
+    fn place(&self, session: &SessionId, tab: usize, at: u64, mut bytes: Vec<u8>) {
+        let (offset, skip) = self
+            .state()
+            .placed
+            .entry((session.as_str().to_owned(), tab))
+            .or_default()
+            .place(at, bytes.len() as u64);
+        bytes.drain(..usize::try_from(skip).unwrap_or(bytes.len()));
+        if bytes.is_empty() {
+            return;
+        }
+        self.publish(Event::TerminalData {
+            session: session.clone(),
+            tab,
+            offset: usize::try_from(offset).unwrap_or(usize::MAX),
+            bytes,
+        });
+    }
+
     /// Attaches again each tab of `session` the app opened whose attach
     /// ended, as when its holder died in a reboot and the daemon resumed
     /// the agent in a new one. A tab still attached is left as it is; one
@@ -205,21 +244,11 @@ async fn read_attach(
                 // The snapshot is the screen up to its offset: place it so
                 // the output that follows continues from there.
                 let offset = snapshot.offset.saturating_sub(snapshot.vt.len() as u64);
-                shared.publish(Event::TerminalData {
-                    session: session.clone(),
-                    tab,
-                    offset: usize::try_from(offset).unwrap_or(usize::MAX),
-                    bytes: snapshot.vt,
-                });
+                shared.place(&session, tab, offset, snapshot.vt);
             }
             Some(Message::Output(output)) => {
                 let end = output.offset + output.data.len() as u64;
-                shared.publish(Event::TerminalData {
-                    session: session.clone(),
-                    tab,
-                    offset: usize::try_from(output.offset).unwrap_or(usize::MAX),
-                    bytes: output.data,
-                });
+                shared.place(&session, tab, output.offset, output.data);
                 let _ = attach
                     .send(pb::attach_client_message::Message::Ack(pb::OutputAck {
                         offset: end,

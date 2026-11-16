@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::model::{
     AccessRule, Agent, Answer, Capability, ChannelId, Comment, ForkKind, GrantId, ItemId, ItemStatus, Line, MachineId, Recovery,
-    RequestId, RuleSetting, Scope, Session, SessionId, Transfer, TransferId,
+    RequestId, RuleSetting, Scope, Session, SessionId, SetupId, Transfer, TransferId,
 };
 use crate::workspace::Workspace;
 
@@ -53,6 +53,10 @@ pub enum Event {
     },
     /// A host went online or offline.
     Machine(crate::model::Machine),
+    /// A host's restart report is ready (frame 47).
+    Restart(crate::model::Restart),
+    /// A channel setup moved on; `Done`/`Failed` steps included (frame 45).
+    ChannelSetup(crate::model::ChannelSetup),
     /// A transfer moved on.
     Transfer(Transfer),
     /// Events were dropped because the subscriber fell behind: reload.
@@ -62,6 +66,8 @@ pub enum Event {
 /// The operations a fake can be told to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Operation {
+    /// A [`crate::desk::DeskClient`] call.
+    Desk(crate::desk::Operation),
     /// [`Daemon::load`].
     Load,
     /// [`Daemon::send`].
@@ -84,6 +90,12 @@ pub enum Operation {
     Archive,
     /// [`Daemon::resume`].
     Resume,
+    /// [`Daemon::start_fresh`].
+    StartFresh,
+    /// [`Daemon::cancel_setup`].
+    CancelSetup,
+    /// [`Daemon::retry_setup`].
+    RetrySetup,
     /// [`Daemon::set_rule`].
     SetRule,
     /// [`Daemon::remove_grant`].
@@ -153,6 +165,9 @@ pub trait Daemon: Send + Sync + 'static {
     fn reconnect(&self, machine: &MachineId) -> Reply<Vec<(SessionId, Recovery)>>;
     /// Starts an exited session's agent again on its conversation.
     fn resume(&self, session: &SessionId) -> Reply<()>;
+    /// Starts a session whose resume failed on a new conversation, seeded
+    /// with a summary of the old one (PER-15, D143).
+    fn start_fresh(&self, session: &SessionId) -> Reply<()>;
     /// Forks a session.
     fn fork(&self, session: &SessionId, kind: ForkKind, title: &str) -> Reply<SessionId>;
     /// Archives a session; its forks keep running.
@@ -183,6 +198,10 @@ pub trait Daemon: Send + Sync + 'static {
         repos: Vec<String>,
         machines: Vec<MachineId>,
     ) -> Reply<ChannelId>;
+    /// Stops a channel setup; the folders it made are moved to the trash.
+    fn cancel_setup(&self, setup: &SetupId) -> Reply<()>;
+    /// Runs a failed channel setup's failed steps again; the channel, once done.
+    fn retry_setup(&self, setup: &SetupId) -> Reply<ChannelId>;
     /// Moves a board item to a column.
     fn move_item(&self, item: &ItemId, status: ItemStatus) -> Reply<()>;
     /// Adds a board item.

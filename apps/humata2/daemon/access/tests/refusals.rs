@@ -484,7 +484,7 @@ fn the_capability_list_matches_the_trace_matrix() {
     );
     let count = |tier: Tier| all.iter().filter(|c| c.tier() == tier).count();
     // TRACE.md §2's rows.
-    assert_eq!(count(Tier::DefaultAllow), 13);
+    assert_eq!(count(Tier::DefaultAllow), 15);
     assert_eq!(count(Tier::AskMe), 16);
     assert_eq!(count(Tier::AskNoAllow), 1);
     assert_eq!(count(Tier::NeverByDefault), 3);
@@ -494,5 +494,50 @@ fn the_capability_list_matches_the_trace_matrix() {
     for capability in Capability::ALL {
         let agent_tier = !matches!(capability.tier(), Tier::UserOnly | Tier::Peer);
         assert_eq!(capability.has_rule(), agent_tier, "{capability:?}");
+    }
+}
+
+#[test]
+fn an_agent_answers_comments_of_its_own_session_only() {
+    let mut policy = policy();
+    let own = |capability| use_on(capability, Target::Session(a()));
+    // Default Allow: an agent replies to and resolves its own session's comments.
+    for capability in [Capability::CommentReply, Capability::CommentResolve] {
+        assert!(matches!(
+            check(&policy, &as_agent(a()), &own(capability), &on_mac()),
+            Verdict::Allowed { .. }
+        ));
+    }
+    // The user turns replies off for the channel: replies are refused, a
+    // resolve is not.
+    policy
+        .set_rule(
+            &user(),
+            &Rules::Channel(payments()),
+            Capability::CommentReply,
+            Decision::Never,
+        )
+        .expect("a rule the capability offers");
+    let refusal = refusal_of(check(
+        &policy,
+        &as_agent(a()),
+        &own(Capability::CommentReply),
+        &on_mac(),
+    ));
+    assert_eq!(refusal.kind(), ErrorKind::Denied(DeniedSource::NeverRule));
+    assert!(matches!(
+        check(&policy, &as_agent(a()), &own(Capability::CommentResolve), &on_mac()),
+        Verdict::Allowed { .. }
+    ));
+    // Another session's comments don't fit the capability.
+    for capability in [Capability::CommentReply, Capability::CommentResolve] {
+        assert_eq!(
+            policy.check(
+                &as_agent(a()),
+                &use_on(capability, Target::Session(b())),
+                &on_mac()
+            ),
+            Err(CheckError::TargetDoesNotFit { capability })
+        );
     }
 }

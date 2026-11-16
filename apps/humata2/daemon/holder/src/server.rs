@@ -1,6 +1,7 @@
 //! The holder process: one program on one pseudo-terminal, its output
 //! kept with offsets, served to any number of clients on a Unix socket.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File};
 use std::future::Future;
@@ -25,7 +26,7 @@ use tokio::sync::{Notify, broadcast, mpsc, watch};
 
 use crate::HolderError;
 use crate::protocol::{
-    CHUNK, ClientFrame, ServerFrame, VERSION, Welcome, output_frame, read_frame,
+    CHUNK, ClientFrame, MAX_KEYED, ServerFrame, VERSION, Welcome, output_frame, read_frame,
 };
 use crate::saved::{SYNC_EVERY, SaveLog};
 use crate::scrollback::Scrollback;
@@ -35,6 +36,34 @@ use crate::scrollback::Scrollback;
 const LIVE_CHUNKS: usize = 256;
 /// How long the program gets to end after a hang-up before it's killed.
 const HANG_UP_GRACE: Duration = Duration::from_secs(2);
+/// How many keyed inputs the holder remembers having typed.
+const KEYS_KEPT: usize = 256;
+
+/// The keys of the keyed inputs typed, the most recent `KEYS_KEPT`. Kept
+/// in memory only: a holder that starts again runs a new program on a new
+/// terminal, which nothing sent before it could have reached.
+struct Keys(VecDeque<String>);
+
+impl Keys {
+    fn has(&self, key: &str) -> bool {
+        self.0.iter().any(|kept| kept == key)
+    }
+
+    fn remember(&mut self, key: String) {
+        if self.0.len() == KEYS_KEPT {
+            self.0.pop_front();
+        }
+        self.0.push_back(key);
+    }
+}
+
+/// A keyed input being received: held until whole, then typed at once.
+struct Pending {
+    key: String,
+    data: Vec<u8>,
+    /// Went over `MAX_KEYED`; the rest is dropped.
+    overflowed: bool,
+}
 
 /// What a holder runs and where it listens.
 #[derive(Clone, Debug)]
@@ -71,6 +100,9 @@ struct Shared {
     live: broadcast::Sender<Live>,
     master: OwnedFd,
     writer: Mutex<File>,
+    keys: Mutex<Keys>,
+    /// Names this run of the holder; see `new_instance`.
+    instance: u64,
     group: Option<Pid>,
     stop: watch::Sender<bool>,
     /// Output was saved and not yet synced.
@@ -156,6 +188,30 @@ impl Shared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .write_all(data)
             .map_err(|source| HolderError::Write { source })
+    }
+
+    /// Types `data` unless `key` was typed already, and remembers `key`
+    /// once all of it is written. Returns whether it was a repeat. Keyed
+    /// inputs are typed one at a time, so two connections sending the same
+    /// key can't both type it.
+    fn write_keyed(&self, key: &str, data: &[u8]) -> Result<bool, HolderError> {
+        let mut keys = self
+            .keys
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if keys.has(key) {
+            return Ok(true);
+        }
+        self.write(data)?;
+        keys.remember(key.to_owned());
+        Ok(false)
+    }
+
+    fn has_key(&self, key: &str) -> bool {
+        self.keys
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .has(key)
     }
 
     /// Hangs up on the program, as closing a terminal window does, and
@@ -282,8 +338,27 @@ async fn sync_after_writes<F: Future<Output = ()>>(wrote: &Notify, mut sync: imp
     loop {
         wrote.notified().await;
         tokio::time::sleep(SYNC_EVERY).await;
+        // What was written during the wait is covered by this sync, so its
+        // notice is taken back: a burst is synced once. Output that lands
+        // while syncing leaves a new notice and gets a sync of its own.
+        tokio::select! {
+            biased;
+            () = wrote.notified() => {}
+            () = std::future::ready(()) => {}
+        }
         sync().await;
     }
+}
+
+/// An id that differs between runs of a holder, even for the same tab: the
+/// start time in nanoseconds mixed with the process id. Never 0, which
+/// clients use for "not known".
+fn new_instance() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_nanos()).unwrap_or(0));
+    let id = nanos ^ u64::from(std::process::id()).rotate_left(40);
+    id.max(1)
 }
 
 fn pid_path(socket: &Path) -> PathBuf {
@@ -437,6 +512,8 @@ fn start(
         live: broadcast::channel(LIVE_CHUNKS).0,
         master,
         writer: Mutex::new(writer),
+        keys: Mutex::new(Keys(VecDeque::new())),
+        instance: new_instance(),
         group,
         stop: watch::channel(false).0,
         wrote: Notify::new(),
@@ -633,6 +710,9 @@ async fn send_backlog(
 
 /// Carries out what the client asks, answering through `replies`.
 async fn commands(shared: Arc<Shared>, mut read: OwnedReadHalf, replies: mpsc::Sender<Vec<u8>>) {
+    // Dropped with the connection: a keyed input cut off before its last
+    // chunk types nothing.
+    let mut pending: Option<Pending> = None;
     while let Ok(Some(frame)) = read_frame(&mut read).await {
         let reply = match ClientFrame::decode(&frame) {
             Ok(ClientFrame::Input { seq, last, data }) => {
@@ -647,6 +727,41 @@ async fn commands(shared: Arc<Shared>, mut read: OwnedReadHalf, replies: mpsc::S
                     }),
                 }
             }
+            Ok(ClientFrame::KeyedInput { key, last, data }) => {
+                if pending.as_ref().is_none_or(|held| held.key != key) {
+                    pending = Some(Pending {
+                        key,
+                        data: Vec::new(),
+                        overflowed: false,
+                    });
+                }
+                let Some(held) = pending.as_mut() else { continue };
+                let mut reply = None;
+                if !held.overflowed {
+                    if held.data.len() + data.len() > MAX_KEYED {
+                        held.overflowed = true;
+                        held.data = Vec::new();
+                        reply = Some(ServerFrame::Refused {
+                            message: format!(
+                                "keyed input over {MAX_KEYED} bytes; nothing was typed. Send it in smaller parts"
+                            ),
+                        });
+                    } else {
+                        held.data.extend_from_slice(&data);
+                    }
+                }
+                if last
+                    && let Some(done) = pending.take()
+                    && !done.overflowed
+                {
+                    reply = Some(type_keyed(&shared, done).await);
+                }
+                reply
+            }
+            Ok(ClientFrame::KeyQuery { key }) => Some(ServerFrame::KeyAnswer {
+                arrived: shared.has_key(&key),
+                instance: shared.instance,
+            }),
             Ok(ClientFrame::Resize { cols, rows }) => {
                 shared.resize(cols, rows).err().map(|error| refused(&error))
             }
@@ -664,6 +779,20 @@ async fn commands(shared: Arc<Shared>, mut read: OwnedReadHalf, replies: mpsc::S
     }
 }
 
+/// Types a whole keyed input in one go.
+async fn type_keyed(shared: &Arc<Shared>, input: Pending) -> ServerFrame {
+    let typing = shared.clone();
+    let written =
+        tokio::task::spawn_blocking(move || typing.write_keyed(&input.key, &input.data)).await;
+    match written {
+        Ok(Ok(repeat)) => ServerFrame::KeyedWritten { repeat },
+        Ok(Err(error)) => refused(&error),
+        Err(_) => ServerFrame::Refused {
+            message: "typing was interrupted; ask whether it arrived".to_owned(),
+        },
+    }
+}
+
 fn refused(error: &HolderError) -> ServerFrame {
     ServerFrame::Refused {
         message: error.to_string(),
@@ -677,7 +806,18 @@ mod tests {
 
     use tokio::sync::Notify;
 
-    use super::sync_after_writes;
+    use super::{KEYS_KEPT, Keys, sync_after_writes};
+
+    #[test]
+    fn the_oldest_key_is_forgotten_after_256() {
+        let mut keys = Keys(Default::default());
+        for n in 0..=KEYS_KEPT {
+            keys.remember(format!("k{n}"));
+        }
+        assert!(!keys.has("k0"));
+        assert!(keys.has("k1"));
+        assert!(keys.has(&format!("k{KEYS_KEPT}")));
+    }
 
     async fn syncing(wrote: &Notify, syncs: &AtomicUsize) {
         sync_after_writes(wrote, || async {
@@ -710,7 +850,10 @@ mod tests {
             tokio::time::sleep(Duration::from_secs(3600)).await;
             (early, after, syncs.load(Ordering::SeqCst))
         };
+        // The syncing side is polled first, as in the holder, where it is
+        // already waiting when output arrives.
         let counts = tokio::select! {
+            biased;
             () = syncing(&wrote, &syncs) => unreachable!(),
             counts = check => counts,
         };

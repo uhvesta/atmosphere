@@ -23,7 +23,7 @@
 //! how to wait, and gets each step's progress pushed to it as it happens
 //! (TR-7).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -31,13 +31,14 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::enroll::{self, Key};
-use crate::error::{KnownHostsError, NameError, QuoteError, Remedy, RunError, SetupError};
-use crate::hosts::{EntryState, HostEntry, Hosts, HostsError};
+use crate::error::{KnownHostsError, NameError, QuoteError, Remedy, RunError, SetupError, ValuesError};
+use crate::hosts::{EntryState, HostEntry, Hosts, HostsError, ProviderMachine};
 use crate::identity::{SshAccess, SshTarget};
 use crate::install::{Builds, InstalledFile};
 use crate::known_hosts;
 use crate::link::Link;
 use crate::name::MachineName;
+use crate::provider::{Action, Provider, Reach};
 use crate::runner::{Exit, Invocation, Output, Runner};
 use crate::setup::{self, Progress, RetryPolicy, Setup};
 
@@ -49,6 +50,10 @@ pub const DEFAULT_ROOT: &str = "~/Humata";
 /// The steps an operation shows (GRPC.md §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OpStep {
+    /// The provider's `create` command (MP-19).
+    Create,
+    /// The provider's `identity` command (MP-8).
+    Identity,
     Connect,
     Check,
     Install,
@@ -58,6 +63,9 @@ pub enum OpStep {
     Uninstall,
     /// Forgetting the host key and dropping the entry.
     Forget,
+    /// One of the provider's own commands: start, stop, status, or the
+    /// delete that follows removing a machine (MP-21).
+    Provider,
 }
 
 impl OpStep {
@@ -67,10 +75,29 @@ impl OpStep {
     pub const RECONNECT: [Self; 4] = [Self::Connect, Self::Check, Self::Install, Self::Start];
     /// The steps of Remove machine.
     pub const REMOVE: [Self; 2] = [Self::Uninstall, Self::Forget];
+    /// The steps of a provider's start, stop or status.
+    pub const PROVIDER_ACTION: [Self; 1] = [Self::Provider];
+    /// The steps of a provider machine's Delete: remove it, then the
+    /// provider's `delete` (MP-21).
+    pub const PROVIDER_DELETE: [Self; 3] = [Self::Uninstall, Self::Forget, Self::Provider];
+
+    /// The steps of Create machine through a provider that reaches its
+    /// machines as `reach` says (MP-19).
+    pub fn create_steps(reach: Reach) -> Vec<Self> {
+        let mut steps = vec![Self::Create];
+        if reach == Reach::Identity {
+            steps.push(Self::Identity);
+        }
+        steps.extend([Self::Connect, Self::Check, Self::Install, Self::Start, Self::FindAgents]);
+        steps
+    }
 
     /// Stable, as `OperationStep.key`.
     pub fn key(self) -> &'static str {
         match self {
+            Self::Create => "create",
+            Self::Identity => "identity",
+            Self::Provider => "provider",
             Self::Connect => "connect",
             Self::Check => "check",
             Self::Install => "install",
@@ -84,6 +111,9 @@ impl OpStep {
     /// As shown.
     pub fn title(self) -> &'static str {
         match self {
+            Self::Create => "Creating the machine",
+            Self::Identity => "Asking the provider how to reach it",
+            Self::Provider => "Running the provider's command",
             Self::Connect => "Connecting",
             Self::Check => "Checking the machine",
             Self::Install => "Installing Humata's tools",
@@ -96,7 +126,9 @@ impl OpStep {
 
     fn of(step: setup::Step) -> Self {
         match step {
-            setup::Step::Create | setup::Step::Identity | setup::Step::Connect => Self::Connect,
+            setup::Step::Create => Self::Create,
+            setup::Step::Identity => Self::Identity,
+            setup::Step::Connect => Self::Connect,
             setup::Step::Check => Self::Check,
             setup::Step::Install => Self::Install,
             setup::Step::Service => Self::Start,
@@ -138,10 +170,10 @@ pub struct Drive<'a> {
 }
 
 /// A step boundary: the cancel the user asked for, if any.
-fn stop_if_cancelled(link: &Link, drive: &Drive<'_>) -> Result<(), ManageError> {
+fn stop_if_cancelled(machine: &MachineName, drive: &Drive<'_>) -> Result<(), ManageError> {
     if (drive.cancelled)() {
         return Err(ManageError::Cancelled {
-            machine: link.machine().as_str().to_owned(),
+            machine: machine.as_str().to_owned(),
         });
     }
     Ok(())
@@ -168,6 +200,14 @@ pub struct PlannedAdd {
     pub machine: MachineName,
     pub target: SshTarget,
     pub root: String,
+}
+
+/// A create that passed every check that needs no machine.
+#[derive(Debug, Clone)]
+pub struct PlannedCreate {
+    pub machine: MachineName,
+    pub provider: Provider,
+    pub values: BTreeMap<String, String>,
 }
 
 /// What [`Machines::recover`] did with an entry left mid-way.
@@ -276,6 +316,48 @@ pub enum ManageError {
         #[source]
         source: std::io::Error,
     },
+    #[error("can't use the params given for the machine: {source}")]
+    Params {
+        #[source]
+        source: ValuesError,
+    },
+    #[error(
+        "the {provider} provider runs its commands on another machine (`run_on`), which this build of humatad2 can't do yet. Remove `run_on` from the provider to run its commands on this Mac"
+    )]
+    RunOnUnsupported { provider: String },
+    #[error(
+        "{machine} needs a login only a person can give, and Create machine can't ask for one. Add the machine with its provider's key login set up, or make the provider's connect command log in without a prompt"
+    )]
+    ProviderLoginNeeded { machine: String, output_tail: String },
+    #[error("{machine} isn't a machine the {provider} provider made. Pick a machine of that provider")]
+    NotProviderMachine { machine: String, provider: String },
+    #[error(
+        "the {provider} provider has no `{}` command, so there is nothing to run. Add `{}` to the provider in Settings › Machine providers",
+        .action.field(), .action.field()
+    )]
+    ActionUndefined { provider: String, action: Action },
+    #[error(
+        "the provider's {} command for {machine} failed ({exit}). The step's output says why; fix the command in Settings › Machine providers or the machine itself, then run it again",
+        .action.field()
+    )]
+    ActionFailed {
+        machine: String,
+        action: Action,
+        exit: Exit,
+        output_tail: String,
+    },
+    #[error(
+        "{machine} was removed from Humata, but the provider's delete command failed ({exit}), so what the provider made may still exist and cost money. Delete it by hand with the provider's own tool"
+    )]
+    DeleteFailed {
+        machine: String,
+        exit: Exit,
+        output_tail: String,
+    },
+    #[error(
+        "Humata lost how to reach {machine} (its provider's link is missing from the machine list). Remove the machine and add it again"
+    )]
+    ProviderLinkLost { machine: String },
     #[error(transparent)]
     Hosts(#[from] HostsError),
     #[error(transparent)]
@@ -308,7 +390,7 @@ pub struct Machines {
 }
 
 /// Marks a machine busy until dropped.
-struct BusyGuard<'a> {
+pub(crate) struct BusyGuard<'a> {
     busy: &'a Mutex<BTreeSet<String>>,
     machine: String,
 }
@@ -383,6 +465,7 @@ impl Machines {
             arch: String::new(),
             staged: Vec::new(),
             undo_pending: false,
+            provider: None,
         };
         if !self.hosts.insert_new(entry.clone())? {
             return Err(ManageError::NameTaken { machine: name });
@@ -391,7 +474,7 @@ impl Machines {
         let key = Key::new();
         let result = self
             .confirm_host_key(&link, request.trust_fingerprint.as_deref(), drive)
-            .and_then(|()| stop_if_cancelled(&link, drive))
+            .and_then(|()| stop_if_cancelled(link.machine(), drive))
             .and_then(|()| self.set_up(&link, Some(&key), drive));
         match result {
             Ok(ready) => {
@@ -403,10 +486,250 @@ impl Machines {
             Err(error) => {
                 // What was done is undone; the add's own error is what the
                 // user needs, so an undo that has to wait is only recorded.
-                let _ = self.undo_add(&link, drive);
+                let _ = self.undo_add(link.machine(), Some(&link), drive);
                 Err(error)
             }
         }
+    }
+
+    /// Checks `request` for a machine the provider will make, without
+    /// running anything: the provider runs on this Mac, the name is valid
+    /// and free, and the params are exactly the declared ones (a missing
+    /// one without a default, or an undeclared one, is refused naming it).
+    pub fn plan_create(
+        &self,
+        provider: &Provider,
+        name: &str,
+        values: BTreeMap<String, String>,
+    ) -> Result<PlannedCreate, ManageError> {
+        let machine = MachineName::new(name.trim()).map_err(|source| ManageError::BadName {
+            value: name.trim().to_owned(),
+            source,
+        })?;
+        if provider.run_on().is_some() {
+            return Err(ManageError::RunOnUnsupported {
+                provider: provider.id().to_owned(),
+            });
+        }
+        provider
+            .environment(&machine, &values)
+            .map_err(|source| ManageError::Params { source })?;
+        if self.hosts.get(machine.as_str())?.is_some() {
+            return Err(ManageError::NameTaken {
+                machine: machine.as_str().to_owned(),
+            });
+        }
+        Ok(PlannedCreate {
+            machine,
+            provider: provider.clone(),
+            values,
+        })
+    }
+
+    /// Create machine through a provider (MP-3, MP-19): its `create`, then
+    /// `identity` or `connect`, then the same check, install and start as
+    /// an SSH add, then the machine is listed with its provider. The entry
+    /// is written `Adding` first, and its link as soon as it is known, so
+    /// a restart at any step undoes it. A failure undoes what the setup
+    /// did on the machine and leaves what `create` made, for the
+    /// provider's `delete` to remove ([`Machines::delete_made`]).
+    pub fn create(&self, plan: PlannedCreate, drive: &mut Drive<'_>) -> Result<HostEntry, ManageError> {
+        let name = plan.machine.as_str().to_owned();
+        let _busy = self.claim(&name)?;
+        let key = Key::new();
+        let setup = Setup::new(
+            plan.provider.clone(),
+            plan.machine.clone(),
+            plan.values.clone(),
+            &self.known_hosts,
+        )
+        .map_err(|source| ManageError::Params { source })?
+        .with_retry(self.retry)
+        .with_enrollment(key.clone());
+        let entry = HostEntry {
+            name: name.clone(),
+            ssh_host: format!("via {}", plan.provider.id()),
+            root: DEFAULT_ROOT.to_owned(),
+            state: EntryState::Adding,
+            os: String::new(),
+            arch: String::new(),
+            staged: Vec::new(),
+            undo_pending: false,
+            provider: Some(ProviderMachine {
+                id: plan.provider.id().to_owned(),
+                params: plan.values.clone(),
+                link: None,
+            }),
+        };
+        if !self.hosts.insert_new(entry.clone())? {
+            return Err(ManageError::NameTaken { machine: name });
+        }
+        match self.run_setup(setup, Some(&key), drive, true) {
+            Ok(ready) => {
+                (drive.events)(StepEvent::Skipped(OpStep::FindAgents));
+                let mut entry = registered(entry, &ready);
+                if let Some(provider) = &mut entry.provider {
+                    provider.link = Some(ready.link.stored());
+                }
+                self.hosts.put(entry.clone())?;
+                Ok(entry)
+            }
+            Err(error) => {
+                let error = match error {
+                    ManageError::LoginNeeded { machine, output_tail } => {
+                        ManageError::ProviderLoginNeeded { machine, output_tail }
+                    }
+                    other => other,
+                };
+                // Failing before the machine answered means humatad2 never
+                // got there, so there is nothing to uninstall.
+                let reached = !matches!(
+                    error,
+                    ManageError::ProviderLoginNeeded { .. }
+                        | ManageError::Step {
+                            step: OpStep::Create | OpStep::Identity | OpStep::Connect,
+                            ..
+                        }
+                );
+                let link = self
+                    .hosts
+                    .get(&name)
+                    .ok()
+                    .flatten()
+                    .filter(|_| reached)
+                    .and_then(|entry| self.link_if_any(&entry).ok().flatten());
+                let _ = self.undo_add(&plan.machine, link.as_ref(), drive);
+                Err(error)
+            }
+        }
+    }
+
+    /// Runs the provider's `action` for the machine it made, with the
+    /// params it was made with (MP-21): start, stop or status. Returns what
+    /// the command printed.
+    pub fn run_action(
+        &self,
+        provider: &Provider,
+        machine: &str,
+        action: Action,
+        drive: &mut Drive<'_>,
+    ) -> Result<Output, ManageError> {
+        let _busy = self.claim(machine)?;
+        let entry = self.get(machine)?;
+        let record = provider_record(&entry, provider)?;
+        if entry.state != EntryState::Ready {
+            return Err(ManageError::NotReady {
+                machine: machine.to_owned(),
+            });
+        }
+        self.run_provider_command(provider, machine, &record.params, action, drive)
+    }
+
+    /// Delete on a provider's machine (MP-21): removes the machine as
+    /// Remove machine does, then runs the provider's `delete`. Refused
+    /// before anything is removed when the provider has no `delete`.
+    pub fn delete_machine(&self, provider: &Provider, machine: &str, drive: &mut Drive<'_>) -> Result<(), ManageError> {
+        let _busy = self.claim(machine)?;
+        let entry = self.get(machine)?;
+        let params = provider_record(&entry, provider)?.params.clone();
+        if !provider.has(Action::Delete) {
+            return Err(ManageError::ActionUndefined {
+                provider: provider.id().to_owned(),
+                action: Action::Delete,
+            });
+        }
+        self.remove_claimed(machine, entry, drive)?;
+        self.run_provider_command(provider, machine, &params, Action::Delete, drive)
+            .map(|_| ())
+            .map_err(|error| match error {
+                ManageError::ActionFailed {
+                    machine,
+                    exit,
+                    output_tail,
+                    ..
+                } => ManageError::DeleteFailed {
+                    machine,
+                    exit,
+                    output_tail,
+                },
+                other => other,
+            })
+    }
+
+    /// The provider's `delete` for what a failed Create machine made
+    /// (MP-20), run with the params the create was given. The machine is
+    /// not listed, so nothing else is touched.
+    pub fn delete_made(
+        &self,
+        provider: &Provider,
+        machine: &str,
+        values: &BTreeMap<String, String>,
+        drive: &mut Drive<'_>,
+    ) -> Result<(), ManageError> {
+        self.run_provider_command(provider, machine, values, Action::Delete, drive)
+            .map(|_| ())
+    }
+
+    fn run_provider_command(
+        &self,
+        provider: &Provider,
+        machine: &str,
+        values: &BTreeMap<String, String>,
+        action: Action,
+        drive: &mut Drive<'_>,
+    ) -> Result<Output, ManageError> {
+        let name = MachineName::new(machine).map_err(|source| ManageError::BadName {
+            value: machine.to_owned(),
+            source,
+        })?;
+        let invocation = provider
+            .invocation(action, &name, values)
+            .map_err(|source| ManageError::Params { source })?
+            .ok_or_else(|| ManageError::ActionUndefined {
+                provider: provider.id().to_owned(),
+                action,
+            })?;
+        (drive.events)(StepEvent::Running(OpStep::Provider));
+        let output = drive.runner.run(&invocation).map_err(|source| {
+            (drive.events)(StepEvent::Failed {
+                step: OpStep::Provider,
+                output_tail: String::new(),
+            });
+            ManageError::Run {
+                machine: machine.to_owned(),
+                source,
+            }
+        })?;
+        if output.exit.success() {
+            (drive.events)(StepEvent::Done(OpStep::Provider));
+            return Ok(output);
+        }
+        let output_tail = tail(&output);
+        (drive.events)(StepEvent::Failed {
+            step: OpStep::Provider,
+            output_tail: output_tail.clone(),
+        });
+        Err(ManageError::ActionFailed {
+            machine: machine.to_owned(),
+            action,
+            exit: output.exit,
+            output_tail,
+        })
+    }
+
+    /// Where `hosts.json` is, for the files kept beside it.
+    pub fn hosts_file(&self) -> &Path {
+        self.hosts.path()
+    }
+
+    /// The machine list, for the interactive login's own registering.
+    pub(crate) fn hosts(&self) -> &Hosts {
+        &self.hosts
+    }
+
+    /// Humata's own known_hosts file (MP-9).
+    pub(crate) fn known_hosts_file(&self) -> &Path {
+        &self.known_hosts
     }
 
     /// Reconnect now (HO-6): connect, check, install what differs (TS-1),
@@ -415,22 +738,23 @@ impl Machines {
     pub fn reconnect(&self, machine: &str, drive: &mut Drive<'_>) -> Result<HostEntry, ManageError> {
         let _busy = self.claim(machine)?;
         let entry = self.get(machine)?;
-        let link = self.link(&entry)?;
+        let link = self.link_if_any(&entry)?;
         match entry.state {
             EntryState::Ready => {}
             EntryState::Adding => {
-                self.undo_add(&link, drive)?;
+                self.undo_add(&machine_name(&entry)?, link.as_ref(), drive)?;
                 return Err(ManageError::NotReady {
                     machine: machine.to_owned(),
                 });
             }
             EntryState::Removing => {
-                self.finish_remove(&link, drive)?;
+                self.finish_remove(&need_link(link, &entry)?, drive)?;
                 return Err(ManageError::NotFound {
                     machine: machine.to_owned(),
                 });
             }
         }
+        let link = need_link(link, &entry)?;
         // A machine added before the host kept keys gets one now.
         let key = (!self.peer_key(machine).exists()).then(Key::new);
         let ready = self.set_up(&link, key.as_ref(), drive)?;
@@ -444,11 +768,17 @@ impl Machines {
     /// forgets the host key, drops the entry.
     pub fn remove(&self, machine: &str, drive: &mut Drive<'_>) -> Result<(), ManageError> {
         let _busy = self.claim(machine)?;
-        let mut entry = self.get(machine)?;
-        let link = self.link(&entry)?;
+        let entry = self.get(machine)?;
+        self.remove_claimed(machine, entry, drive)
+    }
+
+    fn remove_claimed(&self, machine: &str, mut entry: HostEntry, drive: &mut Drive<'_>) -> Result<(), ManageError> {
+        let link = self.link_if_any(&entry)?;
         if entry.state == EntryState::Adding {
-            return self.undo_add(&link, drive);
+            return self.undo_add(&machine_name(&entry)?, link.as_ref(), drive);
         }
+        let link = need_link(link, &entry)?;
+        debug_assert_eq!(link.machine().as_str(), machine);
         entry.state = EntryState::Removing;
         self.hosts.put(entry)?;
         self.finish_remove(&link, drive)
@@ -464,10 +794,10 @@ impl Machines {
                 continue;
             }
             let outcome = self.claim(&entry.name).and_then(|_busy| {
-                let link = self.link(&entry)?;
+                let link = self.link_if_any(&entry)?;
                 match entry.state {
-                    EntryState::Adding => self.undo_add(&link, drive),
-                    EntryState::Removing => self.finish_remove(&link, drive),
+                    EntryState::Adding => self.undo_add(&machine_name(&entry)?, link.as_ref(), drive),
+                    EntryState::Removing => self.finish_remove(&need_link(link, &entry)?, drive),
                     EntryState::Ready => Ok(()),
                 }
             });
@@ -480,7 +810,7 @@ impl Machines {
         Ok(recovered)
     }
 
-    fn claim(&self, machine: &str) -> Result<BusyGuard<'_>, ManageError> {
+    pub(crate) fn claim(&self, machine: &str) -> Result<BusyGuard<'_>, ManageError> {
         let mut busy = self.busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !busy.insert(machine.to_owned()) {
             return Err(ManageError::Busy {
@@ -509,18 +839,29 @@ impl Machines {
 
     /// The command that opens `machine`'s peer link.
     pub fn peer_link(&self, machine: &str) -> Result<Invocation, ManageError> {
-        let link = self.link(&self.get(machine)?)?;
+        let entry = self.get(machine)?;
+        let link = need_link(self.link_if_any(&entry)?, &entry)?;
         link.peer().map_err(|source| ManageError::Quote {
             machine: machine.to_owned(),
             source,
         })
     }
 
-    fn link(&self, entry: &HostEntry) -> Result<Link, ManageError> {
-        let machine = MachineName::new(&entry.name).map_err(|source| ManageError::BadName {
-            value: entry.name.clone(),
-            source,
-        })?;
+    /// The link to `entry`'s machine: from the provider's record, or the
+    /// SSH host typed in. None for a provider machine whose create was
+    /// cut short before it had one.
+    pub(crate) fn link_if_any(&self, entry: &HostEntry) -> Result<Option<Link>, ManageError> {
+        let machine = machine_name(entry)?;
+        if let Some(provider) = &entry.provider {
+            return Ok(provider
+                .link
+                .as_ref()
+                .map(|stored| Link::from_stored(machine, stored, &self.known_hosts)));
+        }
+        self.ssh_link(entry, machine).map(Some)
+    }
+
+    fn ssh_link(&self, entry: &HostEntry, machine: MachineName) -> Result<Link, ManageError> {
         let target = parse_ssh_host(&entry.ssh_host, &self.ssh_config)?;
         Ok(Link::ssh(machine, target, &self.known_hosts))
     }
@@ -578,21 +919,42 @@ impl Machines {
     /// With `key`, the install step writes it on the machine and, once the
     /// rest is set up, the host keeps its copy.
     fn set_up(&self, link: &Link, key: Option<&Key>, drive: &mut Drive<'_>) -> Result<setup::Ready, ManageError> {
-        let machine = link.machine().as_str().to_owned();
         let mut setup = Setup::existing(link.clone(), &self.known_hosts).with_retry(self.retry);
         if let Some(key) = key {
             setup = setup.with_enrollment(key.clone());
         }
+        self.run_setup(setup, key, drive, false)
+    }
+
+    /// Drives `setup` to its end. With `record`, the link is written to the
+    /// machine's entry as soon as a step makes one (a provider's create),
+    /// so a restart can undo what reached the machine.
+    fn run_setup(
+        &self,
+        mut setup: Setup,
+        key: Option<&Key>,
+        drive: &mut Drive<'_>,
+        record: bool,
+    ) -> Result<setup::Ready, ManageError> {
+        let name = setup.machine().clone();
+        let machine = name.as_str().to_owned();
+        let mut recorded = false;
         let mut current = OpStep::of(setup.current());
         (drive.events)(StepEvent::Running(current));
         loop {
             let progress = setup.step(drive.runner, drive.builds);
             match progress {
                 Progress::Continue => {
+                    if record && !recorded {
+                        if let Some(link) = setup.link() {
+                            self.record_link(&machine, link)?;
+                            recorded = true;
+                        }
+                    }
                     let next = OpStep::of(setup.current());
                     if next != current {
                         (drive.events)(StepEvent::Done(current));
-                        stop_if_cancelled(link, drive)?;
+                        stop_if_cancelled(&name, drive)?;
                         current = next;
                         (drive.events)(StepEvent::Running(current));
                     }
@@ -605,7 +967,7 @@ impl Machines {
                         delay,
                     });
                     (drive.wait)(delay);
-                    stop_if_cancelled(link, drive)?;
+                    stop_if_cancelled(&name, drive)?;
                 }
                 Progress::NeedsLogin(login) => {
                     (drive.events)(StepEvent::Failed {
@@ -619,7 +981,7 @@ impl Machines {
                 }
                 Progress::Ready(ready) => {
                     if let Some(key) = key {
-                        enroll::write_host(&self.peer_keys, link.machine(), key).map_err(|source| {
+                        enroll::write_host(&self.peer_keys, &name, key).map_err(|source| {
                             (drive.events)(StepEvent::Failed {
                                 step: current,
                                 output_tail: String::new(),
@@ -652,12 +1014,25 @@ impl Machines {
         }
     }
 
+    /// Writes `link` in `machine`'s entry (a provider machine being made).
+    fn record_link(&self, machine: &str, link: &Link) -> Result<(), ManageError> {
+        if let Some(mut entry) = self.hosts.get(machine)? {
+            if let Some(provider) = &mut entry.provider {
+                provider.link = Some(link.stored());
+                self.hosts.put(entry)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Undoes an add: without a pinned key nothing reached the machine, so
     /// only the entry goes; otherwise humatad2 is removed first, and when
     /// that can't be done the entry stays with `undo_pending`.
-    fn undo_add(&self, link: &Link, drive: &mut Drive<'_>) -> Result<(), ManageError> {
-        let machine = link.machine();
-        if known_hosts::pinned(&self.known_hosts, machine)?.is_some() {
+    fn undo_add(&self, machine: &MachineName, link: Option<&Link>, drive: &mut Drive<'_>) -> Result<(), ManageError> {
+        let pinned = known_hosts::pinned(&self.known_hosts, machine)?.is_some();
+        // A provider's `connect` pins nothing, so having a link is what
+        // says humatad2 may have reached the machine.
+        if let Some(link) = link.filter(|link| pinned || link.is_connect()) {
             if let Err(error) = self.uninstall(link, drive) {
                 if let Some(mut entry) = self.hosts.get(machine.as_str())? {
                     entry.undo_pending = true;
@@ -666,8 +1041,8 @@ impl Machines {
                 return Err(error);
             }
             (drive.events)(StepEvent::Undone(OpStep::Install));
-            known_hosts::unpin(&self.known_hosts, machine)?;
         }
+        known_hosts::unpin(&self.known_hosts, machine)?;
         self.forget_peer_key(machine.as_str())?;
         self.hosts.remove(machine.as_str())?;
         Ok(())
@@ -675,7 +1050,7 @@ impl Machines {
 
     fn finish_remove(&self, link: &Link, drive: &mut Drive<'_>) -> Result<(), ManageError> {
         let machine = link.machine();
-        if known_hosts::pinned(&self.known_hosts, machine)?.is_some() {
+        if link.is_connect() || known_hosts::pinned(&self.known_hosts, machine)?.is_some() {
             self.uninstall(link, drive)?;
         } else {
             // The key is forgotten last, so without one the machine was
@@ -720,6 +1095,31 @@ impl Machines {
             output_tail,
         })
     }
+}
+
+fn machine_name(entry: &HostEntry) -> Result<MachineName, ManageError> {
+    MachineName::new(&entry.name).map_err(|source| ManageError::BadName {
+        value: entry.name.clone(),
+        source,
+    })
+}
+
+fn need_link(link: Option<Link>, entry: &HostEntry) -> Result<Link, ManageError> {
+    link.ok_or_else(|| ManageError::ProviderLinkLost {
+        machine: entry.name.clone(),
+    })
+}
+
+/// `entry`'s provider record, when `provider` is the one that made it.
+fn provider_record<'a>(entry: &'a HostEntry, provider: &Provider) -> Result<&'a ProviderMachine, ManageError> {
+    entry
+        .provider
+        .as_ref()
+        .filter(|record| record.id == provider.id())
+        .ok_or_else(|| ManageError::NotProviderMachine {
+            machine: entry.name.clone(),
+            provider: provider.id().to_owned(),
+        })
 }
 
 fn tail(output: &Output) -> String {

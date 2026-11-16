@@ -28,12 +28,13 @@ use crate::compression::Compression;
 use crate::daemon::Daemon;
 use crate::error::DaemonError;
 use crate::events::{EventSvc, Feed};
-use crate::files::Files;
+use crate::files::{Files, Roots};
 use crate::guard::Guard;
 use crate::identity::{self, Authenticate, Identities};
 use crate::inbox::Inbox;
 use crate::last_good;
 use crate::machine_service::{self, MachineSvc, Work};
+use crate::provider_service::ProviderSvc;
 use crate::not_built;
 use crate::operations::{OperationSvc, Operations};
 use crate::paste::PASTE_MAX_BYTES;
@@ -43,6 +44,8 @@ use crate::session_service::SessionSvc;
 use crate::sync;
 use crate::terminal::{Terminals, TerminalsConfig};
 use crate::terminal_session::Kernel;
+use crate::transfer_service::TransferSvc;
+use crate::trash_service::{Bin, TrashSvc};
 
 /// What Unix sockets allow in a path, without its terminating NUL.
 #[cfg(target_os = "linux")]
@@ -94,6 +97,10 @@ pub(crate) struct ServeArgs {
     /// own three files beside humatad2 (machines of this platform only).
     #[arg(long)]
     tools: Option<PathBuf>,
+    /// The home folder the host's agent skill folders (.claude/skills,
+    /// .codex/skills, .copilot/skills) are read from. Default: $HOME.
+    #[arg(long)]
+    skills_home: Option<PathBuf>,
     /// The ssh config SSH machines' aliases are read from. Default:
     /// ~/.ssh/config.
     #[arg(long)]
@@ -333,7 +340,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         &store,
         revive,
         restart::Sessions {
-            channels: channels_folder,
+            channels: channels_folder.clone(),
             remote_template: args.remote_template.clone(),
             agents,
             holders: holders.clone(),
@@ -371,15 +378,50 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         compression: compression.clone(),
         inbox: inbox.clone(),
     });
-    let files = Files::new(
+    let roots = Arc::new(Roots::new(
         store.clone(),
-        guard.clone(),
         machine.clone(),
+        channels_folder.clone(),
+    ));
+    // LD-6: one trash per machine, in the folder the channels live in.
+    let bin = Arc::new(Bin::new(channels_folder.join(".trash")));
+    let files = Files::new(
+        roots.clone(),
+        guard.clone(),
+        bin.clone(),
         compression.clone(),
         Link::Local,
     );
-    let review =
-        crate::review::Review::new(store.clone(), guard.clone(), machine.clone(), feed.clone());
+    let trash = TrashSvc::new(bin.clone(), guard.clone(), machine.clone());
+    let transfers = TransferSvc::new(
+        roots,
+        guard.clone(),
+        bin.clone(),
+        state.clone(),
+        machine.clone(),
+    );
+    // LD-7, PER-27: trash past its 30 days goes, and transfers a restart
+    // cut short continue or finish undoing, off the runtime.
+    tokio::task::spawn_blocking({
+        let transfers = transfers.clone();
+        move || {
+            bin.sweep();
+            transfers.recover();
+        }
+    });
+    let review = crate::review::Review::new(
+        store.clone(),
+        guard.clone(),
+        machine.clone(),
+        feed.clone(),
+        Arc::new(crate::review::TerminalSink::new(terminals.core())),
+    );
+    // D138: a batch of comments the last run was still typing is settled
+    // before anyone asks.
+    {
+        let review = review.clone();
+        tokio::spawn(async move { review.recover_comments().await });
+    }
     let access = Access::new(guard.clone(), feed.clone(), inbox.clone(), store.clone());
     let events = EventSvc::new(feed.clone(), guard.clone(), machine.clone());
     let operations = Arc::new(Operations::new(feed.clone()));
@@ -407,8 +449,29 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 args.ssh_config,
                 feed.clone(),
             )?);
+            let skills_home = match args.skills_home {
+                Some(home) => home,
+                None => std::env::var_os("HOME")
+                    .filter(|home| !home.is_empty())
+                    .map(PathBuf::from)
+                    .ok_or(DaemonError::NoHome)?,
+            };
+            let skills = Arc::new(crate::skills_service::SkillsHost::new(&state, skills_home));
+            // Set before any link starts, so the first link-up reaches it.
+            let _ = work.skills.set(skills.clone());
             machine_service::recover_in_background(work.clone());
-            Some(MachineSvc::new(guard, work, operations.clone()))
+            let providers = ProviderSvc::new(guard.clone(), work.clone(), operations.clone());
+            let skills = crate::skills_service::SkillsSvc::new(
+                guard.clone(),
+                work.clone(),
+                operations.clone(),
+                skills,
+            );
+            Some((
+                MachineSvc::new(guard, work, operations.clone()),
+                providers,
+                skills,
+            ))
         }
         _ => None,
     };
@@ -425,6 +488,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 .started(last_start),
         ))
         .add_service(pb::file_service_server::FileServiceServer::new(files))
+        .add_service(pb::trash_service_server::TrashServiceServer::new(trash))
+        .add_service(pb::transfer_service_server::TransferServiceServer::from_arc(transfers))
         .add_service(
             pb::terminal_service_server::TerminalServiceServer::new(terminals)
                 .max_decoding_message_size(DECODE_MAX_BYTES),
@@ -464,9 +529,16 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // Only the host keeps machines; a machine's daemon forwards these to
     // it once the link does (GRPC.md §4).
     let router = match machines {
-        Some(machines) => router.add_service(
-            pb::machine_service_server::MachineServiceServer::new(machines),
-        ),
+        Some((machines, providers, skills)) => router
+            .add_service(pb::machine_service_server::MachineServiceServer::new(
+                machines,
+            ))
+            .add_service(pb::provider_service_server::ProviderServiceServer::new(
+                providers,
+            ))
+            .add_service(pb::skills_service_server::SkillsServiceServer::new(
+                skills,
+            )),
         None => not_built::register_host_only(router),
     };
     let router = not_built::register(router);

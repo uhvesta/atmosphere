@@ -4,7 +4,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # State, actions and effects only; the views are in //apps/humata2/ui.
 rust_library(
     name = "files",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "humata2_files",
     visibility = [
         "//apps/humata2/desktop:__pkg__",
@@ -15,6 +15,7 @@ rust_library(
         "//apps/humata2/clients",
         "//libs/tca-rust:tca",
         "@crates//:serde",
+        "@crates//:serde_json",
     ],
 )
 

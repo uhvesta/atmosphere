@@ -75,6 +75,14 @@ fn secondary(look: Look, text: impl Into<SharedString>) -> Div {
         .text_size(px(11.5))
         .child(text.into())
 }
+/// A small section heading.
+fn heading(look: Look, title: &'static str) -> Div {
+    div()
+        .text_size(px(11.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(rgb(look.secondary))
+        .child(title)
+}
 fn card(look: Look) -> Div {
     col()
         .rounded(px(9.))
@@ -95,13 +103,70 @@ fn button(
         .label(label)
         .small()
         .h(px(24.))
-        .px(px(10.))
+        .px(px(11.))
+        .rounded(px(6.))
+        .text_size(px(12.))
+        .font_weight(FontWeight::MEDIUM)
+        .flex_shrink_0()
+        .when(primary, |b| b.primary())
         .bg(rgb(if primary { look.accent } else { look.fill }))
         .text_color(rgb(if primary { 0xffffff } else { look.text }))
+        .when(!primary, |b| b.border_1().border_color(rgb(look.line)))
         .on_click(move |_, _, cx| {
             cx.stop_propagation();
             ui.send(action.clone(), cx);
         })
+}
+/// A pop-up menu button: its value, then the up-down chevrons.
+fn popup(
+    ui: &Rc<Ui>,
+    id: &'static str,
+    label: impl Into<SharedString>,
+    action: A,
+    look: Look,
+) -> impl IntoElement {
+    let ui = ui.clone();
+    let label = label.into();
+    row()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .flex_shrink_0()
+        .gap(px(6.))
+        .h(px(24.))
+        .pl(px(9.))
+        .pr(px(5.))
+        .rounded(px(6.))
+        .bg(rgb(look.fill))
+        .border_1()
+        .border_color(rgb(look.line))
+        .text_size(px(12.))
+        .cursor_pointer()
+        .child(label)
+        .child(chrome::icon(IconName::ChevronsUpDown, look.secondary, 12.))
+        .on_click(move |_, _, cx| ui.send(AppAction::Board(action.clone()), cx))
+        .test_support()
+}
+/// A bare icon that sends a board action when clicked.
+fn glyph(
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    name: IconName,
+    action: A,
+    color: u32,
+    size: f32,
+) -> impl IntoElement {
+    let ui = ui.clone();
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .flex_shrink_0()
+        .cursor_pointer()
+        .child(chrome::icon(name, color, size))
+        .on_click(move |_, _, cx| ui.send(AppAction::Board(action.clone()), cx))
+        .test_support()
 }
 fn act(
     ui: &Rc<Ui>,
@@ -150,16 +215,13 @@ pub(crate) fn toolbar(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, look: Look
                 .overflow_hidden()
                 .whitespace_nowrap(),
         )
-        .child(
-            act(
-                ui,
-                "board-scope",
-                format!("Scope: {scope}"),
-                A::ScopeMenu,
-                look,
-            )
-            .icon(IconName::ChevronDown),
-        )
+        .child(popup(
+            ui,
+            "board-scope",
+            format!("Scope: {scope}"),
+            A::ScopeMenu,
+            look,
+        ))
         .child(
             row().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
                 [
@@ -177,8 +239,8 @@ pub(crate) fn toolbar(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, look: Look
                         .aria_selected(mode == state.board.view.mode)
                         .px(px(12.))
                         .py(px(2.))
-                        .rounded(px(6.))
-                        .text_size(px(12.))
+                        .rounded(px(5.))
+                        .text_size(px(11.5))
                         .when(mode == state.board.view.mode, |x| {
                             x.bg(rgb(look.card)).shadow_sm()
                         })
@@ -192,7 +254,16 @@ pub(crate) fn toolbar(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, look: Look
             div()
                 .id("board-filter-input")
                 .w(px(150.))
-                .child(Input::new(&inputs.filter).small())
+                .flex_shrink_0()
+                .child(
+                    Input::new(&inputs.filter)
+                        .small()
+                        .min_h(px(26.))
+                        .rounded(px(6.))
+                        .bg(rgb(look.card))
+                        .border_color(rgb(look.line))
+                        .text_size(px(12.5)),
+                )
                 .test_support(),
         )
         .child(button(
@@ -219,10 +290,11 @@ fn session_chip(state: &AppState, item: &Item, look: Look) -> Option<Div> {
                 .rounded(px(4.))
                 .bg(rgb(look.fill))
                 .text_size(px(11.))
+                .text_color(rgb(look.secondary))
                 .when(item.status != S::Done, |x| {
                     x.child(chrome::status(s.status))
                 })
-                .child(secondary(look, s.title.clone()))
+                .child(s.title.clone())
         })
         .or_else(|| {
             state
@@ -239,7 +311,9 @@ fn session_chip(state: &AppState, item: &Item, look: Look) -> Option<Div> {
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .child(secondary(look, label.clone()))
+                        .text_size(px(11.))
+                        .text_color(rgb(look.secondary))
+                        .child(label.clone())
                 })
         })
 }
@@ -308,8 +382,8 @@ fn item_card(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> impl Int
                 row()
                     .gap(px(6.))
                     .text_size(px(11.))
-                    .text_color(rgb(0xff9500))
-                    .child(chrome::icon(IconName::Inbox, 0xff9500, 12.))
+                    .text_color(rgb(0xff9f0a))
+                    .child(chrome::icon(IconName::Inbox, 0xff9f0a, 12.))
                     .child(
                         div()
                             .flex_1()
@@ -374,22 +448,15 @@ fn lanes(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                         .child(div().font_weight(FontWeight::SEMIBOLD).child(status.name()))
                         .child(secondary(look, items.len().to_string()))
                         .child(div().flex_1())
-                        .child(
-                            act(
-                                ui,
-                                SharedString::from(format!("board-add-{}", status.name())),
-                                "",
-                                A::StartNewIn(status),
-                                look,
-                            )
-                            .ghost()
-                            .bg(gpui_kit::transparent_black())
-                            .w(px(16.))
-                            .h(px(16.))
-                            .p(px(0.))
-                            .icon(IconName::Plus)
-                            .accessibility_label(format!("Add item to {}", status.name())),
-                        ),
+                        .child(glyph(
+                            ui,
+                            SharedString::from(format!("board-add-{}", status.name())),
+                            format!("Add item to {}", status.name()),
+                            IconName::Plus,
+                            A::StartNewIn(status),
+                            look.tertiary,
+                            12.,
+                        )),
                 )
                 .children(
                     items
@@ -462,6 +529,7 @@ fn table(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                     })
                     .child(
                         secondary(look, item.id.to_string())
+                            .text_size(px(12.5))
                             .w(px(60.))
                             .flex_shrink_0(),
                     )
@@ -485,22 +553,43 @@ fn table(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                             look,
                             match &item.scope {
                                 Scope::Global => "Global".into(),
-                                Scope::Channel(id) => id.to_string(),
+                                Scope::Channel(id) => state
+                                    .workspace
+                                    .channel(id)
+                                    .map_or_else(|| id.to_string(), |c| c.name.clone()),
                             },
                         )
+                        .text_size(px(12.5))
                         .w(px(130.))
                         .flex_shrink_0(),
                     )
                     .child(div().w(px(90.)).flex_shrink_0().when(
                         state.board.request(item).is_some(),
                         |x| {
-                            x.child(act(
-                                ui,
-                                SharedString::from(format!("board-table-review {}", item.id)),
-                                "Review",
-                                A::Open(item.id.clone()),
-                                look,
-                            ))
+                            // The golden's Review fills its column, label at the left.
+                            let review = ui.clone();
+                            let open = item.id.clone();
+                            x.child(
+                                Button::new(SharedString::from(format!(
+                                    "board-table-review {}",
+                                    item.id
+                                )))
+                                .accessibility_label("Review")
+                                .small()
+                                .h(px(24.))
+                                .px(px(11.))
+                                .rounded(px(6.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .bg(rgb(look.fill))
+                                .text_color(rgb(look.text))
+                                .border_1()
+                                .border_color(rgb(look.line))
+                                .child(div().w_full().text_left().child("Review"))
+                                .on_click(move |_, _, cx| {
+                                    cx.stop_propagation();
+                                    review.send(AppAction::Board(A::Open(open.clone())), cx);
+                                }),
+                            )
                         },
                     ))
                     .on_click(move |_, _, cx| send.send(AppAction::Board(A::Open(id.clone())), cx))
@@ -528,6 +617,43 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
         .iter()
         .filter(|i| state.board.request(i).is_some())
         .count();
+    // BD-13: the In progress line names what needs the user among them.
+    let exited = state
+        .workspace
+        .sessions
+        .iter()
+        .filter(|s| {
+            !s.archived
+                && matches!(s.status, humata2_clients::model::Status::Exited { .. })
+                && items
+                    .iter()
+                    .any(|i| i.status == S::InProgress && i.session.as_ref() == Some(&s.id))
+        })
+        .count();
+    let progress_note = match exited {
+        0 => "See active items →".to_owned(),
+        1 => "1 session exited →".to_owned(),
+        n => format!("{n} sessions exited →"),
+    };
+    // BD-13: Done this week carries the change on last week.
+    let done_days: Vec<u8> = items
+        .iter()
+        .filter(|i| i.status == S::Done)
+        .filter_map(|i| {
+            state
+                .workspace
+                .item_details
+                .get(&i.id)
+                .and_then(|d| d.done_day)
+        })
+        .collect();
+    let this_week = done_days.iter().filter(|d| **d >= 7).count();
+    let last_week = done_days.iter().filter(|d| **d < 7).count();
+    let done_note = match this_week.cmp(&last_week) {
+        std::cmp::Ordering::Greater => format!("+{} on last week", this_week - last_week),
+        std::cmp::Ordering::Less => format!("−{} on last week", last_week - this_week),
+        std::cmp::Ordering::Equal => "Same as last week".to_owned(),
+    };
     let tile = |id: &str, title: &str, value: usize, note: &str, filter: Filter, color: u32| {
         let ui = ui.clone();
         card(look)
@@ -556,14 +682,14 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
             )
             .on_click(move |_, _, cx| ui.send(AppAction::Board(A::Drill(filter)), cx))
     };
-    let lane_colors = [look.tertiary, 0x8e8e93, look.accent, 0xaf52de, 0x28cd41];
+    let lane_colors = [look.tertiary, 0x8e8e93, look.accent, 0xbf5af2, 0x30d158];
     let ss = [S::Backlog, S::Todo, S::InProgress, S::InReview, S::Done];
     let mut by_channel = card(look)
         .flex_1()
         .min_w_0()
         .p(px(12.))
         .gap(px(10.))
-        .child(secondary(look, "By channel").font_weight(FontWeight::SEMIBOLD));
+        .child(heading(look, "By channel"));
     for channel in &state.workspace.channels {
         let lane: Vec<_> = items
             .iter()
@@ -612,7 +738,12 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                 .gap(px(10.))
                 .child(div().w(px(130.)).child(channel.name.clone()))
                 .child(bars)
-                .child(secondary(look, lane.len().to_string()).w(px(30.))),
+                .child(
+                    row()
+                        .w(px(30.))
+                        .justify_end()
+                        .child(secondary(look, lane.len().to_string())),
+                ),
         );
     }
     by_channel = by_channel.child(row().flex_wrap().gap(px(12.)).children(
@@ -661,8 +792,15 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
     let mut sessions = card(look)
         .p(px(12.))
         .gap(px(2.))
-        .child(secondary(look, "By session").font_weight(FontWeight::SEMIBOLD));
-    for session in &state.workspace.sessions {
+        .child(heading(look, "By session"));
+    // Frame 24: the sessions that need the person come first, then the exited ones.
+    let mut by_need: Vec<_> = state.workspace.sessions.iter().collect();
+    by_need.sort_by_key(|session| match session.status {
+        humata2_clients::model::Status::NeedsYou => 0,
+        humata2_clients::model::Status::Exited { .. } => 1,
+        _ => 2,
+    });
+    for session in by_need {
         let count = items
             .iter()
             .filter(|i| i.session.as_ref() == Some(&session.id))
@@ -694,6 +832,7 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                         look,
                         format!("{count} {}", if count == 1 { "item" } else { "items" }),
                     )
+                    .text_size(px(12.5))
                     .w(px(80.)),
                 )
                 .child(
@@ -729,32 +868,21 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                     waiting,
                     "Review the asks →",
                     Filter::Waiting,
-                    0xff9500,
+                    0xff9f0a,
                 ))
                 .child(tile(
                     "progress",
                     "In progress",
                     items.iter().filter(|i| i.status == S::InProgress).count(),
-                    "See active items →",
+                    progress_note.as_str(),
                     Filter::Status(S::InProgress),
                     look.text,
                 ))
                 .child(tile(
                     "done",
                     "Done this week",
-                    items
-                        .iter()
-                        .filter(|i| {
-                            i.status == S::Done
-                                && state
-                                    .workspace
-                                    .item_details
-                                    .get(&i.id)
-                                    .and_then(|d| d.done_day)
-                                    .is_some_and(|d| d >= 7)
-                        })
-                        .count(),
-                    "See completed items →",
+                    this_week,
+                    done_note.as_str(),
                     Filter::DoneWeek,
                     look.text,
                 ))
@@ -778,11 +906,7 @@ fn dashboard(ui: &Rc<Ui>, state: &AppState, look: Look) -> Stateful<Div> {
                     .gap(px(8.))
                     .child(
                         row()
-                            .child(
-                                secondary(look, "Done per day")
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .flex_1(),
-                            )
+                            .child(heading(look, "Done per day").flex_1())
                             .child(secondary(look, "14 days")),
                     )
                     .child(chart),
@@ -795,7 +919,13 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
     let field = |name: &str, value: AnyElement| {
         row()
             .gap(px(10.))
-            .child(secondary(look, name.to_owned()).w(px(80.)).flex_shrink_0())
+            .child(
+                div()
+                    .w(px(80.))
+                    .flex_shrink_0()
+                    .text_color(rgb(look.secondary))
+                    .child(name.to_owned()),
+            )
             .child(value)
     };
     let mut panel = col()
@@ -816,26 +946,24 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
                 .gap(px(8.))
                 .child(secondary(look, item.id.to_string()))
                 .child(div().flex_1())
-                .child(
-                    act(ui, "board-expand", "", A::Expand, look)
-                        .ghost()
-                        .bg(gpui_kit::transparent_black())
-                        .w(px(16.))
-                        .h(px(16.))
-                        .p(px(0.))
-                        .icon(IconName::Maximize2)
-                        .accessibility_label("Expand item"),
-                )
-                .child(
-                    act(ui, "board-close", "", A::Close, look)
-                        .ghost()
-                        .bg(gpui_kit::transparent_black())
-                        .w(px(16.))
-                        .h(px(16.))
-                        .p(px(0.))
-                        .icon(IconName::X)
-                        .accessibility_label("Close item"),
-                ),
+                .child(glyph(
+                    ui,
+                    "board-expand",
+                    "Expand item",
+                    IconName::Maximize2,
+                    A::Expand,
+                    look.secondary,
+                    15.,
+                ))
+                .child(glyph(
+                    ui,
+                    "board-close",
+                    "Close item",
+                    IconName::X,
+                    A::Close,
+                    look.secondary,
+                    15.,
+                )),
         )
         .child(
             div()
@@ -845,9 +973,7 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
         )
         .child(field(
             "Status",
-            act(ui, "board-status", item.status.name(), A::StatusMenu, look)
-                .icon(IconName::ChevronDown)
-                .into_any_element(),
+            popup(ui, "board-status", item.status.name(), A::StatusMenu, look).into_any_element(),
         ));
     if state.board.status_menu {
         panel = panel.child(col().gap(px(3.)).children(S::ALL.into_iter().map(|s| {
@@ -897,24 +1023,39 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
     panel = panel.child(field(
         "Depends on",
         col()
+            .items_start()
             .gap(px(4.))
             .children(
                 item.depends_on
                     .iter()
                     .filter_map(|id| state.workspace.items.iter().find(|i| &i.id == id))
                     .map(|i| {
-                        act(
-                            ui,
-                            SharedString::from(format!("board-dependency {}", i.id)),
-                            format!(
-                                "{} {}{}",
-                                i.id,
-                                i.title,
-                                if i.status == S::Done { " ✓" } else { "" }
-                            ),
-                            A::Open(i.id.clone()),
-                            look,
-                        )
+                        let ui = ui.clone();
+                        let id = i.id.clone();
+                        let name = format!(
+                            "{} {}{}",
+                            i.id,
+                            i.title,
+                            if i.status == S::Done { " ✓" } else { "" }
+                        );
+                        div()
+                            .id(SharedString::from(format!("board-dependency {}", i.id)))
+                            .role(Role::Button)
+                            .aria_label(name.clone())
+                            .flex_shrink_0()
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(rgb(look.line))
+                            .text_size(px(11.))
+                            .text_color(rgb(look.secondary))
+                            .cursor_pointer()
+                            .child(name)
+                            .on_click(move |_, _, cx| {
+                                ui.send(AppAction::Board(A::Open(id.clone())), cx)
+                            })
+                            .test_support()
                     }),
             )
             .into_any_element(),
@@ -949,7 +1090,6 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
                 ))
                 .child(
                     row()
-                        .flex_wrap()
                         .gap(px(6.))
                         .child(button(
                             ui,
@@ -978,15 +1118,7 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
         );
     }
     panel
-        .child(button(
-            ui,
-            "board-start-session",
-            "Start a session for this item",
-            AppAction::StartNewForItem(item.id.clone()),
-            look,
-            false,
-        ))
-        .child(secondary(look, "Description").font_weight(FontWeight::SEMIBOLD))
+        .child(heading(look, "Description"))
         .child(
             secondary(
                 look,
@@ -994,13 +1126,21 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, item: &Item, look: Look) -> Stateful<Di
             )
             .text_size(px(12.5)),
         )
-        .child(secondary(look, "History").font_weight(FontWeight::SEMIBOLD))
+        .child(heading(look, "History"))
         .children(
             details
                 .into_iter()
                 .flat_map(|d| &d.history)
                 .map(|line| secondary(look, line.clone())),
         )
+        .child(row().child(button(
+            ui,
+            "board-start-session",
+            "Start a session for this item",
+            AppAction::StartNewForItem(item.id.clone()),
+            look,
+            false,
+        )))
 }
 fn scope_of(item: &Item) -> String {
     match &item.scope {

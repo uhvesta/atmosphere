@@ -357,9 +357,17 @@ impl<H: Host> GpuiDriver<'_, H> {
                 frame::click(window, at, MouseButton::Left, cx);
                 Ok::<(), GpuiDriverError>(())
             })??,
-            Action::Type(text) => self.window(|window, cx| {
-                frame::type_text(window, text, cx).map_err(|error| frame_error(text, error))
-            })??,
+            Action::Type(text) => {
+                for character in text.chars() {
+                    self.window(|window, cx| {
+                        frame::type_character(window, character, cx)
+                            .map_err(|error| frame_error(text, error))
+                    })??;
+                    self.window(|window, cx| {
+                        frame::natural_frame(window, cx);
+                    })?;
+                }
+            }
             Action::Key(key) => self.window(|window, cx| {
                 frame::press(window, key, cx).map_err(|error| frame_error(key, error))
             })??,

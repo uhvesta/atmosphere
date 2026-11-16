@@ -14,11 +14,13 @@ mod agents;
 mod atomic;
 mod blob;
 mod channels;
+mod comments;
 mod error;
 pub mod fault;
 mod inbox;
 mod journal;
 mod last_good;
+mod previous;
 mod records;
 mod reviews;
 mod rules;
@@ -30,9 +32,13 @@ mod views;
 use humata2_store_proto::humata::store::v1 as proto;
 
 pub use atomic::write_atomic;
+pub use comments::{
+    CommentChange, CommentDeliveryRecord, CommentDeliveryState, CommentNumbers, CommentRecord, SessionComments,
+};
 pub use error::StoreError;
 pub use journal::{Journal, JournalEntry};
 pub use last_good::{Change, LastGood, Restored, RowChange};
+pub use previous::PreviousConversation;
 pub use records::{
     AgentLaunch, AgentRecord, AgentState, ChannelRecord, ChannelRepo, InboxRecord, Interruption,
     MainClone, Pointers, RepoPointer, ResumeFailure, ReviewRecord, SessionDetail, SessionRecord,

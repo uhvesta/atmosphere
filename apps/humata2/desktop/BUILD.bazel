@@ -20,6 +20,7 @@ rust_binary(
         "@crates//:thiserror",
         "@crates//:tokio",
     ],
+    visibility = ["//apps/humata2/app:__pkg__"],
 )
 
 # The window on fakes, drawn headless (nothing is shown) and kept as view
@@ -88,7 +89,7 @@ humata2_snapshot_test(
 
 humata2_snapshot_test(
     name = "native_test",
-    srcs = ["tests/native.rs"],
+    srcs = ["tests/native.rs"] + glob(["tests/native/*.rs"]),
     compile_data = ["Cargo.toml"],
     crate_root = "tests/native.rs",
     target_compatible_with = ["@platforms//os:macos"],

@@ -1,9 +1,9 @@
-//! Channel pages fitted to frames 18–20, over client data and saved page state.
+//! Channel pages fitted to frames 18–20 and 35, over client data and saved page state.
 use crate::{
     bridge::Ui,
     chrome, lists,
     theme::Look,
-    widgets::{self, col, row},
+    widgets::{col, row},
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Disableable as _, TestTextExt as _};
@@ -18,11 +18,30 @@ use humata2_app::{
     channel::{self, Action, History, Tab, View},
 };
 use humata2_clients::model::{
-    ActivityKind, Agent, Channel, ChannelId, ForkKind, SessionId, Status,
+    ActivityKind, Agent, Channel, ChannelId, ForkKind, Scope, SessionId, Status,
 };
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
 
+/// A push button at the frames' size: 24 high with a 12 pt medium label.
+fn shape(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Button {
+    let label = label.into();
+    Button::new(id)
+        .accessibility_label(label.clone())
+        .small()
+        .h(px(24.))
+        .px(px(11.))
+        .rounded(px(6.))
+        .font_weight(FontWeight::MEDIUM)
+        .child(div().text_size(px(12.)).child(label))
+}
+/// The frames' secondary button, without a click handler.
+fn quiet(id: impl Into<ElementId>, label: impl Into<SharedString>, look: Look) -> Button {
+    shape(id, label)
+        .bg(rgb(look.fill))
+        .border_color(rgb(look.line))
+        .text_color(rgb(look.text))
+}
 fn button(
     ui: &Rc<Ui>,
     id: impl Into<ElementId>,
@@ -31,17 +50,33 @@ fn button(
     look: Look,
 ) -> Button {
     let ui = ui.clone();
-    Button::new(id)
-        .label(label)
-        .small()
-        .h(px(24.))
-        .px(px(10.))
-        .bg(rgb(look.fill))
-        .text_color(rgb(look.text))
+    quiet(id, label, look).on_click(move |_, _, cx| {
+        cx.stop_propagation();
+        ui.send(action.clone(), cx);
+    })
+}
+/// Accent text that acts as a button, as the frames draw table links.
+fn link(
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    action: AppAction,
+    look: Look,
+) -> impl IntoElement {
+    let ui = ui.clone();
+    let label = label.into();
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .cursor_pointer()
+        .text_color(rgb(look.accent))
+        .child(label)
         .on_click(move |_, _, cx| {
             cx.stop_propagation();
             ui.send(action.clone(), cx);
         })
+        .test_support()
 }
 fn page_view(state: &AppState, id: &ChannelId) -> View {
     state.channel_pages.get(id).cloned().unwrap_or_default()
@@ -80,6 +115,17 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
         .map(|m| m.name.as_str())
         .collect::<Vec<_>>()
         .join(", ");
+    let repos = if channel.repos.is_empty() {
+        "no repos yet".to_owned()
+    } else {
+        channel.repos.join(", ")
+    };
+    let new_session = ui.clone();
+    let has_sessions = state
+        .workspace
+        .sessions
+        .iter()
+        .any(|s| s.channel == channel.id);
     col()
         .flex_shrink_0()
         .border_b_1()
@@ -104,19 +150,41 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
                         .text_ellipsis()
                         .text_size(px(11.5))
                         .text_color(rgb(look.secondary))
-                        .child(format!("{} · {machines}", channel.repos.join(", "))),
+                        .child(if machines.is_empty() {
+                            repos
+                        } else {
+                            format!("{repos} · {machines}")
+                        }),
+                )
+                // Frames 18 and 35 draw Pin and a "…" menu here. Neither has an action yet
+                // (a channel can't be pinned, and there is nothing for the menu to hold), so
+                // both are drawn disabled.
+                .when(has_sessions, |bar| {
+                    bar.child(
+                        Button::new("channel-pin")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::Pin)
+                            .accessibility_label("Pin this channel")
+                            .disabled(true),
+                    )
+                })
+                .child(
+                    Button::new("channel-more")
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Ellipsis)
+                        .accessibility_label("More channel actions")
+                        .disabled(true),
                 )
                 .child(
-                    widgets::primary(
-                        ui,
-                        "channel-new-session",
-                        "New session",
-                        AppAction::StartNewSession,
-                    )
-                    .small()
-                    .h(px(24.))
-                    .bg(rgb(look.accent))
-                    .text_color(rgb(0xffffff)),
+                    shape("channel-new-session", "New session")
+                        .primary()
+                        .bg(rgb(look.accent))
+                        .text_color(rgb(0xffffff))
+                        .on_click(move |_, _, cx| {
+                            new_session.send(AppAction::StartNewSession, cx)
+                        }),
                 ),
         )
         .child(
@@ -130,7 +198,7 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
                 .text_size(px(12.5))
                 .children(
                     [
-                        (Tab::Sessions, "Sessions", Some(sessions)),
+                        (Tab::Sessions, "Sessions", (sessions > 0).then_some(sessions)),
                         (Tab::Inbox, "Inbox", (waiting > 0).then_some(waiting)),
                         (Tab::Board, "Board", None),
                         (Tab::Repos, "Repos and machines", None),
@@ -155,13 +223,14 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
                             .when(tab == on, |x| x.font_weight(FontWeight::MEDIUM))
                             .child(name)
                             .children(count.map(|n| {
-                                div()
+                                row()
+                                    .h(px(16.))
                                     .px(px(6.))
-                                    .py(px(1.))
                                     .rounded_full()
                                     .bg(rgb(look.fill))
-                                    .text_size(px(11.))
+                                    .text_size(px(10.5))
                                     .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(rgb(look.secondary))
                                     .child(n.to_string())
                             }))
                             .on_click(move |_, _, cx| {
@@ -205,7 +274,15 @@ fn sessions(
                     div()
                         .id("channel-session-filter")
                         .w(px(240.))
-                        .child(Input::new(&filter).small().h(px(26.)))
+                        .child(
+                            Input::new(&filter)
+                                .small()
+                                .min_h(px(26.))
+                                .rounded(px(6.))
+                                .bg(rgb(look.card))
+                                .border_color(rgb(look.line))
+                                .text_size(px(12.5)),
+                        )
                         .test_support(),
                 )
                 .child(
@@ -225,8 +302,8 @@ fn sessions(
                                 .aria_selected(view.history == history)
                                 .px(px(12.))
                                 .py(px(2.))
-                                .rounded(px(6.))
-                                .text_size(px(12.))
+                                .rounded(px(5.))
+                                .text_size(px(11.5))
                                 .when(view.history == history, |x| {
                                     x.bg(rgb(look.card)).shadow_sm()
                                 })
@@ -239,32 +316,20 @@ fn sessions(
                     ),
                 )
                 .child(div().flex_1())
-                .child(
-                    button(
-                        ui,
-                        "channel-expand-all",
-                        "Expand all",
-                        AppAction::Channel(Action::ExpandAll),
-                        look,
-                    )
-                    .ghost()
-                    .bg(rgba(0))
-                    .px_0()
-                    .text_color(rgb(look.accent)),
-                )
-                .child(
-                    button(
-                        ui,
-                        "channel-collapse-all",
-                        "Collapse all",
-                        AppAction::Channel(Action::CollapseAll),
-                        look,
-                    )
-                    .ghost()
-                    .bg(rgba(0))
-                    .px_0()
-                    .text_color(rgb(look.accent)),
-                ),
+                .child(link(
+                    ui,
+                    "channel-expand-all",
+                    "Expand all",
+                    AppAction::Channel(Action::ExpandAll),
+                    look,
+                ))
+                .child(link(
+                    ui,
+                    "channel-collapse-all",
+                    "Collapse all",
+                    AppAction::Channel(Action::CollapseAll),
+                    look,
+                )),
         )
         .children(view.clones.as_ref().map(|(host, repo)| {
             row()
@@ -291,7 +356,7 @@ fn sessions(
                 .bg(rgb(look.card))
                 .child(
                     row()
-                        .min_w(px(850.))
+                        .min_w(px(948.))
                         .h(px(30.))
                         .px(px(12.))
                         .gap(px(8.))
@@ -309,7 +374,8 @@ fn sessions(
                         .child(column("Agent", 100.))
                         .child(column("Machine", 80.))
                         .child(column("Status", 110.))
-                        .child(column("Started", 90.)),
+                        .child(column("Started", 90.))
+                        .child(column("Last used ↓", 90.)),
                 )
                 .children(rows.iter().map(|r| {
                     let s = r.session;
@@ -326,7 +392,7 @@ fn sessions(
                         .id(SharedString::from(format!("channel-session-{}", s.id)))
                         .role(Role::Link)
                         .aria_label(s.title.clone())
-                        .min_w(px(850.))
+                        .min_w(px(948.))
                         .h(px(34.))
                         .px(px(12.))
                         .gap(px(8.))
@@ -404,13 +470,23 @@ fn sessions(
                                         Button::new(SharedString::from(format!(
                                             "channel-inbox-{id}"
                                         )))
+                                        .accessibility_label(r.pending.to_string())
                                         .small()
                                         .ghost()
                                         .h(px(20.))
-                                        .px(px(2.))
+                                        .px_0()
                                         .text_color(rgb(0xff453a))
-                                        .icon(IconName::Inbox)
-                                        .label(r.pending.to_string())
+                                        .child(
+                                            row()
+                                                .gap(px(2.))
+                                                .text_size(px(11.))
+                                                .child(chrome::icon(
+                                                    IconName::Inbox,
+                                                    0xff453a,
+                                                    12.,
+                                                ))
+                                                .child(r.pending.to_string()),
+                                        )
                                         .tooltip(format!(
                                             "{direct} from this session, {} from forks",
                                             r.pending - direct
@@ -465,6 +541,13 @@ fn sessions(
                                 .flex_shrink_0()
                                 .text_color(rgb(look.secondary))
                                 .child(s.started.clone()),
+                        )
+                        .child(
+                            div()
+                                .w(px(90.))
+                                .flex_shrink_0()
+                                .text_color(rgb(look.secondary))
+                                .child(s.last_used.clone()),
                         )
                         .on_click(move |_, _, cx| open(&ui2, &id, None, cx))
                         .test_support()
@@ -560,18 +643,15 @@ fn activity(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> Any
                                                         p.repo, p.number
                                                     )
                                                 });
-                                            Button::new(SharedString::from(format!(
-                                                "channel-event-{i}"
-                                            )))
-                                            .small()
-                                            .h(px(24.))
-                                            .label(match kind {
-                                                ActivityKind::Inbox => "Review",
-                                                ActivityKind::Turn => "Diff",
-                                                _ => "Open PR",
-                                            })
-                                            .bg(rgb(look.fill))
-                                            .text_color(rgb(look.text))
+                                            quiet(
+                                                SharedString::from(format!("channel-event-{i}")),
+                                                match kind {
+                                                    ActivityKind::Inbox => "Review",
+                                                    ActivityKind::Turn => "Diff",
+                                                    _ => "Open PR",
+                                                },
+                                                look,
+                                            )
                                             .on_click(move |_, _, cx| {
                                                 if kind == ActivityKind::PullRequest {
                                                     if let Some(url) = &url {
@@ -661,8 +741,8 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                                     col()
                                         .w(px(150.))
                                         .flex_shrink_0()
-                                        .child(
-                                            button(
+                                        .child(row().font_weight(FontWeight::SEMIBOLD).child(
+                                            link(
                                                 ui,
                                                 SharedString::from(format!(
                                                     "channel-host-{}",
@@ -675,13 +755,8 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                                                     ),
                                                 ),
                                                 look,
-                                            )
-                                            .ghost()
-                                            .bg(rgba(0))
-                                            .px_0()
-                                            .justify_start()
-                                            .text_color(rgb(look.accent)),
-                                        )
+                                            ),
+                                        ))
                                         .child(
                                             div()
                                                 .text_size(px(11.))
@@ -731,7 +806,7 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                                     .child("—")
                                     .into_any_element()
                             } else {
-                                button(
+                                link(
                                     ui,
                                     SharedString::from(format!("channel-clones-{repo}-{machine}")),
                                     format!("{count} clone{}", if count == 1 { "" } else { "s" }),
@@ -741,11 +816,6 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                                     }),
                                     look,
                                 )
-                                .ghost()
-                                .bg(rgba(0))
-                                .px_0()
-                                .justify_start()
-                                .text_color(rgb(look.accent))
                                 .into_any_element()
                             })
                         }))
@@ -755,17 +825,152 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
             row()
                 .gap(px(8.))
                 .child(
-                    Button::new("channel-add-repo")
-                        .small()
-                        .label("Add a GitHub repo…")
+                    quiet("channel-add-repo", "Add a GitHub repo…", look)
+                        .text_color(rgb(look.tertiary))
                         .disabled(true),
                 )
+                .child(button(
+                    ui,
+                    "channel-add-machine",
+                    "Add a machine…",
+                    AppAction::Hosts(humata2_hosts::HostsAction::StartAdd),
+                    look,
+                )),
+        )
+        .test_support()
+        .into_any_element()
+}
+
+/// The Sessions tab of a channel that has never had a session (frame 35).
+fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyElement {
+    let machines = channel
+        .machines
+        .iter()
+        .filter_map(|id| state.workspace.machine(id))
+        .map(|m| m.name.as_str())
+        .collect::<Vec<_>>();
+    let picked = if machines.is_empty() {
+        "Add a machine to run sessions there.".to_owned()
+    } else {
+        format!(
+            "{} {} in. Add others to run sessions there.",
+            machines.join(", "),
+            if machines.len() == 1 { "is" } else { "are" }
+        )
+    };
+    let board_empty = !state
+        .workspace
+        .items
+        .iter()
+        .any(|i| matches!(&i.scope, Scope::Channel(id) if *id == channel.id));
+    let step = |glyph: IconName, title: &'static str, note: String, action: Option<Button>| {
+        row()
+            .gap(px(12.))
+            .px(px(14.))
+            .py(px(12.))
+            .border_b_1()
+            .border_color(rgb(look.line))
+            .child(chrome::icon(glyph, look.accent, 15.))
+            .child(
+                col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(title))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(note),
+                    ),
+            )
+            .children(action)
+    };
+    div()
+        .id("channel-empty")
+        .size_full()
+        .overflow_y_scroll()
+        .flex()
+        .items_start()
+        .justify_center()
+        .p(px(24.))
+        .text_size(px(13.))
+        .child(
+            col()
+                .w(px(640.))
+                .gap(px(12.))
                 .child(
-                    Button::new("channel-add-machine")
-                        .small()
-                        .label("Add a machine…")
-                        .disabled(true),
-                ),
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Nothing in # {} yet", channel.name)),
+                )
+                .child(
+                    col()
+                        .rounded(px(9.))
+                        .border_1()
+                        .border_color(rgb(look.line))
+                        .bg(rgb(look.card))
+                        .overflow_hidden()
+                        .child(
+                            row()
+                                .gap(px(12.))
+                                .px(px(14.))
+                                .py(px(12.))
+                                .border_b_1()
+                                .border_color(rgb(look.line))
+                                .child(chrome::icon(IconName::Check, 0x30d158, 15.))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .text_color(rgb(look.secondary))
+                                        .child("Channel made"),
+                                ),
+                        )
+                        .child(step(
+                            IconName::FolderGit2,
+                            "Add a repo",
+                            "Sessions get their own clone of each repo you add.".to_owned(),
+                            // No action adds a repo to a channel yet (CH-6): drawn disabled.
+                            Some(
+                                quiet("channel-empty-add-repo", "Add a GitHub repo…", look)
+                                    .text_color(rgb(look.tertiary))
+                                    .disabled(true),
+                            ),
+                        ))
+                        .child(step(
+                            IconName::Server,
+                            "Pick machines",
+                            picked,
+                            Some(button(
+                                ui,
+                                "channel-empty-add-machine",
+                                "Add a machine…",
+                                AppAction::Hosts(humata2_hosts::HostsAction::StartAdd),
+                                look,
+                            )),
+                        ))
+                        .child(step(
+                            IconName::SquareTerminal,
+                            "Start a session",
+                            "An agent's TUI or a plain shell. Works without a repo, in an empty folder."
+                                .to_owned(),
+                            Some(button(
+                                ui,
+                                "channel-empty-new-session",
+                                "New session",
+                                AppAction::StartNewSession,
+                                look,
+                            )),
+                        )),
+                )
+                .children(board_empty.then(|| {
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.secondary))
+                        .child(
+                            "The board is empty too: add items from the Board tab, or ask an agent to.",
+                        )
+                })),
         )
         .test_support()
         .into_any_element()
@@ -781,6 +986,15 @@ pub(crate) fn page(
 ) -> AnyElement {
     let view = page_view(state, &channel.id);
     match view.tab {
+        Tab::Sessions
+            if !state
+                .workspace
+                .sessions
+                .iter()
+                .any(|s| s.channel == channel.id) =>
+        {
+            empty(ui, state, channel, look)
+        }
         Tab::Sessions => sessions(ui, state, channel, &view, filter, look),
         Tab::Activity => activity(ui, state, channel, look),
         Tab::Repos => repos(ui, state, channel, look),

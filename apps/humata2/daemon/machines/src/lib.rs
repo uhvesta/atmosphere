@@ -16,6 +16,7 @@ mod install;
 mod known_hosts;
 mod link;
 mod local;
+mod login;
 mod manage;
 mod name;
 mod platform;
@@ -34,12 +35,17 @@ pub use error::{
 };
 pub use identity::{parse_identity, HostKey, Identity, SshAccess, SshTarget};
 pub use bundle::{Bundle, MANIFEST};
-pub use hosts::{EntryState, HostEntry, Hosts, HostsError};
+pub use hosts::{EntryState, HostEntry, Hosts, HostsError, ProviderMachine, StoredLink};
 pub use install::{Builds, BuildsError, InstallProblem, InstalledFile, Payload};
 pub use link::Link;
 pub use local::{install_local, Holders, LocalInstallError, LocalReport, RunningHolders};
+pub use login::{
+    detect_prompt, existing_link, is_interactive, make_unattended, mark_interactive, provider_link, register, unregister,
+    LinkReader, LinkWriter, LoginError, LoginEvent, LoginHandle, LoginLink, LoginSession, LoginTerminal, Method, Observed,
+    Plan,
+};
 pub use manage::{
-    AddSsh, Drive, Machines, MachinesConfig, ManageError, OpStep, PlannedAdd, Recovered, StepEvent, DEFAULT_ROOT,
+    AddSsh, Drive, Machines, MachinesConfig, ManageError, OpStep, PlannedAdd, PlannedCreate, Recovered, StepEvent, DEFAULT_ROOT,
 };
 pub use name::MachineName;
 pub use platform::{Arch, Os, Platform};
@@ -49,3 +55,13 @@ pub use service::ServiceKind;
 pub use setup::{Failure, LoginNeeded, LoginReason, Progress, Ready, RetryPolicy, Setup, Step};
 pub use system::{HostVariables, SystemRunner};
 pub use takeover::{Takeover, TakeoverAction};
+
+mod skills;
+mod sync_rules;
+
+pub use skills::{
+    Change, ChangeKind, Choice, Clash, ClashUse, Incoming, Managed, Plan as SkillsPlan, SkillEntry,
+    SkillName, SkillSet, SkillsError, SkillsManifest, Source as SkillsSource, plan as plan_skills_sync,
+    scan as scan_skills,
+};
+pub use sync_rules::{RuleProblem, RuleSource, SyncRule, SyncRulesError, parse_rules};

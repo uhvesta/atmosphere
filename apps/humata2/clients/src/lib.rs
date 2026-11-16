@@ -10,10 +10,13 @@
 
 mod clipboard;
 mod daemon;
+pub mod desk;
+mod file_manager;
 mod files;
 pub mod fixture;
 mod keychain;
 pub mod model;
+pub mod machines;
 mod workspace;
 
 use std::sync::Arc;
@@ -22,6 +25,12 @@ use std::time::Duration;
 pub use clipboard::{Clipboard, FakeClipboard};
 pub use daemon::{
     Daemon, DaemonError, EVENT_QUEUE, Event, Events, FakeDaemon, Operation, Reply, Terminals,
+};
+pub use desk::DeskClient;
+pub use file_manager::{
+    EmptyPlan, Entry, EntryKind, FakeFileManager, FileManager, FileManagerError, FileReply, FileRoot, Folder,
+    Listing, RetentionSkip, StorageAction, StorageKind, StorageReport, StorageRow, TransferMode, TransferPhase,
+    TransferRow, TrashEntry, TrashListing,
 };
 pub use files::{FakeFileSystem, FileError, FileSystem};
 pub use keychain::{FakeKeychain, Keychain, KeychainError};
@@ -35,12 +44,16 @@ pub struct Clients {
     pub daemon: Arc<dyn Daemon>,
     /// Sessions' terminal tabs.
     pub terminals: Arc<dyn Terminals>,
+    /// The Desk: sessions outside any channel.
+    pub desk: Arc<dyn DeskClient>,
     /// Time, for latency, debouncing and save intervals.
     pub clock: Arc<dyn Clock>,
     /// Where Copy puts text.
     pub clipboard: Arc<dyn Clipboard>,
     /// Files the app writes itself.
     pub files: Arc<dyn FileSystem>,
+    /// Files on machines: the file manager, transfers, trash and Storage.
+    pub file_manager: Arc<dyn FileManager>,
     /// Secrets.
     pub keychain: Arc<dyn Keychain>,
     /// Where the app's own state is saved between launches.
@@ -56,6 +69,8 @@ pub struct Fakes {
     pub clipboard: FakeClipboard,
     /// The file system.
     pub files: FakeFileSystem,
+    /// The file manager.
+    pub file_manager: FakeFileManager,
     /// The keychain.
     pub keychain: FakeKeychain,
     /// Saved app state. Hand the same one to the next launch to restart.
@@ -71,6 +86,7 @@ impl Clients {
             daemon,
             clipboard: FakeClipboard::default(),
             files: FakeFileSystem::default(),
+            file_manager: FakeFileManager::default(),
             keychain: FakeKeychain::default(),
             storage: Arc::new(MemoryStorage::new()),
         }, clock)
@@ -83,9 +99,11 @@ impl Clients {
         let clients = Self {
             daemon: Arc::new(fakes.daemon.clone()),
             terminals: Arc::new(fakes.daemon.clone()),
+            desk: Arc::new(fakes.daemon.clone()),
             clock,
             clipboard: Arc::new(fakes.clipboard.clone()),
             files: Arc::new(fakes.files.clone()),
+            file_manager: Arc::new(fakes.file_manager.clone()),
             keychain: Arc::new(fakes.keychain.clone()),
             storage: fakes.storage.clone(),
         };
@@ -103,9 +121,11 @@ impl Clients {
         let clients = Self {
             daemon: Arc::new(daemon.clone()),
             terminals: Arc::new(daemon.clone()),
+            desk: Arc::new(daemon.clone()),
             clock,
             clipboard: Arc::new(FakeClipboard::default()),
             files: Arc::new(FakeFileSystem::default()),
+            file_manager: Arc::new(FakeFileManager::default()),
             keychain: Arc::new(FakeKeychain::default()),
             storage,
         };

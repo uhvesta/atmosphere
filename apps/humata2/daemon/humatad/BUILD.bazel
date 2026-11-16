@@ -50,6 +50,7 @@ rust_library(
 )
 
 DAEMON_DEPS = [
+    "//apps/humata2/daemon/transfers",
     "//apps/humata2/daemon/app_peer",
     ":grpc",
     "//apps/humata2/api/proto:humata2_store_rust",
@@ -109,6 +110,19 @@ tools_bundle(
         "//bazel/platforms:macos_x86_64": "darwin-x86_64",
     },
     visibility = ["//apps/humata2:__subpackages__"],
+)
+
+# The Mac's own tools, signed ad hoc, for the app bundle to carry in
+# Contents/Helpers (//apps/humata2/app). Remote machines get `:tools`.
+tools_bundle(
+    name = "tools_mac",
+    holder = "//apps/humata2/daemon/holder:humata2_holder",
+    humata = "//apps/humata2/cli:humata",
+    humatad2 = ":humatad2",
+    platforms = {
+        "//bazel/platforms:macos_arm64": "darwin-arm64",
+    },
+    visibility = ["//apps/humata2/app:__pkg__"],
 )
 
 # A test daemon: with `serve --admin`, a call with no credential acts as

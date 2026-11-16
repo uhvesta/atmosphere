@@ -32,6 +32,10 @@ impl Builds for AnyPlatform {
 /// Bazel).
 const SHORT: Duration = Duration::from_secs(3);
 
+/// How long the never-syncing bridge is given: long enough for its first
+/// line to arrive when the computer is busy with other tests (3 s was not).
+const SYNC_WAIT: Duration = Duration::from_secs(10);
+
 /// A humatad2 whose bridge says it is in sync, then echoes the stream.
 fn fake_files() -> Vec<Payload> {
     files_with_bridge("printf 'HUMATA_SYNC_%s\\n' \"$n\"\nexec cat")
@@ -260,7 +264,7 @@ fn a_bridge_that_never_syncs_times_out_with_the_end_of_its_output() {
     let home = tempfile::tempdir().unwrap();
     let mut shell = Shell::start(home.path());
     let files = files_with_bridge("echo 'waiting for the socket'\nexec cat");
-    let takeover = Takeover::new(machine()).with_sync_timeout(SHORT);
+    let takeover = Takeover::new(machine()).with_sync_timeout(SYNC_WAIT);
 
     let (end, _) = run_takeover(takeover, &mut shell, &AnyPlatform(files), <[u8]>::to_vec);
 
@@ -273,7 +277,7 @@ fn a_bridge_that_never_syncs_times_out_with_the_end_of_its_output() {
         panic!("the takeover didn't time out");
     };
     assert_eq!(timed_out, machine());
-    assert_eq!(waited, SHORT);
+    assert_eq!(waited, SYNC_WAIT);
     assert!(output_tail.contains("waiting for the socket"), "{output_tail}");
 }
 

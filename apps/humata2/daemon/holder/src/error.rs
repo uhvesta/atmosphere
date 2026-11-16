@@ -78,6 +78,16 @@ pub enum HolderError {
         source: std::io::Error,
     },
 
+    #[error(
+        "the key {key:?} is {len} bytes, more than the {max} a keyed input may have; use a shorter key"
+    )]
+    KeyTooLong { key: String, len: usize, max: usize },
+
+    #[error(
+        "{len} bytes is more than the {max} the holder types as one keyed input; send it in smaller parts"
+    )]
+    KeyedInputTooLarge { len: usize, max: usize },
+
     #[error("couldn't resize the terminal; the program in it may have ended")]
     Resize {
         #[source]

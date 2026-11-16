@@ -297,6 +297,7 @@ async fn comments<D: Daemon, C: Console>(
             statuses: statuses.clone(),
             file: None,
             page,
+            archived: false,
         }
     })
     .await

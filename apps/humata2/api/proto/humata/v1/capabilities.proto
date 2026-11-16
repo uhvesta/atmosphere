@@ -120,6 +120,12 @@ enum Capability {
   // "Order": reorder and group the review's files (review_prepare in the
   // review chat).
   CAPABILITY_REVIEW_ORDER = 41;
+  // "Reply": answer in the thread of a comment typed into its own session
+  // (comment_reply, DK-9).
+  CAPABILITY_COMMENT_REPLY = 42;
+  // "Resolve": resolve one with a note on what was done (comment_resolve,
+  // SM-19).
+  CAPABILITY_COMMENT_RESOLVE = 43;
 
   // ----- User-only: no rule, never granted, no MCP tool. -----
 

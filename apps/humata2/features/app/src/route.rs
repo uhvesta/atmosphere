@@ -33,6 +33,8 @@ pub enum Route {
     Files,
     /// Prepared views.
     Views,
+    /// The Desk: sessions outside any channel (DK-5).
+    Desk,
     /// Settings.
     Settings,
 }
@@ -77,6 +79,10 @@ impl App {
             self.child(
                 state,
                 AppAction::Views(ViewsAction::Show(state.workspace.clone())),
+            ),
+            self.child(
+                state,
+                AppAction::Desk(humata2_desk::DeskAction::Show(state.workspace.clone())),
             ),
         ])
     }
@@ -142,6 +148,10 @@ impl App {
             }
             Route::Board(scope) => {
                 effects.push(self.child(state, AppAction::Board(BoardAction::SetScope(scope))));
+            }
+            Route::Files => {
+                state.session.open = None;
+                effects.push(self.child(state, AppAction::Files(FilesAction::Opened)));
             }
             _ => state.session.open = None,
         }

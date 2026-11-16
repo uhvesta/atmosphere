@@ -46,6 +46,7 @@ pub(super) fn send(daemon: &FakeDaemon, session: &SessionId, text: &str) -> Repl
             found.turn = Turn::Running;
             inner.changed(&id);
             inner.output(&id, 0, Speaker::You, &text);
+            super::desk::used(inner, &id);
             Ok(())
         }
     });
@@ -105,6 +106,30 @@ pub(super) fn resume(daemon: &FakeDaemon, session: &SessionId) -> Reply<()> {
     )
 }
 
+pub(super) fn start_fresh(daemon: &FakeDaemon, session: &SessionId) -> Reply<()> {
+    let id = session.clone();
+    daemon.reply(
+        Some(Operation::StartFresh),
+        format!("start fresh {session}"),
+        move |inner| {
+            let found = inner.session_mut(&id)?;
+            found.status = Status::Idle;
+            found.turn = Turn::Ended;
+            found.recovery = None;
+            found.resume_failed = None;
+            let agent = found.agent;
+            inner.changed(&id);
+            inner.output(
+                &id,
+                0,
+                Speaker::System,
+                &format!("{} started fresh with a summary of its last conversation", agent.name()),
+            );
+            Ok(())
+        },
+    )
+}
+
 pub(super) fn fork(
     daemon: &FakeDaemon,
     session: &SessionId,
@@ -138,6 +163,7 @@ pub(super) fn fork(
             fork.archived = false;
             fork.started = "just now".into();
             fork.active = "just now".into();
+            fork.last_used = "just now".into();
             fork.activity = if kind == ForkKind::Shared {
                 "Fresh agent, no conversation".into()
             } else {
@@ -334,6 +360,7 @@ pub(super) fn set_vip(daemon: &FakeDaemon, session: &SessionId, vip: bool) -> Re
 pub(super) fn mark_read(daemon: &FakeDaemon, session: &SessionId) -> Reply<()> {
     let id = session.clone();
     daemon.reply(None, format!("read {session}"), move |inner| {
+        super::desk::used(inner, &id);
         if let Some(found) = inner
             .workspace
             .sessions
@@ -400,6 +427,7 @@ pub(super) fn create_session(
                 branch: if options.branch.is_empty(){id.to_string()}else{options.branch.clone()},
                 started: "just now".to_owned(),
                 active: "just now".to_owned(),
+                last_used: "just now".to_owned(),
                 activity: String::new(),
                 transcript: vec![Line {
                     from: Speaker::System,
@@ -409,6 +437,8 @@ pub(super) fn create_session(
                 terminal_agents: Default::default(),
                 archived: false,
                 recovery: None,
+                resume_failed: None,
+                interrupted_unix_ms: None,
                 model: None,
                 restart_detail: None,
                 permissions: Vec::new(),

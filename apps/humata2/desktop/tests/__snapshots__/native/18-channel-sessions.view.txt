@@ -8,6 +8,7 @@ Navigation "Sidebar"
   Link "Home"
   Link "Inbox"
   Link "Board"
+  Link "Desk"
   Button "New channel"
   TreeItem "payments-rewrite" selected expanded
     Button "Fold"
@@ -31,6 +32,8 @@ Navigation "Sidebar"
   Link "Settings"
 Splitter "Resize the sidebar"
 Button "New session"
+Button "Pin this channel" disabled
+Button "More channel actions" disabled
 Tab "Sessions" selected
 Tab "Inbox"
 Tab "Board"
@@ -38,14 +41,14 @@ Tab "Repos and machines"
 Tab "Agent access"
 Tab "Activity"
 #channel-sessions
-  Button "Expand all"
-  Button "Collapse all"
+  #channel-session-filter
+    #input-4294967327
+      TextInput "Filter sessions" value="" placeholder="Filter sessions"
   Tab "Open" selected
   Tab "Archived"
   Tab "All"
-  #channel-session-filter
-    #input-4294967321
-      TextInput "Filter sessions" value="" placeholder="Filter sessions"
+  Button "Expand all"
+  Button "Collapse all"
   Link "Ledger schema migration"
     Button "2" description="1 from this session, 1 from forks"
     Button "Fold session forks"

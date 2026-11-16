@@ -19,6 +19,12 @@ pub(super) fn create_channel(
                     reason: "it needs a name. Type one and try again".to_owned(),
                 });
             }
+            if name == crate::desk::FOLDER {
+                return Err(DaemonError::Refused {
+                    what: format!("Creating #{name}"),
+                    reason: "that name is kept for the Desk's folder. Pick another name".to_owned(),
+                });
+            }
             if inner
                 .workspace
                 .channels
@@ -30,14 +36,16 @@ pub(super) fn create_channel(
                     reason: "a channel with that name exists. Pick another name".to_owned(),
                 });
             }
+            super::setup::start(inner, &name, &repos, &machines)?;
             let id = ChannelId::new(name.clone());
             inner.workspace.channels.push(Channel {
                 id: id.clone(),
-                name,
+                name: name.clone(),
                 repos,
                 machines,
                 purpose: String::new(),
             });
+            super::setup::finish(inner, &name);
             inner.emit(Event::Resync);
             Ok(id)
         },

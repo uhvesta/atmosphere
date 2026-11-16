@@ -801,6 +801,7 @@ pub fn user_note_to_pb(note: &UserNote) -> pb::Comment {
             blob_sha: anchor.map(|anchor| anchor.blob.clone()).unwrap_or_default(),
             detached: false,
             outdated: note.outdated,
+            ..pb::CommentAnchor::default()
         }),
         text: note.note.text.clone(),
         destination: Some(pb::CommentDestination {

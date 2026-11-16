@@ -11,10 +11,16 @@ use crate::model::{
 /// What every daemon the app talks to holds, merged.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Workspace {
+    /// The Desk: sessions outside any channel, and their documents (DK-1).
+    pub desk: crate::desk::DeskData,
     /// The hosts.
     pub machines: Vec<Machine>,
     /// Health reported by each host.
     pub machine_health: BTreeMap<MachineId, crate::model::MachineHealth>,
+    /// What each host found when it last restarted, newest first (frame 47).
+    pub restarts: Vec<crate::model::Restart>,
+    /// Channels being set up (frame 45).
+    pub setups: Vec<crate::model::ChannelSetup>,
     /// The channels, in sidebar order.
     pub channels: Vec<Channel>,
     /// Every session, parents before their forks.

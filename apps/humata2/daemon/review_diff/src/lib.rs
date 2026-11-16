@@ -14,6 +14,11 @@
 //!   are anchored to blobs and go outdated when their lines change (RV-34).
 //! - [`ReviewChat`] is the review chat's view state (PR-22–PR-26): focus,
 //!   notes for the user, order, Undo and Back, gated by [`AgentSwitches`].
+//! - A [`CommentLedger`] holds a session's comments for its agent
+//!   (SM-9–SM-21): drafts, the batches being typed into its terminal, and
+//!   what became of each. [`compose`] writes the message a batch is typed
+//!   as, and [`place`] finds a comment's passage again after its file
+//!   changed.
 //! - [`wire`] converts all of it to and from `humata.v1`.
 //!
 //! Every git call blocks, so each `*_blocking` method has an async twin
@@ -31,10 +36,13 @@
 
 mod chat;
 mod checkout;
+mod comment_message;
+mod comments;
 mod diff;
 mod error;
 mod git;
 mod model;
+mod passage;
 mod plan;
 mod snapshot;
 mod spec;
@@ -48,12 +56,19 @@ pub use chat::{
     Place, Replaced, ReviewChat, Switch, Undoable, UserNote, ViewState, ViewedFile,
 };
 pub use checkout::{Checkout, Stamp, WatchSet};
+pub use comment_message::{DiffContext, MessagePart, bracketed_paste, compose};
+pub use comments::{
+    Addressed, CommentAnchor, CommentAuthor, CommentError, CommentFilter, CommentLedger,
+    CommentReply, CommentStamp, CommentStatus, Delivery, DeliveryState, LedgerParts, Typed,
+    UserComment,
+};
 pub use diff::Matching;
 pub use error::{DiffError, PlanError};
 pub use model::{
     Budget, Cursor, DiffLine, FileChunk, FileStatus, FileSummary, Hunk, LineKind, RepoDiff, Side,
     Snapshot, Trees, Viewed,
 };
+pub use passage::{Placement, place};
 pub use plan::{
     Anchor, AnchorError, Arrangement, FileRef, Group, Note, NoteState, NoteTarget, ReviewPlan,
     Section,

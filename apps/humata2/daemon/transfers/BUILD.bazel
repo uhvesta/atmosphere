@@ -1,0 +1,101 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Copying, moving and uploading files and folders, and the Humata trash
+# (FM-3, FM-6, FM-8, FM-14, LD-6, LD-7, LD-19, TR-11): chunked, resumable,
+# checksummed, and finished or cleanly undone after a crash at any step
+# (PER-27). Files are touched only through the `End` trait, so a remote
+# machine can be added later. humatad2 drives it; it knows nothing about
+# gRPC.
+TRANSFERS_DEPS = [
+    "@crates//:rustix",
+    "@crates//:serde",
+    "@crates//:serde_json",
+    "@crates//:sha2",
+    "@crates//:thiserror",
+    "@crates//:uuid",
+]
+
+rust_library(
+    name = "transfers",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_transfers",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = TRANSFERS_DEPS + [
+        "//apps/humata2/daemon/durable",
+        "//apps/humata2/daemon/store",
+    ],
+)
+
+rust_test(
+    name = "transfers_unit_test",
+    crate = ":transfers",
+    deps = ["@crates//:tempfile"],
+)
+
+# The same crate on the fault-point builds of everything it drives.
+rust_library(
+    name = "transfers_faults",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_transfers",
+    deps = TRANSFERS_DEPS + [
+        "//apps/humata2/daemon/durable:durable_faults",
+        "//apps/humata2/daemon/store:store_faults",
+    ],
+)
+
+rust_test(
+    name = "trash_test",
+    srcs = ["tests/trash.rs"],
+    deps = [
+        ":transfers",
+        "@crates//:tempfile",
+    ],
+)
+
+rust_test(
+    name = "transfers_test",
+    srcs = ["tests/transfers.rs"],
+    deps = [
+        ":transfers",
+        "@crates//:sha2",
+        "@crates//:tempfile",
+    ],
+)
+
+rust_test(
+    name = "storage_test",
+    srcs = ["tests/storage.rs"],
+    deps = [
+        ":transfers",
+        "@crates//:tempfile",
+    ],
+)
+
+rust_test(
+    name = "retention_test",
+    srcs = ["tests/retention.rs"],
+    deps = [":transfers"],
+)
+
+# PER-27, PER-28: kills copies, moves, cancels, uploads and trash changes at
+# each point and checks recovery finishes or fully undoes them.
+rust_test(
+    name = "kill_matrix_test",
+    size = "large",
+    srcs = ["tests/kill_matrix.rs"],
+    tags = [
+        "slow",
+    ],
+    deps = [
+        ":transfers_faults",
+        "@crates//:sha2",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

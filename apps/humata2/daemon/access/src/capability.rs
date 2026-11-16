@@ -31,6 +31,10 @@ pub enum Capability {
     ReviewFocus,
     ReviewNote,
     ReviewOrder,
+    // The agent's two tools on comments typed into its own session
+    // (DK-9, SM-19): reply in the thread, resolve with a note.
+    CommentReply,
+    CommentResolve,
     // Reads of other channels and the global board (D127.4).
     GlobalRead,
     // Ask me.
@@ -128,7 +132,7 @@ const SETTINGS_NONE: &[Decision] = &[];
 
 impl Capability {
     /// Every capability, once.
-    pub const ALL: [Capability; 46] = [
+    pub const ALL: [Capability; 48] = [
         Self::OwnBoardWrite,
         Self::ChannelRead,
         Self::ChannelBoardAdd,
@@ -141,6 +145,8 @@ impl Capability {
         Self::ReviewFocus,
         Self::ReviewNote,
         Self::ReviewOrder,
+        Self::CommentReply,
+        Self::CommentResolve,
         Self::ChannelBoardEditOthers,
         Self::GlobalRead,
         Self::FilesReadOtherSession,
@@ -191,6 +197,8 @@ impl Capability {
             | Self::ReviewFocus
             | Self::ReviewNote
             | Self::ReviewOrder
+            | Self::CommentReply
+            | Self::CommentResolve
             | Self::GlobalRead => Tier::DefaultAllow,
             Self::ChannelBoardEditOthers
             | Self::FilesReadOtherSession
@@ -291,6 +299,8 @@ impl Capability {
             | Self::ReviewFocus
             | Self::ReviewNote
             | Self::ReviewOrder
+            | Self::CommentReply
+            | Self::CommentResolve
             | Self::ChannelBoardEditOthers
             | Self::FilesReadOtherSession
             | Self::FilesCopyIn
@@ -353,6 +363,8 @@ impl Capability {
             Self::ReviewFocus => "move your review's view to a file or lines",
             Self::ReviewNote => "leave you notes in a review",
             Self::ReviewOrder => "order a review's files",
+            Self::CommentReply => "reply in the thread of comments you sent it",
+            Self::CommentResolve => "resolve comments you sent it, with a note on what it did",
             Self::ChannelBoardEditOthers => "edit anyone else's board items",
             Self::GlobalRead => "use the global board or other channels",
             Self::FilesReadOtherSession => "read another session's files",

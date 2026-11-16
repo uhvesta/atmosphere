@@ -468,3 +468,347 @@ fn a_removal_cut_short_finishes_at_the_next_start() {
         assert_clean(&host, &machine);
     }
 }
+
+// ---- Machines made through a provider (MP-3, MP-7, MP-8, MP-19, MP-21) ----
+
+mod provider_machines {
+    use std::collections::BTreeMap;
+
+    use humata2_machines::{Action, IdentityError, MachineStatus, OpStep, Provider, parse_status};
+
+    use super::*;
+
+    const HOST_KEY: &str = fake_machine::HOST_KEY;
+
+    impl Host {
+        fn dir(&self) -> &std::path::Path {
+            self.folder.path()
+        }
+
+        fn made(&self) -> bool {
+            self.dir().join("created").exists()
+        }
+
+        fn write_identity(&self, host_key: &str) {
+            let identity = format!(
+                r#"{{"name":"box-1","ssh":{{"host":"box-1.internal","user":"me","port":22,"host_key":"{host_key}"}},"os":"linux","arch":"x86_64"}}"#
+            );
+            std::fs::write(self.dir().join("identity.json"), identity).unwrap();
+        }
+
+        /// A provider reaching its machine from an identity it prints.
+        fn identity_provider(&self) -> Provider {
+            let dir = self.dir().display();
+            parse(&format!(
+                "[providers.fake]\n\
+                 params = [{{ name = \"size\", prompt = \"Size\", default = \"small\" }}, {{ name = \"zone\", prompt = \"Zone\" }}]\n\
+                 create = 'touch {dir}/created'\n\
+                 identity = 'cat {dir}/identity.json'\n\
+                 start = 'touch {dir}/started'\n\
+                 status = 'echo stopped'\n\
+                 delete = 'rm -f {dir}/created'\n"
+            ))
+        }
+
+        /// A provider whose connect command runs the remote command over
+        /// the fake ssh, checking the key in a file of the test's own.
+        fn connect_provider(&self) -> Provider {
+            let dir = self.dir().display();
+            std::fs::write(self.dir().join("connect_known_hosts"), format!("humata2.box-1 {HOST_KEY}\n")).unwrap();
+            parse(&format!(
+                "[providers.viaconnect]\n\
+                 params = [{{ name = \"zone\", prompt = \"Zone\", default = \"a\" }}]\n\
+                 create = 'touch {dir}/created'\n\
+                 connect = 'ssh -F /dev/null -o UserKnownHostsFile={dir}/connect_known_hosts -o HostKeyAlias=humata2.box-1 -- box-1 {{cmd}}'\n\
+                 delete = 'rm -f {dir}/created'\n"
+            ))
+        }
+    }
+
+    fn parse(text: &str) -> Provider {
+        Provider::parse(text).unwrap().pop().unwrap()
+    }
+
+    fn zone() -> BTreeMap<String, String> {
+        BTreeMap::from([("zone".to_owned(), "fsn1".to_owned())])
+    }
+
+    fn create(
+        host: &Host,
+        provider: &Provider,
+        values: BTreeMap<String, String>,
+        runner: &FakeSshRunner,
+    ) -> (Result<humata2_machines::HostEntry, ManageError>, Vec<StepEvent>) {
+        let machines = host.machines();
+        let plan = match machines.plan_create(provider, "box-1", values) {
+            Ok(plan) => plan,
+            Err(error) => return (Err(error), Vec::new()),
+        };
+        drive(runner, &Files(1), |drive| machines.create(plan, drive))
+    }
+
+    fn create_ok(host: &Host, provider: &Provider, machine: &FakeMachine) -> humata2_machines::HostEntry {
+        create(host, provider, zone(), &machine.runner()).0.unwrap()
+    }
+
+    #[test]
+    fn a_machine_made_by_an_identity_provider_is_listed_with_its_provider_and_reconnects_through_it() {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        host.write_identity(HOST_KEY);
+        let provider = host.identity_provider();
+
+        let (entry, events) = create(&host, &provider, zone(), &machine.runner());
+        let entry = entry.unwrap();
+
+        assert_eq!(entry.state, EntryState::Ready);
+        assert_eq!(entry.provider.as_ref().map(|p| p.id.as_str()), Some("fake"));
+        assert_eq!(host.machines().list().unwrap(), [entry]);
+        assert!(host.made());
+        assert_has(&machine, &Files(1));
+        assert!(host.pinned(), "the identity's host key is pinned with no prompt");
+        assert!(host.peer_key().is_some());
+        for step in [OpStep::Create, OpStep::Identity, OpStep::Connect, OpStep::Install] {
+            assert!(events.contains(&StepEvent::Done(step)), "{step:?}");
+        }
+        // The stored link survives a restart: a reconnect and the peer link use it.
+        let machines = host.machines();
+        let (reconnected, _) = drive(&machine.runner(), &Files(1), |drive| machines.reconnect("box-1", drive));
+        assert_eq!(reconnected.unwrap().state, EntryState::Ready);
+        machines.peer_link("box-1").unwrap();
+    }
+
+    #[test]
+    fn a_machine_made_by_a_connect_provider_is_reached_through_its_command_and_removed_through_it() {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        let provider = host.connect_provider();
+
+        let entry = create(&host, &provider, BTreeMap::new(), &machine.runner()).0.unwrap();
+
+        assert_eq!(entry.provider.as_ref().map(|p| p.id.as_str()), Some("viaconnect"));
+        assert_has(&machine, &Files(1));
+        let machines = host.machines();
+        machines.peer_link("box-1").unwrap();
+        let (removed, _) = drive(&machine.runner(), &Files(1), |drive| machines.remove("box-1", drive));
+        removed.unwrap();
+        assert_clean(&host, &machine);
+    }
+
+    #[test]
+    fn params_that_are_undeclared_or_missing_are_refused_by_name_before_anything_runs() {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        let provider = host.identity_provider();
+        let runner = machine.runner();
+
+        let missing = create(&host, &provider, BTreeMap::new(), &runner).0;
+        let mut extra = zone();
+        extra.insert("colour".to_owned(), "red".to_owned());
+        let undeclared = create(&host, &provider, extra, &runner).0;
+
+        match missing {
+            Err(ManageError::Params {
+                source: humata2_machines::ValuesError::Missing { param, .. },
+            }) => assert_eq!(param, "zone"),
+            other => panic!("expected a missing param, got {other:?}"),
+        }
+        match undeclared {
+            Err(ManageError::Params {
+                source: humata2_machines::ValuesError::Undeclared { param, .. },
+            }) => assert_eq!(param, "colour"),
+            other => panic!("expected an undeclared param, got {other:?}"),
+        }
+        assert_eq!(runner.calls(), 0);
+        assert!(!host.made());
+        assert_eq!(host.machines().list().unwrap(), []);
+    }
+
+    #[test]
+    fn a_failed_step_leaves_no_half_machine_but_keeps_what_create_made_for_delete() {
+        for connect in [false, true] {
+            let host = Host::new();
+            let machine = FakeMachine::new();
+            host.write_identity(HOST_KEY);
+            let provider = if connect {
+                host.connect_provider()
+            } else {
+                host.identity_provider()
+            };
+            machine.set_uname("FreeBSD amd64");
+            let values = if connect { BTreeMap::new() } else { zone() };
+
+            let (result, _) = create(&host, &provider, values.clone(), &machine.runner());
+
+            assert!(matches!(result, Err(ManageError::Step { .. })), "{result:?}");
+            assert_clean(&host, &machine);
+            assert!(host.made(), "what create made is left for Delete what was made");
+
+            let machines = host.machines();
+            let (deleted, _) = drive(&machine.runner(), &Files(1), |drive| {
+                machines.delete_made(&provider, "box-1", &values, drive)
+            });
+            deleted.unwrap();
+            assert!(!host.made());
+        }
+    }
+
+    #[test]
+    fn a_bad_identity_field_is_named_and_leaves_nothing_listed() {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        host.write_identity("not-a-key");
+        let provider = host.identity_provider();
+
+        let (result, _) = create(&host, &provider, zone(), &machine.runner());
+
+        match result {
+            Err(ManageError::Step {
+                step,
+                source: SetupError::Identity(IdentityError::Field { field, .. }),
+                ..
+            }) => {
+                assert_eq!(step, OpStep::Identity);
+                assert_eq!(field, "ssh.host_key");
+            }
+            other => panic!("expected a bad identity field, got {other:?}"),
+        }
+        assert_clean(&host, &machine);
+    }
+
+    #[test]
+    fn a_login_the_connect_needs_fails_the_step_and_is_undone() {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        let dir = host.dir().display();
+        let provider = parse(&format!(
+            "[providers.asks]\ncreate = 'true'\nconnect = 'echo \"Password:\" >&2; exit 5; : {{cmd}}'\ndelete = 'rm -f {dir}/created'\n"
+        ));
+
+        let (result, _) = create(&host, &provider, BTreeMap::new(), &machine.runner());
+
+        assert!(matches!(result, Err(ManageError::ProviderLoginNeeded { .. })), "{result:?}");
+        assert_clean(&host, &machine);
+    }
+
+    #[test]
+    fn a_create_cancelled_after_any_step_is_undone() {
+        for after in [OpStep::Create, OpStep::Identity, OpStep::Connect, OpStep::Check, OpStep::Install] {
+            let host = Host::new();
+            let machine = FakeMachine::new();
+            host.write_identity(HOST_KEY);
+            let provider = host.identity_provider();
+            let machines = host.machines();
+            let plan = machines.plan_create(&provider, "box-1", zone()).unwrap();
+            let events = std::cell::RefCell::new(Vec::new());
+            let mut push = |event| events.borrow_mut().push(event);
+            let cancelled = || events.borrow().contains(&StepEvent::Done(after));
+            let runner = machine.runner();
+            let mut drive = Drive {
+                runner: &runner,
+                builds: &Files(1),
+                wait: &|_| {},
+                events: &mut push,
+                cancelled: &cancelled,
+            };
+
+            let result = machines.create(plan, &mut drive);
+
+            assert!(matches!(result, Err(ManageError::Cancelled { .. })), "after {after:?}: {result:?}");
+            assert_clean(&host, &machine);
+        }
+    }
+
+    /// How many commands a whole create runs.
+    fn create_calls() -> usize {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        host.write_identity(HOST_KEY);
+        let runner = machine.runner();
+        create(&host, &host.identity_provider(), zone(), &runner).0.unwrap();
+        runner.calls()
+    }
+
+    #[test]
+    fn a_create_cut_short_at_any_step_is_undone_after_a_restart() {
+        let steps = create_calls();
+        assert!(steps >= 5, "a create runs create, identity, connect, check, install and start");
+        for fault in [Fault::HostKilled, Fault::MachineKilled] {
+            for at in 0..steps {
+                let host = Host::new();
+                let machine = FakeMachine::new();
+                host.write_identity(HOST_KEY);
+                let provider = host.identity_provider();
+                let runner = machine.runner().fault_at(at, fault);
+
+                let result = panic::catch_unwind(AssertUnwindSafe(|| create(&host, &provider, zone(), &runner).0));
+                match fault {
+                    Fault::HostKilled => assert!(result.is_err(), "call {at} wasn't reached"),
+                    Fault::MachineKilled => assert!(result.unwrap().is_err(), "call {at}"),
+                }
+
+                machine.clear("down");
+                recover(&host, &machine);
+
+                assert_clean(&host, &machine);
+                // The VM create made is not Humata's to undo on its own. A
+                // host killed at the first call never ran `create` at all.
+                let create_ran = !(at == 0 && matches!(fault, Fault::HostKilled));
+                assert_eq!(host.made(), create_ran, "call {at}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_provider_action_runs_its_command_for_its_machine_and_an_undefined_one_is_refused() {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        host.write_identity(HOST_KEY);
+        let provider = host.identity_provider();
+        create_ok(&host, &provider, &machine);
+        let machines = host.machines();
+
+        let (status, _) = drive(&machine.runner(), &Files(1), |drive| {
+            machines.run_action(&provider, "box-1", Action::Status, drive)
+        });
+        let (stop, _) = drive(&machine.runner(), &Files(1), |drive| {
+            machines.run_action(&provider, "box-1", Action::Stop, drive)
+        });
+        let (start, _) = drive(&machine.runner(), &Files(1), |drive| {
+            machines.run_action(&provider, "box-1", Action::Start, drive)
+        });
+
+        assert_eq!(parse_status(&status.unwrap().stdout), MachineStatus::Stopped);
+        assert!(matches!(
+            stop,
+            Err(ManageError::ActionUndefined { action: Action::Stop, .. })
+        ));
+        start.unwrap();
+        assert!(host.dir().join("started").exists());
+        // A machine another provider made isn't this provider's to run.
+        let other = host.connect_provider();
+        let (wrong, _) = drive(&machine.runner(), &Files(1), |drive| {
+            machines.run_action(&other, "box-1", Action::Start, drive)
+        });
+        assert!(matches!(wrong, Err(ManageError::NotProviderMachine { .. })));
+    }
+
+    #[test]
+    fn deleting_a_provider_machine_removes_it_then_runs_the_providers_delete() {
+        let host = Host::new();
+        let machine = FakeMachine::new();
+        host.write_identity(HOST_KEY);
+        let provider = host.identity_provider();
+        create_ok(&host, &provider, &machine);
+        let machines = host.machines();
+
+        let (deleted, events) = drive(&machine.runner(), &Files(1), |drive| {
+            machines.delete_machine(&provider, "box-1", drive)
+        });
+
+        deleted.unwrap();
+        assert_clean(&host, &machine);
+        assert!(!host.made(), "the provider's delete ran");
+        assert!(events.contains(&StepEvent::Done(OpStep::Provider)));
+    }
+}

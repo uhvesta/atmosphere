@@ -62,6 +62,8 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                         )
                         .text_color(rgb(0x64a8ff))
                         .font_weight(FontWeight::SEMIBOLD)
+                        // Frame 32: the action sits one gap after the text, with no pad of its own.
+                        .px_0()
                         .disabled(toast.working),
                     )
                 })

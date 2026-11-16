@@ -70,16 +70,23 @@ side on fakes. Cross-machine transfers wait for MACH's link (requests below).
   (main's seams, then the manager's flip of `files.rs`, `features/files/src/lib.rs`,
   the test moves and the BUILD exclude) comes last, in one go.
 - **Tasks:**
-  - [ ] T1 `daemon/transfers` crate: trash + engine + fault points + kill matrix · worker engine (Sonnet, medium) · `daemon/transfers/**` · running
-  - [x] T2 app core: `FileManager` client + fake (`clients/src/file_manager.rs`), reducer in `features/files/src/manager.rs` + `manager/{pane,edit,tray,trash,storage}.rs`, tests `tests/manager_{fake,panes}.rs` · worker app-core (Sonnet, medium) · written, checked by the manager, not built (inert)
-  - [x] T3r the resolver for every root: `daemon/humatad/src/files/roots.rs` · manager · written, inert
-  - [ ] T3a FileService list, stat, new folder, rename, trash (`src/files/ops.rs`), TrashService (`src/trash_service.rs`), tests in `tests/pending/{file_ops,trash}.rs` · worker wiring-files (Sonnet, medium) · running
-  - [ ] T3b TransferService and Upload (`src/transfer_service.rs`), tests in `tests/pending/transfers.rs` incl. a daemon killed mid-transfer · after T1
-  - [ ] T4 views: file manager, tray, Storage (frames 61, 60) · worker views (Sonnet, medium) · new `ui/src/{file_manager,transfers_tray,storage_view}.rs` · running
-  - [ ] T5 Storage measuring and retention rules (LD-13–LD-18) in `daemon/transfers`; FindFiles (RV-11) · after T3
-  - [ ] T6 CLI: `cli/src/commands/files.rs` already speaks all three services (`cli/tests/files.rs`); add `humata` runs to the daemon tests after wiring
-  - [ ] T7 (after MACH) the gRPC `End`, host-relayed transfers, waiting-for-machine, flows §26.7 and §26.15 against the stdio peer
-  - [ ] W wiring step: seams to main, flip `files.rs` (use `roots`, delegate to `ops`), flip `features/files/src/lib.rs`, move `tests/pending/*` up, drop `manual` and the BUILD exclude
-- **Waiting on:** main for seam lines (listed in each batch report); MACH for FileService and TrashService on the peer link and a per-machine channel plus link up/down signal.
-- **Build gates:** none yet
+  - [x] T1 `daemon/transfers` crate: trash + engine + uploads + fault points + kill matrix · worker engine (Sonnet, medium) · written, checked, not built
+  - [x] T2 app core: `clients/src/file_manager.rs`, `features/files/src/manager.rs` + `manager/`, tests `tests/manager_{fake,panes}.rs` · worker app-core · written, checked, not built
+  - [x] T3r the resolver for every root: `daemon/humatad/src/files/roots.rs` · manager · written
+  - [x] T3a FileService list, stat, new folder, rename, trash (`src/files/ops.rs`), TrashService (`src/trash_service.rs`), tests `tests/pending/{file_ops,trash}.rs` · worker wiring-files · written, checked (manager added `Target::unfollowed` so a link itself can be renamed or trashed), not built
+  - [x] T3b TransferService and Upload (`src/transfer_service.rs`), tests `tests/pending/transfers.rs` incl. a daemon killed mid-transfer · worker wiring-transfers · written, checked (manager added: a destination inside a source is refused), not built
+  - [x] T4 views: `ui/src/{file_manager,transfers_tray,storage_view}.rs` · worker views · written, not built; differs from frame 61 (see Open)
+  - [ ] W wiring, staged: scratchpad `files-wiring/WIRING.md` (main's seams) + `files-wiring/flip.py` (manager's files): A engine (applied by main), B humatad, C app core, D views, S storage + retention in the crate, F FindFiles, G humatad storage, H home root · waiting on main
+  - [x] T5a Storage measuring: `daemon/transfers/src/storage.rs` + `tests/storage.rs`; humatad `src/storage.rs` (report, ClearBuildCache, TrimLogs; unit tests inside) · worker storage · written, not built (inert); MACH's handlers call it
+  - [x] T5b retention decisions: `daemon/transfers/src/retention.rs` + `tests/retention.rs` (pure; `pub mod retention`) · worker retention · written, checked, not built (inert); carrying them out waits for ArchiveSession and activity times
+  - [x] T5c FindFiles: `daemon/humatad/src/files/find.rs` + `tests/pending/find_files.rs` · worker find · written, checked (manager: a clone not on disk is skipped), not built (inert)
+  - [x] proto seams: scratchpad `files-wiring/PROTO.md` (part 1 the home root with `flip.py H`; part 2 the `TransferEndService` proposal for T7, not to apply yet)
+  - [ ] T6 `humata` runs against the wired services in the daemon tests (the CLI already speaks all three services)
+  - [ ] T7 (after MACH, D139 relay) a gRPC `End` over the relayed FileService, host-driven transfers, waiting-for-machine, flows §26.7 and §26.15 against the stdio peer
+    - From MACH (2026-11-15, written there, not gated): `host_relay::Links` (Clone, handed over by serve.rs): `links.channel(machine) -> Result<Channel, RelayError>` (never waits; `RelayError::Offline` converts to the machine-offline status), `links.relayed(machine)?.file()` / `.trash()` (generated clients), `links.watch(machine) -> watch::Receiver<LinkState>` with `LinkState::{Down, Up { generation }}`, `links.reopen_on_new_link(machine, |channel, generation| async …)` for "waiting for X, continue on reconnect". Requests over the link are fresh `tonic::Request`s (never copy the caller's metadata); `host_relay::assigned(message, Some(id))` for a host-assigned id. The machine takes a relayed call as the user's (D144), so the host must check access before it relays. The relay allowlist covers all of FileService and TrashService by prefix; `TransferEndService` is one line there once its proto lands (tell MACH).
+  - [ ] T8 power-cut pass on the kill matrix (PER-28, `HUMATA2_POWER_CUT_ROOTS`)
+  - [x] T9 views to frame 61/60 · worker views2 · written, not built (inert): times come from each listing's read time and offset (pure `manager/when.rs`), names are entered in a prompt (`naming`), the machine picker is a popup (`picker`), no system clock in any view; tests `manager_{when,naming}.rs`; headless flow test `desktop/tests/files_page.rs` (target lines in WIRING.md). Left against frame 61: the selected folder's children aren't drawn as a tree; the drop hint shows under every loaded pane; the arrows flip when the right pane is active
+- **Open picks:** D142, D145 (Provisional). A copy of a root itself isn't served yet (only things in it). Rename is check-then-rename (no NOREPLACE). A case-only rename on a case-insensitive disk is refused as taken.
+- **Waiting on:** main: the staged wiring and gates A–D. MACH (via main): the relay allowlist to carry all of FileService and TrashService; a per-machine channel to the relayed FileService for the host's TransferService; a pushed link up/down signal per machine. Main (proto): a resumable remote write (`WriteFileHeader` transfer id + offset, and a way to ask a partial's confirmed offset) and the FM-10 home root.
+- **Build gates:** none yet (batch 1 reported 2026-11-15, nothing compiled)
 - **Ready to commit:** no

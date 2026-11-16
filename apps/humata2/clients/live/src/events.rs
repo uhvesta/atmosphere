@@ -112,6 +112,7 @@ async fn handle(shared: &Arc<Shared>, event: pb::Event) {
             let runs = !matches!(session.status, Status::Exited { .. } | Status::Offline);
             let id = session.id.clone();
             shared.publish(Event::Session(session));
+            shared.check_restart();
             if runs {
                 shared.reattach(&id);
             }

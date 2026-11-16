@@ -12,12 +12,14 @@ pub mod layout;
 pub mod saved;
 
 mod commands;
+mod desk;
 mod events;
 mod messages;
 mod new_channel;
 mod new_session;
 mod overlay;
 mod persist;
+mod restart;
 mod report;
 mod route;
 mod toast;
@@ -26,6 +28,7 @@ pub use new_channel::{NewChannel, NewChannelAction};
 pub use new_session::{NewSession, NewSessionAction, NewSessionPicker};
 pub use overlay::Overlay;
 pub use report::{PinTarget, PinnedComment, ReportAction, ReportForm, ReportKind, ReportState};
+pub use restart::{RestartAction, RestartGroups, restart_groups};
 pub use route::Route;
 pub use toast::{Toast, ToastAction};
 
@@ -35,6 +38,7 @@ use std::time::Duration;
 use humata2_board::{Board, BoardAction, BoardState};
 use humata2_clients::model::{ChannelId, ItemId, Scope, SessionId};
 use humata2_clients::{Clients, DaemonError, Event, Workspace};
+use humata2_desk::{Desk, DeskAction, DeskState};
 use humata2_files::{Files, FilesAction, FilesState};
 use humata2_hosts::{Hosts, HostsAction, HostsState};
 use humata2_inbox::{Inbox, InboxAction, InboxState};
@@ -107,6 +111,8 @@ pub struct AppState {
     pub inbox: InboxState,
     /// Boards.
     pub board: BoardState,
+    /// The Desk.
+    pub desk: DeskState,
     /// Hosts.
     pub hosts: HostsState,
     /// Files.
@@ -163,6 +169,7 @@ impl AppState {
                 selected: saved.selected_host.clone(),
                 ..Default::default()
             },
+            desk: desk::restored(saved.desk_sort),
             files: FilesState::default(),
             settings: SettingsState::default(),
             palette: PaletteState::default(),
@@ -222,6 +229,7 @@ impl AppState {
             recent: self.palette.recent.clone(),
             views: self.views.decisions.clone(),
             connected: self.hosts.connected(),
+            desk_sort: self.desk.sort,
         }
     }
 
@@ -345,6 +353,12 @@ pub enum AppAction {
     Palette(PaletteAction),
     /// Prepared views.
     Views(ViewsAction),
+    /// New desk session was clicked.
+    StartNewDeskSession,
+    /// The Desk.
+    Desk(DeskAction),
+    /// After a host restarts: what the person can do about what it found.
+    Restart(RestartAction),
 }
 
 /// The app's reducer.
@@ -356,6 +370,7 @@ pub struct App {
     review: Review,
     inbox: Inbox,
     board: Board,
+    desk: Desk,
     hosts: Hosts,
     files: Files,
     settings: Settings,
@@ -371,6 +386,7 @@ impl App {
             review: Review,
             inbox: Inbox::new(clients.clone()),
             board: Board::new(clients.clone()),
+            desk: Desk::new(clients.desk.clone()),
             hosts: Hosts::new(clients.clone()),
             files: Files::new(clients.clone()),
             settings: Settings::new(clients.clone()),
@@ -430,6 +446,10 @@ impl App {
             AppAction::Views(action) => {
                 Views.reduce(&mut state.views, action).map(AppAction::Views)
             }
+            AppAction::Desk(action) => self
+                .desk
+                .reduce(&mut state.desk, action)
+                .map(AppAction::Desk),
             _ => Effect::none(),
         }
     }
@@ -524,6 +544,7 @@ impl App {
                     Effect::none()
                 }
             },
+            AppAction::Desk(action) => self.desk_delegate(state, action),
             _ => Effect::none(),
         }
     }
@@ -553,6 +574,7 @@ impl App {
         let clock = self.clients.clock.clone();
         match action {
             AppAction::Launch => Effect::merge([self.load(), self.follow()]),
+            AppAction::StartNewDeskSession => self.start_new_desk_session(state),
             AppAction::Loaded(Ok(workspace)) => {
                 state.load = Load::Ready;
                 state.workspace = Arc::new(workspace);
@@ -766,6 +788,7 @@ impl App {
                     effect
                 }
             }
+            AppAction::Restart(change) => self.change_restart(state, change),
             action @ (AppAction::Sidebar(_)
             | AppAction::Session(_)
             | AppAction::Review(_)
@@ -775,7 +798,8 @@ impl App {
             | AppAction::Files(_)
             | AppAction::Settings(_)
             | AppAction::Palette(_)
-            | AppAction::Views(_)) => {
+            | AppAction::Views(_)
+            | AppAction::Desk(_)) => {
                 let delegated = self.delegate(state, &action);
                 let effect = self.child(state, action);
                 effect.and(delegated)

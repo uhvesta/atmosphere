@@ -24,9 +24,11 @@
 //!   when GPUI Fast changes the setting.
 //!
 //! The input functions here ([`move_pointer`], [`click`], [`press`],
-//! [`type_text`], [`scroll`], [`drag`]) dispatch real platform events with
+//! [`type_character`], [`scroll`], [`drag`]) dispatch real platform events with
 //! `Window::dispatch_event` and draw a natural frame after each one, as a
 //! person's events arrive between frames. Nothing here refreshes.
+//! `type_character` doesn't draw: the caller draws the natural frame in its
+//! own window update, after GPUI delivers the events the key caused.
 //!
 //! GPUI itself refreshes on some input, and a refreshed frame builds every
 //! view on both engines. The one that matters here: pressing a mouse button
@@ -336,26 +338,29 @@ pub fn press(window: &mut Window, key: &str, cx: &mut App) -> Result<(), FrameEr
     Ok(())
 }
 
-/// Types `text` one character at a time into the focused control, with a
-/// natural frame after each.
+/// Types `character` into the focused control, as one key press, without
+/// drawing. Draw the natural frame in a separate window update: GPUI hands
+/// the control's events (its Change, say) to subscribers only when the
+/// update that dispatched the key ends, and a running app draws after that.
 ///
 /// # Errors
 ///
 /// [`FrameError::InvalidKey`] for a character GPUI can't express as a key.
-pub fn type_text(window: &mut Window, text: &str, cx: &mut App) -> Result<(), FrameError> {
-    for character in text.chars() {
-        let text = character.to_string();
-        let mut keystroke =
-            Keystroke::parse_with_os(&text, cx.platform_info().os).map_err(|source| {
-                FrameError::InvalidKey {
-                    key: text.clone(),
-                    source,
-                }
-            })?;
-        keystroke.key_char = Some(text);
-        window.dispatch_keystroke(keystroke, cx);
-        natural_frame(window, cx);
-    }
+pub fn type_character(
+    window: &mut Window,
+    character: char,
+    cx: &mut App,
+) -> Result<(), FrameError> {
+    let text = character.to_string();
+    let mut keystroke =
+        Keystroke::parse_with_os(&text, cx.platform_info().os).map_err(|source| {
+            FrameError::InvalidKey {
+                key: text.clone(),
+                source,
+            }
+        })?;
+    keystroke.key_char = Some(text);
+    window.dispatch_keystroke(keystroke, cx);
     Ok(())
 }
 

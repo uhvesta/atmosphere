@@ -10,6 +10,7 @@ Navigation "Sidebar"
   Link "Home"
   Link "Inbox"
   Link "Board"
+  Link "Desk"
   Button "New channel"
   TreeItem "web" expanded
     Button "Fold"
@@ -38,7 +39,7 @@ Complementary "Files"
   Button "Expand panel"
   Button "Close panel"
   #session-file-filter
-    #input-4294967319
+    #input-4294967325
       TextInput "Filter files" value="" placeholder="Filter files"
   List "Session files"
     Button "acme/api"
