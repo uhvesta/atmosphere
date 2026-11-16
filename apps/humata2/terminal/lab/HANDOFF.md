@@ -67,7 +67,7 @@ Actual browser runtime tests need `--strategy=TestRunner=local`; keep compilatio
 
 ## Ownership and publication
 
-- This checkpoint publishes the terminal experiment with its owned review log and D206. The hash-fill follow-up records the exact code SHA in GAPS_REVIEW. Root owns final publication; all three helper agents have completed their scoped work.
+- Code commit4e20a245 publishes the terminal experiment with its owned review log and D206. The hash-fill follow-up names it in GAPS_REVIEW. Publishing is authorized; verify the pushed pair against remote main. All three helper agents have completed their scoped work. The three focused goals are verified; further adoption boundaries below remain explicit.
 - Every code commit needs same-commit `GAPS_REVIEW.md` and accurate C1 `OVERVIEW` block, then a hash-fill follow-up and authorized push to shared main; verify remote SHA. Commit prefix: `Humata 2 (minion C1): ...`. No attribution trailers.
 - Preserve `.claude/**`, ui-prototype, daemon/proto and every unrelated lane. No broad `git add .`, reset or stash. Use `git -c lfs.storage=/tmp/humata2-minion-c-lfs` for PNG-aware Git operations; inherited LFS storage points outside this checkout.
 - Owned pin artifacts: `/private/tmp/c1-owned-pin-artifacts/owned-native-pins.patch` and `owned-module.patch`. They exclude foreign OpenCode/Find/Marks/Mirror changes and unrelated MODULE moves. Exact native checksum `0022c54cf8b22f150c1b18287ab61cd4ff8a28b0af5c65dcfa10f39f85bd9aba` comes from Bazel's typed digest; mod tidy without repin validates it. External dependency contexts are unchanged.
