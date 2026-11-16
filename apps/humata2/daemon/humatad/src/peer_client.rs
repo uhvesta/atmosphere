@@ -32,6 +32,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
 use tonic::transport::{Channel, Endpoint, Uri};
 
+use crate::away::PolicySource;
 use crate::daemon::{API_MAJOR, API_MINOR};
 use crate::link_proof::{EnrollmentKey, HOST_NONCE_MIN, KeyError, MACHINE_NONCE_BYTES, Side};
 use crate::status;
@@ -150,8 +151,9 @@ pub(crate) struct Up {
     machine: String,
     daemon_version: String,
     from_machine: tonic::Streaming<pb::MachineToHost>,
-    /// Held so the host's side of the Uplink stays open.
-    _to_machine: mpsc::Sender<pb::HostToMachine>,
+    /// The host's side of the Uplink: held open, and carrying the policy
+    /// copies (AW-8).
+    to_machine: mpsc::Sender<pb::HostToMachine>,
     channel: Channel,
 }
 
@@ -168,21 +170,81 @@ impl Up {
 
     /// Resolves when the link ends, with why. Each message the machine
     /// sends on the Uplink goes to `sink` (D139: status and pointer
-    /// reports); no journal or mirror is kept yet.
-    pub(crate) async fn closed(mut self, sink: &Sink) -> LinkError {
+    /// reports); no journal or mirror is kept yet. With a `policy`, the
+    /// machine is sent its policy copy now and again each time it changes
+    /// (AW-8).
+    pub(crate) async fn closed(mut self, sink: &Sink, policy: Option<&Arc<PolicySource>>) -> LinkError {
+        let mut changes = policy.map(|policy| policy.changes());
+        if let Some(policy) = policy {
+            self.send_copy(policy).await;
+        }
         loop {
-            match self.from_machine.message().await {
-                Ok(Some(message)) => sink(message),
-                Ok(None) => return LinkError::Ended { machine: self.machine },
-                Err(source) => {
+            let changed = async {
+                match changes.as_mut() {
+                    Some(changes) => changes.changed().await.is_ok(),
+                    None => std::future::pending().await,
+                }
+            };
+            let next = tokio::select! {
+                message = self.from_machine.message() => Next::Message(message),
+                still = changed => Next::Changed(still),
+            };
+            match next {
+                Next::Message(Ok(Some(message))) => sink(message),
+                Next::Message(Ok(None)) => return LinkError::Ended { machine: self.machine },
+                Next::Message(Err(source)) => {
                     return LinkError::Lost {
                         machine: self.machine,
                         source,
                     };
                 }
+                Next::Changed(true) => {
+                    if let Some(policy) = policy {
+                        self.send_copy(policy).await;
+                    }
+                }
+                // The daemon is ending; the link ends with it.
+                Next::Changed(false) => changes = None,
             }
         }
     }
+
+    /// Sends the machine its policy copy as it is now. One that can't be
+    /// made is left for the next change; the machine keeps the one before.
+    async fn send_copy(&self, policy: &Arc<PolicySource>) {
+        let (policy, machine) = (Arc::clone(policy), self.machine.clone());
+        let made = tokio::task::spawn_blocking(move || policy.snapshot(&machine)).await;
+        let snapshot = match made {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(error)) => {
+                crate::log::say!(
+                    "humatad2: warning: couldn't make {}'s policy copy, so it keeps the one before: {}",
+                    self.machine,
+                    crate::status::chain(&error)
+                );
+                return;
+            }
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: warning: making {}'s policy copy stopped: {error}",
+                    self.machine
+                );
+                return;
+            }
+        };
+        let message = pb::HostToMachine {
+            message: Some(pb::host_to_machine::Message::Policy(snapshot)),
+        };
+        // A send fails only when the Uplink is ending, which `closed` sees.
+        let _ = self.to_machine.send(message).await;
+    }
+}
+
+/// What a link that is up waits on.
+enum Next {
+    Message(Result<Option<pb::MachineToHost>, Status>),
+    /// Whether the policy can still change.
+    Changed(bool),
 }
 
 /// Speaks gRPC over `pipe`, runs the handshake under `key`, and opens the
@@ -266,7 +328,7 @@ pub(crate) async fn open(pipe: Pipe, key: &EnrollmentKey, machine: &str) -> Resu
         machine: machine.to_owned(),
         daemon_version: hello.daemon_version,
         from_machine,
-        _to_machine: to_machine,
+        to_machine,
         channel,
     })
 }
@@ -334,6 +396,7 @@ pub(crate) async fn supervise(
     machine: String,
     report: Report,
     sink: Sink,
+    policy: Option<Arc<PolicySource>>,
 ) -> LinkError {
     let mut wait = RETRY_FIRST;
     loop {
@@ -344,7 +407,7 @@ pub(crate) async fn supervise(
                     channel: up.channel(),
                 });
                 wait = RETRY_FIRST;
-                up.closed(&sink).await
+                up.closed(&sink, policy.as_ref()).await
             }
             Err(error) => error,
         };
@@ -690,7 +753,7 @@ mod tests {
         let (report, mut events) = recorder();
         let ended = tokio::time::timeout(
             HOUR,
-            supervise(Box::new(InProcess(machine.clone())), host_key(dir.path(), 0xcd), MACHINE.into(), report, Box::new(|_| {})),
+            supervise(Box::new(InProcess(machine.clone())), host_key(dir.path(), 0xcd), MACHINE.into(), report, Box::new(|_| {}), None),
         )
         .await
         .expect("a wrong key ends the supervisor");
@@ -725,6 +788,7 @@ mod tests {
             MACHINE.into(),
             report,
             Box::new(|_| {}),
+            None,
         ));
         assert_eq!(events.recv().await, Some(Seen::Up));
 
@@ -748,6 +812,7 @@ mod tests {
             MACHINE.into(),
             report,
             Box::new(|_| {}),
+            None,
         ));
         assert_eq!(events.recv().await, Some(Seen::Up));
 

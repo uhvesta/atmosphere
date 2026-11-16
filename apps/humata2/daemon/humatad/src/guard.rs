@@ -2,12 +2,14 @@
 //! caller is, what it wants and to what, judged by humata2_access.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_access::{
     AccessRequest, Agent, Call, Capability, Context, Effect, MachineId, PeerLink, Policy,
     PresenceMethod, Principal, Refusal, SessionKind, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
+use tokio::sync::watch;
 use tonic::Status;
 
 use crate::away::HostLink;
@@ -21,6 +23,10 @@ pub(crate) struct Guard {
     policy: Mutex<Policy>,
     here: MachineId,
     link: Arc<HostLink>,
+    /// The revision of what a machine's policy copy holds (AW-8): bumped
+    /// when the policy changes, and by [`Guard::policy_changed`] for the
+    /// rest the copy carries.
+    revision: watch::Sender<u64>,
 }
 
 /// What a check allows.
@@ -46,6 +52,7 @@ impl Guard {
             policy: Mutex::new(Policy::new()),
             here: MachineId::new(machine),
             link: Arc::new(HostLink::new(!matches!(role, pb::DaemonRole::Machine))),
+            revision: watch::Sender::new(next_revision(0)),
         }
     }
 
@@ -161,8 +168,39 @@ impl Guard {
     /// answering requests and changing grants.
     pub(crate) fn with_policy<R>(&self, with: impl FnOnce(&mut Policy, &Context) -> R) -> R {
         let context = self.link.context(&self.here);
-        with(&mut lock(&self.policy), &context)
+        let mut policy = lock(&self.policy);
+        let before = policy.clone();
+        let result = with(&mut policy, &context);
+        if *policy != before {
+            self.policy_changed();
+        }
+        result
     }
+
+    /// The revision a policy copy made now carries.
+    pub(crate) fn policy_revision(&self) -> u64 {
+        *self.revision.borrow()
+    }
+
+    /// Changes each time a policy copy made now would differ.
+    pub(crate) fn policy_changes(&self) -> watch::Receiver<u64> {
+        self.revision.subscribe()
+    }
+
+    /// Says something else a policy copy carries changed: the approval
+    /// passphrase or Contain agents.
+    pub(crate) fn policy_changed(&self) {
+        self.revision.send_modify(|revision| *revision = next_revision(*revision));
+    }
+}
+
+/// A revision after `last`: the clock in milliseconds, so one made after a
+/// restart is still newer, or one more than `last` if the clock is behind.
+fn next_revision(last: u64) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+    now.max(last.saturating_add(1))
 }
 
 /// Who `caller` is to the policy.
@@ -363,5 +401,20 @@ mod tests {
         let result = guard.check(&agent(), &read_other_machine_file());
         assert!(!refused_host_unreachable(&result));
         assert!(matches!(result, Ok(Checked::Ask(_))));
+    }
+
+    #[test]
+    fn a_policy_change_moves_the_copy_revision_and_a_read_does_not() {
+        let guard = Guard::new(MACHINE, pb::DaemonRole::Host);
+        let first = guard.policy_revision();
+        guard.with_policy(|policy, _| policy.channel_rules(&ChannelId::new("ch_a")).is_some());
+        assert_eq!(guard.policy_revision(), first);
+
+        guard.with_policy(|policy, _| policy.add_channel(ChannelId::new("ch_a")).unwrap());
+        let added = guard.policy_revision();
+        assert!(added > first);
+
+        guard.policy_changed();
+        assert!(guard.policy_revision() > added);
     }
 }

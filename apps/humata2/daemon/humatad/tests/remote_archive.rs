@@ -40,19 +40,26 @@ async fn say(rig: &Rig, id: &pb::SessionId, line: &str) {
 }
 
 async fn archive(rig: &Rig, id: &pb::SessionId) -> pb::Operation {
+    let started = start_archive(rig, id, pb::ArchiveChoice::Archive).await;
+    rig.ended(&started).await
+}
+
+/// Plans the archive of `id`, checks the plan offers `choice`, and starts
+/// it; returns the operation as it started.
+async fn start_archive(rig: &Rig, id: &pb::SessionId, choice: pb::ArchiveChoice) -> pb::Operation {
     let plan = sessions(rig).await.plan_archive(pb::PlanArchiveRequest { id: Some(id.clone()) }).await.expect("the archive is planned").into_inner();
-    let started = sessions(rig)
+    assert!(plan.choices.contains(&(choice as i32)), "the plan offers {choice:?}: {plan:?}");
+    sessions(rig)
         .await
         .archive_session(pb::ArchiveSessionRequest {
             idempotency_key: None,
             id: Some(id.clone()),
-            choice: pb::ArchiveChoice::Archive as i32,
+            choice: choice as i32,
             plan: plan.token,
         })
         .await
         .expect("the archive starts")
-        .into_inner();
-    rig.ended(&started).await
+        .into_inner()
 }
 
 async fn restore(rig: &Rig, id: &pb::SessionId, on: Option<pb::MachineId>) -> pb::Operation {
@@ -213,4 +220,135 @@ async fn a_conversation_restored_on_this_mac_is_mirrored_once() {
     let held = |text: &str| texts.iter().filter(|entry| entry.contains(text)).count();
     assert_eq!(held("before the restore"), 1, "{texts:?}");
     assert_eq!(held("after the restore"), 1, "{texts:?}");
+}
+
+/// MV-7 with work: the host's archive of a box-1 session shows what box-1's
+/// archive kept, the files the clone changed and the subjects of the
+/// commits never pushed, as an archive on this Mac does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_box_1_archive_with_work_shows_its_files_and_unpushed_commits_on_the_host() {
+    let (rig, channel, id) = on_box().await;
+    let clone = rig.the("box-1").path(&channel, CLONE);
+    let at = clone.display().to_string();
+    std::fs::write(clone.join("warm.txt"), "warmed\n").unwrap();
+    git(&["-C", &at, "add", "warm.txt"]);
+    git(&["-C", &at, "commit", "-q", "-m", "Warm the cache"]);
+    std::fs::write(clone.join("wip.txt"), "not committed yet\n").unwrap();
+    // The host learns of the work from box-1's report.
+    rig.wait_session(&id, "reporting its work", |s| {
+        s.pointers.iter().any(|pointer| {
+            pointer.dirty_files > 0 && pointer.unpushed_subjects.iter().any(|subject| subject == "Warm the cache")
+        })
+    })
+    .await;
+
+    let started = start_archive(&rig, &id, pb::ArchiveChoice::ArchiveAndDeleteWork).await;
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+
+    let archived = rig.wait_session(&id, "archived", |s| s.archive.is_some()).await;
+    let summary = archived.archive.expect("an archived session has a summary");
+    let repo = summary.repos.first().expect("the summary names the session's repository");
+    let files: Vec<&str> = repo.files.iter().map(|file| file.path.as_str()).collect();
+    assert!(files.contains(&"wip.txt"), "the uncommitted file is listed: {files:?}");
+    assert!(files.contains(&"warm.txt"), "the committed file is listed: {files:?}");
+    assert!(
+        repo.unpushed_subjects.iter().any(|subject| subject == "Warm the cache"),
+        "the unpushed commit is named: {:?}",
+        repo.unpushed_subjects
+    );
+}
+
+/// Waits until box-1's own store holds an archive row for `id`: box-1 took
+/// the archive in. Nothing on the host's feeds tells of it.
+async fn recorded_on_box_1(rig: &Rig, id: &pb::SessionId) {
+    let deadline = tokio::time::Instant::now() + LONG;
+    while rig.the("box-1").store().archive(&id.value).unwrap().is_none() {
+        assert!(tokio::time::Instant::now() < deadline, "box-1 never recorded the archive");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Restarts the host so a remote archive holds, once box-1 has answered,
+/// until the returned FIFO is opened for writing.
+async fn hold_remote_archives(rig: &mut Rig) -> std::path::PathBuf {
+    let hold = rig.host.dir.path().join("hold-archive.fifo");
+    assert!(std::process::Command::new("mkfifo").arg(&hold).status().unwrap().success());
+    let named = hold.display().to_string();
+    rig.restart_host(&[("HUMATA2_HOLD_AT", "archive-remote-asked"), ("HUMATA2_HOLD_FIFO", named.as_str())]).await;
+    hold
+}
+
+/// Lets the held archive go on; it opens the FIFO once it gets there.
+async fn release(hold: &Path) {
+    let hold = hold.to_owned();
+    let opened = tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(hold).map(drop));
+    tokio::time::timeout(LONG, opened)
+        .await
+        .expect("the archive never got to where it is held")
+        .unwrap()
+        .expect("the held archive's FIFO opens");
+}
+
+/// A link lost while box-1 archives: box-1 finishes on its own, and once
+/// its link is back the host lists the session archived, with no new ask.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_archive_whose_link_was_lost_shows_archived_once_box_1_is_back() {
+    let (mut rig, _channel, id) = on_box().await;
+    let hold = hold_remote_archives(&mut rig).await;
+    rig.wait_session(&id, "live again", is_live).await;
+
+    let started = start_archive(&rig, &id, pb::ArchiveChoice::Archive).await;
+    recorded_on_box_1(&rig, &id).await;
+    rig.link_lost("box-1").await;
+    release(&hold).await;
+    // Whether the host saw the end before the link went, the operation ends.
+    rig.ended(&started).await;
+
+    rig.link_back("box-1").await;
+    let archived = rig.wait_session(&id, "archived", |s| s.archive.is_some()).await;
+    assert_eq!(archived.machine, Some(Rig::box_id("box-1")));
+    assert!(!listed(&rig).await.contains(&id), "an archived session leaves the plain list");
+}
+
+/// MV-8 elsewhere with box-1 away: its archive restored on this Mac takes
+/// the conversation from the host's mirror, runs here, mirrors each entry
+/// once, and box-1 lets its copy go once it is back.
+#[tokio::test(flavor = "multi_thread")]
+async fn restoring_box_1s_archive_on_this_mac_while_box_1_is_away_uses_the_mirror() {
+    let (rig, channel, id) = on_box().await;
+    say(&rig, &id, r#"{"type":"user","message":{"content":"said on box-1"}}"#).await;
+    mirrored(&rig, &id, "said on box-1").await;
+    let branch = rig.session(&id).await.repos[0].branch.clone();
+    let clone = rig.the("box-1").path(&channel, CLONE);
+    git(&["-C", &clone.display().to_string(), "push", "-u", "origin", &branch]);
+    let ended = archive(&rig, &id).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    wait_gone(&clone).await;
+    rig.link_lost("box-1").await;
+
+    let host = rig.host_id().await;
+    let ended = restore(&rig, &id, Some(host.clone())).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+
+    let back = rig.wait_session(&id, "live on this Mac", |s| s.machine.as_ref() == Some(&host) && is_live(s)).await;
+    assert!(back.archive.is_none());
+    let here = rig.host_path(&channel, CLONE);
+    assert_eq!(git(&["-C", &here.display().to_string(), "rev-parse", "--abbrev-ref", "HEAD"]), branch);
+    let talk = std::fs::read_to_string(rig.host_conversation(&back.conversation_id)).unwrap();
+    assert!(talk.contains("said on box-1"), "the conversation came from the mirror: {talk}");
+    say(&rig, &id, r#"{"type":"user","message":{"content":"said on this mac"}}"#).await;
+    mirrored(&rig, &id, "said on this mac").await;
+    let texts = mirror_texts(&rig, &id).await;
+    let held = |text: &str| texts.iter().filter(|entry| entry.contains(text)).count();
+    assert_eq!(held("said on box-1"), 1, "{texts:?}");
+    assert_eq!(held("said on this mac"), 1, "{texts:?}");
+
+    // Back, box-1 drops its copy: the session runs here alone.
+    rig.link_back("box-1").await;
+    let deadline = tokio::time::Instant::now() + LONG;
+    while rig.the("box-1").store().session(&id.value).unwrap().is_some() {
+        assert!(tokio::time::Instant::now() < deadline, "box-1 kept its copy of the session");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

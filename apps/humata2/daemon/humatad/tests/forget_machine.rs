@@ -135,3 +135,28 @@ async fn forget_is_safe_to_repeat_and_an_agent_cannot_forget() {
     let used = machines(&rig).await.forget_machine(forget(&plan, "forget-2")).await.expect_err("a plan is good once");
     assert_eq!(used.code(), Code::FailedPrecondition, "{used:?}");
 }
+
+/// A host killed after the sessions were archived and before the answer was
+/// kept answers a retry with the same key and plan as the first call would
+/// have: box-1 is forgotten and its session archived once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forget_cut_short_after_archiving_is_finished_by_a_retry() {
+    let (mut rig, _channel, on_box, on_host) = gone_box().await;
+    // The plan lives in the host's memory, so the stop-point host makes its own.
+    rig.restart_host(&[("HUMATA2_STOP_AT", "forget.archived")]).await;
+    let plan = plan(&rig).await;
+    let _ = machines(&rig).await.forget_machine(forget(&plan, "forget-1")).await;
+    rig.host_stopped().await;
+    rig.restart_host(&[]).await;
+
+    let done = machines(&rig).await.forget_machine(forget(&plan, "forget-1")).await.expect("the retry finishes the forget").into_inner();
+    assert_eq!(done.archived, [on_box.clone()]);
+    let summary = rig.session(&on_box).await.archive.expect("box-1's session is archived");
+    assert!(summary.machine_lost);
+    assert!(rig.session(&on_host).await.archive.is_none(), "this Mac's session is untouched");
+    let listed = machines(&rig).await.list_machines(pb::ListMachinesRequest::default()).await.unwrap().into_inner();
+    let ids: Vec<_> = listed.machines.iter().filter_map(|machine| machine.id.clone()).collect();
+    assert!(!ids.contains(&Rig::box_id("box-1")), "box-1 is still a machine here: {ids:?}");
+    let again = machines(&rig).await.forget_machine(forget(&plan, "forget-1")).await.unwrap().into_inner();
+    assert_eq!(again.archived, done.archived);
+}

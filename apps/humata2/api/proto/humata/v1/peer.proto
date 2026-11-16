@@ -305,6 +305,23 @@ message PolicySnapshot {
   repeated OwnedItem owned_items = 5;
   // The capabilities whose Ask is decided by AwayRule while the host is away.
   repeated Capability low_risk = 6;
+  // What new channels start with. Unset: every rule at its default and
+  // While I'm away at Wait.
+  DefaultRules defaults = 7;
+  // The approval passphrase's Argon2id hash (PHC string), checked on the
+  // machine while the host is away (SEC-13, AW-5); empty when none is set.
+  string approval_verifier = 8;
+  // Settings › Security › Contain agents (SEC-6, D217).
+  bool contain_agents = 9;
+  // Channels that chose for themselves; any other channel in `channels`
+  // follows contain_agents.
+  repeated ChannelContain channel_contain = 10;
+}
+
+// A channel's own Contain agents choice (D217).
+message ChannelContain {
+  ChannelId channel = 1;
+  bool contain_agents = 2;
 }
 
 message OwnedItem {

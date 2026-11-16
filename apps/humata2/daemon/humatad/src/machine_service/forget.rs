@@ -53,11 +53,16 @@ pub(crate) struct Forgetful {
     answers: Mutex<()>,
 }
 
-/// What one ForgetMachine key answered, as the answers file keeps it.
+/// What one ForgetMachine key did, as the answers file keeps it. A started
+/// entry (`done` false) is written before the first durable effect and holds
+/// the sessions the plan listed, so a retry after a crash finishes the forget
+/// without the plan token, which died with the process. A done entry is the
+/// answer.
 struct Answer {
     key: String,
     machine: String,
     archived: Vec<String>,
+    done: bool,
 }
 
 fn answers_path(hosts_file: &Path) -> PathBuf {
@@ -87,6 +92,8 @@ fn read_answers(path: &Path) -> Vec<Answer> {
                     .iter()
                     .filter_map(|id| id.as_str().map(str::to_owned))
                     .collect(),
+                // Entries from before started records are all answers.
+                done: entry.get("done").and_then(|value| value.as_bool()).unwrap_or(true),
             })
         })
         .collect()
@@ -95,7 +102,7 @@ fn read_answers(path: &Path) -> Vec<Answer> {
 fn write_answers(path: &Path, answers: &[Answer]) -> Result<(), humata2_store::StoreError> {
     let entries: Vec<serde_json::Value> = answers
         .iter()
-        .map(|answer| serde_json::json!({"key": answer.key, "machine": answer.machine, "archived": answer.archived}))
+        .map(|answer| serde_json::json!({"key": answer.key, "machine": answer.machine, "archived": answer.archived, "done": answer.done}))
         .collect();
     let bytes = serde_json::to_vec_pretty(&entries).unwrap_or_default();
     humata2_store::write_atomic(path, &bytes)
@@ -128,13 +135,34 @@ impl Forgetful {
         let _held = lock(&self.answers);
         read_answers(&answers_path(hosts_file))
             .into_iter()
-            .find(|answer| answer.key == key && answer.machine == machine)
+            .find(|answer| answer.key == key && answer.machine == machine && answer.done)
             .map(|answer| answer.archived.into_iter().map(|value| pb::SessionId { value }).collect())
+    }
+
+    /// The sessions the plan listed for a ForgetMachine of `machine` with
+    /// `key` that started but never answered.
+    fn started(&self, hosts_file: &Path, key: &str, machine: &str) -> Option<Vec<String>> {
+        let _held = lock(&self.answers);
+        read_answers(&answers_path(hosts_file))
+            .into_iter()
+            .find(|answer| answer.key == key && answer.machine == machine && !answer.done)
+            .map(|answer| answer.archived)
     }
 
     /// Keeps what `key` answered. The forget is done either way, so a write
     /// that fails is only logged: a retry with the key then needs a new plan.
     fn remember(&self, hosts_file: &Path, key: String, machine: &str, archived: &[pb::SessionId]) {
+        self.keep(hosts_file, key, machine, archived.iter().map(|id| id.value.clone()).collect(), true);
+    }
+
+    /// Keeps that `key` began forgetting `machine` with `planned` sessions
+    /// to archive, before anything is archived. A write that fails is only
+    /// logged: a crash after it then needs a new plan.
+    fn begin(&self, hosts_file: &Path, key: String, machine: &str, planned: &[pb::SessionId]) {
+        self.keep(hosts_file, key, machine, planned.iter().map(|id| id.value.clone()).collect(), false);
+    }
+
+    fn keep(&self, hosts_file: &Path, key: String, machine: &str, archived: Vec<String>, done: bool) {
         let _held = lock(&self.answers);
         let path = answers_path(hosts_file);
         let mut answers = read_answers(&path);
@@ -142,7 +170,8 @@ impl Forgetful {
         answers.push(Answer {
             key,
             machine: machine.to_owned(),
-            archived: archived.iter().map(|id| id.value.clone()).collect(),
+            archived,
+            done,
         });
         let extra = answers.len().saturating_sub(ANSWERS_KEPT);
         answers.drain(..extra);
@@ -227,13 +256,33 @@ impl MachineSvc {
         {
             return Ok(Response::new(pb::ForgetMachineResponse { archived }));
         }
-        let token = request
-            .plan
-            .map(|plan| plan.value)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| status::missing("plan"))?;
-        forgetting.spend(&token, &name)?;
-        let archived = forgetting.hook()?.archive_lost(&name).await?;
+        // A retry of a forget that began and was cut short finishes it: the
+        // plan's token died with the process, but what it listed was kept.
+        let begun = key.as_ref().and_then(|key| forgetting.started(hosts_file, key, &name));
+        let mut planned = begun.clone().unwrap_or_default();
+        if begun.is_none() {
+            let token = request
+                .plan
+                .map(|plan| plan.value)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| status::missing("plan"))?;
+            let listed = forgetting.hook()?.lost_on(&name).await?;
+            forgetting.spend(&token, &name)?;
+            if let Some(key) = &key {
+                let ids: Vec<pb::SessionId> = listed.iter().filter_map(|lost| lost.session.clone()).collect();
+                forgetting.begin(hosts_file, key.clone(), &name, &ids);
+                planned = ids.into_iter().map(|id| id.value).collect();
+            }
+        }
+        let mut archived = forgetting.hook()?.archive_lost(&name).await?;
+        // What an earlier, cut short run archived is no longer listed by the
+        // sessions' side; the answer is the same as the first call's.
+        for value in planned.into_iter().rev() {
+            if !archived.iter().any(|id| id.value == value) {
+                archived.insert(0, pb::SessionId { value });
+            }
+        }
+        stop_point("forget.archived");
         // LD-12: this host forgets it without reaching it, so it is never
         // dialed again and adding it later makes a new machine. A retry
         // after this step finds it already gone.
@@ -249,3 +298,18 @@ impl MachineSvc {
         Ok(Response::new(pb::ForgetMachineResponse { archived }))
     }
 }
+
+/// Kills the process with SIGKILL when `HUMATA2_STOP_AT` names this point, so
+/// a test can show what a crash here leaves behind. Test daemons only: a
+/// release build never reads the variable.
+#[cfg(feature = "admin")]
+fn stop_point(name: &str) {
+    if std::env::var("HUMATA2_STOP_AT").is_ok_and(|wanted| wanted == name) {
+        let _ = rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::KILL);
+        std::process::abort();
+    }
+}
+
+#[cfg(not(feature = "admin"))]
+#[inline(always)]
+fn stop_point(_name: &str) {}

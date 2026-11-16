@@ -368,6 +368,73 @@ async fn a_context_only_fork_onto_another_machine_is_refused() {
     assert!(!rig.the("box-1").path(&channel, FORK).exists());
 }
 
+/// D187, D208: a context-only fork of box-1's session, asked for on the
+/// host onto box-1, runs on box-1 in its parent's folder and clones, with a
+/// copy of the conversation under its own id. The host lists it on box-1 as
+/// the parent's fork, its preview names the parent's branches and copies
+/// nothing, and the parent's agent runs on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_context_only_fork_of_a_box_session_onto_that_box_works_in_the_parents_clones_there() {
+    let rig = Rig::start(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let parent = rig.start_on(&channel, &one, "Cache warmup").await;
+    let before = rig.wait_session(&parent, "live", is_live).await;
+    say(&rig, &parent, "remember the retry").await;
+    let holder = rig.the("box-1").tabs()[0].holder_pid;
+
+    let preview = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .preview_fork(request(&parent, pb::ForkKind::ContextOnly, &one))
+        .await
+        .expect("the preview answers")
+        .into_inner();
+    assert_eq!(preview.copy_bytes, 0, "a context-only fork copies no code: {preview:?}");
+    let named: Vec<&str> = preview.branches.iter().map(|named| named.branch.as_str()).collect();
+    let theirs: Vec<&str> = before.repos.iter().map(|repo| repo.branch.as_str()).collect();
+    assert_eq!(named, theirs, "it works on the parent's branches");
+
+    let (ended, made) = fork(&rig, &parent, pb::ForkKind::ContextOnly, &one).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    let id = made.expect("the fork made a session");
+    let child = rig.wait_session(&id, "live on box-1", |s| s.machine.as_ref() == Some(&one) && is_live(s)).await;
+    assert_eq!(child.fork_origin.as_ref().and_then(|o| o.parent.clone()), Some(parent.clone()));
+
+    let listed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .list_sessions(pb::ListSessionsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .sessions;
+    let shown = listed.iter().find(|session| session.id.as_ref() == Some(&id)).expect("the host lists the fork");
+    assert_eq!(shown.machine.as_ref(), Some(&one), "listed on box-1");
+
+    let store = rig.the("box-1").store();
+    let paths = |session: &pb::SessionId| -> Vec<std::path::PathBuf> {
+        store
+            .session_detail(&session.value)
+            .unwrap()
+            .unwrap_or_else(|| panic!("box-1 has no start record for {}", session.value))
+            .repos
+            .into_iter()
+            .map(|repo| repo.path)
+            .collect()
+    };
+    assert_eq!(paths(&id), paths(&parent), "on box-1 it works in the parent's clones");
+    assert_eq!(branch_of(&rig.the("box-1").path(&channel, PARENT)), before.repos[0].branch, "no new branch");
+    assert!(!rig.the("box-1").path(&channel, FORK).exists(), "no copy of the code");
+
+    let box_one = rig.the("box-1");
+    let conversation = box_one.conversation_id(&id);
+    assert_ne!(conversation, box_one.conversation_id(&parent), "the fork's conversation has its own id");
+    let talk = std::fs::read_to_string(box_one.conversation(&conversation)).unwrap_or_default();
+    assert!(talk.contains("remember the retry"), "the conversation came along: {talk}");
+
+    let tabs = box_one.tabs();
+    assert_eq!(tabs.len(), 2, "the parent's agent and the fork's: {tabs:?}");
+    assert!(tabs.iter().any(|tab| tab.holder_pid == holder), "the parent's agent runs on");
+    assert!(is_live(&rig.session(&parent).await));
+}
+
 /// FK-4, FK-8: the preview of a fork onto or from a box names the new
 /// branch the fork's clones would get, a branch the parent isn't on, and
 /// what the copy would weigh, measured on the parent's machine. Previewing

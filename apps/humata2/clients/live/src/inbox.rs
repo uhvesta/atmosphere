@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
     AccessRule, Answer, AskedBy, Capability, ChannelId, Grant, GrantId, Preview, Request,
-    RequestId, RequestKind, RuleSetting, SessionId,
+    RequestId, RequestKind, RuleSetting,
 };
 use humata2_grpc::humata::v1 as pb;
 
@@ -117,6 +117,8 @@ fn path_text(path: &pb::RepoPath) -> String {
 }
 
 /// A grant's target in words: "only under ledger/docs/".
+// Old grants may still carry the deprecated BoardItem and Machine targets.
+#[allow(deprecated)]
 fn scope_text(target: Option<&pb::GrantTarget>) -> String {
     use pb::grant_target::Target as T;
     match target.and_then(|target| target.target.as_ref()) {
@@ -584,6 +586,7 @@ impl Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use humata2_clients::model::SessionId;
 
     #[test]
     fn every_capability_round_trips_by_name() {

@@ -368,8 +368,9 @@ impl pb::peer_service_server::PeerService for Peer {
     /// proven connection, so the daemon counts the host reachable from the
     /// moment the host sees Resume. If that open fails, the link still runs
     /// and the daemon counts the host away until the link is redialled.
-    /// Resume says to resume from nothing: this process keeps no journal,
-    /// mirror or policy yet (AWAY T4/T5). Then the machine reports its
+    /// Resume says to resume from nothing: this process keeps no journal or
+    /// mirror yet (AWAY T5), and the host sends its policy copy whole on
+    /// every link (AWAY T4). Then the machine reports its
     /// sessions. Each message the host sends goes to the daemon's
     /// PeerUplink, and each message the daemon sends goes to the host. The
     /// two are carried until one ends: a daemon whose PeerUplink ends with an

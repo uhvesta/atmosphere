@@ -398,3 +398,267 @@ fn items_of(
     }
     Ok(items)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GONE: &str = "ma_gone";
+    const OTHER: &str = "ma_other";
+
+    fn channel(machines: &[&str]) -> ChannelRecord {
+        ChannelRecord {
+            id: "ch_1".to_owned(),
+            name: "Team".to_owned(),
+            folder: "team".to_owned(),
+            branch_prefix: None,
+            default_agent: "claude".to_owned(),
+            repos: Vec::new(),
+            machines: machines.iter().map(|machine| machine.to_string()).collect(),
+            revision: 1,
+            created_unix_ms: 0,
+        }
+    }
+
+    /// The machine being removed and one other machine of the channel.
+    fn channel_with_other() -> ChannelRecord {
+        channel(&[GONE, OTHER])
+    }
+
+    fn live(sessions: &[(&str, &str)]) -> Vec<(String, String)> {
+        sessions
+            .iter()
+            .map(|(id, title)| (id.to_string(), title.to_string()))
+            .collect()
+    }
+
+    fn disposition(session: &str, what: pb::session_disposition::Disposition) -> pb::SessionDisposition {
+        pb::SessionDisposition {
+            session: Some(pb::SessionId {
+                value: session.to_owned(),
+            }),
+            disposition: Some(what),
+        }
+    }
+
+    fn move_to(session: &str, machine: &str) -> pb::SessionDisposition {
+        disposition(
+            session,
+            pb::session_disposition::Disposition::MoveTo(pb::MachineId {
+                value: machine.to_owned(),
+            }),
+        )
+    }
+
+    fn archive(session: &str, choice: pb::ArchiveChoice) -> pb::SessionDisposition {
+        disposition(
+            session,
+            pb::session_disposition::Disposition::Archive(choice as i32),
+        )
+    }
+
+    fn accepted(result: Result<Vec<Item>, Status>) -> Vec<Item> {
+        match result {
+            Ok(items) => items,
+            Err(status) => panic!("refused with code {:?}", status.code()),
+        }
+    }
+
+    fn refused(result: Result<Vec<Item>, Status>) -> Status {
+        match result {
+            Ok(items) => panic!("accepted {} items", items.len()),
+            Err(status) => status,
+        }
+    }
+
+    /// The code, the invalid field's name and its problem of a refusal.
+    fn refusal(status: &Status) -> (Code, String, i32) {
+        let Some(error) = status::error_of(status) else {
+            panic!("the refusal carries no humata.v1.Error");
+        };
+        let Some(pb::error::Kind::InvalidField(found)) = error.kind else {
+            panic!("the refusal doesn't name an invalid field");
+        };
+        (status.code(), found.field, found.problem)
+    }
+
+    fn moved_to(how: &Removal) -> Option<&str> {
+        match how {
+            Removal::MoveTo(to) => Some(to.as_str()),
+            Removal::Archive(_) => None,
+        }
+    }
+
+    fn archived_as(how: &Removal) -> Option<pb::ArchiveChoice> {
+        match how {
+            Removal::Archive(choice) => Some(*choice),
+            Removal::MoveTo(_) => None,
+        }
+    }
+
+    #[test]
+    fn a_move_to_another_machine_of_the_channel_is_accepted() {
+        let items = accepted(items_of(
+            &channel_with_other(),
+            GONE,
+            &live(&[("se_1", "Refactor")]),
+            vec![move_to("se_1", OTHER)],
+        ));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].session, "se_1");
+        assert_eq!(items[0].title, "Refactor");
+        assert_eq!(moved_to(&items[0].how), Some(OTHER));
+    }
+
+    #[test]
+    fn each_archive_choice_is_accepted_as_an_archive() {
+        for choice in [
+            pb::ArchiveChoice::Archive,
+            pb::ArchiveChoice::CommitPushPrThenArchive,
+            pb::ArchiveChoice::ArchiveAndDeleteWork,
+        ] {
+            let items = accepted(items_of(
+                &channel_with_other(),
+                GONE,
+                &live(&[("se_1", "Refactor")]),
+                vec![archive("se_1", choice)],
+            ));
+            assert_eq!(items.len(), 1);
+            assert_eq!(archived_as(&items[0].how), Some(choice));
+        }
+    }
+
+    #[test]
+    fn a_machine_with_no_live_sessions_needs_no_dispositions() {
+        let items = accepted(items_of(&channel_with_other(), GONE, &[], Vec::new()));
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn a_disposition_without_a_session_is_refused_as_missing() {
+        for bad in [
+            pb::SessionDisposition {
+                session: None,
+                ..move_to("se_1", OTHER)
+            },
+            move_to("", OTHER),
+        ] {
+            let status = refused(items_of(
+                &channel_with_other(),
+                GONE,
+                &live(&[("se_1", "Refactor")]),
+                vec![bad],
+            ));
+            assert_eq!(
+                refusal(&status),
+                (Code::InvalidArgument, "dispositions.session".to_owned(), Problem::Missing as i32)
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_not_live_on_the_machine_is_refused() {
+        let status = refused(items_of(
+            &channel_with_other(),
+            GONE,
+            &live(&[("se_1", "Refactor")]),
+            vec![move_to("se_9", OTHER)],
+        ));
+        assert_eq!(
+            refusal(&status),
+            (Code::InvalidArgument, "dispositions".to_owned(), Problem::UnknownValue as i32)
+        );
+    }
+
+    #[test]
+    fn a_session_handled_twice_is_refused() {
+        let status = refused(items_of(
+            &channel_with_other(),
+            GONE,
+            &live(&[("se_1", "Refactor")]),
+            vec![move_to("se_1", OTHER), archive("se_1", pb::ArchiveChoice::Archive)],
+        ));
+        assert_eq!(
+            refusal(&status),
+            (Code::InvalidArgument, "dispositions".to_owned(), Problem::UnknownValue as i32)
+        );
+    }
+
+    #[test]
+    fn a_move_to_the_machine_being_removed_is_refused() {
+        let status = refused(items_of(
+            &channel_with_other(),
+            GONE,
+            &live(&[("se_1", "Refactor")]),
+            vec![move_to("se_1", GONE)],
+        ));
+        assert_eq!(
+            refusal(&status),
+            (Code::InvalidArgument, "dispositions".to_owned(), Problem::UnknownValue as i32)
+        );
+    }
+
+    #[test]
+    fn a_move_to_a_machine_outside_the_channel_is_refused() {
+        let status = refused(items_of(
+            &channel_with_other(),
+            GONE,
+            &live(&[("se_1", "Refactor")]),
+            vec![move_to("se_1", "ma_stranger")],
+        ));
+        assert_eq!(
+            refusal(&status),
+            (Code::InvalidArgument, "dispositions".to_owned(), Problem::UnknownValue as i32)
+        );
+    }
+
+    #[test]
+    fn an_archive_without_a_usable_choice_is_refused_as_missing() {
+        for choice in [0, 99] {
+            let status = refused(items_of(
+                &channel_with_other(),
+                GONE,
+                &live(&[("se_1", "Refactor")]),
+                vec![disposition(
+                    "se_1",
+                    pb::session_disposition::Disposition::Archive(choice),
+                )],
+            ));
+            assert_eq!(
+                refusal(&status),
+                (Code::InvalidArgument, "dispositions".to_owned(), Problem::Missing as i32)
+            );
+        }
+    }
+
+    #[test]
+    fn a_disposition_with_no_action_is_refused_as_missing() {
+        let status = refused(items_of(
+            &channel_with_other(),
+            GONE,
+            &live(&[("se_1", "Refactor")]),
+            vec![pb::SessionDisposition {
+                disposition: None,
+                ..move_to("se_1", OTHER)
+            }],
+        ));
+        assert_eq!(
+            refusal(&status),
+            (Code::InvalidArgument, "dispositions".to_owned(), Problem::Missing as i32)
+        );
+    }
+
+    #[test]
+    fn a_live_session_left_without_a_disposition_is_refused_as_missing() {
+        let status = refused(items_of(
+            &channel_with_other(),
+            GONE,
+            &live(&[("se_1", "Refactor"), ("se_2", "Docs")]),
+            vec![move_to("se_1", OTHER)],
+        ));
+        assert_eq!(
+            refusal(&status),
+            (Code::InvalidArgument, "dispositions".to_owned(), Problem::Missing as i32)
+        );
+    }
+}

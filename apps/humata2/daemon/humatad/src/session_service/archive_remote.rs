@@ -9,7 +9,11 @@
 //! names this Mac.
 //!
 //! Nothing here waits on a timer: the host follows the machine's own
-//! operation until it ends.
+//! operation until it ends. A link lost after the machine was asked leaves
+//! the host's row to the next time the link comes up: the host asks the
+//! machine then whether it archived the session. A restore on this Mac
+//! while the machine is away takes the conversation from the host's mirror
+//! and lets the machine's copy go the next time its link comes up.
 
 use std::collections::HashMap;
 
@@ -18,11 +22,12 @@ use humata2_store::{ArchiveRow, ArchiveState, SessionRecord, StoreError};
 use prost::Message;
 use tonic::{Code, Status};
 
+use super::fork::hold_point;
 use super::lineage::publish_family;
 use super::{Gated, Loaded, SessionSvc, now_ms, run_resume, start_error, watch};
 use crate::channel_service::{blocking, error_of, failed, timestamp_ms};
 use crate::carry::Place;
-use crate::host_relay::{Links, RelayError, Relayed, assigned};
+use crate::host_relay::{LinkState, Links, RelayError, Relayed, assigned};
 use crate::identity::{self, Caller};
 use crate::operations::{Progress, Started};
 use crate::status;
@@ -46,11 +51,107 @@ enum RemoteError {
     ElsewhereNotBuilt { session: String, machine: String },
     #[error("session {session} runs on {machine} and has no clone folder here to restore into")]
     NoDetail { session: String, machine: String },
+    #[error("{machine} is offline and this Mac's mirror holds no conversation of session {session} to restore it from")]
+    NoMirror { session: String, machine: String },
+    #[error("this Mac's mirror of session {session}'s conversation couldn't be read")]
+    Mirror {
+        session: String,
+        #[source]
+        source: humata2_mirror::MirrorError,
+    },
+}
+
+/// Waits until `links` show `machine` up on a link other than `stale`, and
+/// returns that link's generation; `None` once the machine is forgotten.
+async fn next_link_up(links: &Links, machine: &str, stale: Option<u64>) -> Option<u64> {
+    let mut state = links.watch(machine);
+    let now = *state
+        .wait_for(|now| matches!(now, LinkState::Up { generation } if Some(*generation) != stale))
+        .await
+        .ok()?;
+    match now {
+        LinkState::Up { generation } => Some(generation),
+        LinkState::Down => None,
+    }
+}
+
+/// Whether `repo` of a pointer is `owner`/`name`.
+fn names(pointer: &pb::Pointer, owner: &str, name: &str) -> bool {
+    pointer
+        .repo
+        .as_ref()
+        .is_some_and(|named| named.owner == owner && named.name == name)
+}
+
+/// The host's summary of a session its machine archived: what the machine's
+/// own archive says (the files the clones changed), with what the machine
+/// last reported filling what that leaves out (the unpushed commits'
+/// subjects, the last pushed sha). Without the machine's summary, the
+/// repositories and reports alone.
+fn host_summary(
+    loaded: &Loaded,
+    machines: Option<pb::ArchiveSummary>,
+    reported: &[pb::Pointer],
+    archived: i64,
+) -> pb::ArchiveSummary {
+    let theirs = machines.unwrap_or_default();
+    let repos = loaded
+        .detail
+        .iter()
+        .flat_map(|detail| detail.repos.iter())
+        .map(|repo| {
+            let mut kept = theirs
+                .repos
+                .iter()
+                .find(|kept| {
+                    kept.repo
+                        .as_ref()
+                        .is_some_and(|named| named.owner == repo.owner && named.name == repo.name)
+                })
+                .cloned()
+                .unwrap_or_else(|| pb::archive_summary::Repo {
+                    repo: Some(pb::RepoRef {
+                        owner: repo.owner.clone(),
+                        name: repo.name.clone(),
+                    }),
+                    branch: repo.branch.clone(),
+                    ..Default::default()
+                });
+            let mine = reported.iter().filter(|pointer| names(pointer, &repo.owner, &repo.name));
+            if kept.last_pushed_sha.is_empty()
+                && let Some(pushed) = mine.clone().find(|pointer| pointer.pushed)
+            {
+                kept.last_pushed_sha.clone_from(&pushed.head_sha);
+            }
+            if kept.unpushed_subjects.is_empty()
+                && let Some(subjects) = mine.clone().find(|pointer| !pointer.unpushed_subjects.is_empty())
+            {
+                kept.unpushed_subjects.clone_from(&subjects.unpushed_subjects);
+            }
+            if kept.files.is_empty() {
+                kept.files = mine
+                    .flat_map(|pointer| pointer.dirty_paths.iter())
+                    .map(|path| pb::FileChange {
+                        path: path.clone(),
+                        added: 0,
+                        removed: 0,
+                    })
+                    .collect();
+            }
+            kept
+        })
+        .collect();
+    pb::ArchiveSummary {
+        archived_at: Some(timestamp_ms(archived)),
+        repos,
+        machine_lost: false,
+        lost: Vec::new(),
+    }
 }
 
 /// A call to `machine` that failed: its own answer stays as it is, a link
 /// that broke under the call is "offline".
-fn machine_failed(machine: &str, source: Status) -> Status {
+pub(super) fn machine_failed(machine: &str, source: Status) -> Status {
     if status::error_of(&source).is_none()
         && matches!(source.code(), Code::Unavailable | Code::Unknown | Code::Cancelled)
     {
@@ -61,12 +162,12 @@ fn machine_failed(machine: &str, source: Status) -> Status {
     source
 }
 
-fn finished(operation: &pb::Operation) -> bool {
+pub(super) fn finished(operation: &pb::Operation) -> bool {
     operation.state != pb::OperationState::Running as i32
 }
 
 /// Shows the steps `operation` has on the host's `progress`.
-fn mirror_steps(
+pub(super) fn mirror_steps(
     operation: &pb::Operation,
     progress: &Progress,
     seen: &mut HashMap<String, (i32, String)>,
@@ -83,15 +184,29 @@ fn mirror_steps(
     }
 }
 
+/// The error of a link to `machine` lost while it was `doing` something it
+/// finishes on its own.
+fn lost_link(machine: &str, doing: &'static str) -> Status {
+    failed(
+        Code::Unavailable,
+        &RemoteError::LinkLost {
+            machine: machine.to_owned(),
+            doing,
+        },
+        "reconnect the machine and look at the session: the machine finishes what it started on its own",
+        None,
+    )
+}
+
 /// Follows the machine's operation `first` until it ends, showing its steps
-/// on `progress`. A link that breaks first is an error: the machine goes on
-/// with the work on its own.
-async fn follow_to_end(
+/// on `progress`. A link that breaks first is the error `lost` makes: the
+/// machine goes on with the work on its own.
+pub(super) async fn follow_to_end(
     relayed: &Relayed,
     machine: &str,
     first: pb::Operation,
     progress: &Progress,
-    doing: &'static str,
+    lost: impl FnOnce() -> Status,
 ) -> Result<pb::Operation, Status> {
     let mut seen = HashMap::new();
     mirror_steps(&first, progress, &mut seen);
@@ -99,17 +214,6 @@ async fn follow_to_end(
         return Ok(first);
     }
     let id = first.id.map(|id| id.value).unwrap_or_default();
-    let lost = || {
-        failed(
-            Code::Unavailable,
-            &RemoteError::LinkLost {
-                machine: machine.to_owned(),
-                doing,
-            },
-            "reconnect the machine and look at the session: the machine finishes what it started on its own",
-            None,
-        )
-    };
     let mut stream = relayed
         .operation()
         .watch_operation(pb::WatchOperationRequest {
@@ -249,15 +353,20 @@ impl SessionSvc {
         let id = loaded.record.id.clone();
         let guard = self.lifecycle.lock_of(&id).lock_owned().await;
         progress.set_step("stop", pb::StepState::Running, None);
+        // What the machine last reported, before its archive may clear it.
+        let reported = self.reported_pointers(&machine, &id);
+        let mut asked_machine = false;
         let ended = async {
             let relayed = self.relayed_to(&id, &machine)?;
+            let request = assigned(asked, None).map_err(Status::from)?;
+            asked_machine = true;
             let first = relayed
                 .session()
-                .archive_session(assigned(asked, None).map_err(Status::from)?)
+                .archive_session(request)
                 .await
-                .map_err(|source| machine_failed(&machine, source))?
-                .into_inner();
-            follow_to_end(&relayed, &machine, first, &progress, "archive").await
+                .map_err(|source| machine_failed(&machine, source));
+            hold_point("archive-remote-asked").await;
+            follow_to_end(&relayed, &machine, first?.into_inner(), &progress, || lost_link(&machine, "archive")).await
         }
         .await;
         let ended = match ended {
@@ -269,6 +378,12 @@ impl SessionSvc {
                     retry: None,
                     kind: None,
                 }));
+                drop(guard);
+                // The machine may finish the archive on its own; the host
+                // learns of it once the link is back.
+                if asked_machine && refused.code() == Code::Unavailable {
+                    tokio::spawn(self.clone().reconcile_when_linked(id, machine, reported, by));
+                }
                 return;
             }
         };
@@ -276,20 +391,115 @@ impl SessionSvc {
             progress.fail(operation_error(&machine, "archive", &ended));
             return;
         }
-        if let Err(refused) = self.write_remote_row(&loaded, &machine).await {
+        let theirs = self.archived_on(&machine, &id).await.ok().flatten();
+        if let Err(refused) = self.write_remote_row(&loaded, theirs, &reported).await {
             progress.fail(status::error_of(&refused).unwrap_or_default());
             return;
         }
         drop(guard);
+        progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
+            value: id.clone(),
+        })));
+        self.after_remote_archive(&id, by).await;
+    }
+
+    /// The pointers `machine` last reported for `session`.
+    fn reported_pointers(&self, machine: &str, session: &str) -> Vec<pb::Pointer> {
+        self.remote
+            .as_ref()
+            .and_then(|remote| remote.view(machine, session))
+            .map(|view| view.pointers)
+            .unwrap_or_default()
+    }
+
+    /// What `machine`'s own archive of `session` says, when it has one.
+    async fn archived_on(&self, machine: &str, session: &str) -> Result<Option<pb::ArchiveSummary>, Status> {
+        let relayed = self.relayed_to(session, machine)?;
+        let request = pb::GetSessionRequest {
+            id: Some(pb::SessionId { value: session.to_owned() }),
+        };
+        match relayed.session().get_session(tonic::Request::new(request)).await {
+            Ok(shown) => Ok(shown.into_inner().archive),
+            Err(refused) if refused.code() == Code::NotFound => Ok(None),
+            Err(refused) => Err(machine_failed(machine, refused)),
+        }
+    }
+
+    /// After a link lost while `machine` archived `session`: each time the
+    /// link comes up, asks the machine whether it archived the session, and
+    /// writes the host's row when it did. Ends once the machine answers, or
+    /// once it is forgotten.
+    async fn reconcile_when_linked(self, session: String, machine: String, reported: Vec<pb::Pointer>, by: pb::Actor) {
+        let Ok(links) = self.links_to(&session, &machine) else {
+            return;
+        };
+        let mut stale = None;
+        while let Some(generation) = next_link_up(&links, &machine, stale).await {
+            match self.reconcile_archive(&session, &machine, &reported, &by).await {
+                Ok(()) => return,
+                Err(refused) if refused.code() == Code::Unavailable => stale = Some(generation),
+                Err(refused) => {
+                    crate::log::say!(
+                        "humatad2: couldn't learn whether {machine} archived session {session}: {}; look at the session on {machine} and archive it again",
+                        refused.message()
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Writes the host's row for `session` when `machine` archived it and
+    /// the host has none yet, and the session still runs there.
+    async fn reconcile_archive(
+        &self,
+        session: &str,
+        machine: &str,
+        reported: &[pb::Pointer],
+        by: &pb::Actor,
+    ) -> Result<(), Status> {
+        let guard = self.lifecycle.lock_of(session).lock_owned().await;
+        let loaded = match self.load(session).await {
+            Ok(loaded) => loaded,
+            Err(refused) if refused.code() == Code::NotFound => return Ok(()),
+            Err(refused) => return Err(refused),
+        };
+        let (store, key) = (self.starter.store.clone(), session.to_owned());
+        let row = blocking(move || store.archive(&key)).await?.map_err(|source| {
+            failed(
+                Code::Internal,
+                &RemoteError::Store {
+                    session: session.to_owned(),
+                    source,
+                },
+                "restart Humata on this machine",
+                None,
+            )
+        })?;
+        if loaded.record.machine != machine || row.is_some() {
+            return Ok(());
+        }
+        let Some(theirs) = self.archived_on(machine, session).await? else {
+            return Ok(());
+        };
+        self.write_remote_row(&loaded, Some(theirs), reported).await?;
+        drop(guard);
+        self.after_remote_archive(session, by.clone()).await;
+        Ok(())
+    }
+
+    /// What follows the host's row for a session its machine archived: its
+    /// grants and requests end, and the feeds show it archived.
+    async fn after_remote_archive(&self, id: &str, by: pb::Actor) {
         // The session no longer waits on anyone (IN-22, TP-15).
-        if let Err(error) = self.end_grants_of(&id).await {
+        if let Err(error) = self.end_grants_of(id).await {
             crate::log::say!(
                 "humatad2: ending archived session {id}'s grants: {}",
                 error.message()
             );
         }
         if let Err(error) = self
-            .withdraw_requests_of(&id, pb::WithdrawReason::SessionArchived)
+            .withdraw_requests_of(id, pb::WithdrawReason::SessionArchived)
             .await
         {
             crate::log::say!(
@@ -297,53 +507,21 @@ impl SessionSvc {
                 error.message()
             );
         }
-        progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
-            value: id.clone(),
-        })));
-        self.tell.session(&id, pb::Change::Updated, Some(by.clone())).await;
-        publish_family(&self.tell, &id, Some(by)).await;
+        self.tell.session(id, pb::Change::Updated, Some(by.clone())).await;
+        publish_family(&self.tell, id, Some(by)).await;
     }
 
     /// The host's own row for a session its machine archived. It is written
     /// archived at once: the host has no clones of the session to free.
-    async fn write_remote_row(&self, loaded: &Loaded, machine: &str) -> Result<(), Status> {
+    async fn write_remote_row(
+        &self,
+        loaded: &Loaded,
+        theirs: Option<pb::ArchiveSummary>,
+        reported: &[pb::Pointer],
+    ) -> Result<(), Status> {
         let id = loaded.record.id.clone();
         let archived = now_ms();
-        let pushed = self
-            .remote
-            .as_ref()
-            .and_then(|remote| remote.view(machine, &id))
-            .map(|view| view.pointers)
-            .unwrap_or_default();
-        let summary = pb::ArchiveSummary {
-            archived_at: Some(timestamp_ms(archived)),
-            repos: loaded
-                .detail
-                .iter()
-                .flat_map(|detail| detail.repos.iter())
-                .map(|repo| pb::archive_summary::Repo {
-                    repo: Some(pb::RepoRef {
-                        owner: repo.owner.clone(),
-                        name: repo.name.clone(),
-                    }),
-                    branch: repo.branch.clone(),
-                    last_pushed_sha: pushed
-                        .iter()
-                        .find(|pointer| {
-                            pointer.pushed
-                                && pointer.repo.as_ref().is_some_and(|named| {
-                                    named.owner == repo.owner && named.name == repo.name
-                                })
-                        })
-                        .map(|pointer| pointer.head_sha.clone())
-                        .unwrap_or_default(),
-                    files: Vec::new(),
-                    unpushed_subjects: Vec::new(),
-                })
-                .collect(),
-            machine_lost: false,
-            lost: Vec::new(),
-        };
+        let summary = host_summary(loaded, theirs, reported, archived);
         let row = ArchiveRow {
             session_id: id.clone(),
             archived_unix_ms: archived,
@@ -395,8 +573,13 @@ impl SessionSvc {
             }
             _ => {}
         }
-        // An offline machine answers at once and changes nothing (CH-4).
-        self.relayed_to(&id, &machine)?;
+        if here {
+            // With the machine away, the host's mirror has the conversation.
+            self.links_to(&id, &machine)?;
+        } else {
+            // An offline machine answers at once and changes nothing (CH-4).
+            self.relayed_to(&id, &machine)?;
+        }
         let mut steps = Vec::new();
         if here {
             for repo in loaded.detail.iter().flat_map(|detail| detail.repos.iter()) {
@@ -456,7 +639,7 @@ impl SessionSvc {
                 .await
                 .map_err(|source| machine_failed(&machine, source))?
                 .into_inner();
-            follow_to_end(&relayed, &machine, first, &progress, "restore").await
+            follow_to_end(&relayed, &machine, first, &progress, || lost_link(&machine, "restore")).await
         }
         .await;
         let ended = match ended {
@@ -511,13 +694,17 @@ impl SessionSvc {
         let id = loaded.record.id.clone();
         let guard = self.lifecycle.lock_of(&id).lock_owned().await;
         let operation = progress.operation().id.map(|id| id.value).unwrap_or_default();
+        // The machine away: the conversation comes from the host's mirror.
+        if self.relayed_to(&id, &machine).is_err() {
+            return self.restore_here_from_mirror(progress, loaded, machine, by, guard).await;
+        }
         let repos: Vec<String> = loaded
             .detail
             .iter()
             .flat_map(|detail| detail.repos.iter())
             .map(|repo| repo.name.clone())
             .collect();
-        let Some(detail) = loaded.detail.as_ref() else {
+        let Some(detail) = loaded.detail.clone() else {
             progress.fail(error_of(
                 &RemoteError::NoDetail {
                     session: id,
@@ -531,6 +718,10 @@ impl SessionSvc {
 
         progress.set_step("import_conversation", pb::StepState::Running, None);
         if let Err(status) = self.take_conversation(&loaded.record, &machine, &operation).await {
+            if status.code() == Code::Unavailable {
+                self.undo_conversation(&loaded.record, &operation).await;
+                return self.restore_here_from_mirror(progress, loaded, machine, by, guard).await;
+            }
             progress.set_step(
                 "import_conversation",
                 pb::StepState::Failed,
@@ -544,7 +735,7 @@ impl SessionSvc {
         for name in &repos {
             progress.set_step(&format!("clone:{name}"), pb::StepState::Running, None);
         }
-        if let Err(error) = self.starter.reclone(&loaded.record, detail).await {
+        if let Err(error) = self.starter.reclone(&loaded.record, &detail).await {
             let (_, failure) = start_error(&error);
             for name in &repos {
                 progress.set_step(
@@ -620,6 +811,168 @@ impl SessionSvc {
         )
         .await;
         watch::agent(self.tell.clone(), id);
+    }
+
+    /// Restore on this Mac while the session's machine is away: its branch
+    /// is cloned again here, the conversation the host's mirror kept is
+    /// written as the agent's, the record names this Mac and the agent
+    /// resumes in it. The machine lets its copy go the next time its link
+    /// comes up.
+    async fn restore_here_from_mirror(
+        self,
+        progress: Progress,
+        loaded: Loaded,
+        machine: String,
+        by: pb::Actor,
+        guard: tokio::sync::OwnedMutexGuard<()>,
+    ) {
+        let id = loaded.record.id.clone();
+        let operation = progress.operation().id.map(|id| id.value).unwrap_or_default();
+        let Some(detail) = loaded.detail.clone() else {
+            progress.fail(error_of(
+                &RemoteError::NoDetail { session: id, machine },
+                "restore it on its own machine once it is back",
+                None,
+            ));
+            return;
+        };
+
+        progress.set_step("import_conversation", pb::StepState::Running, None);
+        let (svc, key) = (self.clone(), id.clone());
+        let lines = match blocking(move || svc.mirrored_lines(&key)).await {
+            Ok(Ok(Some(lines))) if !lines.is_empty() => lines,
+            Ok(Ok(_)) => {
+                let error = RemoteError::NoMirror { session: id, machine };
+                progress.set_step("import_conversation", pb::StepState::Failed, Some(error.to_string()));
+                progress.fail(error_of(&error, "bring the machine back online, then restore again", None));
+                return;
+            }
+            Ok(Err(source)) => {
+                let error = RemoteError::Mirror { session: id, source };
+                progress.set_step("import_conversation", pb::StepState::Failed, Some(status::chain(&error)));
+                progress.fail(error_of(&error, "bring the machine back online, then restore again", None));
+                return;
+            }
+            Err(refused) => {
+                progress.fail(error_from(&refused));
+                return;
+            }
+        };
+        let channel = match self.find_channel(&loaded.record.channel).await {
+            Ok(channel) => channel,
+            Err(refused) => {
+                progress.fail(error_from(&refused));
+                return;
+            }
+        };
+        // The session's folder on this Mac, by the same name it had there.
+        let name = loaded
+            .record
+            .folder
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| id.clone());
+        let folder = self.starter.layout.session(&channel.folder, &name);
+        let old_folder = detail
+            .repos
+            .first()
+            .and_then(|repo| repo.path.parent())
+            .unwrap_or(loaded.record.folder.as_path())
+            .display()
+            .to_string();
+        let mut record = loaded.record.clone();
+        record.machine.clone_from(&self.machine);
+        record.folder.clone_from(&folder);
+        let mut detail = detail;
+        for repo in &mut detail.repos {
+            repo.path = folder.join(&repo.name);
+        }
+        progress.set_step("import_conversation", pb::StepState::Done, None);
+
+        let repos: Vec<String> = detail.repos.iter().map(|repo| repo.name.clone()).collect();
+        for name in &repos {
+            progress.set_step(&format!("clone:{name}"), pb::StepState::Running, None);
+        }
+        if let Err(error) = self.starter.reclone(&record, &detail).await {
+            let (_, failure) = start_error(&error);
+            for name in &repos {
+                progress.set_step(&format!("clone:{name}"), pb::StepState::Failed, Some(status::chain(&error)));
+            }
+            progress.fail(failure);
+            return;
+        }
+        for name in &repos {
+            progress.set_step(&format!("clone:{name}"), pb::StepState::Done, None);
+        }
+
+        // Switch: the new file repeats exactly the entries of the lines
+        // written, so the mirror adds only what follows (D211).
+        let here = self.machine.clone();
+        self.rebase_mirror(&id, &here, Some(humata2_mirror::entry_count(&lines))).await;
+        let (store, saved, saved_detail, key) = (self.starter.store.clone(), record.clone(), detail.clone(), id.clone());
+        let switched = blocking(move || -> Result<(), StoreError> {
+            store.put_session(&saved)?;
+            store.put_session_detail(&saved_detail)?;
+            store.remove_archive(&key)
+        })
+        .await;
+        let failure = match switched {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error_of(&error, "fix the cause the message names, then restore again", None)),
+            Err(refused) => Some(error_from(&refused)),
+        };
+        if let Some(failure) = failure {
+            self.rebase_mirror(&id, &machine, None).await;
+            progress.fail(failure);
+            return;
+        }
+        drop(guard);
+        if let Some(remote) = &self.remote {
+            remote.forget_session(&machine, &id).await;
+        }
+        tokio::spawn(self.clone().release_when_linked(machine, id.clone(), record.channel.clone(), operation));
+        self.tell.session(&id, pb::Change::Updated, Some(by.clone())).await;
+        publish_family(&self.tell, &id, Some(by.clone())).await;
+
+        progress.set_step("launch", pb::StepState::Running, None);
+        if let Err(failure) = self.resume_here_from(&record, lines, &old_folder).await {
+            progress.set_step("launch", pb::StepState::Failed, Some(failure.message.clone()));
+            progress.fail(failure);
+            self.tell.session(&id, pb::Change::Updated, Some(by)).await;
+            return;
+        }
+        progress.set_step("launch", pb::StepState::Done, None);
+        progress.set_step("verify", pb::StepState::Done, None);
+        progress.succeed(Some(pb::operation::Result::Session(pb::SessionId { value: id.clone() })));
+        self.tell.session(&id, pb::Change::Updated, Some(by)).await;
+        watch::agent(self.tell.clone(), id);
+    }
+
+    /// After a restore here while `machine` was away: the next time its link
+    /// comes up, its copy of the session goes to its trash and its records
+    /// are dropped. Tries again on each new link while the call fails for
+    /// the link; ends once the machine is forgotten.
+    async fn release_when_linked(self, machine: String, session: String, channel: String, operation: String) {
+        let Some(carry) = self.carry.get().cloned() else {
+            return;
+        };
+        let links = carry.links().clone();
+        let mut stale = None;
+        while let Some(generation) = next_link_up(&links, &machine, stale).await {
+            match carry.release(&machine, &operation, &session, &channel).await {
+                Ok(()) => return,
+                Err(refused) if matches!(refused.code(), Code::Unavailable | Code::Unknown | Code::Cancelled) => {
+                    stale = Some(generation);
+                }
+                Err(refused) => {
+                    crate::log::say!(
+                        "humatad2: session {session} runs here now, but its old copy on {machine} is still there: {}",
+                        refused.message()
+                    );
+                    return;
+                }
+            }
+        }
     }
 
     /// The machine's copy of the session goes to its trash and its records

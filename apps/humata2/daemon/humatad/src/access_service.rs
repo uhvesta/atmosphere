@@ -468,6 +468,8 @@ impl pb::access_service_server::AccessService for Access {
             request.into_inner(),
         )
         .await?;
+        // AW-5: machines get the new hash with the next policy copy.
+        self.guard.policy_changed();
         Ok(Response::new(set))
     }
 }

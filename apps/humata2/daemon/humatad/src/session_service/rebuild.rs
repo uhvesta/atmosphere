@@ -212,6 +212,15 @@ impl SessionSvc {
         let _ = self.raw_lines.1.set(rebase);
     }
 
+    /// The scrubbed lines the host's mirror kept of `session`'s
+    /// conversation; none when it keeps none or has no mirror.
+    pub(super) fn mirrored_lines(&self, session: &str) -> Result<Option<Vec<u8>>, MirrorError> {
+        match self.raw_lines.0.get() {
+            Some(lines) => lines(session),
+            None => Ok(None),
+        }
+    }
+
     /// Points the host's mirror of `session` at its file on `machine` (MV-13,
     /// D209), before the record says the session is there. Best effort: a
     /// mirror that can't be pointed may mirror the history twice, which loses
@@ -233,6 +242,73 @@ impl SessionSvc {
                 status.message()
             ),
         }
+    }
+
+    /// Writes `lines`, a conversation the host's mirror kept, as the new
+    /// conversation of `record`'s agent on this machine, with `old_folder`
+    /// rewritten to the record's folder, and starts the agent resuming it.
+    /// The records must already name this machine. A restore on this Mac
+    /// whose machine is away uses it (D195).
+    pub(super) async fn resume_here_from(
+        &self,
+        record: &SessionRecord,
+        lines: Vec<u8>,
+        old_folder: &str,
+    ) -> Result<(), pb::Error> {
+        let starter = &self.starter;
+        let kind = starter.agents.get(&record.agent).map_err(|source| {
+            error_of(
+                &RebuildError::Agent { agent: record.agent.clone(), source },
+                "install the session's agent on this Mac, then restore again",
+                None,
+            )
+        })?;
+        let conversation_id = uuid::Uuid::new_v4().hyphenated().to_string();
+        let plan = kind.launch(&starter.home, &record.folder, &conversation_id);
+        let lines = replaced(&lines, old_folder.as_bytes(), record.folder.display().to_string().as_bytes());
+        let file = plan.conversation_file.clone();
+        blocking(move || write_lines(&file, &lines))
+            .await
+            .map_err(|status| failure_of(&status))?
+            .map_err(|error| error_of(&error, "free space on this disk or fix the folder's permissions, then restore again", None))?;
+        let tab = format!("tb_{}", uuid::Uuid::new_v4().simple());
+        let socket = starter.holders.join(format!("{tab}.sock"));
+        let probe = TabRecord {
+            id: tab.clone(),
+            session: Some(record.id.clone()),
+            kind: TabKind::Agent,
+            title: record.agent.clone(),
+            holder_socket: socket.clone(),
+            holder_pid: 0,
+            created_unix_ms: now_ms(),
+        };
+        let env = |tab: &TabRecord| self.tokens.env(tab);
+        let variable_names = env(&probe)
+            .iter()
+            .map(|(name, _)| name.to_string_lossy().into_owned())
+            .collect();
+        let launch = AgentLaunch {
+            agent: record.agent.clone(),
+            folder: record.folder.clone(),
+            argv: plan.resume_argv.clone(),
+            resume_argv: plan.resume_argv,
+            variable_names,
+            conversation_id,
+            conversation_file: plan.conversation_file,
+            holder_socket: socket,
+            cols: COLS,
+            rows: ROWS,
+        };
+        humata2_revive::launch_agent(&starter.store, &starter.revive, record, &tab, launch, None, &env)
+            .await
+            .map(drop)
+            .map_err(|source| {
+                error_of(
+                    &RebuildError::Launch(source),
+                    "the session is on this Mac now; resume it from its menu",
+                    None,
+                )
+            })
     }
 
     // -- the host's half --------------------------------------------------

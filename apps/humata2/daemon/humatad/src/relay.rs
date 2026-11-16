@@ -85,6 +85,9 @@ const LISTED_METHODS: [(&str, &[&str]); 6] = [
             "PlanArchive",
             "ArchiveSession",
             "RestoreSession",
+            // D187, D208: a context-only fork of a machine's session runs
+            // there, in its parent's clones.
+            "ForkSession",
         ],
     ),
     (
@@ -637,6 +640,7 @@ mod tests {
             "/humata.v1.SessionService/PlanArchive",
             "/humata.v1.SessionService/ArchiveSession",
             "/humata.v1.SessionService/RestoreSession",
+            "/humata.v1.SessionService/ForkSession",
             "/humata.v1.ChannelService/CreateChannel",
             "/humata.v1.ChannelService/GetChannel",
             "/humata.v1.OperationService/GetOperation",
@@ -654,7 +658,6 @@ mod tests {
         }
         for refused in [
             "/humata.v1.SessionService/DeleteSession",
-            "/humata.v1.SessionService/ForkSession",
             "/humata.v1.ChannelService/DeleteChannel",
             "/humata.v1.OperationService/RetryOperation",
             "/humata.v1.AccessService/ListRules",

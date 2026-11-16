@@ -263,6 +263,8 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         })
         .await?
         .map_err(|error| status::store(error, &self.machine, "save the settings"))?;
+        // AW-8: machines get Contain agents with the next policy copy.
+        self.guard.policy_changed();
         let shown = self.shown().await?;
         self.feed.publish(
             pb::Change::Updated,
@@ -343,6 +345,8 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         })
         .await?
         .map_err(|error| status::store(error, &self.machine, "save the channel's settings"))?;
+        // AW-8: machines get the channel's Contain agents with the next copy.
+        self.guard.policy_changed();
         self.channel_settings(&id).await.map(Response::new)
     }
 }

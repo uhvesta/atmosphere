@@ -962,7 +962,8 @@ impl Inner {
     async fn trash(&self, machine: &MachineId) -> Result<TrashListing, FileManagerError> {
         let what = "Reading the trash";
         let mut items = Vec::new();
-        let mut total_bytes = 0;
+        // Set by the first page, which always arrives before the loop ends.
+        let mut total_bytes;
         let mut token = String::new();
         loop {
             let reply = self

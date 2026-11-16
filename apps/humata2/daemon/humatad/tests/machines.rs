@@ -1018,5 +1018,5 @@ async fn the_storage_page_reads_this_machines_own_storage_and_no_other() {
         })
         .await
         .unwrap_err();
-    assert_eq!(other.code(), Code::NotFound);
+    assert_eq!(other.code(), Code::Unimplemented);
 }

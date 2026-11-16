@@ -9,6 +9,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status};
 
 use super::link::HostLink;
+use super::policy_copy::PolicySource;
 use crate::events::Feed;
 use crate::identity::{Caller, UserVia};
 use crate::status;
@@ -21,11 +22,13 @@ pub(crate) type UplinkStream = ReceiverStream<Result<pb::MachineToHost, Status>>
 pub(crate) struct Uplinks {
     link: Arc<HostLink>,
     feed: Arc<Feed>,
+    /// Where the policy copies the host sends are put in force (AW-8).
+    policy: Arc<PolicySource>,
 }
 
 impl Uplinks {
-    pub(crate) fn new(link: Arc<HostLink>, feed: Arc<Feed>) -> Self {
-        Self { link, feed }
+    pub(crate) fn new(link: Arc<HostLink>, feed: Arc<Feed>, policy: Arc<PolicySource>) -> Self {
+        Self { link, feed, policy }
     }
 
     pub(crate) fn reachable(&self) -> bool {
@@ -64,6 +67,7 @@ impl Uplinks {
         );
         let (to_host, stream) = mpsc::channel(16);
         let feed = self.feed.clone();
+        let policy = self.policy.clone();
         tokio::spawn(async move {
             let mut from_host = from_host;
             loop {
@@ -78,8 +82,17 @@ impl Uplinks {
                         break;
                     }
                     message = from_host.message() => match message {
-                        // The host's messages are ignored for now. The policy
-                        // snapshot they will carry is taken in AWAY T4.
+                        Ok(Some(pb::HostToMachine {
+                            message: Some(pb::host_to_machine::Message::Policy(snapshot)),
+                        })) => {
+                            let Some(ack) = applied(&policy, snapshot).await else {
+                                continue;
+                            };
+                            if to_host.send(Ok(ack)).await.is_err() {
+                                break;
+                            }
+                        }
+                        // The host's other messages are taken in AWAY T5–T7.
                         Ok(Some(_)) => {}
                         Ok(None) | Err(_) => break,
                     },
@@ -94,5 +107,32 @@ impl Uplinks {
             }
         });
         Ok(ReceiverStream::new(stream))
+    }
+}
+
+/// Puts `snapshot` in force and acks its revision. A copy that can't be kept
+/// is not acked, so the host's next one is taken instead; the one before
+/// stays in force meanwhile.
+async fn applied(policy: &Arc<PolicySource>, snapshot: pb::PolicySnapshot) -> Option<pb::MachineToHost> {
+    let policy = Arc::clone(policy);
+    let applied = tokio::task::spawn_blocking(move || policy.apply(&snapshot)).await;
+    match applied {
+        Ok(Ok(revision)) => Some(pb::MachineToHost {
+            message: Some(pb::machine_to_host::Message::Ack(pb::UplinkAck {
+                policy_revision: revision,
+                ..pb::UplinkAck::default()
+            })),
+        }),
+        Ok(Err(error)) => {
+            crate::log::say!(
+                "humatad2: warning: the host's policy copy wasn't taken: {}",
+                crate::status::chain(&error)
+            );
+            None
+        }
+        Err(error) => {
+            crate::log::say!("humatad2: warning: taking the host's policy copy stopped: {error}");
+            None
+        }
     }
 }

@@ -16,6 +16,8 @@
 //! A code-only fork has no conversation to resume: its agent is started
 //! fresh by the target's ResumeSession (`unlaunched`, `launch_unlaunched`).
 
+mod context;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -97,6 +99,41 @@ fn elsewhere_text(checked: &Elsewhere, before_turn: u32, plan: &pb::CarryPreview
         checked.from,
         human_bytes(plan.copy_bytes),
     )
+}
+
+/// The preview of a context-only fork on the parent's machine (D187): the
+/// parent's clones on their branches, and nothing copied.
+fn context_preview(checked: &Elsewhere) -> pb::ForkPreview {
+    let repos = checked
+        .parent
+        .detail
+        .as_ref()
+        .map(|detail| detail.repos.as_slice())
+        .unwrap_or_default();
+    let on = repos
+        .iter()
+        .map(|repo| format!("{} on {}", repo.name, repo.branch))
+        .collect::<Vec<_>>()
+        .join(", ");
+    pb::ForkPreview {
+        text: format!(
+            "Forks \u{201c}{}\u{201d} into a new session on {} that works in the parent's files: its clones are the parent's, on their branches ({on}), so what it changes lands in them. It copies no code and carries on the conversation from a copy of it.",
+            checked.parent.record.title, checked.to,
+        ),
+        branches: repos
+            .iter()
+            .map(|repo| pb::preview_branch_names_response::Name {
+                repo: Some(pb::RepoRef {
+                    owner: repo.owner.clone(),
+                    name: repo.name.clone(),
+                }),
+                branch: repo.branch.clone(),
+                suffix_reason: String::new(),
+            })
+            .collect(),
+        copy_bytes: 0,
+        seeded_with_summary: false,
+    }
 }
 
 /// The machine `record` lives on, from this host's point of view.
@@ -200,9 +237,8 @@ impl SessionSvc {
                     None,
                 ));
             }
-            Ok(pb::ForkKind::ContextOnly) => {
-                return Err(not_built_part(FORK_SESSION, "a context-only fork of a session on another machine"));
-            }
+            // D187: from and to are the same machine, a box; it forks there.
+            Ok(pb::ForkKind::ContextOnly) => pb::ForkKind::ContextOnly,
             _ => {
                 return Err(status::invalid_field(
                     "kind",
@@ -218,6 +254,14 @@ impl SessionSvc {
                 Problem::NotAllowedHere,
                 "a fork before a turn carries the conversation up to that turn, and a code-only fork carries none",
                 "fork with CODE_AND_CONTEXT, or set before_turn to 0 to fork from now",
+            ));
+        }
+        if copy == pb::ForkKind::ContextOnly && !request.branch.is_empty() {
+            return Err(status::invalid_field(
+                "branch",
+                Problem::NotAllowedHere,
+                "a fork that carries only the conversation works in its parent's clones, so it has no branch to name",
+                "clear the branch, or fork with CODE_AND_CONTEXT or CODE_ONLY to get a branch of its own",
             ));
         }
         self.check_typed_branch(&parent, &from, &carry, &request.branch).await?;
@@ -313,6 +357,9 @@ impl SessionSvc {
             Some(Gated::Ask(asked)) => return Ok(Some(Gated::Ask(asked))),
             Some(Gated::Done(checked)) => checked,
         };
+        if checked.copy == pb::ForkKind::ContextOnly {
+            return Ok(Some(Gated::Done(context_preview(&checked))));
+        }
         let plan = checked
             .carry
             .preview_fork(&checked.from, &checked.parent.record.id, &checked.title, &request.branch)
@@ -369,6 +416,19 @@ impl SessionSvc {
                 None,
             ));
         };
+        if copy == pb::ForkKind::ContextOnly {
+            let there = context::ContextThere {
+                carry,
+                parent: parent.record,
+                parent_detail,
+                machine: to,
+                title,
+            };
+            return self
+                .fork_context_there(caller, request, there)
+                .await
+                .map(|operation| Some(Gated::Done(operation)));
+        }
 
         let steps: Vec<(String, String)> = STEPS
             .iter()

@@ -125,11 +125,11 @@ async fn a_kind_prefix_and_a_name_resolve_through_the_daemon() {
                 ..Default::default()
             },
         );
-    for (thing, expected) in [
-        ("session:fix login", session_ref("se_7")),
-        ("channel:payments", channel_ref("ch_pay")),
-        ("machine:laptop", machine_ref("ma_laptop")),
-        ("item:GLB-4", item_ref("GLB-4")),
+    for thing in [
+        "session:fix login",
+        "channel:payments",
+        "machine:laptop",
+        "item:GLB-4",
     ] {
         let console = FakeConsole::pipe();
         assert_eq!(run(&daemon, &console, &["--json", "vip", thing]).await, exit::OK, "{thing}");

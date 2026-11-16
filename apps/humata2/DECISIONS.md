@@ -1918,3 +1918,10 @@ SEC-6 containment isn't built (`contained: false`), so a context-only fork's Bas
 - **3. The side panel's border (fixed).** The panel drew its border inside its own width, after the divider's 1 pt. So the panel was 1 pt narrow and its content sat 1 pt right. The panel now spans the divider's point (`ui/src/panels.rs`, width + 1 with a -1 margin).
 - **Why not mask 2 and 3:** they are layout defects that no ruling accepts. Masking them would hide a real bug. Leaving 37 and 38 out would drop two of the Desk's five frames from its own check.
 - **Reverse:** put the 16 pt box and the inner border back, and mask the header cluster and the panel on 37 and 38 under this decision.
+
+## D218: Picks in FORK's cross-machine third slice (FORK manager, 2026-11-16). Provisional
+- A context-only fork of a box session onto that box goes through the relay: the host relays ForkSession to the box, which runs its own local context fork. The host records the fork only once the box's operation ends, under the id the box picked. Carry isn't used because it packs copies, and a context fork has none. **Reverse:** the box takes the host's id, which allows a journal on the host.
+- A remote archive whose link is lost fails the host's operation. The host then checks the box when its link comes back and writes its row if the box archived. **Reverse:** keep the operation open until the box answers.
+- Restoring a box archive on this Mac while the box is away takes the conversation from the host's mirror, and also does so when the link is lost during the copy step. The box's copy is released when its link is next up.
+- Not yet durable: the three follow-ups above are kept in memory, so a host restart in between loses them. **Reverse:** journal them in the store.
+- The host's archive row takes the files from the box's own summary, and the unpushed subjects and pushed sha from the pointers the box last reported.

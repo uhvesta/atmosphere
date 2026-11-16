@@ -118,6 +118,16 @@ fn keep(store: &Store, chosen: Chosen) -> Result<Option<String>, SetError> {
     Ok(generated)
 }
 
+/// The kept hash, or empty when no passphrase is set, for the policy copy.
+pub(super) fn verifier(store: &Store) -> Result<String, StoreError> {
+    Ok(store.setting(VERIFIER_KEY)?.map(|saved| saved.value).unwrap_or_default())
+}
+
+/// Keeps the host's hash on a machine, from its policy copy.
+pub(super) fn put_verifier(store: &Store, encoded: &str, revision: u64) -> Result<(), StoreError> {
+    store.put_setting(VERIFIER_KEY, encoded, revision)
+}
+
 fn hash(passphrase: &str) -> Result<String, SetError> {
     Verifier::hash(passphrase)
         .map(|verifier| verifier.encoded().to_owned())

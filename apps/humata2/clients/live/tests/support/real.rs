@@ -181,6 +181,8 @@ pub async fn start_comments() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn CommentsCl
     (world, daemon, comments)
 }
 
+// shared test support: not every test binary uses it
+#[allow(dead_code)]
 pub async fn start_desk() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn DeskClient>) {
     let (world, live) = start_live().await;
     let live = Arc::new(live);

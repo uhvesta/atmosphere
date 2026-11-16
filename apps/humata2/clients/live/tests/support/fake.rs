@@ -50,6 +50,8 @@ pub fn start_comments() -> (FakeWorld, Arc<dyn Daemon>, Arc<dyn CommentsClient>)
     (world, daemon, Arc::new(FakeComments::new()))
 }
 
+// shared test support: not every test binary uses it
+#[allow(dead_code)]
 pub fn start_desk() -> (FakeWorld, Arc<dyn Daemon>, Arc<dyn DeskClient>) {
     let workspace = Workspace {
         machines: vec![Machine {

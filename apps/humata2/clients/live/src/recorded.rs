@@ -182,7 +182,7 @@ mod tests {
     use std::convert::Infallible;
     use std::sync::Mutex;
 
-    use http_body_util::{BodyExt as _, Full};
+    use http_body_util::Full;
     use tonic::codegen::Bytes;
     use tower::{ServiceExt as _, service_fn};
 

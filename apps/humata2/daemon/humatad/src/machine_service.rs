@@ -92,6 +92,9 @@ pub(crate) struct Work {
     /// Skills sync, told each link that comes up or goes down (SK-3, SK-7);
     /// set once by `serve` before any link starts.
     pub(crate) skills: std::sync::OnceLock<Arc<crate::skills_service::SkillsHost>>,
+    /// The policy copy each link sends its machine (AW-8); set once by
+    /// `serve` before any link starts.
+    pub(crate) policy: std::sync::OnceLock<Arc<crate::away::PolicySource>>,
     /// Each machine's live link, for the services that relay calls to it
     /// (D139). Told at the same hook as `skills`.
     relay_links: Links,
@@ -268,6 +271,7 @@ impl Work {
             clock,
             plans: Mutex::new(HashMap::new()),
             skills: std::sync::OnceLock::new(),
+            policy: std::sync::OnceLock::new(),
             relay_links: Links::default(),
             reports: PeerReports::default(),
             probes: Mutex::new(HashMap::new()),
@@ -392,7 +396,8 @@ impl Work {
         });
         let report = Box::new(move |event: LinkEvent<'_>| tell_link(&work, &name, event));
         let key_file = self.machines.peer_key(machine);
-        let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report, sink));
+        let policy = self.policy.get().cloned();
+        let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report, sink, policy));
         if let Some(before) = lock(&self.links).insert(machine.to_owned(), task.abort_handle()) {
             before.abort();
         }
@@ -555,8 +560,7 @@ impl MachineSvc {
     }
 
     /// Storage is the user's page: agents and scripts are refused, and so is
-    /// a machine other than this one, since only this machine's own storage
-    /// is read here (the relay to other machines is not built).
+    /// another machine's storage, whose relay isn't built yet.
     fn storage_call(&self, caller: &Caller, machine: Option<&pb::MachineId>) -> Result<(), Status> {
         match caller {
             Caller::User(_) => {}
@@ -566,12 +570,11 @@ impl MachineSvc {
             }
         }
         match machine.map(|id| id.value.as_str()).filter(|name| !name.is_empty()) {
-            Some(name) if name != self.guard.machine() => Err(status::not_found(
-                pb::EntityKind::Machine,
-                name,
-                format!("storage of machine {name} can't be read from here: only this machine's own storage is served"),
-                format!("ask machine {name} itself, or use {} for this machine", self.guard.machine()),
-            )),
+            // Reading another machine's storage needs a relay to it, which
+            // isn't built yet: say so rather than claim the machine is missing.
+            Some(name) if name != self.guard.machine() => {
+                Err(status::not_built("humata.v1.MachineService storage of another machine"))
+            }
             _ => Ok(()),
         }
     }

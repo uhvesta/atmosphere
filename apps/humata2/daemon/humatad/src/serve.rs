@@ -360,6 +360,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let authenticate = authenticate.with_relay(relay.clone());
     let guard = Arc::new(Guard::new(&machine, role));
     crate::rules_kept::restore(&store, &guard).map_err(DaemonError::RulesKept)?;
+    // AW-8: a machine judges by the host's last copy, kept across restarts.
+    if role == pb::DaemonRole::Machine
+        && let Err(error) = crate::away::restore_policy_copy(&store, &guard)
+    {
+        crate::log::say!("humatad2: warning: {}", crate::status::chain(&error));
+    }
 
     let channels_folder = args.channels.clone().unwrap_or_else(|| root.join("Humata"));
     let agents = match &args.agents {
@@ -430,7 +436,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     );
     let feed = Arc::new(Feed::default());
     // AWAY: the peer link's PeerUplink, and whether the host is reachable.
-    let uplinks = Arc::new(crate::away::Uplinks::new(guard.host_link(), feed.clone()));
+    // AW-8: the policy copy, made here on the host, put in force on a machine.
+    let policy_copy = crate::away::PolicySource::new(guard.clone(), store.clone());
+    let uplinks = Arc::new(crate::away::Uplinks::new(guard.host_link(), feed.clone(), policy_copy.clone()));
     let tell = crate::session_service::Tell::new(feed.clone(), store.clone(), machine.clone());
     let last_start = restart::in_background(
         store.clone(),
@@ -649,6 +657,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             let skills = Arc::new(crate::skills_service::SkillsHost::new(&state, skills_home));
             // Set before any link starts, so the first link-up reaches it.
             let _ = work.skills.set(skills.clone());
+            // AW-8: each link sends its machine the policy copy.
+            let _ = work.policy.set(policy_copy.clone());
             // LD-11: forgetting a machine archives its sessions through the SessionService.
             work.forgetting.set(Arc::new(session_svc.clone()));
             // FM-8, FM-9: transfers reach other machines over their links.
