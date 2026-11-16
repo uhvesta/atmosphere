@@ -27,7 +27,7 @@ use humata2_store::TabRecord;
 pub use agent::launch_agent;
 pub use error::{ContainRefused, ReviveError};
 pub use reconcile::{
-    Reconciled, Revived, ShellRevived, reconcile, restart_agent, restart_shells, resume_agent,
+    Reconciled, Revived, ShellRevived, reconcile, restart_agent, restart_shell, restart_shells, resume_agent,
 };
 pub use report::RestartReports;
 

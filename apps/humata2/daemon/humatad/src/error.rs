@@ -124,6 +124,14 @@ pub(crate) enum DaemonError {
         source: std::io::Error,
     },
 
+    #[error(
+        "couldn't start humatad2 again after the stop or start: {source}"
+    )]
+    Relaunch {
+        #[source]
+        source: crate::stop::exec::ExecError,
+    },
+
     #[error("the gRPC server stopped")]
     Serve {
         #[source]

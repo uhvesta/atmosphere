@@ -14,7 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use hmac::{Hmac, KeyInit, Mac};
 use humata2_grpc::humata::v1 as pb;
@@ -57,8 +57,15 @@ fn write_key(dir: &Path) {
 
 /// A role-machine daemon of `build` in `dir`, enrolled with the test's key.
 pub async fn machine_in(build: Build, dir: TempDir) -> Daemon {
+    machine_with(build, dir, &[]).await
+}
+
+/// [`machine_in`] with more `serve` arguments.
+pub async fn machine_with(build: Build, dir: TempDir, extra: &[&str]) -> Daemon {
     write_key(dir.path());
-    Daemon::start_with(build, dir, &["--role", "machine"]).await
+    let mut args = vec!["--role", "machine"];
+    args.extend_from_slice(extra);
+    Daemon::start_with(build, dir, &args).await
 }
 
 /// The hash the host keeps of [`PASSPHRASE`].
@@ -69,15 +76,44 @@ pub fn verifier() -> String {
         .to_owned()
 }
 
-/// Waits until the machine's view of its host is `want`.
+/// Waits until the machine's view of its host is `want`. The machine's feed
+/// tells of each change in its link (HostLinkChanged, to the user only), so
+/// the feed is opened first, the view is read once, and the view is read
+/// again each time the feed tells of a change to `want`. Nothing sleeps.
 pub async fn host_reachable_becomes(daemon: &Daemon, want: bool) {
-    let deadline = Instant::now() + MESSAGE_WAIT;
-    while server_info(daemon).await.host_reachable != want {
-        assert!(
-            Instant::now() < deadline,
-            "the machine's view of its host never changed"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
+    let mut feed = pb::event_service_client::EventServiceClient::new(daemon.channel().await)
+        .subscribe(pb::SubscribeRequest {
+            topics: vec![pb::Topic::Machines as i32],
+            ..Default::default()
+        })
+        .await
+        .expect("the machine's event feed opens")
+        .into_inner();
+    if server_info(daemon).await.host_reachable == want {
+        return;
+    }
+    let deadline = tokio::time::Instant::now() + MESSAGE_WAIT;
+    loop {
+        match tokio::time::timeout_at(deadline, feed.message()).await {
+            Err(_) => panic!(
+                "the machine's view of its host never became {want} within {MESSAGE_WAIT:?}"
+            ),
+            Ok(Err(status)) => panic!(
+                "the machine's event feed failed ({status:?}) before its view of its host became {want}"
+            ),
+            Ok(Ok(None)) => panic!(
+                "the machine's event feed ended before its view of its host became {want}"
+            ),
+            Ok(Ok(Some(event))) => {
+                let link_changed = matches!(
+                    &event.payload,
+                    Some(pb::event::Payload::HostLink(link)) if link.reachable == want
+                );
+                if link_changed && server_info(daemon).await.host_reachable == want {
+                    return;
+                }
+            }
+        }
     }
 }
 
@@ -277,6 +313,10 @@ pub struct Terminal {
     keyboard: File,
     /// The terminal's own end, to drop what was typed but never read.
     screen: File,
+    /// What the screen showed and no wait has taken yet.
+    shown: Vec<u8>,
+    /// The screen's output as the reader thread passes it on, as it comes.
+    screen_output: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
     home: TempDir,
     runs: usize,
 }
@@ -296,10 +336,20 @@ impl Terminal {
         .unwrap();
         let screen = File::from(screen);
         let mut output = File::from(rustix::io::fcntl_dupfd_cloexec(&pty, 0).unwrap());
-        // Ends when the last screen end closes (the read fails or is empty).
+        let (screen_sender, screen_output) = tokio::sync::mpsc::unbounded_channel();
+        // Passes on what the screen shows, as it comes, so a wait can read
+        // it. Keeps reading after the test has stopped waiting, so the shell
+        // never blocks. Ends when the last screen end closes.
         std::thread::spawn(move || {
-            let mut shown = [0_u8; 4096];
-            while matches!(output.read(&mut shown), Ok(read) if read > 0) {}
+            let mut bytes = [0_u8; 4096];
+            loop {
+                match output.read(&mut bytes) {
+                    Ok(read) if read > 0 => {
+                        let _ = screen_sender.send(bytes[..read].to_vec());
+                    }
+                    _ => return,
+                }
+            }
         });
         let home = tempfile::tempdir().unwrap();
         let mut command = Command::new("/bin/sh");
@@ -328,6 +378,8 @@ impl Terminal {
             commands,
             keyboard: File::from(pty),
             screen,
+            shown: Vec::new(),
+            screen_output,
             home,
             runs: 0,
         }
@@ -337,21 +389,67 @@ impl Terminal {
     /// at the terminal, and returns its exit code. Whatever was typed but
     /// not read is dropped afterwards, so it can't answer a later prompt.
     pub async fn exit_code(&mut self, line: &str, typed: Option<&str>) -> i32 {
+        let run = self.start(line);
+        if let Some(typed) = typed {
+            self.type_raw(format!("{typed}\n").as_bytes());
+        }
+        self.finished(run).await
+    }
+
+    /// Starts `line` as [`Self::exit_code`] runs it but returns at once with
+    /// its number, for a command that reads the keyboard while it runs
+    /// (`humata attach`): [`Self::type_raw`] types at it, and
+    /// [`Self::finished`] waits for its exit code. The shell prints a done
+    /// marker to the screen after it has written the exit code.
+    pub fn start(&mut self, line: &str) -> usize {
         let run = self.runs;
         self.runs += 1;
         writeln!(
             self.commands,
-            "{line}; echo $? > code{run}.partial && mv code{run}.partial code{run}"
+            "{line}; echo $? > code{run}.partial && mv code{run}.partial code{run}; echo '<<done{run}>>'"
         )
         .unwrap();
         self.commands.flush().unwrap();
-        if let Some(typed) = typed {
-            writeln!(self.keyboard, "{typed}").unwrap();
-            self.keyboard.flush().unwrap();
-        }
-        let code = read_when_written(&self.home.path().join(format!("code{run}"))).await;
+        run
+    }
+
+    /// Types `bytes` at the terminal as they are, with no newline added.
+    pub fn type_raw(&mut self, bytes: &[u8]) {
+        self.keyboard.write_all(bytes).unwrap();
+        self.keyboard.flush().unwrap();
+    }
+
+    /// The exit code of the command [`Self::start`] numbered `run`, read
+    /// once its done marker has come to the screen. Whatever was typed but
+    /// not read is dropped, as [`Self::exit_code`] does.
+    pub async fn finished(&mut self, run: usize) -> i32 {
+        self.wait_for_screen(&format!("<<done{run}>>")).await;
+        let code = std::fs::read_to_string(self.home.path().join(format!("code{run}")))
+            .unwrap_or_else(|error| panic!("the exit code of command {run} was not kept: {error}"));
         rustix::termios::tcflush(&self.screen, QueueSelector::IFlush).unwrap();
         code.trim().parse().unwrap()
+    }
+
+    /// Waits until `text` has come to the screen, within [`WAIT`]. What came
+    /// before it is dropped, so a later wait only sees what follows.
+    pub async fn wait_for_screen(&mut self, text: &str) {
+        let needle = text.as_bytes();
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let found = self
+                .shown
+                .windows(needle.len())
+                .position(|window| window == needle);
+            if let Some(at) = found {
+                self.shown.drain(..at + needle.len());
+                return;
+            }
+            match tokio::time::timeout_at(deadline, self.screen_output.recv()).await {
+                Ok(Some(bytes)) => self.shown.extend_from_slice(&bytes),
+                Ok(None) => panic!("the terminal's screen closed before {text:?} came"),
+                Err(_) => panic!("{text:?} never came to the terminal's screen within {WAIT:?}"),
+            }
+        }
     }
 
     /// `humata login` as a person runs it, typing `passphrase` at its
@@ -373,17 +471,5 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = self.shell.kill();
         let _ = self.shell.wait();
-    }
-}
-
-pub async fn read_when_written(path: &Path) -> String {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        match std::fs::read_to_string(path) {
-            Ok(text) if !text.is_empty() => return text,
-            _ => {}
-        }
-        assert!(Instant::now() < deadline, "{} was never written", path.display());
-        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }

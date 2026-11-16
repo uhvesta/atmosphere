@@ -183,7 +183,7 @@ pub struct Remote {
 }
 
 impl Remote {
-    async fn start(name: &'static str, links: &Path, template: &str) -> Self {
+    async fn start(name: &'static str, links: &Path, template: &str, build: Build) -> Self {
         let machine = FakeMachine::new();
         // The machine's `~/.humata2` is its daemon's folder: the add writes
         // the enrollment key into the state folder the daemon uses, and the
@@ -199,7 +199,7 @@ impl Remote {
         let control = links.join(name);
         std::fs::create_dir_all(&control).unwrap();
         let mut daemon = Daemon::start_with_env(
-            Build::Release,
+            build,
             dir,
             &Self::serve_args(&channels, &agents, template)
                 .iter()
@@ -232,6 +232,12 @@ impl Remote {
             "--remote-template".to_owned(),
             template.to_owned(),
         ]
+    }
+
+    /// The machine's own daemon: its socket and its folder, for a terminal
+    /// on the machine to talk to.
+    pub fn daemon(&self) -> &Daemon {
+        &self.daemon
     }
 
     /// The machine's home folder.
@@ -298,6 +304,28 @@ impl Remote {
         self.down = false;
     }
 
+    /// Waits until this machine's daemon ends by itself, at a stop point
+    /// its start's environment named.
+    pub async fn stopped(&mut self) {
+        self.daemon.stopped(LONG).await;
+        self.down = true;
+    }
+
+    /// [`Self::cut`] when a link left its group and the group still runs;
+    /// nothing otherwise.
+    fn cut_if_linked(&self) {
+        let file = self.control.join("link");
+        let group = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .and_then(Pid::from_raw);
+        if let Some(group) = group {
+            // A group that ended by itself is what was wanted.
+            let _ = kill_process_group(group, Signal::KILL);
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+
     /// Ends this machine's link at once, as a dropped connection does:
     /// every process of it, and nothing else. The link command runs in a
     /// process group of its own, whose id this rig's `ssh` left in the
@@ -344,6 +372,18 @@ impl Rig {
     /// A host and one machine per name, added (the host key confirmed) and
     /// linked, with the git remotes `repos` (`owner/name`) made.
     pub async fn start(boxes: &[&'static str], repos: &[(&str, &str)]) -> Self {
+        Self::start_with(boxes, repos, Build::Release).await
+    }
+
+    /// As [`Rig::start`], with each machine's daemon the `--admin` test
+    /// daemon: the test reads a machine's own state (its feed, its server
+    /// info) as the user, and makes an agent's calls with the session's
+    /// token from the test process, which stands in for the tab's shell.
+    pub async fn start_seen(boxes: &[&'static str], repos: &[(&str, &str)]) -> Self {
+        Self::start_with(boxes, repos, Build::Admin).await
+    }
+
+    async fn start_with(boxes: &[&'static str], repos: &[(&str, &str)], build: Build) -> Self {
         let dir = folder();
         let world = World::new(dir.path());
         for (owner, name) in repos {
@@ -353,7 +393,7 @@ impl Rig {
         let links = dir.path().join("links");
         let mut remotes = Vec::new();
         for &name in boxes {
-            remotes.push(Remote::start(name, &links, &template).await);
+            remotes.push(Remote::start(name, &links, &template, build).await);
         }
         let machines: String = remotes
             .iter()
@@ -629,6 +669,50 @@ impl Rig {
         for name in names {
             self.linked(name).await;
         }
+    }
+
+    /// Ends box `name`'s daemon (if it still runs), waits until the host
+    /// shows the machine offline, starts the daemon again on the same state
+    /// with `env` for this start only, and returns once the host shows its
+    /// link up. With `HUMATA2_STOP_AT`, `HUMATA2_HOLD_AT`,
+    /// `HUMATA2_POWER_CUT_ROOTS` or `HUMATA2_FAULT_TRACE` in `env`, the box
+    /// runs the faults daemon, without `--admin` (D240); otherwise the
+    /// daemon as shipped. Nothing sleeps: the host's feed wakes each wait.
+    pub async fn restart_box_env(&mut self, name: &str, env: &[(&str, &str)]) {
+        self.the_mut(name).kill();
+        self.link_ended(name).await;
+        self.the_mut(name).relaunch(env).await;
+        self.link_back(name).await;
+    }
+
+    /// A machine whose daemon ended has its link's process still up for a
+    /// while: the host would show it online, and a call made then would fail
+    /// as offline. This ends the link, as the dropped connection of a lost
+    /// machine does (a link already gone is fine), keeps the host's dials in
+    /// the fake `ssh` until [`Self::link_back`], and returns once the host
+    /// shows it offline.
+    pub async fn link_ended(&self, name: &str) -> pb::Machine {
+        let remote = self.the(name);
+        remote.machine.set("hang");
+        remote.cut_if_linked();
+        self.machine_until(name, "offline", |machine| {
+            machine.reachability == pb::Reachability::Offline as i32
+        })
+        .await
+    }
+
+    /// Waits until box `name`'s daemon ends by itself, at a stop point its
+    /// last start named, and until the host shows the machine offline.
+    pub async fn box_stopped(&mut self, name: &str) {
+        self.the_mut(name).stopped().await;
+        self.link_ended(name).await;
+    }
+
+    /// Lets the host's dials reach `name` again, as [`Self::link_back`]
+    /// does, without waiting for the link: for a host that is about to stop
+    /// at a point once the link is up.
+    pub fn dials_through(&self, name: &str) {
+        self.the(name).machine.clear("hang");
     }
 
     /// A channel of `repos` (`owner/name`) on the machines `on`, created

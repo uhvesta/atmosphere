@@ -2001,3 +2001,214 @@ SEC-6 containment isn't built (`contained: false`), so a context-only fork's Bas
 
 ## D243: The PER-28 power-cut suite runs a host and one box on the fault build against an inventory (SAFE manager; picked by a Fable 5.2 high subagent, 2026-11-16). Provisional
 - `tests/power_cut_{host,machine,both}.rs` over `tests/common/power_cut.rs`, in RIG_TESTS (large), sharded. Host + one box on the faults build, POWER_CUT_ROOTS on each side's state and holders. Setup puts every PER-25 item on both sides; each operation (start, local fork, remote fork, move, remote archive+restore, comment send, transfer) runs once traced, then once per first armed hit of each traced name. Daemons die before holders; waits on exits, no sleeps. Check: an Inventory through the public API: untouched items equal, touched items before-or-finished, anything else named in `restart.json` or `operations.jsonl`; comments typed once; terminal output a gap-free prefix.
+
+## D260: "Stop all sessions…" on a machine: the words, where it lives, the CLI and frames 72–76 (STOP manager; picked by a Fable 5.2 high subagent, 2026-11-16). Provisional
+- **Words:** the action is **Stop all sessions…**, the state **Sessions stopped**, the way back **Start sessions**. Provider VM power keeps "stopped" / **Start** (MP-21, HO-3, golden 28's cloud-vm-3), so the two never read alike. A provider VM that is off and also Humata-stopped reads as today, plus a page line "Sessions were stopped by you at 14:02 and stay stopped after the VM starts".
+- **UI:** the last item, red, after a separator, of the machine page's ⋯ menu and of the sidebar machine row's context menu (frames 59 and 28 unchanged). No Hosts-row Stop, no app-wide stop (follow-up if wanted). **Start sessions** is in the page's Stopped banner, the Hosts row's one action, and the sidebar context menu. The confirm names what ends (agents, shells, 2 s to quit then killed), what is kept, that agents can't type, call Humata or be answered and their open requests end, and that it stays stopped across reboots; for This Mac also that other machines keep running and operations in flight are cut and finished or undone at Start. Buttons Cancel / red **Stop all sessions**; the dialog is the in-app presence (SEC-10). Start has a lighter confirm.
+- **CLI:** `humata host stop|start <machine>` from the host (`machine` a visible alias of `host`); `humata stop|start` on a machine means that machine. `humata provider start|stop` unchanged; each help names the other. Stop prints what ended and how to start; Start prints the restart report's lines.
+- **Frames** (new `desktop/tests/design/stop.rs`, appended rows only, no existing golden changes): 72 stop-confirm over frame 59; 73 machine-sessions-stopped (banner, grey session rows "Stopped", New session disabled "Start sessions first"); 74 hosts-sessions-stopped (frame 28 with devbox-1 "Sessions stopped" + Start sessions; sidebar square glyph, dimmed sessions); 75 start-confirm; 76 stop-not-delivered (orange banner, Cancel stop).
+- **Undo:** rename the strings; drop the menu items, commands and frames 72–76.
+
+## D261: A stop covers one machine, is a file on that machine, and is a restart into a sweep (STOP manager; Fable 5.2 high, 2026-11-16). Provisional
+- **Scope:** one machine's own sessions. Stopping This Mac leaves boxes running (AW-1) and the host keeps linking them.
+- **Record:** `<data>/stop/this.json` via humata2_durable (temp, fsync, rename, sync_dir): `{stop_id, stopped_at_unix_ms, by {kind user|agent|terminal, via app|cli|ssh|direct, machine, session?}, reason?, ended? {agents, shells, killed, left}}`. A file, not a store row, so a PER-31 restore from an older copy can't bring wild agents back, and it is read before the store opens. The host keeps `<data>/stop/<machine-id>.json` (same shape + `delivered`), removed on remove/forget, learned from the stop's reply and a new `HelloResponse.sessions_stopped`; clients get `Machine.sessions_stopped`, read from the host's copy so it shows while the link is down. No new Reachability value.
+- **Daemon stays up by re-exec:** Stop writes the record, replies, re-execs humatad2; a boot with the record skips every start-time recovery and runs the sweep. It serves the user's reads, archive, delete, rename, boards, Settings, Start and the host's links; it refuses every Agent and Script caller (`Refusal::MachineStopped` in `guard::judge`) and launches, resumes, attach and typing.
+- **Sweep, in order:** record written and synced → reply → re-exec → SIGTERM each holder found by its pid file (the holder's own SIGHUP, 2 s, SIGKILL; scrollback synced) → withdraw the Inbox (D264) → wait up to 5 s, then SIGKILL the holder and its program group → check no holder pid or program group is alive → write `ended`. Agents stay `Running{holder_pid}` (never `Stopped`) so Start revives them. No Ctrl-C step: a stop is a shutdown. Fault points `stop.record.written`, `stop.exec`, `stop.holders.signalled`, `stop.inbox.withdrawn`, `stop.holders.gone`, `stop.record.settled`; a cut before the record syncs leaves everything running, any later cut reruns the idempotent sweep at the next boot.
+- **Known limit:** a process that left its group with `setsid` can't be found on macOS; `ended.left` and the docs say so.
+- **Undo:** an in-process stop (needs an operation registry to cancel) and a settings key.
+
+## D262: Stop reaches a box by racing the peer link and a one-off SSH, idempotent by stop_id (STOP manager; Fable 5.2 high, 2026-11-16). Provisional
+- Peer RPC `StopSessions{stop_id, by}` with a 3 s deadline races a one-off SSH `script(...)` (new `Purpose::StopSessions`; its own connection, `ControlPath=none`) running `humatad2 stop --id … --by …`. On the box, `humatad2 stop` asks the local socket; with no answer in 3 s it writes the record itself, SIGKILLs the daemon (the service manager restarts it into the sweep) and SIGTERMs the holders. `humata stop` on the box falls back to it.
+- Neither reaches: the host keeps its copy with `delivered: false`, shows frame 76, and sends the stop first thing at the next link-up; Cancel stop or Start clears it.
+- **Undo:** drop the deferred delivery.
+
+## D263: Who may stop and start: a new Never-by-default capability, user stops start only by the user (STOP manager; Fable 5.2 high, 2026-11-16). Provisional
+- `MachineActionKind::{StopSessions, StartSessions}` → new `Capability::MachineSessionsStop`, tier NeverByDefault; IN-17 row "Stop or start all sessions on a machine | Never"; never low-risk while away. Provider Stop stays `MachineProvision`.
+- A stop the user made is started only by the user, whatever the rule. The user needs presence for both (app: the confirm; CLI: `humata login`).
+- Exception, Stop only: `humata stop` on the machine itself is accepted without a login when the caller carries no agent or script credential and its process is outside every Humata session (peer pid + `getsid`, as `terminal_session.rs` does). Start never has a no-login or daemon-down path.
+- An agent's `humata stop` is judged by the rule: Never denied at once (IN-18); Allow stops its box, itself included, recorded as `by.kind = agent`.
+- **Risk:** an uncontained agent that drops its credential and leaves its session with `setsid` can stop its machine, never start it; nothing is lost and the record says how.
+- **Undo:** require a login for every stop.
+
+## D264: Requests end as "stopped by you", and what a stopped machine still does (STOP manager; Fable 5.2 high, 2026-11-16). Provisional
+- `WITHDRAW_REASON_MACHINE_STOPPED = 8`. The sweep withdraws every pending request of the machine's sessions; on a box through the journaled start-up path (D226), so the host's mirror follows by replay; when the host learns a box is stopped it withdraws what it holds for that machine's sessions. The card reads "Stopped by you · devbox-1, 14:02" (or from a terminal on devbox-1, or by <session>'s agent) from the record's `by`. `Event::RequestGone` unchanged. D225's gap (Inbox write and journal append not one transaction) applies.
+- **While stopped:** allowed: the page and sessions, conversations, files, diffs, boards, archive, delete, rename, remove/forget the machine. Refused with "Start sessions on devbox-1 first": new session, fork, move to or from it, resume, rebuild, typing, attach, Open a shell; review comments stay queued. Sessions Start would bring back report new `SESSION_STATUS_MACHINE_STOPPED = 12`, sidebar "Stopped", session header "devbox-1's sessions are stopped" + Start sessions.
+
+## D265: Start is the normal bring-back, and its report names the stop; a reboot while stopped writes none (STOP manager; Fable 5.2 high, 2026-11-16). Provisional
+- Start renames `this.json` to `this.starting.json` and re-execs; the boot runs the normal `bring_back`, names the stop, then removes the file. `restart.json` gains optional `after_stop {stop_id, stopped_at_unix_ms, stopped_by, reason, started_by, ended}`; `pb::LastStart` gains `after_stop = 7` (`AfterStop`) and `sessions_stopped = 8`. Frame 47's line: "devbox-1 started at 14:40 after your stop".
+- A reboot while stopped writes no report (a report would list every session as failed) and sets `LastStart{started_at, sessions_stopped}` so waiters don't hang; PER-29 gets that sentence.
+- Fault points `start.record.renamed`, `start.exec`, `start.report.written`, `start.record.removed`: a cut before the rename leaves it stopped; after it, the next boot brings back again and still names the stop. `operations.jsonl` unchanged.
+- **Unverified:** the app reconnecting by itself after its daemon re-execs; re-exec from a multi-threaded tokio process (needs a test); the macOS sandbox denying a contained agent signals and writes to `<data>/stop/`; saved shell scrollback readable with no holder.
+
+## D227: AW-7 rows 2, 3 and 6 on a machine: forwarded board calls, journaled board writes, the last copy, and holding for the host (AWAY manager; picked by a Fable 5.2 high subagent, 2026-11-16). Provisional
+- **Problem:** on a machine, an agent's board calls read and write the machine's own store whether the host is linked or not (nothing uses `ForwardedCall`; DECISIONS line 1033 lists it as AWAY's debt). So AW-7 row 2 (reads from the last copy), row 3 (allowed writes journaled, SL-5–SL-8) and row 6 (Wait holds calls that need the host) have no host answer to copy and no host write to replay.
+0. **A machine forwards its agents' board calls to the host.** One table, `away/registry.rs`, lists Read rows (`BoardService/ListItems`, `GetItem`, `GetItemHistory`), Write rows (`CreateItem`, `UpdateItem`, `MoveItem`, `DeleteItem`, as journal operations `board.item_create`, `board.item_update`, `board.item_move`, `board.item_delete`) and Held rows (row 6). For an agent caller on a machine, `BoardSvc` no longer touches the local store: while reachable it sends `ForwardedCall` (agent principal, method, request bytes, same idempotency key) up and answers with the host's `ForwardedResult`. A drop mid-call is `host_unreachable`, retryable. The host takes `MachineToHost::Call` off before the reports sink, checks the session is one it places on that machine, and runs the existing `BoardSvc` functions as that agent under the host's rules (TP-8); replay uses the same dispatcher. Cut: `ForwardedResult.pending` (an Ask comes back `needs_approval`); `humata` board commands by a machine-logged-in user; topology, view and comment methods; see D268.
+1. **Row 6: the hold lives in the handler and is not durable.** The Guard marks a `WaitForHost` refusal with a private status metadata key; `Guard::held(caller, run)` runs the handler body, and on that mark waits for the link, strips the mark and runs it again, so it is judged anew. Skip's refusal has no mark and fails at once. Held: `InboxService/RequestAccess` (the wait is outside the Inbox lock), reads or copies from another machine, start or fork elsewhere, a note elsewhere, push. Bound: the call's `grpc-timeout`, else 40 s for an agent (under MCP's 45 s wait) and none for a user at a terminal. Past the bound: `host_unreachable`, retryable, nothing kept. Cut: surviving a restart or the client leaving; waiting for a fresh copy before judging again. SPEC row 6 away cell: "waits until the host is back, then is judged again and done or asked; a call that outlasts its wait is refused saying the host is away, and can be repeated. Under Skip denied saying the host is away; never low-risk".
+2. **Row 3: board writes are journaled; comment and view drafts are refused.** `JournalEntry` unchanged: `operation` as above, `request` the request bytes as received, `principal` the session, `policy_revision` the held copy's, `base_revision` the request's `expected_revision` (unset = later write wins, SL-7). Reply `delivery = JOURNALED` with a `JournalPosition`, sent only after a fallible append commits. Journaled only: creates on its own session board or the channel board, and edit, move or delete of items in `PolicySnapshot.owned_items` owned by the caller (the host fills it; a change bumps the policy revision); any other item is `host_unreachable`. Host replay dispatches by prefix (`inbox.` unchanged, `board.` to board replay): decode and principal checks as D226; re-check as that agent under the host's rules now (AW-9: an Ask or refusal is not applied, kept lost in the item's history plus one line in the agent's terminal); apply per field; the mark moves in the same transaction as the board write. SL-6: a replayed value over a field changed since its base wins and the host's value is kept as a `lost` entry (GRPC §9.5.2). SL-8: the store's existing tombstone rules. Cut: provisional ids (a journaled create has no id until replay); Asks on other sessions' items while away; an away read showing its own journaled writes; comment and view drafts while away. SPEC: AW-7 row 3 drops "comment and view drafts"; a new row "Comment and view drafts | done | refused, saying the host is away; nothing is kept"; SL-5 "(board items, questions to the user)" and "A journaled new item has no id until the host replays it."; SL-6 "the replayed write wins, as the later one to reach the host"; GRPC §9.6 and the MCP provisional-result wording go.
+3. **Row 2: the last copy is the forwarded read responses.** A machine store table keyed (session, method, sha256 of the request) holds the response bytes and when the host answered; 64 per session, oldest dropped, none over 256 KiB, rows go with the session, kept across restarts. Away, the Guard judges first (Never isn't served); a hit returns the bytes with response header `humata-stale-as-of` (RFC 3339), which the MCP bridge maps to `stale_as_of`; a miss is `host_unreachable`. `GetChannel` and `ListSessions` answer from the machine's own records, with the header set to when the link dropped. Cut: prefetch on link-up. SPEC row 2 away cell: "answered from the last copy, marked with the time it was made; a read the machine holds no copy of is refused, saying the host is away".
+- **Order:** row 6; forwarding; host board replay (before any machine journals a board write, since the host rejects and acks unknown operations and the machine then deletes them); machine board journal; last copy; then the AW-9 terminal line and the approved-Ask slice.
+- **Reverse:** drop the registry rows (board calls go back to the local store); drop the cache table; drop the hold helper (the 40 s is one constant).
+
+## D266: AWAY closes with Contain agents enforced; the record field and Info card wording move to POLISH (picked by an Opus 5.5 high subagent while Fable is rate-limited, 2026-11-16). Provisional
+- **Problem:** AWAY.md T8 listed four leftovers: `Session.contained`, the contain setting reaching machines, `<session>/.humata/` not git-excluded, and the Info card wording.
+- **Pick:** the copy to machines (80afbeae: PolicySnapshot fields 9/10, applied in `policy_copy.rs`) and the git-exclude (ce242d25: `contain/src/git_exclude.rs`, called at every contained launch) are done. `Session.contained` and the Info card wording move to POLISH, V1 at the latest: the record decides nothing (each launch reads the setting again, and a launch that can't be contained stays stopped).
+- **Before AWAY closes:** a machine that never received a copy reads Contain as off, so a test must show the copy arrives before the first relayed start.
+- **Why not fail open or leak:** the `.humata/` copy can hold secrets (`.claude.json`, `settings.json` env); it sits beside the repo worktrees, not in one, and is excluded besides.
+- **Reverse:** pull the two items back into AWAY.
+
+## D267: AW-9: a write refused at replay shows as one line under the agent tab, kept by the host (AWAY manager; picked by an Opus 5.5 high subagent while Fable is rate-limited, 2026-11-16). Provisional
+
+1. Carrier: nothing goes to the machine; no peer.proto change. The host judges at replay (board_service/replay.rs), holds the session record, and every desktop/web viewer reaches the terminal through the host. An ack field would lose the line if the link dropped between mark commit and ack.
+   Host-facing proto in api/proto/humata/v1/sessions.proto:
+     // AW-9: board writes this session's agent made while the host was away
+     // that the host's rules no longer allowed at replay, from the latest
+     // link-up that left any out. Unset when none has.
+     message AwayWritesLeftOut {
+       uint32 count = 1;
+       repeated BoardItemId items = 2;      // items whose history keeps them as lost (first few)
+       repeated string not_made = 3;        // titles of refused creates (first few); their only trace
+       bool refused = 4;                    // true if any now refused (Never); false if all now Ask
+       google.protobuf.Timestamp at = 5;
+     }
+     // in message Session (verify 31 is the last used field):
+     AwayWritesLeftOut away_left_out = 32;
+
+2. Display: the UI's existing terminal notice slot. ui/src/terminals.rs Terminals::body(.., notice, ..) draws under the last row, outside the vt grid. ui/src/session_tabs.rs (~L674-705) puts the PER-17 reboot line there for tab 0 from Session.interrupted_at (ui/src/resume_failed.rs reboot_line). New line goes in the same column, tab 0 only. Never written to pty input or output.
+   SPEC AW-9 new wording: "A write a tightened rule no longer allows is not applied: an edit is kept in the item's history as lost, a new item is not made, and the agent's terminal shows one line under its output saying how many of its writes weren't applied and why, until a later reconnect replaces it. The line is Humata's, not the agent's: nothing is typed into the agent."
+
+3. Text (UI formats from fields, one sentence; stricter wording wins when mixed):
+   refused: "2 board changes this agent made while the host was away weren't applied because the channel's rules now refuse them (kept as lost in PAY-12's history); allow them in Agent access, then ask the agent to make them again."
+   all Ask: "1 board change this agent made while the host was away wasn't applied because the channel's rule now says Ask me (kept as lost in PAY-12's history); ask the agent to make it again and you'll be asked."
+   creates only: parenthetical becomes "(new item “Fix login” wasn't made)". Several items: "PAY-12 and 2 more".
+
+4. Persistence: host store, written in the SAME transaction as the machine's applied-through mark (edits: Store::replay_board_entry in daemon/store/src/machine_journal.rs; refused creates: the Stopped::Rejected branch's apply_machine_journal(machine, seq, None) needs a variant that also writes the summary). Redelivered seq hits the mark check, so no double count. A write from a new link-up replaces the summary; same link-up adds. peer_client.rs Up records when its link came up and passes it through HostSide::replay. Survives app and host restarts. After writing, publish a session Updated feed event.
+
+5. Tests:
+   - replay.rs units (host(), rule(), create(), retitle()): Ask on an edit -> item unchanged, history lost, summary count 1 items [PAY-1] refused false; Never on a create -> no item, not_made has title, refused true; same seq twice -> count unchanged; second link-up batch replaces; NoItem/undecodable/allowed -> no summary.
+   - store test in machine_journal.rs: summary + mark land together, survive reopen.
+   - integration on tests/common/remote_rig.rs (real host): session on a box, link_lost, agent own-board edit JOURNALED (add an agent-call path with the session token header like away_machine.rs as_agent if missing), host sets OwnBoardWrite Never, link_back, wait_session until away_left_out.count == 1, item revision unchanged + history lost, restart_host -> summary still there, agent tab got no input.
+   - clients/live/src/map.rs mapping test; UI headless test: tab 0 shows the line, shell tabs don't.
+
+Record only Ask, Refused, Never rejections; not NoItem, Archived, Unusable, Undecodable.
+Risks to log: a viewer attached directly on the machine, or host-relayed `humata attach`, doesn't see the line (follow-up: a TerminalNotice on attach open); the agent isn't told (deliberate, learns on next read); refused creates have no history (line is the only trace); no dismiss (like the reboot line); D226's refused Always-allow grant line can reuse this later as grants_not_kept.
+
+## D268: An agent's board write the rules ask about, from a machine: linked, the host holds the request; away, the machine holds it and journals the approved write (AWAY manager; picked by an Opus 5.5 high subagent while Fable is rate-limited, 2026-11-16). Provisional
+
+### Today
+- Linked: a forwarded write runs `BoardSvc::write` on the host (board_service/replay.rs `run_forwarded`). An Ask makes `inbox.defer_board` on the HOST Inbox; the error comes back as ForwardedResult.error kind `approval_pending`; MCP turns it into pending{request_id} and calls WaitForAnswer on the MACHINE daemon, which doesn't hold the id -> not_found. That is the only break.
+- Away: journaled.rs refuses AwayCall::Asks as host_unreachable.
+- BUG: replay.rs `allowed()` treats any host Checked::Ask as Rejection::Asks, so writes journaled under "Allow low-risk kinds" are always left out at replay and the D267 line wrongly says "rule now says Ask me".
+
+### Picks
+1. Linked: the request lives on the host; approval runs the write there (deferred.rs unchanged).
+   - When WaitForAnswer or WithdrawRequest names an id the machine Inbox doesn't hold and the uplink is open, the machine forwards it as a unary ForwardedCall (new registry rows /humata.v1.InboxService/WaitForAnswer and /WithdrawRequest; never stored in the last-copy table).
+   - The host runs its own wait_for_answer as that agent (`sees` checks the session), skips keepalives, returns the final WaitResponse bytes (approved: WriteItemResponse delivery=APPLIED).
+   - The machine sends its own keepalives every 15 s meanwhile; if the agent leaves, the stream drops and `Leaving` sends ForwardedCallCancel.
+   - Link drop mid-wait: host_unreachable, retryable; fix says call inbox_wait again with the same request_id; an approval on the host still makes the change (TP-13).
+   - The machine keeps an in-memory set of ids that came back approval_pending from the host; while away a wait/withdraw on one is host_unreachable; any other unknown id stays not_found.
+   - Not done: ForwardedResult.pending (reserve field 4); approved_request on ForwardedCall.
+2. Replay counts low-risk as the rules are now (bug fix, no proto change): in replay.rs `allowed()`, a host Checked::Ask is allowed when the channel's While I'm away rule is AllowLowRisk listing that capability now (`may_be_low_risk`); otherwise left out as Asks.
+3. Away (writes the machine may journal: own board, channel-board add, its own items; under Wait): the request lives in the machine Inbox; approval journals the write with approved_request.
+   - journaled(): `proved` check before the Ask branch; unproved stays host_unreachable.
+   - AwayCall::Asks carries the AccessRequest; handler calls defer_board on the machine Inbox (journaled per D225, mirrored per D226).
+   - Card from the request alone: new-item preview for creates; for edits item key + new values, `before` empty (host BD-15 fills it at display time).
+   - Run closure (`FnOnce(String)` takes the request id; call sites board_service.rs, channel_service.rs x2, deferred.rs test) appends the board entry with approved_request=<id>, replies JOURNALED with its position, journals even if the link is back. inbox.answer is appended at commit before start(), so the approval has the lower seq.
+   - Deny/withdraw journals nothing.
+4. Replay of an entry with approved_request: Allow -> apply. Ask -> apply only when the host mirror of that id is held by this machine (journal.machine), made by the entry's session, Approved, and its preview names the same item (or new-item card for a create); else left out as Asks with a log line. Never -> left out Refused (IN-21, deny_if_never). Lookup via a new async Inbox::approved_on(machine, id, session) before `blocking`.
+5. Build 1+2 first (no proto field add). 3+4 if lanes allow before AWAY closes; else POLISH, with the away refusal reworded: "...needs the user's approval under this channel's rules, and a board change can only be approved while the Mac is reachable", fix "repeat once the Mac is back, or set the rule to Allow, or list it as low-risk under While I'm away". Proto field 9 only with 3-4.
+
+### Proto
+- peer.proto JournalEntry (3-4 only): `// BD-15, AW-9: the request the user approved for this write, held by this machine. The host applies the entry under an Ask rule only when its mirror of that request is Approved, made by this session and about this item. It never overrides Never.` `RequestId approved_request = 9;`
+- ForwardedResult: replace `RequestId pending = 4;` with `reserved 4; reserved "pending";` and comment "an Ask on the host comes back as error.kind approval_pending; the request is the host's, and the agent waits on it through forwarded InboxService calls (D268)". Drop ForwardError::Asked and its Outcome::Pending arm in registry.rs.
+
+### Wording
+- GRPC §9.3 row "A board write the rules ask about": Reachable "the host's Inbox request; the machine forwards the agent's WaitForAnswer and WithdrawRequest on it to the host; approving runs the write on the host". Away "for a write the machine may journal, per the away rule: Wait makes a request in the machine's Inbox, and approving it (passphrase on the machine, or the host's relay once linked) journals the write with `approved_request`; Skip `user_away`; a kind listed as low-risk is journaled at once; any other board write `host_unreachable`".
+- GRPC §9.4 bullet: the approved write is journaled after its inbox.answer, so the host has the approval before it replays the write.
+- GRPC §9.5 step 1: "Under an Ask rule an entry is applied when its `approved_request` names a request the host's mirror shows Approved, held by that machine, made by that session about that item, or when the channel's While I'm away rule lists its kind as low-risk now. Never rejects it whatever was approved."
+- SPEC AW-7 row: Reachable "Inbox request; the call waits; approving makes the change". Away "per the While I'm away rule for writes the machine may journal (own board, channel board add, its own items): under Wait an Inbox request on the machine, and the approved write is journaled with its approval; any other board write is refused, saying the host is away (D268)".
+- SPEC AW-9 add: "A write the user approved on the machine is applied while the rule still says Ask, and a kind the While I'm away rule still lists as low-risk is applied; Never still leaves it out."
+- D227 cut line: replace "a board write approved on the machine ... fails clearly until that slice" with "see D268".
+- daemon/mcp/src/outcome.rs (3-4): "journaled" -> "written to this machine's journal and applied when the host replays it".
+
+### Tests
+- tests/away_forward.rs (common/away_machine.rs plays host): forwarded update answered approval_pending -> agent's WaitForAnswer on the machine goes up as ForwardedCall for that id -> fake host answers Approved with WriteItemResponse -> wait returns it; link drop mid-wait -> host_unreachable retryable; agent drops wait -> ForwardedCallCancel; WithdrawRequest forwarded; away: host-held id -> host_unreachable, unknown -> not_found.
+- replay.rs units: run_forwarded WaitForAnswer from another session -> not_found; Ask+low-risk listed -> applied; kind removed -> Asks; Ask+approved matching mirror -> applied; mirror pending/denied/other session/other item/other machine -> Asks; Never+approved -> Refused; Allow+approved -> applied; same seq twice -> once.
+- tests/away_board_journal.rs (3-4): Ask+Wait move of an owned item while away -> approval_pending with machine id, card has BoardChange preview; approve with passphrase login -> board entry carries approved_request after the inbox.answer entry; deny -> nothing; Skip -> user_away; not owned -> host_unreachable, no request.
+- remote_rig.rs: linked, ChannelBoardEditOthers default Ask, box agent edits another session's item -> host Inbox request -> approve on host -> wait returns APPLIED, revision +1; deny variant unchanged. (3-4) link_lost -> approve on box -> link_back -> item changed, mirror Approved credited to box user, away_left_out unset; variant approving the mirror from the host after link_back.
+
+### Risks (accepted)
+Host-held request can't be answered on the machine; withdraw while away can't reach a host-held card; inbox_list on the machine doesn't show host-held requests; away-approved write replies JOURNALED even if linked again; restart between approval and append reruns; away edit card lacks title/before; failed inbox.answer append leaves the write out as Asks; host trusts the machine's approval on item, not field values.
+
+## D269: A stop's sweep hangs up on the programs itself before it ends the holders (STOP manager; picked by an Opus 5.5 high subagent while Fable is rate-limited, 2026-11-16). Provisional
+
+The stop sweep SIGHUPs each holder's program groups, waits 2 s, and SIGKILLs the groups still alive, counting that holder Killed. Only then does it SIGTERM the holders, wait 2 s, and SIGKILL any holder still alive. So `killed` always means the sweep's own SIGKILL and never races the holder's own 2 s hangup timer. A holder keeps what its terminal printed when its program exits and when it gets SIGTERM, so nothing saved is lost. The sweep counts a pid as a holder under either build's name (`humata2_holder`, `humata2_holder_faults`) or the configured holder's name, so a daemon of one build sweeps the holders a daemon of the other left. New fault point `stop.programs.hungup`, before `stop.holders.signalled`. Start also waits up to 5 s on the state lock, a blocking lock on a thread of its own, not a retry loop. A stop or start lets go of the lock before it re-execs, because under load an old daemon's lock can linger for a moment after it is gone.
+
+## D270: A leaving daemon ends idle response streams at once (STOP manager pick, 2026-11-16). Provisional
+
+When humatad2 leaves (a stop, a start, or SIGTERM), every response stream with nothing ready ends at once with UNAVAILABLE, so its client connects again; replies already ready still go out. Graceful shutdown no longer waits 3 s for attached terminals, hooks or Inbox waits. The 3 s grace is kept only for a call still being answered.
+
+## D271: Terminals in the app run on C1's reusable terminal, with humatad as the one owner (TERM manager; picks by an Opus 5.5 high subagent while Fable is rate-limited, 2026-11-16). Provisional
+
+1. The authoritative terminal screen lives in humatad, in a new crate `daemon/vt_authority` on `ghostty_vt`, one per running tab; C1's `terminal_host` is neither embedded nor run beside it. humatad stays the only owner of holders, the store, revive, FORK, SAFE and STOP.
+2. The wire stays gRPC Attach with optional fields (checkpoint format, Control, Resized, Detached, ResyncRequired, InputWritten). An attach with no checkpoint format resyncs with input off; raw bytes are never replayed into a replica.
+3. D14 holds: several writers, every attach that isn't read-only is a controller, and only the focused, visible replica asks for a resize.
+4. A replica's UUID is UUIDv5(tab id, holder generation). The new `TabRecord.holder_generation` is bumped by revive and by a FORK move.
+5. daemon/revive stays the only recovery authority.
+6. Terminal bytes leave the TCA store, replaced by a per-tab frame link through `clients/terminal_link`, which builds for wasm.
+7. TERM covers the desktop; the browser follows in ANYHOST on the same crate.
+8. Memory saver is on by default for a tab not visible in any pane for 30 s, with a Settings switch; it never parks a tab with unsent or uncertain input.
+9. Checkpoints are not saved to disk at first: after a daemon restart the screen is rebuilt from the holder's kept bytes, or ResyncRequired is sent.
+10. `humata attach` filters terminal query replies out of raw input, so a query is never answered twice.
+
+
+## D272: The daemon lists the repos gh sees from `user/repos`, at most 1000 (NEWCH manager; picked by an Opus 5.5 high subagent while Fable is rate-limited, 2026-11-16). Provisional
+
+SearchGitHubRepos runs the host's `gh api --paginate "user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member"`, with `--jq` cutting each repo to the proto's fields (full name, description, private, default branch, pushed at). It keeps at most 1000 repos, most recently pushed first; past that the person types to narrow. gh keeps its own login: Humata never reads, stores or sends the token.
+
+## D273: The New channel sheet asks once and filters locally (NEWCH manager pick, 2026-11-16). Provisional
+
+The app asks for every repo (an empty query) when the sheet opens and filters as the person types. The daemon still honours the query and paging, for the CLI and MCP.
+
+## D274: Repo search is a two-tier fuzzy match (NEWCH manager pick, 2026-11-16). Provisional
+
+A repo matches when the query's letters appear in order in `owner/name`, ignoring case. Repos where the query appears as typed come first, then repos where its letters are scattered; within each tier gh's pushed order is kept. The app and the daemon use the same rule.
+
+## D275: The sheet shows the first 50 matches, then "and N more" (NEWCH manager pick, 2026-11-16). Provisional
+
+The repo list scrolls with about 8 rows visible and holds the first 50 matches, then a faint "and N more; type to narrow".
+
+## D276: This Mac starts ticked (NEWCH manager pick, 2026-11-16). Provisional
+
+New channel ticks This Mac when it is online, otherwise the first online machine, otherwise none. Create with no machine ticked says to pick one. A machine that went offline after it was ticked can still be unticked.
+
+## D277: Ticked repos stay first (NEWCH manager pick, 2026-11-16). Provisional
+
+Ticked repos always show at the top in the order they were ticked, and stay ticked whether or not they match the search.
+
+## D278: Listing gh's repos is a global read (NEWCH manager pick, 2026-11-16). Provisional
+
+SearchGitHubRepos refuses peers. Other callers pass the GlobalRead guard as ListChannels does; an Ask waits in the Inbox.
+
+## D279: The sheet says what gh is doing and how to fix it (NEWCH manager pick, 2026-11-16). Provisional
+
+While the list loads the sheet says "Listing repos from gh…". A failure shows why with its fix (install the GitHub CLI, or run `gh auth login` in a terminal) and a Retry. Create works with zero repos, so a failed listing never blocks making a channel.
+
+## D280: The daemon keeps gh's repo list for 60 seconds, in memory only (NEWCH manager pick, 2026-11-16). Provisional
+
+A successful listing is kept in memory for 60 s and never written to disk. Failures are not kept, so a Retry after a failure runs gh again.
+
+## D281: Every needed update is a VIP "Migrate <thing>" Inbox item (Provisional, 2026-11-16)
+The owner: "We should force upgrade daemons and stuff when we detect them" and "our inbox should get vip messages that say 'migrate x'". Picks by the UPGRADE manager with an Opus 5.5 high advisor (Fable out until 2026-11-22):
+- a) The version is the bundle id (sha256 of the bundle manifest), reported only when the daemon's binary matches its platform entry; the CLI sends a `humata-bundle` header. Shown as "2.0.5 (a1b2c3d)".
+- b) Each mismatch posts a VIP MIGRATE Inbox item held by the host daemon. The app holds the item itself for an older local daemon that can't hold it.
+- c) Proto: request kind 8, preview 14, Approve shown as Migrate, success APPROVED, withdraw reason RESOLVED = 9.
+- d) "Force" means the item can't be dismissed and everything else is refused. Migrate is still the user's click.
+- e) Error `migration_needed` (field 60). A machine at another bundle links read-only plus the upgrade call. A CLI at another bundle is refused everything but ServerInfo.
+- f) Files land verified as `.<name>.next`; an `Upgrade` call swaps and `exec_at`s the installed path (STOP's exec). `.staged` is retired. A one-time `launchctl kickstart -k` or SSH restart handles daemons too old to have the call.
+- g) An upgrade record with fault points `upgrade.files.staged` … `upgrade.record.settled`, and a store copy first when the schema changes. If the new build fails to reach ready twice, the old build and the copy are put back.
+- h) Schema folds into the daemon item; Humata never downgrades.
+- i) Each session records its holder build; "Migrate holders" restarts agent sessions at their next idle moment; shells keep the old holder until closed. The holder protocol stays VERSION 1, additive only.
+- j) Schema, CLI and host tools found together with the daemon are lines of the daemon's item, and get their own item only when found alone.
+- k) Words: "Upgraded to 2.0.5 · 2 min ago", "Read-only until migrated · Open message"; frames 77–83 in `desktop/tests/design/upgrade.rs`.
+SPEC: UP-1 added; TS-0, TS-1 and PER-6 reworded.
+

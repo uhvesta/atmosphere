@@ -615,14 +615,27 @@ pub(crate) mod host_probe {
     /// what it wrote (output, then errors); none when it can't start or
     /// outlives the timeout (then it is killed).
     fn run(program: &str, args: &[&str], env: &[(&str, &str)]) -> Option<String> {
-        let mut child = Command::new(program)
-            .args(args)
-            .envs(env.iter().copied())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .ok()?;
+        // A tool that was just written (an install, an upgrade) can still be
+        // open for writing in a process that forked at that moment; exec
+        // then fails with "text file busy" for a few milliseconds.
+        let mut tries = 0;
+        let mut child = loop {
+            match Command::new(program)
+                .args(args)
+                .envs(env.iter().copied())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => break child,
+                Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return None,
+            }
+        };
         let out = drain(child.stdout.take());
         let err = drain(child.stderr.take());
         let deadline = Instant::now() + COMMAND_TIMEOUT;

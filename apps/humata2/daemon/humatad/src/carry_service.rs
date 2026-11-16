@@ -198,7 +198,11 @@ impl SessionCarrySvc {
                 })?;
                 trashed.push(discard.what);
             }
+            // A cut here: the copy is in the trash, its records are still
+            // here, and the host asks again.
+            crate::fault::point("carry.trashed");
             starter.forget_moved(&operation, &session, &channel, take).map_err(failed)?;
+            crate::fault::point("carry.forgotten");
             Ok(trashed)
         })
         .await?

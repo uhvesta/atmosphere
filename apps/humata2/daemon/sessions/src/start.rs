@@ -635,6 +635,8 @@ impl Starter {
                 .map_err(store_err("list the sessions"))?
                 .iter()
                 .any(|other| other.id != id && other.folder == folder);
+            // A fork's conversation copy may be outside the folder.
+            crate::fork::remove_fork_copy(&folder, &id)?;
             if !shared {
                 remove_folder(&folder)?;
             }

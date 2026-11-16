@@ -135,6 +135,20 @@ message FileChange {
   uint32 removed = 3;
 }
 
+// AW-9, D267: board writes this session's agent made while the host was away
+// that the host's rules no longer allowed at replay, from the latest link-up
+// that left any out. Unset when none has.
+message AwayWritesLeftOut {
+  uint32 count = 1;
+  // Items whose history keeps the write as lost (the first few).
+  repeated BoardItemId items = 2;
+  // Titles of the new items that weren't made (the first few); their only trace.
+  repeated string not_made = 3;
+  // True if any is now refused (Never); false if all now say Ask me.
+  bool refused = 4;
+  google.protobuf.Timestamp at = 5;
+}
+
 message Session {
   SessionId id = 1;
   ChannelId channel = 2;
@@ -180,6 +194,10 @@ message Session {
   // Set only while status is RESUME_FAILED: what "Start fresh with a summary"
   // would summarize (D143). Unspecified otherwise.
   SummarySource summary_source = 31;
+  // AW-9, D267: what the host left out of this session's agent's writes when
+  // its machine reconnected. The app draws one line under the agent's
+  // terminal output from it; unset when nothing was left out.
+  AwayWritesLeftOut away_left_out = 32;
 
   enum SummarySource {
     SUMMARY_SOURCE_UNSPECIFIED = 0;

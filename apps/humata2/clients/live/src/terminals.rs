@@ -141,6 +141,7 @@ impl Shared {
             rows: u32::from(rows),
             window_bytes: WINDOW_BYTES,
             accept_codecs: Vec::new(),
+            checkpoint_engine: String::new(),
         };
         to.send(pb::AttachClientMessage {
             message: Some(pb::attach_client_message::Message::Open(open)),
@@ -347,6 +348,7 @@ impl Terminals for LiveDaemon {
                 .send(pb::attach_client_message::Message::Resize(pb::TerminalResize {
                     cols: u32::from(columns),
                     rows: u32::from(rows),
+                    ..Default::default()
                 }))
                 .await
         })

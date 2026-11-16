@@ -337,6 +337,45 @@ impl Shared {
         Ok(id)
     }
 
+    /// The GitHub repositories `gh` sees on the host, as `owner/name`, that
+    /// match `query` (CH-3). Reads the daemon's pages until it has no more,
+    /// up to a fixed number of pages.
+    async fn github_repos(&self, query: String) -> Result<Vec<String>, DaemonError> {
+        // 10 pages of 100 hold the daemon's whole list (at most 1000, D272).
+        const REPO_PAGE_SIZE: u32 = 100;
+        const REPO_PAGES: usize = 10;
+        let mut repos = Vec::new();
+        let mut token = String::new();
+        for _ in 0..REPO_PAGES {
+            let reply = self
+                .channels()
+                .search_git_hub_repos(pb::SearchGitHubReposRequest {
+                    query: query.clone(),
+                    page: Some(pb::PageRequest {
+                        page_size: REPO_PAGE_SIZE,
+                        page_token: token,
+                    }),
+                })
+                .await
+                .map_err(|status| self.error(&status, "The GitHub repositories"))?
+                .into_inner();
+            repos.extend(reply.repos.iter().filter_map(|listed| {
+                listed
+                    .repo
+                    .as_ref()
+                    .map(|repo| format!("{}/{}", repo.owner, repo.name))
+            }));
+            token = reply
+                .page
+                .map(|page| page.next_page_token)
+                .unwrap_or_default();
+            if token.is_empty() {
+                break;
+            }
+        }
+        Ok(repos)
+    }
+
     async fn create_session(
         &self,
         channel: ChannelId,
@@ -855,6 +894,12 @@ impl Daemon for LiveDaemon {
         let shared = self.shared.clone();
         let name = name.to_owned();
         Box::pin(async move { shared.create_channel(name, repos, machines).await })
+    }
+
+    fn github_repos(&self, query: &str) -> Reply<Vec<String>> {
+        let shared = self.shared.clone();
+        let query = query.to_owned();
+        Box::pin(async move { shared.github_repos(query).await })
     }
 
     fn move_item(&self, item: &ItemId, status: ItemStatus) -> Reply<()> {

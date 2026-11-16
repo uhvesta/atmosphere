@@ -435,6 +435,9 @@ pub struct Session {
     pub resume_failed: Option<ResumeFailure>,
     /// When a host restart interrupted it, in Unix ms; `None` if none has.
     pub interrupted_unix_ms: Option<i64>,
+    /// What its host left out of its agent's writes when the machine
+    /// reconnected (AW-9, D267); `None` when nothing was.
+    pub away_left_out: Option<AwayLeftOut>,
     /// What Start fresh could summarize, while its resume has failed and the
     /// daemon says; `None` otherwise.
     pub summary_source: Option<SummarySource>,
@@ -446,6 +449,20 @@ pub struct Session {
     /// What its agent may do, one paragraph each, as the daemon's access
     /// rules give it; empty when not reported.
     pub permissions: Vec<String>,
+}
+
+/// Board writes a session's agent made while its host was away that the
+/// host's rules no longer allowed when its machine reconnected (AW-9, D267).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AwayLeftOut {
+    /// How many writes weren't applied.
+    pub count: u32,
+    /// The items whose history keeps one as lost (the first few).
+    pub items: Vec<String>,
+    /// The titles of the new items that weren't made (the first few).
+    pub not_made: Vec<String>,
+    /// Whether any is now refused; `false` when all now say Ask me.
+    pub refused: bool,
 }
 
 /// What happened to a session when its host came back (PER-13–16, PER-26).

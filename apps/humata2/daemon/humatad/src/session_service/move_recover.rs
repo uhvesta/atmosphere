@@ -17,6 +17,7 @@ use super::SessionSvc;
 use super::move_session::{self, Moving};
 use crate::carry::{Carry, Journaled};
 use crate::host_relay::{LinkState, Links};
+use crate::restart::OperationState;
 use crate::status;
 
 impl SessionSvc {
@@ -55,11 +56,29 @@ impl SessionSvc {
             return;
         };
         let svc = self.clone();
+        let operations = started.as_ref().map(|started| started.operations().clone());
+        let note = move |state: OperationState, journal: &Journaled| {
+            if let Some(operations) = &operations {
+                operations.record(&journal.operation, "move", &journal.phase, state);
+            }
+        };
+        note(
+            OperationState::Pending {
+                waits_for: format!("the start to finish, then the links of {} and {}", journal.from, journal.to),
+            },
+            &journal,
+        );
         tokio::spawn(async move {
             if let Some(started) = started {
                 started.wait().await;
             }
             if let Err(machine) = links_up(&carry, &journal).await {
+                note(
+                    OperationState::Stuck {
+                        reason: format!("{machine} was forgotten before the move could be recovered"),
+                    },
+                    &journal,
+                );
                 crate::log::say!(
                     "humatad2: the move of session {} was cut short, and {machine} was forgotten before it could be recovered. Check the session on its machine; nothing was deleted",
                     journal.session
@@ -69,7 +88,22 @@ impl SessionSvc {
             }
             let held = svc.lifecycle.lock_of(&journal.session).lock_owned().await;
             let session = journal.session.clone();
-            if let Err(error) = move_session::recover(svc.clone(), carry, remote, journal, held).await {
+            let settled = journal.clone();
+            let outcome = move_session::recover(svc.clone(), carry, remote, journal, held).await;
+            note(
+                match &outcome {
+                    // The agent runs on the new machine from `resumed` on.
+                    Ok(()) if matches!(settled.phase.as_str(), "resumed" | "switched") => OperationState::Finished,
+                    Ok(()) => OperationState::Undone {
+                        reason: format!("the agent still ran on {}", settled.from),
+                    },
+                    Err(error) => OperationState::Stuck {
+                        reason: status::chain(error),
+                    },
+                },
+                &settled,
+            );
+            if let Err(error) = outcome {
                 crate::log::say!(
                     "humatad2: couldn't finish or undo the move of session {session}: {}. Nothing was deleted; the next start tries again, or look at the session on both machines",
                     status::chain(&error)

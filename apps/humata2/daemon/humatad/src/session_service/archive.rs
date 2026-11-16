@@ -25,7 +25,7 @@ use pb::invalid_field::Problem;
 use prost::Message;
 use tonic::{Code, Status};
 
-use super::fork::{not_built_part, stop_point};
+use super::fork::not_built_part;
 use super::lineage::{Lineage, publish_family};
 use super::push::{PullRequestText, RepoPush, run_pushes, step_rows};
 use super::{Loaded, SessionSvc, busy, now_ms, run_resume, start_error, turns, watch};
@@ -637,7 +637,7 @@ impl SessionSvc {
         }
         // A kill here leaves the intent recorded and the agent running: the
         // restart finishes the archive.
-        stop_point("archive.recorded");
+        crate::fault::point("archive.recorded");
         let by = identity::actor(caller);
         self.tell
             .session(&id, pb::Change::Updated, Some(by.clone()))
@@ -791,6 +791,25 @@ impl SessionSvc {
             .iter()
             .filter(|row| row.state == ArchiveState::Archived)
         {
+            // A cut between the row and ending the grants left them live.
+            // Both are safe to repeat.
+            if let Err(error) = self.end_grants_of(&row.session_id).await {
+                crate::log::say!(
+                    "humatad2: ending archived session {}'s grants: {}",
+                    row.session_id,
+                    error.message()
+                );
+            }
+            if let Err(error) = self
+                .withdraw_requests_of(&row.session_id, pb::WithdrawReason::SessionArchived)
+                .await
+            {
+                crate::log::say!(
+                    "humatad2: withdrawing archived session {}'s requests: {}",
+                    row.session_id,
+                    error.message()
+                );
+            }
             self.free_now(&row.session_id).await;
         }
     }
@@ -904,7 +923,7 @@ impl SessionSvc {
         }
         // A kill here leaves the intent recorded and the agent running: the
         // restart finishes the archive.
-        stop_point("archive.recorded");
+        crate::fault::point("archive.recorded");
         drop(guard);
         self.tell
             .session(&id, pb::Change::Updated, Some(by.clone()))
@@ -952,6 +971,9 @@ impl SessionSvc {
     async fn finish_archive(&self, row: ArchiveRow) -> Result<(), ArchiveError> {
         let id = row.session_id.clone();
         self.stop_agent(&id).await?;
+        // A kill here leaves the agent stopped and the row still archiving:
+        // the restart finishes it.
+        crate::fault::point("archive.agent_stopped");
         let summary = if row.summary.is_empty() {
             let (store, key) = (self.starter.store.clone(), id.clone());
             let archived = row.archived_unix_ms;
@@ -992,6 +1014,9 @@ impl SessionSvc {
                 session: id.clone(),
                 source,
             })?;
+        // A kill here leaves the row archived with its grants and requests
+        // still live: the restart ends them (`recover_archives`).
+        crate::fault::point("archive.archived");
         // The session no longer waits on anyone (IN-22, TP-15).
         if let Err(error) = self.end_grants_of(&id).await {
             crate::log::say!(
@@ -1095,6 +1120,9 @@ impl SessionSvc {
                     remove_session_folder(&layout_root, &channel.folder, &record.folder)?;
                 }
             }
+            // A kill here leaves the folder gone and the row archived: the
+            // restart frees it again, and a folder already gone is freed.
+            crate::fault::point("archive.folder_removed");
             store
                 .put_archive(&ArchiveRow {
                     state: ArchiveState::Freed,

@@ -38,6 +38,7 @@ fn opened(workspace: &Arc<Workspace>) -> PaletteState {
     let mut state = PaletteState {
         workspace: workspace.clone(),
         context: Some(here()),
+        split: true,
         report: ReportStatus {
             recording: false,
             last: true,
@@ -196,7 +197,8 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
             path: s.file.1.clone(),
         },
         Some(Command::File { .. }) => Command::TerminalFullScreen,
-        Some(Command::TerminalFullScreen) => Command::Record,
+        Some(Command::TerminalFullScreen) => Command::JoinTabGroups,
+        Some(Command::JoinTabGroups) => Command::Record,
         Some(Command::Record) => Command::Snapshot,
         Some(Command::Snapshot) => Command::ReportBug,
         Some(Command::ReportBug) => Command::OpenLastReport,
@@ -300,6 +302,7 @@ fn reach(command: &Command) -> Reach {
         | Command::Session(_)
         | Command::File { .. }
         | Command::TerminalFullScreen
+        | Command::JoinTabGroups
         | Command::Record
         | Command::Snapshot
         | Command::ReportBug

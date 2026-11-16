@@ -7,7 +7,7 @@ use gpui_kit::base::{Disableable as _, TestTextExt as _};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::model::{Agent, Session, Status, Turn};
-use humata2_session::{SessionAction, Tab, TabGroup, is_markdown};
+use humata2_session::{GroupWidth, SessionAction, Tab, TabGroup, group_widths, is_markdown};
 use humata2_views::ViewsAction;
 
 use crate::{
@@ -62,6 +62,8 @@ fn tab_row(
     look: Look,
 ) -> Stateful<Div> {
     let split = state.session.view().is_some_and(|v| v.groups.len() == 2);
+    // In a split, only the focused group's tab reads lit.
+    let focused = !split || state.session.view().is_some_and(|v| v.focused_group == group);
     row()
         .id(SharedString::from(format!("session-tabs-{group}")))
         .h(px(32.))
@@ -143,7 +145,7 @@ fn tab_row(
                 .border_color(rgb(look.line))
                 .when(index == tabs.selected, |t| t.bg(rgb(look.term)))
                 .text_size(px(12.))
-                .text_color(rgb(if index == tabs.selected {
+                .text_color(rgb(if index == tabs.selected && focused {
                     look.text
                 } else {
                     look.secondary
@@ -224,20 +226,6 @@ fn tab_row(
                             .test_support(),
                     )
                 },
-            )
-        })
-        .when(split, |bar| {
-            bar.child(
-                send(
-                    ui,
-                    format!("close-group-{group}"),
-                    "Join tab groups",
-                    SessionAction::CloseGroup(group),
-                    look,
-                )
-                .mr(px(10.))
-                .child(chrome::icon(IconName::X, look.tertiary, 12.))
-                .test_support(),
             )
         })
         .when(!split && session.status == Status::Offline, |bar| {
@@ -458,6 +446,20 @@ pub(crate) fn body(
         .map(|v| v.groups.as_slice())
         .filter(|g| !g.is_empty())
         .unwrap_or(std::slice::from_ref(&fallback));
+    // A terminal beside a Side-by-side document is a fixed width; the row's
+    // own width is not known here, so the half-row limit is applied by the
+    // group's max width.
+    let widths = group_widths(
+        f32::INFINITY,
+        &(0..groups.len())
+            .map(|group| {
+                state
+                    .session
+                    .view()
+                    .is_some_and(|v| v.selected_is_side_by_side(group))
+            })
+            .collect::<Vec<_>>(),
+    );
     col()
         .size_full()
         .children(
@@ -513,6 +515,7 @@ pub(crate) fn body(
                                 "Later",
                                 AppAction::Views(ViewsAction::Later(offer.title.clone())),
                             )
+                            .px(px(0.))
                             .bg(transparent_black())
                             .border_color(transparent_black())
                             .text_color(rgb(look.secondary)),
@@ -525,6 +528,7 @@ pub(crate) fn body(
                                 "Not now",
                                 AppAction::Views(ViewsAction::Dismiss(offer.title.clone())),
                             )
+                            .px(px(0.))
                             .bg(transparent_black())
                             .border_color(transparent_black())
                             .text_color(rgb(look.secondary)),
@@ -547,9 +551,15 @@ pub(crate) fn body(
                     .enumerate()
                     .map(|(group, tabs)| {
                         let selected = tabs.tabs.get(tabs.selected);
+                        let width = widths.get(group).copied().unwrap_or(GroupWidth::Flexible);
                         col()
                             .relative()
-                            .flex_1()
+                            .map(|g| match width {
+                                GroupWidth::Fixed(points) => {
+                                    g.w(px(points)).max_w(relative(0.5)).flex_shrink_0()
+                                }
+                                GroupWidth::Flexible => g.flex_1(),
+                            })
                             .min_w_0()
                             .h_full()
                             .overflow_hidden()
@@ -666,21 +676,25 @@ pub(crate) fn body(
                                     // After a host restart (PER-15, PER-29, frame 46): the line that
                                     // marks it under the old output and, when the agent couldn't be
                                     // resumed, the card that says why, in place of the exit notice.
-                                    let (reboot, failed) = if *tab == 0 {
+                                    // AW-9, D267: and the line that says what the host left out
+                                    // of the agent's writes when its machine reconnected.
+                                    let (reboot, failed, away) = if *tab == 0 {
                                         (
                                             crate::resume_failed::reboot_line(state, session, look),
                                             crate::resume_failed::note(ui, state, session, look),
+                                            crate::away_left_out::line(session, look),
                                         )
                                     } else {
-                                        (None, None)
+                                        (None, None, None)
                                     };
-                                    let notice = if reboot.is_some() || failed.is_some() {
+                                    let notice = if reboot.is_some() || failed.is_some() || away.is_some() {
                                         let usual = if failed.is_some() { None } else { notice };
                                         Some(
                                             col()
                                                 .w_full()
                                                 .gap(px(8.))
                                                 .children(reboot)
+                                                .children(away)
                                                 .children(failed)
                                                 .children(usual)
                                                 .into_any_element(),

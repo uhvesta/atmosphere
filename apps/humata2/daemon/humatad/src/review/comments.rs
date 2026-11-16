@@ -494,11 +494,11 @@ impl Review {
         }
 
         if let Some(target) = &target {
-            stop_point("comments.begun");
+            crate::fault::point("comments.begun");
             for batch in &batches {
                 let key = format!("{}/{}", record.id, batch.key);
                 let pasted = self.inner.sink.paste(target, &key, &bracketed_paste(&batch.text)).await;
-                stop_point("comments.typed");
+                crate::fault::point("comments.typed");
                 settled(&mut lock(&review.comments), &record.id, &batch.key, pasted, batch.retried);
             }
         }
@@ -846,26 +846,6 @@ fn sendable_ids(ledger: &CommentLedger) -> Vec<String> {
         .map(|comment| comment.id.clone())
         .collect()
 }
-
-/// A point a test can kill the daemon at, to show what a crash there leaves
-/// behind: `HUMATA2_STOP_AT=<name>` ends the process at once, flushing and
-/// unwinding nothing, as `kill -9` would. Only the test daemon, built with
-/// the `admin` feature, reads the variable; without it this does nothing,
-/// so a release build can't be stopped this way.
-#[cfg(feature = "admin")]
-fn stop_point(name: &str) {
-    if std::env::var("HUMATA2_STOP_AT").is_ok_and(|wanted| wanted == name) {
-        // SIGKILL, as the store's fault points use: no handler runs and no
-        // crash report is written. It can't be refused, so the abort after
-        // it is never reached.
-        let _ = rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::KILL);
-        std::process::abort();
-    }
-}
-
-#[cfg(not(feature = "admin"))]
-#[inline(always)]
-fn stop_point(_name: &str) {}
 
 /// Records what became of typing batch `key`.
 fn settled(ledger: &mut CommentLedger, session: &str, key: &str, pasted: Pasted, in_doubt: bool) {

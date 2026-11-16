@@ -78,15 +78,36 @@ async fn remove_own_copy_partials(starter: &Starter) {
     let Ok(Ok(channels)) = blocking(move || this.store.channels()).await else {
         return;
     };
+    let this = starter.clone();
+    let Ok(Ok(named)) = blocking(move || this.store.sessions()).await else {
+        return;
+    };
+    let named: std::collections::HashSet<std::path::PathBuf> =
+        named.into_iter().map(|session| session.folder).collect();
     for channel in channels {
         let sessions = starter.layout.sessions(&channel.folder);
+        let named = named.clone();
         let _ = blocking(move || {
             let Ok(entries) = fs::read_dir(&sessions) else {
                 return;
             };
             for entry in entries.flatten() {
                 if entry.file_name().to_string_lossy().ends_with(".partial") {
-                    let _ = fs::remove_dir_all(entry.path());
+                    // The conversation copy it made, if it got that far.
+                    // A copy that can't be removed keeps its note, so the next
+                    // start tries again.
+                    let note = crate::own_copy::own_copy_note(&entry.path());
+                    if crate::fork::remove_noted_copy(&note).is_ok() {
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
+                } else if !named.contains(&entry.path()) {
+                    // A folder renamed into place that no record names: an own
+                    // copy cut before its records were saved. Only its note
+                    // says so; any other folder has none.
+                    let note = crate::own_copy::own_copy_note(&entry.path());
+                    if note.exists() && crate::fork::remove_noted_copy(&note).is_ok() {
+                        let _ = fs::remove_dir_all(entry.path());
+                    }
                 }
             }
         })

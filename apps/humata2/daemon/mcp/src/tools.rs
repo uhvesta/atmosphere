@@ -401,7 +401,7 @@ fn expected_revision() -> Schema {
 }
 
 fn item_id() -> Schema {
-    string().describe("An item id such as PAY-7, or a provisional ~machine.seq id")
+    string().describe("An item id such as PAY-7")
 }
 
 fn title() -> Schema {

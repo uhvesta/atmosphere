@@ -152,7 +152,7 @@ a machine checks only calls it answers alone, using the host's last
 | BoardService (boards) | host | host socket; forwarded, or journaled (§9) | |
 | InboxService (inbox) | host; a machine while its host is away, for requests it holds (§9.4) | host socket; machine socket for `humata inbox` | |
 | AccessService, AuditService, CliAuthService (access) | host | host socket; forwarded | The policy a machine applies offline is a copy (§9.2). A machine checks CLI logins and the approval passphrase itself while the host is away |
-| DiffService, CommentService, ViewService, PullRequestReviewService (review) | host for comments, views, drafts, review state; the machine computes diffs | host socket; forwarded; comment and view drafts journaled | |
+| DiffService, CommentService, ViewService, PullRequestReviewService (review) | host for comments, views, drafts, review state; the machine computes diffs | host socket; forwarded; comment and view drafts refused while the host is away (§9.3) | |
 | ReviewChatService (review) | the review session's machine, which keeps the review chat's view state, notes and switches (PR-22–PR-26) | host socket; forwarded | The app reports its view; agents in the review change it through MCP (review_*), each change undoable. Switches off are denied with `SOURCE_REVIEW_SWITCH_OFF` |
 | OperationService (operations) | host | host socket; forwarded | |
 | MachineService, ProviderService, SkillsService (hosts) | host | host socket only for user-only calls; forwarded otherwise | Provider commands run on the Mac or `run_on` (MP-5) |
@@ -169,8 +169,8 @@ a machine checks only calls it answers alone, using the host's last
 Each id is its own message (`SessionId`, `ChannelId`, …) so the compiler
 catches a session id passed as a channel id. Values are opaque ULID-based
 strings; clients compare them and never parse them. Board item ids are the
-human ones (`PAY-7`); items made in a journal get a provisional id
-(`~devbox-1.3`) until the host replays them (§9.6).
+human ones (`PAY-7`); an item made in a journal has no id until the host
+replays it (§9.6).
 
 ### 5.2 Idempotency
 
@@ -512,14 +512,22 @@ While the host is away the machine judges calls against it. The snapshot
 never holds a secret, and no part of it can be changed on the machine: there
 is no call for it there.
 
+Each copy the machine keeps is reported on the feed as `PolicyCopyKept`
+(its revision, after the copy is in force and before the ack), on
+TOPIC_MACHINES to the user only, next to `HostLinkChanged` for the link
+itself. A client that wants to know when a copy has landed waits for that
+event rather than reading the copy again.
+
 ### 9.3 What happens to each call
 
 | The call | Host reachable | Host away |
 | --- | --- | --- |
 | Reads of its own session's files and clones | applied (machine) | applied (machine) |
 | Writes to its own clones and `shared/` (TP-2, FC-8) | applied (machine) | applied (machine) |
-| Reads of host state (channel topology, boards, its comments) | applied (host) | answered from the last snapshot and mirror, marked `stale_as_of` |
-| Host-state writes the snapshot allows (own board, channel board add, edit its own items, comment and view drafts, `inbox_ask`) | applied | **journaled**: response `{outcome: journaled}` with provisional ids |
+| Reads of host state (channel topology, boards, its comments) | applied (host) | answered from the host's last answer to the same call, kept while it was linked, with the response header `humata-stale-as-of` (RFC 3339, when the host answered; `stale_as_of` in MCP); a call the host never answered is `host_unreachable` (D227) |
+| Host-state writes the snapshot allows (own board, channel board add, edit its own items, `inbox_ask`) | applied | **journaled**: `delivery = JOURNALED` with a `JournalPosition` and no item; an edit is journaled only for an item `PolicySnapshot.owned_items` lists with the caller as owner (D227) |
+| A board write the rules ask about (D268) | the host's Inbox request; the machine forwards the agent's `WaitForAnswer` and `WithdrawRequest` on it to the host (as `ForwardedCall`s, never kept as a last copy) and the host runs them as that agent; approving runs the write on the host. A link that drops mid-wait is `host_unreachable`, retryable: wait again with the same request id | for a write the machine may journal, per the away rule: Wait makes a request in the machine's Inbox, and approving it (passphrase on the machine, or the host's relay once linked) journals the write with `approved_request`; Skip `user_away`; a kind listed as low-risk is journaled at once; any other board write `host_unreachable`. A wait or withdrawal on a request the host holds is `host_unreachable` too; an id the machine never saw stays `not_found` |
+| Comment and view drafts | applied | `host_unreachable`; nothing is kept (D227) |
 | Anything the snapshot says Never, or a hard limit | denied | denied |
 | An Ask on something on this machine (another session's files here, start or fork here, type into a session here) | Inbox request; the call waits | per the away rule: **Wait** (request journaled, the call waits, answerable on the machine), **Skip** (denied with `user_away`), **Allow low-risk** (applied if the kind is low-risk and journaled for the record, else Wait) |
 | Anything that needs another machine or GitHub through the Mac (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | applied or asked | **waits** (TP-9) or, under Skip, denied with `host_unreachable`. Never low-risk (AW-11): the host must route it. A port forward can't be approved on the machine (HO-11) |
@@ -533,13 +541,29 @@ returns (AW-3).
 
 - **The first answer at the site that holds the call wins.** While the host
   is away, that is the machine: the user answers there with the approval
-  passphrase (AW-5), the machine acts on it at once, and sends a
-  `LocalAnswer` up on reconnect.
+  passphrase (AW-5), the machine acts on it at once, and the answer goes up
+  as an `inbox.answer` journal entry on reconnect (D226).
 - On reconnect the journal replays (AW-6). A request already answered
   locally arrives answered, attributed to the user via CLI on that machine.
-  A request still pending becomes an ordinary Inbox request on the host,
-  and from then on the host holds it; its answer goes down as an
-  `InboxAnswerRelay`.
+  A request still pending stays held by the machine; the host shows a mirror
+  with the same id, stamped with the machine and journal position. A host
+  answer to a mirror goes down as an `InboxAnswerRelay`, the machine applies
+  it under its own lock, and the host waits up to 10 s for the resulting
+  `inbox.answer` entry. With the link down the host refuses with
+  `machine_offline` and sends nothing. There is no `LocalAnswer` message.
+- A relay the machine can't apply comes back at once as an
+  `InboxAnswerRefused` (a `MachineToHost` arm carrying the request, the
+  `Error` and its status code): `already_answered` naming who answered and
+  how, `not_found` when the machine no longer holds the request, or a
+  denial when it can't count the host's user as present. The host answers
+  its user with that error without waiting out the 10 s. Only a machine
+  that says nothing, or whose link drops, ends as `machine_offline`
+  ("sent, not confirmed"). The host forgets its record of a sent answer
+  whenever the wait ends, so a later answer is a fresh relay.
+  An `inbox.answer` the machine journals after the wait ended is credited
+  to the machine's user, not the host's: the host already told its user
+  the answer wasn't confirmed.
+- A board write approved on the machine is journaled after its `inbox.answer`, so the host has the approval before it replays the write (D268).
 - A second answer anywhere fails with `already_answered`, naming who
   answered and how. Last-writer-wins never applies to answers: an approval
   that ran can't be taken back by a later deny, and treating them as
@@ -556,8 +580,13 @@ own writes in arrival order. For each entry:
 1. **Re-check access** against the current rules. IN-21 says rule changes
    apply to the next call; a journaled call hasn't reached the host yet, so
    it is judged again. A rule tightened while the host was away rejects the
-   entry (`journal_entry_rejected`, recorded in history, sent to the agent's
-   terminal as one line). A loosened rule changes nothing.
+   entry: an edit is kept in the item's history as lost, a new item is not
+   made, and `Session.away_left_out` says how many (D267). A loosened rule
+   changes nothing. Under an Ask rule an entry is applied when its
+   `approved_request` names a request the host's mirror shows Approved, held
+   by that machine, made by that session about that item, or when the
+   channel's While I'm away rule lists its kind as low-risk now. Never rejects
+   it whatever was approved (D268).
 2. **Compare `base_revision`** with the item's current revision. Equal: apply.
    Different: apply field by field; fields the host changed since the base
    keep the later write in host commit order, which is the replayed one; the
@@ -570,13 +599,24 @@ own writes in arrival order. For each entry:
    by a replay.
 4. **Moves** treat column and rank as one field.
 
-### 9.6 Provisional ids
+`Session.away_left_out` (D267, AW-9) is the host's summary of the writes its
+rules stopped at replay, for the latest link-up that left any out: `count`,
+`items` (whose history keeps an edit as lost), `not_made` (titles of refused
+creates, their only trace, the first few), `refused` (any now Never; false
+when all now say Ask me) and `at`. It is written in the same transaction as
+the machine's applied-through mark, so a delivery the host sees twice counts
+once, it survives restarts, and a session Updated event follows. Nothing
+goes to the machine (no peer.proto field) and nothing is typed into the
+agent: the app draws one line under the agent's terminal output from it.
+A viewer attached directly on the machine, or `humata attach` relayed by
+the host, doesn't show the line.
 
-Items created in a journal get `~<machine>.<seq>`. On replay the host gives
-the final id, rewrites later journal entries from the same machine that name
-the provisional one, and emits `ProvisionalIdResolved`. For 30 days the host
-also accepts the provisional id anywhere an id is taken, so an agent holding
-it keeps working.
+### 9.6 Journaled new items
+
+An item created in a journal has no id until the host replays it. The
+response says `JOURNALED` and where the entry is in the journal; nothing can
+name the item before the host gives it its id on replay, and an agent reads
+it from the board then (D227).
 
 ### 9.7 The journal itself
 

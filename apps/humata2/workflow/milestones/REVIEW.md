@@ -160,3 +160,11 @@ Early lane (minion REVIEW, Fable, 2026-11-15): daemon and model only. DESK and F
       - [x] D200: a sent batch is pasted, then submitted with return, each keyed once (`review/sink.rs`).
       - Re-records for main: session:: 01, 11, 30 and file-tab-open, plus any frame that wrapping now changes. main is running them together with POLISH's button change.
       - Open: a `changed` passage on a Draft or Waiting comment still detaches it, and a batch whose return was lost before a restart reads as sent (D200).
+    - Batch 15 (REVIEW manager, 2026-11-16): the fakes half, frames 39 and 41–43 and the sidebar against their goldens. Nothing is built yet. The seam is `seam_review.py` (22 files, sha-guarded), handed to main.
+      - [ ] R2 document typography (Sonnet): `MarkdownTheme::document()` (13/20 text, H1 22, H2 15), a byline "text · file" (`Document::byline`), and a 560-wide page with 24 px padding (`ui/src/document_tab.rs`).
+      - [ ] R3+R4 (Haiku): a page marks only drafts and the open box, not sent comments. The comment box is borderless at 13/20.
+      - [ ] R3b+R3c (Haiku, Sonnet): one lit list item, not the whole list (frame 43). A new hunk in `markdown/patches/gpui-base-selection.patch` records each list item's bounds (`TextViewState::list_item_bounds`), and `Document::item_at_line` finds the item a mark is on.
+      - [ ] R5 (Haiku): the Diff badge counts sent document comments (`ui/src/panels.rs` `changes_count`).
+      - [ ] R6 (Sonnet): the group beside a side-by-side doc is 330 pt (`features/session` `group_widths`). Join tab groups is a palette command now, not a button.
+      - [ ] FIND, FIND2 (Haiku, Sonnet): Pinned rows use the design's geometry. The upper stack shrinks first and the channel list last; lists over 1000 pt fill and scroll. The divider no longer takes the last point and the selected row stays regular weight. The -4/-3 fudges are gone. New check: look_test `every_sidebar_from_01_matches_its_golden` (01–09, 12, 15–17).
+      - Estimated before the build: sidebar 15 at 10.43% falls to about 1.5–3%, so it may still fail; 16 at 0.64% falls to about 0.4%. 16's drag-handle grip at x 234 is left as it is.

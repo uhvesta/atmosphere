@@ -42,6 +42,9 @@ pub(super) enum Pending {
         /// What the machine's copy had more of at the last comparison, so
         /// it was kept.
         kept: Option<String>,
+        /// The copy was compared and what it had more of carried here, so
+        /// a retry only asks the machine to let go.
+        cleared: bool,
     },
 }
 
@@ -99,6 +102,7 @@ impl Pending {
                 operation,
                 restored,
                 kept,
+                cleared,
             } => json!({
                 "kind": self.kind(),
                 "session": session,
@@ -107,6 +111,7 @@ impl Pending {
                 "operation": operation,
                 "restored": restored.as_ref().map(restored_value),
                 "kept": kept,
+                "cleared": cleared,
             }),
         }
     }
@@ -138,6 +143,7 @@ impl Pending {
                 // Missing or unreadable: unknown, so the copy is kept.
                 restored: value.get("restored").and_then(restored_of),
                 kept: text("kept"),
+                cleared: value.get("cleared").and_then(Value::as_bool).unwrap_or(false),
             }),
             _ => None,
         }
@@ -220,6 +226,55 @@ pub(super) fn write(folder: &Path, pending: &Pending) -> Result<(), PendingError
 /// `pending` is done or moot; its file goes. Blocking.
 pub(super) fn remove(folder: &Path, pending: &Pending) {
     let _ = std::fs::remove_file(path_of(folder, pending));
+}
+
+/// The conversation a restore here is about to resume, kept beside its
+/// follow-ups: `<session>.resume` holds the folder it was written for, a
+/// newline, then the lines.
+fn resume_path(folder: &Path, session: &str) -> PathBuf {
+    folder.join(format!("{session}.resume"))
+}
+
+/// Keeps the conversation `lines`, written for `old_folder`. Blocking.
+pub(super) fn write_resume(folder: &Path, session: &str, old_folder: &str, lines: &[u8]) -> Result<(), PendingError> {
+    std::fs::create_dir_all(folder).map_err(|source| PendingError::Folder {
+        path: folder.to_owned(),
+        source,
+    })?;
+    let path = resume_path(folder, session);
+    let mut bytes = old_folder.as_bytes().to_vec();
+    bytes.push(b'\n');
+    bytes.extend_from_slice(lines);
+    humata2_store::write_atomic(&path, &bytes).map_err(|source| PendingError::Write { path, source })
+}
+
+/// The kept conversation of `session` is done or moot. Blocking.
+pub(super) fn remove_resume(folder: &Path, session: &str) {
+    let _ = std::fs::remove_file(resume_path(folder, session));
+}
+
+/// Every kept conversation: the session, the folder it was written for and
+/// the lines. Blocking.
+pub(super) fn read_resumes(folder: &Path) -> Vec<(String, String, Vec<u8>)> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("resume") || !path.is_file() {
+            continue;
+        }
+        let (Some(session), Ok(bytes)) = (path.file_stem().and_then(|stem| stem.to_str()), std::fs::read(&path)) else {
+            continue;
+        };
+        let Some(at) = bytes.iter().position(|byte| *byte == b'\n') else {
+            continue;
+        };
+        let old_folder = String::from_utf8_lossy(&bytes[..at]).into_owned();
+        found.push((session.to_owned(), old_folder, bytes[at + 1..].to_vec()));
+    }
+    found
 }
 
 /// Every follow-up the last run left. A file that can't be read is logged
@@ -320,6 +375,7 @@ mod tests {
             operation: "op_1".to_owned(),
             restored,
             kept,
+            cleared: false,
         }
     }
 
@@ -332,6 +388,7 @@ mod tests {
             operation,
             restored: read,
             kept: was_kept,
+            ..
         } = kept(&release(Some(restored()), Some("1 later turn(s)".to_owned())))
         else {
             panic!("a release reads back as a release");
@@ -378,6 +435,26 @@ mod tests {
     }
 
     #[test]
+    fn a_cleared_release_reads_back_cleared_and_an_old_one_does_not() {
+        let Pending::Release { cleared, .. } = kept(&Pending::Release {
+            session: "se_1".to_owned(),
+            machine: "box-1".to_owned(),
+            channel: "ch_1".to_owned(),
+            operation: "op_1".to_owned(),
+            restored: None,
+            kept: None,
+            cleared: true,
+        }) else {
+            panic!("a release reads back as a release");
+        };
+        assert!(cleared);
+        let Pending::Release { cleared, .. } = kept(&release(None, None)) else {
+            panic!("a release reads back as a release");
+        };
+        assert!(!cleared);
+    }
+
+    #[test]
     fn a_reconcile_and_a_release_of_one_session_are_kept_apart() {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("store");
@@ -394,5 +471,20 @@ mod tests {
         remove(&store, &release);
         let left = read_all(&store);
         assert!(matches!(left.as_slice(), [Pending::Reconcile { .. }]), "{left:?}");
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+
+    #[test]
+    fn a_kept_conversation_is_read_back_with_its_folder_and_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let lines = b"{\"a\":1}\n{\"b\":2}\n".to_vec();
+        write_resume(dir.path(), "se_1", "/old/folder", &lines).unwrap();
+        assert_eq!(read_resumes(dir.path()), vec![("se_1".to_owned(), "/old/folder".to_owned(), lines)]);
+        remove_resume(dir.path(), "se_1");
+        assert!(read_resumes(dir.path()).is_empty());
     }
 }

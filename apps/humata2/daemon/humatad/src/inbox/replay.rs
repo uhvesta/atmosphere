@@ -10,14 +10,19 @@
 //! and the caller asks the machine to send the entry again.
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
+use humata2_access::{Answer, GrantId};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{SessionRecord, Store, StoreError};
+use humata2_store_proto::humata::store::v1 as stored;
 use prost::Message;
 use tokio::task::JoinError;
 
 use super::{Entry, Held, Inbox, kept, next_revision};
 use crate::away::{JOURNAL_ANSWER, JOURNAL_REQUEST, JOURNAL_WITHDRAWN};
+use crate::grant_target;
+use crate::identity::{Caller, UserVia};
 
 /// What became of one journal entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +101,11 @@ struct Arrival<'a> {
     at: Option<humata2_grpc::Timestamp>,
     /// The session the entry says made the call.
     session: &'a str,
+    /// The host's own machine.
+    host: &'a str,
+    /// The answer the host has sent down for this request and not yet
+    /// seen settled.
+    relayed: Option<pb::RequestAnswer>,
     request: pb::InboxRequest,
 }
 
@@ -238,7 +248,8 @@ fn mirrored(arrival: &Arrival<'_>, session: &SessionRecord) -> pb::InboxRequest 
 }
 
 /// The answer's credit: when the machine says it was made, by the user at
-/// that machine's terminal (AW-6).
+/// that machine's terminal (AW-6). When the host has just relayed that very
+/// answer, it is the host's own user: the one at the Mac who gave it.
 fn credited(arrival: &Arrival<'_>) -> pb::Timestamped {
     let at = arrival
         .request
@@ -246,13 +257,22 @@ fn credited(arrival: &Arrival<'_>) -> pb::Timestamped {
         .as_ref()
         .and_then(|answered| answered.at.clone())
         .or_else(|| arrival.at.clone());
+    let relayed = arrival
+        .relayed
+        .as_ref()
+        .is_some_and(|sent| arrival.request.answer.as_ref() == Some(sent));
+    let (via, machine) = if relayed {
+        (pb::user_actor::Via::App, arrival.host)
+    } else {
+        (pb::user_actor::Via::CliOnMachine, arrival.machine)
+    };
     pb::Timestamped {
         at,
         by: Some(pb::Actor {
             actor: Some(pb::actor::Actor::User(pb::UserActor {
-                via: pb::user_actor::Via::CliOnMachine as i32,
+                via: via as i32,
                 machine: Some(pb::MachineId {
-                    value: arrival.machine.to_owned(),
+                    value: machine.to_owned(),
                 }),
             })),
         }),
@@ -266,6 +286,20 @@ fn revised(arrival: &Arrival<'_>, held: &pb::InboxRequest) -> Option<pb::Revisio
         .revision
         .clone()
         .or_else(|| Some(next_revision(held)))
+}
+
+/// The target an "Always allow" answer names.
+fn always_target(request: &pb::InboxRequest) -> Option<pb::GrantTarget> {
+    match request.answer.as_ref()?.answer.as_ref()? {
+        pb::request_answer::Answer::Always(always) => always.target.clone(),
+        _ => None,
+    }
+}
+
+fn say_not_forgotten(machine: &str, why: &str) {
+    crate::log::say!(
+        "humatad2: warning: couldn't forget how far {machine}'s journal was applied: {why}. If {machine} is added again, the first entries of its new journal may be left out as already applied; forget it again once the disk problem is fixed"
+    );
 }
 
 impl Inbox {
@@ -299,7 +333,12 @@ impl Inbox {
     /// nothing.
     pub(crate) async fn replay(&self, machine: &str, entry: &pb::JournalEntry) -> Replayed {
         match self.replayed(machine, entry).await {
-            Ok(outcome) => outcome,
+            Ok(outcome) => {
+                if outcome != Replayed::Held {
+                    self.settle_relay(entry);
+                }
+                outcome
+            }
             Err(error) => {
                 crate::log::say!("humatad2: warning: {}", crate::status::chain(&error));
                 Replayed::Held
@@ -342,6 +381,11 @@ impl Inbox {
         }
 
         let decided = match pb::InboxRequest::decode(entry.request.as_slice()) {
+            // `board.` entries go to the boards before they get here (D227); what is no
+            // Inbox operation at all is left out, decodable or not.
+            Ok(_) if !entry.operation.starts_with("inbox.") => Err(Rejection::UnknownOperation {
+                operation: entry.operation.clone(),
+            }),
             Ok(request) => {
                 let arrival = Arrival {
                     machine,
@@ -349,6 +393,8 @@ impl Inbox {
                     operation: &entry.operation,
                     at: entry.at.clone(),
                     session: &session_id,
+                    host: &self.machine,
+                    relayed: request.id.as_ref().and_then(|id| self.relays.outstanding(&id.value)),
                     request,
                 };
                 let id = arrival.request.id.as_ref().map(|id| id.value.as_str()).unwrap_or_default();
@@ -382,27 +428,181 @@ impl Inbox {
         };
 
         let id = next.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
-        match state.requests.iter().position(|held| held.id == id) {
+        // "Always allow", answered on the machine or relayed from here,
+        // becomes this Mac's own grant (D226).
+        let made = match (entry.operation.as_str(), always_target(&next)) {
+            (JOURNAL_ANSWER, Some(target)) => self
+                .host_grant(machine, &session_id, &next, &target)
+                .map(|made| (target, made)),
+            _ => None,
+        };
+        let (asked, grant) = match made {
+            Some((target, made)) => (Some(target), Some(made)),
+            None => (None, None),
+        };
+        let grant_number = grant
+            .as_ref()
+            .and_then(|(grant, _)| grant_target::grant_number(grant));
+        let position = state.requests.iter().position(|held| held.id == id);
+        let mut held = match position {
             Some(at) => {
                 let mut held = state.requests[at].request.borrow().clone();
                 held.request = next;
-                let record = kept::record(&state.requests[at], &held);
-                self.save(machine, seq, Some(record)).await?;
-                let told = held.request.clone();
-                let owner = state.requests[at].session.clone();
-                state.requests[at].request.send_replace(held);
-                self.tell(pb::Change::Updated, &owner, &told);
+                held
+            }
+            None => Held::new(next),
+        };
+        if let Some((grant, granted)) = grant {
+            held.grant = Some(grant);
+            held.granted = Some(granted);
+        }
+        let (record, before) = match position {
+            Some(at) => {
+                let entry = &mut state.requests[at];
+                let before = entry.asked.clone();
+                if asked.is_some() {
+                    entry.asked.clone_from(&asked);
+                }
+                (kept::record(entry, &held), before)
             }
             None => {
-                let held = Held::new(next);
-                let made = Entry::new(id, session_id.clone(), None, None, None, held.clone());
-                let record = kept::record(&made, &held);
-                self.save(machine, seq, Some(record)).await?;
+                let made = Entry::new(id.clone(), session_id.clone(), None, asked.clone(), None, held.clone());
+                (kept::record(&made, &held), None)
+            }
+        };
+        if let Err(error) = self.save(machine, seq, Some(record)).await {
+            // What is in force is what a restart keeps.
+            self.take_back(grant_number);
+            if let Some(at) = position {
+                state.requests[at].asked = before;
+            }
+            return Err(error);
+        }
+        match position {
+            Some(at) => {
+                state.requests[at].request.send_replace(held);
+                self.tell_answer(&state.requests[at]);
+            }
+            None => {
+                let told = held.request.clone();
+                let made = Entry::new(id, session_id.clone(), None, asked, None, held);
+                self.tell_grant(&made);
                 state.add(made);
-                self.tell(pb::Change::Created, &session_id, &held.request);
+                self.tell(pb::Change::Created, &session_id, &told);
             }
         }
         Ok(Replayed::Applied)
+    }
+
+    /// The grant an "Always allow" answer makes on this Mac when it is
+    /// replayed (D226): the card's target worked out again against the
+    /// rules as they are now, and made the way the user's own "Always
+    /// allow" here would. No grant, and a line in the log, when the rule is
+    /// now Allow or something already covers it, when it is now Never, or
+    /// when what the target names is gone: the answer is recorded all the
+    /// same.
+    fn host_grant(
+        &self,
+        machine: &str,
+        session: &str,
+        request: &pb::InboxRequest,
+        target: &pb::GrantTarget,
+    ) -> Option<(pb::Grant, stored::InboxGrant)> {
+        let id = request.id.as_ref().map(|id| id.value.as_str()).unwrap_or_default();
+        let ahead = kept::ahead(&self.guard, &self.store, &self.machine, session, request.capability, target.clone());
+        let asked = match ahead {
+            kept::Ahead::Ask(asked) => asked,
+            kept::Ahead::Covered => {
+                crate::log::say!(
+                    "humatad2: {machine}'s \"Always allow\" for request {id} made no grant on this Mac: the rule allows it already, or a grant covers it"
+                );
+                return None;
+            }
+            kept::Ahead::Refused => {
+                crate::log::say!(
+                    "humatad2: {machine}'s \"Always allow\" for request {id} made no grant on this Mac: the rule for it is now Never; the answer is recorded, and the agent asks again if it still needs this"
+                );
+                return None;
+            }
+            kept::Ahead::Gone => {
+                crate::log::say!(
+                    "humatad2: {machine}'s \"Always allow\" for request {id} made no grant on this Mac: the session, or what the grant named, is gone; the answer is recorded"
+                );
+                return None;
+            }
+        };
+        // An ask-ahead asks whatever the rule says; Allow means nothing to grant.
+        let rule = self.guard.with_policy(|policy, _| {
+            policy
+                .channel_rules(&asked.channel)
+                .and_then(|rules| rules.decision(asked.capability))
+        });
+        if rule == Some(humata2_access::Decision::Allow) {
+            crate::log::say!(
+                "humatad2: {machine}'s \"Always allow\" for request {id} made no grant on this Mac: the rule allows it already"
+            );
+            return None;
+        }
+        let offered = asked.always_let.clone()?;
+        let user = self.present_user(&Caller::User(UserVia::App)).ok()?;
+        match self.approve(&user, id, &asked, &Answer::AlwaysLet(offered), SystemTime::now()) {
+            Ok(made) => made,
+            Err(refused) => {
+                crate::log::say!(
+                    "humatad2: {machine}'s \"Always allow\" for request {id} made no grant on this Mac: {}",
+                    refused.message()
+                );
+                None
+            }
+        }
+    }
+
+    /// Takes back the grant number `grant` just made, when its entry
+    /// couldn't be saved.
+    fn take_back(&self, grant: Option<u64>) {
+        let Some(grant) = grant else {
+            return;
+        };
+        let Ok(user) = self.present_user(&Caller::User(UserVia::App)) else {
+            return;
+        };
+        // Just made, so it can't be missing; if it were, a restart has none.
+        let _ = self.guard.with_policy(|policy, _| policy.revoke_grant(&user, GrantId::new(grant)));
+    }
+
+    /// Forgets how far `machine`'s journal was applied: the machine is
+    /// forgotten, or enrolled again, and its journal starts over, so the old
+    /// mark would skip its first entries (D226).
+    pub(crate) async fn forget_journal(&self, machine: &str) {
+        // Not while an entry of it is being applied.
+        let _state = self.state.lock().await;
+        let (store, name) = (Arc::clone(&self.store), machine.to_owned());
+        match tokio::task::spawn_blocking(move || store.forget_machine_journal(&name)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => say_not_forgotten(machine, &crate::status::chain(&error)),
+            Err(error) => say_not_forgotten(machine, &error.to_string()),
+        }
+    }
+
+    /// As [`Self::forget_journal`], from a thread that may block.
+    pub(crate) fn forget_journal_now(&self, machine: &str) {
+        if let Err(error) = self.store.forget_machine_journal(machine) {
+            say_not_forgotten(machine, &crate::status::chain(&error));
+        }
+    }
+
+    /// An answer or withdrawal of request `entry` is applied: the answer
+    /// the host sent for it, if any, has done its part.
+    fn settle_relay(&self, entry: &pb::JournalEntry) {
+        if !matches!(entry.operation.as_str(), JOURNAL_ANSWER | JOURNAL_WITHDRAWN) {
+            return;
+        }
+        let id = pb::InboxRequest::decode(entry.request.as_slice())
+            .ok()
+            .and_then(|request| request.id);
+        if let Some(id) = id {
+            self.relays.settle(&id.value);
+        }
     }
 
     /// Saves `record`, if any, and moves `machine`'s mark to `seq`, in one
@@ -639,5 +839,162 @@ mod tests {
         broken.request = vec![0xff, 0xff, 0xff];
         assert_eq!(inbox.replay(BOX, &broken).await, Replayed::Rejected);
         assert_eq!(store.machine_journal_mark(BOX).unwrap(), 1);
+    }
+
+    fn by_of(request: &pb::InboxRequest) -> pb::UserActor {
+        let by = request
+            .answered
+            .clone()
+            .and_then(|answered| answered.by)
+            .and_then(|actor| actor.actor);
+        let Some(pb::actor::Actor::User(user)) = by else {
+            panic!("the answer should be credited to the user");
+        };
+        user
+    }
+
+    fn said(answer: pb::request_answer::Answer) -> pb::RequestAnswer {
+        pb::RequestAnswer { answer: Some(answer) }
+    }
+
+    #[tokio::test]
+    async fn an_answer_is_credited_to_the_host_user_only_when_the_host_relayed_that_answer() {
+        let approve = said(pb::request_answer::Answer::Approve(pb::Approve {}));
+        let deny = said(pb::request_answer::Answer::Deny(pb::Deny::default()));
+        for (relayed, via) in [
+            (Some(approve), pb::user_actor::Via::App),
+            (Some(deny), pb::user_actor::Via::CliOnMachine),
+            (None, pb::user_actor::Via::CliOnMachine),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (_store, inbox) = open(directory.path());
+            let asked = card("rq_1", "se_a", pb::RequestState::Pending);
+            inbox.replay(BOX, &entry(1, JOURNAL_REQUEST, "se_a", &asked)).await;
+            // The host's wait is still on when the machine's entry comes.
+            let _waiting = relayed.map(|sent| inbox.relays().sent(BOX, "rq_1", sent));
+            inbox.replay(BOX, &entry(2, JOURNAL_ANSWER, "se_a", &approved("rq_1"))).await;
+            let settled = mirror(&inbox, "rq_1").await.unwrap();
+            let user = by_of(&settled);
+            assert_eq!(user.via(), via);
+            if via == pb::user_actor::Via::App {
+                assert_eq!(user.machine.map(|machine| machine.value), Some(HOST.to_owned()));
+            }
+            assert_eq!(inbox.relays().outstanding("rq_1"), None, "the entry settles the relay");
+        }
+    }
+
+    fn other_files() -> pb::GrantTarget {
+        pb::GrantTarget {
+            target: Some(pb::grant_target::Target::Path(pb::PathScope {
+                machine: None,
+                session: Some(pb::SessionId {
+                    value: "se_other".to_owned(),
+                }),
+                prefix: Some(pb::RepoPath {
+                    repo: Some(pb::RepoRef {
+                        owner: "acme".to_owned(),
+                        name: "ledger".to_owned(),
+                    }),
+                    path: "src".to_owned(),
+                }),
+            })),
+        }
+    }
+
+    /// The request as the machine's journal says it ended: approved with
+    /// "Always allow" on `other_files`.
+    fn always_allowed(id: &str) -> pb::InboxRequest {
+        pb::InboxRequest {
+            capability: pb::Capability::FilesReadOtherSession as i32,
+            always: Some(pb::AlwaysOption {
+                label: "Always allow".to_owned(),
+                target: Some(other_files()),
+            }),
+            answer: Some(said(pb::request_answer::Answer::Always(pb::AlwaysLet {
+                target: Some(other_files()),
+            }))),
+            ..card(id, "se_a", pb::RequestState::Approved)
+        }
+    }
+
+    /// The host's Inbox after it replays a request and its "Always allow"
+    /// answer, with `decision` as the channel's rule for reading another
+    /// session's files.
+    async fn always_replayed(decision: humata2_access::Decision) -> (tempfile::TempDir, Inbox) {
+        use humata2_access::{Capability, ChannelId, Principal, Rules};
+        let directory = tempfile::tempdir().unwrap();
+        let (store, inbox) = open(directory.path());
+        store.put_session(&session("se_other", BOX)).unwrap();
+        inbox.guard.with_policy(|policy, context| {
+            let user = Principal::App.present_user(context).unwrap();
+            let _ = policy.add_channel(ChannelId::new("ch_a"));
+            policy
+                .set_rule(
+                    &user,
+                    &Rules::Channel(ChannelId::new("ch_a")),
+                    Capability::FilesReadOtherSession,
+                    decision,
+                )
+                .unwrap();
+        });
+        let asked = pb::InboxRequest {
+            capability: pb::Capability::FilesReadOtherSession as i32,
+            ..card("rq_1", "se_a", pb::RequestState::Pending)
+        };
+        inbox.replay(BOX, &entry(1, JOURNAL_REQUEST, "se_a", &asked)).await;
+        let outcome = inbox.replay(BOX, &entry(2, JOURNAL_ANSWER, "se_a", &always_allowed("rq_1"))).await;
+        assert_eq!(outcome, Replayed::Applied);
+        (directory, inbox)
+    }
+
+    fn grants_of(inbox: &Inbox) -> usize {
+        inbox.guard.with_policy(|policy, _| policy.grants().count())
+    }
+
+    #[tokio::test]
+    async fn an_always_allow_answer_makes_a_host_grant_when_the_rule_is_ask() {
+        let (_directory, inbox) = always_replayed(humata2_access::Decision::Ask).await;
+        assert_eq!(grants_of(&inbox), 1);
+        assert_eq!(mirror(&inbox, "rq_1").await.unwrap().state(), pb::RequestState::Approved);
+    }
+
+    #[tokio::test]
+    async fn an_always_allow_answer_makes_no_grant_when_the_rule_is_allow_or_never_and_is_still_recorded() {
+        for decision in [humata2_access::Decision::Allow, humata2_access::Decision::Never] {
+            let (_directory, inbox) = always_replayed(decision).await;
+            assert_eq!(grants_of(&inbox), 0);
+            let settled = mirror(&inbox, "rq_1").await.unwrap();
+            assert_eq!(settled.state(), pb::RequestState::Approved);
+            assert!(matches!(
+                settled.answer.and_then(|answer| answer.answer),
+                Some(pb::request_answer::Answer::Always(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_always_allow_replayed_again_makes_no_second_grant() {
+        let (_directory, inbox) = always_replayed(humata2_access::Decision::Ask).await;
+        let again = inbox.replay(BOX, &entry(3, JOURNAL_ANSWER, "se_a", &always_allowed("rq_1"))).await;
+        assert_eq!(again, Replayed::Applied);
+        assert_eq!(grants_of(&inbox), 1);
+    }
+
+    #[tokio::test]
+    async fn a_forgotten_machines_journal_is_applied_from_the_start_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let (store, inbox) = open(directory.path());
+        let asked = card("rq_1", "se_a", pb::RequestState::Pending);
+        inbox.replay(BOX, &entry(1, JOURNAL_REQUEST, "se_a", &asked)).await;
+        assert_eq!(store.machine_journal_mark(BOX).unwrap(), 1);
+
+        inbox.forget_journal(BOX).await;
+        assert_eq!(store.machine_journal_mark(BOX).unwrap(), 0);
+        assert_eq!(inbox.replayed_through(BOX).await, 0);
+
+        // The machine, enrolled again, starts its journal over at 1.
+        let next = card("rq_2", "se_a", pb::RequestState::Pending);
+        assert_eq!(inbox.replay(BOX, &entry(1, JOURNAL_REQUEST, "se_a", &next)).await, Replayed::Applied);
+        assert!(mirror(&inbox, "rq_2").await.is_some());
     }
 }

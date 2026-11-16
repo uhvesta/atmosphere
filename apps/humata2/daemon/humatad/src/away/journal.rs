@@ -3,6 +3,7 @@
 //! is reachable, so the host takes it in order when it links: a new request,
 //! the answer to one, a request withdrawn. The host's ack ends a resend.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -106,6 +107,19 @@ pub(crate) fn record_now(
 }
 
 fn append(store: &Store, session: &str, operation: &str, request: &pb::InboxRequest) -> Result<(), JournalError> {
+    append_entry(store, session, operation, request.encode_to_vec(), None, None).map(drop)
+}
+
+/// Adds one entry made by `session`, with `request` as it was received, and
+/// returns its sequence once it is on disk.
+fn append_entry(
+    store: &Store,
+    session: &str,
+    operation: &str,
+    request: Vec<u8>,
+    base_revision: Option<u64>,
+    approved_request: Option<String>,
+) -> Result<u64, JournalError> {
     let store_error = |source| JournalError::Store { source };
     let revision = policy_copy::held_revision(store).map_err(store_error)?;
     let entry = pb::JournalEntry {
@@ -117,15 +131,43 @@ fn append(store: &Store, session: &str, operation: &str, request: &pb::InboxRequ
             pid: 0,
         }),
         operation: operation.to_owned(),
-        request: request.encode_to_vec(),
+        request,
+        base_revision: base_revision.map(|value| pb::Revision { value }),
         policy_revision: revision,
+        approved_request: approved_request.map(|value| pb::RequestId { value }),
         ..Default::default()
     };
     store
         .journal()
         .append(operation, &entry.encode_to_vec())
-        .map_err(store_error)?;
-    Ok(())
+        .map_err(store_error)
+}
+
+/// Keeps a board write `session`'s agent made while the host is away, as the
+/// request was received, and returns where it sits in the journal (D227).
+/// Unlike [`record`], this fails when the entry can't be kept: the journal is
+/// then the only copy of the write, so the call must not say it was taken.
+/// `base_revision` is the revision the agent last saw, if the call says.
+/// `approved_request` is the request the user approved on this machine for
+/// the write, when its rule asked (D268).
+pub(crate) async fn record_board(
+    store: &Arc<Store>,
+    link: &HostLink,
+    session: &str,
+    operation: &'static str,
+    request: Vec<u8>,
+    base_revision: Option<u64>,
+    approved_request: Option<String>,
+) -> Result<u64, JournalError> {
+    let store = Arc::clone(store);
+    let session = session.to_owned();
+    let seq = tokio::task::spawn_blocking(move || {
+        append_entry(&store, &session, operation, request, base_revision, approved_request)
+    })
+    .await
+    .map_err(|source| JournalError::Task { source })??;
+    link.journal_written();
+    Ok(seq)
 }
 
 /// The entries the host hasn't acked with a sequence after `after`, in
@@ -150,6 +192,18 @@ pub(crate) fn entries_after(store: &Store, after: u64) -> Result<Vec<pb::Journal
         }
     }
     Ok(entries)
+}
+
+/// The ids of the requests whose answers are in the journal, unacked, with a
+/// sequence through `through`. A grant made on this machine for one of them
+/// is kept only until the host acks it (D226).
+pub(super) fn answered_through(store: &Store, through: u64) -> Result<BTreeSet<String>, JournalError> {
+    Ok(entries_after(store, 0)?
+        .into_iter()
+        .filter(|entry| entry.seq <= through && entry.operation == ANSWER)
+        .filter_map(|entry| pb::InboxRequest::decode(entry.request.as_slice()).ok()?.id)
+        .map(|id| id.value)
+        .collect())
 }
 
 /// Records that the host has every entry through `seq`.
@@ -223,5 +277,57 @@ mod tests {
     fn a_withdrawal_is_its_own_operation() {
         let withdrawn = request(pb::RequestState::Withdrawn);
         assert_eq!(operation_of(pb::RequestState::Pending, &withdrawn), Some(WITHDRAWN));
+    }
+
+    #[tokio::test]
+    async fn a_board_write_is_kept_whole_with_the_revision_it_was_made_against() {
+        let (_directory, store) = store();
+        let link = HostLink::new(false);
+        let changes = link.journal_writes();
+        let seq = record_board(&store, &link, "se_a", "board.item_move", vec![1, 2, 3], Some(4), None)
+            .await
+            .unwrap();
+        assert!(
+            changes.has_changed().unwrap(),
+            "an open uplink is told there is something to send"
+        );
+        record_board(&store, &link, "se_a", "board.item_create", vec![9], None, None).await.unwrap();
+
+        let entries = entries_after(&store, 0).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].seq, seq);
+        assert_eq!(entries[0].operation, "board.item_move");
+        assert_eq!(entries[0].request, vec![1, 2, 3]);
+        assert_eq!(entries[0].base_revision, Some(pb::Revision { value: 4 }));
+        assert_eq!(
+            entries[0]
+                .principal
+                .as_ref()
+                .and_then(|p| p.session.as_ref())
+                .map(|s| s.value.as_str()),
+            Some("se_a")
+        );
+        assert_eq!(
+            entries[1].base_revision, None,
+            "a write that names no revision is the later one that wins"
+        );
+        assert_eq!(entries[0].approved_request, None, "nothing was approved for these");
+    }
+
+    #[tokio::test]
+    async fn a_board_write_the_user_approved_names_the_request_it_ran_under() {
+        let (_directory, store) = store();
+        let link = HostLink::new(false);
+        let approved = Some("rq_1".to_owned());
+        record_board(&store, &link, "se_a", "board.item_move", vec![1], Some(4), approved)
+            .await
+            .unwrap();
+        let entries = entries_after(&store, 0).unwrap();
+        assert_eq!(
+            entries[0].approved_request,
+            Some(pb::RequestId {
+                value: "rq_1".to_owned()
+            })
+        );
     }
 }

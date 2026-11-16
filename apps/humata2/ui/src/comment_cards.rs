@@ -4,6 +4,7 @@
 use std::rc::Rc;
 
 use gpui_kit::base::{TestSupportExt as _, TestTextExt as _};
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
@@ -193,8 +194,20 @@ pub(crate) fn open_box(
                 .child(chip(look, "Draft")),
         )
         .child(
+            // The field reads as the card's text: the card's size and line
+            // height, no border or fill, no inner padding, and as tall as its
+            // lines. XSmall leaves the editor 4 pt on each side and the editor
+            // keeps 10 more at the end of a line for its caret; the negative
+            // margins take them back, so the text wraps where the card's
+            // does. The card's accent border is the focus ring.
             Textarea::new(input)
-                .h(px(60.))
+                .xsmall()
+                .appearance(false)
+                .bordered(false)
+                .text_size(px(12.))
+                .line_height(phi())
+                .ml(px(-4.))
+                .mr(px(-14.))
                 .aria_label("Comment"),
         )
         .child(

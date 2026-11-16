@@ -592,3 +592,96 @@ async fn a_context_only_fork_on_a_box_cut_short_by_a_host_restart_is_listed_once
     assert_eq!(listed.len(), 2, "the parent and its fork, once: {listed:?}");
     assert_eq!(rig.the("box-1").store().sessions().unwrap().len(), 2, "box-1 made the fork once");
 }
+
+/// Forks `parent` onto `to` under a host killed at `at`, and starts the host
+/// again once it has died there.
+async fn fork_killed_at(rig: &mut Rig, parent: &pb::SessionId, to: &pb::MachineId, at: &str) {
+    rig.restart_host(&[("HUMATA2_STOP_AT", at)]).await;
+    let _ = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .fork_session(request(parent, pb::ForkKind::CodeAndContext, to))
+        .await;
+    rig.host_stopped().await;
+    rig.restart_host(&[]).await;
+}
+
+/// After a restart has undone a fork cut short before its copy landed: the
+/// parent runs on where it was with its work, the host lists the parent
+/// alone with no fork, box-1 keeps no record, agent or folder of the fork,
+/// and nothing is staged on either side.
+async fn assert_fork_undone(rig: &Rig, channel: &pb::Channel, parent: &pb::SessionId, head: &str) {
+    let shown = rig.session(parent).await;
+    assert!(is_live(&shown), "the parent runs on: {shown:?}");
+    assert!(shown.forks.is_empty(), "the parent lists no fork: {:?}", shown.forks);
+    let listed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .list_sessions(pb::ListSessionsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .sessions;
+    assert_eq!(listed.len(), 1, "only the parent is listed: {listed:?}");
+    assert_eq!(git(&["-C", &text(&rig.host_path(channel, PARENT)), "rev-parse", "HEAD"]), head, "the parent keeps its work");
+    assert_eq!(common::stored_tabs(&rig.host.state).len(), 1, "the host runs only the parent's agent");
+    assert!(common::stored_tabs(&rig.host.state).iter().all(holder_answers), "the parent's agent runs on");
+
+    let box_one = rig.the("box-1");
+    assert!(box_one.store().sessions().unwrap().is_empty(), "box-1 keeps no record of the fork");
+    assert!(box_one.tabs().is_empty(), "box-1 runs no agent");
+    assert!(!box_one.path(channel, FORK).exists(), "box-1 keeps no folder of the fork");
+    assert!(staged_at(&box_one.path(channel, "")).is_empty(), "box-1 keeps nothing staged");
+    assert!(staged_at(&rig.host_path(channel, "")).is_empty(), "the host keeps nothing staged");
+}
+
+/// Cuts a fork of the host's session onto box-1 short at `at`, restarts,
+/// and checks the fork is undone; then forking again works.
+async fn fork_cut_short_is_undone_at_restart(at: &str) {
+    let mut rig = Rig::start(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let parent = rig.start_on(&channel, &host, "Cache warmup").await;
+    rig.wait_session(&parent, "live", is_live).await;
+    let head = make_work(&rig.host_path(&channel, PARENT));
+
+    fork_killed_at(&mut rig, &parent, &one, at).await;
+
+    let fork_on_box = rig.the("box-1").path(&channel, FORK);
+    let box_staging = rig.the("box-1").path(&channel, "");
+    let host_staging = rig.host_path(&channel, "");
+    rig.wait_session(&parent, "the fork undone", |s| {
+        is_live(s) && !fork_on_box.exists() && staged_at(&box_staging).is_empty() && staged_at(&host_staging).is_empty()
+    })
+    .await;
+    assert_fork_undone(&rig, &channel, &parent, &head).await;
+
+    let mut again = request(&parent, pb::ForkKind::CodeAndContext, &one);
+    again.idempotency_key = Some(pb::IdempotencyKey { value: format!("fork-again-{at}") });
+    let started = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .fork_session(again)
+        .await
+        .expect("the fork starts again")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{at}: forking again failed: {:?}", ended.error);
+    let Some(pb::operation::Result::Session(id)) = ended.result else {
+        panic!("{at}: the fork made no session: {ended:?}");
+    };
+    rig.wait_session(&id, "live on box-1", |s| s.machine.as_ref() == Some(&one) && is_live(s)).await;
+    let to = rig.the("box-1").path(&channel, FORK);
+    assert!(git(&["-C", &text(&to), "merge-base", "--is-ancestor", &head, "HEAD"]).is_empty(), "{at}: the parent's commit is in the fork");
+}
+
+/// FK-8: a host killed as a fork of this Mac's session
+/// onto box-1 starts, before anything is staged, undoes the fork at its
+/// next start, and forking again works.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_cut_short_as_it_starts_is_undone_at_restart() {
+    fork_cut_short_is_undone_at_restart("fork-started").await;
+}
+
+/// FK-8 recovery: a host killed once the fork's files are staged and its
+/// copy to box-1 has begun undoes the fork at its next start: box-1 takes
+/// back whatever landed there, the staged files on this Mac are removed,
+/// and the parent is untouched.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fork_cut_short_as_its_copy_begins_is_undone_at_restart() {
+    fork_cut_short_is_undone_at_restart("fork-copying").await;
+}

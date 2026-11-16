@@ -223,6 +223,22 @@ pub async fn restart_shells(
     Ok(restarted)
 }
 
+/// Starts one shell tab again as [`restart_shells`] does for a session's:
+/// a new shell in `folder` (its session's, if it has one) with the output
+/// its old holder saved shown above `line`; a tab whose holder answers is
+/// reattached. For the restart doctor (PER-30), which repairs a tab the
+/// last start didn't bring back. No restart report is written.
+pub async fn restart_shell(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    tab: TabRecord,
+    folder: Option<PathBuf>,
+    env: Env<'_>,
+    line: &str,
+) -> Result<ShellRevived, ReviveError> {
+    revive_shell(store, config, tab, folder, env, Some(line)).await
+}
+
 /// Looks up the agent's tab, then brings the agent back for `why`.
 async fn revive_listed(
     store: &Arc<Store>,

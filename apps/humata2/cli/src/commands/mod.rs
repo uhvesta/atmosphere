@@ -2,6 +2,7 @@
 
 mod boards;
 mod desk;
+mod doctor;
 mod files;
 mod hook;
 mod hosts;
@@ -165,6 +166,7 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
         Command::Sessions(command) => search::sessions(ctx, command).await,
         Command::Desk(command) => desk::desk(ctx, command).await,
         Command::Report(command) => hosts::report(ctx, command).await,
+        Command::Doctor(DoctorCommand::Restarts(args)) => doctor::restarts(ctx, args).await,
         Command::Turn { state } => turn::turn(ctx, state, std::time::SystemTime::now()).await,
         Command::Hook { agent, event } => hook::hook(ctx, &agent, event).await,
         Command::Opencode {
@@ -174,6 +176,13 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
         } => opencode::opencode(ctx, conversation, state, program).await,
     }
 }
+
+/// Whether a command only reads files, so it runs with the daemon down.
+pub fn works_offline(command: &Command) -> bool {
+    matches!(command, Command::Doctor(DoctorCommand::Restarts(args)) if args.explain)
+}
+
+pub use doctor::{DoctorError, Offline};
 
 /// The operation id a command is, as MCP, audit and history name it.
 pub fn operation(command: &Command) -> &'static str {
@@ -371,6 +380,7 @@ pub fn operation(command: &Command) -> &'static str {
             ReportCommand::Stop => "report.stop",
             ReportCommand::Snapshot { .. } => "report.snapshot",
         },
+        Command::Doctor(DoctorCommand::Restarts(_)) => "doctor.restarts",
         Command::Turn { .. } => "session.report_turn",
         Command::Hook { .. } => "session.hook",
         Command::Opencode { .. } => "session.opencode",

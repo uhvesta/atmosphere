@@ -503,7 +503,9 @@ pub(crate) fn refused(refusal: &Refusal) -> Status {
             }),
             false,
         ),
-        Refusal::NotItsFolder { .. } | Refusal::ReviewSessionPush { .. } => (
+        Refusal::NotItsFolder { .. }
+        | Refusal::ReviewSessionPush { .. }
+        | Refusal::MachineStopped { .. } => (
             Code::PermissionDenied,
             denied(Denied::HardLimit, None),
             false,

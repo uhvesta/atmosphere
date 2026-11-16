@@ -127,6 +127,8 @@ enum SessionStatus {
   // SE-22: the output fallback says the turn ended. Never shown as Idle;
   // stays until the user types or the agent writes output again.
   SESSION_STATUS_PROBABLY_IDLE = 11;
+  // D264: its machine's sessions are stopped; Start brings it back.
+  SESSION_STATUS_MACHINE_STOPPED = 12;
 }
 
 // SE-21: where a turn end comes from.

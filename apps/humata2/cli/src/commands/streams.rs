@@ -139,7 +139,7 @@ pub(super) async fn attach<D: Daemon, C: Console>(
                 }
             }
             Some((cols, rows)) = keyboard.resizes.recv() => {
-                let _ = send.send(message(Client::Resize(pb::TerminalResize { cols, rows }))).await;
+                let _ = send.send(message(Client::Resize(pb::TerminalResize { cols, rows, ..Default::default() }))).await;
             }
         }
     }

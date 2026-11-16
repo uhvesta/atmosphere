@@ -11,7 +11,7 @@ use humata2_sessions::{OwnCopyError, Starter};
 use humata2_store::TabRecord;
 use tonic::{Code, Status};
 
-use super::fork::{not_built_part, stop_point};
+use super::fork::not_built_part;
 use super::lineage::publish_family;
 use super::{SessionSvc, Tell, advance, turns, watch};
 use crate::channel_service::{Gated, blocking, error_of, failed};
@@ -223,7 +223,7 @@ async fn run_own_copy(
     let env = |tab: &TabRecord| tokens.env(tab);
     let outcome = {
         let mut note = |event: &str| {
-            stop_point(&format!("own_copy.{event}"));
+            crate::fault::point(&format!("own_copy.{event}"));
             current = advance(&progress, &keys, event);
         };
         starter.give_own_copy(&fork, &env, &mut note).await

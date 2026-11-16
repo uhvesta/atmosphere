@@ -383,6 +383,7 @@ impl Attached {
             status: status as i32,
             exit_code: self.exited.unwrap_or(0),
             other_writers: others,
+            ..Default::default()
         }
     }
 
@@ -583,6 +584,7 @@ async fn snapshot_messages(
                 raw_size: header.raw_len,
                 crc32: header.crc32,
                 more: index < last,
+                ..Default::default()
             })
         })
         .collect())

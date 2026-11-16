@@ -28,7 +28,7 @@ use humata2_store::{ChannelRecord, ForkOrigin, SessionDetail, SessionRecord, Ses
 use pb::invalid_field::Problem;
 use tonic::{Code, Status};
 
-use super::fork::{human_bytes, not_built_part, stop_point};
+use super::fork::{human_bytes, not_built_part};
 use super::lineage::publish_family;
 use super::{COLS, Gated, Loaded, ROWS, SessionSvc, Tell, advance, clean_title, now_ms, start_error, watch};
 use crate::carry::{Carry, ForkJournal, Place};
@@ -624,7 +624,7 @@ impl Forker {
                 context: None,
             })
             .await;
-        stop_point(&format!("fork-{phase}"));
+        crate::fault::point(&format!("fork-{phase}"));
     }
 
     fn take_progress(&self) -> Option<Progress> {
@@ -915,10 +915,27 @@ impl SessionSvc {
                 continue;
             }
             let (svc, carry, started) = (self.clone(), carry.clone(), started.clone());
+            let operations = started.operations().clone();
+            operations.record(
+                &journal.operation,
+                "fork",
+                &journal.phase,
+                crate::restart::OperationState::Pending {
+                    waits_for: format!("the start to finish, then the links of {} and {}", journal.from, journal.to),
+                },
+            );
             tokio::spawn(async move {
                 started.wait().await;
                 for machine in [&journal.from, &journal.to] {
                     if !carry.is_host(machine) && super::move_recover::wait_up(carry.links(), machine).await.is_err() {
+                        operations.record(
+                            &journal.operation,
+                            "fork",
+                            &journal.phase,
+                            crate::restart::OperationState::Stuck {
+                                reason: format!("{machine} was forgotten before the fork could be finished or undone"),
+                            },
+                        );
                         crate::log::say!(
                             "humatad2: the fork {} of session {} was cut short, and {machine} was forgotten before it could be finished or undone. Nothing was deleted; look at the fork's machine",
                             journal.session, journal.parent
@@ -927,7 +944,22 @@ impl SessionSvc {
                     }
                 }
                 let operation = journal.operation.clone();
-                match recover_fork(svc, carry.clone(), journal).await {
+                let (phase, from) = (journal.phase.clone(), journal.from.clone());
+                let outcome = recover_fork(svc, carry.clone(), journal).await;
+                operations.record(
+                    &operation,
+                    "fork",
+                    &phase,
+                    match &outcome {
+                        // The host's record was written: the fork stands.
+                        Ok(()) if phase == "recorded" => crate::restart::OperationState::Finished,
+                        Ok(()) => crate::restart::OperationState::Undone {
+                            reason: format!("the fork's record wasn't written yet, so its copy was taken back and the session on {from} stands"),
+                        },
+                        Err(error) => crate::restart::OperationState::Stuck { reason: status::chain(error) },
+                    },
+                );
+                match outcome {
                     Ok(()) => carry.fork_done(&operation).await,
                     Err(error) => crate::log::say!(
                         "humatad2: couldn't finish or undo fork {operation}: {}. Nothing was deleted; the next start tries again",

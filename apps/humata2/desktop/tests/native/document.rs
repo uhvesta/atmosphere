@@ -96,7 +96,7 @@ fn a_desk_document_opens_as_a_page_beside_the_files_panel() {
     assert_eq!(shown(&app).0, DocumentMode::Preview);
     assert!(app.contains("doc-preview"));
     assert!(!app.contains("doc-source"));
-    app.snapshot("desk-document");
+    app.snapshot("39-desk-document");
 }
 
 /// Frame 42: side by side, a comment sent on line 7, a draft box on 13-14.
@@ -115,7 +115,7 @@ fn the_source_shows_a_sent_comment_and_a_draft_box_beside_the_page() {
     assert!(app.contains("doc-source"));
     assert!(app.contains("doc-preview"));
     assert!(app.contains("doc-comment-box"));
-    app.snapshot("review-markdown-source");
+    app.snapshot("42-review-markdown-source");
 }
 
 /// Moves the document tab into the other group, as dragging it there does.
@@ -138,7 +138,35 @@ fn the_terminal_the_source_and_the_page_fit_side_by_side() {
     assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups[1].tabs.len()), 1);
     assert!(app.contains("doc-source"));
     assert!(app.contains("doc-preview"));
-    app.snapshot("review-terminal-source-page");
+    // The frame's state: line 7 sent, a draft on 13-14, the agent's tab shown.
+    comment_on(&mut app, 7, 7, "Where are the sizes from?");
+    app.send(AppAction::Comments(C::OpenBox(session(), anchor(13, 14))));
+    app.send(AppAction::Comments(C::Typed(
+        session(),
+        "Keep both until range p95 holds for a week on devbox-1, not just until the backfill ends."
+            .into(),
+    )));
+    app.send(AppAction::Session(SessionAction::SelectGroupTab { group: 0, index: 0 }));
+    // The user is writing in the file's group: it is the focused one.
+    app.send(AppAction::Session(SessionAction::SelectGroupTab { group: 1, index: 0 }));
+    assert!(app.contains("doc-comment-box"));
+    app.snapshot("43-review-terminal-source-page");
+}
+
+/// Frame 41, dark: the agent's terminal in one group, the file's page alone
+/// in the second, the mode switch in that group's row.
+#[test]
+fn the_page_reads_beside_the_agents_terminal() {
+    let mut app = doc_app();
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    open_document(&mut app, None);
+    move_document_across(&mut app);
+    app.send(AppAction::Session(SessionAction::SelectGroupTab { group: 0, index: 0 }));
+    assert_eq!(shown(&app).0, DocumentMode::Preview);
+    assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups.len()), 2);
+    assert!(app.contains("doc-preview"));
+    assert!(!app.contains("doc-source"));
+    app.snapshot("41-review-beside-terminal");
 }
 
 #[test]
@@ -302,13 +330,31 @@ fn link_scrolling_unticks_and_ticks_again() {
     assert!(shown(&app).1);
 }
 
+/// The page lights a draft and the box being written, never a sent comment:
+/// a sent one shows on its source line only.
 #[test]
 fn the_page_marks_where_a_comment_is() {
     let mut app = doc_app();
     open_document(&mut app, None);
     comment_on(&mut app, 7, 7, "Where are the sizes from?");
-    let id = app.fakes.comments.comments(&session())[0].id.clone();
-    assert!(app.contains(&format!("md-comment-{id}")));
+    app.send(AppAction::Comments(C::OpenBox(session(), anchor(13, 14))));
+    app.send(AppAction::Comments(C::Typed(
+        session(),
+        "Keep both until range p95 holds for a week on devbox-1.".into(),
+    )));
+    let held = app.fakes.comments.comments(&session());
+    let sent = held
+        .iter()
+        .find(|comment| comment.anchor.first == 7)
+        .expect("the sent comment is held");
+    let draft = held
+        .iter()
+        .find(|comment| comment.anchor.first == 13)
+        .expect("the draft is held");
+    assert_eq!(sent.status, CommentStatus::Sent);
+    assert_eq!(draft.status, CommentStatus::Draft);
+    assert!(app.contains(&format!("md-comment-{}", draft.id)));
+    assert!(!app.contains(&format!("md-comment-{}", sent.id)));
 }
 
 /// Flow 26.14 step 3 for the editor: Settings › Long lines switches the open

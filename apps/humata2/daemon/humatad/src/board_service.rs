@@ -10,8 +10,10 @@
 mod asks;
 mod hidden;
 mod history;
+mod journaled;
 mod keys;
 mod rank;
+mod replay;
 mod scope;
 
 use std::collections::HashSet;
@@ -30,6 +32,7 @@ use self::asks::{change_ask, field_change, new_item_ask, pending_for};
 use self::scope::{
     board_for_policy, board_pb, by_of, column_label, column_number, column_pb, made_by_session,
 };
+use crate::away::{Forwarder, Method};
 use crate::channel_service::{gate, timestamp_ms};
 use crate::events::{Feed, Scope};
 use crate::guard::{Checked, Guard};
@@ -60,6 +63,11 @@ pub(crate) struct BoardSvc {
     machine: String,
     writes: Arc<Mutex<()>>,
     finished: Arc<Answers<pb::WriteItemResponse>>,
+    /// On a machine: where its agents' board calls go while the host is linked (D227).
+    forwarder: Option<Arc<Forwarder>>,
+    /// On the host: tells the feed a session changed, merged as the app
+    /// sees it, when a replay leaves a write out of its summary (AW-9, D267).
+    told: Option<crate::session_service::Tell>,
 }
 
 /// A write, as asked.
@@ -213,7 +221,64 @@ impl BoardSvc {
             machine,
             writes: Arc::new(Mutex::new(())),
             finished: Arc::new(Answers::new()),
+            forwarder: None,
+            told: None,
         }
+    }
+
+    /// Tells the feed of a session whose summary of what the host left out
+    /// of its agent's replayed writes changed (AW-9, D267).
+    pub(crate) fn telling(mut self, told: crate::session_service::Tell) -> Self {
+        self.told = Some(told);
+        self
+    }
+
+    /// Sends the board calls of this machine's agents to the host while it
+    /// is linked (D227): `forwarder` is the machine's end of the Uplink.
+    pub(crate) fn forwarding(mut self, forwarder: Arc<Forwarder>) -> Self {
+        self.forwarder = Some(forwarder);
+        self
+    }
+
+    /// The machine's forwarder and the session, when `caller` is an agent on
+    /// a machine whose host is linked: its call is the host's to run. Away,
+    /// the call goes on as it always did.
+    fn forwarder_for(&self, caller: &Caller) -> Option<(&Arc<Forwarder>, String)> {
+        let Caller::Agent(agent) = caller else {
+            return None;
+        };
+        let forwarder = self.forwarder.as_ref()?;
+        forwarder
+            .forwards()
+            .then(|| (forwarder, agent.session.id.to_string()))
+    }
+
+    /// Sends `request` to `row`'s method on the host as agent `session`, and
+    /// answers with the host's response.
+    async fn forward<Req: Message, Res: Message + Default>(
+        &self,
+        forwarder: &Forwarder,
+        session: &str,
+        row: &'static crate::away::Row,
+        request: &Req,
+        key: Option<pb::IdempotencyKey>,
+    ) -> Result<Response<Res>, Status> {
+        let request_bytes = request.encode_to_vec();
+        let bytes = forwarder.call(session, row, request_bytes.clone(), key).await?;
+        // What the host answered a read with is what the machine answers it with
+        // when the host is away (D227).
+        if row.reads_board() {
+            self.keep_last_copy(session, row, request_bytes, &bytes).await;
+        }
+        Res::decode(bytes.as_slice()).map(Response::new).map_err(|error| {
+            status::internal(
+                format!(
+                    "the host's answer to {} couldn't be read: {error}; update Humata on this machine so both ends speak the same version",
+                    row.name
+                ),
+                "",
+            )
+        })
     }
 
     fn refuse_peer(caller: &Caller) -> Result<(), Status> {
@@ -398,6 +463,10 @@ impl BoardSvc {
 
     /// Puts the item as it is now on the feed.
     fn tell(&self, caller: &Caller, change: pb::Change, item: &BoardItemRecord, archived: &HashSet<String>) {
+        // The copy each machine holds lists the items its sessions own (D227).
+        if journaled::changes_owned_items(change, item) {
+            self.guard.policy_changed();
+        }
         let session = match &item.board {
             BoardKey::Session(id) => id.clone(),
             _ => String::new(),
@@ -808,7 +877,7 @@ impl BoardSvc {
             }
             Applied::Ask(asked, board) => {
                 let (me, who) = (self.clone(), caller.clone());
-                let run: Run = Box::new(move || {
+                let run: Run = Box::new(move |_| {
                     Box::pin(async move {
                         match me.attempt(&who, &op, true).await? {
                             Applied::Done(done) => Ok(Deferred {
@@ -953,6 +1022,16 @@ impl pb::board_service_server::BoardService for BoardSvc {
         let caller = identity::caller(&request)?;
         Self::refuse_peer(&caller)?;
         let request = request.into_inner();
+        if let Some((forwarder, session)) = self.forwarder_for(&caller) {
+            return self
+                .forward(forwarder, &session, Method::ListItems.row(), &request, None)
+                .await;
+        }
+        if let Some(agent) = self.away_agent(&caller) {
+            return self
+                .last_copy(&caller, agent, Method::ListItems.row(), &request, Self::list_boards)
+                .await;
+        }
         let asks = self.asks_for(&caller).await;
         let me = self.clone();
         blocking(move || me.list(&caller, &request, &asks))
@@ -966,16 +1045,23 @@ impl pb::board_service_server::BoardService for BoardSvc {
     ) -> Result<Response<pb::BoardItem>, Status> {
         let caller = identity::caller(&request)?;
         Self::refuse_peer(&caller)?;
-        let id = item_id(request.into_inner().id.as_ref())?;
+        let request = request.into_inner();
+        if let Some((forwarder, session)) = self.forwarder_for(&caller) {
+            return self
+                .forward(forwarder, &session, Method::GetItem.row(), &request, None)
+                .await;
+        }
+        let id = item_id(request.id.as_ref())?;
+        if let Some(agent) = self.away_agent(&caller) {
+            return self
+                .last_copy(&caller, agent, Method::GetItem.row(), &request, Self::item_boards)
+                .await;
+        }
         let asks = self.asks_for(&caller).await;
         let me = self.clone();
-        blocking(move || {
-            let item = me.load(&caller, &id, false)?;
-            let archived = me.archived()?;
-            Ok(me.item_pb(&caller, &item, &asks, &archived))
-        })
-        .await?
-        .map(Response::new)
+        blocking(move || me.read_item(&caller, &id, &asks))
+            .await?
+            .map(Response::new)
     }
 
     async fn create_item(
@@ -983,7 +1069,18 @@ impl pb::board_service_server::BoardService for BoardSvc {
         request: Request<pb::CreateItemRequest>,
     ) -> Result<Response<pb::WriteItemResponse>, Status> {
         let caller = identity::caller(&request)?;
-        self.write(caller, Op::Create(request.into_inner())).await
+        let request = request.into_inner();
+        if let Some((forwarder, session)) = self.forwarder_for(&caller) {
+            return self
+                .forward(forwarder, &session, Method::CreateItem.row(), &request, request.idempotency_key.clone())
+                .await;
+        }
+        let op = Op::Create(request);
+        // Away, a write the rules allow and the copy proves is kept in the journal (D227).
+        if let Some(done) = self.journaled(&caller, &op).await? {
+            return Ok(done);
+        }
+        self.write(caller, op).await
     }
 
     async fn update_item(
@@ -991,7 +1088,18 @@ impl pb::board_service_server::BoardService for BoardSvc {
         request: Request<pb::UpdateItemRequest>,
     ) -> Result<Response<pb::WriteItemResponse>, Status> {
         let caller = identity::caller(&request)?;
-        self.write(caller, Op::Update(request.into_inner())).await
+        let request = request.into_inner();
+        if let Some((forwarder, session)) = self.forwarder_for(&caller) {
+            return self
+                .forward(forwarder, &session, Method::UpdateItem.row(), &request, request.idempotency_key.clone())
+                .await;
+        }
+        let op = Op::Update(request);
+        // Away, a write the rules allow and the copy proves is kept in the journal (D227).
+        if let Some(done) = self.journaled(&caller, &op).await? {
+            return Ok(done);
+        }
+        self.write(caller, op).await
     }
 
     async fn move_item(
@@ -999,7 +1107,18 @@ impl pb::board_service_server::BoardService for BoardSvc {
         request: Request<pb::MoveItemRequest>,
     ) -> Result<Response<pb::WriteItemResponse>, Status> {
         let caller = identity::caller(&request)?;
-        self.write(caller, Op::Move(request.into_inner())).await
+        let request = request.into_inner();
+        if let Some((forwarder, session)) = self.forwarder_for(&caller) {
+            return self
+                .forward(forwarder, &session, Method::MoveItem.row(), &request, request.idempotency_key.clone())
+                .await;
+        }
+        let op = Op::Move(request);
+        // Away, a write the rules allow and the copy proves is kept in the journal (D227).
+        if let Some(done) = self.journaled(&caller, &op).await? {
+            return Ok(done);
+        }
+        self.write(caller, op).await
     }
 
     async fn delete_item(
@@ -1007,7 +1126,18 @@ impl pb::board_service_server::BoardService for BoardSvc {
         request: Request<pb::DeleteItemRequest>,
     ) -> Result<Response<pb::WriteItemResponse>, Status> {
         let caller = identity::caller(&request)?;
-        self.write(caller, Op::Delete(request.into_inner())).await
+        let request = request.into_inner();
+        if let Some((forwarder, session)) = self.forwarder_for(&caller) {
+            return self
+                .forward(forwarder, &session, Method::DeleteItem.row(), &request, request.idempotency_key.clone())
+                .await;
+        }
+        let op = Op::Delete(request);
+        // Away, a write the rules allow and the copy proves is kept in the journal (D227).
+        if let Some(done) = self.journaled(&caller, &op).await? {
+            return Ok(done);
+        }
+        self.write(caller, op).await
     }
 
     async fn get_item_history(
@@ -1017,31 +1147,26 @@ impl pb::board_service_server::BoardService for BoardSvc {
         let caller = identity::caller(&request)?;
         Self::refuse_peer(&caller)?;
         let request = request.into_inner();
-        let id = item_id(request.id.as_ref())?;
-        let (size, after) = page_of(request.page.as_ref())?;
+        if let Some((forwarder, session)) = self.forwarder_for(&caller) {
+            return self
+                .forward(forwarder, &session, Method::GetItemHistory.row(), &request, None)
+                .await;
+        }
+        if let Some(agent) = self.away_agent(&caller) {
+            return self
+                .last_copy(
+                    &caller,
+                    agent,
+                    Method::GetItemHistory.row(),
+                    &request,
+                    Self::history_boards,
+                )
+                .await;
+        }
         let me = self.clone();
-        blocking(move || {
-            let item = me.load(&caller, &id, true)?;
-            let mut found = me
-                .store
-                .board_item_history(&item.key, after as u64, size + 1)
-                .map_err(|error| me.failed(error, "read the item's history"))?;
-            let more = found.len() > size;
-            found.truncate(size);
-            let next_page_token = match (more, found.last()) {
-                (true, Some(last)) => last.n.to_string(),
-                _ => String::new(),
-            };
-            Ok(pb::GetItemHistoryResponse {
-                entries: found
-                    .iter()
-                    .map(|entry| history::entry_pb(entry, me.actor_of(&entry.by)))
-                    .collect(),
-                page: Some(pb::PageResponse { next_page_token }),
-            })
-        })
-        .await?
-        .map(Response::new)
+        blocking(move || me.read_history(&caller, &request))
+            .await?
+            .map(Response::new)
     }
 }
 

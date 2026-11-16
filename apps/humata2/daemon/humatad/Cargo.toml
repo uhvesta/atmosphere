@@ -21,6 +21,9 @@ path = "codegen/protoc_gen_tonic.rs"
 # Test daemons only: `humatad2 serve --admin` takes a call with no
 # credential for the user. Release builds never turn this on.
 admin = []
+# Test daemons only: the points of this crate and the crates under it are
+# live (HUMATA2_STOP_AT, HUMATA2_FAULT_TRACE), and SIGUSR2 is a power cut.
+faults = ["admin", "humata2-store/faults", "humata2-durable/faults"]
 
 [dependencies]
 clap = { workspace = true }
@@ -36,6 +39,8 @@ humata2-mcp = { path = "../mcp" }
 humata2-review-diff = { path = "../review_diff" }
 humata2-revive = { workspace = true }
 humata2-store = { workspace = true }
+humata2-durable = { workspace = true }
+http-body = { workspace = true }
 hyper-util = { workspace = true }
 notify = { workspace = true }
 prost = { workspace = true }

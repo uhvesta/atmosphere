@@ -20,7 +20,7 @@ use humata2_access::{AgentId, Capability, ChannelId, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_mirror::{MirrorError, entry_count};
 use humata2_revive::ReviveError;
-use humata2_sessions::{AgentError, GitError, pick_branch, remote_url, restore_clone};
+use humata2_sessions::{AgentError, GitError, Starter, pick_branch, remote_url, restore_clone};
 use humata2_store::{
     AgentLaunch, ChannelRecord, SessionDetail, SessionRecord, SessionRepo, StartStep, StoreError,
     TabKind, TabRecord,
@@ -29,7 +29,6 @@ use pb::invalid_field::Problem;
 use prost::Message;
 use tonic::{Code, Request, Status};
 
-use super::fork::stop_point;
 use super::lineage::publish_family;
 use super::{COLS, Gated, ROWS, SessionSvc, clean_title, now_ms, watch};
 use crate::carry::Place;
@@ -99,6 +98,12 @@ enum RebuildError {
     },
     #[error("couldn't start the agent")]
     Launch(#[source] ReviveError),
+    #[error("couldn't write {path}, which a restart reads to take a cut rebuild back")]
+    Marker {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("couldn't remove {path}")]
     Remove {
         path: PathBuf,
@@ -121,6 +126,44 @@ fn staged_shape(staged: &str) -> bool {
         && name.is_some_and(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
         && file == Some(STAGED_FILE)
         && rest.is_none()
+}
+
+/// What the names of the folders a session's conversation is staged in
+/// start with: unique to the session, so a machine can tell the ones an
+/// earlier, cut ask left from those of other rebuilds.
+fn stage_prefix(session: &str) -> String {
+    let plain: String = session.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+    format!("rb_{plain}_")
+}
+
+/// Removes the folders under `.carry` that an earlier ask for `session`
+/// staged and nothing took back (a host cut after it sent the conversation
+/// and before the machine began), except `keep`. Best effort.
+fn sweep_stale_stages(channel_dir: &std::path::Path, session: &str, keep: &str) {
+    let prefix = stage_prefix(session);
+    let Ok(entries) = std::fs::read_dir(channel_dir.join(humata2_sessions::CARRY_DIR)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let stale = name.strip_prefix(&prefix).is_some_and(|rest| rest.len() == 32 && rest.chars().all(|c| c.is_ascii_hexdigit()));
+        if stale && name != keep {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// The folder `staged` (`.carry/<name>/conversation.jsonl`) is in, under
+/// the channel's folder `channel_dir`; none when `staged` isn't that shape.
+fn staged_folder(channel_dir: &std::path::Path, staged: &str) -> Option<PathBuf> {
+    staged_shape(staged).then(|| channel_dir.join(humata2_sessions::CARRY_DIR).join(staged_dir_name(staged)))
+}
+
+/// The name of the folder under `.carry` that `staged` is in, or empty.
+fn staged_dir_name(staged: &str) -> String {
+    staged.split('/').nth(1).unwrap_or_default().to_owned()
 }
 
 /// A plain name for one folder: no path, no dots that climb.
@@ -444,6 +487,10 @@ impl SessionSvc {
         let sent = self.ask_machine(&progress, &record, &summary, &channel, &target).await;
         let outcome = match sent {
             Ok(written) => {
+                // A kill here leaves the session whole on the machine and
+                // still archived as lost here: rebuilding it again finds the
+                // machine's session and switches over to it.
+                crate::fault::point("rebuild.machine_done");
                 // The new file repeats exactly the entries of the lines sent.
                 self.rebase_mirror(&id, &target, Some(written)).await;
                 self.switch_to(&record, &summary, &target).await
@@ -465,11 +512,11 @@ impl SessionSvc {
     /// Copies the mirror's `lines` into the channel's folder on `target`,
     /// as a file, so no message size bounds them, and says where. The
     /// host's own copy goes once it was sent, sent or not.
-    async fn send_conversation(&self, channel: &ChannelRecord, target: &str, lines: Vec<u8>) -> Result<String, pb::Error> {
+    async fn send_conversation(&self, channel: &ChannelRecord, session: &str, target: &str, lines: Vec<u8>) -> Result<String, pb::Error> {
         let Some(carry) = self.carry.get().cloned() else {
             return Err(failure_of(&only_host()));
         };
-        let name = format!("rb_{}", uuid::Uuid::new_v4().simple());
+        let name = format!("{}{}", stage_prefix(session), uuid::Uuid::new_v4().simple());
         let folder = format!("{}/{name}", humata2_sessions::CARRY_DIR);
         let staged = format!("{folder}/{STAGED_FILE}");
         let here = self.starter.layout.channel(&channel.folder).join(&folder);
@@ -543,7 +590,7 @@ impl SessionSvc {
             conversation_staged: match lines {
                 Some(lines) if !lines.is_empty() => {
                     written = entry_count(&lines);
-                    self.send_conversation(channel, target, lines).await?
+                    self.send_conversation(channel, &record.id, target, lines).await?
                 }
                 _ => String::new(),
             },
@@ -562,10 +609,10 @@ impl SessionSvc {
             rebuild: Some(rebuild),
         };
         // Nothing is moved yet: a host killed here leaves the session archived.
-        stop_point("rebuild-clone-api");
+        crate::fault::point("rebuild-clone-api");
         for repo in &summary.repos {
             if let Some(named) = &repo.repo {
-                stop_point(&format!("rebuild-clone-{}", named.name));
+                crate::fault::point(&format!("rebuild-clone-{}", named.name));
             }
         }
         let mut sessions = relayed.session();
@@ -576,15 +623,24 @@ impl SessionSvc {
             .map_err(|status| failure_of(&status))?
             .into_inner();
         let operation = started.operation.unwrap_or_default();
-        let mut operations = relayed.operation();
-        let mut stream = operations
-            .watch_operation(Request::new(pb::WatchOperationRequest {
-                id: operation.id.clone(),
-                from_version: 0,
-            }))
-            .await
-            .map_err(|status| failure_of(&status))?
-            .into_inner();
+        // A session the machine already holds whole (an earlier rebuild
+        // that the host was cut off from) answers with its operation done,
+        // and that operation may be gone from the machine's memory: there
+        // is nothing to watch then.
+        let mut stream = None;
+        if operation.state == pb::OperationState::Running as i32 {
+            let mut operations = relayed.operation();
+            stream = Some(
+                operations
+                    .watch_operation(Request::new(pb::WatchOperationRequest {
+                        id: operation.id.clone(),
+                        from_version: 0,
+                    }))
+                    .await
+                    .map_err(|status| failure_of(&status))?
+                    .into_inner(),
+            );
+        }
         let mut latest = operation;
         loop {
             for step in &latest.steps {
@@ -595,7 +651,10 @@ impl SessionSvc {
             if latest.state != pb::OperationState::Running as i32 {
                 break;
             }
-            match stream.message().await {
+            let Some(open) = stream.as_mut() else {
+                break;
+            };
+            match open.message().await {
                 Ok(Some(next)) => latest = next,
                 Ok(None) | Err(_) => {
                     return Err(error_of(
@@ -654,6 +713,9 @@ impl SessionSvc {
         .await
         .map_err(|error| failure_of(&error))?
         .map_err(|source| error_of(&RebuildError::Store { session: id.clone(), source }, "check the host's state folder, then rebuild again", None))?;
+        // A kill here leaves the session switched over: the lost machine's
+        // own copy of it is all that is left to forget.
+        crate::fault::point("rebuild.switched");
         if let Some(remote) = &self.remote {
             remote.forget_session(&lost, &id).await;
         }
@@ -675,6 +737,11 @@ impl SessionSvc {
             return Err(only_host());
         };
         if let Some(known) = self.known_start(&id).await? {
+            // The machine already holds this session (an earlier ask that
+            // the host was cut off from, or one the machine's own restart
+            // kept): the conversation staged for this ask is not wanted, and
+            // nothing else would ever take it.
+            self.discard_staged(&request, &rebuild).await;
             return Ok(Gated::Done(known));
         }
         let channel_id = request
@@ -737,6 +804,7 @@ impl SessionSvc {
         )? {
             Started::New(progress) => progress,
             Started::Existing(operation) => {
+                self.discard_staged(&request, &rebuild).await;
                 return Ok(Gated::Done(pb::StartSessionResponse {
                     session: Some(pb::SessionId { value: id }),
                     operation: Some(operation),
@@ -754,6 +822,33 @@ impl SessionSvc {
             starter.layout.session(&session_channel.folder, &name)
         })
         .await?;
+        // Written before anything else is, so a restart can tell a rebuild
+        // cut short from a session started here: it takes the rebuild back,
+        // where a start would be finished without the conversation.
+        let staged_dir = std::path::Path::new(&rebuild.conversation_staged)
+            .parent()
+            .filter(|_| !rebuild.conversation_staged.is_empty())
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (channel_dir, marked_id, marked_folder) =
+            (self.starter.layout.channel(&channel.folder), id.clone(), folder.clone());
+        match blocking(move || write_marker(&channel_dir, &marked_id, &marked_folder, &staged_dir)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let fix = "check the channel's folder is writable and has room, then rebuild again";
+                progress.fail(error_of(&error, fix, None));
+                return Err(failed(Code::Internal, &error, fix, None));
+            }
+            Err(refused) => {
+                progress.fail(failure_of(&refused));
+                return Err(refused);
+            }
+        }
+        // A host cut after it sent the conversation and before this ask
+        // left its copy; the ask now made stages another, so that one goes.
+        let (swept_dir, swept_id) = (self.starter.layout.channel(&channel.folder), id.clone());
+        let keep = std::path::Path::new(&staged_dir_name(&rebuild.conversation_staged)).to_owned();
+        let _ = blocking(move || sweep_stale_stages(&swept_dir, &swept_id, &keep.to_string_lossy())).await;
         let record = SessionRecord {
             id: id.clone(),
             channel: channel.id.clone(),
@@ -802,6 +897,9 @@ impl SessionSvc {
         self.tell
             .session(&id, pb::Change::Created, Some(identity::actor(caller)))
             .await;
+        // A kill here leaves the records saved and nothing cloned: the
+        // restart takes the rebuild back.
+        crate::fault::point("rebuild.recorded");
         let note = Some(request.first_message).filter(|note| !note.is_empty());
         tokio::spawn(self.clone().run_rebuild_here(
             progress,
@@ -817,6 +915,22 @@ impl SessionSvc {
             session: Some(pb::SessionId { value: id }),
             operation: Some(operation),
         }))
+    }
+
+    /// Removes the conversation `rebuild` staged here when this ask is not
+    /// going to use it. Best effort: the staged name is unique to the ask, so
+    /// nothing else reads it.
+    async fn discard_staged(&self, request: &pb::StartSessionRequest, rebuild: &pb::RebuildFrom) {
+        let Some(channel_id) = request.channel.as_ref().map(|channel| channel.value.clone()).filter(|id| !id.is_empty()) else {
+            return;
+        };
+        let Ok(channel) = self.find_channel(&channel_id).await else {
+            return;
+        };
+        let Some(folder) = staged_folder(&self.starter.layout.channel(&channel.folder), &rebuild.conversation_staged) else {
+            return;
+        };
+        let _ = blocking(move || std::fs::remove_dir_all(folder)).await;
     }
 
     /// The machine's work: clone each repo at its branch, write the
@@ -844,6 +958,8 @@ impl SessionSvc {
             let folder = self.starter.layout.channel(&channel.folder).join(staged);
             let _ = blocking(move || std::fs::remove_dir_all(folder)).await;
         }
+        let marker = marker_file(&self.starter.layout.channel(&channel.folder), &id);
+        let _ = blocking(move || std::fs::remove_file(marker)).await;
         match built {
             Ok(()) => {
                 progress.set_step("verify", pb::StepState::Done, None);
@@ -901,6 +1017,8 @@ impl SessionSvc {
             progress.set_step(current, pb::StepState::Done, None);
         }
         self.set_start(detail, StartStep::Cloned).await.map_err(|error| (error, false))?;
+        // A kill at each of these leaves a rebuild the restart takes back.
+        crate::fault::point("rebuild.cloned");
 
         *current = "write_conversation".to_owned();
         progress.set_step(current, pb::StepState::Running, None);
@@ -930,6 +1048,7 @@ impl SessionSvc {
             );
             write_lines(&plan.conversation_file, &lines).map_err(|error| (error, false))?;
         }
+        crate::fault::point("rebuild.conversation_written");
         progress.set_step(current, pb::StepState::Done, None);
 
         *current = "launch".to_owned();
@@ -968,6 +1087,8 @@ impl SessionSvc {
             .map_err(|source| (RebuildError::Launch(source), false))?;
         // From here the records stay: revive owns the agent.
         self.set_start(detail, StartStep::Done).await.map_err(|error| (error, true))?;
+        // A kill here leaves the agent launched: the restart keeps it.
+        crate::fault::point("rebuild.launched");
         progress.set_step(current, pb::StepState::Done, None);
         *current = "verify".to_owned();
         if let Some(note) = note
@@ -1031,6 +1152,129 @@ async fn blocking_git<T: Send + 'static>(
         })?
 }
 
+/// Where a channel keeps the markers of the rebuilds under way on this
+/// machine, one file per session.
+const MARKERS: &str = ".rebuilding";
+
+fn marker_file(channel_dir: &std::path::Path, session: &str) -> PathBuf {
+    channel_dir.join(MARKERS).join(session)
+}
+
+/// Marks a rebuild begun on this machine: the session's folder and, if the
+/// host staged the conversation, the folder it is staged in (relative to
+/// the channel's), one per line. Whole or not at all.
+fn write_marker(
+    channel_dir: &std::path::Path,
+    session: &str,
+    folder: &std::path::Path,
+    staged_dir: &str,
+) -> Result<(), RebuildError> {
+    let file = marker_file(channel_dir, session);
+    let fail = |source| RebuildError::Marker { path: file.clone(), source };
+    if let Some(markers) = file.parent() {
+        std::fs::create_dir_all(markers).map_err(fail)?;
+    }
+    let partial = channel_dir.join(MARKERS).join(format!("{session}.partial"));
+    std::fs::write(&partial, format!("{}\n{staged_dir}\n", folder.display())).map_err(fail)?;
+    std::fs::rename(&partial, &file).map_err(fail)
+}
+
+/// A rebuild the last run began on this machine and didn't end.
+pub(crate) struct CutRebuild {
+    marker: PathBuf,
+    session: String,
+    folder: PathBuf,
+    staged: Option<PathBuf>,
+}
+
+/// The rebuilds the last run left, read before anything is served so a
+/// rebuild begun since is left to its own call. A marker that doesn't name
+/// a folder directly in its channel's sessions folder (and a staged folder
+/// of the shape a host stages in) is ignored: it isn't ours to act on.
+pub(crate) fn cut_rebuilds(starter: &Starter) -> Vec<CutRebuild> {
+    let Ok(channels) = starter.store.channels() else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for channel in channels {
+        let channel_dir = starter.layout.channel(&channel.folder);
+        let sessions = starter.layout.sessions(&channel.folder);
+        let Ok(entries) = std::fs::read_dir(channel_dir.join(MARKERS)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Some(session) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if session.ends_with(".partial") {
+                continue;
+            }
+            let marker = entry.path();
+            let Ok(text) = std::fs::read_to_string(&marker) else {
+                continue;
+            };
+            let mut lines = text.lines();
+            let folder = PathBuf::from(lines.next().unwrap_or_default());
+            if folder.parent() != Some(sessions.as_path()) {
+                continue;
+            }
+            let staged = lines
+                .next()
+                .filter(|dir| staged_shape(&format!("{dir}/{STAGED_FILE}")))
+                .map(|dir| channel_dir.join(dir));
+            found.push(CutRebuild { marker, session, folder, staged });
+        }
+    }
+    found
+}
+
+/// Takes back each cut rebuild whose agent was never launched (its folder
+/// and records), clears what the host staged, and drops the marker. One
+/// whose agent was launched is left to the restart's own recovery, which
+/// keeps it. Safe to repeat; runs before the restart finishes the starts
+/// it finds, which would start such a session with no conversation.
+pub(crate) async fn undo_cut_rebuilds(starter: &Starter, cut: Vec<CutRebuild>) {
+    for rebuild in cut {
+        let (store, id) = (starter.store.clone(), rebuild.session.clone());
+        let undone = tokio::task::spawn_blocking(move || undo_cut(&store, &rebuild))
+            .await
+            .map_err(RebuildError::Task)
+            .and_then(|undone| undone);
+        if let Err(error) = undone {
+            crate::log::say!("humatad2: couldn't take back the cut rebuild of session {id}: {}", status::chain(&error));
+        }
+    }
+}
+
+fn undo_cut(store: &humata2_store::Store, rebuild: &CutRebuild) -> Result<(), RebuildError> {
+    let session = &rebuild.session;
+    let store_error = |source| RebuildError::Store { session: session.clone(), source };
+    let launched = store.agent(session).map_err(store_error)?.is_some()
+        || store.session_detail(session).map_err(store_error)?.is_some_and(|detail| detail.start == StartStep::Done);
+    if !launched {
+        remove_dir(&rebuild.folder)?;
+        store.remove_session(session).map_err(store_error)?;
+    }
+    if let Some(staged) = &rebuild.staged {
+        remove_dir(staged)?;
+    }
+    match std::fs::remove_file(&rebuild.marker) {
+        Err(source) if source.kind() != io::ErrorKind::NotFound => {
+            Err(RebuildError::Remove { path: rebuild.marker.clone(), source })
+        }
+        _ => Ok(()),
+    }
+}
+
+fn remove_dir(path: &std::path::Path) -> Result<(), RebuildError> {
+    match std::fs::remove_dir_all(path) {
+        Err(source) if source.kind() != io::ErrorKind::NotFound => {
+            Err(RebuildError::Remove { path: path.to_owned(), source })
+        }
+        _ => Ok(()),
+    }
+}
+
 /// A failure's error as the operation records it.
 fn failure_of(status: &Status) -> pb::Error {
     super::archive::failure_of(status)
@@ -1063,7 +1307,18 @@ async fn undo(store: Arc<humata2_store::Store>, record: &SessionRecord) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::staged_shape;
+    use super::{staged_folder, staged_shape};
+
+    #[test]
+    fn a_staged_conversation_is_in_its_own_folder_under_the_channels_carry() {
+        let channel = std::path::Path::new("/h/ch/payments");
+        assert_eq!(
+            staged_folder(channel, ".carry/rb_s1_0f3a/conversation.jsonl"),
+            Some(channel.join(".carry").join("rb_s1_0f3a"))
+        );
+        assert_eq!(staged_folder(channel, ".carry/../conversation.jsonl"), None);
+        assert_eq!(staged_folder(channel, ""), None);
+    }
 
     #[test]
     fn only_a_carry_folder_of_plain_name_holding_the_conversation_is_staged() {

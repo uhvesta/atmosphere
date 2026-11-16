@@ -1039,7 +1039,7 @@ mod tests {
         next(&mut stream).await;
         typed
             .send(Ok(pb::AttachClientMessage {
-                message: Some(ClientMessage::Resize(pb::TerminalResize { cols: 100, rows: 30 })),
+                message: Some(ClientMessage::Resize(pb::TerminalResize { cols: 100, rows: 30, ..Default::default() })),
             }))
             .await
             .expect("resized");

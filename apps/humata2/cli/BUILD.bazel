@@ -32,6 +32,7 @@ rust_library(
         "@crates//:prost",
         "@crates//:prost-reflect",
         "@crates//:rustix",
+        "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:sha2",
         "@crates//:thiserror",

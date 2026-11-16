@@ -5,9 +5,9 @@
 
 use std::collections::HashSet;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
-use crate::store::{check_id, from_sql, to_sql};
+use crate::store::{check_id, from_sql, to_sql, Inner};
 use crate::{Store, StoreError};
 
 /// The column number of Done (`BoardColumn`).
@@ -449,6 +449,210 @@ fn refuse_deps(
     Ok(find_cycle(connection, item, deps)?.map(|cycle| BoardWrite::Loop { cycle }))
 }
 
+/// A journaled board write the host replays (AWAY, D227).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BoardReplay {
+    /// An item the machine's agent made while the host was away.
+    Create(NewBoardItem),
+    /// An edit, move or delete. A replayed value wins over one the host
+    /// changed since the entry's base revision, and the host's value is
+    /// kept as lost (SL-6); a stale delete loses and an edit of a deleted
+    /// item never revives it (SL-8).
+    Change(BoardItemChange),
+    /// A change the host's rules now stop (AW-9): nothing is applied, and
+    /// each field it set is kept in the item's history as lost.
+    Refused(BoardItemChange),
+}
+
+/// What replaying a [`BoardReplay`] came to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BoardReplayed {
+    Created(BoardItemRecord),
+    Written(BoardWrite),
+    /// Kept as lost; the item is as it was.
+    Refused,
+    /// The entry's sequence is at or below the machine's mark: it was
+    /// applied before, and nothing changed.
+    AlreadyApplied,
+}
+
+/// For each scalar field the replayed change sets that an applied write
+/// changed after revision `expected`, keeps the host's value as a lost
+/// entry (SL-6): the value that stayed is the replayed one, the value that
+/// lost is the host's, credited to whoever wrote it. Session and dependency
+/// lists are added to and taken from, so they never conflict.
+fn keep_hosts_values_lost(
+    connection: &Connection,
+    change: &BoardItemChange,
+    current: &BoardItemRecord,
+    expected: u64,
+) -> rusqlite::Result<()> {
+    for edit in edits(change, current, true) {
+        if !matches!(edit.field, "title" | "description" | "column" | "rank") {
+            continue;
+        }
+        let by: Option<String> = connection
+            .prepare_cached(
+                "SELECT actor FROM board_history
+                 WHERE item = ?1 AND revision > ?2 AND lost = 0 AND field = ?3
+                 ORDER BY n DESC LIMIT 1",
+            )?
+            .query_row(params![change.key, to_sql(expected), edit.field], |row| row.get(0))
+            .optional()?;
+        let Some(by) = by else {
+            continue;
+        };
+        push_history(
+            connection,
+            &change.key,
+            (
+                change.at_unix_ms,
+                &by,
+                edit.kind,
+                edit.field,
+                &edit.after,
+                &edit.before,
+                true,
+                current.revision,
+            ),
+            &change.cause,
+        )?;
+    }
+    Ok(())
+}
+
+/// Keeps each field `change` sets, or its delete, in the item's history as
+/// lost, and changes nothing else.
+fn keep_refused_lost(
+    connection: &Connection,
+    change: &BoardItemChange,
+    current: &BoardItemRecord,
+) -> rusqlite::Result<()> {
+    let lost = |kind, field: &str, before: &str, after: &str| {
+        push_history(
+            connection,
+            &change.key,
+            (change.at_unix_ms, &change.by, kind, field, before, after, true, current.revision),
+            &change.cause,
+        )
+    };
+    if change.delete {
+        return lost(BoardHistoryKind::Deleted, "", "", "");
+    }
+    for edit in edits(change, current, true) {
+        lost(edit.kind, edit.field, &edit.before, &edit.after)?;
+    }
+    Ok(())
+}
+
+/// Replays `replay` inside `transaction`.
+pub(crate) fn replay_in(
+    inner: &Inner,
+    transaction: &Transaction<'_>,
+    replay: &BoardReplay,
+) -> Result<BoardReplayed, StoreError> {
+    let doing = "replay a journaled board write";
+    let failed = inner.failed(doing);
+    let current_of = |change: &BoardItemChange| -> Result<BoardItemRecord, StoreError> {
+        check_id(&change.key)?;
+        if let Some(column) = change.column {
+            check_column(column)?;
+        }
+        load(transaction, &change.key)
+            .map_err(&failed)?
+            .ok_or_else(|| StoreError::NoBoardItem {
+                key: change.key.clone(),
+            })
+    };
+    match replay {
+        BoardReplay::Create(new) => create_in(inner, transaction, new).map(BoardReplayed::Created),
+        BoardReplay::Change(change) => {
+            let current = current_of(change)?;
+            apply_with(transaction, change, current, true)
+                .map(BoardReplayed::Written)
+                .map_err(&failed)
+        }
+        BoardReplay::Refused(change) => {
+            let current = current_of(change)?;
+            keep_refused_lost(transaction, change, &current).map_err(&failed)?;
+            Ok(BoardReplayed::Refused)
+        }
+    }
+}
+
+/// Makes `new` inside `transaction`: the next number of its owner's prefix,
+/// its sessions and dependencies, and a created entry.
+pub(crate) fn create_in(
+    inner: &Inner,
+    transaction: &Transaction<'_>,
+    new: &NewBoardItem,
+) -> Result<BoardItemRecord, StoreError> {
+    check_column(new.column)?;
+    let owner = owner_of(&new.board, &new.channel);
+    check_id(&owner)?;
+    let sessions = dedup(&new.sessions);
+    let deps = dedup(&new.depends_on);
+    let doing = "create a board item";
+    let failed = inner.failed(doing);
+    let prefix: Option<String> = transaction
+        .query_row("SELECT prefix FROM board_prefixes WHERE owner = ?1", [&owner], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(&failed)?;
+    let Some(prefix) = prefix else {
+        return Err(StoreError::NoBoardPrefix { owner });
+    };
+    for dep in &deps {
+        let found = load(transaction, dep).map_err(&failed)?;
+        if found.is_none_or(|item| item.deleted) {
+            return Err(StoreError::NoBoardItem { key: dep.clone() });
+        }
+    }
+    let last: i64 = transaction
+        .query_row("SELECT last FROM board_counters WHERE prefix = ?1", [&prefix], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(&failed)?
+        .unwrap_or(0);
+    let number = last + 1;
+    transaction
+        .execute(
+            "INSERT INTO board_counters (prefix, last) VALUES (?1, ?2)
+             ON CONFLICT (prefix) DO UPDATE SET last = excluded.last",
+            params![prefix, number],
+        )
+        .map_err(&failed)?;
+    let key = format!("{prefix}-{number}");
+    let (kind, id) = new.board.parts();
+    let done = (new.column == DONE).then_some(new.at_unix_ms);
+    transaction
+        .execute(
+            "INSERT INTO board_items
+                 (key, board_kind, board_id, channel, title, description, col, rank,
+                  created_by, created_unix_ms, updated_unix_ms, revision, done_unix_ms, deleted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1, ?11, 0)",
+            params![
+                key, kind, id, new.channel, new.title, new.description, new.column,
+                new.rank, new.created_by, new.at_unix_ms, done
+            ],
+        )
+        .map_err(&failed)?;
+    set_sessions(transaction, &key, &sessions).map_err(&failed)?;
+    set_deps(transaction, &key, &deps).map_err(&failed)?;
+    push_history(
+        transaction,
+        &key,
+        (new.at_unix_ms, &new.created_by, BoardHistoryKind::Created, "", "", "", false, 1),
+        "",
+    )
+    .map_err(&failed)?;
+    load(transaction, &key)
+        .map_err(&failed)?
+        .ok_or(StoreError::NoBoardItem { key })
+}
+
 impl Store {
     /// The prefix this owner (a channel id, or `global`) numbers its items
     /// under, if it has one.
@@ -496,72 +700,9 @@ impl Store {
     /// Makes an item under the next number of its owner's prefix, with its
     /// sessions, dependencies and a created entry, in one transaction.
     pub fn create_board_item(&self, new: &NewBoardItem) -> Result<BoardItemRecord, StoreError> {
-        check_column(new.column)?;
-        let owner = owner_of(&new.board, &new.channel);
-        check_id(&owner)?;
-        let sessions = dedup(&new.sessions);
-        let deps = dedup(&new.depends_on);
         let inner = self.inner();
-        let doing = "create a board item";
-        inner.write_with("boards.create", doing, |transaction| {
-            let failed = inner.failed(doing);
-            let prefix: Option<String> = transaction
-                .query_row("SELECT prefix FROM board_prefixes WHERE owner = ?1", [&owner], |row| {
-                    row.get(0)
-                })
-                .optional()
-                .map_err(&failed)?;
-            let Some(prefix) = prefix else {
-                return Err(StoreError::NoBoardPrefix { owner });
-            };
-            for dep in &deps {
-                let found = load(transaction, dep).map_err(&failed)?;
-                if found.is_none_or(|item| item.deleted) {
-                    return Err(StoreError::NoBoardItem { key: dep.clone() });
-                }
-            }
-            let last: i64 = transaction
-                .query_row("SELECT last FROM board_counters WHERE prefix = ?1", [&prefix], |row| {
-                    row.get(0)
-                })
-                .optional()
-                .map_err(&failed)?
-                .unwrap_or(0);
-            let number = last + 1;
-            transaction
-                .execute(
-                    "INSERT INTO board_counters (prefix, last) VALUES (?1, ?2)
-                     ON CONFLICT (prefix) DO UPDATE SET last = excluded.last",
-                    params![prefix, number],
-                )
-                .map_err(&failed)?;
-            let key = format!("{prefix}-{number}");
-            let (kind, id) = new.board.parts();
-            let done = (new.column == DONE).then_some(new.at_unix_ms);
-            transaction
-                .execute(
-                    "INSERT INTO board_items
-                         (key, board_kind, board_id, channel, title, description, col, rank,
-                          created_by, created_unix_ms, updated_unix_ms, revision, done_unix_ms, deleted)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, 1, ?11, 0)",
-                    params![
-                        key, kind, id, new.channel, new.title, new.description, new.column,
-                        new.rank, new.created_by, new.at_unix_ms, done
-                    ],
-                )
-                .map_err(&failed)?;
-            set_sessions(transaction, &key, &sessions).map_err(&failed)?;
-            set_deps(transaction, &key, &deps).map_err(&failed)?;
-            push_history(
-                transaction,
-                &key,
-                (new.at_unix_ms, &new.created_by, BoardHistoryKind::Created, "", "", "", false, 1),
-                "",
-            )
-            .map_err(&failed)?;
-            load(transaction, &key)
-                .map_err(&failed)?
-                .ok_or(StoreError::NoBoardItem { key })
+        inner.write_with("boards.create", "create a board item", |transaction| {
+            create_in(inner, transaction, new)
         })
     }
 
@@ -719,6 +860,19 @@ fn apply(
     change: &BoardItemChange,
     current: BoardItemRecord,
 ) -> rusqlite::Result<BoardWrite> {
+    apply_with(connection, change, current, false)
+}
+
+/// As [`apply`]. A `replayed` change is one the machine's agent made while
+/// the host was away: it is the later write to reach the host, so where it
+/// lands on a field changed since its base revision it wins and the host's
+/// value is kept lost (SL-6). A delete still loses against a newer revision.
+fn apply_with(
+    connection: &Connection,
+    change: &BoardItemChange,
+    current: BoardItemRecord,
+    replayed: bool,
+) -> rusqlite::Result<BoardWrite> {
     let key = change.key.as_str();
     let lost = |kind, field: &str, before: &str, after: &str| {
         push_history(
@@ -742,7 +896,9 @@ fn apply(
             lost(BoardHistoryKind::Deleted, "", "", "")?;
             return Ok(BoardWrite::Stale { current });
         }
-        if touched_since(connection, change, expected)? {
+        if replayed {
+            keep_hosts_values_lost(connection, change, &current, expected)?;
+        } else if touched_since(connection, change, expected)? {
             for edit in edits(change, &current, true) {
                 lost(edit.kind, edit.field, &edit.before, &edit.after)?;
             }

@@ -14,6 +14,7 @@ single_version_override(
     patch_strip = 1,
     patches = ["//bazel/toolchains/llvm:llvm_no_rtlib_on_macos.patch"],
 )
+
 bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
 bazel_dep(name = "aspect_rules_lint_rust", version = "0.0.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
@@ -190,7 +191,9 @@ crate.annotation(
 # gpui-base's text selection, patched (D104): a drag through the blank space
 # beside lines selects the lines in between, as in a browser, and a gesture
 # that selects nothing tells the text view it ended, so it stops counting as
-# selecting; see apps/humata2/markdown/patches. In every crate repository.
+# selecting; the text view also reports the bounds of each list item it lays
+# out, so a comment can light one item; see apps/humata2/markdown/patches.
+# In every crate repository.
 crate.annotation(
     crate = "gpui-base",
     patch_args = ["-p1"],

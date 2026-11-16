@@ -61,11 +61,16 @@ pub(crate) const SOCKET_PATH_MAX: usize = 107;
 pub(crate) const SOCKET_PATH_MAX: usize = 103;
 
 /// How long a stopping daemon gives its connections to finish once its
-/// event subscriptions have ended, before it cuts them and exits.
+/// streams have ended (D270), before it cuts them and exits: only a call
+/// still being answered can take this long.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The file a daemon locks in its state folder. Its pid is written in it.
 const LOCK_FILE: &str = "daemon.lock";
+/// How long a start waits for the state lock to come free before it says
+/// another daemon has it. On a loaded machine the lock of a daemon that
+/// just ended, or just started itself again, can stay taken for a moment.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Room for a pasted image and the message around it.
 const DECODE_MAX_BYTES: usize = PASTE_MAX_BYTES + (1 << 20);
@@ -264,7 +269,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // Locked before the socket is bound or the state touched, so a second
     // daemon on this state stops here, and it can't take the first one's
     // socket. The lock lasts as long as this function does.
-    let _state_lock = lock_state(&state)?;
+    let state_lock = lock_state(&state, LOCK_WAIT).await?;
+    // D261, D265: whether this machine's sessions are stopped, read before
+    // anything is started.
+    let stop_folder = crate::stop::StopFolder::new(&state);
+    let stop_mode = crate::stop::boot::read_mode(&stop_folder);
+    let stopped_now = matches!(stop_mode, crate::stop::boot::Mode::Stopped(_));
     // Bound before the store is opened, so a second daemon on the same
     // socket stops here; and only the daemon that has the socket keeps
     // the log.
@@ -274,6 +284,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .map_err(|source| DaemonError::Store { source })?;
     let store = Arc::new(store);
     let machine = machine_id(&state.join("machine-id"))?;
+    if stopped_now {
+        crate::stop::gate::enter(&machine);
+    }
     let role = match args.role {
         Role::Host => pb::DaemonRole::Host,
         Role::Machine => pb::DaemonRole::Machine,
@@ -414,7 +427,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             state.clone(),
             socket.clone(),
             root.clone(),
-        ))),
+        ).needing_host_rules(guard.clone()))),
         holder: holder.clone(),
         logs: logs.clone(),
         scrollback_bytes: args.scrollback_bytes,
@@ -425,6 +438,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine: machine.clone(),
         daemon_log,
     };
+    // The names a live holder's process may have, for the stop's sweep.
+    let holder_names = crate::stop::sweep::holder_names(&holder);
     let starter = restart::starter(
         &store,
         revive,
@@ -439,16 +454,31 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // AWAY: the peer link's PeerUplink, and whether the host is reachable.
     // AW-8: the policy copy, made here on the host, put in force on a machine.
     let policy_copy = crate::away::PolicySource::new(guard.clone(), store.clone());
-    let uplinks = Arc::new(crate::away::Uplinks::new(guard.host_link(), feed.clone(), policy_copy.clone()));
     let tell = crate::session_service::Tell::new(feed.clone(), store.clone(), machine.clone());
-    let last_start = restart::in_background(
-        store.clone(),
-        identities.clone(),
-        starter.clone(),
-        restored,
-        tell,
-        socket.clone(),
-    );
+    // D265: a start after a stop names the stop once it has brought back.
+    let after_stop = match &stop_mode {
+        crate::stop::boot::Mode::Starting(record) => Some(crate::stop::boot::AfterStop {
+            record: record.clone(),
+            folder: stop_folder.clone(),
+            machine: machine.clone(),
+        }),
+        _ => None,
+    };
+    // D261: a stopped boot brings nothing back; its start is set once the
+    // sweep has run.
+    let last_start = if stopped_now {
+        Arc::new(restart::Started::default())
+    } else {
+        restart::in_background(
+            store.clone(),
+            identities.clone(),
+            starter.clone(),
+            restored,
+            tell,
+            socket.clone(),
+            after_stop,
+        )
+    };
     last_good::keep(store.clone(), last_good::Quiet::default());
     let compression = Arc::new(Compression::new(&state));
     let inbox = Arc::new(Inbox::new(
@@ -457,6 +487,32 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine.clone(),
         feed.clone(),
     ));
+    // D261: a stopped boot ends every holder, withdraws the Inbox's pending
+    // requests and settles the record; that is its start.
+    if let crate::stop::boot::Mode::Stopped(record) = stop_mode {
+        let settle = crate::stop::boot::Settle {
+            folder: stop_folder.clone(),
+            record,
+            sweep: crate::stop::sweep::Sweep {
+                holders: holders.clone(),
+                grace: crate::stop::sweep::GRACE,
+                programs: holder_names,
+            },
+            store: store.clone(),
+            inbox: inbox.clone(),
+        };
+        let started = last_start.clone();
+        tokio::spawn(async move { started.set(settle.run().await) });
+    }
+    // AWAY: the peer link's PeerUplink, which applies the answers the host relays to this Inbox.
+    let uplinks = Arc::new(crate::away::Uplinks::new(
+        guard.host_link(),
+        feed.clone(),
+        policy_copy.clone(),
+        inbox.clone(),
+    ));
+    // D268: a wait on a request the host holds goes up the same link.
+    inbox.forwarding(uplinks.forwarder());
     // The host's machine list and its links come first: the terminal, channel and
     // session services each hold a part of them (D139). A machine's own daemon has
     // none, so every session it knows is here and its local path is untouched.
@@ -562,7 +618,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     );
     // D138: a batch of comments the last run was still typing is settled
     // before anyone asks.
-    {
+    // A stopped machine types nothing, so it settles them at its Start.
+    if !stopped_now {
         let review = review.clone();
         tokio::spawn(async move { review.recover_comments().await });
     }
@@ -595,13 +652,16 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     );
     // D194: a delete a restart cut short is finished once the start is done.
     channel_svc.recover_deletes_after(channel_bin, last_start.clone());
+    // D227: on a machine, the agents' board calls go to the host while its Uplink is open.
     let board_svc = BoardSvc::new(
         guard.clone(),
         store.clone(),
         feed.clone(),
         inbox.clone(),
         machine.clone(),
-    );
+    )
+    .forwarding(uplinks.forwarder())
+    .telling(session_tell.clone());
     // DK-14, D182: the Desk's sessions, beside the session service.
     let desk = crate::desk_service::server(crate::desk_service::DeskDeps {
         guard: guard.clone(),
@@ -662,8 +722,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             let _ = work.policy.set(policy_copy.clone());
             // D226: each link replays its machine's Inbox journal into the host's Inbox.
             let _ = work.inbox.set(inbox.clone());
+            // D227: each link runs its machine's forwarded board calls and replays its board journal.
+            let _ = work.boards.set(board_svc.clone());
             // LD-11: forgetting a machine archives its sessions through the SessionService.
             work.forgetting.set(Arc::new(session_svc.clone()));
+            // A forget the last run began and didn't answer is finished now.
+            tokio::spawn(machine_service::finish_forgets(work.clone()));
             // FM-8, FM-9: transfers reach other machines over their links.
             transfers.use_links(work.links());
             // D195: the host moves sessions between machines.
@@ -677,7 +741,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 compression.clone(),
             ));
             // MV-14: a move the last run cut short is undone or finished once its machines are linked.
-            session_svc.recover_moves_after(last_start.clone());
+            // A stopped machine moves nothing until its Start.
+            if !stopped_now {
+                session_svc.recover_moves_after(last_start.clone());
+            }
             // A pane on another machine: its file and trash calls are forwarded.
             files.use_links(work.links());
             // D189: other machines' conversations reach the host's mirror.
@@ -713,18 +780,39 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         _ => None,
     };
 
+    // PER-30, D242: the restart doctor's store repair makes this daemon
+    // leave once it has answered, so its next start restores the last good
+    // copy; `leave` is what it wakes.
+    let leave = Arc::new(tokio::sync::Notify::new());
+    let relaunch = crate::stop::service::Relaunch::new(leave.clone());
+    let doctor = crate::doctor::Doctor::new(
+        session_svc.clone(),
+        inbox.clone(),
+        store.clone(),
+        machine.clone(),
+        leave.clone(),
+    );
     // Every call is matched to its caller before a service sees it. The
     // first layer is the outer one: it marks the methods open to anyone,
-    // which the interceptor can't see the path of.
+    // which the interceptor can't see the path of. The last, next to the
+    // services, ends their streams when the daemon leaves (D270).
+    let (leaving, cut_streams) = crate::stop::streams::Leaving::signal();
     let router = Server::builder()
         .layer(MapRequestLayer::new(identity::mark_open))
         .layer(InterceptorLayer::new(authenticate))
+        .layer(cut_streams)
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(
             Daemon::new(machine.clone(), role)
                 .offering(compression)
                 .started(last_start)
                 .with_relay(relay)
-                .with_uplinks(uplinks),
+                .with_uplinks(uplinks)
+                .with_doctor(doctor)
+                .with_stop(crate::stop::service::StopSvc::new(
+                    stop_folder,
+                    machine.clone(),
+                    relaunch.clone(),
+                )),
         ))
         .add_service(pb::file_service_server::FileServiceServer::new(files))
         .add_service(pb::trash_service_server::TrashServiceServer::new(trash))
@@ -793,15 +881,24 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let router = router.add_service(pb::history_service_server::HistoryServiceServer::from_arc(history));
     let router = not_built::register(router);
 
-    let stop = stop_signal()?;
+    let stop = {
+        let signal = stop_signal()?;
+        async move {
+            tokio::select! {
+                () = signal => {}
+                () = leave.notified() => {}
+            }
+        }
+    };
     if let Some(mut ready) = ready {
         // A bridge that went meanwhile has nothing to hear.
         let _ = ready.write_all(b"\n");
     }
     let incoming = humata2_app_peer::incoming(listener, app_requirement());
-    // A stop ends every event subscription: graceful shutdown would wait
-    // on them for as long as the app keeps them open. The socket goes at
-    // once too, so nothing new reaches a daemon that is leaving.
+    // A stop ends every event subscription and every other stream:
+    // graceful shutdown would wait on them for as long as the app keeps
+    // them open. The socket goes at once too, so nothing new reaches a
+    // daemon that is leaving.
     let (stopped, stopping) = tokio::sync::oneshot::channel::<()>();
     let shutdown = {
         let feed = feed.clone();
@@ -809,6 +906,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         async move {
             stop.await;
             feed.end_subscriptions();
+            leaving.now();
             unlink_socket(&socket, socket_id);
             let _ = stopped.send(());
         }
@@ -826,6 +924,20 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         }
     };
     unlink_socket(&socket, socket_id);
+    // D261, D265: a stop or a start has the daemon start itself again, in
+    // this process. The state lock and the socket are close-on-exec, so the
+    // new run takes both.
+    if outcome.is_ok()
+        && let Some(point) = relaunch.take()
+    {
+        // Let go of the lock now rather than at the exec, which on a
+        // loaded machine can leave it taken past the new run's start.
+        let _ = state_lock.unlock();
+        return match crate::stop::exec::exec_again(point) {
+            Ok(never) => match never {},
+            Err(source) => Err(DaemonError::Relaunch { source }),
+        };
+    }
     outcome.map_err(|source| DaemonError::Serve { source })
 }
 
@@ -1009,9 +1121,9 @@ fn unlink_socket(socket: &Path, id: SocketId) {
 }
 
 /// Takes the state folder's lock, which lasts as long as the daemon does.
-/// A second daemon on the same state is refused here, and the pid the lock
-/// holder wrote is what the refusal names.
-fn lock_state(state: &Path) -> Result<File, DaemonError> {
+/// A lock still taken after `wait` is a second daemon on the same state,
+/// refused here; the pid the lock holder wrote is what the refusal names.
+async fn lock_state(state: &Path, wait: std::time::Duration) -> Result<File, DaemonError> {
     let path = state.join(LOCK_FILE);
     let lock_failed = |source| DaemonError::StateLock {
         path: path.clone(),
@@ -1027,21 +1139,27 @@ fn lock_state(state: &Path) -> Result<File, DaemonError> {
         .map_err(lock_failed)?;
     match file.try_lock() {
         Ok(()) => {}
-        Err(TryLockError::WouldBlock) => {
-            let pid = std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| text.trim().parse::<u32>().ok());
-            return Err(match pid {
-                Some(pid) => DaemonError::StateInUse {
-                    state: state.to_owned(),
-                    pid,
-                },
-                None => DaemonError::StateInUseUnknownPid {
-                    state: state.to_owned(),
-                },
-            });
-        }
         Err(TryLockError::Error(source)) => return Err(lock_failed(source)),
+        Err(TryLockError::WouldBlock) => {
+            // Wait on the lock itself, so it's taken the moment it's let go.
+            // The wait is a thread of its own, not the runtime's, so a wait
+            // that runs out doesn't hold up the runtime's shutdown: the
+            // thread stays blocked until the process ends, or gets the lock
+            // and lets go of it at once, as nobody takes the file from it.
+            let (taken, waiting) = tokio::sync::oneshot::channel();
+            std::thread::Builder::new()
+                .name("state-lock".into())
+                .spawn(move || {
+                    let _ = taken.send(file.lock().map(|()| file));
+                })
+                .map_err(lock_failed)?;
+            file = match tokio::time::timeout(wait, waiting).await {
+                Ok(Ok(Ok(file))) => file,
+                Ok(Ok(Err(source))) => return Err(lock_failed(source)),
+                Ok(Err(gone)) => return Err(lock_failed(std::io::Error::other(gone))),
+                Err(_elapsed) => return Err(state_in_use(state, &path)),
+            };
+        }
     }
     // Only the lock's holder writes the file, so the pid written is this one's.
     file.set_len(0)
@@ -1049,6 +1167,23 @@ fn lock_state(state: &Path) -> Result<File, DaemonError> {
         .and_then(|()| file.sync_data())
         .map_err(lock_failed)?;
     Ok(file)
+}
+
+/// The refusal for a state folder another daemon holds, naming the pid
+/// that daemon wrote in the lock file when it reads.
+fn state_in_use(state: &Path, lock_file: &Path) -> DaemonError {
+    let pid = std::fs::read_to_string(lock_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok());
+    match pid {
+        Some(pid) => DaemonError::StateInUse {
+            state: state.to_owned(),
+            pid,
+        },
+        None => DaemonError::StateInUseUnknownPid {
+            state: state.to_owned(),
+        },
+    }
 }
 
 /// Listens on `socket`, 0600 in a folder only this user can open. A socket
@@ -1109,6 +1244,42 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
+
+    /// Another holder of `state`'s lock: a description of its own, as a
+    /// second daemon's would be, having written `pid`.
+    fn hold_lock(state: &Path, pid: u32) -> File {
+        let path = state.join(LOCK_FILE);
+        std::fs::write(&path, format!("{pid}\n")).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        file.try_lock().unwrap();
+        file
+    }
+
+    #[tokio::test]
+    async fn a_state_lock_let_go_within_the_wait_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = hold_lock(dir.path(), 4242);
+        let letting_go = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            drop(held);
+        });
+        let taken = lock_state(dir.path(), std::time::Duration::from_secs(10)).await;
+        assert!(taken.is_ok(), "{taken:?}");
+        letting_go.await.unwrap();
+        let written = std::fs::read_to_string(dir.path().join(LOCK_FILE)).unwrap();
+        assert_eq!(written.trim(), std::process::id().to_string());
+    }
+
+    #[tokio::test]
+    async fn a_state_lock_held_past_the_wait_is_refused_naming_its_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let _held = hold_lock(dir.path(), 4242);
+        let refused = lock_state(dir.path(), std::time::Duration::from_millis(100)).await;
+        assert!(
+            matches!(refused, Err(DaemonError::StateInUse { pid: 4242, .. })),
+            "{refused:?}"
+        );
+    }
 
     #[test]
     fn first_starts_at_once_agree_on_one_machine_id() {

@@ -7,6 +7,13 @@
 //! Boxes run the daemon as shipped, so their undo window is the real 10
 //! seconds. Waits are on the host's feeds; a freed folder is waited for on
 //! disk.
+//!
+//! The cut tests at the end stop the host or a box at each point of the
+//! archive, the mirror restore and the carry (`archive_remote.*`,
+//! `mirror_restore.*`, `carry.*`), start it again, and have the box link:
+//! each ends whole, or is still where it was. Both run the faults daemon
+//! for such a start (D240); a box without a fault variable in its start's
+//! environment runs the daemon as shipped.
 
 mod common;
 #[path = "common/remote_rig.rs"]
@@ -516,4 +523,357 @@ async fn a_mirror_restore_brings_what_box_1_had_more_of_into_a_side_folder_then_
     assert!(notice.contains("wip.txt"), "the notice names the work that is gone: {notice}");
     assert!(!rig.host_path(&channel, CLONE).join("wip.txt").exists(), "the live clone here is untouched");
     stays_here(&rig, &id).await;
+}
+
+// Cuts (SAFE T2c). The host or a box is stopped at one point, started again,
+// and the box links; what is left must be whole.
+
+/// Plans and starts the archive of `id`, whether or not the host lives to
+/// answer: a host cut at a point may die before it says the archive began.
+async fn archive_until_cut(rig: &Rig, id: &pb::SessionId) {
+    let plan = sessions(rig)
+        .await
+        .plan_archive(pb::PlanArchiveRequest { id: Some(id.clone()) })
+        .await
+        .expect("the archive is planned")
+        .into_inner();
+    let _ = sessions(rig)
+        .await
+        .archive_session(pb::ArchiveSessionRequest {
+            idempotency_key: None,
+            id: Some(id.clone()),
+            choice: pb::ArchiveChoice::Archive as i32,
+            plan: plan.token,
+        })
+        .await;
+}
+
+/// The session as archived on box-1, listed once among the archived and not
+/// among the plain list, with a summary that names its repository.
+async fn archived_once(rig: &Rig, id: &pb::SessionId) -> pb::Session {
+    let archived = rig.wait_session(id, "archived", |s| s.archive.is_some()).await;
+    assert_eq!(archived.machine, Some(Rig::box_id("box-1")));
+    assert!(!listed(rig).await.contains(id), "an archived session leaves the plain list");
+    let all = sessions(rig)
+        .await
+        .list_sessions(pb::ListSessionsRequest { include_archived: true, ..Default::default() })
+        .await
+        .expect("the host lists sessions with the archived")
+        .into_inner()
+        .sessions;
+    let shown = all.iter().filter(|session| session.id.as_ref() == Some(id)).count();
+    assert_eq!(shown, 1, "the archived session is listed once: {all:?}");
+    let summary = archived.archive.clone().expect("an archived session has a summary");
+    assert!(!summary.repos.is_empty(), "the summary names the session's repository: {summary:?}");
+    archived
+}
+
+/// A host cut at `point` while box-1 archives a session: once the host is
+/// back and box-1 linked, the session is archived, and listed once.
+async fn host_cut_while_archiving(point: &str) {
+    let (mut rig, channel, id) = on_box().await;
+    rig.restart_host(&[("HUMATA2_STOP_AT", point)]).await;
+    rig.wait_session(&id, "live again", is_live).await;
+
+    archive_until_cut(&rig, &id).await;
+    rig.host_stopped().await;
+    rig.restart_host(&[]).await;
+
+    archived_once(&rig, &id).await;
+    wait_gone(&rig.the("box-1").path(&channel, CLONE)).await;
+    assert!(rig.the("box-1").tabs().is_empty(), "its agent stopped on box-1");
+}
+
+/// A host cut before box-1 was asked: nothing changed. The session is live,
+/// unarchived and in the plain list, and archiving it again goes through.
+async fn host_cut_before_box_1_was_asked(point: &str) {
+    let (mut rig, _channel, id) = on_box().await;
+    rig.restart_host(&[("HUMATA2_STOP_AT", point)]).await;
+    rig.wait_session(&id, "live again", is_live).await;
+
+    archive_until_cut(&rig, &id).await;
+    rig.host_stopped().await;
+    rig.restart_host(&[]).await;
+
+    let shown = rig.wait_session(&id, "live", is_live).await;
+    assert!(shown.archive.is_none(), "box-1 wasn't asked, so nothing is archived: {shown:?}");
+    assert!(listed(&rig).await.contains(&id), "the session is in the plain list");
+    assert!(!rig.the("box-1").tabs().is_empty(), "its agent still runs on box-1");
+    assert!(rig.the("box-1").store().archive(&id.value).unwrap().is_none(), "box-1 holds no archive");
+    say(&rig, &id, "after the cut").await;
+
+    let ended = archive(&rig, &id).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    archived_once(&rig, &id).await;
+}
+
+macro_rules! host_archive_cuts {
+    ($($name:ident: $body:ident($point:literal),)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread")]
+            async fn $name() {
+                $body($point).await
+            }
+        )*
+    };
+}
+
+host_archive_cuts! {
+    a_host_cut_before_box_1_is_asked_to_archive_leaves_the_session_live: host_cut_before_box_1_was_asked("archive_remote.journaled"),
+    a_host_cut_after_box_1_was_asked_to_archive_lists_it_archived_once_box_1_links: host_cut_while_archiving("archive_remote.asked"),
+    a_host_cut_after_box_1_archived_lists_it_archived_once_box_1_links: host_cut_while_archiving("archive_remote.ended"),
+    a_host_cut_after_the_archive_row_was_written_keeps_it_archived_once: host_cut_while_archiving("archive_remote.row_written"),
+    a_host_cut_after_the_archive_follow_up_was_settled_keeps_it_archived_once: host_cut_while_archiving("archive_remote.settled"),
+}
+
+/// A box cut right after it recorded its archive of a session, with the agent
+/// still running: the box finishes the archive when it starts, and once it
+/// links the host lists the session archived, once, with no new ask.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_box_1_cut_after_it_recorded_its_archive_finishes_it_once_it_links() {
+    let (mut rig, channel, id) = on_box().await;
+    rig.restart_box_env("box-1", &[("HUMATA2_STOP_AT", "archive.recorded")]).await;
+    rig.wait_session(&id, "live again", is_live).await;
+
+    archive_until_cut(&rig, &id).await;
+    rig.box_stopped("box-1").await;
+    rig.restart_box_env("box-1", &[]).await;
+
+    archived_once(&rig, &id).await;
+    assert!(rig.the("box-1").store().archive(&id.value).unwrap().is_some(), "box-1 holds its archive");
+    wait_gone(&rig.the("box-1").path(&channel, CLONE)).await;
+    assert!(rig.the("box-1").tabs().is_empty(), "its agent stopped on box-1");
+}
+
+/// What a cut mirror restore leaves, for the test to check.
+struct Cut {
+    rig: Rig,
+    channel: pb::Channel,
+    id: pb::SessionId,
+    host: pb::MachineId,
+}
+
+/// A mirror restore of box-1's archive of a session with work in its clone,
+/// with the host cut at `point`: either inside the restore, or (`at_link`)
+/// once box-1's link is back, when the host compares and carries box-1's
+/// copy. Returns with the host started again, box-1 started again and
+/// linked.
+async fn cut_a_mirror_restore(point: &str, at_link: bool) -> Cut {
+    let (mut rig, channel, id) = on_box().await;
+    say(&rig, &id, r#"{"type":"user","message":{"content":"said on box-1"}}"#).await;
+    mirrored(&rig, &id, "said on box-1").await;
+    let branch = rig.session(&id).await.repos[0].branch.clone();
+    let clone = rig.the("box-1").path(&channel, CLONE);
+    git(&["-C", &clone.display().to_string(), "push", "-u", "origin", &branch]);
+    std::fs::write(clone.join("wip.txt"), "not committed yet\n").unwrap();
+    rig.wait_session(&id, "reporting its work", |s| s.pointers.iter().any(|pointer| pointer.dirty_files > 0))
+        .await;
+    let started = start_archive(&rig, &id, pb::ArchiveChoice::ArchiveAndDeleteWork).await;
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    wait_gone(&clone).await;
+    rig.restart_host(&[("HUMATA2_STOP_AT", point)]).await;
+    rig.link_lost("box-1").await;
+
+    let host = rig.host_id().await;
+    let asked = sessions(&rig)
+        .await
+        .restore_session(pb::RestoreSessionRequest { idempotency_key: None, id: Some(id.clone()), machine: Some(host.clone()) })
+        .await;
+    if at_link {
+        let started = asked.expect("the restore starts").into_inner();
+        let ended = rig.ended(&started).await;
+        assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+        rig.wait_session(&id, "live on this Mac", |s| s.machine.as_ref() == Some(&host) && is_live(s)).await;
+        rig.dials_through("box-1");
+    }
+    rig.host_stopped().await;
+    // Box-1 is away through the host's restart, then links.
+    rig.the_mut("box-1").kill();
+    rig.restart_host(&[]).await;
+    rig.the_mut("box-1").relaunch(&[]).await;
+    rig.link_back("box-1").await;
+    Cut { rig, channel, id, host }
+}
+
+/// The side folders brought from box-1 under the session's folder here:
+/// (whole ones, unfinished ones).
+fn side_folders(rig: &Rig, channel: &pb::Channel) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
+    let sides = rig.host_path(channel, "sessions/cache-warmup/.humata");
+    let (mut whole, mut partial) = (Vec::new(), Vec::new());
+    for entry in std::fs::read_dir(&sides).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_owned();
+        if name.starts_with("from-box-1-") {
+            if name.ends_with(".partial") { partial.push(path) } else { whole.push(path) }
+        }
+    }
+    (whole, partial)
+}
+
+/// The session runs on this Mac and isn't archived: live, or live once the
+/// user resumes it, which has to work.
+async fn on_this_mac(rig: &Rig, id: &pb::SessionId, host: &pb::MachineId) {
+    let shown = rig
+        .wait_session(id, "on this Mac and not archived", |s| s.machine.as_ref() == Some(host) && s.archive.is_none())
+        .await;
+    if !is_live(&shown) {
+        let started = sessions(rig)
+            .await
+            .resume_session(pb::ResumeSessionRequest {
+                idempotency_key: None,
+                id: Some(id.clone()),
+                mode: pb::resume_session_request::Mode::Resume as i32,
+            })
+            .await
+            .expect("the session can be resumed on this Mac")
+            .into_inner();
+        let ended = rig.ended(&started).await;
+        assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    }
+    rig.wait_session(id, "live on this Mac", |s| s.machine.as_ref() == Some(host) && is_live(s) && s.archive.is_none())
+        .await;
+}
+
+/// A host cut in a mirror restore at or after its switch: the session runs
+/// here, its conversation is the mirror's once, box-1 let its copy go, and
+/// what box-1 had more of sits beside the session exactly once.
+async fn host_cut_after_the_switch(point: &str, at_link: bool) {
+    let Cut { rig, channel, id, host } = cut_a_mirror_restore(point, at_link).await;
+    // Live on its own, with the conversation the mirror kept: a cut after
+    // the switch finishes the resume at the host's start. The record names
+    // this Mac before the agent exists, so the wait is for the agent's
+    // conversation, not only for a live-looking status.
+    let back = rig
+        .wait_session(&id, "live on this Mac with its agent", |s| {
+            s.machine.as_ref() == Some(&host) && is_live(s) && s.archive.is_none() && !s.conversation_id.is_empty()
+        })
+        .await;
+    let talk = std::fs::read_to_string(rig.host_conversation(&back.conversation_id)).unwrap();
+    assert!(talk.contains("said on box-1"), "the conversation came from the mirror: {talk}");
+    released_on_box_1(&rig, &id).await;
+    stays_here(&rig, &id).await;
+
+    let (whole, partial) = side_folders(&rig, &channel);
+    assert_eq!(whole.len(), 1, "what box-1 had more of is beside the session once: {whole:?}");
+    assert!(partial.is_empty(), "no unfinished side folder is left: {partial:?}");
+    let notice = std::fs::read_to_string(whole[0].join("NOTICE.md")).expect("the side folder has a notice");
+    assert!(notice.contains("wip.txt"), "the notice names the work that is gone: {notice}");
+    let files = texts_under(&whole[0]);
+    assert!(
+        files.iter().any(|(path, text)| path.extension().is_some_and(|ext| ext == "jsonl") && text.contains("said on box-1")),
+        "box-1's conversation was brought: {:?}",
+        files.iter().map(|(path, _)| path).collect::<Vec<_>>()
+    );
+    say(&rig, &id, r#"{"type":"user","message":{"content":"said on this mac"}}"#).await;
+    mirrored(&rig, &id, "said on this mac").await;
+    let texts = mirror_texts(&rig, &id).await;
+    let held = |text: &str| texts.iter().filter(|entry| entry.contains(text)).count();
+    assert_eq!(held("said on box-1"), 1, "{texts:?}");
+    assert_eq!(held("said on this mac"), 1, "{texts:?}");
+}
+
+/// A host cut in a mirror restore before its switch: the session is still
+/// archived on box-1, whole, with box-1's copy where it was; restoring it
+/// again, now that box-1 is linked, goes through.
+async fn host_cut_before_the_switch(point: &str) {
+    let Cut { rig, id, host, .. } = cut_a_mirror_restore(point, false).await;
+    let shown = rig.session(&id).await;
+    assert!(shown.archive.is_some(), "the session is still archived: {shown:?}");
+    assert_eq!(shown.machine, Some(Rig::box_id("box-1")), "its record still names box-1");
+    assert!(!listed(&rig).await.contains(&id), "an archived session leaves the plain list");
+    assert!(rig.the("box-1").store().session(&id.value).unwrap().is_some(), "box-1 kept its copy");
+
+    let ended = restore(&rig, &id, Some(host.clone())).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    on_this_mac(&rig, &id, &host).await;
+    released_on_box_1(&rig, &id).await;
+    stays_here(&rig, &id).await;
+}
+
+macro_rules! mirror_restore_cuts {
+    ($($name:ident: $body:ident($point:literal, $link:literal),)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread")]
+            async fn $name() {
+                $body($point, $link).await
+            }
+        )*
+    };
+}
+
+macro_rules! mirror_restore_cuts_before_the_switch {
+    ($($name:ident: $point:literal,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread")]
+            async fn $name() {
+                host_cut_before_the_switch($point).await
+            }
+        )*
+    };
+}
+
+mirror_restore_cuts_before_the_switch! {
+    a_host_cut_after_a_mirror_restore_cloned_leaves_the_session_archived_on_box_1: "mirror_restore.cloned",
+    a_host_cut_after_a_mirror_restore_kept_its_release_leaves_the_session_archived_on_box_1: "mirror_restore.journaled",
+}
+
+mirror_restore_cuts! {
+    a_host_cut_after_a_mirror_restore_switched_still_runs_it_here_and_releases_box_1s_copy: host_cut_after_the_switch("mirror_restore.switched", false),
+    a_host_cut_after_a_mirror_restore_resumed_still_runs_it_here_and_releases_box_1s_copy: host_cut_after_the_switch("mirror_restore.resumed", false),
+    a_host_cut_after_box_1s_copy_was_compared_still_releases_it_and_carries_once: host_cut_after_the_switch("mirror_restore.compared", true),
+    a_host_cut_after_box_1_let_go_of_its_copy_keeps_one_carried_folder: host_cut_after_the_switch("mirror_restore.released", true),
+    a_host_cut_after_the_carry_staged_box_1s_copy_carries_it_once: host_cut_after_the_switch("carry.staged", true),
+    a_host_cut_after_the_carry_copied_box_1s_files_carries_them_once: host_cut_after_the_switch("carry.copied", true),
+    a_host_cut_after_the_carry_wrote_its_notice_carries_once_with_no_partial_left: host_cut_after_the_switch("carry.noticed", true),
+    a_host_cut_after_the_carry_was_placed_carries_once: host_cut_after_the_switch("carry.placed", true),
+}
+
+/// A box cut while it lets go of its copy of a session restored on this
+/// Mac: once it links, the host asks again, the copy goes, and the session
+/// runs here alone.
+async fn box_cut_while_letting_go(point: &str) {
+    let (mut rig, channel, id) = on_box().await;
+    rig.restart_box_env("box-1", &[("HUMATA2_STOP_AT", point)]).await;
+    rig.wait_session(&id, "live again", is_live).await;
+    say(&rig, &id, r#"{"type":"user","message":{"content":"said on box-1"}}"#).await;
+    mirrored(&rig, &id, "said on box-1").await;
+    let branch = rig.session(&id).await.repos[0].branch.clone();
+    let clone = rig.the("box-1").path(&channel, CLONE);
+    git(&["-C", &clone.display().to_string(), "push", "-u", "origin", &branch]);
+    let ended = archive(&rig, &id).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    wait_gone(&clone).await;
+    rig.link_lost("box-1").await;
+
+    let host = rig.host_id().await;
+    let ended = restore(&rig, &id, Some(host.clone())).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    rig.wait_session(&id, "live on this Mac", |s| s.machine.as_ref() == Some(&host) && is_live(s)).await;
+    rig.dials_through("box-1");
+
+    rig.box_stopped("box-1").await;
+    rig.restart_box_env("box-1", &[]).await;
+    released_on_box_1(&rig, &id).await;
+    stays_here(&rig, &id).await;
+    let (whole, partial) = side_folders(&rig, &channel);
+    assert!(whole.is_empty() && partial.is_empty(), "nothing was more on box-1, so nothing is carried: {whole:?} {partial:?}");
+    let texts = mirror_texts(&rig, &id).await;
+    assert_eq!(texts.iter().filter(|entry| entry.contains("said on box-1")).count(), 1, "{texts:?}");
+}
+
+macro_rules! box_release_cuts {
+    ($($name:ident: $point:literal,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread")]
+            async fn $name() {
+                box_cut_while_letting_go($point).await
+            }
+        )*
+    };
+}
+
+box_release_cuts! {
+    a_box_1_cut_after_trashing_its_copy_lets_go_of_it_once_it_links: "carry.trashed",
+    a_box_1_cut_after_forgetting_its_copy_lets_go_of_it_once_it_links: "carry.forgotten",
 }

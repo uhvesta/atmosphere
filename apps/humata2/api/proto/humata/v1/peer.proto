@@ -150,6 +150,7 @@ message MachineToHost {
     LocalAnswer local_answer = 8;
     PushRequested push = 9;
     UplinkResume resume = 10;
+    InboxAnswerRefused answer_refused = 11;
   }
 }
 
@@ -250,6 +251,11 @@ message JournalEntry {
   uint64 policy_revision = 7;
   // Ids the machine gave things it made ("~devbox-1.3").
   repeated BoardItemId provisional_ids = 8;
+  // BD-15, AW-9: the request the user approved for this write, held by this
+  // machine. The host applies the entry under an Ask rule only when its
+  // mirror of that request is Approved, made by this session and about this
+  // item. It never overrides Never.
+  RequestId approved_request = 9;
 }
 
 // A client call the machine can't answer itself: an MCP tool, or `humata`
@@ -284,10 +290,13 @@ message ForwardedResult {
   uint64 call_id = 1;
   oneof outcome {
     bytes response = 2;
+    // An Ask on the host comes back here as error.kind approval_pending; the
+    // request is the host's, and the agent waits on it through forwarded
+    // InboxService calls (D268).
     Error error = 3;
-    // An Inbox request was made; the call stays open until it is answered.
-    RequestId pending = 4;
   }
+  reserved 4;
+  reserved "pending";
 }
 
 // What a machine needs to judge its agents' calls while the host is away
@@ -328,6 +337,8 @@ message OwnedItem {
   BoardItemId item = 1;
   SessionId owner = 2;
   Revision revision = 3;
+  // The board the item is on: the machine judges an edit by it (D227).
+  BoardRef board = 4;
 }
 
 // AW-6: answered in one place, answered everywhere.
@@ -342,6 +353,17 @@ message InboxAnswerRelay {
 message RequestWithdrawnRelay {
   uint64 seq = 1;
   RequestId request = 2;
+}
+
+// The machine's refusal of an InboxAnswerRelay it could not apply: the request
+// was already answered there (the error names who and how), is no longer held
+// there, or the answer's principal check failed. The host answers its user
+// with `error` at once instead of waiting for a journal entry that won't come.
+message InboxAnswerRefused {
+  RequestId request = 1;
+  Error error = 2;
+  // The gRPC status code the host answers with (google.rpc.Code).
+  int32 code = 3;
 }
 
 // AW-5: the user answered a journaled request on the machine while the host

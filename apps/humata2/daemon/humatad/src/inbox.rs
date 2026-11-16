@@ -7,8 +7,10 @@
 //! the event feed.
 
 mod deferred;
+mod forwarded;
 mod kept;
 pub(crate) mod permission;
+mod relay;
 mod replay;
 
 use std::collections::HashMap;
@@ -17,7 +19,7 @@ use std::time::{Duration, SystemTime};
 
 use humata2_access::{
     AccessRequest, Agent, Answer, AnswerError, Call, Capability, CheckError, Decision, GrantTarget,
-    PresentUser, Refusal, RequestId, Source, Target, Verdict,
+    PresentUser, Principal, Refusal, RequestId, Source, Target, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::Store;
@@ -29,6 +31,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
 use crate::attach;
+use crate::away::Forwarder;
 use crate::events::{Feed, Scope};
 use crate::grant_target;
 use crate::guard::{self, Guard};
@@ -38,6 +41,7 @@ use crate::status;
 use deferred::Outcome;
 pub(crate) use deferred::{BoardAsk, Deferred, Run};
 pub(crate) use replay::Replayed;
+use relay::{Relayed, Relays};
 
 /// How often a wait says it is still waiting (MCP.md §5).
 const KEEPALIVE: Duration = Duration::from_secs(15);
@@ -57,6 +61,11 @@ pub(crate) struct Inbox {
     /// Where new requests and their answers are told.
     feed: Arc<Feed>,
     state: Mutex<State>,
+    /// The machines' live links, and the answers the host passed down them (D226).
+    relays: Arc<Relays>,
+    /// On a machine: the host's link, where a wait on a request the host holds
+    /// goes up (D268). Set once the link's parts are made.
+    forwarder: std::sync::OnceLock<Arc<Forwarder>>,
 }
 
 #[derive(Default)]
@@ -166,7 +175,23 @@ impl Inbox {
             machine,
             feed,
             state: Mutex::new(state),
+            relays: Arc::new(Relays::new()),
+            forwarder: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The machines' live links and the answers sent down them: each link
+    /// loop of the host registers its machine here, and the replay reads
+    /// what was sent.
+    pub(crate) fn relays(&self) -> &Arc<Relays> {
+        &self.relays
+    }
+
+    /// This Inbox with `relays` in place of its own.
+    #[cfg(test)]
+    fn with_relays(mut self, relays: Arc<Relays>) -> Self {
+        self.relays = relays;
+        self
     }
 
     /// Saves `next` as `entry`'s request, and only then tells its waits.
@@ -247,6 +272,27 @@ impl Inbox {
             .ok_or_else(|| no_request(id))
     }
 
+    /// The host's mirror of request `id`, when `machine` holds it, `session`
+    /// made it and the user approved it: what a journaled board write names
+    /// as its approval (AW-9, D268). `None` when any of those isn't so.
+    pub(crate) async fn approved_on(&self, machine: &str, id: &str, session: &str) -> Option<pb::InboxRequest> {
+        let state = self.state.lock().await;
+        let held = state
+            .requests
+            .iter()
+            .find(|entry| entry.id == id && entry.session == session)?
+            .request
+            .borrow()
+            .request
+            .clone();
+        let from = held
+            .journal
+            .as_ref()
+            .and_then(|position| position.machine.as_ref())
+            .map(|from| from.value.as_str());
+        (held.state == pb::RequestState::Approved as i32 && from == Some(machine)).then_some(held)
+    }
+
     /// The ids of the pending requests of any of `sessions`, for a plan
     /// that lists what deleting them would withdraw (CH-24).
     pub(crate) async fn pending_ids_of(&self, sessions: &[String]) -> Vec<String> {
@@ -271,12 +317,26 @@ impl Inbox {
         session: &str,
         reason: pb::WithdrawReason,
     ) -> Result<(), Status> {
+        self.withdraw_pending_where(reason, |entry| entry.session == session)
+            .await
+    }
+
+    /// Withdraws every pending request of this machine for `reason`, as
+    /// when its sessions are stopped (D264).
+    pub(crate) async fn withdraw_all_pending(
+        &self,
+        reason: pb::WithdrawReason,
+    ) -> Result<(), Status> {
+        self.withdraw_pending_where(reason, |_| true).await
+    }
+
+    async fn withdraw_pending_where(
+        &self,
+        reason: pb::WithdrawReason,
+        which: impl Fn(&Entry) -> bool,
+    ) -> Result<(), Status> {
         let state = self.state.lock().await;
-        for entry in state
-            .requests
-            .iter()
-            .filter(|entry| entry.session == session)
-        {
+        for entry in state.requests.iter().filter(|entry| which(entry)) {
             let mut next = entry.request.borrow().clone();
             if next.request.state != pb::RequestState::Pending as i32 {
                 continue;
@@ -330,30 +390,37 @@ impl Inbox {
     /// Tells the feed of the grant `entry`'s answer made, if any, then of
     /// the answered request.
     fn tell_answer(&self, entry: &Entry) -> pb::InboxRequest {
+        self.tell_grant(entry);
         let held = entry.request.borrow().clone();
-        if let Some(grant) = held.grant {
-            let scope = Scope {
-                channel: grant
-                    .channel
-                    .as_ref()
-                    .map(|channel| channel.value.clone())
-                    .unwrap_or_default(),
-                session: entry.session.clone(),
-            };
-            let by = held
-                .request
-                .answered
-                .as_ref()
-                .and_then(|answered| answered.by.clone());
-            self.feed.publish_in(
-                pb::Change::Created,
-                pb::event::Payload::Grant(grant),
-                scope,
-                by,
-            );
-        }
         self.tell(pb::Change::Updated, &entry.session, &held.request);
         held.request
+    }
+
+    /// Tells the feed of the grant `entry`'s answer made, if any.
+    fn tell_grant(&self, entry: &Entry) {
+        let held = entry.request.borrow().clone();
+        let Some(grant) = held.grant else {
+            return;
+        };
+        let scope = Scope {
+            channel: grant
+                .channel
+                .as_ref()
+                .map(|channel| channel.value.clone())
+                .unwrap_or_default(),
+            session: entry.session.clone(),
+        };
+        let by = held
+            .request
+            .answered
+            .as_ref()
+            .and_then(|answered| answered.by.clone());
+        self.feed.publish_in(
+            pb::Change::Created,
+            pb::event::Payload::Grant(grant),
+            scope,
+            by,
+        );
     }
 
     /// The user behind `caller`, who has shown they are there.
@@ -458,6 +525,187 @@ impl Inbox {
     }
 }
 
+impl Inbox {
+    /// Answers request `id` as `caller`, whose presence `user` shows. Only
+    /// the first answer counts (IN-15). A mirror of a request its machine
+    /// holds isn't answered here: the answer goes to that machine, and the
+    /// result is what the machine's journal says came of it (D226).
+    async fn answer_as(
+        &self,
+        caller: &Caller,
+        user: &PresentUser,
+        id: String,
+        answer: pb::request_answer::Answer,
+        expected_revision: Option<pb::Revision>,
+    ) -> Result<pb::InboxRequest, Status> {
+        // Held while answering and saving, so an answer, a second answer
+        // and a withdrawal can't interleave.
+        let state = self.state.lock().await;
+        let entry = state
+            .requests
+            .iter()
+            .find(|entry| entry.id == id && sees(caller, entry))
+            .ok_or_else(|| no_request(&id))?;
+        // A permission card whose hook let go has no one to hear the answer.
+        let _ = self.withdraw_unheld(entry).await;
+        let current = entry.request.borrow().request.clone();
+        still_open(&current)?;
+        if let Some(expected) = expected_revision {
+            let actual = current.revision.clone().unwrap_or_default();
+            if expected.value != actual.value {
+                return Err(revision_conflict(&id, expected, actual));
+            }
+        }
+        if current.journal.is_some() {
+            let relayed = self.relay(entry, &current, caller, user, answer)?;
+            // Not held while the machine answers: its journal entry is
+            // applied under this lock.
+            drop(state);
+            return relayed.verdict().await;
+        }
+        let at = SystemTime::now();
+        let approving = matches!(
+            answer,
+            pb::request_answer::Answer::Approve(_) | pb::request_answer::Answer::Always(_)
+        );
+        if let Some(refused) = self
+            .deny_if_never(entry, caller, user, approving, at)
+            .await?
+        {
+            self.tell_answer(entry);
+            return Err(refused);
+        }
+        let decided = self.decide(user, entry, &current, answer, at)?;
+        let by = answered_by(caller, user);
+        let mut next = entry.request.borrow().clone();
+        settle(&mut next, decided, by, at);
+        self.commit(entry, next, Some(user), "save the answer")
+            .await?;
+        self.start(entry);
+        Ok(self.tell_answer(entry))
+    }
+
+    /// Sends `answer` to the machine that holds the mirror `current`, if
+    /// its link is up and the answer fits the card (D226). Nothing is sent
+    /// otherwise.
+    fn relay(
+        &self,
+        entry: &Entry,
+        current: &pb::InboxRequest,
+        caller: &Caller,
+        user: &PresentUser,
+        answer: pb::request_answer::Answer,
+    ) -> Result<Relayed, Status> {
+        fits_card(current, &answer)?;
+        let machine = current
+            .journal
+            .as_ref()
+            .and_then(|position| position.machine.as_ref())
+            .map(|machine| machine.value.clone())
+            .unwrap_or_default();
+        let Some(link) = self.relays.link_of(&machine) else {
+            return Err(machine_offline(current, false));
+        };
+        let sent = pb::RequestAnswer {
+            answer: Some(answer),
+        };
+        // Noted first, so the journal entry that comes back finds it. The
+        // note goes when the wait on the answer ends, whichever way.
+        let record = self.relays.sent(&machine, &entry.id, sent.clone());
+        let message = pb::HostToMachine {
+            message: Some(pb::host_to_machine::Message::Answer(pb::InboxAnswerRelay {
+                seq: 0,
+                request: current.id.clone(),
+                answer: Some(sent.clone()),
+                by: Some(answered_by(caller, user)),
+                at: Some(grant_target::timestamp(SystemTime::now())),
+            })),
+        };
+        if link.try_send(message).is_err() {
+            return Err(machine_offline(current, false));
+        }
+        Ok(Relayed {
+            link,
+            seen: entry.request.subscribe(),
+            sent,
+            record,
+            wait: self.relays.wait(),
+            request: current.clone(),
+        })
+    }
+
+    /// The host's user, as this machine counts them when the host passes an
+    /// answer down: at the Mac, so on host, whatever the card's `answer_at`
+    /// (D213 judges the host's relayed calls as reachable).
+    fn relayed_user(&self) -> Option<PresentUser> {
+        let here = humata2_access::Context::on_host(humata2_access::MachineId::new(&self.machine));
+        Principal::App.present_user(&here)
+    }
+
+    /// Answers a request as the host's user does, when the host passes the
+    /// answer down the link (D226). The first answer wins, here, under this
+    /// Inbox's lock: one for a request already settled does nothing, and
+    /// the journal entry the first answer made carries the outcome to the
+    /// host. What this machine refuses comes back as the refusal to send up
+    /// the link, so the host's user hears at once (not after a wait).
+    pub(crate) async fn answer_relayed(&self, relayed: &pb::InboxAnswerRelay) -> Option<pb::InboxAnswerRefused> {
+        let id = relayed
+            .request
+            .as_ref()
+            .map(|id| id.value.clone())
+            .unwrap_or_default();
+        let answer = relayed.answer.as_ref().and_then(|answer| answer.answer.clone());
+        let (false, Some(answer)) = (id.is_empty(), answer) else {
+            crate::log::say!(
+                "humatad2: warning: the host passed down an answer with no request or no answer in it, so it was left out; update Humata on the Mac and on this machine so both ends speak the same version"
+            );
+            return None;
+        };
+        let refusal = |status: Status| pb::InboxAnswerRefused {
+            request: Some(pb::RequestId { value: id.clone() }),
+            error: status::error_of(&status),
+            code: status.code() as i32,
+        };
+        let Some(user) = self.relayed_user() else {
+            return Some(refusal(status::failure(
+                Code::PermissionDenied,
+                pb::Error {
+                    message: format!(
+                        "{} didn't accept your answer to request {id}: it can't count you as present there",
+                        self.machine
+                    ),
+                    fix: format!(
+                        "answer it on {} with `humata login` and the approval passphrase, or update Humata on both so they agree",
+                        self.machine
+                    ),
+                    retry: None,
+                    kind: None,
+                },
+            )));
+        };
+        let caller = Caller::User(UserVia::Host);
+        match self.answer_as(&caller, &user, id.clone(), answer, None).await {
+            Ok(_) => None,
+            Err(refused) => {
+                crate::log::say!(
+                    "humatad2: the host's answer to request {id} wasn't applied: {}",
+                    refused.message()
+                );
+                let refused = match status::error_of(&refused).and_then(|error| error.kind) {
+                    Some(pb::error::Kind::NotFound(_)) => status::not_found(
+                        pb::EntityKind::Request,
+                        &id,
+                        format!("request {id} is no longer held on {}", self.machine),
+                        "nothing to answer: the request ended there, and the card shows how once the machine's journal reaches this Mac",
+                    ),
+                    _ => refused,
+                };
+                Some(refusal(refused))
+            }
+        }
+    }
+}
+
 fn sees(caller: &Caller, entry: &Entry) -> bool {
     match caller {
         Caller::User(_) => true,
@@ -545,45 +793,10 @@ impl pb::inbox_service_server::InboxService for Inbox {
             .answer
             .and_then(|answer| answer.answer)
             .ok_or_else(|| status::missing("answer"))?;
-        // Held while answering and saving, so an answer, a second answer
-        // and a withdrawal can't interleave.
-        let state = self.state.lock().await;
-        let entry = state
-            .requests
-            .iter()
-            .find(|entry| entry.id == id && sees(&caller, entry))
-            .ok_or_else(|| no_request(&id))?;
-        // A permission card whose hook let go has no one to hear the answer.
-        let _ = self.withdraw_unheld(entry).await;
-        let current = entry.request.borrow().request.clone();
-        still_open(&current)?;
-        held_on_machine(&current)?;
-        if let Some(expected) = request.expected_revision {
-            let actual = current.revision.clone().unwrap_or_default();
-            if expected.value != actual.value {
-                return Err(revision_conflict(&id, expected, actual));
-            }
-        }
-        let at = SystemTime::now();
-        let approving = matches!(
-            answer,
-            pb::request_answer::Answer::Approve(_) | pb::request_answer::Answer::Always(_)
-        );
-        if let Some(refused) = self
-            .deny_if_never(entry, &caller, &user, approving, at)
-            .await?
-        {
-            self.tell_answer(entry);
-            return Err(refused);
-        }
-        let decided = self.decide(&user, entry, &current, answer, at)?;
-        let by = answered_by(&caller, &user);
-        let mut next = entry.request.borrow().clone();
-        settle(&mut next, decided, by, at);
-        self.commit(entry, next, Some(&user), "save the answer")
+        let settled = self
+            .answer_as(&caller, &user, id, answer, request.expected_revision)
             .await?;
-        self.start(entry);
-        Ok(Response::new(self.tell_answer(entry)))
+        Ok(Response::new(settled))
     }
 
     /// IN-6: answers the listed requests that are still pending and in
@@ -744,115 +957,124 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 "ask from a Humata session tab, where HUMATA_SESSION_TOKEN is set",
             ));
         };
-        // Asking ahead is asking; this also loads the channel's rules.
-        self.guard.check_inbox_ask(&caller, &inbox_ask(agent))?;
-        let request = request.into_inner();
-        let capability = match request.capability {
-            0 => return Err(status::missing("capability")),
-            value => grant_target::capability_of(value).ok_or_else(|| {
-                status::invalid_field(
-                    "capability",
-                    Problem::UnknownValue,
-                    format!("capability {value} isn't one this humatad2 knows"),
-                    "use a capability from humata.v1.Capability, or update humatad2",
-                )
-            })?,
-        };
-        let target = request.target.ok_or_else(|| status::missing("target"))?;
-        let asked_target = target.clone();
-        // The target's session is looked up in the store, which blocks:
-        // off the runtime's threads (TR-8).
-        let call = {
-            let store = Arc::clone(&self.store);
-            let machine = self.machine.clone();
-            let asking = agent.clone();
-            tokio::task::spawn_blocking(move || {
-                grant_target::ask_ahead_call(&store, &machine, &asking, capability, target)
+        // A call that needs the Mac waits for it here, with no lock held:
+        // each run takes the Inbox lock for itself and gives it back when
+        // it fails, and the call is judged afresh when the Mac is back.
+        let bound = guard::hold_bound(&caller, request.metadata());
+        let message = request.into_inner();
+        self.guard
+            .held(bound, || async {
+                let request = message.clone();
+                // Asking ahead is asking; this also loads the channel's rules.
+                self.guard.check_inbox_ask(&caller, &inbox_ask(agent))?;
+                let capability = match request.capability {
+                    0 => return Err(status::missing("capability")),
+                    value => grant_target::capability_of(value).ok_or_else(|| {
+                        status::invalid_field(
+                            "capability",
+                            Problem::UnknownValue,
+                            format!("capability {value} isn't one this humatad2 knows"),
+                            "use a capability from humata.v1.Capability, or update humatad2",
+                        )
+                    })?,
+                };
+                let target = request.target.ok_or_else(|| status::missing("target"))?;
+                let asked_target = target.clone();
+                // The target's session is looked up in the store, which blocks:
+                // off the runtime's threads (TR-8).
+                let call = {
+                    let store = Arc::clone(&self.store);
+                    let machine = self.machine.clone();
+                    let asking = agent.clone();
+                    tokio::task::spawn_blocking(move || {
+                        grant_target::ask_ahead_call(&store, &machine, &asking, capability, target)
+                    })
+                    .await
+                    .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))??
+                };
+                let session = agent.session.id.to_string();
+                let key = id_of(request.idempotency_key.map(|key| key.value))
+                    .map(|key| format!("{session}/{key}"));
+                let mut state = self.state.lock().await;
+                if let Some(made) = state.made_with(key.as_deref()) {
+                    return Ok(Response::new(made));
+                }
+                let asker = Agent {
+                    session: agent.session.clone(),
+                    kind: agent.session_kind(),
+                };
+                let (verdict, grant, decision) = self.guard.with_policy(|policy, context| {
+                    let verdict = policy.check_ask_ahead(&asker, &call, context);
+                    let grant = match &verdict {
+                        Ok(Verdict::Allowed {
+                            source: Source::Grant(id),
+                            ..
+                        }) => policy
+                            .grant(*id)
+                            .map(|grant| grant_target::grant(grant, false)),
+                        _ => None,
+                    };
+                    let decision = policy
+                        .channel_rules(&agent.session.channel)
+                        .and_then(|rules| rules.decision(capability));
+                    (verdict, grant, decision)
+                });
+                let asked = match verdict {
+                    Ok(Verdict::Ask(asked)) => asked,
+                    // Covered already, by a grant or because it's its own.
+                    Ok(Verdict::Allowed { .. }) => {
+                        return Ok(Response::new(approved_at_once(grant)));
+                    }
+                    Ok(Verdict::WaitForHost) => return Err(guard::waits_for_host()),
+                    Ok(Verdict::Refused(refusal)) => return Err(status::refused(&refusal)),
+                    Err(error @ CheckError::TargetDoesNotFit { .. }) => {
+                        return Err(status::invalid_field(
+                            "target",
+                            Problem::NotAllowedHere,
+                            status::chain(&error),
+                            "name the target the capability acts on",
+                        ));
+                    }
+                    Err(error @ CheckError::UnknownChannel { .. }) => {
+                        return Err(status::internal(
+                            format!("couldn't check the ask-ahead: {}", status::chain(&error)),
+                            "",
+                        ));
+                    }
+                };
+                if asked.capability != capability {
+                    return Err(status::invalid_field(
+                        "capability",
+                        Problem::NotAllowedHere,
+                        format!(
+                            "on this target the call needs \"{}\", not \"{capability}\"",
+                            asked.capability
+                        ),
+                        format!("ask ahead for \"{}\" instead", asked.capability),
+                    ));
+                }
+                let id = new_id();
+                let made = access_request(&id, agent, &asked, request.reason, decision);
+                let held = Held::new(made);
+                let reply = settled(&held);
+                let entry = Entry::new(
+                    id,
+                    session,
+                    Some(asked),
+                    Some(asked_target),
+                    key,
+                    held.clone(),
+                );
+                self.commit(&entry, held, None, "save the request").await?;
+                self.tell(
+                    pb::Change::Created,
+                    &entry.session,
+                    &entry.request.borrow().request,
+                );
+                state.add(entry);
+                Ok(Response::new(reply))
             })
             .await
-            .map_err(|error| status::internal(format!("a background task failed: {error}"), ""))??
-        };
-        let session = agent.session.id.to_string();
-        let key = id_of(request.idempotency_key.map(|key| key.value))
-            .map(|key| format!("{session}/{key}"));
-        let mut state = self.state.lock().await;
-        if let Some(made) = state.made_with(key.as_deref()) {
-            return Ok(Response::new(made));
-        }
-        let asker = Agent {
-            session: agent.session.clone(),
-            kind: agent.session_kind(),
-        };
-        let (verdict, grant, decision) = self.guard.with_policy(|policy, context| {
-            let verdict = policy.check_ask_ahead(&asker, &call, context);
-            let grant = match &verdict {
-                Ok(Verdict::Allowed {
-                    source: Source::Grant(id),
-                    ..
-                }) => policy
-                    .grant(*id)
-                    .map(|grant| grant_target::grant(grant, false)),
-                _ => None,
-            };
-            let decision = policy
-                .channel_rules(&agent.session.channel)
-                .and_then(|rules| rules.decision(capability));
-            (verdict, grant, decision)
-        });
-        let asked = match verdict {
-            Ok(Verdict::Ask(asked)) => asked,
-            // Covered already, by a grant or because it's its own.
-            Ok(Verdict::Allowed { .. }) => {
-                return Ok(Response::new(approved_at_once(grant)));
-            }
-            Ok(Verdict::WaitForHost) => return Err(status::refused(&Refusal::HostUnreachable)),
-            Ok(Verdict::Refused(refusal)) => return Err(status::refused(&refusal)),
-            Err(error @ CheckError::TargetDoesNotFit { .. }) => {
-                return Err(status::invalid_field(
-                    "target",
-                    Problem::NotAllowedHere,
-                    status::chain(&error),
-                    "name the target the capability acts on",
-                ));
-            }
-            Err(error @ CheckError::UnknownChannel { .. }) => {
-                return Err(status::internal(
-                    format!("couldn't check the ask-ahead: {}", status::chain(&error)),
-                    "",
-                ));
-            }
-        };
-        if asked.capability != capability {
-            return Err(status::invalid_field(
-                "capability",
-                Problem::NotAllowedHere,
-                format!(
-                    "on this target the call needs \"{}\", not \"{capability}\"",
-                    asked.capability
-                ),
-                format!("ask ahead for \"{}\" instead", asked.capability),
-            ));
-        }
-        let id = new_id();
-        let made = access_request(&id, agent, &asked, request.reason, decision);
-        let held = Held::new(made);
-        let reply = settled(&held);
-        let entry = Entry::new(
-            id,
-            session,
-            Some(asked),
-            Some(asked_target),
-            key,
-            held.clone(),
-        );
-        self.commit(&entry, held, None, "save the request").await?;
-        self.tell(
-            pb::Change::Created,
-            &entry.session,
-            &entry.request.borrow().request,
-        );
-        state.add(entry);
-        Ok(Response::new(reply))
     }
 
     type WaitForAnswerStream = ReceiverStream<Result<pb::WaitResponse, Status>>;
@@ -865,8 +1087,15 @@ impl pb::inbox_service_server::InboxService for Inbox {
     ) -> Result<Response<Self::WaitForAnswerStream>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let id = id_of(request.id.map(|id| id.value)).ok_or_else(|| status::missing("id"))?;
-        let mut answers = self.find(&caller, &id).await?.subscribe();
+        let id = id_of(request.id.as_ref().map(|id| id.value.clone())).ok_or_else(|| status::missing("id"))?;
+        let mut answers = match self.find(&caller, &id).await {
+            Ok(held) => held.subscribe(),
+            // A request this machine doesn't hold may be the host's (D268).
+            Err(missing) => {
+                let stream = self.wait_on_host(&caller, request, &id, missing)?;
+                return Ok(Response::new(stream));
+            }
+        };
         let wait = Duration::from_secs(u64::from(request.wait_seconds));
         let (sender, receiver) = mpsc::channel(4);
         tokio::spawn(async move {
@@ -927,15 +1156,24 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 "answer or deny the request in the Inbox instead",
             ));
         }
-        let id = id_of(request.into_inner().id.map(|id| id.value))
+        let request = request.into_inner();
+        let id = id_of(request.id.as_ref().map(|id| id.value.clone()))
             .ok_or_else(|| status::missing("id"))?;
         // Under the lock, so it can't land in the middle of an answer.
         let state = self.state.lock().await;
-        let entry = state
+        let Some(entry) = state
             .requests
             .iter()
             .find(|entry| entry.id == id && sees(&caller, entry))
-            .ok_or_else(|| no_request(&id))?;
+        else {
+            drop(state);
+            // A request this machine doesn't hold may be the host's (D268).
+            let missing = no_request(&id);
+            return self
+                .withdraw_on_host(&caller, request, &id, missing)
+                .await
+                .map(Response::new);
+        };
         let mut next = entry.request.borrow().clone();
         if next.request.state != pb::RequestState::Pending as i32 {
             return Ok(Response::new(next.request));
@@ -1244,33 +1482,105 @@ fn approved_at_once(grant: Option<pb::Grant>) -> pb::WaitResponse {
     }
 }
 
-/// Fails when `request` can no longer be answered (IN-15).
-/// A mirror of a request its machine holds can't be answered on the host
-/// yet: the answer is made on that machine.
-fn held_on_machine(request: &pb::InboxRequest) -> Result<(), Status> {
-    let Some(position) = &request.journal else {
-        return Ok(());
-    };
-    let machine = position
-        .machine
+/// The machine that holds `request` can't be reached, so the Mac's answer
+/// can't be passed on, or was passed on and not confirmed (D226).
+fn machine_offline(request: &pb::InboxRequest, sent: bool) -> Status {
+    let machine = request
+        .journal
         .as_ref()
+        .and_then(|position| position.machine.as_ref())
         .map(|machine| machine.value.clone())
         .unwrap_or_default();
-    let id = request.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
-    Err(status::failure(
+    let id = request
+        .id
+        .as_ref()
+        .map(|id| id.value.clone())
+        .unwrap_or_default();
+    let (message, fix) = if sent {
+        (
+            format!(
+                "your answer to request {id} was sent to {machine}, but {machine} didn't confirm it"
+            ),
+            format!(
+                "nothing is lost: the card shows how it ended as soon as {machine} is linked again; if it should end differently, answer it on {machine} with `humata login` and the approval passphrase"
+            ),
+        )
+    } else {
+        (
+            format!(
+                "request {id} is held on {machine}, which isn't linked to this Mac right now, so nothing was sent"
+            ),
+            format!(
+                "reconnect {machine} and answer again, or answer it on {machine} with `humata login` and the approval passphrase; its answer shows here as soon as {machine} is linked"
+            ),
+        )
+    };
+    status::failure(
         Code::Unavailable,
         status::error(
-            format!("request {id} is held on {machine}, so it is answered there: the Mac can't pass an answer to it yet"),
-            format!("answer it on {machine} with `humata login` and the approval passphrase; its answer shows here as soon as {machine} is linked"),
+            message,
+            fix,
             pb::error::Kind::MachineOffline(pb::MachineOffline {
-                machine: position.machine.clone(),
+                machine: request
+                    .journal
+                    .as_ref()
+                    .and_then(|position| position.machine.clone()),
                 machine_name: machine,
                 since: None,
             }),
         ),
-    ))
+    )
 }
 
+/// Fails when `answer` isn't one the card takes: a question takes a reply,
+/// an access request an approval, and "Always allow" only its own offer.
+/// The same as answering on the machine, so a mistake fails here and not
+/// on the far side of the link.
+fn fits_card(request: &pb::InboxRequest, answer: &pb::request_answer::Answer) -> Result<(), Status> {
+    use pb::request_answer::Answer as A;
+    let id = request
+        .id
+        .as_ref()
+        .map(|id| id.value.as_str())
+        .unwrap_or_default();
+    let question = request.kind == pb::RequestKind::Question as i32;
+    match answer {
+        A::Deny(_) => Ok(()),
+        A::Reply(reply) if question => {
+            if reply.text.trim().is_empty() {
+                Err(status::missing("answer.reply.text"))
+            } else {
+                Ok(())
+            }
+        }
+        A::Approve(_) | A::Always(_) if question => Err(status::invalid_field(
+            "answer",
+            Problem::NotAllowedHere,
+            format!("request {id} is a question: it takes a reply, not an approval"),
+            "reply with text (one of its choices, or your own), or deny it",
+        )),
+        A::Reply(_) => Err(status::invalid_field(
+            "answer",
+            Problem::NotAllowedHere,
+            format!("request {id} asks for access: a reply doesn't answer it"),
+            "allow it, allow it with Always allow, or deny it",
+        )),
+        A::Approve(_) => Ok(()),
+        A::Always(always) => {
+            let offered = request
+                .always
+                .as_ref()
+                .and_then(|always| always.target.as_ref());
+            match offered {
+                Some(offered) if always.target.as_ref() == Some(offered) => Ok(()),
+                Some(_) => Err(grant_target::answer_failed(&AnswerError::TargetNotOffered)),
+                None => Err(grant_target::answer_failed(&AnswerError::NoStandingApproval)),
+            }
+        }
+    }
+}
+
+/// Fails when `request` can no longer be answered (IN-15).
 fn still_open(request: &pb::InboxRequest) -> Result<(), Status> {
     let id = request.id.clone();
     let value = id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
@@ -1440,4 +1750,338 @@ fn no_request(id: &str) -> Status {
 
 fn id_of(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use humata2_store::SessionRecord;
+
+    use super::*;
+    use crate::away::{JOURNAL_ANSWER, JOURNAL_REQUEST, JOURNAL_WITHDRAWN};
+
+    const HOST: &str = "ma_host";
+    const BOX: &str = "ma_box";
+    /// A wait the test expects to run out.
+    const SHORT: Duration = Duration::from_millis(200);
+    /// The bound on something that must happen.
+    const BOUND: Duration = Duration::from_secs(5);
+
+    fn card(id: &str, state: pb::RequestState) -> pb::InboxRequest {
+        pb::InboxRequest {
+            id: Some(pb::RequestId { value: id.to_owned() }),
+            state: state as i32,
+            kind: pb::RequestKind::Files as i32,
+            requester: Some(pb::AgentActor {
+                session: Some(pb::SessionId {
+                    value: "se_a".to_owned(),
+                }),
+                ..Default::default()
+            }),
+            action_title: "Read files".to_owned(),
+            ..Default::default()
+        }
+    }
+
+    fn entry(seq: u64, operation: &str, request: &pb::InboxRequest) -> pb::JournalEntry {
+        pb::JournalEntry {
+            seq,
+            principal: Some(pb::AgentPrincipal {
+                session: Some(pb::SessionId {
+                    value: "se_a".to_owned(),
+                }),
+                pid: 0,
+            }),
+            operation: operation.to_owned(),
+            request: request.encode_to_vec(),
+            ..Default::default()
+        }
+    }
+
+    /// The host's Inbox, holding a mirror of `request`, whose machine's
+    /// verdict is waited for at most `wait`.
+    async fn host_holding(directory: &std::path::Path, wait: Duration, request: pb::InboxRequest) -> Arc<Inbox> {
+        let store = Arc::new(Store::open(directory).unwrap());
+        store
+            .put_session(&SessionRecord {
+                id: "se_a".to_owned(),
+                channel: "ch_a".to_owned(),
+                machine: BOX.to_owned(),
+                title: "agent".to_owned(),
+                agent: "claude".to_owned(),
+                folder: PathBuf::new(),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        let guard = Arc::new(Guard::new(HOST, pb::DaemonRole::Host));
+        let inbox = Inbox::new(guard, store, HOST.to_owned(), Arc::new(Feed::default()))
+            .with_relays(Arc::new(Relays::with_wait(wait)));
+        assert_eq!(
+            inbox.replay(BOX, &entry(1, JOURNAL_REQUEST, &request)).await,
+            Replayed::Applied
+        );
+        Arc::new(inbox)
+    }
+
+    /// What the machine does with the host's answer.
+    #[derive(Clone, Copy)]
+    enum Does {
+        /// Applies it, and journals that.
+        Applies,
+        /// Had already denied the request: that entry reaches the host.
+        HadDenied,
+        /// Had already withdrawn the request.
+        HadWithdrawn,
+        /// Refuses it outright: the request was already answered there.
+        Refuses,
+        /// Says nothing.
+        Silent,
+        /// The link drops.
+        HangsUp,
+    }
+
+    /// `BOX`'s link, up, with a machine behind it that does `does` with the
+    /// answer it is sent. Dropping the registration takes the link away.
+    fn linked(inbox: &Arc<Inbox>, does: Does) -> (relay::Registered, tokio::task::JoinHandle<()>) {
+        let (link, mut from_host) = mpsc::channel(4);
+        let registered = inbox.relays().register(BOX, link);
+        let host = Arc::clone(inbox);
+        let machine = tokio::spawn(async move {
+            let Some(pb::HostToMachine {
+                message: Some(pb::host_to_machine::Message::Answer(relayed)),
+            }) = from_host.recv().await
+            else {
+                return;
+            };
+            let journal = match does {
+                Does::Applies => {
+                    let mut request = card("rq_1", pb::RequestState::Approved);
+                    request.answer = relayed.answer.clone();
+                    entry(2, JOURNAL_ANSWER, &request)
+                }
+                Does::HadDenied => {
+                    let mut request = card("rq_1", pb::RequestState::Denied);
+                    request.answer = Some(pb::RequestAnswer {
+                        answer: Some(pb::request_answer::Answer::Deny(pb::Deny::default())),
+                    });
+                    entry(2, JOURNAL_ANSWER, &request)
+                }
+                Does::HadWithdrawn => {
+                    let mut request = card("rq_1", pb::RequestState::Withdrawn);
+                    request.withdraw_reason = pb::WithdrawReason::CallEnded as i32;
+                    entry(2, JOURNAL_WITHDRAWN, &request)
+                }
+                Does::Refuses => {
+                    host.relays().refused(
+                        BOX,
+                        pb::InboxAnswerRefused {
+                            request: Some(pb::RequestId { value: "rq_1".to_owned() }),
+                            error: status::error_of(&still_open(&card("rq_1", pb::RequestState::Denied)).unwrap_err()),
+                            code: Code::Aborted as i32,
+                        },
+                    );
+                    // The link stays up, and no journal entry ever comes.
+                    std::future::pending::<()>().await;
+                    return;
+                }
+                Does::Silent => {
+                    // The link stays up until the task ends with the test.
+                    std::future::pending::<()>().await;
+                    return;
+                }
+                Does::HangsUp => {
+                    drop(from_host);
+                    return;
+                }
+            };
+            host.replay(BOX, &journal).await;
+        });
+        (registered, machine)
+    }
+
+    async fn host_answers(inbox: &Inbox, answer: pb::request_answer::Answer) -> Result<pb::InboxRequest, Status> {
+        let caller = Caller::User(UserVia::App);
+        let user = inbox.present_user(&caller).unwrap();
+        tokio::time::timeout(BOUND, inbox.answer_as(&caller, &user, "rq_1".to_owned(), answer, None))
+            .await
+            .expect("the host's answer ends within the bound")
+    }
+
+    fn approve() -> pb::request_answer::Answer {
+        pb::request_answer::Answer::Approve(pb::Approve {})
+    }
+
+    fn kind_of(status: &Status) -> Option<pb::error::Kind> {
+        status::error_of(status).and_then(|error| error.kind)
+    }
+
+    async fn state_of(inbox: &Inbox) -> pb::RequestState {
+        let state = inbox.state.lock().await;
+        let held = state.requests.iter().find(|held| held.id == "rq_1").unwrap();
+        held.request.borrow().request.state()
+    }
+
+    #[tokio::test]
+    async fn the_hosts_answer_goes_to_the_machine_and_comes_back_settled_and_credited_to_the_host_user() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = host_holding(directory.path(), BOUND, card("rq_1", pb::RequestState::Pending)).await;
+        let (_registered, _machine) = linked(&inbox, Does::Applies);
+        let settled = host_answers(&inbox, approve()).await.unwrap();
+        assert_eq!(settled.state(), pb::RequestState::Approved);
+        let by = settled.answered.and_then(|answered| answered.by).and_then(|actor| actor.actor);
+        let Some(pb::actor::Actor::User(user)) = by else {
+            panic!("the answer should be credited to the user");
+        };
+        assert_eq!(user.via(), pb::user_actor::Via::App);
+        assert_eq!(state_of(&inbox).await, pb::RequestState::Approved);
+    }
+
+    #[tokio::test]
+    async fn an_answer_with_the_link_down_is_refused_and_the_request_stays_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = host_holding(directory.path(), BOUND, card("rq_1", pb::RequestState::Pending)).await;
+        let refused = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&refused), Some(pb::error::Kind::MachineOffline(_))));
+        assert_eq!(state_of(&inbox).await, pb::RequestState::Pending);
+        assert_eq!(inbox.relays().outstanding("rq_1"), None);
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_machine_beat_with_a_different_one_is_already_answered() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = host_holding(directory.path(), BOUND, card("rq_1", pb::RequestState::Pending)).await;
+        let (_registered, _machine) = linked(&inbox, Does::HadDenied);
+        let refused = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&refused), Some(pb::error::Kind::AlreadyAnswered(_))));
+        assert_eq!(state_of(&inbox).await, pb::RequestState::Denied);
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_machine_refuses_ends_the_wait_with_its_refusal() {
+        let directory = tempfile::tempdir().unwrap();
+        // A wait that would fail the test's own bound if it ran out.
+        let inbox = host_holding(directory.path(), BOUND * 10, card("rq_1", pb::RequestState::Pending)).await;
+        let (_registered, _machine) = linked(&inbox, Does::Refuses);
+        let refused = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&refused), Some(pb::error::Kind::AlreadyAnswered(_))));
+        assert_eq!(refused.code(), Code::Aborted);
+        assert_eq!(state_of(&inbox).await, pb::RequestState::Pending);
+        assert_eq!(inbox.relays().outstanding("rq_1"), None);
+    }
+
+    #[tokio::test]
+    async fn an_answer_to_a_machine_whose_link_dropped_fails_at_once_as_machine_offline() {
+        let directory = tempfile::tempdir().unwrap();
+        // A wait that would fail the test's own bound if it ran out.
+        let inbox = host_holding(directory.path(), BOUND * 10, card("rq_1", pb::RequestState::Pending)).await;
+        let (registered, machine) = linked(&inbox, Does::Silent);
+        drop(registered);
+        machine.abort();
+        let refused = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&refused), Some(pb::error::Kind::MachineOffline(_))));
+        let fix = status::error_of(&refused).map(|error| error.fix).unwrap_or_default();
+        assert!(!fix.is_empty(), "the refusal says what to do");
+        assert_eq!(inbox.relays().outstanding("rq_1"), None);
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_answer_leaves_no_record_so_a_second_answer_after_the_machine_returns_works() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = host_holding(directory.path(), SHORT, card("rq_1", pb::RequestState::Pending)).await;
+        let (silent, machine) = linked(&inbox, Does::Silent);
+        let unconfirmed = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&unconfirmed), Some(pb::error::Kind::MachineOffline(_))));
+        assert_eq!(inbox.relays().outstanding("rq_1"), None);
+
+        drop(silent);
+        machine.abort();
+        let (_registered, _machine) = linked(&inbox, Does::Applies);
+        let settled = host_answers(&inbox, approve()).await.unwrap();
+        assert_eq!(settled.state(), pb::RequestState::Approved);
+    }
+
+    #[tokio::test]
+    async fn an_answer_to_a_request_the_machine_withdrew_is_request_withdrawn() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = host_holding(directory.path(), BOUND, card("rq_1", pb::RequestState::Pending)).await;
+        let (_registered, _machine) = linked(&inbox, Does::HadWithdrawn);
+        let refused = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&refused), Some(pb::error::Kind::RequestWithdrawn(_))));
+    }
+
+    #[tokio::test]
+    async fn no_verdict_in_time_is_machine_offline_and_the_request_stays_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = host_holding(directory.path(), SHORT, card("rq_1", pb::RequestState::Pending)).await;
+        let (_registered, _machine) = linked(&inbox, Does::Silent);
+        let unconfirmed = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&unconfirmed), Some(pb::error::Kind::MachineOffline(_))));
+        assert_eq!(state_of(&inbox).await, pb::RequestState::Pending);
+    }
+
+    #[tokio::test]
+    async fn a_link_that_drops_while_waiting_ends_the_wait_at_once() {
+        let directory = tempfile::tempdir().unwrap();
+        // A wait that would fail the test's own bound if it ran out.
+        let inbox = host_holding(directory.path(), BOUND * 10, card("rq_1", pb::RequestState::Pending)).await;
+        let (_registered, _machine) = linked(&inbox, Does::HangsUp);
+        let unconfirmed = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&unconfirmed), Some(pb::error::Kind::MachineOffline(_))));
+        assert_eq!(inbox.relays().outstanding("rq_1"), None);
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_card_does_not_take_is_refused_and_nothing_is_sent() {
+        let directory = tempfile::tempdir().unwrap();
+        let question = pb::InboxRequest {
+            kind: pb::RequestKind::Question as i32,
+            ..card("rq_1", pb::RequestState::Pending)
+        };
+        let inbox = host_holding(directory.path(), BOUND, question).await;
+        let (link, mut from_host) = mpsc::channel(4);
+        let _registered = inbox.relays().register(BOX, link);
+        let refused = host_answers(&inbox, approve()).await.unwrap_err();
+        assert!(matches!(kind_of(&refused), Some(pb::error::Kind::InvalidField(_))));
+        assert!(from_host.try_recv().is_err(), "a wrong answer isn't passed on");
+        assert_eq!(state_of(&inbox).await, pb::RequestState::Pending);
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_the_one_the_host_sent_is_not_credited_to_the_host() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = host_holding(directory.path(), BOUND, card("rq_1", pb::RequestState::Pending)).await;
+        // The machine had approved before the relay got there, and says so.
+        let (_registered, _machine) = linked(&inbox, Does::HadDenied);
+        let _ = host_answers(&inbox, approve()).await;
+        let state = inbox.state.lock().await;
+        let held = state.requests.iter().find(|held| held.id == "rq_1").unwrap();
+        let by = held
+            .request
+            .borrow()
+            .request
+            .answered
+            .clone()
+            .and_then(|answered| answered.by)
+            .and_then(|actor| actor.actor);
+        let Some(pb::actor::Actor::User(user)) = by else {
+            panic!("the answer should be credited to the user");
+        };
+        assert_eq!(user.via(), pb::user_actor::Via::CliOnMachine);
+    }
+
+    #[tokio::test]
+    async fn a_machine_counts_the_hosts_relayed_user_as_on_host() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(directory.path()).unwrap());
+        let guard = Arc::new(Guard::new(BOX, pb::DaemonRole::Machine));
+        let inbox = Inbox::new(guard, store, BOX.to_owned(), Arc::new(Feed::default()));
+        let user = inbox.relayed_user().unwrap();
+        assert!(user.on_host(), "an answer from the Mac is at the Mac, so a Host-only card takes it");
+        assert_eq!(user.machine().to_string(), BOX);
+        // A passphrase-less user on the machine itself is not.
+        let local = inbox.present_user(&Caller::User(UserVia::App)).unwrap();
+        assert!(!local.on_host());
+    }
 }

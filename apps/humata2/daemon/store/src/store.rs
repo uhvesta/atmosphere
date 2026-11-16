@@ -113,6 +113,20 @@ impl Store {
         Ok((Self::open(root)?, Some(restored)))
     }
 
+    /// What SQLite's quick check finds wrong with the database now, or
+    /// None when it finds nothing: the check [`Store::open_or_restore`]
+    /// makes at start, so a store this calls damaged is restored from its
+    /// last good copy when the daemon starts again (PER-30, PER-31).
+    pub fn damage(&self) -> Result<Option<String>, StoreError> {
+        self.inner
+            .read_with(|connection| Ok(last_good::integrity(connection, "quick_check")))
+    }
+
+    /// Whether a last good copy is kept beside the database to restore.
+    pub fn has_last_good(&self) -> bool {
+        self.inner.root.join(last_good::LAST_GOOD).exists()
+    }
+
     /// Saves a last good copy of the database beside it, replacing the one
     /// before once the new one checks out (PER-31). Holds the database
     /// while it copies, so run it off the async runtime, when writes are

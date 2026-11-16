@@ -13,6 +13,7 @@ pub mod report_view;
 
 mod access;
 mod action_menu;
+mod away_left_out;
 mod board;
 mod channel;
 mod chrome;

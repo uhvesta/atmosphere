@@ -12,6 +12,7 @@
 
 mod agents;
 mod atomic;
+mod away_left_out;
 mod blob;
 mod boards;
 mod channel_snapshot;
@@ -23,6 +24,7 @@ mod fresh_seeds;
 pub mod fault;
 mod inbox;
 mod journal;
+mod last_copy;
 mod last_good;
 mod lifecycle;
 mod machine_journal;
@@ -44,7 +46,7 @@ pub use atomic::write_atomic;
 pub use channel_snapshot::{DeletedChannel, SIDE_FILE, Placement};
 pub use boards::{
     BoardHistoryEntry, BoardHistoryKind, BoardItemChange, BoardItemRecord, BoardKey,
-    BoardWrite, NewBoardItem, PrefixClaim,
+    BoardReplay, BoardReplayed, BoardWrite, NewBoardItem, PrefixClaim,
 };
 pub use comments::{
     CommentChange, CommentDeliveryRecord, CommentDeliveryState, CommentNumbers, CommentRecord, SessionComments,
@@ -53,6 +55,7 @@ pub use desk::{DeskFolderKind, DeskRow};
 pub use error::StoreError;
 pub use fresh_seeds::FreshSeed;
 pub use journal::{Journal, JournalEntry};
+pub use last_copy::LastCopy;
 pub use last_good::{Change, LastGood, Restored, RowChange};
 pub use lifecycle::{ArchiveRow, ArchiveState, ForkOrigin};
 pub use previous::PreviousConversation;
@@ -64,6 +67,7 @@ pub use records::{
 pub use remote_reports::RemoteReportRow;
 pub use rules::SavedRules;
 pub use settings::SavedSetting;
+pub use away_left_out::{AwayLeftOut, LeftOut};
 pub use schema::SCHEMA_VERSION;
 pub use script_tokens::SavedScriptToken;
 pub use session_snapshot::Take;

@@ -58,6 +58,8 @@ const COPIED: &[Copied] = &[
     copied("sessions", OF_CHANNEL),
     copied("session_details", IN_CHANNEL),
     copied("session_repos", IN_CHANNEL),
+    copied("last_copies", IN_CHANNEL),
+    copied("away_left_out", IN_CHANNEL),
     Copied {
         restored: false,
         ..copied("tabs", IN_CHANNEL)

@@ -372,8 +372,9 @@ async fn a_start_past_launch_refuses_cancel_and_finishes_unwatched() {
 ### 4.7 The host away
 
 - With `cut_link(machine)`, a write the machine's policy copy allows
-  returns `DELIVERY_JOURNALED` with a `JournalPosition` and a provisional id
-  (`~devbox-1.41`). After `restore_link`, an event resolves the id.
+  returns `DELIVERY_JOURNALED` with a `JournalPosition` and no item: a new item
+  has no id until the host replays it (D227). After `restore_link`, the item is on
+  the host's board.
 - Replay checks each entry against the host's current rules. An entry the
   rules now refuse ends as `journal_entry_rejected`, and the host is
   unchanged.

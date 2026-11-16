@@ -2,6 +2,15 @@ use super::FakeDaemon;
 use crate::daemon::{DaemonError, Event, Operation, Reply};
 use crate::model::{Channel, ChannelId, MachineId};
 
+pub(super) fn github_repos(daemon: &FakeDaemon, query: &str) -> Reply<Vec<String>> {
+    let query = query.to_owned();
+    daemon.reply(
+        Some(Operation::GitHubRepos),
+        format!("github repos {query:?}"),
+        move |inner| Ok(crate::github::matching(&query, &inner.github_repos)),
+    )
+}
+
 pub(super) fn create_channel(
     daemon: &FakeDaemon,
     name: &str,

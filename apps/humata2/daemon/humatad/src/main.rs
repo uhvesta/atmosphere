@@ -17,7 +17,9 @@ mod compression;
 mod contained;
 mod daemon;
 mod desk_service;
+mod doctor;
 mod error;
+mod fault;
 mod events;
 mod files;
 mod grant_target;
@@ -57,6 +59,7 @@ mod serve;
 mod session_service;
 mod skills_service;
 mod status;
+mod stop;
 mod storage;
 mod sync;
 mod terminal;
@@ -99,6 +102,8 @@ fn main() -> ExitCode {
         .map_err(|source| DaemonError::Runtime { source })
         .and_then(|runtime| {
             let result = runtime.block_on(async move {
+                // Test builds with `faults`: SIGUSR2 is a power cut.
+                fault::power_cut_on_sigusr2();
                 match cli.command {
                     Command::Serve(args) => serve::run(args).await,
                     Command::Bridge(args) => bridge::run(args).await,

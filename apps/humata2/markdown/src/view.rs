@@ -30,7 +30,7 @@ use gpui_kit::{
 
 use crate::anchor::{AnchorStatus, AnchorTarget, Comment, SourceSelection};
 use crate::diff::{BlockChange, RenderedDiff, diff};
-use crate::document::{BlockKind, Document, LineRange, ParseStats};
+use crate::document::{BlockKind, Document, LineRange, ParseStats, byline_text, follows_title};
 use crate::image::{self, ImageCache, ImageEntry, ImageStats};
 use crate::mermaid::{self, DiagramBlock, DiagramEntry, DiagramStats, MermaidCache};
 use crate::theme::{MarkdownTheme, hex};
@@ -144,6 +144,11 @@ pub struct MarkdownOptions {
     /// Drawn diagrams; share one cache between views so a diagram shown in
     /// several places is drawn once.
     pub diagrams: MermaidCache,
+    /// The file name, when the view is a document tab's page: the page then
+    /// has the design's document typography, and a paragraph that is one
+    /// emphasis span directly under the title is drawn as a byline ending in
+    /// this name. `None` for chat and everything else.
+    pub document: Option<SharedString>,
 }
 
 impl MarkdownOptions {
@@ -157,6 +162,7 @@ impl MarkdownOptions {
             comments: true,
             marks: CommentMarks::Notes,
             diagrams: MermaidCache::default(),
+            document: None,
         }
     }
 }
@@ -482,6 +488,64 @@ impl MarkdownPlugin for DiagramPlugin {
     }
 }
 
+/// A document page's byline: the emphasis paragraph under the title, in the
+/// secondary colour and upright, followed by the file's name.
+struct BylinePlugin {
+    shared: Arc<Shared>,
+    file: SharedString,
+}
+
+impl MarkdownPlugin for BylinePlugin {
+    fn is_block(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &str {
+        "byline"
+    }
+
+    fn parse(&self, node: &markdown_ast::Node, cx: &MarkdownParseContext<'_>) -> Option<MarkdownNode> {
+        if !matches!(node, markdown_ast::Node::Paragraph(_)) {
+            return None;
+        }
+        let start = node.position()?.start.offset;
+        if !follows_title(cx.source().get(..start)?) {
+            return None;
+        }
+        let raw = cx.node_source(node)?;
+        let text = byline_text(raw)?;
+        Some(
+            MarkdownNode::new("byline", text.clone())
+                .text(text.clone())
+                .markdown(raw.to_owned())
+                .accessibility_label(text),
+        )
+    }
+
+    fn render(&self, node: &MarkdownNode, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        let text = node.data::<String>().cloned().unwrap_or_default();
+        let shown = format!("{text} \u{b7} {}", self.file);
+        let look = read(&self.shared.look);
+        div()
+            .text_color(look.theme.muted)
+            .text_size(px(11.5))
+            .line_height(px(20.))
+            .child(shown.clone())
+            .test_text(shown)
+    }
+}
+
+/// The room a lit list item keeps at its end for its count: 8 before the
+/// chip, the chip's icon, gap and digits, and 4 after it.
+fn count_room(count: usize) -> Pixels {
+    px(26. + 6.5 * count.to_string().len() as f32)
+}
+
+/// The recorded bounds of the list item whose source starts where `span` does.
+fn item_at(items: &[(Range<usize>, Bounds<Pixels>)], span: &Range<usize>) -> Option<Bounds<Pixels>> {
+    items.iter().find(|(item, _)| item.start == span.start).map(|(_, bounds)| *bounds)
+}
+
 /// Visible blocks and where they are on screen.
 type Placed = Vec<(usize, Bounds<Pixels>)>;
 
@@ -517,7 +581,7 @@ impl EventEmitter<MarkdownEvent> for MarkdownView {}
 impl MarkdownView {
     /// A view of `source`, in the app's current theme.
     pub fn new(source: &str, options: MarkdownOptions, cx: &mut Context<Self>) -> Self {
-        let theme = MarkdownTheme::from_app(cx);
+        let theme = Self::app_theme(&options, cx);
         let shared = Arc::new(Shared {
             view: cx.weak_entity(),
             look: RwLock::new(Look::new(theme.clone())),
@@ -529,18 +593,25 @@ impl MarkdownView {
             }),
             commented_diagrams: RwLock::new(HashSet::new()),
         });
-        let extensions = MarkdownExtensions::default()
+        let mut extensions = MarkdownExtensions::default()
             .frontmatter()
             .plugin(FrontmatterPlugin::new())
             .plugin(DiagramPlugin {
                 shared: shared.clone(),
             });
+        if let Some(file) = options.document.clone() {
+            extensions = extensions.plugin(BylinePlugin {
+                shared: shared.clone(),
+                file,
+            });
+        }
         let text = cx.new(|cx| TextViewState::markdown(source, cx));
         let subscriptions = vec![
             cx.observe(&text, |view, _, cx| view.sync_marks(cx)),
             cx.observe_global::<Theme>(|view, cx| {
                 if view.follows_app_theme {
-                    view.apply_theme(MarkdownTheme::from_app(cx), cx);
+                    let theme = MarkdownView::app_theme(&view.options, cx);
+                    view.apply_theme(theme, cx);
                 }
             }),
         ];
@@ -603,6 +674,12 @@ impl MarkdownView {
         }
         self.refresh_marks();
         cx.notify();
+    }
+
+    /// The app's theme, in the document look when the view is a document page.
+    fn app_theme(options: &MarkdownOptions, cx: &App) -> MarkdownTheme {
+        let theme = MarkdownTheme::from_app(cx);
+        if options.document.is_some() { theme.document() } else { theme }
     }
 
     /// Use `theme` from now on instead of following the app's.
@@ -1000,6 +1077,29 @@ impl MarkdownView {
         (view, placed, true)
     }
 
+    /// Each commented block, or list item in one: (block, item in a list
+    /// block, first comment's id, how many, all outdated).
+    fn comment_targets(&self) -> Vec<(usize, Option<usize>, String, usize, bool)> {
+        let mut per_target: Vec<(usize, Option<usize>, String, usize, bool)> = Vec::new();
+        for (comment, status) in self.comments.iter().zip(&self.statuses) {
+            let (outdated, bytes) = match status {
+                AnchorStatus::Current { bytes, .. } => (false, bytes),
+                AnchorStatus::Outdated { bytes, .. } => (true, bytes),
+                AnchorStatus::Gone => continue,
+            };
+            let Some(block) = self.document.block_at(bytes.start) else { continue };
+            let item = self.document.item_at_line(block, self.document.line_of(bytes.start));
+            match per_target.iter_mut().find(|entry| entry.0 == block && entry.1 == item) {
+                Some(entry) => {
+                    entry.3 += 1;
+                    entry.4 &= outdated;
+                }
+                None => per_target.push((block, item, comment.id.clone(), 1, outdated)),
+            }
+        }
+        per_target
+    }
+
     fn render_text(&self, cx: &mut Context<Self>) -> TextView {
         let view = cx.weak_entity();
         let shared = self.shared.clone();
@@ -1007,8 +1107,21 @@ impl MarkdownView {
             CopyFormat::Source => SelectionFormat::Source,
             CopyFormat::Plain => SelectionFormat::Plain,
         };
+        let mut style = self.theme.text_view_style();
+        if self.options.marks == CommentMarks::Counts {
+            // A commented list item keeps room at its end for its count.
+            let ends = self
+                .comment_targets()
+                .into_iter()
+                .filter_map(|(block, item, _, count, _)| {
+                    let part = self.document.blocks().get(block)?.parts.get(item?)?;
+                    Some((part.bytes().start, count_room(count)))
+                })
+                .collect();
+            style = style.with_list_item_ends(ends);
+        }
         TextView::new(self.active_text())
-            .style(self.theme.text_view_style())
+            .style(style)
             .selectable(true)
             .selection_format(format)
             .scrollable(self.options.layout == Layout::Scroll)
@@ -1236,34 +1349,36 @@ impl MarkdownView {
         let mut lit = Vec::new();
         let mut counts = Vec::new();
         if self.options.marks == CommentMarks::Counts {
-            // (block, first comment's id, how many, all outdated)
-            let mut per_block: Vec<(usize, String, usize, bool)> = Vec::new();
-            for (comment, status) in self.comments.iter().zip(&self.statuses) {
-                let (outdated, bytes) = match status {
-                    AnchorStatus::Current { bytes, .. } => (false, bytes),
-                    AnchorStatus::Outdated { bytes, .. } => (true, bytes),
-                    AnchorStatus::Gone => continue,
+            let per_target = self.comment_targets();
+            let item_bounds = self.active_text().read(cx).list_item_bounds();
+            for (block, item, id, count, outdated) in per_target {
+                let Some((_, block_bounds)) = placed.iter().find(|(index, _)| *index == block) else { continue };
+                // A list item is lit alone, reaching a little left of the text
+                // as the design draws it; before its bounds are recorded, or
+                // for any other block, the whole block is lit.
+                let item_span = item
+                    .and_then(|item| self.document.blocks().get(block)?.parts.get(item))
+                    .map(|part| part.bytes());
+                let item_rect = item_span.and_then(|span| item_at(&item_bounds, &span));
+                let (bounds, reach) = match &item_rect {
+                    Some(rect) => (rect, px(10.)),
+                    None => (block_bounds, px(0.)),
                 };
-                let Some(block) = self.document.block_at(bytes.start) else { continue };
-                match per_block.iter_mut().find(|entry| entry.0 == block) {
-                    Some(entry) => {
-                        entry.2 += 1;
-                        entry.3 &= outdated;
-                    }
-                    None => per_block.push((block, comment.id.clone(), 1, outdated)),
-                }
-            }
-            for (block, id, count, outdated) in per_block {
-                let Some((_, bounds)) = placed.iter().find(|(index, _)| *index == block) else { continue };
                 let accent = if outdated { theme.muted } else { theme.comment_accent };
+                let on_item = item_rect.is_some();
                 lit.push(
                     div()
-                        .id(("md-comment-lit", block))
+                        .id(match item {
+                            // A lit list item has its own id, so a block's
+                            // id stays the block's index.
+                            Some(item) => ("md-comment-lit-item", block * 10_000 + item),
+                            None => ("md-comment-lit", block),
+                        })
                         .test_support()
                         .absolute()
                         .top(top(bounds))
-                        .left(left(bounds))
-                        .w(bounds.size.width)
+                        .left(left(bounds) - reach)
+                        .w(bounds.size.width + reach)
                         .h(bounds.size.height)
                         .border_l_2()
                         .border_color(accent)
@@ -1287,7 +1402,8 @@ impl MarkdownView {
                         .aria_label(label)
                         .absolute()
                         .top(top(bounds))
-                        .right(px(4.))
+                        .when(on_item, |chip| chip.h(bounds.size.height).right(px(1.)))
+                        .when(!on_item, |chip| chip.right(px(4.)))
                         .flex()
                         .items_center()
                         .gap(px(3.))
@@ -1327,16 +1443,22 @@ impl MarkdownView {
         .size_full();
 
         let has_marks = self.diff.is_some();
+        let gutter_width = px(if has_marks { 28. } else { 20. });
+        // A document page's text keeps its column's full width: the gutter
+        // hangs in the padding to its left.
+        let hang = self.options.document.is_some();
         div()
             .flex()
             .flex_row()
             .size_full()
+            .when(hang, |row| row.relative())
             .child(
                 div()
                     .relative()
                     .flex_none()
-                    .w(px(if has_marks { 28. } else { 20. }))
+                    .w(gutter_width)
                     .h_full()
+                    .when(hang, |column| column.absolute().top_0().left(-gutter_width))
                     .children(gutter),
             )
             .child(
@@ -1580,6 +1702,7 @@ impl Render for MarkdownView {
             .font_family(theme.sans.clone())
             .text_size(theme.text_size)
             .children(gone)
+            .when(theme.document, |root| root.line_height(px(20.)).pt(px(22.)))
             .child(div().flex_1().min_h_0().child(body))
     }
 }
@@ -1616,6 +1739,16 @@ fn fence_prefix(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recorded_item_is_found_by_where_its_source_starts() {
+        let bounds = |width: f32| Bounds { origin: Default::default(), size: gpui_kit::size(px(width), px(20.)) };
+        let items = vec![(10..30, bounds(100.)), (31..60, bounds(200.))];
+        assert_eq!(item_at(&items, &(31..59)), Some(bounds(200.)));
+        assert_eq!(item_at(&items, &(10..30)), Some(bounds(100.)));
+        assert_eq!(item_at(&items, &(70..80)), None);
+        assert_eq!(item_at(&[], &(10..30)), None);
+    }
 
     /// SM-4
     #[test]

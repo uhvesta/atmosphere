@@ -15,7 +15,7 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::ContainError;
+use crate::{ContainError, Login};
 
 /// What is copied again from `~/.claude/` at every launch and resume.
 /// `.credentials.json` is left out on purpose: the login stays in the keychain.
@@ -45,20 +45,20 @@ pub struct ClaudeCopy {
 
 impl ClaudeCopy {
     /// The environment the contained agent runs with: the copy as its config
-    /// folder, and the usual keychain login. Setting a config folder would
-    /// otherwise make Claude Code look for a login under a name of its own;
-    /// an empty `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the usual one.
-    pub fn env(&self) -> Vec<(OsString, OsString)> {
-        vec![
-            (
-                OsString::from("CLAUDE_CONFIG_DIR"),
-                self.folder.clone().into_os_string(),
-            ),
-            (
-                OsString::from("CLAUDE_SECURESTORAGE_CONFIG_DIR"),
-                OsString::new(),
-            ),
-        ]
+    /// folder and, for the keychain `login`, the usual keychain login.
+    /// Setting a config folder would otherwise make Claude Code look for a
+    /// login under a name of its own; an empty
+    /// `CLAUDE_SECURESTORAGE_CONFIG_DIR` keeps the usual one. A token login
+    /// needs no more: the token is in the launch environment already.
+    pub fn env(&self, login: Login) -> Vec<(OsString, OsString)> {
+        let mut env = vec![(
+            OsString::from("CLAUDE_CONFIG_DIR"),
+            self.folder.clone().into_os_string(),
+        )];
+        if login == Login::Keychain {
+            env.push((OsString::from("CLAUDE_SECURESTORAGE_CONFIG_DIR"), OsString::new()));
+        }
+        env
     }
 }
 
@@ -268,7 +268,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{project_folder_name, seed_claude_copy};
-    use crate::ContainError;
+    use crate::{ContainError, Login};
 
     /// A temp home with a Claude Code config, a session folder and the copy's
     /// place in it. Nothing here touches the real home folder.
@@ -410,10 +410,30 @@ mod tests {
     fn the_env_names_the_copy_and_keeps_the_usual_login() {
         let s = setup();
         let copy = seed_claude_copy(&s.home, &s.copy, &s.session).expect("a copy");
-        let env = copy.env();
+        let env = copy.env(Login::Keychain);
 
         assert!(env.contains(&("CLAUDE_CONFIG_DIR".into(), s.copy.clone().into_os_string())));
         assert!(env.contains(&("CLAUDE_SECURESTORAGE_CONFIG_DIR".into(), "".into())));
+    }
+
+    #[test]
+    fn a_token_login_leaves_the_keychain_variable_unset() {
+        let s = setup();
+        let copy = seed_claude_copy(&s.home, &s.copy, &s.session).expect("a copy");
+        let env = copy.env(Login::Token);
+
+        assert!(env.contains(&("CLAUDE_CONFIG_DIR".into(), s.copy.clone().into_os_string())));
+        assert!(env.iter().all(|(name, _)| name != "CLAUDE_SECURESTORAGE_CONFIG_DIR"));
+    }
+
+    #[test]
+    fn credentials_are_not_copied_by_any_seed() {
+        let s = setup();
+        seed_claude_copy(&s.home, &s.copy, &s.session).expect("a copy");
+        seed_claude_copy(&s.home, &s.copy, &s.session).expect("a reseed");
+
+        assert!(!s.copy.join(".credentials.json").exists());
+        assert!(s.home.join(".claude/.credentials.json").is_file());
     }
 
     #[test]

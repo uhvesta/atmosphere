@@ -1,7 +1,9 @@
 //! The `PeerUplink` stream. The peer link holds it open while the host is
 //! reachable (D213); the newest open replaces the oldest.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use humata2_grpc::humata::v1 as pb;
 use tokio::sync::mpsc;
@@ -11,7 +13,9 @@ use tonic::{Code, Status};
 use super::journal;
 use super::link::HostLink;
 use super::policy_copy::PolicySource;
+use super::registry::Forwarder;
 use crate::events::Feed;
+use crate::inbox::Inbox;
 use crate::identity::{Caller, UserVia};
 use crate::status;
 
@@ -25,11 +29,27 @@ pub(crate) struct Uplinks {
     feed: Arc<Feed>,
     /// Where the policy copies the host sends are put in force (AW-8).
     policy: Arc<PolicySource>,
+    /// Where the answers the host relays are applied (D226).
+    inbox: Arc<Inbox>,
+    /// Where this machine's agents' board calls go up, and the host's answers come back (D227).
+    forwarder: Arc<Forwarder>,
 }
 
 impl Uplinks {
-    pub(crate) fn new(link: Arc<HostLink>, feed: Arc<Feed>, policy: Arc<PolicySource>) -> Self {
-        Self { link, feed, policy }
+    pub(crate) fn new(link: Arc<HostLink>, feed: Arc<Feed>, policy: Arc<PolicySource>, inbox: Arc<Inbox>) -> Self {
+        let forwarder = Arc::new(Forwarder::new(link.on_host()));
+        Self {
+            link,
+            feed,
+            policy,
+            inbox,
+            forwarder,
+        }
+    }
+
+    /// The machine's end of the calls it forwards to the host (D227).
+    pub(crate) fn forwarder(&self) -> Arc<Forwarder> {
+        Arc::clone(&self.forwarder)
     }
 
     pub(crate) fn reachable(&self) -> bool {
@@ -67,9 +87,13 @@ impl Uplinks {
             None,
         );
         let (to_host, stream) = mpsc::channel(16);
+        // From now until this uplink ends, the agents' board calls go up on it (D227).
+        let forwarder = Arc::clone(&self.forwarder);
+        let epoch = forwarder.attach(to_host.clone());
         let feed = self.feed.clone();
         let policy = self.policy.clone();
         let store = Arc::clone(self.policy.store());
+        let inbox = Arc::clone(&self.inbox);
         let mut written = self.link.journal_writes();
         tokio::spawn(async move {
             let mut from_host = from_host;
@@ -99,7 +123,7 @@ impl Uplinks {
                             message: Some(pb::host_to_machine::Message::Resume(resume)),
                         })) => {
                             let through = resume.from.map_or(0, |from| from.journal_through);
-                            if !acked(&store, through).await {
+                            if !acked(&store, &policy, &inbox, through).await {
                                 continue;
                             }
                             resumed = true;
@@ -112,24 +136,44 @@ impl Uplinks {
                         Ok(Some(pb::HostToMachine {
                             message: Some(pb::host_to_machine::Message::Ack(ack)),
                         })) => {
-                            acked(&store, ack.journal_through).await;
+                            acked(&store, &policy, &inbox, ack.journal_through).await;
                         }
                         Ok(Some(pb::HostToMachine {
                             message: Some(pb::host_to_machine::Message::Policy(snapshot)),
                         })) => {
-                            let Some(ack) = applied(&policy, snapshot).await else {
+                            let Some(ack) = applied(&policy, &feed, snapshot).await else {
                                 continue;
                             };
                             if to_host.send(Ok(ack)).await.is_err() {
                                 break;
                             }
                         }
-                        // The host's other messages are taken in AWAY T5–T7.
+                        Ok(Some(pb::HostToMachine {
+                            message: Some(pb::host_to_machine::Message::Answer(relayed)),
+                        })) => {
+                            if let Some(refused) = inbox.answer_relayed(&relayed).await {
+                                // So the host answers its user now, not after its wait.
+                                let message = pb::MachineToHost {
+                                    message: Some(pb::machine_to_host::Message::AnswerRefused(refused)),
+                                };
+                                if to_host.send(Ok(message)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(Some(pb::HostToMachine {
+                            message: Some(pb::host_to_machine::Message::Result(result)),
+                        })) => {
+                            forwarder.answered(result);
+                        }
+                        // The host's other messages are taken in later milestones.
                         Ok(Some(_)) => {}
                         Ok(None) | Err(_) => break,
                     },
                 }
             }
+            // The calls still waiting on this uplink are host_unreachable now.
+            forwarder.detach(epoch);
             if opened.close() {
                 feed.publish(
                     pb::Change::Updated,
@@ -142,19 +186,30 @@ impl Uplinks {
     }
 }
 
-/// Puts `snapshot` in force and acks its revision. A copy that can't be kept
-/// is not acked, so the host's next one is taken instead; the one before
-/// stays in force meanwhile.
-async fn applied(policy: &Arc<PolicySource>, snapshot: pb::PolicySnapshot) -> Option<pb::MachineToHost> {
+/// Puts `snapshot` in force, reports it kept on the feed, and acks its
+/// revision. An older copy is acked but not reported, since it was dropped.
+/// A copy that can't be kept is not acked, so the host's next one is taken
+/// instead; the one before stays in force meanwhile.
+async fn applied(policy: &Arc<PolicySource>, feed: &Feed, snapshot: pb::PolicySnapshot) -> Option<pb::MachineToHost> {
     let policy = Arc::clone(policy);
-    let applied = tokio::task::spawn_blocking(move || policy.apply(&snapshot)).await;
+    let revision = snapshot.revision;
+    let applied = tokio::task::spawn_blocking(move || policy.kept(&snapshot)).await;
     match applied {
-        Ok(Ok(revision)) => Some(pb::MachineToHost {
-            message: Some(pb::machine_to_host::Message::Ack(pb::UplinkAck {
-                policy_revision: revision,
-                ..pb::UplinkAck::default()
-            })),
-        }),
+        Ok(Ok(kept)) => {
+            if let Some(revision) = kept {
+                feed.publish(
+                    pb::Change::Updated,
+                    pb::event::Payload::PolicyCopy(pb::PolicyCopyKept { revision }),
+                    None,
+                );
+            }
+            Some(pb::MachineToHost {
+                message: Some(pb::machine_to_host::Message::Ack(pb::UplinkAck {
+                    policy_revision: revision,
+                    ..pb::UplinkAck::default()
+                })),
+            })
+        }
         Ok(Err(error)) => {
             crate::log::say!(
                 "humatad2: warning: the host's policy copy wasn't taken: {}",
@@ -169,9 +224,22 @@ async fn applied(policy: &Arc<PolicySource>, snapshot: pb::PolicySnapshot) -> Op
     }
 }
 
-/// Records that the host has every journal entry through `seq`. False when
-/// it couldn't be kept; the entries are then sent again on the next link.
-async fn acked(store: &Arc<humata2_store::Store>, seq: u64) -> bool {
+/// Records that the host has every journal entry through `seq`. The grants
+/// this machine made for the answers among them go first: the host holds
+/// those answers and made its own grants, so these are dropped and marked
+/// revoked (D226). False when the ack couldn't be kept; the entries are then
+/// sent again on the next link.
+async fn acked(store: &Arc<humata2_store::Store>, policy: &Arc<PolicySource>, inbox: &Inbox, seq: u64) -> bool {
+    let reading = Arc::clone(store);
+    let answered = tokio::task::spawn_blocking(move || journal::answered_through(&reading, seq)).await;
+    match answered {
+        Ok(Ok(answered)) => dropped(policy, inbox, &answered).await,
+        Ok(Err(error)) => crate::log::say!(
+            "humatad2: warning: couldn't tell which of this machine's grants the host has taken over, so they stay until the next ack: {}",
+            crate::status::chain(&error)
+        ),
+        Err(error) => crate::log::say!("humatad2: warning: reading the journal for the host's ack stopped: {error}"),
+    }
     let store = Arc::clone(store);
     let kept = tokio::task::spawn_blocking(move || journal::acked(&store, seq)).await;
     match kept {
@@ -183,6 +251,32 @@ async fn acked(store: &Arc<humata2_store::Store>, seq: u64) -> bool {
         Err(error) => {
             crate::log::say!("humatad2: warning: keeping the host's journal ack stopped: {error}");
             false
+        }
+    }
+}
+
+/// Drops the grants this machine made for the requests in `answered`, and
+/// marks them revoked in the Inbox so a restart doesn't bring them back.
+async fn dropped(policy: &Arc<PolicySource>, inbox: &Inbox, answered: &BTreeSet<String>) {
+    if answered.is_empty() {
+        return;
+    }
+    let (source, requests) = (Arc::clone(policy), answered.clone());
+    match tokio::task::spawn_blocking(move || source.drop_made_for(&requests)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => crate::log::say!(
+            "humatad2: warning: a grant made on this machine wasn't dropped after the host took its answer: {}",
+            crate::status::chain(&error)
+        ),
+        Err(error) => crate::log::say!("humatad2: warning: dropping this machine's grants stopped: {error}"),
+    }
+    let at = SystemTime::now();
+    for request in answered {
+        if let Err(refused) = inbox.revoked(request, at).await {
+            crate::log::say!(
+                "humatad2: warning: request {request}'s grant wasn't marked revoked, so a restart may bring it back until the host's copy replaces it: {}",
+                refused.message()
+            );
         }
     }
 }

@@ -111,6 +111,8 @@ impl App {
             last: state.report.last.is_some(),
         };
         let in_session = matches!(state.route, Route::Session(_));
+        state.palette.split =
+            in_session && state.session.view().is_some_and(|view| view.groups.len() > 1);
         state.palette.context = match &state.route {
             Route::Session(id) => Some(id.clone()),
             _ => None,

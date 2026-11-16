@@ -165,11 +165,51 @@ impl pb::access_service_server::AccessService for Access {
         Ok(Response::new(rules))
     }
 
+    /// The user sets a channel's While I'm away rule (AW-2); machines get it
+    /// with the next policy copy.
     async fn set_away_rule(
         &self,
-        _request: Request<pb::SetAwayRuleRequest>,
+        request: Request<pb::SetAwayRuleRequest>,
     ) -> Result<Response<pb::ChannelRules>, Status> {
-        Err(status::not_built("humata.v1.AccessService.SetAwayRule"))
+        let caller = identity::caller(&request)?;
+        self.require_user(&caller)?;
+        let user = self.present_user(&caller)?;
+        let request = request.into_inner();
+        let channel = channel_of(request.channel)?;
+        let away = rules_kept::away_of(request.away.as_ref())
+            .map_err(|error| unknown("away", &error))?
+            .ok_or_else(|| status::missing("away"))?;
+        let change = Change {
+            decisions: Vec::new(),
+            away: Some(away),
+        };
+        // Held until the rule is saved and applied.
+        let _changing = self.changing.lock().await;
+        self.ensure_known(&channel).await?;
+        let actual = self.channel_revision(&channel).await?;
+        check_revision(&channel, request.expected_revision, actual)?;
+        let next = actual.saturating_add(1);
+        let scope = Rules::Channel(ChannelId::new(channel.as_str()));
+        let trial = self.guard.with_policy(|policy, _| {
+            let mut trial = policy.clone();
+            change.apply(&mut trial, &user, &scope)?;
+            Ok::<_, Status>(channel_pb(&trial, &channel, next))
+        })?;
+        self.save(trial).await?;
+        let rules = self.guard.with_policy(|policy, _| {
+            change.apply(policy, &user, &scope)?;
+            Ok::<_, Status>(channel_pb(policy, &channel, next))
+        })?;
+        self.feed.publish_in(
+            pb::Change::Updated,
+            pb::event::Payload::Rules(rules.clone()),
+            Scope {
+                channel,
+                session: String::new(),
+            },
+            Some(identity::actor(&caller)),
+        );
+        Ok(Response::new(rules))
     }
 
     /// The user reads what new channels start with.

@@ -223,6 +223,9 @@ pub enum Command {
     Desk(DeskCommand),
     #[command(subcommand)]
     Report(ReportCommand),
+    /// Find out why a restart didn't bring everything back.
+    #[command(subcommand)]
+    Doctor(DoctorCommand),
     /// Say what turn this session's agent is in. For the agent's hooks:
     /// prints nothing, and works only from the session's own terminal.
     Turn {
@@ -816,6 +819,35 @@ pub enum PinnedCommand {
         #[arg(required = true)]
         things: Vec<String>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DoctorCommand {
+    /// Read a restart report, say what wasn't brought back and what is
+    /// stuck, repair what can't lose anything and write diagnosis.md beside
+    /// the report.
+    Restarts(RestartsArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct RestartsArgs {
+    /// A report's folder, or its name in restarts/. Default: the newest.
+    pub report: Option<String>,
+    /// Only read and say: change nothing, and work with the daemon down.
+    #[arg(long)]
+    pub explain: bool,
+    /// Also run this repair, which can lose something (an id from
+    /// --explain, such as start-fresh:<session>). Repeat for more.
+    #[arg(long, value_name = "ID")]
+    pub allow: Vec<String>,
+    /// The diagnosis you wrote, as a file or `-` for stdin, put at the top
+    /// of diagnosis.md.
+    #[arg(long, value_name = "FILE")]
+    pub diagnosis: Option<String>,
+    /// The state folder humatad2 serves from. Default: the one beside the
+    /// daemon's socket.
+    #[arg(long, value_name = "DIR")]
+    pub state: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]

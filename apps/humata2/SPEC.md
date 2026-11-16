@@ -2060,14 +2060,24 @@ Linux machine (AR-7).
   login (launchd on macOS, PER-20; the systemd user service on Linux, PER-18)
   and puts `humata` on the user's PATH. Nothing on the
   host needs a separate installer, and an app update updates the daemon at
-  its next safe moment (PER-6). (D51)
+  its next safe moment (PER-6). When the app finds an older local daemon it
+  posts "Migrate the daemon on This Mac" (UP-1) and upgrades it on Migrate.
+  (D51, D281)
 
 - **TS-1** Adding a machine, and every connect after, installs Humata's own
-  binaries there automatically, with no prompt and no download: `humatad2`,
+  binaries there with no download: `humatad2`,
   `humata2_holder` and the `humata` CLI, into `~/.humata2/bin`, a folder only
   Humata uses. Sessions Humata starts there have it on their PATH. A machine
   whose copies differ from the app's (by checksum) gets the app's, replaced
-  atomically and only when no session's holder uses the old ones.
+  atomically on Migrate (UP-1), and no running holder is replaced (PER-6).
+- **UP-1** Every needed update is a VIP Inbox item from Humata, "Migrate
+  <thing>": the local or a machine's daemon (with its schema), CLI, holders
+  and host tools. Its one action, Migrate, does it; it can't be dismissed while
+  the mismatch stands, a second detection updates the same item, and it ends
+  as "Migrated to <version>". Until then nothing falls back to mixed versions:
+  a call that needs the new version is refused "Migrate <thing> first",
+  pointing at the item. Humata never downgrades; a machine or store newer than
+  the app asks for an app update. (D281)
 - **TS-2** The desktop app embeds these binaries for every machine platform
   it supports (macOS and Linux, arm64 and x86_64), as Humata 1 did. Setup
   reads the machine's OS and architecture and copies the matching set, so a
@@ -2326,15 +2336,16 @@ daemon and, as far as physically possible, the machine.
   and marks what is lost (unpushed commits, dirty files) from the last
   pointers.
 - **SL-5** While the host is unreachable, the host-state writes that AW-7
-  marks "journaled" (board items, comment and view drafts, questions to the
-  user) and requests made on the machine go to a local append-only journal.
-  The journal replays to the host in order on reconnect. Nothing else is
-  journaled. (provisional, D3)
+  marks "journaled" (board items, questions to the user) and requests made
+  on the machine go to a local append-only journal. The journal replays to
+  the host in order on reconnect. A journaled new item has no id until the
+  host replays it. Nothing else is journaled. (provisional, D3, D227)
 - **SL-6** The host is authoritative. A replayed write is applied field by
   field against the revision it was made on. Where the host changed the same
-  field since, the later write wins and the other value is kept in the
-  item's history, marked as a lost conflict. Inbox answers never work this
-  way: the first answer wins (AW-10). (provisional, D3)
+  field since, the replayed write wins, as the later one to reach the host,
+  and the other value is kept in the item's history, marked as a lost
+  conflict. Inbox answers never work this way: the first answer wins
+  (AW-10). (provisional, D3, D227)
 - **SL-7** Every board item, comment and view has a revision that goes up
   with each change. An edit made from a stale revision is not applied: the
   editor shows the current value and asks again. Board fields, marks and
@@ -2364,8 +2375,9 @@ daemon and, as far as physically possible, the machine.
 
 - **PER-5** A `humatad` crash or upgrade leaves holders untouched. A new
   daemon finds the running holders and reattaches to them.
-- **PER-6** A holder is never upgraded under a live session; new holder
-  versions apply to new sessions and to sessions after their next restart.
+- **PER-6** No running holder is replaced; new holder versions apply to new
+  sessions and to sessions after their next restart ("Migrate holders"
+  restarts idle agent sessions, D281).
 - **PER-7** One daemon runs per machine, enforced by a lock file. A second
   daemon exits with a message naming the running one.
 
@@ -2504,11 +2516,13 @@ daemon and, as far as physically possible, the machine.
   | The call | Host reachable | Host away |
   | --- | --- | --- |
   | Reads and writes of its own session's files, clones and `shared/` | done on the machine | done on the machine |
-  | Reads of channel state (topology, boards, its comments) | answered by the host | answered from the last copy, marked with its age |
-  | Writes the rules allow (own board, channel board add, its own items, comment and view drafts, questions to the user) | done | journaled (SL-5) |
+  | Reads of channel state (topology, boards, its comments) | answered by the host | answered from the last copy, marked with the time it was made; a read the machine holds no copy of is refused, saying the host is away (D227) |
+  | Writes the rules allow (own board, channel board add, its own items, questions to the user) | done | journaled (SL-5) |
+  | A board write the rules ask about | Inbox request; the call waits; approving makes the change | per the While I'm away rule for writes the machine may journal (own board, channel board add, its own items): under Wait an Inbox request on the machine, and the approved write is journaled with its approval; any other board write is refused, saying the host is away (D268) |
+  | Comment and view drafts | done | refused, saying the host is away; nothing is kept (D227) |
   | Anything the rules say Never | denied | denied |
   | An Ask on something on this machine (another session here, start or fork here, type into a session here) | Inbox request; the call waits | per the While I'm away rule |
-  | Anything that needs another machine or GitHub (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | done or asked | waits, or under Skip denied saying the host is away; never low-risk |
+  | Anything that needs another machine or GitHub (read or copy from another machine, start or fork elsewhere, a note to a session elsewhere, push, port forward) | done or asked | waits until the host is back, then is judged again and done or asked; a call that outlasts its wait is refused saying the host is away, and can be repeated. Under Skip denied saying the host is away; never low-risk (D227) |
   | User-only calls | user-only (SEC-9) | only answering requests the machine holds, with the passphrase, and reading the rules the machine judges by (D220) |
 
   (provisional, D3)
@@ -2517,8 +2531,14 @@ daemon and, as far as physically possible, the machine.
   the machine can change that copy. (provisional, D3)
 - **AW-9** On reconnect, every journaled write is checked again against the
   rules as they are then. A write a tightened rule no longer allows is not
-  applied; it is shown in the item's history and as one line in the agent's
-  terminal. (provisional, D3)
+  applied: an edit is kept in the item's history as lost, a new item is not
+  made, and the agent's terminal shows one line under its output saying how
+  many of its writes weren't applied and why, until a later reconnect
+  replaces it. The line is Humata's, not the agent's: nothing is typed into
+  the agent. A write the user approved on the machine is applied while the
+  rule still says Ask, and a kind the While I'm away rule still lists as
+  low-risk is applied; Never still leaves it out.
+  (provisional, D3; D267, D268)
 - **AW-10** The first answer to a request wins, as IN-15 says, wherever the
   answers come from. A deny never undoes an approval that already ran.
   (provisional, D3)

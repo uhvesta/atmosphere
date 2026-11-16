@@ -241,3 +241,69 @@ async fn a_start_fresh_killed_after_launch_types_its_seed_once_after_the_restart
 async fn a_start_fresh_killed_after_launch_with_its_holder_lost_still_hears_the_seed_first() {
     killed_after_launch(true).await;
 }
+
+/// Every step a start fresh takes, as the points a cut can land on. The
+/// two `revive` points are the new agent's launch, record then process.
+const START_FRESH_POINTS: &[&str] = &[
+    "start_fresh.recorded",
+    "start_fresh.busy",
+    "start_fresh.seed_kept",
+    "revive.launch.recorded",
+    "revive.launch.spawned",
+    "start_fresh.launched",
+    "start_fresh.typed",
+];
+
+/// The session once it is no longer in flight: working again, or showing
+/// the failed resume it began with.
+async fn settled(fix: &Fixture) -> pb::Session {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let session = get_session(&fix.daemon, &fix.id()).await;
+        if session.status == Status::Working as i32 || session.status == Status::ResumeFailed as i32 {
+            return session;
+        }
+        assert!(Instant::now() < deadline, "the session never settled: {session:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A start fresh cut at any step either finished (a new conversation that
+/// heard its first message once) or left the session as it was, and asking
+/// again from there works. Either way the session has one agent tab.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_fresh_cut_at_any_point_finishes_or_leaves_the_session_as_it_was() {
+    for point in START_FRESH_POINTS {
+        let mut fix = Fixture::new().await;
+        fix.say("remember-the-blue-door").await;
+        fix.lose_conversation_then_start(&[("HUMATA2_STOP_AT", point)]).await;
+        fix.ask_start_fresh("k-cut").await;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while std::os::unix::net::UnixStream::connect(&fix.daemon.socket).is_ok() {
+            assert!(Instant::now() < deadline, "the daemon never died at {point}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        fix.daemon.restart().await;
+
+        let mut session = settled(&fix).await;
+        if session.status == Status::ResumeFailed as i32 {
+            // Left as it was: asking again works.
+            assert_eq!(session.conversation_id, fix.session.conversation_id, "cut at {point}");
+            let ended = fix.start_fresh("k-again").await.expect("start fresh is asked again");
+            assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "cut at {point}: {ended:?}");
+            session = wait_status(&fix.daemon, &fix.id(), Status::Working).await;
+        }
+        assert_ne!(session.conversation_id, fix.session.conversation_id, "cut at {point}");
+        let file = fix.world.conversation(&session.conversation_id);
+        let tag = format!("[start fresh {}]", session.conversation_id);
+        let heard = heard_with(&file, &tag).await;
+        assert_eq!(times(&heard, &tag), 1, "cut at {point}: the new conversation holds {heard:?}");
+        let id = fix.id().value;
+        let agent_tabs: Vec<_> = stored_tabs(&fix.daemon.state)
+            .into_iter()
+            .filter(|tab| tab.session.as_deref() == Some(id.as_str()) && tab.kind == humata2_store::TabKind::Agent)
+            .collect();
+        assert_eq!(agent_tabs.len(), 1, "cut at {point}: one agent tab, no orphan");
+        assert!(common::holder_answers(&agent_tabs[0]), "cut at {point}: its holder runs");
+    }
+}

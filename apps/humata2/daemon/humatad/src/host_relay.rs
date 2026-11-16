@@ -409,6 +409,27 @@ mod tests {
             Err(Status::unimplemented("not used"))
         }
 
+        async fn repair_restart(
+            &self,
+            _request: Request<pb::RepairRestartRequest>,
+        ) -> Result<tonic::Response<pb::RepairRestartResponse>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
+
+        async fn stop_sessions(
+            &self,
+            _request: Request<pb::StopSessionsRequest>,
+        ) -> Result<tonic::Response<pb::StopSessionsResponse>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
+
+        async fn start_sessions(
+            &self,
+            _request: Request<pb::StartSessionsRequest>,
+        ) -> Result<tonic::Response<pb::StartSessionsResponse>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
+
         type PeerUplinkStream = tokio_stream::wrappers::ReceiverStream<Result<pb::MachineToHost, Status>>;
 
         async fn peer_uplink(

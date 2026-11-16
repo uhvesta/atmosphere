@@ -177,14 +177,17 @@ fn restored(
         outcome: None,
     };
     let access = asked.clone().and_then(|target| {
-        asked_again(
+        match ahead(
             guard,
             store,
             machine,
             &record.session,
             held.request.capability,
             target,
-        )
+        ) {
+            Ahead::Ask(asked) => Some(asked),
+            Ahead::Covered | Ahead::Refused | Ahead::Gone => None,
+        }
     });
     let mut changed = false;
     if deferred && held.request.state == pb::RequestState::Pending as i32 {
@@ -226,33 +229,57 @@ fn restored(
     Some((entry, standing, changed, before))
 }
 
+/// What the policy does with `session`'s ask-ahead on `target` as the rules
+/// stand now.
+pub(super) enum Ahead {
+    /// It asks the user: this is the request, with the grant "Always allow"
+    /// would make.
+    Ask(AccessRequest),
+    /// It is allowed already, by the rule or by a grant that covers it.
+    Covered,
+    /// The rule is Never, or a limit refuses it.
+    Refused,
+    /// The session, or what the target names, is gone.
+    Gone,
+}
+
 /// What the policy asks the user for `session`'s ask-ahead on `target`,
-/// worked out again as when it was asked. `None` once the session, or
-/// what the target names, is gone.
-fn asked_again(
+/// worked out again as when it was asked.
+pub(super) fn ahead(
     guard: &Guard,
     store: &Store,
     machine: &str,
     session: &str,
     capability: i32,
     target: pb::GrantTarget,
-) -> Option<AccessRequest> {
-    let capability = grant_target::capability_of(capability)?;
-    let record = store.session(session).ok()??;
-    let agent = AgentCaller::of(&record, machine).resolve_fork(store).ok()?;
-    let call = grant_target::ask_ahead_call(store, machine, &agent, capability, target).ok()?;
+) -> Ahead {
+    let Some(capability) = grant_target::capability_of(capability) else {
+        return Ahead::Gone;
+    };
+    let Ok(Some(record)) = store.session(session) else {
+        return Ahead::Gone;
+    };
+    let Ok(agent) = AgentCaller::of(&record, machine).resolve_fork(store) else {
+        return Ahead::Gone;
+    };
+    let Ok(call) = grant_target::ask_ahead_call(store, machine, &agent, capability, target) else {
+        return Ahead::Gone;
+    };
     let asker = Agent {
         session: agent.session.clone(),
         kind: agent.session_kind(),
     };
     guard.with_policy(|policy, context| {
-        if policy.channel_rules(&asker.session.channel).is_none() {
-            policy.add_channel(asker.session.channel.clone()).ok()?;
+        if policy.channel_rules(&asker.session.channel).is_none()
+            && policy.add_channel(asker.session.channel.clone()).is_err()
+        {
+            return Ahead::Gone;
         }
-        // No grant is back in the policy yet, so none covers it.
         match policy.check_ask_ahead(&asker, &call, context) {
-            Ok(Verdict::Ask(asked)) => Some(asked),
-            _ => None,
+            Ok(Verdict::Ask(asked)) => Ahead::Ask(asked),
+            Ok(Verdict::Allowed { .. }) => Ahead::Covered,
+            Ok(_) => Ahead::Refused,
+            Err(_) => Ahead::Gone,
         }
     })
 }

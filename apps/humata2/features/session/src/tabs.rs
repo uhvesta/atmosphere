@@ -35,7 +35,52 @@ impl TabGroup {
     }
 }
 
+/// How wide one tab group is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GroupWidth {
+    /// The group shares what is left equally with the other flexible groups.
+    Flexible,
+    /// The group is this many points wide.
+    Fixed(f32),
+}
+
+/// How wide the terminal beside a Side-by-side document is (design frame 43).
+const BESIDE_DOCUMENT: f32 = 330.;
+
+/// The width of each tab group in a row of `available` points. The group
+/// beside a group whose selected tab is a Side-by-side document is
+/// `BESIDE_DOCUMENT` wide, or half the row when that is narrower; the
+/// document's group takes the rest. Otherwise groups share the row equally.
+/// `side_by_side[i]` says whether group `i`'s selected tab is such a document.
+#[must_use]
+pub fn group_widths(available: f32, side_by_side: &[bool]) -> Vec<GroupWidth> {
+    let besides = side_by_side.len() == 2 && side_by_side[0] != side_by_side[1];
+    side_by_side
+        .iter()
+        .map(|document| {
+            if besides && !document {
+                GroupWidth::Fixed(BESIDE_DOCUMENT.min(available / 2.))
+            } else {
+                GroupWidth::Flexible
+            }
+        })
+        .collect()
+}
+
 impl super::SessionView {
+    /// Whether a group's selected tab is a Markdown document shown Side by
+    /// side.
+    #[must_use]
+    pub fn selected_is_side_by_side(&self, group: usize) -> bool {
+        match self.selected(group) {
+            Some(Tab::File { repo, path }) => {
+                super::is_markdown(path)
+                    && self.document(repo, path).mode == super::DocumentMode::SideBySide
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn ensure_groups(&mut self, shells: usize) {
         if self.groups.is_empty() {
             self.groups.push(TabGroup {

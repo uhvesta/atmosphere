@@ -168,6 +168,8 @@ fn draw_row(
                 });
                 body = body.child(chrome::status(status)).child(
                     div()
+                        // The design puts 5 pt, not the row's 7, between the dot and the count.
+                        .ml(px(-2.))
                         .text_size(px(11.))
                         .text_color(rgb(if current { 0xffffff } else { look.secondary }))
                         .child(sessions.to_string()),
@@ -188,7 +190,15 @@ fn draw_row(
                 18. + f32::from(entry.depth - 1) * 16. - if fork { 19. } else { 0. }
             };
             if fork {
-                body = body.child(chrome::icon(IconName::GitFork, faint, 12.));
+                // The design sits the fork glyph 2 pt nearer the status dot than the
+                // row's gap, with the dot and title where they are.
+                body = body.child(
+                    div()
+                        .ml(px(2.))
+                        .mr(px(-2.))
+                        .flex_shrink_0()
+                        .child(chrome::icon(IconName::GitFork, faint, 12.)),
+                );
             }
             let count = ui.read(|s| match &key {
                 RowKey::Session(id) => inbox_count(s, id, *vip),
@@ -200,8 +210,11 @@ fn draw_row(
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    // Unread or selected rows read semibold (goldens 01, 16).
-                    .when(*unread > 0 || current, |x| x.font_weight(FontWeight::SEMIBOLD))
+                    // Unread rows read semibold, and so does the selected row while
+                    // it has requests waiting (golden 15 bolds it, golden 16 doesn't).
+                    .when(*unread > 0 || (current && count > 0), |x| {
+                        x.font_weight(FontWeight::SEMIBOLD)
+                    })
                     .child(title.clone()),
             );
             if count > 0 {
@@ -285,6 +298,52 @@ pub(crate) fn nav(
                 .child(n.to_string())
         }))
         .on_click(move |_, _, cx| ui.send(AppAction::Switch(route.clone()), cx))
+        .test_support()
+}
+
+/// The channel list's height, in points, above which it stops taking its
+/// natural height and fills what the other rows leave instead.
+const FILL_ABOVE: f32 = 1000.;
+
+/// Whether the channel list is long enough to fill the column.
+fn channels_fill(lines: usize) -> bool {
+    lines as f32 * theme::ROW > FILL_ABOVE
+}
+
+/// The box around the channel list. A short list is as tall as its rows and
+/// gives up height only after every other row has shrunk to its least, as the
+/// design's channel block does (its weight is nil next to theirs). A long list
+/// fills the rest of the column and scrolls, so Settings stays in view.
+fn channels_box(lines: usize, list: impl IntoElement) -> Div {
+    let frame = widgets::col().min_h_0();
+    if channels_fill(lines) {
+        frame.flex_1().child(list)
+    } else {
+        frame
+            .h(px(lines as f32 * theme::ROW))
+            .flex_shrink(SHRINK_LAST)
+            .child(list)
+    }
+}
+
+/// A shrink factor so small the other rows absorb the overflow first.
+const SHRINK_LAST: f32 = 0.0001;
+
+/// The Channels section's + (frame 16 draws it at 12 pt).
+fn new_channel(ui: &Rc<Ui>, look: Look) -> impl IntoElement {
+    let ui = ui.clone();
+    div()
+        .id("sidebar-new-channel")
+        .role(Role::Button)
+        .aria_label("New channel")
+        .size(px(12.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .child(chrome::icon(IconName::Plus, look.secondary, 12.))
+        .on_click(move |_, _, cx| ui.send(AppAction::StartNewChannel, cx))
         .test_support()
 }
 
@@ -461,7 +520,7 @@ impl Render for Sidebar {
         let pinned = ui.read(|s| {
             crate::sidebar_pinned::section(&s.pinned, &s.workspace, shown.as_ref(), look, &send_pinned)
         });
-        let pinned_shown = pinned.is_some();
+        let pinned_gap = if pinned.is_some() { 5.5 } else { 4. };
         widgets::col()
             .id("sidebar")
             .role(Role::Navigation)
@@ -483,9 +542,18 @@ impl Render for Sidebar {
             .h_full()
             .flex_shrink_0()
             .bg(rgb(look.sidebar))
-            .border_r_1()
-            .border_color(rgb(look.line))
             .text_color(rgb(look.text))
+            // The divider is drawn over the column's last point instead of taking
+            // it, so right-aligned items sit where the design puts them.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_0()
+                    .w(px(1.))
+                    .bg(rgb(look.line)),
+            )
             .child(
                 row()
                     .h(px(52.))
@@ -528,7 +596,6 @@ impl Render for Sidebar {
                     .role(Role::Button)
                     .aria_label("Search")
                     .mx(px(10.))
-                    .mt(px(if pinned_shown { -4. } else { 0. }))
                     .mb(px(6.))
                     .h(px(26.))
                     .px(px(8.))
@@ -548,7 +615,9 @@ impl Render for Sidebar {
                     .test_support(),
             )
             .children(pinned)
-            .child(div().h(px(4.)))
+            // Frame 15 leaves 5.5 pt between the last pin and Home; 4 pt without
+            // pins. It never shrinks, or the full column eats it.
+            .child(div().flex_shrink_0().h(px(pinned_gap)))
             .child(nav(
                 ui,
                 "rail-home",
@@ -580,23 +649,8 @@ impl Render for Sidebar {
                 look,
             ))
             .child(ui.read(|s| crate::sidebar_desk::rows(ui, s, look)))
-            .child(chrome::section(look, "Channels").child(chrome::action(
-                ui,
-                "sidebar-new-channel",
-                "New channel",
-                IconName::Plus,
-                AppAction::StartNewChannel,
-                look.secondary,
-            )))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .min_h_0()
-                    .h(px(lines.len() as f32 * theme::ROW))
-                    .flex_shrink(1.)
-                    .child(list),
-            )
+            .child(chrome::section(look, "Channels").child(new_channel(ui, look)))
+            .child(channels_box(lines.len(), list))
             .when(no_channels, |bar| {
                 bar.child(nothing_yet(look, "No channels yet")).child(start(
                     ui,
@@ -606,7 +660,7 @@ impl Render for Sidebar {
                     look,
                 ))
             })
-            .child(chrome::section(look, "Hosts").mt(px(if pinned_shown { -3. } else { 0. })))
+            .child(chrome::section(look, "Hosts"))
             .children(machines.into_iter().enumerate().map(|(index, m)| {
                 let ui = ui.clone();
                 row()
@@ -654,7 +708,7 @@ impl Render for Sidebar {
                     look,
                 ))
             })
-            .child(div().flex_1())
+            .when(!channels_fill(lines.len()), |bar| bar.child(div().flex_1()))
             .child(div().pb(px(10.)).child(nav(
                 ui,
                 "rail-settings",

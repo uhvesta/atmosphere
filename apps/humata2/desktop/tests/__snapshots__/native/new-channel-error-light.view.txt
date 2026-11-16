@@ -38,11 +38,21 @@ Dialog "New channel" focused
   #input-4294967308 focused
     TextInput "Channel name" value="" placeholder="web" focused
   #input-4294967310
-    TextInput "Repositories" value="" placeholder="org/web, org/design"
+    TextInput "Search repos" value="" placeholder="Search repos"
+  CheckBox "acme/ledger"
+  CheckBox "acme/api"
+  CheckBox "acme/web"
+  CheckBox "acme/infra"
+  CheckBox "acme/docs"
+  CheckBox "octo/notes"
+  CheckBox "This Mac" selected
+  CheckBox "devbox-1"
+  CheckBox "gpu-box"
+  CheckBox "cloud-vm-3"
   Alert "Give the channel a name."
     Button "Dismiss"
   Button "Cancel"
-  Button "Make channel"
+  Button "Create channel"
 Link "Ledger schema migration"
   Button "Review"
   text "Asks to move PAY-3 to Done"

@@ -189,6 +189,8 @@ mod lists;
 mod machines;
 #[path = "native/marks.rs"]
 mod marks;
+#[path = "native/new_channel.rs"]
+mod new_channel;
 #[path = "native/overlays.rs"]
 mod overlays;
 #[path = "native/queue.rs"]

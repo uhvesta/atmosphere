@@ -411,6 +411,10 @@ fn run(
     }
     let (reader, writer) = link.split();
     let pipe = bridge(reader, writer, runtime);
+    if enroll_into.is_some() {
+        // Enrolled afresh: its journal starts over (D226).
+        work.forget_journal_now(&name);
+    }
     work.start_link(
         &name,
         Box::new(OneShot {

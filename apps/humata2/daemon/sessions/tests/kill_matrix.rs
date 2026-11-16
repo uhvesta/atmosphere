@@ -399,36 +399,167 @@ async fn check_settled(world: &World, point: &str) {
     }
 }
 
+/// The points the daemon is killed at, and cut at by a power cut.
+const POINTS: &[&str] = &[
+    "store.channel.put.committing",
+    "store.channel.put.committed",
+    "sessions.channel.recorded",
+    "sessions.channel.cloned",
+    "sessions.channel.cloned@2",
+    "store.channel.main_clone.committing",
+    "store.channel.main_clone.committed",
+    "store.channel.main_clone.committing@2",
+    "sessions.start.recorded",
+    "store.session.put.committing",
+    "store.session.put.committed",
+    "store.session_detail.put.committing",
+    "store.session_detail.put.committed",
+    "sessions.start.cloned",
+    "sessions.start.cloned@2",
+    "store.session_detail.put.committing@2",
+    "store.session_detail.put.committed@2",
+    "store.session_detail.put.committing@3",
+    "sessions.start.launching",
+    "revive.launch.recorded",
+    "revive.launch.spawned",
+    "store.session_detail.put.committing@4",
+    "store.session_detail.put.committed@4",
+];
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_daemon_killed_at_any_point_leaves_a_running_session_or_none() {
-    for point in [
-        "store.channel.put.committing",
-        "store.channel.put.committed",
-        "sessions.channel.recorded",
-        "sessions.channel.cloned",
-        "sessions.channel.cloned@2",
-        "store.channel.main_clone.committing",
-        "store.channel.main_clone.committed",
-        "store.channel.main_clone.committing@2",
-        "sessions.start.recorded",
-        "store.session.put.committing",
-        "store.session.put.committed",
-        "store.session_detail.put.committing",
-        "store.session_detail.put.committed",
-        "sessions.start.cloned",
-        "sessions.start.cloned@2",
-        "store.session_detail.put.committing@2",
-        "store.session_detail.put.committed@2",
-        "store.session_detail.put.committing@3",
-        "sessions.start.launching",
-        "revive.launch.recorded",
-        "revive.launch.spawned",
-        "store.session_detail.put.committing@4",
-        "store.session_detail.put.committed@4",
-    ] {
+    for &point in POINTS {
         let world = World::new();
         kill_at(&world, point);
         check_settled(&world, point).await;
+    }
+}
+
+/// As [`kill_at`], with the power cut there too: the state folder and the
+/// holders' folder lose what the daemon hadn't synced, and the holders it
+/// started are cut as well (see [`cut_holders`]).
+fn power_cut_at(world: &World, stop_at: &str) {
+    let roots = std::env::join_paths([world.root.join("state"), world.root.join("h")]).unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["kill_child", "--exact", "--nocapture", "--test-threads=1"])
+        .env(CHILD, "1")
+        .env(ROOT, &world.root)
+        .env("HUMATA2_STOP_AT", stop_at)
+        .env("HUMATA2_POWER_CUT_ROOTS", roots)
+        .env("HUMATA2_POWER_CUT_SPARE", world.root.join("spare"))
+        .env_remove("TESTBRIDGE_TEST_ONLY")
+        .status()
+        .unwrap();
+    assert_eq!(status.signal(), Some(9), "never reached {stop_at}");
+}
+
+/// Cuts the power of every holder still answering: each drops what it
+/// hadn't synced and dies, as a test-build holder does on SIGUSR2.
+async fn cut_holders(world: &World) {
+    let Ok(entries) = fs::read_dir(world.root.join("h")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let socket = entry.path();
+        if socket.extension().is_some_and(|ext| ext == "sock")
+            && answers(&socket).await
+            && let Some(pid) = holder_pid(&socket)
+        {
+            let _ = rustix::process::kill_process(pid_of(pid), Signal::USR2);
+            until("the cut holder stops answering", async || !answers(&socket).await).await;
+        }
+    }
+}
+
+fn entries_of(dir: &Path) -> Vec<PathBuf> {
+    fs::read_dir(dir)
+        .map(|read| read.flatten().map(|entry| entry.path()).collect())
+        .unwrap_or_default()
+}
+
+fn name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// After [`check_settled`]: every folder, clone, session start, agent and
+/// holder socket is one a saved row names, and every saved row names one
+/// that is saved.
+async fn nothing_orphaned(world: &World, point: &str) {
+    let store = world.store();
+    let channels = store.channels().unwrap();
+    let sessions = store.sessions().unwrap();
+    let details = store.session_details().unwrap();
+    let agents = store.agents().unwrap();
+
+    for session in &sessions {
+        assert!(
+            channels.iter().any(|c| c.id == session.channel),
+            "{point}: session {} of no saved channel",
+            session.id
+        );
+    }
+    for detail in &details {
+        assert!(
+            sessions.iter().any(|s| s.id == detail.session),
+            "{point}: a session start of no saved session: {}",
+            detail.session
+        );
+    }
+    for agent in &agents {
+        assert!(
+            sessions.iter().any(|s| s.id == agent.session),
+            "{point}: an agent of no saved session: {}",
+            agent.session
+        );
+    }
+
+    let humata = world.layout().root;
+    for folder in entries_of(&humata) {
+        let Some(channel) = channels.iter().find(|c| c.folder == name_of(&folder)) else {
+            panic!("{point}: a folder of no saved channel: {folder:?}");
+        };
+        for entry in entries_of(&world.layout().main(&channel.folder)) {
+            let name = name_of(&entry);
+            assert!(
+                channel.repos.iter().any(|r| r.name == name),
+                "{point}: a main clone of no saved repository: {entry:?}"
+            );
+        }
+        for entry in entries_of(&world.layout().sessions(&channel.folder)) {
+            let named = details.iter().any(|d| {
+                d.repos.iter().any(|r| {
+                    r.path.parent().map(name_of).as_deref() == Some(name_of(&entry).as_str())
+                })
+            });
+            assert!(named, "{point}: a session folder no saved start names: {entry:?}");
+        }
+    }
+
+    let running: Vec<String> = agents
+        .iter()
+        .filter(|a| matches!(a.state, AgentState::Running { .. }))
+        .map(|a| name_of(&a.launch.holder_socket))
+        .collect();
+    for entry in entries_of(&world.root.join("h")) {
+        if entry.extension().is_some_and(|ext| ext == "sock") && answers(&entry).await {
+            assert!(
+                running.contains(&name_of(&entry)),
+                "{point}: a holder answers on {entry:?} that no running agent has"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_power_cut_at_any_point_leaves_a_running_session_or_none() {
+    for &point in POINTS {
+        let world = World::new();
+        power_cut_at(&world, point);
+        cut_holders(&world).await;
+        check_settled(&world, point).await;
+        nothing_orphaned(&world, point).await;
     }
 }
 

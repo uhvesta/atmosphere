@@ -374,6 +374,8 @@ impl Filter {
             Some(pb::event::Payload::Settings(_)) => self.user && self.settings,
             // AWAY: whether this machine has its host, as GetServerInfo says.
             Some(pb::event::Payload::HostLink(_)) => self.user && self.machines,
+            // AWAY: a policy copy the machine kept, to the user as HostLink is.
+            Some(pb::event::Payload::PolicyCopy(_)) => self.user && self.machines,
             _ => false,
         }
     }

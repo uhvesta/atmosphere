@@ -1,12 +1,12 @@
-//! LOOK2's and DESK's exit check: each native capture of frames 18–38, 40
-//! and 55 matches its design golden within tolerance, on the page (right of
-//! the sidebar).
+//! LOOK2's, DESK's and REVIEW's exit check: each native capture of frames
+//! 18–44 and 55 matches its design golden within tolerance, on the page
+//! (right of the sidebar). The sidebar (left of 237 pt) is checked the same
+//! way for the frames that show it, in `SIDEBARS`.
 //!
 //! The captures are what `native_test` records from its flows and the
 //! goldens are what `design_test` draws (D76), so this test reads both
-//! folders and draws nothing. The sidebar is left out: frames 01–17 cover it,
-//! and the goldens of 18–35 don't draw the Desk row the app has. Frame 39 is
-//! REVIEW's and joins with its document.
+//! folders and draws nothing. The goldens of 18–35 don't draw the Desk row
+//! the app has, so only the sidebars of frames 01–09, 12, 15–17 are checked.
 //!
 //! Pixels are compared in 2 × 2 pt blocks (the captures are 2x), so a glyph
 //! anti-aliased half a pixel apart doesn't count, while a moved row, a wrong
@@ -15,6 +15,7 @@
 //! allows it.
 //! A frame fails when more than its budget of the page's blocks differ.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use image::RgbaImage;
@@ -81,6 +82,16 @@ const HEADER_ACTIONS_WHY: &str = "D147 L4: the channel's Pin and … are disable
 const TERMINAL_BODY: Rect = Rect(237, 118, 638, 642);
 const TERMINAL_GRID_WHY: &str = "D219.1: the grid's cell is a whole 7 px, the frame's Menlo 12 \
      advances 7.2; rows and the agent's input box sit off the frame's";
+
+/// A document tab's Preview / Source / Side by side switch in its group row.
+const MODE_SWITCH: Rect = Rect(640, 86, 232, 30);
+const MODE_SWITCH_WHY: &str = "D166: the app shows the document's mode switch, frame 39 doesn't";
+
+/// The agent's terminal body in the left of two equal tab groups (no panel).
+const HALF_TERMINAL_BODY: Rect = Rect(237, 118, 489, 642);
+/// The agent's terminal body in the 330 pt group beside a Side-by-side
+/// document.
+const NARROW_TERMINAL_BODY: Rect = Rect(237, 118, 330, 642);
 
 const FRAMES: &[Frame] = &[
     frame("18-channel-sessions"),
@@ -179,7 +190,25 @@ const FRAMES: &[Frame] = &[
         masks: &[(TERMINAL_BODY, TERMINAL_GRID_WHY)],
         budget: BUDGET,
     },
+    // A document beside the agent (REVIEW, D166, flow 26.20).
+    Frame {
+        name: "39-desk-document",
+        masks: &[(MODE_SWITCH, MODE_SWITCH_WHY)],
+        budget: BUDGET,
+    },
     frame("40-new-desk-session"),
+    Frame {
+        name: "41-review-beside-terminal",
+        masks: &[(HALF_TERMINAL_BODY, TERMINAL_GRID_WHY)],
+        budget: BUDGET,
+    },
+    frame("42-review-markdown-source"),
+    Frame {
+        name: "43-review-terminal-source-page",
+        masks: &[(NARROW_TERMINAL_BODY, TERMINAL_GRID_WHY)],
+        budget: BUDGET,
+    },
+    frame("44-new-channel"),
     frame("55-desk-clean-up"),
 ];
 
@@ -241,7 +270,35 @@ fn block(image: &RgbaImage, bx: u32, by: u32) -> [u32; 3] {
     sum.map(|total| total / (side * side))
 }
 
-/// How the capture compares with the golden on the page.
+/// The part of the window a comparison covers.
+#[derive(Clone, Copy)]
+enum Region {
+    /// The page, right of the sidebar and its border.
+    Page,
+    /// The sidebar, left of the page's border at 237 pt. A block is compared
+    /// only when it lies wholly left of that border, so the sidebar's last
+    /// point column (236 pt) is not compared.
+    Sidebar,
+}
+
+impl Region {
+    /// The block columns of the region.
+    fn columns(self) -> Range<u32> {
+        match self {
+            Self::Page => PAGE_LEFT.div_ceil(BLOCK)..WIDTH / BLOCK,
+            Self::Sidebar => 0..PAGE_LEFT / BLOCK,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::Sidebar => "sidebar",
+        }
+    }
+}
+
+/// How the capture compares with the golden in `region`.
 struct Comparison {
     differing: u64,
     total: u64,
@@ -249,7 +306,12 @@ struct Comparison {
     picture: RgbaImage,
 }
 
-fn compare(frame: &Frame, capture: &RgbaImage, golden: &RgbaImage) -> Result<Comparison, LookError> {
+fn compare(
+    frame: &Frame,
+    region: Region,
+    capture: &RgbaImage,
+    golden: &RgbaImage,
+) -> Result<Comparison, LookError> {
     let expected = (WIDTH * SCALE, HEIGHT * SCALE);
     if capture.dimensions() != expected || golden.dimensions() != expected {
         return Err(LookError::Size {
@@ -266,9 +328,8 @@ fn compare(frame: &Frame, capture: &RgbaImage, golden: &RgbaImage) -> Result<Com
         pixel.0 = [faded, faded, faded, 255];
     }
     let (mut differing, mut total) = (0, 0);
-    let first = PAGE_LEFT.div_ceil(BLOCK);
     for by in 0..HEIGHT / BLOCK {
-        for bx in first..WIDTH / BLOCK {
+        for bx in region.columns() {
             let (x, y) = (bx * BLOCK, by * BLOCK);
             if frame.masks.iter().any(|(mask, _)| mask.holds(x, y)) {
                 continue;
@@ -293,16 +354,17 @@ fn compare(frame: &Frame, capture: &RgbaImage, golden: &RgbaImage) -> Result<Com
     })
 }
 
-#[test]
-fn every_page_from_18_matches_its_golden() {
+/// Compares each of `frames` in `region` with its golden and answers one
+/// message for each that can't be read or is over its budget.
+fn misses_in(frames: &[Frame], region: Region) -> Vec<String> {
     let folder = snapshots();
     let outputs = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR").map(PathBuf::from);
     let mut misses = Vec::new();
-    for frame in FRAMES {
+    for frame in frames {
         let file = format!("{}.png", frame.name);
         let checked = read(folder.join("native").join(&file)).and_then(|capture| {
             let golden = read(folder.join("design").join(&file))?;
-            compare(frame, &capture, &golden)
+            compare(frame, region, &capture, &golden)
         });
         let comparison = match checked {
             Ok(comparison) => comparison,
@@ -313,16 +375,18 @@ fn every_page_from_18_matches_its_golden() {
         };
         let share = comparison.differing as f64 / comparison.total.max(1) as f64;
         println!(
-            "{}: {:.3}% of the page differs (budget {:.3}%)",
+            "{}: {:.3}% of the {} differs (budget {:.3}%)",
             frame.name,
             share * 100.,
+            region.name(),
             frame.budget * 100.
         );
         if share > frame.budget {
             let mut miss = format!(
-                "{}: {:.3}% of the page differs from the golden, over its {:.3}% budget.",
+                "{}: {:.3}% of the {} differs from the golden, over its {:.3}% budget.",
                 frame.name,
                 share * 100.,
+                region.name(),
                 frame.budget * 100.
             );
             if let Some(outputs) = &outputs {
@@ -334,6 +398,10 @@ fn every_page_from_18_matches_its_golden() {
             misses.push(miss);
         }
     }
+    misses
+}
+
+fn assert_matches(misses: &[String]) {
     assert!(
         misses.is_empty(),
         "Native captures that don't match their design goldens. Make the app match the \
@@ -343,4 +411,33 @@ fn every_page_from_18_matches_its_golden() {
          budget to hide one.\n{}",
         misses.join("\n")
     );
+}
+
+#[test]
+fn every_page_from_18_matches_its_golden() {
+    assert_matches(&misses_in(FRAMES, Region::Page));
+}
+
+/// The sidebar of each frame that shows one: the session frames, the frame
+/// with the board panel full screen, and the sidebar frames. Pinned rows
+/// (frame 15) are the Pinned section of `ui/src/sidebar_pinned.rs`.
+const SIDEBARS: &[Frame] = &[
+    frame("01-session-working-light"),
+    frame("02-session-working-dark"),
+    frame("03-session-needs-you-light"),
+    frame("04-session-needs-you-dark"),
+    frame("05-session-exited"),
+    frame("06-session-offline"),
+    frame("07-session-board-panel"),
+    frame("08-session-journal-panel"),
+    frame("09-session-no-panel"),
+    frame("12-panel-full-screen-board"),
+    frame("15-sidebar-pinned"),
+    frame("16-sidebar-fork-selected"),
+    frame("17-sidebar-channels-folded"),
+];
+
+#[test]
+fn every_sidebar_from_01_matches_its_golden() {
+    assert_matches(&misses_in(SIDEBARS, Region::Sidebar));
 }

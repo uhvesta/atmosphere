@@ -143,6 +143,7 @@ pub mod rpc {
     service!(daemon, "DaemonService" {
         GET_SERVER_INFO = "GetServerInfo" -> "ServerInfo",
         WHO_AM_I = "WhoAmI" -> "WhoAmIResponse",
+        REPAIR_RESTART = "RepairRestart" -> "RepairRestartResponse",
     });
 
     service!(access, "AccessService" {
@@ -378,6 +379,7 @@ pub mod rpc {
     pub const ALL: &[Rpc] = &[
         daemon::GET_SERVER_INFO,
         daemon::WHO_AM_I,
+        daemon::REPAIR_RESTART,
         access::GET_CHANNEL_RULES,
         access::SET_CHANNEL_RULE,
         access::SET_AWAY_RULE,

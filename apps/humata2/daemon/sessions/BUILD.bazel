@@ -41,6 +41,7 @@ rust_library(
     testonly = True,
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_sessions",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
     deps = SESSIONS_DEPS + [
         "//apps/humata2/daemon/durable:durable_faults",
         "//apps/humata2/daemon/holder:holder_faults",

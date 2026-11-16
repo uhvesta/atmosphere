@@ -75,6 +75,9 @@ impl App {
                 let open = self.child(state, AppAction::Session(SessionAction::OpenFile));
                 Effect::merge([go, select, open])
             }
+            Command::JoinTabGroups => {
+                self.child(state, AppAction::Session(SessionAction::CloseGroup(1)))
+            }
             Command::Back => self.go_back(state),
             Command::ShowShortcuts => self.show_shortcuts(state),
             Command::Views => self.navigate(state, Route::Views),

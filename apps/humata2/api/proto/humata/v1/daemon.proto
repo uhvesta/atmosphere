@@ -5,6 +5,7 @@ package humata.v1;
 
 import "google/protobuf/timestamp.proto";
 import "humata/v1/common.proto";
+import "humata/v1/operations.proto";
 import "humata/v1/peer.proto";
 
 service DaemonService {
@@ -28,6 +29,20 @@ service DaemonService {
   // while one is open; a newer one ends the older. The host can't relay
   // it, and every other caller is refused.
   rpc PeerUplink(stream HostToMachine) returns (stream MachineToHost);
+  // PER-30, D242: the restart doctor's safe repairs. Re-runs the bring-back
+  // for one session or shell tab that the last start didn't bring back, or
+  // checks the store and, if it is damaged, makes the daemon exit so its
+  // next start restores the last good copy. Never loses anything. The user
+  // may call it, and an agent under the same rule as ResumeSession.
+  rpc RepairRestart(RepairRestartRequest) returns (RepairRestartResponse);
+  // D261: stops every session on this machine as a shutdown would, and keeps
+  // them stopped across restarts until StartSessions. The reply comes once
+  // the stop is recorded; the daemon then restarts itself into the sweep.
+  // The user only (with presence); an agent under MachineSessionsStop (D263).
+  rpc StopSessions(StopSessionsRequest) returns (StopSessionsResponse);
+  // D265: brings back what a stop ended, exactly as after a shutdown. The
+  // reply comes once the start is recorded; the daemon then restarts itself.
+  rpc StartSessions(StartSessionsRequest) returns (StartSessionsResponse);
 }
 
 enum DaemonRole {
@@ -89,6 +104,11 @@ message LastStart {
   // The sessions whose agents were started again on their conversations
   // ("3 sessions started again"); each id once.
   repeated SessionId resumed = 6;
+  // D265: this start was a Start after a stop: which stop.
+  AfterStop after_stop = 7;
+  // D265: set while this machine's sessions are stopped; nothing was
+  // brought back and no report written.
+  SessionsStopped sessions_stopped = 8;
 }
 
 message NotBroughtBack {
@@ -129,3 +149,69 @@ message CompleteRelayRequest {
 }
 
 message CompleteRelayResponse {}
+
+message RepairRestartRequest {
+  oneof target {
+    // Resume this session's agent again (ResumeSession's own path).
+    SessionId session = 1;
+    // Start this shell tab again with the output its old holder saved.
+    TabId tab = 2;
+    // Check the store. Refused while it is healthy. True only.
+    bool store = 3;
+  }
+}
+
+message RepairRestartResponse {
+  // For a session: the operation that brings it back.
+  Operation operation = 1;
+  // For a damaged store: the daemon is exiting now so that its next start
+  // restores the last good copy. Start humatad again (or open the app).
+  bool exiting = 2;
+}
+
+message StopSessionsRequest {
+  // Makes a repeated stop act once; a new one is made when empty.
+  string stop_id = 1;
+  string reason = 2;
+  StopVia via = 3;
+}
+message StopSessionsResponse { SessionsStopped stopped = 1; }
+message StartSessionsRequest {}
+message StartSessionsResponse {}
+
+enum StopVia {
+  STOP_VIA_UNSPECIFIED = 0;
+  STOP_VIA_APP = 1;
+  STOP_VIA_CLI = 2;
+  STOP_VIA_SSH = 3;
+  STOP_VIA_DIRECT = 4;
+}
+enum StoppedByKind {
+  STOPPED_BY_KIND_UNSPECIFIED = 0;
+  STOPPED_BY_KIND_USER = 1;
+  STOPPED_BY_KIND_AGENT = 2;
+  STOPPED_BY_KIND_TERMINAL = 3;
+}
+message StoppedBy {
+  StoppedByKind kind = 1;
+  StopVia via = 2;
+  string machine = 3;
+  string session = 4;   // the agent's session, when an agent stopped it
+}
+message StopEnded {
+  uint32 agents = 1;
+  uint32 shells = 2;
+  uint32 killed = 3;    // ended only by SIGKILL after the grace period
+  uint32 left = 4;      // processes still alive after the sweep (should be 0)
+}
+message SessionsStopped {
+  string stop_id = 1;
+  int64 stopped_at_unix_ms = 2;
+  StoppedBy by = 3;
+  string reason = 4;
+  StopEnded ended = 5;  // unset until the sweep has run
+}
+message AfterStop {
+  SessionsStopped stop = 1;
+  StoppedBy started_by = 2;
+}

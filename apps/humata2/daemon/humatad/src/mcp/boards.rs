@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 use tonic::transport::Channel;
 
 use super::{GrpcDaemon, applied, key, lower, text};
+use crate::away::stale;
 
 impl GrpcDaemon {
     fn board_client(&self) -> pb::board_service_client::BoardServiceClient<Channel> {
@@ -46,12 +47,13 @@ impl GrpcDaemon {
             columns: columns(arguments.get("columns")),
             page: page(arguments),
         })?;
-        let listed = self
+        let response = self
             .board_client()
             .list_items(request)
             .await
-            .map_err(|status| self.failed(&status))?
-            .into_inner();
+            .map_err(|status| self.failed(&status))?;
+        let stale_as_of = stale_as_of(response.metadata());
+        let listed = response.into_inner();
         let mut counts = Map::new();
         for count in &listed.counts {
             counts.insert(column_name(count.column), json!(count.items));
@@ -63,7 +65,7 @@ impl GrpcDaemon {
         );
         result.insert("counts".to_owned(), Value::Object(counts));
         next_page(&mut result, listed.page);
-        Ok(applied(Value::Object(result), None))
+        Ok(read_reply(Value::Object(result), stale_as_of))
     }
 
     /// `board_item_get`.
@@ -71,13 +73,14 @@ impl GrpcDaemon {
         let request = self.request(pb::GetItemRequest {
             id: Some(item_id(&call.arguments, "id")),
         })?;
-        let item = self
+        let response = self
             .board_client()
             .get_item(request)
             .await
-            .map_err(|status| self.failed(&status))?
-            .into_inner();
-        Ok(applied(item_json(&item), None))
+            .map_err(|status| self.failed(&status))?;
+        let stale_as_of = stale_as_of(response.metadata());
+        let item = response.into_inner();
+        Ok(read_reply(item_json(&item), stale_as_of))
     }
 
     /// `board_item_history`.
@@ -87,19 +90,20 @@ impl GrpcDaemon {
             id: Some(item_id(arguments, "id")),
             page: page(arguments),
         })?;
-        let history = self
+        let response = self
             .board_client()
             .get_item_history(request)
             .await
-            .map_err(|status| self.failed(&status))?
-            .into_inner();
+            .map_err(|status| self.failed(&status))?;
+        let stale_as_of = stale_as_of(response.metadata());
+        let history = response.into_inner();
         let mut result = Map::new();
         result.insert(
             "entries".to_owned(),
             Value::Array(history.entries.iter().map(entry_json).collect()),
         );
         next_page(&mut result, history.page);
-        Ok(applied(Value::Object(result), None))
+        Ok(read_reply(Value::Object(result), stale_as_of))
     }
 
     /// `board_item_create`.
@@ -127,7 +131,7 @@ impl GrpcDaemon {
             .await
             .map_err(|status| self.failed(&status))?
             .into_inner();
-        Ok(applied(written_json(&written), None))
+        Ok(write_reply(&written, written_json(&written)))
     }
 
     /// `board_item_update`.
@@ -155,7 +159,7 @@ impl GrpcDaemon {
             .await
             .map_err(|status| self.failed(&status))?
             .into_inner();
-        Ok(applied(written_json(&written), None))
+        Ok(write_reply(&written, written_json(&written)))
     }
 
     /// `board_item_move`.
@@ -179,7 +183,7 @@ impl GrpcDaemon {
             .await
             .map_err(|status| self.failed(&status))?
             .into_inner();
-        Ok(applied(written_json(&written), None))
+        Ok(write_reply(&written, written_json(&written)))
     }
 
     /// `board_item_delete`.
@@ -191,11 +195,13 @@ impl GrpcDaemon {
             expected_revision: expected_revision(arguments),
             reason: text(arguments, "reason"),
         })?;
-        self.board_client()
+        let written = self
+            .board_client()
             .delete_item(request)
             .await
-            .map_err(|status| self.failed(&status))?;
-        Ok(applied(json!({ "deleted": true }), None))
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(write_reply(&written, json!({ "deleted": true })))
     }
 }
 
@@ -358,14 +364,49 @@ fn item_json(item: &pb::BoardItem) -> Value {
     Value::Object(result)
 }
 
-/// What a write answered: the item, or when the host was away and the write
-/// went to the journal, the provisional id.
+/// A read's reply: marked with when the host gave the answer if the daemon
+/// answered it from its last copy because the host is away (AW-7 row 2).
+fn read_reply(result: Value, stale_as_of: Option<std::time::SystemTime>) -> Reply {
+    Reply::Applied {
+        result,
+        request: None,
+        stale_as_of,
+    }
+}
+
+/// The time a read's response header says the host answered it, if it does.
+fn stale_as_of(metadata: &tonic::metadata::MetadataMap) -> Option<std::time::SystemTime> {
+    metadata
+        .get(stale::HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(stale::parse)
+}
+
+/// A write's reply: journaled, with where, when the host was away and the
+/// daemon kept the write for it (AW-7 row 3); else applied.
+fn write_reply(written: &pb::WriteItemResponse, result: Value) -> Reply {
+    match (written.delivery(), &written.journal) {
+        (pb::Delivery::Journaled, Some(position)) => Reply::Journaled {
+            result,
+            journal: humata2_mcp::JournalPosition {
+                machine: position
+                    .machine
+                    .as_ref()
+                    .map(|machine| machine.value.clone())
+                    .unwrap_or_default(),
+                seq: position.seq,
+            },
+        },
+        _ => applied(result, None),
+    }
+}
+
+/// What a write answered: the item, or, for a journaled write, nothing: a new
+/// item has no id until the host replays it.
 fn written_json(written: &pb::WriteItemResponse) -> Value {
     match &written.item {
         Some(item) => item_json(item),
-        None => json!({
-            "provisional_id": written.provisional_id.as_ref().map(|id| id.value.clone()),
-        }),
+        None => json!({}),
     }
 }
 

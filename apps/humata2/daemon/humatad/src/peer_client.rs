@@ -14,6 +14,7 @@
 //! checks (`link_proof`). The add writes it (the machines crate's
 //! `enroll`); a machine with no such file gets no link.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -34,6 +35,7 @@ use tonic::Status;
 use tonic::transport::{Channel, Endpoint, Uri};
 
 use crate::away::PolicySource;
+use crate::board_service::BoardSvc;
 use crate::inbox::{Inbox, Replayed};
 use crate::daemon::{API_MAJOR, API_MINOR};
 use crate::link_proof::{EnrollmentKey, HOST_NONCE_MIN, KeyError, MACHINE_NONCE_BYTES, Side};
@@ -158,6 +160,21 @@ impl AsyncWrite for ChildPipe {
 pub(crate) struct HostSide {
     pub(crate) policy: Arc<PolicySource>,
     pub(crate) inbox: Arc<Inbox>,
+    /// Runs the board calls a machine forwards and replays its board writes (D227).
+    pub(crate) boards: BoardSvc,
+}
+
+impl HostSide {
+    /// Applies one journal entry of `machine` by its operation: `board.` to
+    /// the boards, anything else to the Inbox, which leaves out what isn't
+    /// its own (D226, D227).
+    async fn replay_at(&self, machine: &str, entry: &pb::JournalEntry, link_up: i64) -> Replayed {
+        if entry.operation.starts_with("board.") {
+            self.boards.replay_at(machine, entry, link_up).await
+        } else {
+            self.inbox.replay(machine, entry).await
+        }
+    }
 }
 
 /// Whether the host is applying the machine's journal.
@@ -205,7 +222,15 @@ impl Up {
         if let Some(policy) = policy {
             self.send_copy(policy).await;
         }
+        // The host's answers to this machine's requests can go down this link
+        // while it is up (D226).
+        let _registered = host.map(|host| host.inbox.relays().register(&self.machine, self.to_machine.clone()));
         let mut gate = Gate::Open;
+        // When this link came up: what the host's rules leave out of its
+        // entries is summed per link-up (AW-9, D267).
+        let link_up = crate::trash_service::now_ms();
+        // The calls the machine forwarded that are still running here (D227).
+        let mut forwarded = Forwarded::default();
         loop {
             let changed = async {
                 match changes.as_mut() {
@@ -228,8 +253,35 @@ impl Up {
                 Next::Message(Ok(Some(pb::MachineToHost {
                     message: Some(pb::machine_to_host::Message::Journal(entry)),
                 }))) => {
+                    if let Some(host) = host
+                        && let Some(seq) = self.replayed(host, entry, &mut gate, link_up).await
+                    {
+                        // A grant the entry made reaches the machine before
+                        // the ack does (D226).
+                        if let Some(changes) = changes.as_mut()
+                            && changes.has_changed().unwrap_or(false)
+                        {
+                            drop(changes.borrow_and_update());
+                            self.send_copy(&host.policy).await;
+                        }
+                        self.ack(seq).await;
+                    }
+                }
+                Next::Message(Ok(Some(pb::MachineToHost {
+                    message: Some(pb::machine_to_host::Message::Call(call)),
+                }))) if host.is_some() => {
                     if let Some(host) = host {
-                        self.replayed(&host.inbox, entry, &mut gate).await;
+                        forwarded.start(&self.machine, &host.boards, call, self.to_machine.clone());
+                    }
+                }
+                Next::Message(Ok(Some(pb::MachineToHost {
+                    message: Some(pb::machine_to_host::Message::Cancel(cancel)),
+                }))) if host.is_some() => forwarded.cancel(cancel.call_id),
+                Next::Message(Ok(Some(pb::MachineToHost {
+                    message: Some(pb::machine_to_host::Message::AnswerRefused(refused)),
+                }))) if host.is_some() => {
+                    if let Some(host) = host {
+                        host.inbox.relays().refused(&self.machine, refused);
                     }
                 }
                 Next::Message(Ok(Some(message))) => sink(message),
@@ -261,35 +313,41 @@ impl Up {
         }
     }
 
-    /// Applies one journal entry of the machine, and acks it once it is
-    /// applied or left out. When the host's store fails, nothing is acked
-    /// and the gate holds until the entry comes again.
-    async fn replayed(&self, inbox: &Inbox, entry: pb::JournalEntry, gate: &mut Gate) {
+    /// Applies one journal entry of the machine. Gives its sequence when
+    /// it is applied or left out, for the ack; when the host's store fails,
+    /// nothing is acked and the gate holds until the entry comes again.
+    async fn replayed(&self, host: &HostSide, entry: pb::JournalEntry, gate: &mut Gate, link_up: i64) -> Option<u64> {
         match *gate {
-            Gate::Held { seq, resumed, .. } if !resumed || entry.seq != seq => return,
+            Gate::Held { seq, resumed, .. } if !resumed || entry.seq != seq => return None,
             _ => {}
         }
         let seq = entry.seq;
-        match inbox.replay(&self.machine, &entry).await {
+        match host.replay_at(&self.machine, &entry, link_up).await {
             Replayed::Held => {
                 *gate = Gate::Held {
                     seq,
                     until: Instant::now() + HELD_RETRY,
                     resumed: false,
                 };
+                None
             }
             Replayed::Applied | Replayed::Rejected => {
                 *gate = Gate::Open;
-                let ack = pb::HostToMachine {
-                    message: Some(pb::host_to_machine::Message::Ack(pb::UplinkAck {
-                        journal_through: seq,
-                        ..pb::UplinkAck::default()
-                    })),
-                };
-                // A send fails only when the Uplink is ending, which `closed` sees.
-                let _ = self.to_machine.send(ack).await;
+                Some(seq)
             }
         }
+    }
+
+    /// Acks the machine's journal through `seq`.
+    async fn ack(&self, seq: u64) {
+        let ack = pb::HostToMachine {
+            message: Some(pb::host_to_machine::Message::Ack(pb::UplinkAck {
+                journal_through: seq,
+                ..pb::UplinkAck::default()
+            })),
+        };
+        // A send fails only when the Uplink is ending, which `closed` sees.
+        let _ = self.to_machine.send(ack).await;
     }
 
     /// Asks the machine to send its journal again from the host's mark.
@@ -334,6 +392,47 @@ impl Up {
         };
         // A send fails only when the Uplink is ending, which `closed` sees.
         let _ = self.to_machine.send(message).await;
+    }
+}
+
+/// The calls a machine forwarded that are still running on the host. One
+/// the machine cancels, or any left when the link ends, is dropped; a write
+/// already started is not undone (GRPC.md §7).
+#[derive(Default)]
+struct Forwarded {
+    running: HashMap<u64, tokio::task::AbortHandle>,
+}
+
+impl Forwarded {
+    /// Runs `call` as its agent on a task of its own, so a long write or a
+    /// wait never holds up the link, and sends its result back on the link.
+    fn start(&mut self, machine: &str, boards: &BoardSvc, call: pb::ForwardedCall, to_machine: mpsc::Sender<pb::HostToMachine>) {
+        self.running.retain(|_, running| !running.is_finished());
+        let id = call.call_id;
+        let (boards, machine) = (boards.clone(), machine.to_owned());
+        let task = tokio::spawn(async move {
+            let result = boards.forwarded(&machine, call).await;
+            let message = pb::HostToMachine {
+                message: Some(pb::host_to_machine::Message::Result(result)),
+            };
+            // A send fails only when the Uplink is ending, which `closed` sees.
+            let _ = to_machine.send(message).await;
+        });
+        self.running.insert(id, task.abort_handle());
+    }
+
+    fn cancel(&mut self, id: u64) {
+        if let Some(running) = self.running.remove(&id) {
+            running.abort();
+        }
+    }
+}
+
+impl Drop for Forwarded {
+    fn drop(&mut self) {
+        for running in self.running.values() {
+            running.abort();
+        }
     }
 }
 

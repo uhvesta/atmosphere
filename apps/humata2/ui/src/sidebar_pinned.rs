@@ -23,6 +23,29 @@ pub(crate) type SendPinned = Rc<dyn Fn(PinnedAction, &mut App)>;
 const EVENT: u32 = 0xff9f0a;
 /// The VIP badge's fill.
 const VIP: u32 = 0xbf5af2;
+/// A pin's row, and the height of a row with an event under its title.
+const ROW: f32 = 26.;
+const EVENT_ROW: f32 = 42.;
+/// The height of a row's title line, where its icon, badge and buttons sit.
+const LINE_EVENT: f32 = 21.;
+/// The space an event line leaves below its row, so the next row starts
+/// where frame 15's does.
+const EVENT_GAP: f32 = 0.3;
+
+/// The height of the section's header, and what a pin's row takes.
+const SECTION: f32 = 29.;
+
+/// The least share of its height the section shrinks to. Frame 15's VIP card
+/// is 37 pt tall and Home sits 5 pt under the last pin.
+const MIN_SHARE: f32 = 0.77;
+
+fn row_height(pin: &Pinned) -> f32 {
+    if pin.event.is_empty() {
+        ROW
+    } else {
+        EVENT_ROW + EVENT_GAP
+    }
+}
 
 /// The Pinned section for `pinned`, or nothing when Settings hides it or
 /// nothing is pinned and nothing went wrong. `current` is the thing the
@@ -38,8 +61,13 @@ pub(crate) fn section(
     if !pinned.shown || (pinned.list.items.is_empty() && pinned.error.is_none()) {
         return None;
     }
+    // The section shrinks with the column as one block, from its own height
+    // down to MIN_SHARE of it; its rows then share what it gives up, so
+    // together they shrink as frame 15's rows do.
+    let natural = SECTION + pinned.list.items.iter().map(row_height).sum::<f32>();
     let mut list = col()
         .id("sidebar-pinned")
+        .min_h(px(natural * MIN_SHARE))
         .role(Role::List)
         .aria_label("Pinned")
         .child(chrome::section(look, "Pinned"));
@@ -201,16 +229,24 @@ fn pin_row(
             chrome::icon(IconName::GitPullRequest, look.accent, 12.).into_any_element()
         }
         Some(facts) => chrome::status(facts.status).into_any_element(),
-        None => chrome::icon(
-            glyph(&pin.thing),
-            if current { 0xffffff } else { look.secondary },
-            12.,
-        )
-        .into_any_element(),
+        None => div()
+            .h(px(LINE_EVENT))
+            .flex()
+            .items_center()
+            .flex_shrink_0()
+            .child(chrome::icon(
+                glyph(&pin.thing),
+                if current { 0xffffff } else { look.secondary },
+                12.,
+            ))
+            .into_any_element(),
     };
+    // Frame 15's session row: the title, badge and status hang from the
+    // row's top padding, and the badge keeps 7 pt clear of the row's edge.
     let mut line = row()
-        .h(px(if event { 18. } else { 26. }))
+        .h(px(if event { LINE_EVENT } else { ROW }))
         .gap(px(7.))
+        .when(event, |line| line.items_start().pr(px(7.)))
         .child(icon)
         .child(
             div()
@@ -218,7 +254,8 @@ fn pin_row(
                 .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
-                .text_ellipsis()
+                // Frame 15 clips the VIP card's title at the badge, no ellipsis.
+                .when(!event, |title| title.text_ellipsis())
                 .child(pin.title.clone()),
         );
     if pin.vip {
@@ -250,7 +287,7 @@ fn pin_row(
         .absolute()
         .top(px(if event { 5. } else { 0. }))
         .right(px(6.))
-        .h(px(if event { 18. } else { 26. }))
+        .h(px(if event { LINE_EVENT } else { ROW }))
         .flex()
         .items_center()
         .gap(px(4.));
@@ -286,9 +323,8 @@ fn pin_row(
         .role(Role::ListItem)
         .aria_label(label)
         .aria_selected(current)
-        .h(px(if event { 36. } else { 26. }))
-        .when(event, |x| x.pt(px(5.)))
-        .flex_shrink_0()
+        .h(px(if event { EVENT_ROW } else { ROW }))
+        .when(event, |x| x.pt(px(5.)).mb(px(EVENT_GAP)))
         .overflow_hidden()
         .mx(px(10.))
         .px(px(8.))
@@ -299,10 +335,13 @@ fn pin_row(
         })
         .child(line)
         .children(under.map(|(text, color, left)| {
+            // Hangs from the bottom edge, as frame 15's asks line does, so
+            // the row's own height decides where it sits. Its left is measured
+            // from the row's left edge, which sits 10 pt in from the sidebar's.
             div()
-                .pl(px(left))
-                .h(px(12.))
-                .line_height(px(12.))
+                .absolute()
+                .left(px(left + 8.))
+                .bottom(px(0.7))
                 .whitespace_nowrap()
                 .text_size(px(11.))
                 .text_color(rgb(color))

@@ -14,6 +14,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use humata2_store::fault::point;
 use humata2_revive::{Env, ReviveError, Revived, restart_agent};
 use humata2_store::{
     AgentRecord, AgentState, ChannelRecord, SessionDetail, SessionRecord, StoreError,
@@ -21,7 +22,7 @@ use humata2_store::{
 
 use crate::agents::{AgentKind, LaunchPlan};
 use crate::error::{AgentError, GitError, StartError};
-use crate::fork::copy_clone;
+use crate::fork::{copy_clone, forget_note, note_copy_at};
 use crate::layout::partial;
 use crate::names::Branch;
 use crate::setup::unix_ms;
@@ -306,6 +307,11 @@ impl Starter {
     ) -> Result<AgentRecord, OwnCopyError> {
         let fork = plan.session.id.clone();
         if running {
+            // Saved as being resumed before it is stopped: the stop is not
+            // the agent ending, so its exit isn't saved as one, and a cut
+            // from here on has the restart resume it (in the parent's code
+            // until the copy's records are saved).
+            self.put_agent_state(plan, AgentState::Resuming).await?;
             let socket = plan.agent.launch.holder_socket.clone();
             // A holder that is already gone is as stopped as one asked to stop.
             let _ = humata2_holder::shutdown(&socket).await;
@@ -313,6 +319,8 @@ impl Starter {
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
             while humata2_holder::attach(&socket, u64::MAX).await.is_ok() {
                 if tokio::time::Instant::now() >= deadline {
+                    // It still runs: its record says so again.
+                    self.put_agent_state(plan, plan.agent.state).await?;
                     return Err(OwnCopyError::HolderAnswers { session: fork });
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -325,8 +333,19 @@ impl Starter {
         let to = launch.conversation_file.clone();
 
         let (copying_from, copying_to) = (from.clone(), to.clone());
-        if let Err(error) = blocking(move || copy_conversation(&copying_from, &copying_to))
-            .await?
+        let note = own_copy_note(&partial(folder));
+        if let Err(error) = blocking(move || {
+            // Named before the copy exists: a cut leaves the partial folder,
+            // which recovery clears, and the note says what else to remove.
+            if copying_from != copying_to {
+                note_copy_at(&note, &copying_to).map_err(|source| OwnCopyError::Copy {
+                    path: note.clone(),
+                    source,
+                })?;
+            }
+            copy_conversation(&copying_from, &copying_to)
+        })
+        .await?
         {
             remove_copy(&from, &to).await;
             return Err(error);
@@ -342,9 +361,16 @@ impl Starter {
             });
         }
 
+        // The folder is in place and no record names it yet: its note is what
+        // lets `recover` take it back.
+        point("own_copy.renamed");
         match self.save_own_copy(plan, folder, &branch.name, launch).await {
             Ok(agent) => {
                 remove_old_conversation(&from, &to).await;
+                // The records point at the copy now; its note, renamed into
+                // the folder with the clones, is done with.
+                let note = own_copy_note(folder);
+                let _ = blocking(move || forget_note(&note)).await;
                 Ok(agent)
             }
             Err(error) => {
@@ -352,6 +378,20 @@ impl Starter {
                 Err(error)
             }
         }
+    }
+
+    /// Saves the fork's agent record as it was planned, in `state`.
+    async fn put_agent_state(&self, plan: &Plan, state: AgentState) -> Result<(), OwnCopyError> {
+        let mut agent = plan.agent.clone();
+        agent.state = state;
+        agent.updated_unix_ms = unix_ms();
+        let store = self.store.clone();
+        blocking(move || store.put_agent(&agent))
+            .await?
+            .map_err(store_error(
+                &plan.session.id,
+                "save that the fork's agent is stopping for its own copy",
+            ))
     }
 
     /// Saves the fork's session, its repositories on the new branch in its
@@ -424,6 +464,12 @@ fn copy_clones(
         }
     }
     Ok(())
+}
+
+/// Where, in an own copy being built in `dir`, the path of the conversation
+/// copy made for it is noted until its records are saved.
+pub(crate) fn own_copy_note(dir: &Path) -> PathBuf {
+    dir.join(".humata").join("own-copy-conversation")
 }
 
 /// Copies a conversation file to where the agent keys it for the new folder.

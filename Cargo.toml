@@ -103,6 +103,8 @@ hmac = "0.13.0"
 argon2 = "0.6"
 # Humata 2 tests drive the daemon over a Unix socket with these.
 # Humata 2's OpenCode link talks to the agent's own loopback server (D201).
+# humatad2 ends its response streams when it leaves (D270).
+http-body = "1.1.0"
 http-body-util = "0.1.5"
 hyper = { version = "1.12.0", features = ["client", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }

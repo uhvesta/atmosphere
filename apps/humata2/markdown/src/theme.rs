@@ -5,7 +5,9 @@
 
 use gpui_kit::base::TextViewStyle;
 use gpui_kit::component::Theme;
-use gpui_kit::{App, HighlightStyle, Hsla, Pixels, Rgba, SharedString, StyleRefinement, Styled as _, rems, rgb};
+use gpui_kit::{
+    App, FontWeight, HighlightStyle, Hsla, Pixels, Rgba, SharedString, StyleRefinement, Styled as _, px, rems, rgb,
+};
 
 /// Everything the view draws with.
 #[derive(Clone, Debug, PartialEq)]
@@ -39,6 +41,9 @@ pub struct MarkdownTheme {
     /// Body text size, and the code size.
     pub text_size: Pixels,
     pub mono_size: Pixels,
+    /// Whether the page is a document tab's: the page typography of the
+    /// design instead of the chat's.
+    pub(crate) document: bool,
 }
 
 impl MarkdownTheme {
@@ -65,19 +70,30 @@ impl MarkdownTheme {
             comment: theme.info.opacity(0.25),
             comment_outdated: theme.muted_foreground.opacity(0.2),
             comment_lit: if theme.is_dark() { rgb(0x1c2a3f).into() } else { rgb(0xeaf2ff).into() },
-            comment_accent: theme.info,
+            comment_accent: if theme.is_dark() { rgb(0x3b8cff).into() } else { rgb(0x0a6cff).into() },
             error: theme.danger,
             sans: theme.font_family.clone(),
             mono: theme.mono_font_family.clone(),
             text_size: theme.font_size,
             mono_size: theme.mono_font_size,
+            document: false,
         }
+    }
+
+    /// The look of a document tab's page: 13/20 body, 22 title, 15 section
+    /// headings, 12/17 mono code in a plain filled block, 6 between blocks
+    /// and between list items.
+    pub(crate) fn document(mut self) -> Self {
+        self.document = true;
+        self.text_size = px(13.);
+        self.mono_size = px(12.);
+        self
     }
 
     /// The text view's style for this theme.
     pub(crate) fn text_view_style(&self) -> TextViewStyle {
         let mono = self.mono.clone();
-        TextViewStyle::default()
+        let style = TextViewStyle::default()
             .with_foreground(self.foreground)
             .with_muted_foreground(self.muted)
             .with_link(self.link)
@@ -95,7 +111,42 @@ impl MarkdownTheme {
                 ..HighlightStyle::default()
             })
             .with_inline_code_style(StyleRefinement::default().font_family(mono))
-            .with_dark(self.dark)
+            .with_dark(self.dark);
+        if !self.document {
+            return style;
+        }
+        let foreground = self.foreground;
+        // The design's fill: code sits in it, a step off the page.
+        let fill: Hsla = if self.dark { rgb(0x323235).into() } else { rgb(0xeceaee).into() };
+        style
+            .with_paragraph_gap(rems(6. / 16.))
+            .with_list_item_gap(px(6.))
+            .with_heading(|level| {
+                let heading = StyleRefinement::default().line_height(px(20.)).pb(px(6.));
+                match level {
+                    1 => heading.text_size(px(22.)).font_weight(FontWeight::BOLD).pt(px(0.)),
+                    2 => heading.text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).pt(px(11.)),
+                    _ => heading.text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).pt(px(11.)),
+                }
+            })
+            .with_code_block(
+                StyleRefinement::default()
+                    .font_family(self.mono.clone())
+                    .text_size(self.mono_size)
+                    .line_height(px(17.))
+                    .p(px(10.))
+                    .rounded(px(6.))
+                    .bg(fill)
+                    .border_0(),
+            )
+            // The bullet keeps the text colour and sits 8 before the text.
+            .with_list_style(
+                StyleRefinement::default()
+                    .text_color(foreground)
+                    .min_w(px(0.))
+                    .pr(px(8.))
+                    .text_left(),
+            )
     }
 
     /// Mermaid's theme for this theme.

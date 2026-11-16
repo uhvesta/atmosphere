@@ -104,12 +104,14 @@ fn plan(state: &AppState) -> Plan {
             let Some(Ok(source)) = state.session.file_contents.get(&key) else {
                 continue;
             };
-            let marks = state
+            // The page lights drafts and the box being written; a sent
+            // comment shows on its source line only.
+            let mut marks: Vec<Mark> = state
                 .comments
                 .on_file(id, repo, path)
                 .into_values()
                 .flatten()
-                .filter(|comment| !comment.anchor.detached)
+                .filter(|comment| comment.counts_as_draft() && !comment.anchor.detached)
                 .map(|comment| Mark {
                     id: comment.id.to_string(),
                     first: comment.anchor.first,
@@ -117,6 +119,21 @@ fn plan(state: &AppState) -> Plan {
                     text: comment.text.clone(),
                 })
                 .collect();
+            // A box with no text yet has no comment to mark, so its lines are.
+            if let Some(b) = state
+                .comments
+                .sessions
+                .get(id)
+                .and_then(|held| held.editing.as_ref())
+                .filter(|b| b.comment.is_none() && b.anchor.repo == *repo && b.anchor.path == *path)
+            {
+                marks.push(Mark {
+                    id: "box".to_owned(),
+                    first: b.anchor.first,
+                    last: b.anchor.last,
+                    text: b.text.clone(),
+                });
+            }
             let shown = view.document(repo, path);
             plan.documents.push(Want {
                 key,
@@ -127,6 +144,11 @@ fn plan(state: &AppState) -> Plan {
         }
     }
     plan
+}
+
+/// The last part of a file's path.
+fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// The page's comments: each mark's lines of the page's own source.
@@ -298,7 +320,7 @@ impl Documents {
         let comment_input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .placeholder("Write a comment")
-                .rows(3)
+                .auto_grow(1, 12)
         });
         let ui = ui.clone();
         let typing = cx.subscribe(
@@ -389,6 +411,9 @@ impl Documents {
                     // shows where they are.
                     options.comments = false;
                     options.marks = CommentMarks::Counts;
+                    // The page's own typography, and a byline ending in the
+                    // file's name.
+                    options.document = Some(file_name(&want.key.2).into());
                     let source = want.source.clone();
                     let view = cx.new(|cx| MarkdownView::new(&source, options, cx));
                     set_marks(&view, &want.marks, cx);
@@ -503,7 +528,6 @@ impl Documents {
             .view()
             .map(|view| view.document(repo, path))
             .unwrap_or_default();
-        let has_marks = !page.marks.is_empty();
         let preview = || {
             div()
                 .id("doc-preview")
@@ -515,10 +539,14 @@ impl Documents {
                 .bg(rgb(look.content))
                 .flex()
                 .justify_center()
+                // The padding is inside the pane, so beside the source the
+                // two panes split the width evenly; the page is 560 at most.
                 .child(
                     div()
-                        .w(px(if has_marks { 780. } else { 580. }))
-                        .max_w_full()
+                        .flex_1()
+                        .min_w_0()
+                        .max_w(px(608.))
+                        .px(px(24.))
                         .h_full()
                         .child(page.view.clone()),
                 )
@@ -658,7 +686,7 @@ impl Documents {
                         .justify_center()
                         .when(lit, |gutter| gutter.border_l_2().border_color(rgb(look.accent)))
                         .when(markers.contains(&n), |gutter| {
-                            gutter.child(chrome::icon(IconName::MessageSquare, look.accent, 11.))
+                            gutter.child(chrome::icon(IconName::MessageSquare, look.accent, 12.))
                         }),
                 )
                 .test_support();
@@ -814,7 +842,6 @@ fn link_bar(
                 .gap(px(7.))
                 .flex_shrink_0()
                 .text_size(px(12.5))
-                .text_color(rgb(look.text))
                 .cursor_pointer()
                 .on_click(toggle)
                 .child(
@@ -887,7 +914,7 @@ pub(crate) fn mode_switch(
                     .py(px(2.))
                     .rounded(px(5.))
                     .text_size(px(11.5))
-                    .text_color(rgb(if on { look.text } else { look.secondary }))
+                    .text_color(rgb(look.text))
                     .cursor_pointer()
                     .when(on, |segment| segment.bg(rgb(look.card)).shadow_sm())
                     .on_click(move |_, _, cx| {

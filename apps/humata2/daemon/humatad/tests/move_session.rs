@@ -626,3 +626,108 @@ async fn a_moved_session_s_shell_tab_comes_back_on_the_new_machine_with_its_outp
     assert!(rig.the("box-1").tabs().is_empty(), "box-1 forgot the session's tabs");
     assert!(!holder_answers(&old), "box-1's shell stopped");
 }
+
+/// After a restart has undone a move cut short, the session is on `home`
+/// alone and whole: one agent there with its clone at `head`. `away` keeps
+/// no copy, record, agent or staged file, and the host lists the session
+/// once.
+async fn settled_on_one_machine(rig: &Rig, channel: &pb::Channel, id: &pb::SessionId, home: &str, away: &str, head: &str) {
+    let listed = sessions(rig)
+        .await
+        .list_sessions(pb::ListSessionsRequest::default())
+        .await
+        .expect("the host lists sessions")
+        .into_inner()
+        .sessions;
+    let count = listed.iter().filter(|session| session.id.as_ref() == Some(id)).count();
+    assert_eq!(count, 1, "the host lists the session {count} times: {listed:?}");
+
+    let now = rig.session(id).await;
+    assert_eq!(now.machine.as_ref(), Some(&Rig::box_id(home)), "the session is on {home}: {now:?}");
+    assert!(is_live(&now) && not_moving(&now), "the session runs on {home}: {now:?}");
+    let tabs = rig.the(home).tabs();
+    assert_eq!(tabs.len(), 1, "{home} runs one agent: {tabs:?}");
+    assert!(holder_answers(&tabs[0]), "the agent runs on {home}");
+    let clone = clone_on(rig, home, channel);
+    assert_eq!(git(&["-C", &text(&clone), "rev-parse", "HEAD"]), head, "{home} keeps the unpushed commit");
+    assert_eq!(std::fs::read_to_string(clone.join("README.md")).unwrap(), "changed before the move\n");
+
+    let away_box = rig.the(away);
+    assert!(away_box.tabs().is_empty(), "{away} runs no agent");
+    assert!(away_box.store().session(&id.value).unwrap().is_none(), "{away} keeps no record of the session");
+    assert!(!clone_on(rig, away, channel).exists(), "{away} keeps no copy of the folder");
+    assert!(staged(rig, away, channel).is_empty(), "{away} keeps nothing staged");
+    assert!(staged(rig, home, channel).is_empty(), "{home} keeps nothing staged");
+}
+
+/// Cuts a move of box-1's session to box-2 short at `at`, restarts the host,
+/// and checks that the move is undone: the session is back on box-1 alone,
+/// with the same agent, and moving it again works.
+async fn a_move_cut_short_is_undone_at_restart(at: &str) {
+    let mut rig = Rig::start(&["box-1", "box-2"], &[REPO]).await;
+    let (one, two) = (Rig::box_id("box-1"), Rig::box_id("box-2"));
+    let channel = rig.create_channel("Payments", &[REPO], &[rig.host_id().await, one.clone(), two.clone()]).await;
+    let id = rig.start_on(&channel, &one, "Cache warmup").await;
+    rig.wait_session(&id, "live", is_live).await;
+    let head = make_work(&clone_on(&rig, "box-1", &channel));
+    let holder = rig.the("box-1").tabs()[0].holder_pid;
+
+    move_killed_at(&mut rig, &id, &two, at).await;
+
+    rig.wait_session(&id, "back on box-1", |s| s.machine.as_ref() == Some(&one) && is_live(s) && not_moving(s)).await;
+    settled_on_one_machine(&rig, &channel, &id, "box-1", "box-2", &head).await;
+    assert_eq!(rig.the("box-1").tabs()[0].holder_pid, holder, "{at}: the same agent runs on box-1");
+
+    let ended = move_to(&rig, &id, &two).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{at}: moving again failed: {:?}", ended.error);
+}
+
+/// MV-14: a host killed as a move starts, before anything is packed, undoes
+/// it at its next start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_cut_short_as_it_starts_is_undone_at_restart() {
+    a_move_cut_short_is_undone_at_restart("move-started").await;
+}
+
+/// MV-14: a host killed once the move's files are packed, before anything is
+/// copied, undoes the move at its next start; the packed files are removed
+/// from box-1 and the agent never stopped.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_cut_short_once_packed_is_undone_at_restart() {
+    a_move_cut_short_is_undone_at_restart("move-packed").await;
+}
+
+/// MV-14: a host killed once box-2 has checked and taken in the copy, but
+/// before the old agent stops, undoes the move at its next start: box-2's
+/// copy is taken back, and the agent that was never stopped runs on box-1.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_cut_short_once_the_copy_is_taken_in_is_undone_at_restart() {
+    a_move_cut_short_is_undone_at_restart("move-unpacked").await;
+}
+
+/// MV-14, MV-3: a folder of the move's name that box-2 already had before
+/// the move is not the move's to take back. A host killed as the move
+/// starts, before its check ran, must leave box-2's own folder alone at
+/// restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_cut_short_as_it_starts_leaves_a_folder_already_on_box_2_alone() {
+    let mut rig = Rig::start(&["box-1", "box-2"], &[REPO]).await;
+    let (one, two) = (Rig::box_id("box-1"), Rig::box_id("box-2"));
+    let channel = rig.create_channel("Payments", &[REPO], &[rig.host_id().await, one.clone(), two.clone()]).await;
+    let id = rig.start_on(&channel, &one, "Cache warmup").await;
+    rig.wait_session(&id, "live", is_live).await;
+    let head = make_work(&clone_on(&rig, "box-1", &channel));
+    let theirs = rig.the("box-2").path(&channel, "sessions/cache-warmup");
+    std::fs::create_dir_all(&theirs).unwrap();
+    std::fs::write(theirs.join("keep.txt"), "box-2's own\n").unwrap();
+
+    move_killed_at(&mut rig, &id, &two, "move-started").await;
+
+    rig.wait_session(&id, "back on box-1", |s| s.machine.as_ref() == Some(&one) && is_live(s) && not_moving(s)).await;
+    assert_eq!(
+        std::fs::read_to_string(theirs.join("keep.txt")).unwrap_or_default(),
+        "box-2's own\n",
+        "box-2's folder of that name was taken back although the move never put it there"
+    );
+    settled_on_one_machine(&rig, &channel, &id, "box-1", "box-2", &head).await;
+}

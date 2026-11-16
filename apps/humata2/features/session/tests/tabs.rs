@@ -249,7 +249,7 @@ fn terminal_focus_tracks_only_the_visible_tab_in_its_own_session() {
 /// real daemon where only the diff names it yet (§26.20 steps 1–2).
 #[test]
 fn a_changed_file_opens_without_the_files_tree() {
-    let (mut store, _) = store();
+    let (store, _) = store();
     let id = SessionId::new("ledger");
     let mut workspace = (*store.state().workspace).clone();
     workspace.session_files.remove(&id);

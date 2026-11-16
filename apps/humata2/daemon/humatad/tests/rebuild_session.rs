@@ -248,3 +248,125 @@ async fn a_rebuilt_conversation_is_mirrored_once() {
     assert_eq!(held("before the loss"), 1, "{texts:?}");
     assert_eq!(held("after the rebuild"), 1, "{texts:?}");
 }
+
+/// Where the host is cut: before the machine is asked, after it finished,
+/// after the session was switched over.
+const HOST_POINTS: &[&str] = &["rebuild-clone-api", "rebuild.machine_done", "rebuild.switched"];
+
+/// Where the machine is cut: its records saved, the repos cloned, the
+/// conversation written, the agent's launch recorded and spawned, the
+/// start recorded as done.
+const MACHINE_POINTS: &[&str] = &[
+    "rebuild.recorded",
+    "rebuild.cloned",
+    "rebuild.conversation_written",
+    "revive.launch.recorded",
+    "revive.launch.spawned",
+    "rebuild.launched",
+];
+
+/// Asks for the rebuild until the host takes it, which waits for the
+/// machine's link to be up again.
+async fn rebuild_when_linked(rig: &Rig, id: &pb::SessionId, on: &pb::MachineId, key: &str) -> pb::Operation {
+    let deadline = std::time::Instant::now() + remote_rig::LONG;
+    loop {
+        let asked = sessions(rig)
+            .await
+            .rebuild_session(pb::RebuildSessionRequest {
+                idempotency_key: Some(pb::IdempotencyKey { value: key.to_owned() }),
+                id: Some(id.clone()),
+                machine: Some(on.clone()),
+            })
+            .await;
+        match asked {
+            Ok(started) => return rig.ended(&started.into_inner()).await,
+            Err(refused) => {
+                assert!(std::time::Instant::now() < deadline, "the rebuild was never taken: {refused:?}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// After the cut and a retry, the session is whole on box-2 and nothing is
+/// left half-done there or on the host: one record, one agent that runs,
+/// one folder, no marker or staged conversation.
+async fn assert_rebuilt_whole(rig: &Rig, channel: &pb::Channel, id: &pb::SessionId, pushed: &str, point: &str) {
+    let two = Rig::box_id("box-2");
+    let back = rig.wait_session(id, "live on box-2", |s| s.machine.as_ref() == Some(&two) && is_live(s)).await;
+    assert!(back.archive.is_none(), "cut at {point}");
+    let box_two = rig.the("box-2");
+    assert!(box_two.store().session(&id.value).unwrap().is_some(), "cut at {point}: box-2 holds the session");
+    let tabs: Vec<_> = box_two.tabs().into_iter().filter(|tab| tab.session.as_deref() == Some(id.value.as_str())).collect();
+    assert_eq!(tabs.len(), 1, "cut at {point}: one agent tab on box-2");
+    assert!(common::holder_answers(&tabs[0]), "cut at {point}: its agent runs");
+    let folders = std::fs::read_dir(box_two.path(channel, "sessions")).unwrap().count();
+    assert_eq!(folders, 1, "cut at {point}: one session folder on box-2");
+    let clone = box_two.path(channel, CLONE).display().to_string();
+    assert_eq!(git(&["-C", &clone, "rev-parse", "HEAD"]), pushed, "cut at {point}: at the last pushed sha");
+    assert!(staged_none(&box_two.path(channel, ".rebuilding")), "cut at {point}: no marker left");
+    assert!(staged_none(&box_two.path(channel, ".carry")), "cut at {point}: nothing staged on box-2");
+    assert!(staged_none(&rig.host_path(channel, ".carry")), "cut at {point}: nothing staged on the host");
+}
+
+/// A rebuild whose host is cut at any step leaves the session archived and
+/// rebuildable, or switched over; rebuilding again ends whole on box-2 with
+/// no second copy of anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rebuild_with_the_host_cut_at_any_point_ends_whole_on_the_machine() {
+    for point in HOST_POINTS {
+        let (mut rig, channel) = rig_and_channel().await;
+        let (id, pushed) = forgotten(&mut rig, &channel).await;
+        let two = Rig::box_id("box-2");
+        rig.restart_host(&[("HUMATA2_STOP_AT", point)]).await;
+        let _ = sessions(&rig)
+            .await
+            .rebuild_session(pb::RebuildSessionRequest {
+                idempotency_key: Some(pb::IdempotencyKey { value: "rebuild-cut".to_owned() }),
+                id: Some(id.clone()),
+                machine: Some(two.clone()),
+            })
+            .await;
+        rig.host_stopped().await;
+        rig.restart_host(&[]).await;
+
+        let after = rig.session(&id).await;
+        if after.archive.is_some() {
+            assert!(after.archive.as_ref().is_some_and(|a| a.machine_lost), "cut at {point}: still archived as lost");
+            let ended = rebuild_when_linked(&rig, &id, &two, "rebuild-again").await;
+            assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "cut at {point}: {:?}", ended.error);
+        }
+        assert_rebuilt_whole(&rig, &channel, &id, &pushed, point).await;
+    }
+}
+
+/// A rebuild whose machine is cut at any step is taken back or kept whole
+/// by the machine's next start: rebuilding again ends whole on box-2, with
+/// the conversation, and nothing of the cut one is left beside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rebuild_with_the_machine_cut_at_any_point_ends_whole_when_it_is_asked_again() {
+    for point in MACHINE_POINTS {
+        let (mut rig, channel) = rig_and_channel().await;
+        let (id, pushed) = forgotten(&mut rig, &channel).await;
+        let two = Rig::box_id("box-2");
+        rig.the_mut("box-2").kill();
+        rig.link_lost("box-2").await;
+        rig.the_mut("box-2").relaunch(&[("HUMATA2_STOP_AT", point)]).await;
+        rig.link_back("box-2").await;
+
+        let cut = rebuild(&rig, &id, &two, "rebuild-cut").await;
+        assert_eq!(cut.state, pb::OperationState::Failed as i32, "cut at {point}: the machine died at it: {cut:?}");
+        // The host has seen the link end before the machine starts again, so
+        // its link is the new one when the rebuild is asked for.
+        rig.link_ended("box-2").await;
+        rig.the_mut("box-2").relaunch(&[]).await;
+        rig.link_back("box-2").await;
+
+        let ended = rebuild_when_linked(&rig, &id, &two, "rebuild-again").await;
+        assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "cut at {point}: {:?}", ended.error);
+        assert_rebuilt_whole(&rig, &channel, &id, &pushed, point).await;
+        let box_two = rig.the("box-2");
+        let talk = std::fs::read_to_string(box_two.conversation(&box_two.conversation_id(&id))).unwrap_or_default();
+        assert!(talk.contains("before the loss"), "cut at {point}: the conversation came back: {talk}");
+    }
+}

@@ -160,3 +160,55 @@ async fn a_forget_cut_short_after_archiving_is_finished_by_a_retry() {
     let again = machines(&rig).await.forget_machine(forget(&plan, "forget-1")).await.unwrap().into_inner();
     assert_eq!(again.archived, done.archived);
 }
+
+/// Every step a forget takes, as the points a cut can land on: the forget
+/// kept, a session's archive row saved (the store's points, either side of
+/// the commit), the sessions archived, and the machine let go of.
+const FORGET_POINTS: &[&str] = &[
+    "forget.begun",
+    "store.archive.put.committing@1",
+    "store.archive.put.committed@1",
+    "forget.archived",
+    "forget.machine_removed",
+];
+
+/// A forget cut at any step is finished by the host's next start with no
+/// one asking again: the machine's session is archived as lost, box-1 is
+/// out of the channel and the machine list, and this Mac's session is
+/// untouched. The same key then answers the same.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_forget_cut_at_any_point_is_finished_at_the_next_start() {
+    for point in FORGET_POINTS {
+        let (mut rig, channel, on_box, on_host) = gone_box().await;
+        rig.restart_host(&[("HUMATA2_STOP_AT", point)]).await;
+        let plan = plan(&rig).await;
+        let _ = machines(&rig).await.forget_machine(forget(&plan, "forget-cut")).await;
+        rig.host_stopped().await;
+        rig.restart_host(&[]).await;
+
+        let deadline = std::time::Instant::now() + remote_rig::LONG;
+        loop {
+            let listed = machines(&rig).await.list_machines(pb::ListMachinesRequest::default()).await.unwrap().into_inner();
+            if !listed.machines.iter().any(|machine| machine.id.as_ref() == Some(&Rig::box_id("box-1"))) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "cut at {point}: box-1 is still a machine here");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let summary = rig
+            .wait_session(&on_box, "archived as lost", |s| s.archive.as_ref().is_some_and(|a| a.machine_lost))
+            .await
+            .archive
+            .expect("box-1's session is archived");
+        assert!(summary.machine_lost, "cut at {point}");
+        assert!(rig.session(&on_host).await.archive.is_none(), "cut at {point}: this Mac's session is untouched");
+        let shown = pb::channel_service_client::ChannelServiceClient::new(rig.channel().await)
+            .get_channel(pb::GetChannelRequest { id: channel.id.clone() })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!shown.machines.contains(&Rig::box_id("box-1")), "cut at {point}: {:?}", shown.machines);
+        let again = machines(&rig).await.forget_machine(forget(&plan, "forget-cut")).await.expect("the key answers").into_inner();
+        assert_eq!(again.archived, [on_box.clone()], "cut at {point}");
+    }
+}

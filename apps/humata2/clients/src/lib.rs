@@ -15,6 +15,7 @@ pub mod desk;
 mod file_manager;
 mod files;
 pub mod fixture;
+pub mod github;
 pub mod history;
 mod keychain;
 pub mod marks;

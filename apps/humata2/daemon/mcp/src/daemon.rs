@@ -103,7 +103,8 @@ pub enum Reply {
         stale_as_of: Option<SystemTime>,
     },
     /// Written to this machine's journal while the host is away; `result`
-    /// is provisional.
+    /// is what was journaled, and a new item has no id until the host
+    /// replays it.
     Journaled {
         result: Value,
         journal: JournalPosition,

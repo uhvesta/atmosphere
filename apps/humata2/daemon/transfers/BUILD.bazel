@@ -38,6 +38,7 @@ rust_library(
     testonly = True,
     srcs = glob(["src/*.rs"]),
     crate_name = "humata2_transfers",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
     deps = TRANSFERS_DEPS + [
         "//apps/humata2/daemon/durable:durable_faults",
         "//apps/humata2/daemon/store:store_faults",

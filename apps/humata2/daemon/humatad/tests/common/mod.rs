@@ -37,16 +37,36 @@ pub const WAIT: Duration = Duration::from_secs(15);
 /// [`WAIT`] there before any of the daemon's code ran, while every later
 /// start was quick (gate g70: the first ten tests failed, the next eleven
 /// passed in five seconds).
-fn warm(build: Build) {
+fn warm(build: Build, faulty: bool) {
     static ADMIN: OnceLock<()> = OnceLock::new();
     static RELEASE: OnceLock<()> = OnceLock::new();
+    static FAULTS: OnceLock<()> = OnceLock::new();
     let (once, variable) = match build {
+        Build::Admin | Build::AdminForThisProcess if faulty => (&FAULTS, "HUMATAD2_FAULTS"),
         Build::Admin | Build::AdminForThisProcess => (&ADMIN, "HUMATAD2"),
+        // A box that is asked to take faults runs the faults daemon
+        // without `--admin` (D240).
+        Build::Release if faulty => (&FAULTS, "HUMATAD2_FAULTS"),
         Build::Release => (&RELEASE, "HUMATAD2_RELEASE"),
     };
     once.get_or_init(|| {
         let _ = Command::new(binary(variable)).arg("--help").output();
     });
+}
+
+/// The variables that ask for the fault build (`humatad2_faults` and
+/// `humata2_holder_faults`): a start with any of them in its environment
+/// runs those, so every point of the daemon and of its crates is live.
+const FAULT_VARIABLES: [&str; 4] = [
+    "HUMATA2_STOP_AT",
+    "HUMATA2_HOLD_AT",
+    "HUMATA2_POWER_CUT_ROOTS",
+    "HUMATA2_FAULT_TRACE",
+];
+
+/// Whether `env` asks for the fault build.
+pub fn wants_faults(env: &[(String, String)]) -> bool {
+    env.iter().any(|(name, _)| FAULT_VARIABLES.contains(&name.as_str()))
 }
 
 pub fn binary(variable: &str) -> PathBuf {
@@ -160,11 +180,21 @@ impl Daemon {
     }
 
     async fn launch(&mut self) {
-        warm(self.build);
+        let faulty = wants_faults(&self.env_once);
+        warm(self.build, faulty);
         let mut command = match self.build {
+            Build::Admin | Build::AdminForThisProcess if faulty => Command::new(binary("HUMATAD2_FAULTS")),
             Build::Admin | Build::AdminForThisProcess => Command::new(binary("HUMATAD2")),
+            // A box asked to take faults (D240): the faults daemon, started
+            // without `--admin`, serves as the daemon as shipped does.
+            Build::Release if faulty => Command::new(binary("HUMATAD2_FAULTS")),
             Build::Release => Command::new(binary("HUMATAD2_RELEASE")),
         };
+        let holder = binary(if faulty && self.build != Build::Release {
+            "HUMATA2_HOLDER_FAULTS"
+        } else {
+            "HUMATA2_HOLDER"
+        });
         command.arg("serve");
         match self.build {
             Build::Admin => {
@@ -185,7 +215,7 @@ impl Daemon {
             .arg("--root")
             .arg(self.dir.path())
             .arg("--holder")
-            .arg(binary("HUMATA2_HOLDER"))
+            .arg(holder)
             .arg("--shell")
             .arg("/bin/sh")
             .arg("--shell-arg=-i")
@@ -437,6 +467,7 @@ pub fn open(tab: &pb::TabId, from_offset: u64) -> pb::AttachOpen {
         rows: 0,
         window_bytes: 0,
         accept_codecs: Vec::new(),
+        checkpoint_engine: String::new(),
     }
 }
 
@@ -894,7 +925,14 @@ pub async fn wait_running(daemon: &Daemon, id: &pb::SessionId) -> pb::Session {
         if is_running(&session) {
             return session;
         }
-        assert!(Instant::now() < deadline, "session {} never ran; it is {:?}", id.value, session.status());
+        assert!(
+            Instant::now() < deadline,
+            "session {} never ran; it is {:?}, exit code {}, resume failure {:?}",
+            id.value,
+            session.status(),
+            session.exit_code,
+            session.resume_failed
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

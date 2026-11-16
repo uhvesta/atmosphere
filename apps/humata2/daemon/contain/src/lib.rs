@@ -21,10 +21,14 @@
 mod macos;
 
 mod claude;
+mod flow_back;
 mod git_exclude;
 mod home;
+mod login;
 
 pub use claude::{ClaudeCopy, seed_claude_copy};
+pub use flow_back::{FlowBack, flow_back};
+pub use login::{Login, TOKEN_VARIABLES, choose_login, parse_version};
 pub use git_exclude::hide_from_git;
 pub use home::{Agent, HomeRules, home_rules};
 
@@ -193,6 +197,25 @@ pub enum ContainError {
         path.display(), real.display(), real.display()
     )]
     ClaudeProjectsNotALink { path: PathBuf, real: PathBuf },
+
+    /// Claude Code's keychain login can't be found from the copy and no
+    /// token was set, so a contained launch has no way to sign in.
+    #[error(
+        "Can't start this session contained: Claude Code's login isn't reachable from its contained settings copy. Set a Claude Code token for this channel, or turn Contain agents off for this channel. Agents there will then be able to read and write anything your user can on this machine"
+    )]
+    ClaudeLoginUnreachable,
+
+    /// A session's todos or checkpoints couldn't be moved from the copy
+    /// into the real Claude Code config.
+    #[error(
+        "couldn't move {} from this session's Claude Code config copy into your real one: {source}. The session still starts; its todos and checkpoints stay in the copy and move at its next uncontained start. Check the disk has space and that Humata can write ~/.claude",
+        path.display()
+    )]
+    ClaudeFlowBack {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 
     /// The repository's exclude file could not be read or written, so the
     /// session's `.humata/` folder would show up as changes.

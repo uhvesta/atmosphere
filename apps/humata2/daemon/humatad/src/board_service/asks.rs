@@ -4,7 +4,8 @@
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::BoardItemRecord;
 
-use super::scope::column_label;
+use super::scope::{column_label, column_pb};
+use super::{FIRST_COLUMN, Op};
 use crate::inbox::BoardAsk;
 
 pub(super) fn field_change(field: &str, before: &str, after: &str) -> pb::FieldChange {
@@ -40,6 +41,71 @@ pub(super) fn new_item_ask(preview: pb::NewBoardItemPreview, reason: &str) -> Bo
     BoardAsk {
         preview: pb::request_preview::Preview::NewBoardItem(preview),
         reason: reason.to_owned(),
+    }
+}
+
+/// The card for a write made while the host is away, from the call alone:
+/// the host's board isn't there to read. A new item shows as it will be
+/// made; an edit names the item and the values it sets, with no "before",
+/// which the host fills in when it shows the card (BD-15, D268).
+pub(super) fn away_ask(op: &Op) -> BoardAsk {
+    let change = |id: &Option<pb::BoardItemId>, changes: Vec<pb::FieldChange>, deletes: bool, reason: &str| BoardAsk {
+        preview: pb::request_preview::Preview::BoardChange(pb::BoardChangePreview {
+            item: id.clone(),
+            item_title: String::new(),
+            changes,
+            deletes_item: deletes,
+        }),
+        reason: reason.to_owned(),
+    };
+    match op {
+        Op::Create(request) => new_item_ask(
+            pb::NewBoardItemPreview {
+                board: request.board.clone(),
+                title: request.title.trim().to_owned(),
+                column: match request.column {
+                    0 => column_pb(FIRST_COLUMN) as i32,
+                    column => column,
+                },
+                description: request.description.clone(),
+            },
+            &request.reason,
+        ),
+        Op::Update(request) => {
+            let patch = request.patch.clone().unwrap_or_default();
+            let mut changes = Vec::new();
+            if let Some(title) = &patch.title {
+                changes.push(field_change("title", "", title));
+            }
+            if let Some(text) = &patch.description {
+                changes.push(field_change("description", "", text));
+            }
+            let signed = |add: &[String], remove: &[String]| {
+                add.iter()
+                    .map(|id| format!("+{id}"))
+                    .chain(remove.iter().map(|id| format!("-{id}")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let ids = |ids: &[pb::SessionId]| ids.iter().map(|id| id.value.clone()).collect::<Vec<_>>();
+            let items = |ids: &[pb::BoardItemId]| ids.iter().map(|id| id.value.clone()).collect::<Vec<_>>();
+            let sessions = signed(&ids(&patch.sessions_add), &ids(&patch.sessions_remove));
+            if !sessions.is_empty() {
+                changes.push(field_change("sessions", "", &sessions));
+            }
+            let depends = signed(&items(&patch.depends_on_add), &items(&patch.depends_on_remove));
+            if !depends.is_empty() {
+                changes.push(field_change("depends_on", "", &depends));
+            }
+            change(&request.id, changes, false, &request.reason)
+        }
+        Op::Move(request) => change(
+            &request.id,
+            vec![field_change("status", "", column_label(request.column))],
+            false,
+            &request.reason,
+        ),
+        Op::Delete(request) => change(&request.id, Vec::new(), true, &request.reason),
     }
 }
 
@@ -134,6 +200,39 @@ mod tests {
             requester: Some(pb::AgentActor::default()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn an_away_edits_card_names_the_item_and_the_new_values_with_no_before() {
+        let ask = away_ask(&Op::Move(pb::MoveItemRequest {
+            id: Some(pb::BoardItemId {
+                value: "PAY-7".to_owned(),
+            }),
+            column: pb::BoardColumn::InReview as i32,
+            reason: "ready".to_owned(),
+            ..Default::default()
+        }));
+        let pb::request_preview::Preview::BoardChange(change) = ask.preview else {
+            panic!("an edit's card shows a board change");
+        };
+        assert_eq!(change.item.map(|id| id.value), Some("PAY-7".to_owned()));
+        assert_eq!(change.changes.len(), 1);
+        assert_eq!(change.changes[0].before, "");
+        assert_eq!(change.changes[0].after, "In review");
+        assert_eq!(ask.reason, "ready");
+    }
+
+    #[test]
+    fn an_away_adds_card_shows_the_new_item() {
+        let ask = away_ask(&Op::Create(pb::CreateItemRequest {
+            title: "  Fix login ".to_owned(),
+            ..Default::default()
+        }));
+        let pb::request_preview::Preview::NewBoardItem(made) = ask.preview else {
+            panic!("an add's card shows the new item");
+        };
+        assert_eq!(made.title, "Fix login");
+        assert_eq!(made.column, pb::BoardColumn::Backlog as i32);
     }
 
     #[test]

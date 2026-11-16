@@ -107,6 +107,8 @@ pub enum Command {
     },
     /// Expand the terminal in the current session.
     TerminalFullScreen,
+    /// Join the open session's two tab groups into one.
+    JoinTabGroups,
     /// Start, or stop, recording a bug report (I9, D159).
     Record,
     /// Take a snapshot for a bug report, like ⇧⌘S (D159).
@@ -226,6 +228,8 @@ pub struct PaletteState {
     pub marks: PinnedList,
     /// Whether a session is open, so session commands apply.
     pub in_session: bool,
+    /// Whether the open session has two tab groups, so they can be joined.
+    pub split: bool,
     /// Bug reporting, set by the app before it opens the palette.
     pub report: ReportStatus,
     /// The question the palette asks inline, if any (KP-5).
@@ -690,6 +694,13 @@ impl PaletteState {
                 title: "Terminal full screen".into(),
                 hint: "⇧⌘↩".into(),
             });
+            if self.split {
+                entries.push(Entry {
+                    command: Command::JoinTabGroups,
+                    title: "Join tab groups".into(),
+                    hint: String::new(),
+                });
+            }
             // A Desk session has no Fork, and its Archive is Close (DK-11,
             // DK-12).
             let on_desk = self

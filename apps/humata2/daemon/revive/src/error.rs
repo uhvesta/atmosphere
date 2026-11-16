@@ -86,6 +86,11 @@ pub enum ContainRefused {
     },
 
     #[error(
+        "this machine hasn't received the Mac's rules yet, so session {session}'s agent wasn't started rather than risk running it uncontained; wait until the machine shows linked in Humata, then start or resume the session again"
+    )]
+    HostRulesMissing { session: String },
+
+    #[error(
         "session {session} or its channel is no longer on this machine, so there's no folder to contain it in; start a new session in the channel"
     )]
     NoSession { session: String },

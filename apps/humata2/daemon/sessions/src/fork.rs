@@ -326,6 +326,9 @@ impl Starter {
                 with_context && !handover,
             )
             .await?;
+        // The agent record names the copy now.
+        let (folder, id) = (session.folder.clone(), session.id.clone());
+        let _ = blocking(move || forget_note(&copy_note(&folder, &id))).await;
         Ok(Started {
             session,
             detail,
@@ -400,11 +403,101 @@ impl Starter {
         self.set_step(detail, StartStep::Cloned).await?;
         if let Some((from, to)) = conversation {
             let (from, to, before_turn) = (from.to_owned(), to.to_owned(), origin.before_turn);
-            blocking(move || copy_conversation(&from, &to, before_turn)).await??;
+            let (folder, id) = (session.folder.clone(), session.id.clone());
+            blocking(move || {
+                // Named before the copy exists, so a cut can't leave it unfound.
+                note_copy_at(&copy_note(&folder, &id), &to).map_err(|source| StartError::Copy {
+                    path: copy_note(&folder, &id),
+                    source,
+                })?;
+                copy_conversation(&from, &to, before_turn)
+            })
+            .await??;
             progress("copy_conversation");
         }
         Ok(())
     }
+}
+
+/// Where, in a session's folder, the path of the conversation copy its fork
+/// made is kept until the agent is launched, so [`crate::start::Starter::undo`]
+/// can remove a copy outside the folder (an agent keeps its conversations
+/// elsewhere) however the fork was cut short. A context-only fork shares
+/// its parent's folder, so the name carries the fork's id.
+fn copy_note(folder: &Path, fork: &str) -> PathBuf {
+    folder.join(".humata").join(format!("fork-copy-{fork}"))
+}
+
+/// Saves, durably, in the file `note`, that the conversation copy at `to` is
+/// about to be made, so a cut at any point after leaves it findable by
+/// [`remove_noted_copy`]. The note is renamed into place whole, so it never
+/// names half a path.
+pub(crate) fn note_copy_at(note: &Path, to: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = note.parent().unwrap_or(Path::new("."));
+    humata2_durable::create_dir_all(dir, 0o755)?;
+    let temp = temp_note(note);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    let mut file = humata2_durable::File::open(&options, &temp)?;
+    file.append(to.as_os_str().as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    humata2_durable::rename(&temp, note)?;
+    humata2_durable::sync_dir(dir)
+}
+
+fn temp_note(note: &Path) -> PathBuf {
+    let mut name = note.as_os_str().to_os_string();
+    name.push(".tmp");
+    PathBuf::from(name)
+}
+
+/// Removes the conversation copy named in the file `note`, then its folder
+/// when that left it empty (an agent that keys conversations by folder made
+/// one for the copy), then the note. No note: nothing to do. Safe to repeat.
+pub(crate) fn remove_noted_copy(note: &Path) -> Result<(), StartError> {
+    use std::os::unix::ffi::OsStrExt;
+    let bytes = match fs::read(note) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return forget_note(note),
+        Err(source) => {
+            return Err(StartError::Remove {
+                path: note.to_owned(),
+                source,
+            });
+        }
+    };
+    let copy = PathBuf::from(std::ffi::OsStr::from_bytes(&bytes));
+    match fs::remove_file(&copy) {
+        Err(source) if source.kind() != io::ErrorKind::NotFound => {
+            return Err(StartError::Remove { path: copy, source });
+        }
+        _ => {}
+    }
+    if let Some(dir) = copy.parent() {
+        // Only an empty folder goes; one with other conversations stays.
+        let _ = fs::remove_dir(dir);
+    }
+    forget_note(note)
+}
+
+/// Removes the file `note` and any half-written one.
+pub(crate) fn forget_note(note: &Path) -> Result<(), StartError> {
+    for path in [temp_note(note), note.to_owned()] {
+        match fs::remove_file(&path) {
+            Err(source) if source.kind() != io::ErrorKind::NotFound => {
+                return Err(StartError::Remove { path, source });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Takes back the conversation copy of the fork `fork` in `folder`.
+pub(crate) fn remove_fork_copy(folder: &Path, fork: &str) -> Result<(), StartError> {
+    remove_noted_copy(&copy_note(folder, fork))
 }
 
 /// Copies the conversation at `from` to `to`: all of it when `before_turn`
@@ -605,5 +698,28 @@ mod tests {
             copy_conversation(&from, &t.path().join("m.jsonl"), 3),
             Err(StartError::NoConversation { .. })
         ));
+    }
+
+    #[test]
+    fn a_noted_copy_is_removed_with_its_folder_when_that_is_left_empty() {
+        let t = tempfile::tempdir().unwrap();
+        let (note, keyed) = (t.path().join("s/.humata/note"), t.path().join("conv/key"));
+        let (copy, other) = (keyed.join("a.jsonl"), t.path().join("conv/kept/b.jsonl"));
+        fs::create_dir_all(&keyed).unwrap();
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, "b").unwrap();
+        // Noted before the copy exists: removing it then is not an error.
+        note_copy_at(&note, &copy).unwrap();
+        remove_noted_copy(&note).unwrap();
+        note_copy_at(&note, &copy).unwrap();
+        fs::create_dir_all(&keyed).unwrap();
+        fs::write(&copy, "a").unwrap();
+
+        remove_noted_copy(&note).unwrap();
+
+        assert!(!copy.exists() && !keyed.exists() && !note.exists());
+        assert!(other.exists(), "another conversation's file is not touched");
+        // Repeating it, with no note left, does nothing.
+        remove_noted_copy(&note).unwrap();
     }
 }

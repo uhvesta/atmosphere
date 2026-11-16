@@ -137,7 +137,6 @@ pub fn rows(diff: Option<&FileDiff>, current: &str, view: &CodeView) -> Vec<Row>
                 let new = line.new.unwrap_or(next_new);
                 let count = new.saturating_sub(next_new);
                 gap(&mut rows, &text, view, full, next_new, next_old, count);
-                next_new += count;
                 next_old += count;
                 rows.push(Row::Line(line.clone()));
                 next_new = new.saturating_add(1);
@@ -150,7 +149,6 @@ pub fn rows(diff: Option<&FileDiff>, current: &str, view: &CodeView) -> Vec<Row>
                 let count = old.saturating_sub(next_old);
                 gap(&mut rows, &text, view, full, next_new, next_old, count);
                 next_new += count;
-                next_old += count;
                 rows.push(Row::Line(line.clone()));
                 next_old = old.saturating_add(1);
             }

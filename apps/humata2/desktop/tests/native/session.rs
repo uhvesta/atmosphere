@@ -183,6 +183,75 @@ fn session_lifecycle_and_full_screen_reference_images() {
     }
 }
 
+/// AW-9, D267: the agent's terminal says, under its output, what the host
+/// left out of its writes; a shell tab says nothing.
+#[test]
+fn the_agent_terminal_says_what_the_host_left_out_and_a_shell_tab_does_not() {
+    use humata2_clients::model::AwayLeftOut;
+    let mut start = fixture::design_session(Status::Working);
+    start
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == SessionId::new("ledger"))
+        .expect("the fixture has Ledger")
+        .away_left_out = Some(AwayLeftOut {
+        count: 2,
+        items: vec!["PAY-12".into()],
+        not_made: Vec::new(),
+        refused: true,
+    });
+    let mut app = App::new(start);
+    app.open("ledger", Panel::Info);
+    app.click("terminal-tab 0");
+    assert!(app.contains("away-left-out"));
+    app.click("terminal-tab 1");
+    assert!(!app.contains("away-left-out"));
+    let mut plain = App::new(fixture::design_session(Status::Working));
+    plain.open("ledger", Panel::Info);
+    plain.click("terminal-tab 0");
+    assert!(!plain.contains("away-left-out"), "no summary, no line");
+}
+
+/// AW-9, D267: before, and after a refusal and after an Ask. The goldens
+/// are recorded with `HUMATA2_SNAPSHOT=record`.
+#[test]
+fn the_away_left_out_line_frames() {
+    use humata2_clients::model::AwayLeftOut;
+    for (name, left) in [
+        ("away-left-out-before", None),
+        (
+            "away-left-out-refused",
+            Some(AwayLeftOut {
+                count: 2,
+                items: vec!["PAY-12".into()],
+                not_made: vec!["Fix login".into()],
+                refused: true,
+            }),
+        ),
+        (
+            "away-left-out-ask",
+            Some(AwayLeftOut {
+                count: 1,
+                items: vec!["PAY-12".into()],
+                not_made: Vec::new(),
+                refused: false,
+            }),
+        ),
+    ] {
+        let mut start = fixture::design_session(Status::Working);
+        start
+            .sessions
+            .iter_mut()
+            .find(|session| session.id == SessionId::new("ledger"))
+            .expect("the fixture has Ledger")
+            .away_left_out = left;
+        let mut app = App::new(start);
+        app.open("ledger", Panel::Info);
+        app.click("terminal-tab 0");
+        app.snapshot(name);
+    }
+}
+
 /// SE-14: either Resume control starts the same exited agent and retains its view.
 #[test]
 fn resuming_an_exited_session_keeps_its_open_panel() {
@@ -315,7 +384,22 @@ fn the_plus_menu_splits_once_and_joining_keeps_the_program_running() {
             .shells
             .len()
     });
-    app.click("close-group-1");
+    assert!(!app.contains("close-group-0") && !app.contains("close-group-1"));
+    // Joining the groups is a palette command.
+    app.send(AppAction::OpenPalette);
+    app.send(AppAction::Palette(humata2_palette::PaletteAction::Query(
+        "Join tab groups".into(),
+    )));
+    let join = app
+        .ui
+        .read(|s| {
+            s.palette
+                .entries
+                .iter()
+                .position(|e| e.command == humata2_palette::Command::JoinTabGroups)
+        })
+        .expect("the palette offers Join tab groups while the session has two groups");
+    app.send(AppAction::Palette(humata2_palette::PaletteAction::Pick(join)));
     assert_eq!(app.ui.read(|s| s.session.view().unwrap().groups.len()), 1);
     assert_eq!(
         app.ui.read(|s| s

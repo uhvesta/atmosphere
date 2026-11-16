@@ -16,7 +16,7 @@ use humata2_session::SessionAction;
 
 use crate::bridge::{Part, Ui};
 use crate::theme;
-use crate::widgets::{self, col};
+use crate::widgets::col;
 
 #[path = "overlay_add_machine.rs"]
 mod add_machine;
@@ -97,7 +97,7 @@ impl Overlays {
                 .rows(3)
         });
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("web"));
-        let repos = cx.new(|cx| InputState::new(window, cx).placeholder("org/web, org/design"));
+        let repos = cx.new(|cx| InputState::new(window, cx).placeholder("Search repos"));
         let mut subscriptions = Vec::new();
         for (input, change, enter) in [
             (
@@ -123,7 +123,7 @@ impl Overlays {
             ),
             (
                 &repos,
-                |text| AppAction::NewChannel(NewChannelAction::Repos(text)),
+                |text| AppAction::NewChannel(NewChannelAction::Query(text)),
                 AppAction::NewChannel(NewChannelAction::Create),
             ),
         ] {
@@ -233,13 +233,6 @@ fn sheet(id: &'static str, label: &'static str, look: Look) -> Stateful<Div> {
         .shadow_lg()
 }
 
-fn field(look: Look, label: &'static str, input: impl IntoElement) -> Div {
-    col()
-        .gap_1()
-        .child(widgets::dim_in(look, label).text_size(px(12.)))
-        .child(input)
-}
-
 impl Render for Overlays {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let look = Look::of(cx);
@@ -344,6 +337,7 @@ impl Render for Overlays {
                                 Some(Kind::Fork) => 24.,
                                 Some(Kind::NewSession | Kind::Desk) => 70.,
                                 Some(Kind::AddMachine) => 60.,
+                                Some(Kind::NewChannel) => 50.,
                                 _ => 96.,
                             }))
                             .child(

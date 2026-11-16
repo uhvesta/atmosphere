@@ -63,6 +63,7 @@ struct Inner {
     next_pull_request: u32,
     asks_in_inbox: bool,
     codex_needs_trust: bool,
+    github_repos: Vec<String>,
 }
 
 struct Subscriber {
@@ -104,6 +105,16 @@ impl FakeDaemon {
                 next_pull_request: 1,
                 asks_in_inbox: true,
                 codex_needs_trust: false,
+                github_repos: [
+                    "acme/ledger",
+                    "acme/api",
+                    "acme/web",
+                    "acme/infra",
+                    "acme/docs",
+                    "octo/notes",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
             })),
             clock,
             latency: Duration::ZERO,
@@ -134,6 +145,12 @@ impl FakeDaemon {
     /// Makes the daemon say Codex's hooks still need trusting, or not (D202).
     pub fn set_codex_needs_trust(&self, on: bool) {
         self.inner().codex_needs_trust = on;
+    }
+
+    /// Says which GitHub repositories `gh` sees on the host, as `owner/name`,
+    /// most recently pushed first (CH-3).
+    pub fn set_github_repos(&self, repos: Vec<String>) {
+        self.inner().github_repos = repos;
     }
 
     pub fn set_archive_frees(&self, session: &SessionId, frees: impl Into<String>) {
@@ -494,6 +511,10 @@ impl Daemon for FakeDaemon {
         machines: Vec<MachineId>,
     ) -> Reply<ChannelId> {
         channels::create_channel(self, name, repos, machines)
+    }
+
+    fn github_repos(&self, query: &str) -> Reply<Vec<String>> {
+        channels::github_repos(self, query)
     }
 
     fn cancel_setup(&self, setup: &SetupId) -> Reply<()> {

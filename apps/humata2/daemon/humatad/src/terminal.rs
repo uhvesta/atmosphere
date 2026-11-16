@@ -919,6 +919,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         request: Request<pb::OpenShellTabRequest>,
     ) -> Result<Response<pb::Tab>, Status> {
         let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
         let request = request.into_inner();
         let key = request
             .idempotency_key
@@ -990,6 +991,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         request: Request<Streaming<pb::AttachClientMessage>>,
     ) -> Result<Response<Self::AttachStream>, Status> {
         let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
         let mut incoming = request.into_inner();
         let open = match incoming.message().await? {
             Some(pb::AttachClientMessage {
@@ -1051,6 +1053,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         request: Request<pb::TypeRequest>,
     ) -> Result<Response<pb::TypeResponse>, Status> {
         let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
         let request = request.into_inner();
         let key = request
             .idempotency_key

@@ -41,9 +41,12 @@ pub(crate) struct BoardAsk {
     pub(crate) reason: String,
 }
 
-/// The call, to run once the user approves it.
-pub(crate) type Run =
-    Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<Deferred, Status>> + Send>> + Send>;
+/// The call, to run once the user approves it. It is given the id of the
+/// request that was approved, for a call that records which approval it ran
+/// under (D268).
+pub(crate) type Run = Box<
+    dyn FnOnce(String) -> Pin<Box<dyn Future<Output = Result<Deferred, Status>> + Send>> + Send,
+>;
 
 /// How an approved call ended.
 #[derive(Clone)]
@@ -368,13 +371,14 @@ impl Inbox {
             .unwrap_or_else(PoisonError::into_inner)
             .take();
         let sender = entry.request.clone();
+        let id = entry.id.clone();
         let Some(run) = run else {
             sender.send_modify(|held| held.running = false);
             return;
         };
         tokio::spawn(async move {
             // A task of its own, so a panic in the call ends it as a failure.
-            let done = match tokio::spawn(run()).await {
+            let done = match tokio::spawn(run(id)).await {
                 Ok(done) => done,
                 Err(error) => Err(status::internal(format!("the call failed: {error}"), "")),
             };
@@ -463,7 +467,7 @@ mod tests {
         let caller = agent();
         let ran_flag = Arc::new(AtomicBool::new(false));
         let flag = ran_flag.clone();
-        let run: Run = Box::new(move || {
+        let run: Run = Box::new(move |_| {
             Box::pin(async move {
                 flag.store(true, Ordering::SeqCst);
                 Ok(Deferred {

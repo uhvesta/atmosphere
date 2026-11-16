@@ -23,7 +23,6 @@ use humata2_store::{ForkOrigin, SessionDetail, SessionRecord, StartStep};
 use tonic::{Code, Status};
 
 use super::super::archive_remote::{finished, follow_to_end, machine_failed};
-use super::super::fork::stop_point;
 use super::super::lineage::publish_family;
 use super::super::{SessionSvc, now_ms};
 use crate::carry::{Carry, ContextAsk, ForkJournal};
@@ -252,7 +251,7 @@ impl SessionSvc {
             asked_request(&there.parent.id, &host_operation, &ask),
         )
         .await;
-        stop_point("fork-context-asked");
+        crate::fault::point("fork-context-asked");
         let first = match first {
             Ok(first) => first,
             Err(Asked::Refused(status)) => {
@@ -354,12 +353,36 @@ impl SessionSvc {
         started: Option<Arc<crate::restart::Started>>,
     ) {
         let svc = self.clone();
+        let operations = started.as_ref().map(|started| started.operations().clone());
+        if let Some(operations) = &operations {
+            operations.record(
+                &journal.operation,
+                "fork",
+                &journal.phase,
+                crate::restart::OperationState::Pending {
+                    waits_for: format!("the start to finish, then the link of {}", journal.to),
+                },
+            );
+        }
         tokio::spawn(async move {
             if let Some(started) = started {
                 started.wait().await;
             }
             let operation = journal.operation.clone();
-            if let Err(error) = svc.recover_context(carry, journal).await {
+            let phase = journal.phase.clone();
+            let outcome = svc.recover_context(carry, journal).await;
+            if let Some(operations) = &operations {
+                operations.record(
+                    &operation,
+                    "fork",
+                    &phase,
+                    match &outcome {
+                        Ok(()) => crate::restart::OperationState::Finished,
+                        Err(error) => crate::restart::OperationState::Stuck { reason: status::chain(error) },
+                    },
+                );
+            }
+            if let Err(error) = outcome {
                 crate::log::say!(
                     "humatad2: the context-only fork {operation} cut short wasn't listed: {}. Look at the parent's machine: the fork may run there without this Mac listing it",
                     status::chain(&error)

@@ -36,7 +36,6 @@ enum Kind {
     Object(Object),
     /// Any object: fields a provider defines, which the daemon checks.
     AnyObject,
-    Nullable(Box<Schema>),
     OneOf(Vec<Schema>),
 }
 
@@ -173,17 +172,6 @@ impl Schema {
         self
     }
 
-    /// Also accepts `null`, which clears the field.
-    pub(crate) fn nullable(self) -> Self {
-        Schema {
-            description: self.description,
-            kind: Kind::Nullable(Box::new(Schema {
-                kind: self.kind,
-                description: None,
-            })),
-        }
-    }
-
     /// Exactly one of these properties must be given.
     pub(crate) fn exactly_one_of(mut self, names: &[&'static str]) -> Self {
         if let Kind::Object(object) = &mut self.kind {
@@ -283,19 +271,6 @@ impl Schema {
             Kind::AnyObject => {
                 let mut out = Map::new();
                 out.insert("type".to_owned(), json!("object"));
-                out
-            }
-            Kind::Nullable(inner) => {
-                let mut out = match inner.to_json() {
-                    Value::Object(out) => out,
-                    _ => Map::new(),
-                };
-                if let Some(Value::String(kind)) = out.get("type").cloned() {
-                    out.insert("type".to_owned(), json!([kind, "null"]));
-                }
-                if let Some(Value::Array(values)) = out.get_mut("enum") {
-                    values.push(Value::Null);
-                }
                 out
             }
             Kind::OneOf(choices) => {
@@ -438,13 +413,6 @@ impl Schema {
                     Err(violation(Problem::WrongType {
                         expected: "an object",
                     }))
-                }
-            }
-            Kind::Nullable(inner) => {
-                if value.is_null() {
-                    Ok(())
-                } else {
-                    inner.check(value, path)
                 }
             }
             Kind::OneOf(choices) => {

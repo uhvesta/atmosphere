@@ -33,6 +33,7 @@ use crate::status;
 
 mod add;
 mod delete;
+mod gh_repos;
 pub(crate) use delete::{finish_restore, pick_place};
 mod known;
 mod remove_machine;
@@ -162,7 +163,7 @@ where
     match first? {
         Gated::Done(done) => Ok(Response::new(done)),
         Gated::Ask(asked) => {
-            let run: crate::inbox::Run = Box::new(move || {
+            let run: crate::inbox::Run = Box::new(move |_| {
                 Box::pin(async move {
                     match again().await? {
                         Gated::Done(done) => Ok(Deferred {
@@ -1018,7 +1019,7 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
             Checked::Ask(asked) => {
                 let (guard, store) = (self.guard.clone(), self.starter.store.clone());
                 let (machine, who) = (self.machine.clone(), caller.clone());
-                let run: crate::inbox::Run = Box::new(move || {
+                let run: crate::inbox::Run = Box::new(move |_| {
                     Box::pin(async move {
                         let listed = readable_channels(&guard, &store, &machine, &who).await?;
                         Ok(Deferred {
@@ -1057,13 +1058,38 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         .await
     }
 
+    /// Every repo the host's `gh` can see that matches the query, one page
+    /// at a time (CH-3). Listing reaches the repos of every account the host
+    /// is signed in to, which is the global-read rule's to judge.
     async fn search_git_hub_repos(
         &self,
-        _request: Request<pb::SearchGitHubReposRequest>,
+        request: Request<pb::SearchGitHubReposRequest>,
     ) -> Result<Response<pb::SearchGitHubReposResponse>, Status> {
-        Err(status::not_built(
-            "humata.v1.ChannelService.SearchGitHubRepos",
-        ))
+        let caller = identity::caller(&request)?;
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        let request = request.into_inner();
+        let call = Call::Use {
+            capability: Capability::GlobalRead,
+            target: Target::Global,
+        };
+        match self.guard.check(&caller, &call)? {
+            Checked::Allowed => Ok(Response::new(gh_repos::search(&request).await?)),
+            Checked::Ask(asked) => {
+                let run: crate::inbox::Run = Box::new(move |_| {
+                    Box::pin(async move {
+                        let found = gh_repos::search(&request).await?;
+                        Ok(Deferred {
+                            result: found.encode_to_vec(),
+                            result_type: "humata.v1.SearchGitHubReposResponse".to_owned(),
+                        })
+                    })
+                });
+                // The request has no idempotency key field.
+                Err(self.inbox.defer(&caller, asked, None, run).await)
+            }
+        }
     }
 
     /// Adds a repository to the channel and clones it on every machine of

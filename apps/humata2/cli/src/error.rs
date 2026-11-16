@@ -91,6 +91,9 @@ pub enum CliError {
     /// `humata opencode` couldn't run OpenCode; the message says how to fix it.
     #[error(transparent)]
     OpenCode(#[from] humata2_opencode::WrapperError),
+    /// `humata doctor restarts` couldn't read or write a restart report.
+    #[error(transparent)]
+    Doctor(#[from] crate::commands::DoctorError),
 }
 
 /// A failure as printed: `error` in `--json`, message and fix on stderr.
@@ -186,6 +189,10 @@ impl CliError {
                 "Run the command again. If it fails the same way, set compression to Off in the daemon's compression.toml and report it.".into(),
             ),
             Self::OpenCode(_) => plain("tool_failed", exit::TOOL_FAILED, String::new()),
+            Self::Doctor(error) => {
+                let (kind, code, fix) = error.how();
+                plain(kind, code, fix)
+            }
             Self::LoginNeedsHome => plain(
                 "invalid_field",
                 exit::USAGE,

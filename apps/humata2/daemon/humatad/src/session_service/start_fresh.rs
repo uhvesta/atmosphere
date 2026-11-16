@@ -286,6 +286,9 @@ async fn run(
         progress.fail(error_of(&error, "check humatad2's log, then start fresh again", None));
         return;
     }
+    // A kill here leaves the old conversation recorded as a previous one
+    // and the session as it was: a start fresh asked again is the same.
+    crate::fault::point("start_fresh.recorded");
     // Marks it busy, so a second resume or start fresh is refused.
     let mut busy = old.clone();
     busy.state = AgentState::Resuming;
@@ -299,6 +302,9 @@ async fn run(
         progress.fail(error_of(&error, "check humatad2's log, then start fresh again", None));
         return;
     }
+    // A kill here leaves the agent marked as resuming, as a kill during a
+    // resume does: the restart resumes it, or shows the failure again.
+    crate::fault::point("start_fresh.busy");
     tell.session(&session, pb::Change::Updated, Some(by.clone()))
         .await;
 
@@ -352,10 +358,13 @@ async fn run(
     progress.set_step("launch", pb::StepState::Done, None);
     // A kill here leaves the agent running on the new conversation with its
     // first message kept but not typed: the restart types it (D153).
-    stop_point("start_fresh.launched");
+    crate::fault::point("start_fresh.launched");
 
     progress.set_step("seed", pb::StepState::Running, None);
     let typed = type_seed(&agent.launch.holder_socket, &session, &agent.launch.conversation_id, &seed).await;
+    // A kill here leaves the message typed and still kept: the restart finds
+    // the conversation holds it and forgets it, typing nothing twice.
+    crate::fault::point("start_fresh.typed");
     // Typed, or a terminal that can't take it: either way nothing types it
     // later. A failure to reach the terminal leaves it for the restart.
     if !matches!(typed, Err(StartFreshError::Seed { .. })) {
@@ -419,7 +428,13 @@ async fn keep_seed(
     };
     let store = store.clone();
     let kept = blocking(move || store.put_fresh_seed(&row)).await;
-    store_failure(kept, session, "save the first message for the new conversation")
+    let failure = store_failure(kept, session, "save the first message for the new conversation");
+    if failure.is_none() {
+        // A kill here leaves a message kept for a conversation that never
+        // started: the restart forgets it, as the session left it.
+        crate::fault::point("start_fresh.seed_kept");
+    }
+    failure
 }
 
 /// Forgets the message kept for `conversation`; a failure is logged, and
@@ -995,21 +1010,6 @@ fn cap_bytes(text: &str, max: usize) -> String {
     }
     text[..end].to_owned()
 }
-
-/// Kills the process with SIGKILL when `HUMATA2_STOP_AT` names this point, so
-/// a test can show what a crash here leaves behind. Test daemons only: a
-/// release build never reads the variable.
-#[cfg(feature = "admin")]
-fn stop_point(name: &str) {
-    if std::env::var("HUMATA2_STOP_AT").is_ok_and(|wanted| wanted == name) {
-        let _ = rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::KILL);
-        std::process::abort();
-    }
-}
-
-#[cfg(not(feature = "admin"))]
-#[inline(always)]
-fn stop_point(_name: &str) {}
 
 #[cfg(test)]
 mod tests {

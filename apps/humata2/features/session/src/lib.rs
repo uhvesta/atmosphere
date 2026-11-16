@@ -17,7 +17,7 @@ pub use conversation::{Conversation, ConversationRead, ConversationTarget};
 pub use document::{DocumentEntry, DocumentMode, DocumentView, is_markdown};
 use editor::{CodeMode, CodeView};
 pub use message::QueuedMessage;
-pub use tabs::{Tab, TabGroup};
+pub use tabs::{GroupWidth, Tab, TabGroup, group_widths};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;

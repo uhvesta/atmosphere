@@ -36,7 +36,6 @@ use tokio::sync::{OwnedMutexGuard, watch};
 use tonic::{Code, Status};
 
 use super::{Gated, Loaded, SessionSvc, busy, run_resume};
-use super::fork::{hold_point, stop_point};
 use crate::carry::{Carry, Journaled, Place};
 use crate::channel_service::{blocking, failed};
 use crate::identity::{self, Caller, UserVia};
@@ -406,8 +405,8 @@ impl Mover {
     /// daemon may be killed here.
     async fn reached(&self, phase: &str) {
         self.journal(phase).await;
-        stop_point(&format!("move-{phase}"));
-        hold_point(&format!("move-{phase}")).await;
+        crate::fault::point(&format!("move-{phase}"));
+        crate::fault::hold_point(&format!("move-{phase}")).await;
     }
 
     /// Runs one step: shown running, then done, or failed with `why`.
@@ -441,6 +440,10 @@ impl Mover {
         self.agent_ran.store(packed.agent_running, Ordering::SeqCst);
         self.reached("packed").await;
         self.go_on("copy")?;
+        // Something of the copy may be on the new machine from here, so the
+        // journal says so before the first byte goes there (MV-14).
+        self.placing.store(true, Ordering::SeqCst);
+        self.reached("copying").await;
         self.step("copy", self.copy(&packed)).await?;
         self.reached("copied").await;
         self.go_on("verify")?;
@@ -497,7 +500,6 @@ impl Mover {
 
     /// The session's folder, then the staged files, onto the new machine.
     async fn copy(&self, packed: &pb::CarryPackResponse) -> Result<(), Status> {
-        self.placing.store(true, Ordering::SeqCst);
         let pass = self.pass.fetch_add(1, Ordering::SeqCst);
         self.carry
             .copy(
@@ -680,7 +682,7 @@ impl Mover {
                 self.set_step("release", pb::StepState::Done, None);
                 // The old copy is gone, the journal not yet: a restart here
                 // releases again.
-                stop_point("move-released");
+                crate::fault::point("move-released");
             }
             Err(status) => {
                 let shown = status::error_of(&status).map_or_else(|| status.message().to_owned(), |error| error.message);
@@ -703,13 +705,17 @@ impl Mover {
             .await
     }
 
-    /// Takes back what the move put on the new machine, and what it staged
-    /// on the old one.
+    /// Takes back what the move put on the new machine once its copy began
+    /// there, and what it staged on the old one. Before that the new
+    /// machine's folder of that name is not the move's (MV-3, MV-14).
     async fn take_copy_back(&self) -> (Result<(), Status>, Result<(), Status>) {
-        let incoming = self
-            .carry
-            .abort(&self.to, &self.operation, &self.session, &self.at_to, &self.folder, true)
-            .await;
+        let incoming = if self.placing.load(Ordering::SeqCst) {
+            self.carry
+                .abort(&self.to, &self.operation, &self.session, &self.at_to, &self.folder, true)
+                .await
+        } else {
+            Ok(())
+        };
         let staged = self
             .carry
             .abort(&self.from, &self.operation, &self.session, &self.at_from, &self.folder, false)
@@ -725,8 +731,9 @@ impl Mover {
         if self.rebased.load(Ordering::SeqCst) {
             self.svc.rebase_mirror(&self.session, &self.from, None).await;
         }
+        let placed = self.placing.load(Ordering::SeqCst);
         let mut taken_back = true;
-        if self.placing.load(Ordering::SeqCst) {
+        if placed {
             // An agent the resume started there stops before its copy goes.
             let _ = self.stop_on(&self.to).await;
             taken_back = self
@@ -749,7 +756,12 @@ impl Mover {
                 error.message()
             );
         }
-        self.journal("aborted").await;
+        // Only a copy that began on the new machine needs its journal kept for
+        // a restart to take back; otherwise the journal keeps the phase it had,
+        // which says nothing reached the new machine.
+        if placed {
+            self.journal("aborted").await;
+        }
         if taken_back {
             self.carry.journal_done(&self.operation).await;
         } else {
@@ -785,6 +797,14 @@ impl Mover {
             progress.fail(error);
         }
     }
+}
+
+/// Whether a journal at `phase` says the copy into the new machine began, so
+/// a restart takes that copy back (MV-14). `copying` is journaled before the
+/// first byte goes there; `packed` comes before it, when the new machine
+/// has nothing of the move yet.
+fn copy_began(phase: &str) -> bool {
+    matches!(phase, "copying" | "copied" | "unpacked" | "resumed" | "switched" | "aborted")
 }
 
 fn cancelled_at(step: &'static str) -> Failure {
@@ -841,7 +861,7 @@ pub(super) async fn recover(
         progress: Mutex::new(None),
         stopped: AtomicBool::new(false),
         pass: std::sync::atomic::AtomicU32::new(0),
-        placing: AtomicBool::new(true),
+        placing: AtomicBool::new(copy_began(&journal.phase)),
         agent_ran: AtomicBool::new(journal.agent_ran),
         rebased: AtomicBool::new(false),
     };
@@ -904,9 +924,12 @@ impl Mover {
     /// on the old one again. `handing_over` says the old agent may have been
     /// stopped for the move.
     async fn undo_cut_short(&self, handing_over: bool) -> Result<(), Status> {
-        let started_there = self.stop_on(&self.to).await;
-        if handing_over {
-            started_there?;
+        if self.placing.load(Ordering::SeqCst) {
+            // An agent the resume started there stops before its copy goes.
+            let started_there = self.stop_on(&self.to).await;
+            if handing_over {
+                started_there?;
+            }
         }
         let (incoming, staged) = self.take_copy_back().await;
         incoming?;

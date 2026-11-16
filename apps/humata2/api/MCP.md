@@ -54,7 +54,7 @@ a one-line `text` content saying the same for agents that read only text.
       "enum": ["applied", "journaled", "pending"],
       "description": "applied: done on the host or this machine. journaled: the host is away; written to this machine's journal and applied when it returns (GRPC.md §9). pending: waiting for the user; call inbox_wait with request_id."
     },
-    "result": { "description": "The tool's output; set when applied, and for journaled writes the provisional result." },
+    "result": { "description": "The tool's output; set when applied. For a journaled write it is empty: a new item has no id until the host replays it." },
     "request_id": { "type": "string", "description": "Set when pending, and when an applied call went through the Inbox." },
     "journal": {
       "type": "object",
@@ -192,7 +192,7 @@ Allow (IN-17); a user can set any of those to Ask me or Never.
 | `board_items_list` | `board.items_list` / ListItems | OWN_BOARD_WRITE rule's read (session board); CHANNEL_READ (channel board) | `{board, columns?: Column[], page_token?}` → `{items: Item[], counts, next_page_token?}` | none | stale |
 | `board_item_get` | `board.item_get` / GetItem | as list | `{id}` → `Item` | none | stale |
 | `board_item_history` | `board.item_history` / GetItemHistory | as list | `{id, page_token?}` → `{entries:[{at, by, change, lost_conflict}]}` | none | stale |
-| `board_item_create` | `board.item_create` / CreateItem | OWN_BOARD_WRITE (session board), CHANNEL_BOARD_ADD (channel board) | `{board, title, column?, description?, sessions?: SessionId[], depends_on?: ItemId[], reason?}` → `Item` (journaled: `{provisional_id}`) | adds an item | journal |
+| `board_item_create` | `board.item_create` / CreateItem | OWN_BOARD_WRITE (session board), CHANNEL_BOARD_ADD (channel board) | `{board, title, column?, description?, sessions?: SessionId[], depends_on?: ItemId[], reason?}` → `Item` (journaled: `{}`, with the journal position) | adds an item | journal |
 | `board_item_update` | `board.item_update` / UpdateItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, title?, description?, sessions_add?, sessions_remove?, depends_on_add?, depends_on_remove?, expected_revision?, reason?}` (a stale revision fails only when a field it sets changed since; lists never conflict, D155) → `Item` | changes fields given | journal |
 | `board_item_move` | `board.item_move` / MoveItem | as update | `{id, column, after?: ItemId, expected_revision?, reason?}` → `Item` | moves it | journal |
 | `board_item_delete` | `board.item_delete` / DeleteItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, expected_revision?, reason?}` → `{deleted: true}` | tombstone, kept in history | journal |
@@ -280,7 +280,7 @@ rule named until the user changes the rule (IN-18).
     "required": ["id"],
     "additionalProperties": false,
     "properties": {
-      "id": { "type": "string", "description": "PAY-7, or a provisional ~machine.seq id" },
+      "id": { "type": "string", "description": "PAY-7" },
       "title": { "type": "string", "maxLength": 200 },
       "description": { "type": "string", "maxLength": 20000 },
       "assignee": { "type": ["string", "null"], "description": "A session of this channel; null for nobody" },

@@ -16,10 +16,10 @@ fn envelope_schema() -> Value {
         "properties": {
             "outcome": {
                 "enum": ["applied", "journaled", "pending"],
-                "description": "applied: done on the host or this machine. journaled: the host is away; written to this machine's journal and applied when it returns. pending: waiting for the user; call inbox_wait with request_id."
+                "description": "applied: done on the host or this machine. journaled: the host is away; written to this machine's journal and applied when the host replays it. pending: waiting for the user; call inbox_wait with request_id."
             },
             "result": {
-                "description": "The tool's output; set when applied, and for journaled writes the provisional result."
+                "description": "The tool's output; set when applied, and for journaled writes what was journaled. A journaled new item has no id until the host replays it."
             },
             "request_id": {
                 "type": "string",

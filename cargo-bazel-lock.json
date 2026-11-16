@@ -1,5 +1,5 @@
 {
-  "checksum": "19aa440b6c53386143e3a569280537f2dbd7197368496f68eaecdb273a9a2c91",
+  "checksum": "33c4e6ef894d58c1a5cb7f24622839b03ebf18336df7bbd069a898cc7a103d09",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -18641,6 +18641,10 @@
             "target": "rustix"
           },
           {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
             "id": "serde_json 1.0.154",
             "target": "serde_json"
           },
@@ -20053,6 +20057,10 @@
           {
             "id": "hmac 0.13.0",
             "target": "hmac"
+          },
+          {
+            "id": "http-body 1.1.0",
+            "target": "http_body"
           },
           {
             "id": "hyper-util 0.1.21",
@@ -53122,6 +53130,7 @@
     "gpui-kit 0.9.1",
     "gpui-pre-apple 0.3.12",
     "hmac 0.13.0",
+    "http-body 1.1.0",
     "http-body-util 0.1.5",
     "hyper 1.12.0",
     "hyper-util 0.1.21",

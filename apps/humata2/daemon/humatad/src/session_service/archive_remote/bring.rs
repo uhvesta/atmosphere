@@ -175,6 +175,7 @@ impl SessionSvc {
             .pack(bringing.machine, bringing.operation, bringing.session)
             .await
             .map_err(call("stage the session's copy"))?;
+        crate::fault::point("carry.staged");
         // The copy lands each item under its own name in the partial folder.
         let into = format!("sessions/{name}/.humata/{label}.partial");
         let stamp = now_ms();
@@ -186,6 +187,7 @@ impl SessionSvc {
             )
             .await
             .map_err(call("copy the session's staged files"))?;
+        crate::fault::point("carry.copied");
         let has_folder = carry.exists(&from, &packed.folder).await.map_err(call("look for the session's folder"))?;
         if has_folder {
             carry
@@ -221,7 +223,14 @@ impl SessionSvc {
                 let (temp, notice_path) = (partial_path.join("NOTICE.md.tmp"), partial_path.join(NOTICE));
                 std::fs::write(&temp, text).map_err(disk("write", &temp))?;
                 std::fs::rename(&temp, &notice_path).map_err(disk("rename", &temp))?;
-                std::fs::rename(&partial_path, &done_path).map_err(disk("rename", &partial_path))
+                // A cut here: the copy is checked and its notice written,
+                // under the name that says it isn't whole.
+                crate::fault::point("carry.noticed");
+                std::fs::rename(&partial_path, &done_path).map_err(disk("rename", &partial_path))?;
+                // A cut here: the side folder is whole; the machine's copy
+                // isn't released yet.
+                crate::fault::point("carry.placed");
+                Ok(())
             })
             .await,
         )?;

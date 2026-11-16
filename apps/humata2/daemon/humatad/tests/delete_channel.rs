@@ -475,3 +475,64 @@ async fn a_delete_cut_short_finishes_after_a_restart() {
         .into_inner();
     assert_eq!(trash.items.len(), 1, "{trash:?}");
 }
+
+/// Every step a delete takes, as the points a cut can land on.
+const DELETE_POINTS: &[&str] = &[
+    "delete_channel.intent",
+    "delete_channel.stopped",
+    "delete_channel.agents_stopped",
+    "delete_channel.snapshotted",
+    "delete_channel.trashed",
+    "delete_channel.forgotten",
+];
+
+/// A delete cut at any step is finished at the next start: the channel and
+/// its sessions are gone, the folder is in the trash once, no agent runs,
+/// and no note of the delete is left.
+#[tokio::test]
+async fn a_delete_cut_at_any_point_finishes_at_restart_with_nothing_left() {
+    for point in DELETE_POINTS {
+        let mut fixture = Fixture::new().await;
+        fixture.session("One").await;
+        fixture.session("Two").await;
+        let folder = fixture.folder();
+        let tabs = stored_tabs(&state_folder(fixture.daemon.dir.path()));
+        assert!(tabs.iter().any(holder_answers), "the agents run before the delete");
+        fixture.daemon.restart_env(&[("HUMATA2_STOP_AT", point)]).await;
+        common::last_start(&fixture.daemon).await;
+        let plan = fixture.plan().await.unwrap();
+        let _ = fixture.delete(&plan, true).await;
+        let deadline = Instant::now() + WAIT;
+        while std::os::unix::net::UnixStream::connect(&fixture.daemon.socket).is_ok() {
+            assert!(Instant::now() < deadline, "the daemon never died at {point}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        fixture.daemon.restart().await;
+        common::last_start(&fixture.daemon).await;
+
+        until("the delete finishing", || async { !fixture.listed().await }).await;
+        assert!(!folder.exists(), "cut at {point}: the folder is in the trash");
+        assert!(fixture.sessions(true).await.is_empty(), "cut at {point}");
+        let trash = fixture
+            .trash()
+            .await
+            .list_trash(pb::ListTrashRequest::default())
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(trash.items.len(), 1, "cut at {point}: {trash:?}");
+        for tab in stored_tabs(&state_folder(fixture.daemon.dir.path())) {
+            assert!(!holder_answers(&tab), "cut at {point}: tab {} still runs", tab.id);
+        }
+        for tab in &tabs {
+            assert!(!holder_answers(tab), "cut at {point}: tab {} still runs", tab.id);
+        }
+        assert!(pending_requests(&fixture.daemon).await.is_empty(), "cut at {point}");
+        let notes = fixture.world.channels.join(".deleting");
+        until("the note of the delete going", || async {
+            std::fs::read_dir(&notes).map_or(true, |mut left| left.next().is_none())
+        })
+        .await;
+    }
+}

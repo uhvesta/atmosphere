@@ -52,14 +52,25 @@ rust_library(
     ],
 )
 
-DAEMON_DEPS = [
+# What the daemon is built on that has a fault-point build (`*_faults`):
+# the faults daemon swaps each for its twin, so a point in any of them is
+# live in it.
+FAULT_SWAPPED = [
+    "//apps/humata2/daemon/durable",
+    "//apps/humata2/daemon/holder",
+    "//apps/humata2/daemon/revive",
+    "//apps/humata2/daemon/sessions",
+    "//apps/humata2/daemon/store",
+    "//apps/humata2/daemon/transfers",
+]
+
+SHARED_DEPS = [
     ":grpc",
     "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/chunk:humata2_chunk",
     "//apps/humata2/daemon/access",
     "//apps/humata2/daemon/agent_hooks",
     "//apps/humata2/daemon/app_peer",
-    "//apps/humata2/daemon/holder",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/marks",
     "//apps/humata2/daemon/mcp",
@@ -67,12 +78,9 @@ DAEMON_DEPS = [
     "//apps/humata2/daemon/contain",
     "//apps/humata2/daemon/passphrase",
     "//apps/humata2/daemon/review_diff",
-    "//apps/humata2/daemon/revive",
-    "//apps/humata2/daemon/sessions",
-    "//apps/humata2/daemon/store",
-    "//apps/humata2/daemon/transfers",
     "@crates//:clap",
     "@crates//:hmac",
+    "@crates//:http-body",
     "@crates//:hyper-util",
     "@crates//:notify",
     "@crates//:prost",
@@ -86,6 +94,18 @@ DAEMON_DEPS = [
     "@crates//:tonic",
     "@crates//:tower",
     "@crates//:uuid",
+]
+
+DAEMON_DEPS = SHARED_DEPS + FAULT_SWAPPED
+
+# The same daemon on the fault-point builds of its parts.
+FAULTS_DEPS = SHARED_DEPS + [
+    "//apps/humata2/daemon/durable:durable_faults",
+    "//apps/humata2/daemon/holder:holder_faults",
+    "//apps/humata2/daemon/revive:revive_faults",
+    "//apps/humata2/daemon/sessions:sessions_faults",
+    "//apps/humata2/daemon/store:store_faults",
+    "//apps/humata2/daemon/transfers:transfers_faults",
 ]
 
 # The signed app's identity, which the daemon checks socket peers against
@@ -151,6 +171,22 @@ rust_binary(
     deps = DAEMON_DEPS,
 )
 
+# The admin test daemon with every fault point live, its own and its
+# crates': HUMATA2_STOP_AT, HUMATA2_FAULT_TRACE, HUMATA2_FAULT_ARM,
+# HUMATA2_POWER_CUT_ROOTS, and SIGUSR2 as a power cut. Never shipped.
+rust_binary(
+    name = "humatad2_faults",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = [
+        "admin",
+        "faults",
+    ],
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2:__subpackages__"],
+    deps = FAULTS_DEPS,
+)
+
 # The holder, for the app client's parity suite: the daemon there needs one
 # to start sessions, and the holder is visible only inside daemon/.
 filegroup(
@@ -184,6 +220,9 @@ rust_binary(
 
 # The tests that run on the multi-machine rig.
 RIG_TESTS = [
+    "away_approved_board",
+    "away_left_out",
+    "flow_26_10",
     "fork_remote",
     "forget_machine",
     "move_session",
@@ -192,6 +231,8 @@ RIG_TESTS = [
     "remote_archive",
     "remote_rename",
     "remove_machine_live",
+    "restart_operations",
+    "stop_sessions",
     "two_machines",
 ]
 
@@ -212,15 +253,19 @@ RIG_TESTS = [
         data = [
             ":humatad2",
             ":humatad2_admin",
+            ":humatad2_faults",
             ":setsid",
             "//apps/humata2/cli:humata",
             "//apps/humata2/daemon/holder:humata2_holder",
+            "//apps/humata2/daemon/holder:humata2_holder_faults",
         ],
         env = {
             "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
             "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
+            "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
             "HUMATA2_SETSID": "$(rootpath :setsid)",
             "HUMATAD2": "$(rootpath :humatad2_admin)",
+            "HUMATAD2_FAULTS": "$(rootpath :humatad2_faults)",
             "HUMATAD2_RELEASE": "$(rootpath :humatad2)",
         },
         deps = [

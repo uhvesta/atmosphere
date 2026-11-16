@@ -261,20 +261,6 @@ enum DeleteError {
     },
 }
 
-/// Kills the daemon here when `HUMATA2_STOP_AT` names this point, so a
-/// test can show what a crash here leaves behind. Test daemons only.
-#[cfg(feature = "admin")]
-fn stop_point(name: &str) {
-    if std::env::var("HUMATA2_STOP_AT").is_ok_and(|wanted| wanted == name) {
-        let _ = rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::KILL);
-        std::process::abort();
-    }
-}
-
-#[cfg(not(feature = "admin"))]
-#[inline(always)]
-fn stop_point(_name: &str) {}
-
 /// What a delete in progress is written down as.
 fn intent_path(root: &Path, channel: &str) -> PathBuf {
     root.join(INTENTS).join(channel)
@@ -558,6 +544,8 @@ impl ChannelSvc {
             .map_err(|source| DeleteError::Intent { path: note.clone(), source })?;
         }
 
+        // A kill here leaves only the note: the restart runs every step.
+        crate::fault::point("delete_channel.intent");
         step("stop", pb::StepState::Running);
         let (store, id) = (self.starter.store.clone(), channel.id.clone());
         let sessions: Vec<String> = blocking(move || store.sessions())
@@ -569,6 +557,7 @@ impl ChannelSvc {
             .map(|session| session.id)
             .collect();
         self.stop_all(&sessions).await?;
+        crate::fault::point("delete_channel.stopped");
         step("stop", pb::StepState::Done);
 
         step("withdraw", pb::StepState::Running);
@@ -579,7 +568,7 @@ impl ChannelSvc {
                 .map_err(DeleteError::Withdraw)?;
         }
         step("withdraw", pb::StepState::Done);
-        stop_point("delete_channel.agents_stopped");
+        crate::fault::point("delete_channel.agents_stopped");
 
         step("snapshot", pb::StepState::Running);
         let (store, id, side) = (self.starter.store.clone(), channel.id.clone(), folder.join(SIDE_FILE));
@@ -594,6 +583,9 @@ impl ChannelSvc {
         .await
         .map_err(|source| DeleteError::Stop { session: String::new(), source })?
         .map_err(DeleteError::Store)?;
+        // A kill here leaves the side file in the folder: the restart
+        // writes it again.
+        crate::fault::point("delete_channel.snapshotted");
         step("snapshot", pb::StepState::Done);
 
         step("trash", pb::StepState::Running);
@@ -625,6 +617,9 @@ impl ChannelSvc {
         .await
         .map_err(|source| DeleteError::Trash { folder: folder.clone(), source })?
         .map_err(|source| DeleteError::Trash { folder, source })?;
+        // A kill here leaves the folder in the trash and the records: the
+        // restart finds no folder to move and forgets the records.
+        crate::fault::point("delete_channel.trashed");
         step("trash", pb::StepState::Done);
 
         // The records go last: a channel still listed with no folder is a
@@ -639,6 +634,9 @@ impl ChannelSvc {
         .await
         .map_err(|source| DeleteError::Stop { session: String::new(), source })?
         .map_err(DeleteError::Store)?;
+        // A kill here leaves only the note: the restart finds nothing left
+        // to do and removes it.
+        crate::fault::point("delete_channel.forgotten");
         let _ = fs::remove_file(&note);
         Ok(item)
     }

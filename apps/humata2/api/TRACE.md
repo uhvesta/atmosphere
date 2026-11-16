@@ -362,7 +362,7 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | AW-6 | PeerService.Uplink (replay) | — | — | |
 | AW-7 | GRPC.md §9.1, MCP.md §4 table | all tools | — | |
 | AW-8 | PeerService.Uplink (PolicySnapshot) | — | — | |
-| AW-9 | Internal (replay check) | board_item_history | — | |
+| AW-9 | Internal (replay check); Session.away_left_out (D267) | board_item_history | — | |
 | AW-10 | errors.already_answered | — | `humata inbox approve/deny` | |
 | AW-11 | SetAwayRule validates kinds | — | `humata access away low-risk` | |
 | AW-12 | AnswerRequest grant on the machine | — | `humata inbox approve --always` | |

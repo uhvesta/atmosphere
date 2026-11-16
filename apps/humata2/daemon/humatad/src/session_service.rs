@@ -31,7 +31,7 @@ use tonic::{Code, Request, Response, Status};
 use crate::desk_service;
 use crate::events::{Feed, Scope};
 use crate::channel_service::{Gated, answer_gated, answer_gated_showing, blocking, error_of, failed, gate, timestamp_ms};
-use crate::guard::{Checked, Guard};
+use crate::guard::{self, Checked, Guard};
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
 use crate::operations::{Operations, Progress, Started};
@@ -69,6 +69,7 @@ pub(crate) use turns::{
 pub(crate) use hooks::install_agent_hooks;
 pub(crate) use pointers_start::after_restart;
 pub(crate) use move_session::{is_moving, moving_changes};
+pub(crate) use rebuild::{CutRebuild, cut_rebuilds, undo_cut_rebuilds};
 
 mod pointers_start {
     use super::Tell;
@@ -174,6 +175,7 @@ impl Tell {
             loaded.summary_source,
             &self.machine,
         );
+        shown.away_left_out.clone_from(&loaded.away_left_out);
         if let Some(remote) = self.remote.get()
             && remote::elsewhere(&loaded.record, &self.machine)
         {
@@ -204,6 +206,8 @@ pub(crate) struct Loaded {
     agent: Option<AgentRecord>,
     /// What a start fresh could summarize; set only for a failed resume.
     summary_source: pb::session::SummarySource,
+    /// What the host left out of its agent's replayed writes (AW-9, D267).
+    away_left_out: Option<pb::AwayWritesLeftOut>,
 }
 
 impl Loaded {
@@ -217,6 +221,7 @@ impl Loaded {
         Ok(Some(Loaded {
             detail: store.session_detail(key)?,
             summary_source: start_fresh::summary_source(agent.as_ref()),
+            away_left_out: store.away_left_out(key)?.map(away_pb),
             agent,
             record,
         }))
@@ -806,6 +811,107 @@ impl SessionSvc {
         Ok(Gated::Done(operation))
     }
 
+    /// The restart doctor's repair of a session (PER-30, D242): ResumeSession's
+    /// own path and access rule, started again with its pinned conversation.
+    pub(crate) async fn repair_session(
+        &self,
+        caller: &Caller,
+        id: String,
+        approved: bool,
+    ) -> Result<Gated<pb::Operation>, Status> {
+        let request = pb::ResumeSessionRequest {
+            id: Some(pb::SessionId { value: id }),
+            ..pb::ResumeSessionRequest::default()
+        };
+        self.resume(caller, request, approved).await
+    }
+
+    /// The restart doctor's repair of a shell tab (PER-30, D242): started
+    /// again in its folder with the output its old holder saved, as the
+    /// restart does; one whose holder answers is left. A session's tab
+    /// follows the rule for resuming that session; a machine's own shell is
+    /// the user's.
+    pub(crate) async fn repair_tab(
+        &self,
+        caller: &Caller,
+        tab: String,
+        approved: bool,
+    ) -> Result<Gated<()>, Status> {
+        Self::refuse_peer(caller)?;
+        let store = self.starter.store.clone();
+        let key = tab.clone();
+        let found = blocking(move || -> Result<Option<(TabRecord, Option<SessionRecord>)>, StoreError> {
+            let Some(found) = store.tab(&key)? else {
+                return Ok(None);
+            };
+            let session = match &found.session {
+                Some(id) => store.session(id)?,
+                None => None,
+            };
+            Ok(Some((found, session)))
+        })
+        .await?;
+        let (record, session) = match found {
+            Ok(Some(found)) => found,
+            Ok(None) | Err(StoreError::InvalidId { .. }) => {
+                return Err(status::not_found(
+                    pb::EntityKind::Tab,
+                    &tab,
+                    format!("no tab {tab} is on this machine"),
+                    "check the tab's id in the restart report; it may have been closed or be on another machine",
+                ));
+            }
+            Err(error) => return Err(status::store(error, &self.machine, "look up the tab")),
+        };
+        match &session {
+            Some(session) => {
+                let own = matches!(caller, Caller::Agent(agent) if agent.session.id.as_str() == session.id);
+                if let Some(asked) = self.gate(
+                    caller,
+                    if own {
+                        Capability::OwnSessionManage
+                    } else {
+                        Capability::SessionStopOther
+                    },
+                    Target::Session(self.session_ref(session)),
+                    approved,
+                )? {
+                    return Ok(Gated::Ask(asked));
+                }
+            }
+            None => {
+                if !matches!(caller, Caller::User(_)) {
+                    return Err(status::user_only_call(
+                        Capability::SessionStopOther,
+                        "starting a machine's own shell again",
+                        "ask the user to run it, at the app or from their terminal",
+                    ));
+                }
+            }
+        }
+        let tokens = self.tokens.clone();
+        let env = move |tab: &TabRecord| tokens.env(tab);
+        let folder = session.map(|session| session.folder);
+        humata2_revive::restart_shell(
+            &self.starter.store,
+            &self.starter.revive,
+            record,
+            folder,
+            &env,
+            "restarted by the restart doctor",
+        )
+        .await
+        .map_err(|error| {
+            failed(
+                Code::FailedPrecondition,
+                &error,
+                "read the tab's holder log for why, fix that, then repair it again",
+                None,
+            )
+        })?;
+        Ok(Gated::Done(()))
+    }
+
     fn session_ref(&self, record: &SessionRecord) -> humata2_access::SessionRef {
         identity::session_ref(record, &self.machine)
     }
@@ -846,6 +952,7 @@ impl SessionSvc {
             loaded.summary_source,
             &self.machine,
         );
+        shown.away_left_out.clone_from(&loaded.away_left_out);
         self.merge_remote(&loaded.record, &mut shown);
         if !remote::elsewhere(&loaded.record, &self.machine) {
             self.tell.pointers.fill(&loaded.record.id, &mut shown);
@@ -998,6 +1105,16 @@ fn shown_status(
     agent: Option<&AgentState>,
     start: Option<StartStep>,
 ) -> pb::SessionStatus {
+    // D264: an agent a Start would bring back reads as stopped with its
+    // machine; the store still says it runs.
+    if crate::stop::gate::is_stopped()
+        && matches!(
+            agent,
+            Some(AgentState::Launching | AgentState::Resuming | AgentState::Running { .. })
+        )
+    {
+        return pb::SessionStatus::MachineStopped;
+    }
     match (session_status(agent, start), agent) {
         (pb::SessionStatus::Working, Some(AgentState::Running { holder_pid })) => {
             // An agent with no turns shows none (SE-21).
@@ -1016,6 +1133,21 @@ fn exit_code(agent: Option<&AgentState>) -> i32 {
         Some(AgentState::Exited { code }) => *code,
         Some(AgentState::ResumeFailed { exit_code, .. }) => exit_code.unwrap_or(0),
         _ => 0,
+    }
+}
+
+/// What the host left out of an agent's replayed writes, as the feed shows it.
+fn away_pb(left: humata2_store::AwayLeftOut) -> pb::AwayWritesLeftOut {
+    pb::AwayWritesLeftOut {
+        count: left.count,
+        items: left
+            .items
+            .into_iter()
+            .map(|value| pb::BoardItemId { value })
+            .collect(),
+        not_made: left.not_made,
+        refused: left.refused,
+        at: Some(timestamp_ms(left.at_unix_ms)),
     }
 }
 
@@ -1596,14 +1728,23 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::StartSessionRequest>,
     ) -> Result<Response<pb::StartSessionResponse>, Status> {
         let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
         let assigned = identity::host_assigned_id(&request, &caller)?;
+        let bound = guard::hold_bound(&caller, request.metadata());
         let request = request.into_inner();
         let key = request
             .idempotency_key
             .as_ref()
             .map(|key| key.value.clone());
+        // A machine that hasn't been sent the Mac's rules can't tell
+        // whether to contain the agent (D266): it waits for the copy.
+        self.guard.host_rules(bound).await?;
+        // Starting on another machine waits for the Mac while it is away.
         let first = self
-            .begin_session(&caller, request.clone(), assigned.clone(), false)
+            .guard
+            .held(bound, || {
+                self.begin_session(&caller, request.clone(), assigned.clone(), false)
+            })
             .await;
         let (me, who) = (self.clone(), caller.clone());
         answer_gated(
@@ -1682,7 +1823,12 @@ impl pb::session_service_server::SessionService for SessionSvc {
         }
         let store = self.starter.store.clone();
         let include_archived = request.include_archived;
-        let (sessions, details, agents, sources, lineage) = blocking(move || {
+        let (sessions, details, agents, sources, lineage, left_out) = blocking(move || {
+            let left_out: HashMap<String, pb::AwayWritesLeftOut> = store
+                .away_left_outs()?
+                .into_iter()
+                .map(|(session, left)| (session, away_pb(left)))
+                .collect();
             let agents = store.agents()?;
             // Read from the disk, so here and not in the handler.
             let sources: HashMap<String, pb::session::SummarySource> = agents
@@ -1707,6 +1853,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
                 agents,
                 sources,
                 lineage,
+                left_out,
             ))
         })
         .await?
@@ -1753,6 +1900,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
                         .unwrap_or(pb::session::SummarySource::Unspecified),
                     &self.machine,
                 );
+                shown.away_left_out = left_out.get(&session.id).cloned();
                 self.merge_remote(session, &mut shown);
                 lineage.apply(&mut shown);
                 move_session::show_moving(&mut shown);
@@ -1824,11 +1972,15 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::ResumeSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
+        let bound = guard::hold_bound(&caller, request.metadata());
         let request = request.into_inner();
         let key = request
             .idempotency_key
             .as_ref()
             .map(|key| key.value.clone());
+        // As for a start: no launch before the Mac's rules are here (D266).
+        self.guard.host_rules(bound).await?;
         let first = self.resume(&caller, request.clone(), false).await;
         let (me, who) = (self.clone(), caller.clone());
         answer_gated(
@@ -1890,13 +2042,18 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::ForkSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
         self.refuse_desk(request.get_ref().parent.as_ref(), "Fork").await?;
+        let bound = guard::hold_bound(&caller, request.metadata());
         let request = request.into_inner();
         let key = request
             .idempotency_key
             .as_ref()
             .map(|key| key.value.clone());
-        let first = self.fork_session_of(&caller, request.clone(), false).await;
+        let first = self
+            .guard
+            .held(bound, || self.fork_session_of(&caller, request.clone(), false))
+            .await;
         // TP-6, IN-10: a fork waiting on Ask me shows what it would start.
         let card = match &first {
             Ok(Gated::Ask(_)) => self.fork_card(&request).await,
@@ -1944,13 +2101,18 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::MoveSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
         self.refuse_desk(request.get_ref().id.as_ref(), "Move").await?;
+        let bound = guard::hold_bound(&caller, request.metadata());
         let request = request.into_inner();
         let key = request
             .idempotency_key
             .as_ref()
             .map(|key| key.value.clone());
-        let first = self.move_session_of(&caller, request.clone(), false).await;
+        let first = self
+            .guard
+            .held(bound, || self.move_session_of(&caller, request.clone(), false))
+            .await;
         let (me, who) = (self.clone(), caller.clone());
         answer_gated(
             &self.inbox,
@@ -2052,6 +2214,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
         request: Request<pb::RebuildSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
         let request = request.into_inner();
         let key = request
             .idempotency_key
@@ -2099,8 +2262,12 @@ impl pb::session_service_server::SessionService for SessionSvc {
     ) -> Result<Response<pb::PushPlan>, Status> {
         let caller = identity::caller(&request)?;
         self.refuse_desk(request.get_ref().id.as_ref(), "Push").await?;
+        let bound = guard::hold_bound(&caller, request.metadata());
         let request = request.into_inner();
-        let first = self.plan_push_of(&caller, request.clone(), false).await;
+        let first = self
+            .guard
+            .held(bound, || self.plan_push_of(&caller, request.clone(), false))
+            .await;
         let (me, who) = (self.clone(), caller.clone());
         answer_gated(
             &self.inbox,
@@ -2119,13 +2286,17 @@ impl pb::session_service_server::SessionService for SessionSvc {
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
         self.refuse_desk(request.get_ref().id.as_ref(), "Push").await?;
+        let bound = guard::hold_bound(&caller, request.metadata());
         let request = request.into_inner();
         let key = request
             .idempotency_key
             .as_ref()
             .map(|key| key.value.clone());
         let first = self
-            .push_and_open_pull_requests_of(&caller, request.clone(), false)
+            .guard
+            .held(bound, || {
+                self.push_and_open_pull_requests_of(&caller, request.clone(), false)
+            })
             .await;
         let (me, who) = (self.clone(), caller.clone());
         answer_gated(

@@ -169,6 +169,7 @@ async fn the_size_a_writer_attaches_with_reaches_the_shell() {
         .send(ClientMessage::Resize(pb::TerminalResize {
             cols: 90,
             rows: 20,
+            ..Default::default()
         }))
         .await;
     attach.type_text("stty size\n").await;

@@ -530,3 +530,128 @@ async fn freeing_a_context_only_fork_removes_its_handover_file_and_keeps_its_par
     let parent = get_session(&fixture.daemon, &fixture.parent_id()).await;
     assert_eq!(parent.repos.len(), 1, "the parent keeps its repo");
 }
+
+/// The names in `dir`, sorted.
+fn names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// What a fork is cut against: the folders a restart after the cut must
+/// leave as they were.
+struct Before {
+    /// The folder the channel's session folders are in.
+    sessions_folder: PathBuf,
+    folder_names: Vec<String>,
+    conversation_names: Vec<String>,
+}
+
+impl Before {
+    fn of(fixture: &Fixture) -> Self {
+        let sessions_folder = fixture
+            .clone_of(&fixture.parent)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_owned();
+        Self {
+            folder_names: names(&sessions_folder),
+            sessions_folder,
+            conversation_names: names(&fixture.world.conv),
+        }
+    }
+}
+
+/// Forks the parent with `request`, has the daemon die at the stop point
+/// `stop`, and starts the daemon again.
+async fn cut_fork_at(fixture: &mut Fixture, stop: &str, request: pb::ForkSessionRequest) {
+    fixture.daemon.restart_env(&[("HUMATA2_STOP_AT", stop)]).await;
+    last_start(&fixture.daemon).await;
+    let _ = fixture
+        .daemon
+        .session_service()
+        .await
+        .fork_session(request)
+        .await;
+    wait_dead(&fixture.daemon).await;
+    fixture.daemon.restart().await;
+    last_start(&fixture.daemon).await;
+}
+
+/// After a restart, a cut fork is gone: no session, no folder, no copy of
+/// its conversation, and the parent is as it was.
+async fn assert_fork_undone(fixture: &Fixture, before: &Before) {
+    let sessions = fixture.sessions().await;
+    assert_eq!(sessions.len(), 1, "the cut fork is gone: {sessions:?}");
+    assert_eq!(sessions[0].id, Some(fixture.parent_id()));
+    assert_eq!(
+        names(&before.sessions_folder),
+        before.folder_names,
+        "the fork's folder was removed"
+    );
+    assert_eq!(
+        names(&fixture.world.conv),
+        before.conversation_names,
+        "the fork's conversation copy was removed"
+    );
+    let parent = get_session(&fixture.daemon, &fixture.parent_id()).await;
+    assert!(parent.forks.is_empty(), "{parent:?}");
+    assert_eq!(parent.repos, fixture.parent.repos, "the parent keeps its repo");
+    let clone = fixture.clone_of(&parent);
+    assert_eq!(branch_of(&clone), parent.repos[0].branch);
+    assert_eq!(std::fs::read_to_string(clone.join("login.rs")).unwrap(), "fn login() {}\n");
+    assert_eq!(std::fs::read_to_string(clone.join("README.md")).unwrap(), "acme/api\nchanged\n");
+    assert_eq!(std::fs::read_to_string(clone.join("notes.txt")).unwrap(), "untracked\n");
+    assert!(conversation(&fixture.world, &parent).contains("remember the retry"));
+}
+
+#[tokio::test]
+async fn a_fork_cut_when_its_records_are_saved_is_undone_at_restart() {
+    let mut fixture = Fixture::new().await;
+    let before = Before::of(&fixture);
+    let request = fixture.request(pb::ForkKind::CodeAndContext, "Cut at the record");
+    cut_fork_at(&mut fixture, "fork.write_record", request).await;
+    assert_fork_undone(&fixture, &before).await;
+}
+
+#[tokio::test]
+async fn a_fork_cut_after_its_conversation_is_copied_is_undone_at_restart() {
+    let mut fixture = Fixture::new().await;
+    let before = Before::of(&fixture);
+    let request = fixture.request(pb::ForkKind::CodeAndContext, "Cut after the conversation");
+    cut_fork_at(&mut fixture, "fork.copy_conversation", request).await;
+    assert_fork_undone(&fixture, &before).await;
+}
+
+#[tokio::test]
+async fn a_fork_cut_before_its_agent_launches_is_undone_at_restart() {
+    let mut fixture = Fixture::new().await;
+    let before = Before::of(&fixture);
+    let request = fixture.request(pb::ForkKind::CodeAndContext, "Cut at the launch");
+    cut_fork_at(&mut fixture, "fork.launch", request).await;
+    assert_fork_undone(&fixture, &before).await;
+}
+
+#[tokio::test]
+async fn a_code_only_fork_cut_before_its_agent_launches_is_undone_at_restart() {
+    let mut fixture = Fixture::new().await;
+    let before = Before::of(&fixture);
+    let request = fixture.request(pb::ForkKind::CodeOnly, "Clean cut");
+    cut_fork_at(&mut fixture, "fork.launch", request).await;
+    assert_fork_undone(&fixture, &before).await;
+}
+
+#[tokio::test]
+async fn a_handed_over_fork_cut_after_its_conversation_is_copied_is_undone_at_restart() {
+    let mut fixture = Fixture::with_other_agent().await;
+    let before = Before::of(&fixture);
+    let mut request = fixture.request(pb::ForkKind::CodeAndContext, "Cut at the handover");
+    request.agent = Some(pb::AgentId { value: OTHER.to_owned() });
+    cut_fork_at(&mut fixture, "fork.copy_conversation", request).await;
+    assert_fork_undone(&fixture, &before).await;
+}

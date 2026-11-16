@@ -47,10 +47,14 @@ milestone file; agents read that file, not this one.
 | [VIEWS](milestones/VIEWS.md) | Agents prepare views; I choose to open them | L4 | UI + daemon | ASK: preparing a view is rule-gated; REVIEW: a prepared review opens in the diff and editor; FRAMES2: the prepared view's tab and Showing bar have no frame yet | blocked |
 | [PR](milestones/PR.md) | Review a pull request with an agent beside me | L4 | UI + daemon | REVIEW: a PR review is the review surface plus drafts; ASK: the review chat's tools are scoped by access; FRAMES2: the PR dialog, review session and Submit review have no frame yet | blocked |
 | [SAFE](milestones/SAFE.md) | Nothing is lost, ever | L4 | daemon | MACH: add machine and install must exist to be cut; FORK: moves and forks must exist to be cut; FILES: transfers must exist to be cut | open (lane SAFE) |
+| [STOP](milestones/STOP.md) | Stop everything on a machine, and bring it back later | L4 | daemon + UI | MACH: a machine page and link must exist; SAFE*: reuses its shutdown, bring-back, restart report and doctor | open (lane STOP; owner's ask 2026-11-16) |
 | [LINUX](milestones/LINUX.md) | The same app on Linux | L5 | exclusive (nothing else builds) | SAFE: the owner's rule: the Linux batch runs only after all infrastructure work; ASK: its boundary suites are part of the batch; BUG: its suites are part of the batch | blocked |
 | [ANYHOST](milestones/ANYHOST.md) | Any client, any host | L6 | daemon | LINUX: a self-hosted host is a Linux host; its suites run in the VM | blocked |
 | [HOOKS](milestones/HOOKS.md) | Agents tell Humata when a turn ends and ask for approval in the Inbox, without terminal guesswork | L3 | daemon | ASK: asks land as Inbox requests; FL: turn ends already detected | done (0bdf1434; live hook checks owed) |
-| [V1](milestones/V1.md) | Replace Humata 1 (1.0) | L7 | main | ANYHOST: 1.0 runs on both platforms and in a browser; BOARD: every §26 flow passes; PR: every §26 flow passes; VIEWS: every §26 flow passes; AWAY: every §26 flow passes; FIND: every §26 flow passes; TIDY: no dropped designs ship | blocked |
+| [NEWCH](milestones/NEWCH.md) | New channel lets me pick repos from gh and machines, as drawn | L4 | UI + clients | MACH: machines and online state; FL: channel creation and clone progress; REVIEW*: shares ui/ and look_test | open (lane NEWCH; found 2026-11-16) |
+| [TERM](milestones/TERM.md) | Session tabs run on the reusable terminal, the same on desktop and in the browser | L4 | ui + clients | FL: app on the real daemon; DESK*/REVIEW*: share ui/ and look_test | open (lane TERM; owner 2026-11-16) |
+| [UPGRADE](milestones/UPGRADE.md) | Any Humata found at another version is upgraded at once | L4 | daemon + clients + UI | MACH: link + Hello version; STOP*/SAFE*: re-exec and cut safety | open (lane UPGRADE; owner 2026-11-16) |
+| [V1](milestones/V1.md) | Replace Humata 1 (1.0) | L7 | main | ANYHOST: 1.0 runs on both platforms and in a browser; BOARD: every §26 flow passes; PR: every §26 flow passes; VIEWS: every §26 flow passes; AWAY: every §26 flow passes; STOP: a last-resort stop exists; FIND: every §26 flow passes; TIDY: no dropped designs ship | blocked |
 
 ## Critical path
 
@@ -181,6 +185,9 @@ graph TD
   PR --> V1
   VIEWS --> V1
   AWAY --> V1
+  NEWCH --> V1
+  TERM --> V1
+  UPGRADE --> V1
   ASK --> HOOKS
   FL --> HOOKS
   HOOKS --> V1

@@ -422,6 +422,34 @@ const MIGRATIONS: &[&str] = &[
         applied_through INTEGER NOT NULL
     ) STRICT;
 ",
+    "
+    -- The host's last answers to a machine's agents' reads (AWAY T10d, D227):
+    -- by session, method and the sha256 of the request's bytes, with when the
+    -- host answered. A machine whose host is away answers the same read from
+    -- here. A session keeps its newest 64; they go with the session.
+    CREATE TABLE last_copies (
+        session TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+        method TEXT NOT NULL,
+        request_hash BLOB NOT NULL,
+        response BLOB NOT NULL,
+        answered_unix_ms INTEGER NOT NULL,
+        PRIMARY KEY (session, method, request_hash)
+    ) STRICT;
+",
+    "
+    -- Step 20. What the host left out of a machine agent's replayed board
+    -- writes (AW-9, D267): one summary per session, replaced by a later
+    -- link-up's. Names are newline-joined (item keys, one-line titles).
+    CREATE TABLE away_left_out (
+        session TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+        link_up_unix_ms INTEGER NOT NULL,
+        count INTEGER NOT NULL,
+        items TEXT NOT NULL,
+        not_made TEXT NOT NULL,
+        refused INTEGER NOT NULL,
+        at_unix_ms INTEGER NOT NULL
+    ) STRICT;
+",
 ];
 
 /// The schema this build writes and reads.

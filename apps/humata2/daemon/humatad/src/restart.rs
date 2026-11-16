@@ -17,6 +17,10 @@ use humata2_store::{Restored, ResumeFailure, Store, StoreError, TabKind, TabReco
 use crate::identity::{Identities, TabIdentity};
 use crate::status;
 
+mod operations;
+
+pub(crate) use operations::{Operations, State as OperationState};
+
 /// How long a resumed agent has to show it took up its conversation.
 const RESUME_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a resumed agent's output stays quiet before it's told it was
@@ -93,6 +97,8 @@ pub(crate) fn starter(store: &Arc<Store>, revive: Revive, sessions: Sessions) ->
 pub(crate) struct Started {
     done: OnceLock<pb::LastStart>,
     set: tokio::sync::Notify,
+    /// The operations this start found cut short and how each ended (D241).
+    operations: Operations,
 }
 
 impl Started {
@@ -101,7 +107,12 @@ impl Started {
         self.done.get()
     }
 
-    fn set(&self, start: pb::LastStart) {
+    /// Where the recoveries of this start say what they found and did.
+    pub(crate) fn operations(&self) -> &Operations {
+        &self.operations
+    }
+
+    pub(crate) fn set(&self, start: pb::LastStart) {
         let _ = self.done.set(start);
         self.set.notify_waiters();
     }
@@ -132,12 +143,16 @@ pub(crate) fn in_background(
     restored: Option<Restored>,
     tell: crate::session_service::Tell,
     socket: PathBuf,
+    after_stop: Option<crate::stop::boot::AfterStop>,
 ) -> Arc<Started> {
     let done = Arc::new(Started::default());
     let setting = done.clone();
+    let operations = done.operations().clone();
     // Read now, before anything is served, so a channel or session a call
     // makes while this runs is left to that call.
     let left = Leftovers::read(&store);
+    // Likewise the rebuilds the last run began here and didn't end.
+    let cut_rebuilds = crate::session_service::cut_rebuilds(&starter);
     tokio::spawn(async move {
         let start = bring_back(
             &store,
@@ -145,9 +160,16 @@ pub(crate) fn in_background(
             &starter,
             restored.as_ref(),
             left,
+            cut_rebuilds,
             socket,
+            &operations,
         )
         .await;
+        // D265: a start after a stop names it in the report and the start.
+        let start = match after_stop {
+            Some(after) => crate::stop::boot::finish_start(start, after).await,
+            None => start,
+        };
         setting.set(start);
         crate::session_service::after_restart(tell).await;
     });
@@ -156,13 +178,16 @@ pub(crate) fn in_background(
 
 /// Brings back what the last run left, and says what it couldn't. Never
 /// fails the start: a reconcile that can't run is itself the one line.
+#[allow(clippy::too_many_arguments)]
 async fn bring_back(
     store: &Arc<Store>,
     identities: &Arc<Identities>,
     starter: &Starter,
     restored: Option<&Restored>,
     left: Result<Leftovers, StoreError>,
+    cut_rebuilds: Vec<crate::session_service::CutRebuild>,
     socket: PathBuf,
+    operations: &Operations,
 ) -> pb::LastStart {
     let tokens = Tokens::new(store.clone(), identities.clone(), socket);
     let env = |tab: &TabRecord| tokens.env(tab);
@@ -175,7 +200,7 @@ async fn bring_back(
         start.restored_rows_changed = u32::try_from(restored.changes.len()).unwrap_or(u32::MAX);
     }
     match humata2_revive::reconcile(store, &starter.revive, &env, restored).await {
-        Ok(reconciled) => describe(reconciled, &mut start),
+        Ok(reconciled) => describe(reconciled, &mut start, operations),
         Err(error) => {
             crate::log::say!(
                 "humatad2: couldn't bring back this machine's sessions: {}",
@@ -188,6 +213,9 @@ async fn bring_back(
             });
         }
     }
+    // Before the starts are finished: a rebuild cut short would be started
+    // with no conversation.
+    crate::session_service::undo_cut_rebuilds(starter, cut_rebuilds).await;
     match left {
         Ok(left) => {
             for recovery in recover(starter, &env, &left).await {
@@ -264,7 +292,7 @@ fn resume_failed(reason: ResumeFailure, exit_code: Option<i32>) -> String {
     }
 }
 
-fn describe(reconciled: Reconciled, start: &mut pb::LastStart) {
+fn describe(reconciled: Reconciled, start: &mut pb::LastStart, operations: &Operations) {
     for (session, outcome) in reconciled.agents {
         if let Ok(Revived::Resumed { .. }) = &outcome {
             start.resumed.push(pb::SessionId {
@@ -298,7 +326,10 @@ fn describe(reconciled: Reconciled, start: &mut pb::LastStart) {
         }
     }
     match reconciled.report {
-        Ok(folder) => start.report = folder.display().to_string(),
+        Ok(folder) => {
+            operations.set_folder(&folder);
+            start.report = folder.display().to_string();
+        }
         Err(error) => crate::log::say!(
             "humatad2: couldn't write the restart report: {}",
             status::chain(&error)

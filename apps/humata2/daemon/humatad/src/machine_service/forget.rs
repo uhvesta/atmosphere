@@ -15,7 +15,7 @@ use humata2_grpc::humata::v1 as pb;
 use humata2_machines::ManageError;
 use tonic::{Code, Request, Response, Status};
 
-use super::{MachineSvc, lock, machine_id, machine_of, status_of};
+use super::{MachineSvc, Work, lock, machine_id, machine_of, status_of};
 use crate::identity;
 use crate::status;
 
@@ -51,6 +51,9 @@ pub(crate) struct Forgetful {
     plans: Mutex<HashMap<String, (String, Instant)>>,
     /// Held while the answers file is read or written.
     answers: Mutex<()>,
+    /// Held while a forget's steps run, so a retry and the restart's own
+    /// finish of the same forget take them one after the other.
+    finishing: tokio::sync::Mutex<()>,
 }
 
 /// What one ForgetMachine key did, as the answers file keeps it. A started
@@ -180,6 +183,12 @@ impl Forgetful {
         }
     }
 
+    /// The forgets that began and never answered, oldest first.
+    fn unanswered(&self, hosts_file: &Path) -> Vec<Answer> {
+        let _held = lock(&self.answers);
+        read_answers(&answers_path(hosts_file)).into_iter().filter(|answer| !answer.done).collect()
+    }
+
     /// Spends the plan `token` made for `machine`, once.
     fn spend(&self, token: &str, machine: &str) -> Result<(), Status> {
         let planned = lock(&self.plans)
@@ -260,6 +269,10 @@ impl MachineSvc {
         // plan's token died with the process, but what it listed was kept.
         let begun = key.as_ref().and_then(|key| forgetting.started(hosts_file, key, &name));
         let mut planned = begun.clone().unwrap_or_default();
+        // Every forget is kept before it archives anything, with the key
+        // the caller gave or one of its own, so a restart can finish it
+        // when no one asks again.
+        let kept_as = key.clone().unwrap_or_else(|| format!("forget-{}", uuid::Uuid::new_v4().simple()));
         if begun.is_none() {
             let token = request
                 .plan
@@ -268,13 +281,33 @@ impl MachineSvc {
                 .ok_or_else(|| status::missing("plan"))?;
             let listed = forgetting.hook()?.lost_on(&name).await?;
             forgetting.spend(&token, &name)?;
-            if let Some(key) = &key {
-                let ids: Vec<pb::SessionId> = listed.iter().filter_map(|lost| lost.session.clone()).collect();
-                forgetting.begin(hosts_file, key.clone(), &name, &ids);
-                planned = ids.into_iter().map(|id| id.value).collect();
-            }
+            let ids: Vec<pb::SessionId> = listed.iter().filter_map(|lost| lost.session.clone()).collect();
+            forgetting.begin(hosts_file, kept_as.clone(), &name, &ids);
+            planned = ids.into_iter().map(|id| id.value).collect();
+            // A kill here leaves the forget begun and nothing archived: the
+            // restart finishes it.
+            crate::fault::point("forget.begun");
         }
-        let mut archived = forgetting.hook()?.archive_lost(&name).await?;
+        let archived = self.work.finish_forget(hosts_file, kept_as, &name, planned).await?;
+        Ok(Response::new(pb::ForgetMachineResponse { archived }))
+    }
+}
+
+impl Work {
+    /// The steps of a forget once its plan is spent and it is kept: archive
+    /// the machine's sessions, take it out of the host's list and let go of
+    /// its link, then keep the answer. Every step can run again, so a
+    /// retry with the key and a restart both finish a forget cut short.
+    async fn finish_forget(
+        &self,
+        hosts_file: &Path,
+        key: String,
+        name: &str,
+        planned: Vec<String>,
+    ) -> Result<Vec<pb::SessionId>, Status> {
+        let forgetting = &self.forgetting;
+        let _one_at_a_time = forgetting.finishing.lock().await;
+        let mut archived = forgetting.hook()?.archive_lost(name).await?;
         // What an earlier, cut short run archived is no longer listed by the
         // sessions' side; the answer is the same as the first call's.
         for value in planned.into_iter().rev() {
@@ -282,34 +315,38 @@ impl MachineSvc {
                 archived.insert(0, pb::SessionId { value });
             }
         }
-        stop_point("forget.archived");
+        crate::fault::point("forget.archived");
         // LD-12: this host forgets it without reaching it, so it is never
         // dialed again and adding it later makes a new machine. A retry
         // after this step finds it already gone.
-        match self.work.machines.forget(&name) {
+        match self.machines.forget(name) {
             Ok(()) | Err(ManageError::NotFound { .. }) => {}
             Err(error) => return Err(status_of(&error)),
         }
-        self.work.link_down(&name);
-        self.work.forget_peer(&name);
-        if let Some(key) = key {
-            forgetting.remember(hosts_file, key, &name, &archived);
+        // A kill here leaves the machine gone from the list with its link
+        // and the answer not yet let go of and kept: the restart finishes it.
+        crate::fault::point("forget.machine_removed");
+        self.link_down(name);
+        self.forget_peer(name);
+        self.forget_journal(name).await;
+        forgetting.remember(hosts_file, key, name, &archived);
+        Ok(archived)
+    }
+}
+
+/// At start: finishes each forget the last run began and didn't answer, as
+/// a retry with its key would, without the plan token that died with it.
+/// Safe to repeat. Needs the SessionService's hook, so it runs once that
+/// is set.
+pub(crate) async fn finish_forgets(work: Arc<Work>) {
+    let hosts_file = work.machines.hosts_file().to_owned();
+    for begun in work.forgetting.unanswered(&hosts_file) {
+        if let Err(error) = work.finish_forget(&hosts_file, begun.key, &begun.machine, begun.archived).await {
+            crate::log::say!(
+                "humatad2: couldn't finish forgetting {}: {}; forget it again to finish",
+                begun.machine,
+                status::chain(&error)
+            );
         }
-        Ok(Response::new(pb::ForgetMachineResponse { archived }))
     }
 }
-
-/// Kills the process with SIGKILL when `HUMATA2_STOP_AT` names this point, so
-/// a test can show what a crash here leaves behind. Test daemons only: a
-/// release build never reads the variable.
-#[cfg(feature = "admin")]
-fn stop_point(name: &str) {
-    if std::env::var("HUMATA2_STOP_AT").is_ok_and(|wanted| wanted == name) {
-        let _ = rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::KILL);
-        std::process::abort();
-    }
-}
-
-#[cfg(not(feature = "admin"))]
-#[inline(always)]
-fn stop_point(_name: &str) {}

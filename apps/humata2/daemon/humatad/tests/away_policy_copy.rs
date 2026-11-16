@@ -4,6 +4,8 @@
 //! restart, and nothing on the machine changes it.
 
 mod common;
+#[path = "common/away.rs"]
+mod away;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -181,9 +183,10 @@ async fn the_rules_cannot_be_changed_on_a_machine() {
     assert_eq!(away_mode(&daemon).await, pb::AwayMode::Skip as i32);
 }
 
-/// Waits until the machine's `host_reachable` is `want`, as away_link.rs
-/// does: the feed is subscribed before the state is read.
-async fn host_reachable_becomes(daemon: &Daemon, want: bool) {
+#[tokio::test(flavor = "multi_thread")]
+async fn keeping_a_copy_is_reported_on_the_machines_feed() {
+    let daemon = machine_daemon().await;
+    let (_child, channel) = link(&daemon).await;
     let mut feed = pb::event_service_client::EventServiceClient::new(daemon.channel().await)
         .subscribe(pb::SubscribeRequest {
             topics: vec![pb::Topic::Machines as i32],
@@ -192,22 +195,21 @@ async fn host_reachable_becomes(daemon: &Daemon, want: bool) {
         .await
         .unwrap()
         .into_inner();
-    if server_info(daemon).await.host_reachable == want {
-        return;
-    }
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let (to_machine, mut from_machine) = uplink(&channel).await;
+    to_machine.send(snapshot(5, pb::AwayMode::Skip)).await.unwrap();
+    assert_eq!(acked(&mut from_machine).await, 5);
+
+    let kept = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let event = feed.message().await.unwrap().expect("the event feed stayed open");
-            if matches!(
-                &event.payload,
-                Some(pb::event::Payload::HostLink(changed)) if changed.reachable == want
-            ) {
-                return;
+            if let Some(pb::event::Payload::PolicyCopy(kept)) = event.payload {
+                return kept.revision;
             }
         }
     })
     .await
-    .expect("the machine's view of its host never changed");
+    .expect("the machine never reported its copy kept");
+    assert_eq!(kept, 5);
 }
 
 const CHANNEL: &str = "ch_away";
@@ -274,7 +276,7 @@ async fn the_user_on_a_machine_reads_the_rules_it_judges_by_while_the_host_is_aw
     to_machine.send(snapshot_with_channel(7)).await.unwrap();
     assert_eq!(acked(&mut from_machine).await, 7);
     drop((to_machine, from_machine, child));
-    host_reachable_becomes(&daemon, false).await;
+    away::host_reachable_becomes(&daemon, false).await;
 
     for round in ["away", "away after a restart"] {
         let rules = channel_rules(&daemon)

@@ -108,13 +108,16 @@ impl Machine {
             .unwrap();
         let mut attach = Attach::start(&daemon, open(&tab, 0)).await;
         let file = daemon.dir.path().join("token");
+        // The shell prints the marker once the token is in the file, so
+        // the file is read only after the screen shows it.
         attach
             .type_text(&format!(
-                "printf '%s' \"$HUMATA_SESSION_TOKEN\" > {}\r",
+                "printf '%s' \"$HUMATA_SESSION_TOKEN\" > {}; echo tok''en-written\r",
                 file.display()
             ))
             .await;
-        let token = away::read_when_written(&file).await;
+        attach.wait_for("token-written").await;
+        let token = std::fs::read_to_string(&file).expect("the session token was kept");
         Self {
             daemon,
             token,

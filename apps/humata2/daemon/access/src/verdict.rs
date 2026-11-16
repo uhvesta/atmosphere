@@ -178,6 +178,11 @@ pub enum Refusal {
     PeerCannotCall,
 
     #[error(
+        "sessions on {machine} are stopped, so agents and scripts are not answered; the user starts them from the app or with `humata start`, then the call can be made again"
+    )]
+    MachineStopped { machine: MachineId },
+
+    #[error(
         "\"{capability}\" has no \"Always allow …\" to ask ahead for; make the call itself and the user is asked then"
     )]
     NothingToAskAhead { capability: Capability },
@@ -291,6 +296,7 @@ impl Refusal {
             Self::PeerOnly { .. } | Self::PeerCannotCall => {
                 ErrorKind::Denied(DeniedSource::PeerLink)
             }
+            Self::MachineStopped { .. } => ErrorKind::Denied(DeniedSource::HardLimit),
             Self::NothingToAskAhead { .. } => ErrorKind::InvalidField,
         }
     }
@@ -329,7 +335,9 @@ impl Refusal {
                 Fix::NotFromAScript
             }
             Self::NothingToAskAhead { .. } => Fix::MakeTheCall,
-            Self::PeerOnly { .. } | Self::PeerCannotCall => Fix::Nothing,
+            Self::PeerOnly { .. } | Self::PeerCannotCall | Self::MachineStopped { .. } => {
+                Fix::Nothing
+            }
         }
     }
 }

@@ -95,6 +95,8 @@ pub enum Operation {
     CreateSession,
     /// [`Daemon::create_channel`].
     CreateChannel,
+    /// [`Daemon::github_repos`].
+    GitHubRepos,
     /// [`Daemon::move_item`].
     MoveItem,
     /// [`Daemon::archive`].
@@ -315,6 +317,13 @@ pub trait Daemon: Send + Sync + 'static {
         repos: Vec<String>,
         machines: Vec<MachineId>,
     ) -> Reply<ChannelId>;
+    /// The GitHub repositories `gh` on the host sees, as `owner/name`, that
+    /// match `query` (all of them for an empty one), the most recently
+    /// pushed first (CH-3).
+    fn github_repos(&self, query: &str) -> Reply<Vec<String>> {
+        let what = format!("Listing the GitHub repositories gh sees matching {query:?}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
     /// Stops a channel setup; the folders it made are moved to the trash.
     fn cancel_setup(&self, setup: &SetupId) -> Reply<()>;
     /// Runs a failed channel setup's failed steps again; the channel, once done.

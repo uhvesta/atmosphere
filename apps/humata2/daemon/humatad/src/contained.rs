@@ -6,12 +6,20 @@
 //! instead.
 
 use std::ffi::OsString;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use humata2_contain::{Agent, Containment, hide_from_git, home_rules, seed_claude_copy};
+use humata2_contain::{
+    Agent, Containment, Login, TOKEN_VARIABLES, choose_login, flow_back, hide_from_git, home_rules, parse_version,
+    seed_claude_copy,
+};
 use humata2_revive::{Contain, ContainRefused};
 use humata2_store::{AgentRecord, Store, StoreError};
+
+use crate::guard::Guard;
 
 /// The store key of Settings › Security › Contain agents: "true" when on.
 const GLOBAL_KEY: &str = "security.contain_agents";
@@ -84,6 +92,10 @@ pub(crate) struct Contained {
     /// The daemon's socket: the one local connection allowed.
     socket: PathBuf,
     home: PathBuf,
+    /// Where to ask whether the host's rules are in force: a machine with
+    /// no policy copy launches nothing, since it would read Contain agents
+    /// as off (D266).
+    host_rules: Option<Arc<Guard>>,
 }
 
 impl Contained {
@@ -94,15 +106,28 @@ impl Contained {
             state,
             socket,
             home,
+            host_rules: None,
         }
     }
 
-    fn containment(&self, session: &humata2_store::SessionRecord, shared: PathBuf) -> Result<Containment, ContainRefused> {
+    /// Refuses every launch and resume while `guard` says the host's rules
+    /// aren't in force.
+    pub(crate) fn needing_host_rules(mut self, guard: Arc<Guard>) -> Self {
+        self.host_rules = Some(guard);
+        self
+    }
+
+    fn containment(
+        &self,
+        session: &humata2_store::SessionRecord,
+        shared: PathBuf,
+        login: Login,
+    ) -> Result<Containment, ContainRefused> {
         // Its temp folder and config copy live in `.humata/`, which git
         // must not show as the session's changes.
         hide_from_git(&session.folder)?;
         let agent = agent_of(&session.agent);
-        let own = own_state(agent, &self.home, &self.state, &session.folder)?;
+        let own = own_state(agent, &self.home, &self.state, &session.folder, login)?;
         let mut hidden = own.hidden;
         hidden.push(self.channels.clone());
         hidden.push(self.state.clone());
@@ -125,6 +150,62 @@ impl Contained {
     }
 }
 
+impl Contained {
+    /// Moves the session's own todos and checkpoints out of its contained
+    /// copy into the real config. It never stops the start: what can't move
+    /// stays in the copy for the next uncontained start.
+    fn flow_back(&self, folder: &Path, conversation: &str) {
+        match flow_back(&self.home, &folder.join(".humata").join("claude"), conversation) {
+            Ok(report) => {
+                for path in &report.conflicts {
+                    crate::log::say!(
+                        "humatad2: left {} in the session's contained Claude Code copy: your real config has a newer file in its place",
+                        path.display()
+                    );
+                }
+            }
+            Err(error) => crate::log::say!("humatad2: warning: {}", crate::status::chain(&error)),
+        }
+    }
+}
+
+/// How a contained Claude Code signs in: the usual keychain login when the
+/// installed version is verified to find it, else a token the user set.
+fn claude_login(program: Option<&OsString>) -> Result<Login, ContainRefused> {
+    let version = program.and_then(|program| installed_version(Path::new(program)));
+    let token_set = TOKEN_VARIABLES
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()));
+    Ok(choose_login(version.as_deref(), token_set)?)
+}
+
+/// The version `program --version` prints, if it answers within a few
+/// seconds. An unreadable version is treated as unverified.
+fn installed_version(program: &Path) -> Option<String> {
+    let mut child = Command::new(program)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut text = String::new();
+    child.stdout.take()?.read_to_string(&mut text).ok()?;
+    parse_version(&text)
+}
+
 /// What one agent keeps of its own when contained, and how it is told.
 struct OwnState {
     hidden: Vec<PathBuf>,
@@ -137,7 +218,13 @@ struct OwnState {
 /// runs on a fresh copy of its config inside the session (D217 amendment):
 /// the real `~/.claude/` and `~/.claude.json` stay readable but not
 /// writable, apart from this session's own conversation folders.
-fn own_state(agent: Agent, home: &Path, state: &Path, folder: &Path) -> Result<OwnState, ContainRefused> {
+fn own_state(
+    agent: Agent,
+    home: &Path,
+    state: &Path,
+    folder: &Path,
+    login: Login,
+) -> Result<OwnState, ContainRefused> {
     let rules = home_rules(agent, home)?;
     let mut own = OwnState {
         hidden: rules.hidden,
@@ -148,7 +235,7 @@ fn own_state(agent: Agent, home: &Path, state: &Path, folder: &Path) -> Result<O
     match agent {
         Agent::ClaudeCode => {
             let copy = seed_claude_copy(home, &folder.join(".humata").join("claude"), folder)?;
-            own.env = copy.env();
+            own.env = copy.env(login);
             own.agent_state = copy.projects;
             own.read_only = Vec::new();
         }
@@ -173,6 +260,11 @@ impl std::fmt::Debug for Contained {
 
 impl Contain for Contained {
     fn wrap(&self, record: &AgentRecord, argv: &[OsString]) -> Result<Vec<OsString>, ContainRefused> {
+        if self.host_rules.as_ref().is_some_and(|guard| !guard.has_host_rules()) {
+            return Err(ContainRefused::HostRulesMissing {
+                session: record.session.clone(),
+            });
+        }
         let setting = |source| ContainRefused::Setting {
             session: record.session.clone(),
             source,
@@ -184,9 +276,20 @@ impl Contain for Contained {
             .ok_or_else(|| ContainRefused::NoSession {
                 session: record.session.clone(),
             })?;
+        let claude = matches!(agent_of(&session.agent), Agent::ClaudeCode);
         if !applies(&self.store, &session.channel).map_err(setting)? {
+            // D217: the mirror of seeding, at an uncontained start.
+            if claude {
+                self.flow_back(&session.folder, &record.launch.conversation_id);
+            }
             return Ok(argv.to_vec());
         }
+        // Refused before anything is seeded: no login, no contained launch.
+        let login = if claude {
+            claude_login(argv.first())?
+        } else {
+            Login::Keychain
+        };
         let channel = self
             .store
             .channel(&session.channel)
@@ -195,7 +298,7 @@ impl Contain for Contained {
                 session: record.session.clone(),
             })?;
         let shared = self.channels.join(&channel.folder).join("shared");
-        Ok(self.containment(&session, shared)?.wrap(argv)?)
+        Ok(self.containment(&session, shared, login)?.wrap(argv)?)
     }
 }
 
@@ -219,7 +322,7 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let state = directory.path().join("state");
 
-        let own = own_state(Agent::ClaudeCode, &home, &state, &folder).unwrap();
+        let own = own_state(Agent::ClaudeCode, &home, &state, &folder, Login::Keychain).unwrap();
 
         let copy = folder.join(".humata/claude");
         assert!(own.env.contains(&("CLAUDE_CONFIG_DIR".into(), copy.clone().into_os_string())));
@@ -232,6 +335,70 @@ mod tests {
         }
     }
 
+    fn agent_of_session(session: &str) -> AgentRecord {
+        AgentRecord {
+            session: session.to_owned(),
+            tab: "tab".to_owned(),
+            launch: humata2_store::AgentLaunch {
+                agent: "codex".to_owned(),
+                folder: PathBuf::new(),
+                argv: Vec::new(),
+                resume_argv: Vec::new(),
+                variable_names: Vec::new(),
+                conversation_id: String::new(),
+                conversation_file: PathBuf::new(),
+                holder_socket: PathBuf::new(),
+                cols: 80,
+                rows: 24,
+            },
+            state: humata2_store::AgentState::Launching,
+            generation: 1,
+            interruptions: Vec::new(),
+            updated_unix_ms: 0,
+        }
+    }
+
+    #[test]
+    fn a_machine_with_no_copy_launches_nothing_and_does_once_it_has_the_hosts_rules() {
+        let (directory, store) = store();
+        let store = Arc::new(store);
+        store
+            .put_session(&humata2_store::SessionRecord {
+                id: "se_a".to_owned(),
+                channel: "ch_a".to_owned(),
+                machine: String::new(),
+                title: "t".to_owned(),
+                agent: "codex".to_owned(),
+                folder: directory.path().to_owned(),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        let guard = Arc::new(Guard::new("m1", humata2_grpc::humata::v1::DaemonRole::Machine));
+        let contained = Contained::new(
+            store,
+            directory.path().join("ch"),
+            directory.path().join("state"),
+            directory.path().join("d.sock"),
+            directory.path().to_owned(),
+        )
+        .needing_host_rules(guard.clone());
+        let record = agent_of_session("se_a");
+        let argv = vec![OsString::from("agent")];
+
+        assert!(matches!(
+            contained.wrap(&record, &argv),
+            Err(ContainRefused::HostRulesMissing { .. })
+        ));
+
+        guard.host_rules_arrived();
+        assert_eq!(contained.wrap(&record, &argv).unwrap(), argv);
+    }
+
+    #[test]
+    fn a_program_that_prints_no_version_is_unverified() {
+        assert_eq!(installed_version(Path::new("/nonexistent/claude")), None);
+    }
+
     #[test]
     fn other_agents_keep_their_own_state_and_get_no_variables() {
         let directory = tempfile::tempdir().unwrap();
@@ -239,10 +406,10 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let state = directory.path().join("state");
 
-        let own = own_state(Agent::Codex, &home, &state, directory.path()).unwrap();
+        let own = own_state(Agent::Codex, &home, &state, directory.path(), Login::Keychain).unwrap();
         assert!(own.agent_state.contains(&home.join(".codex")));
         assert!(own.env.is_empty());
-        let own = own_state(Agent::OpenCode, &home, &state, directory.path()).unwrap();
+        let own = own_state(Agent::OpenCode, &home, &state, directory.path(), Login::Keychain).unwrap();
         assert!(own.agent_state.contains(&state.join("opencode")));
     }
 

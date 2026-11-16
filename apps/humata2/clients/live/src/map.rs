@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use humata2_clients::model::{
-    Agent, Channel, ChannelId, ForkKind, Machine, MachineId, MachineKind, NotBroughtBack,
+    Agent, AwayLeftOut, Channel, ChannelId, ForkKind, Machine, MachineId, MachineKind, NotBroughtBack,
     Recovery, Restart, ResumeFailure, Session, SessionId, Status, SummarySource, Turn,
 };
 use humata2_grpc::humata::v1 as pb;
@@ -282,10 +282,21 @@ pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNam
             .interrupted_at
             .as_ref()
             .map(|at| unix_ms(at.seconds, at.nanos)),
+        away_left_out: session.away_left_out.as_ref().map(away_left_out),
         summary_source: summary_source(session),
         model: (!session.model.is_empty()).then(|| session.model.clone()),
         restart_detail: None,
         permissions: Vec::new(),
+    }
+}
+
+/// What the host left out of a session's agent's writes (AW-9, D267).
+fn away_left_out(left: &pb::AwayWritesLeftOut) -> AwayLeftOut {
+    AwayLeftOut {
+        count: left.count,
+        items: left.items.iter().map(|id| id.value.clone()).collect(),
+        not_made: left.not_made.clone(),
+        refused: left.refused,
     }
 }
 
@@ -442,6 +453,32 @@ mod tests {
         }
         let mapped = session(&interrupted, &[], &AgentNames::default());
         assert_eq!(mapped.interrupted_unix_ms, Some(1_700_000_000_250));
+    }
+
+    #[test]
+    fn what_the_host_left_out_comes_across_and_none_stays_none() {
+        let plain = session(&pb_session(pb::SessionStatus::Idle), &[], &AgentNames::default());
+        assert_eq!(plain.away_left_out, None);
+        let mut left = pb_session(pb::SessionStatus::Idle);
+        left.away_left_out = Some(pb::AwayWritesLeftOut {
+            count: 2,
+            items: vec![pb::BoardItemId {
+                value: "PAY-12".to_owned(),
+            }],
+            not_made: vec!["Fix login".to_owned()],
+            refused: true,
+            at: None,
+        });
+        let mapped = session(&left, &[], &AgentNames::default());
+        assert_eq!(
+            mapped.away_left_out,
+            Some(AwayLeftOut {
+                count: 2,
+                items: vec!["PAY-12".to_owned()],
+                not_made: vec!["Fix login".to_owned()],
+                refused: true,
+            })
+        );
     }
 
     #[test]

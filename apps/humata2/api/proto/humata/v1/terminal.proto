@@ -114,6 +114,11 @@ message AttachOpen {
   // The codecs the client decodes, best first (TR-11, D65). Empty: none,
   // and each snapshot comes as one message.
   repeated ChunkCodec accept_codecs = 8;
+  // The checkpoint format the client installs (D271). Set: each snapshot
+  // is an opaque checkpoint of the daemon's screen for the tab in this
+  // format, and TerminalState carries the size viewers draw at. Empty:
+  // escape-sequence redraws, for `humata attach`.
+  string checkpoint_engine = 9;
 }
 
 message TerminalInput {
@@ -125,6 +130,9 @@ message TerminalInput {
 message TerminalResize {
   uint32 cols = 1;
   uint32 rows = 2;
+  // A cell's size in pixels, which programs can ask for; 0 if unknown.
+  uint32 cell_width = 3;
+  uint32 cell_height = 4;
 }
 
 message OutputAck {
@@ -161,6 +169,12 @@ message TerminalSnapshot {
   // CRC-32 of the decoded piece; set whenever codec isn't NONE.
   optional uint32 crc32 = 7;
   bool more = 8;
+  // Set when the attach asked for checkpoint_engine: `vt` is then that
+  // engine's opaque checkpoint, never bytes to replay.
+  string engine = 9;
+  // The screen's identity: the tab and its holder's generation. A new one
+  // means a new holder, whose offsets start again.
+  string terminal_uuid = 10;
 }
 
 message TerminalOutput {
@@ -193,6 +207,12 @@ message TerminalState {
   // SE-24: other clients attached with input (the app, a `humata attach`);
   // read-only attaches are not counted (SE-25).
   uint32 other_writers = 4;
+  // With checkpoint_engine: the size the daemon's screen has now, sent in
+  // order with the output whenever it changes (D271).
+  uint32 cols = 5;
+  uint32 rows = 6;
+  uint32 cell_width = 7;
+  uint32 cell_height = 8;
 }
 
 message TerminalNotice {

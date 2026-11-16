@@ -31,6 +31,12 @@ pub(crate) struct Daemon {
     /// The host's link as this daemon sees it (AWAY). None on the peer
     /// link, where PeerUplink answers "not built".
     uplinks: Option<Arc<Uplinks>>,
+    /// What serves RepairRestart (PER-30). None on the peer link, where it
+    /// answers "not built".
+    doctor: Option<Arc<crate::doctor::Doctor>>,
+    /// What serves StopSessions and StartSessions (D261, D265). None on the
+    /// peer link, where they answer "not built".
+    stop: Option<Arc<crate::stop::service::StopSvc>>,
 }
 
 impl Daemon {
@@ -42,6 +48,24 @@ impl Daemon {
             last_start: None,
             relay: None,
             uplinks: None,
+            doctor: None,
+            stop: None,
+        }
+    }
+
+    /// Answers StopSessions and StartSessions from `stop` (D261, D265).
+    pub(crate) fn with_stop(self, stop: crate::stop::service::StopSvc) -> Self {
+        Self {
+            stop: Some(Arc::new(stop)),
+            ..self
+        }
+    }
+
+    /// Answers RepairRestart from `doctor` (PER-30, D242).
+    pub(crate) fn with_doctor(self, doctor: crate::doctor::Doctor) -> Self {
+        Self {
+            doctor: Some(Arc::new(doctor)),
+            ..self
         }
     }
 
@@ -204,6 +228,39 @@ impl pb::daemon_service_server::DaemonService for Daemon {
             )
             .map_err(|refusal| refusal.status())?;
         Ok(Response::new(pb::CompleteRelayResponse {}))
+    }
+
+    /// PER-30, D242: the restart doctor's safe repairs.
+    async fn repair_restart(
+        &self,
+        request: Request<pb::RepairRestartRequest>,
+    ) -> Result<Response<pb::RepairRestartResponse>, Status> {
+        let Some(doctor) = &self.doctor else {
+            return Err(status::not_built("humata.v1.DaemonService.RepairRestart"));
+        };
+        doctor.repair(request).await
+    }
+
+    /// D261: stops this machine's sessions and keeps them stopped.
+    async fn stop_sessions(
+        &self,
+        request: Request<pb::StopSessionsRequest>,
+    ) -> Result<Response<pb::StopSessionsResponse>, Status> {
+        let Some(stop) = &self.stop else {
+            return Err(status::not_built("humata.v1.DaemonService.StopSessions"));
+        };
+        stop.stop(request).await
+    }
+
+    /// D265: brings back what a stop ended.
+    async fn start_sessions(
+        &self,
+        request: Request<pb::StartSessionsRequest>,
+    ) -> Result<Response<pb::StartSessionsResponse>, Status> {
+        let Some(stop) = &self.stop else {
+            return Err(status::not_built("humata.v1.DaemonService.StartSessions"));
+        };
+        stop.start(request).await
     }
 
     type PeerUplinkStream = UplinkStream;

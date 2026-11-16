@@ -1,3 +1,310 @@
+diff --git a/src/input/base/element.rs b/src/input/base/element.rs
+--- a/src/input/base/element.rs
++++ b/src/input/base/element.rs
+@@ -62,6 +62,14 @@
+ const MIN_LINE_NUMBER_DIGITS: usize = 3;
+ const MAX_LINE_NUMBER_DIGITS: usize = 7;
+ const MAX_DISPLAYED_LINE_NUMBER: usize = 9_999_999;
++
++/// The editor's line height, snapped to device pixels as gpui's text element
++/// snaps it rather than rounded to whole points, so a field set in the same
++/// style as a block of text sets its lines at the same pitch.
++fn snapped_line_height(window: &Window) -> Pixels {
++    let style = window.text_style();
++    window.pixel_snap(style.line_height.to_pixels(style.font_size, window.rem_size()))
++}
+ 
+ fn line_number_len(total_lines: usize) -> usize {
+     (total_lines.max(1).ilog10() as usize + 1).clamp(MIN_LINE_NUMBER_DIGITS, MAX_LINE_NUMBER_DIGITS)
+@@ -3119,7 +3127,7 @@
+         cx: &mut App,
+     ) -> (LayoutId, Self::RequestLayoutState) {
+         let state = self.state.read(cx);
+-        let line_height = window.line_height();
++        let line_height = snapped_line_height(window);
+ 
+         let mut style = Style::default();
+         style.size.width = relative(1.).into();
+@@ -3228,7 +3236,7 @@
+             });
+         }
+ 
+-        let line_height = window.line_height();
++        let line_height = snapped_line_height(window);
+         let token_elements = self.measure_tokens(
+             (bounds.size.width - line_number_width - RIGHT_MARGIN).max(px(1.)),
+             line_height,
+@@ -3822,7 +3830,7 @@
+         }
+ 
+         // Paint multi line text
+-        let line_height = window.line_height();
++        let line_height = snapped_line_height(window);
+         let origin = bounds.origin;
+ 
+         let invisible_top_padding = prepaint.last_layout.visible_top;
+diff --git a/src/text/node.rs b/src/text/node.rs
+--- a/src/text/node.rs
++++ b/src/text/node.rs
+@@ -270,7 +270,74 @@
+         GlobalState::global(cx).push_table_cell(bounds);
+         self.0.paint(window, cx);
+         GlobalState::global(cx).pop_table_cell();
++    }
++}
++
++/// Report the bounds of a list item without changing its layout or listeners.
++struct ListItemBoundsElement {
++    content: AnyElement,
++    span: Range<usize>,
++}
++
++impl IntoElement for ListItemBoundsElement {
++    type Element = Self;
++
++    fn into_element(self) -> Self {
++        self
++    }
++}
++
++impl Element for ListItemBoundsElement {
++    type RequestLayoutState = ();
++    type PrepaintState = ();
++
++    fn id(&self) -> Option<ElementId> {
++        None
++    }
++
++    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
++        None
++    }
++
++    fn request_layout(
++        &mut self,
++        _: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        window: &mut Window,
++        cx: &mut App,
++    ) -> (LayoutId, ()) {
++        (self.content.request_layout(window, cx), ())
++    }
++
++    fn prepaint(
++        &mut self,
++        _: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        bounds: Bounds<Pixels>,
++        _: &mut (),
++        window: &mut Window,
++        cx: &mut App,
++    ) {
++        if let Some(view) = GlobalState::global(cx).text_view_state()
++            && let Ok(mut items) = view.read(cx).list_item_bounds.lock()
++        {
++            items.push((self.span.clone(), bounds));
++        }
++        self.content.prepaint(window, cx);
+     }
++
++    fn paint(
++        &mut self,
++        _: Option<&GlobalElementId>,
++        _: Option<&InspectorElementId>,
++        _: Bounds<Pixels>,
++        _: &mut (),
++        _: &mut (),
++        window: &mut Window,
++        cx: &mut App,
++    ) {
++        self.content.paint(window, cx);
++    }
+ }
+ 
+ /// Observe the plugin's own bounds without changing its layout or listeners.
+@@ -3975,11 +4042,14 @@
+                     )),
+                     _ => None,
+                 };
+-                div()
++                let item_span = span.as_ref().map(|span| span.start..span.end);
++                let end = item_span
++                    .as_ref()
++                    .and_then(|span| node_cx.style.list_item_end(span.start));
++                let item = div()
+                     .w_full()
+                     .min_w_0()
+-                    // Items breathe a little apart, less than paragraphs do.
+-                    .when(ix > 0, |this| this.pt(body * 0.25))
++                    .when_some(end, |this, end| this.pr(end))
+                     .when(*spread, |this| this.child(div()))
+                     .children({
+                         let mut items: Vec<Div> = Vec::with_capacity(children.len());
+@@ -4099,7 +4169,25 @@
+                             }
+                         }
+                         items
++                    })
++                    .into_any_element();
++                // Items breathe a little apart, less than paragraphs do; the
++                // gap is outside the item, so its reported bounds are its own.
++                let item = match item_span {
++                    Some(span) => ListItemBoundsElement {
++                        content: item,
++                        span,
++                    }
++                    .into_any_element(),
++                    None => item,
++                };
++                div()
++                    .w_full()
++                    .min_w_0()
++                    .when(ix > 0, |this| {
++                        this.pt(node_cx.style.list_item_gap().unwrap_or(body * 0.25))
+                     })
++                    .child(item)
+                     .into_any_element()
+             }
+             _ => div().into_any_element(),
+diff --git a/src/text/state.rs b/src/text/state.rs
+--- a/src/text/state.rs
++++ b/src/text/state.rs
+@@ -124,6 +124,10 @@
+     /// Line spans reported by `Inline` during prepaint (collected only while
+     /// [`Self::max_lines`] is set); cleared by `TextView` at each frame start.
+     pub(super) line_spans: Arc<Mutex<Vec<LineSpan>>>,
++    /// Each list item laid out in the last frame, by the byte span of its
++    /// source and its bounds in window coordinates. Reported by the items
++    /// during prepaint; cleared by `TextView` at each frame start.
++    pub(super) list_item_bounds: Arc<Mutex<Vec<(Range<usize>, Bounds<Pixels>)>>>,
+     /// Whether the last painted frame clipped content due to `max_lines`.
+     pub(super) clamped: bool,
+     pub(super) text_view_style: Arc<TextViewStyle>,
+@@ -230,6 +234,7 @@
+             scrollable: false,
+             max_lines: None,
+             line_spans: Arc::default(),
++            list_item_bounds: Arc::default(),
+             clamped: false,
+             // Measure all blocks (not just visible ones) so the scrollbar
+             // thumb size stays stable. Without this, off-screen blocks count
+@@ -838,6 +843,16 @@
+         count.checked_sub(1)
+     }
+ 
++    /// The list items painted in the last frame: the byte span of each item
++    /// in the source, and its bounds in window coordinates. Items scrolled out
++    /// of the view are absent.
++    pub fn list_item_bounds(&self) -> Vec<(Range<usize>, Bounds<Pixels>)> {
++        self.list_item_bounds
++            .lock()
++            .map(|items| items.clone())
++            .unwrap_or_default()
++    }
++
+     #[doc(hidden)]
+     pub fn bounds(&self) -> Bounds<Pixels> {
+         self.bounds
+diff --git a/src/text/style.rs b/src/text/style.rs
+--- a/src/text/style.rs
++++ b/src/text/style.rs
+@@ -1,6 +1,6 @@
+ use std::sync::Arc;
+ 
+-use gpui::{HighlightStyle, Hsla, Rems, StyleRefinement, rems};
++use gpui::{HighlightStyle, Hsla, Pixels, Rems, StyleRefinement, rems};
+ 
+ use crate::ColorTokens;
+ 
+@@ -19,6 +19,12 @@
+     code_background: Hsla,
+     border: Hsla,
+     paragraph_gap: Rems,
++    /// The space above every list item but the first, or a quarter of the
++    /// body size when `None`.
++    list_item_gap: Option<Pixels>,
++    /// Room kept free at the end of a list item, by the byte its source
++    /// starts at.
++    list_item_ends: Vec<(usize, Pixels)>,
+     heading: Arc<dyn Fn(u8) -> StyleRefinement + Send + Sync + 'static>,
+     code_block: StyleRefinement,
+     table: StyleRefinement,
+@@ -44,6 +50,8 @@
+ impl PartialEq for TextViewStyle {
+     fn eq(&self, other: &Self) -> bool {
+         self.paragraph_gap == other.paragraph_gap
++            && self.list_item_gap == other.list_item_gap
++            && self.list_item_ends == other.list_item_ends
+             && self.foreground == other.foreground
+             && self.muted_foreground == other.muted_foreground
+             && self.link == other.link
+@@ -95,6 +103,8 @@
+             code_background: colors.accent,
+             border: colors.border,
+             paragraph_gap: rems(0.75),
++            list_item_gap: None,
++            list_item_ends: Vec::new(),
+             heading: Arc::new(|_| StyleRefinement::default()),
+             code_block: StyleRefinement::default(),
+             table: StyleRefinement::default(),
+@@ -216,6 +226,21 @@
+         self
+     }
+ 
++    /// Sets the space above every list item but the first. The default is a
++    /// quarter of the body font size.
++    pub fn with_list_item_gap(mut self, gap: Pixels) -> Self {
++        self.list_item_gap = Some(gap);
++        self
++    }
++
++    /// Keeps room free at the end of list items, such as for something drawn
++    /// over them there: each entry is the byte an item's source starts at and
++    /// the room to keep.
++    pub fn with_list_item_ends(mut self, ends: Vec<(usize, Pixels)>) -> Self {
++        self.list_item_ends = ends;
++        self
++    }
++
+     /// Refines the blockquote container.
+     ///
+     /// Applied after its defaults: the muted text color, a 2px left border in
+@@ -353,8 +378,22 @@
+     /// Explicit list marker refinements.
+     pub fn list_style(&self) -> &StyleRefinement {
+         &self.list_style
++    }
++
++    /// The space above every list item but the first, if set.
++    pub fn list_item_gap(&self) -> Option<Pixels> {
++        self.list_item_gap
+     }
+ 
++    /// The room kept free at the end of the list item whose source starts at
++    /// `start`, if any.
++    pub fn list_item_end(&self, start: usize) -> Option<Pixels> {
++        self.list_item_ends
++            .iter()
++            .find(|(item, _)| *item == start)
++            .map(|(_, end)| *end)
++    }
++
+     /// Explicit blockquote refinements.
+     pub fn blockquote_style(&self) -> &StyleRefinement {
+         &self.blockquote_style
+diff --git a/src/text/text_view.rs b/src/text/text_view.rs
+--- a/src/text/text_view.rs
++++ b/src/text/text_view.rs
+@@ -919,6 +919,9 @@
+     ) -> Self::PrepaintState {
+         let state = request_layout.state.clone();
+         let max_lines_active = state.read(cx).max_lines.is_some();
++        if let Ok(mut items) = state.read(cx).list_item_bounds.lock() {
++            items.clear();
++        }
+         if max_lines_active {
+             if let Ok(mut line_spans) = state.read(cx).line_spans.lock() {
+                 line_spans.clear();
+diff --git a/src/text_selection.rs b/src/text_selection.rs
 --- a/src/text_selection.rs
 +++ b/src/text_selection.rs
 @@ -823,6 +823,13 @@

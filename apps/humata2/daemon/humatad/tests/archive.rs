@@ -364,6 +364,93 @@ async fn an_archive_cut_short_is_finished_at_restart() {
     );
 }
 
+/// Every step an archive takes, as the points a cut can land on: the
+/// intent recorded, the agent stopped, the summary written (the store's own
+/// points either side of the commit), and the folder removed and the row
+/// freed. The `@n` is the nth time that store point is reached in the run.
+const ARCHIVE_POINTS: &[&str] = &[
+    "archive.recorded",
+    "archive.agent_stopped",
+    "store.archive.put.committing@2",
+    "archive.archived",
+    "archive.folder_removed",
+    "store.archive.put.committed@3",
+];
+
+/// An archive cut before its intent is saved leaves no trace: the session
+/// runs on, whole.
+#[tokio::test]
+async fn an_archive_cut_before_it_is_recorded_leaves_the_session_running() {
+    let mut fixture = Fixture::new("0").await;
+    let session = fixture.session("Fix login").await;
+    let id = session.id.clone().unwrap();
+    fixture
+        .daemon
+        .restart_env(&[(UNDO_WINDOW, "0"), ("HUMATA2_STOP_AT", "store.archive.put.committing@1")])
+        .await;
+    last_start(&fixture.daemon).await;
+    let plan = fixture.plan(&id).await;
+    let _ = fixture
+        .daemon
+        .session_service()
+        .await
+        .archive_session(pb::ArchiveSessionRequest {
+            idempotency_key: None,
+            id: Some(id.clone()),
+            choice: pb::ArchiveChoice::Archive as i32,
+            plan: plan.token,
+        })
+        .await;
+    wait_dead(&fixture.daemon).await;
+    fixture.daemon.restart_env(&[(UNDO_WINDOW, "0")]).await;
+    last_start(&fixture.daemon).await;
+    let running = common::wait_running(&fixture.daemon, &id).await;
+    assert!(folder_of(&session).exists());
+    assert!(running.archive.is_none());
+}
+
+/// An archive cut at any later point is finished at the next start: the session
+/// is archived, its folder is freed, and no agent or holder is left.
+#[tokio::test]
+async fn an_archive_cut_at_any_point_is_finished_at_restart() {
+    for point in ARCHIVE_POINTS {
+        let mut fixture = Fixture::new("0").await;
+        let session = fixture.session("Fix login").await;
+        let id = session.id.clone().unwrap();
+        fixture
+            .daemon
+            .restart_env(&[(UNDO_WINDOW, "0"), ("HUMATA2_STOP_AT", point)])
+            .await;
+        last_start(&fixture.daemon).await;
+        let plan = fixture.plan(&id).await;
+        let _ = fixture
+            .daemon
+            .session_service()
+            .await
+            .archive_session(pb::ArchiveSessionRequest {
+                idempotency_key: None,
+                id: Some(id.clone()),
+                choice: pb::ArchiveChoice::Archive as i32,
+                plan: plan.token,
+            })
+            .await;
+        wait_dead(&fixture.daemon).await;
+        fixture.daemon.restart_env(&[(UNDO_WINDOW, "0")]).await;
+        last_start(&fixture.daemon).await;
+        wait_gone(&folder_of(&session)).await;
+        let archived = get_session(&fixture.daemon, &id).await;
+        assert_eq!(archived.status, Status::Archived as i32, "cut at {point}");
+        assert!(archived.archive.is_some(), "cut at {point}");
+        let tabs = common::stored_tabs(&fixture.daemon.state);
+        assert!(
+            tabs.iter()
+                .filter(|t| t.session.as_deref() == Some(id.value.as_str()))
+                .all(|t| !common::holder_answers(t)),
+            "cut at {point}: an archived session's agent is stopped"
+        );
+    }
+}
+
 #[tokio::test]
 async fn forks_move_up_while_their_parent_is_archived_and_back_on_restore() {
     let fixture = Fixture::new(NEVER).await;

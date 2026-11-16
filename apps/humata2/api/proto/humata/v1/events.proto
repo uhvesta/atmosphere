@@ -91,6 +91,7 @@ message Event {
     PointersUpdated pointers = 26;
     Resync resync = 27;
     HostLinkChanged host_link = 28;
+    PolicyCopyKept policy_copy = 29;
   }
 }
 
@@ -98,6 +99,12 @@ message Event {
 // Sent on TOPIC_MACHINES, to the user only, by machines' daemons.
 message HostLinkChanged {
   bool reachable = 1;
+}
+
+// AWAY: a machine's daemon kept a new policy copy from its host (D220).
+// Sent on TOPIC_MACHINES, to the user only, by machines' daemons.
+message PolicyCopyKept {
+  uint64 revision = 1;
 }
 
 // AW-6: one machine's journal has been replayed up to `through`.

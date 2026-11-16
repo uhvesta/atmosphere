@@ -18,12 +18,15 @@ fn setup() -> (TestStore<App>, Fakes) {
     (store, fakes)
 }
 
-/// Types the sheet's fields and presses Make channel; the fake clones the
-/// repositories and leaves the setup in its workspace.
-fn make(store: &mut TestStore<App>, repos: &str) {
+/// Names the channel, ticks `repos` and presses Create; the fake clones the
+/// repositories on This Mac and leaves the setup in its workspace.
+fn make(store: &mut TestStore<App>, repos: &[&str]) {
     store.send(A::StartNewChannel, |_| {});
+    store.skip_received();
     store.send(A::NewChannel(N::Name("Billing exports".into())), |_| {});
-    store.send(A::NewChannel(N::Repos(repos.into())), |_| {});
+    for repo in repos {
+        store.send(A::NewChannel(N::ToggleRepo((*repo).into())), |_| {});
+    }
     store.send(A::NewChannel(N::Create), |_| {});
     store.skip_received();
 }
@@ -69,7 +72,7 @@ fn progress_events_land_in_the_open_sheet_and_in_the_workspace() {
 #[test]
 fn a_failed_clone_shows_failed_and_retry_runs_it_again_then_the_channel_opens() {
     let (mut store, fakes) = setup();
-    make(&mut store, "acme/ledger, acme/broken-api");
+    make(&mut store, &["acme/ledger", "acme/broken-api"]);
     let pending = fakes.daemon.workspace().setups;
     assert_eq!(pending.len(), 1);
     store.send(A::Event(Event::ChannelSetup(pending[0].clone())), |_| {});
@@ -104,7 +107,7 @@ fn a_failed_clone_shows_failed_and_retry_runs_it_again_then_the_channel_opens() 
 #[test]
 fn cancel_stops_the_setup_and_closes_the_sheet() {
     let (mut store, fakes) = setup();
-    make(&mut store, "acme/broken-api");
+    make(&mut store, &["acme/broken-api"]);
     let pending = fakes.daemon.workspace().setups;
     store.send(A::Event(Event::ChannelSetup(pending[0].clone())), |_| {});
     assert!(shown(&store).is_some());
@@ -126,7 +129,7 @@ fn cancel_stops_the_setup_and_closes_the_sheet() {
 #[test]
 fn a_clone_that_works_opens_the_channel_without_a_failed_row() {
     let (mut store, fakes) = setup();
-    make(&mut store, "acme/ledger");
+    make(&mut store, &["acme/ledger"]);
     assert!(fakes.daemon.workspace().setups.is_empty());
     assert!(store.state().overlay().is_none());
     assert_eq!(

@@ -577,7 +577,7 @@ async fn run_fork(
             {
                 let _ = ready.send(Ok(()));
             }
-            stop_point(&format!("fork.{event}"));
+            crate::fault::point(&format!("fork.{event}"));
         };
         starter.fork(request, &env, &mut note).await
     };
@@ -647,38 +647,6 @@ pub(super) fn human_bytes(bytes: u64) -> String {
     }
 }
 
-/// Kills the daemon here when `HUMATA2_STOP_AT` names this point, so a
-/// test can show what a crash here leaves behind. Test daemons only: a
-/// release build never reads the variable.
-#[cfg(feature = "admin")]
-pub(super) fn stop_point(name: &str) {
-    if std::env::var("HUMATA2_STOP_AT").is_ok_and(|wanted| wanted == name) {
-        let _ = rustix::process::kill_process(rustix::process::getpid(), rustix::process::Signal::KILL);
-        std::process::abort();
-    }
-}
-
-#[cfg(not(feature = "admin"))]
-#[inline(always)]
-pub(super) fn stop_point(_name: &str) {}
-
-/// Holds the task here when `HUMATA2_HOLD_AT` names this point, until the
-/// test opens `HUMATA2_HOLD_FIFO` for writing: opening a FIFO to read waits
-/// for a writer, so a test sees the state mid-way with no timing. Test
-/// daemons only.
-#[cfg(feature = "admin")]
-pub(super) async fn hold_point(name: &str) {
-    if std::env::var("HUMATA2_HOLD_AT").is_ok_and(|wanted| wanted == name)
-        && let Ok(fifo) = std::env::var("HUMATA2_HOLD_FIFO")
-    {
-        let _ = tokio::task::spawn_blocking(move || std::fs::File::open(fifo)).await;
-    }
-}
-
-#[cfg(not(feature = "admin"))]
-#[inline(always)]
-pub(super) async fn hold_point(_name: &str) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,46 +656,5 @@ mod tests {
         assert_eq!(human_bytes(12), "12 bytes");
         assert_eq!(human_bytes(2048), "2.0 KB");
         assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MB");
-    }
-
-    /// A shipped daemon never stops or holds at a test point, whatever its
-    /// environment says: the test runs itself again with the variables set
-    /// and a FIFO no one writes to, and that run returns.
-    #[cfg(not(feature = "admin"))]
-    #[test]
-    fn a_release_build_ignores_the_stop_and_hold_variables() {
-        const CHILD: &str = "HUMATA2_TEST_POINTS_CHILD";
-        if let Some(done) = std::env::var_os(CHILD) {
-            stop_point("ignored-point");
-            tokio::runtime::Builder::new_current_thread()
-                .build()
-                .expect("a runtime")
-                .block_on(hold_point("ignored-point"));
-            std::fs::write(done, b"past").expect("the run says it got past");
-            return;
-        }
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let (fifo, done) = (dir.path().join("hold"), dir.path().join("done"));
-        let made = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo runs");
-        assert!(made.success());
-        let mut child = std::process::Command::new(std::env::current_exe().expect("the test binary"))
-            .args(["--exact", "session_service::fork::tests::a_release_build_ignores_the_stop_and_hold_variables"])
-            .env(CHILD, &done)
-            .env("HUMATA2_STOP_AT", "ignored-point")
-            .env("HUMATA2_HOLD_AT", "ignored-point")
-            .env("HUMATA2_HOLD_FIFO", &fifo)
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .expect("the test runs itself");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(child.wait());
-        });
-        let ended = rx
-            .recv_timeout(std::time::Duration::from_secs(60))
-            .expect("the run returns instead of holding")
-            .expect("the run is waited on");
-        assert!(ended.success(), "the run was not stopped: {ended:?}");
-        assert!(done.exists(), "the run got past both points");
     }
 }

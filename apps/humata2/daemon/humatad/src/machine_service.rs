@@ -46,7 +46,7 @@ use crate::status;
 use crate::storage::Storage;
 
 mod forget;
-pub(crate) use forget::Forgetting;
+pub(crate) use forget::{Forgetting, finish_forgets};
 
 /// How long a removal plan stays good.
 const PLAN_LIFETIME: Duration = Duration::from_secs(10 * 60);
@@ -98,6 +98,9 @@ pub(crate) struct Work {
     /// The Inbox each link replays its machine's journal into (D226); set
     /// once by `serve` before any link starts.
     pub(crate) inbox: std::sync::OnceLock<Arc<crate::inbox::Inbox>>,
+    /// The boards each link runs a machine's forwarded board calls in and replays its
+    /// journaled board writes into (D227); set once by `serve` before any link starts.
+    pub(crate) boards: std::sync::OnceLock<crate::board_service::BoardSvc>,
     /// Each machine's live link, for the services that relay calls to it
     /// (D139). Told at the same hook as `skills`.
     relay_links: Links,
@@ -165,6 +168,22 @@ impl Work {
         self.relay_links.forget(machine);
         self.reports.forget(machine);
         lock(&self.probes).remove(machine);
+    }
+
+    /// `machine` was forgotten or is enrolled afresh: the host's mark of how
+    /// far its Inbox journal was applied goes, since the machine's journal
+    /// starts over (D226).
+    pub(crate) async fn forget_journal(&self, machine: &str) {
+        if let Some(inbox) = self.inbox.get() {
+            inbox.forget_journal(machine).await;
+        }
+    }
+
+    /// As [`Self::forget_journal`], from a thread that may block.
+    pub(crate) fn forget_journal_now(&self, machine: &str) {
+        if let Some(inbox) = self.inbox.get() {
+            inbox.forget_journal_now(machine);
+        }
     }
 
     /// `machine`'s health (HO-3, HO-4) and the sizes of its Humata folders
@@ -276,6 +295,7 @@ impl Work {
             skills: std::sync::OnceLock::new(),
             policy: std::sync::OnceLock::new(),
             inbox: std::sync::OnceLock::new(),
+            boards: std::sync::OnceLock::new(),
             relay_links: Links::default(),
             reports: PeerReports::default(),
             probes: Mutex::new(HashMap::new()),
@@ -405,7 +425,8 @@ impl Work {
             .get()
             .cloned()
             .zip(self.inbox.get().cloned())
-            .map(|(policy, inbox)| peer_client::HostSide { policy, inbox });
+            .zip(self.boards.get().cloned())
+            .map(|((policy, inbox), boards)| peer_client::HostSide { policy, inbox, boards });
         let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report, sink, host));
         if let Some(before) = lock(&self.links).insert(machine.to_owned(), task.abort_handle()) {
             before.abort();
@@ -689,6 +710,8 @@ impl MachineSvc {
             match &added {
                 Ok(entry) => {
                     work.saw(&entry.name, pb::Reachability::Online);
+                    // A machine added afresh starts its journal over.
+                    work.forget_journal_now(&entry.name);
                     work.link_up(&entry.name, &Handle::current());
                 }
                 Err(error) => work.saw(&name, reach_after(error)),
@@ -1198,6 +1221,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         };
         self.work.link_down(&name);
         self.work.forget_peer(&name);
+        self.work.forget_journal(&name).await;
         let operation = self.run(progress, Arc::new(move |machines, drive| {
             machines.remove(&name, drive).map(|()| None)
         }));

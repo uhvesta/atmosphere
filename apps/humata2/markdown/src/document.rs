@@ -196,6 +196,25 @@ impl Document {
         &self.blocks
     }
 
+    /// The block that is a byline: a paragraph of exactly one emphasis span
+    /// directly under a level-1 heading. A document page draws it quietly,
+    /// with the file's name after it.
+    pub fn byline(&self) -> Option<usize> {
+        self.blocks.iter().position(|block| {
+            if !matches!(block.kind, BlockKind::Paragraph) {
+                return false;
+            }
+            let before = self.source.get(..block.bytes.start).unwrap_or_default();
+            if !follows_title(before) {
+                return false;
+            }
+            let Some(text) = self.source.get(block.bytes.clone()) else {
+                return false;
+            };
+            byline_text(text).is_some()
+        })
+    }
+
     /// What the last update parsed.
     pub fn stats(&self) -> ParseStats {
         self.stats
@@ -297,6 +316,17 @@ impl Document {
     pub fn block_at(&self, offset: usize) -> Option<usize> {
         let after = self.blocks.partition_point(|block| block.bytes.start <= offset);
         after.checked_sub(1)
+    }
+
+    /// The list item of block `block` that holds the 1-based `line`, as an
+    /// index into the block's `parts`. A continuation line belongs to the item
+    /// it continues. `None` when the block isn't a list or no item spans the
+    /// line, so a paragraph or a heading never has an item.
+    pub fn item_at_line(&self, block: usize, line: usize) -> Option<usize> {
+        let block = self.blocks.get(block)?;
+        block.parts.iter().position(|part| {
+            matches!(part, BlockPart::ListItem { .. }) && self.lines_of(&part.bytes()).contains(line)
+        })
     }
 
     /// The blocks `bytes` touches.
@@ -413,6 +443,48 @@ fn parse_blocks(source: &str, offset: usize, first_line: usize, line_starts: &[u
             })
         })
         .collect()
+}
+
+/// Whether the text before a block ends with a level-1 heading line, so the
+/// block comes directly under the title.
+pub(crate) fn follows_title(before: &str) -> bool {
+    let last = before.trim_end().lines().next_back().unwrap_or_default();
+    let line = last.trim_start_matches(' ');
+    if last.len() - line.len() > 3 {
+        return false;
+    }
+    let bytes = line.as_bytes();
+    bytes.first() == Some(&b'#') && (bytes.len() == 1 || matches!(bytes[1], b' ' | b'\t'))
+}
+
+/// The text, without markup, of a block whose source is one paragraph that
+/// holds one emphasis span and nothing else but blank text; none otherwise.
+/// It takes the source, not a parsed node, because each engine's text view
+/// parses with its own copy of the Markdown crate.
+pub(crate) fn byline_text(source: &str) -> Option<String> {
+    let Ok(Node::Root(root)) = markdown::to_mdast(source, &parse_options()) else {
+        return None;
+    };
+    let [node] = root.children.as_slice() else {
+        return None;
+    };
+    if !emphasis_only(node) {
+        return None;
+    }
+    let mut text = String::new();
+    plain_text(node, &mut text);
+    Some(text.trim().to_owned())
+}
+
+fn emphasis_only(node: &Node) -> bool {
+    let Node::Paragraph(paragraph) = node else {
+        return false;
+    };
+    let mut visible = paragraph.children.iter().filter(|child| match child {
+        Node::Text(text) => !text.value.trim().is_empty(),
+        _ => true,
+    });
+    matches!((visible.next(), visible.next()), (Some(Node::Emphasis(_)), None))
 }
 
 fn kind_of(node: &Node, source: &str) -> BlockKind {
@@ -650,6 +722,47 @@ mod tests {
         assert!(fence_closed("````\n```\n````"));
         assert!(!fence_closed("````\n```\n"));
         assert!(fence_closed("    indented code"));
+    }
+
+    /// The byline sits directly under the title and is only emphasis.
+    #[test]
+    fn a_paragraph_of_one_emphasis_span_under_the_title_is_the_byline() {
+        let document = Document::new("# Title\n\n*Draft by Ada*\n\nBody.\n");
+        assert_eq!(document.byline(), Some(1));
+    }
+
+    #[test]
+    fn emphasis_with_other_text_under_the_title_is_not_a_byline() {
+        let document = Document::new("# Title\n\n*Draft* by Ada\n\nBody.\n");
+        assert_eq!(document.byline(), None);
+    }
+
+    #[test]
+    fn emphasis_that_is_not_under_the_title_is_not_a_byline() {
+        let document = Document::new("# Title\n\nBody.\n\n*Draft by Ada*\n");
+        assert_eq!(document.byline(), None);
+        let document = Document::new("## Section\n\n*Draft by Ada*\n");
+        assert_eq!(document.byline(), None);
+    }
+
+    /// A line of a list lights the item it is on, and a continuation line
+    /// lights the item it continues.
+    #[test]
+    fn a_line_inside_a_list_item_finds_that_item() {
+        let document = Document::new("# Title\n\n- one\n  more\n- two\n- three\n");
+        assert_eq!(document.item_at_line(1, 3), Some(0));
+        assert_eq!(document.item_at_line(1, 4), Some(0));
+        assert_eq!(document.item_at_line(1, 5), Some(1));
+        assert_eq!(document.item_at_line(1, 6), Some(2));
+    }
+
+    /// A paragraph or a heading has no list items, so a mark on it finds none.
+    #[test]
+    fn a_paragraph_has_no_item_but_a_list_line_has_one() {
+        let document = Document::new("# Title\n\nA paragraph.\n\n- one\n- two\n");
+        assert_eq!(document.item_at_line(0, 1), None);
+        assert_eq!(document.item_at_line(1, 3), None);
+        assert_eq!(document.item_at_line(2, 5), Some(0));
     }
 
     /// SM-16
