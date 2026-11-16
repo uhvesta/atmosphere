@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status};
 
+use super::journal;
 use super::link::HostLink;
 use super::policy_copy::PolicySource;
 use crate::events::Feed;
@@ -68,8 +69,15 @@ impl Uplinks {
         let (to_host, stream) = mpsc::channel(16);
         let feed = self.feed.clone();
         let policy = self.policy.clone();
+        let store = Arc::clone(self.policy.store());
+        let mut written = self.link.journal_writes();
         tokio::spawn(async move {
             let mut from_host = from_host;
+            // Nothing of the journal goes out before the host's Resume says
+            // what it already holds; after it, `sent_through` is how far
+            // this uplink has sent.
+            let mut resumed = false;
+            let mut sent_through = 0_u64;
             loop {
                 tokio::select! {
                     () = opened.replaced() => {
@@ -81,7 +89,30 @@ impl Uplinks {
                             .await;
                         break;
                     }
+                    Ok(()) = written.changed(), if resumed => {
+                        if !send_journal(&store, &to_host, &mut sent_through).await {
+                            break;
+                        }
+                    }
                     message = from_host.message() => match message {
+                        Ok(Some(pb::HostToMachine {
+                            message: Some(pb::host_to_machine::Message::Resume(resume)),
+                        })) => {
+                            let through = resume.from.map_or(0, |from| from.journal_through);
+                            if !acked(&store, through).await {
+                                continue;
+                            }
+                            resumed = true;
+                            sent_through = sent_through.max(through);
+                            if !send_journal(&store, &to_host, &mut sent_through).await {
+                                break;
+                            }
+                        }
+                        Ok(Some(pb::HostToMachine {
+                            message: Some(pb::host_to_machine::Message::Ack(ack)),
+                        })) => {
+                            acked(&store, ack.journal_through).await;
+                        }
                         Ok(Some(pb::HostToMachine {
                             message: Some(pb::host_to_machine::Message::Policy(snapshot)),
                         })) => {
@@ -135,4 +166,56 @@ async fn applied(policy: &Arc<PolicySource>, snapshot: pb::PolicySnapshot) -> Op
             None
         }
     }
+}
+
+/// Records that the host has every journal entry through `seq`. False when
+/// it couldn't be kept; the entries are then sent again on the next link.
+async fn acked(store: &Arc<humata2_store::Store>, seq: u64) -> bool {
+    let store = Arc::clone(store);
+    let kept = tokio::task::spawn_blocking(move || journal::acked(&store, seq)).await;
+    match kept {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => {
+            crate::log::say!("humatad2: warning: the host's journal ack wasn't kept: {}", crate::status::chain(&error));
+            false
+        }
+        Err(error) => {
+            crate::log::say!("humatad2: warning: keeping the host's journal ack stopped: {error}");
+            false
+        }
+    }
+}
+
+/// Sends the journal entries after `sent_through`, in order, and moves it
+/// up to the last one sent. False when the uplink is gone.
+async fn send_journal(
+    store: &Arc<humata2_store::Store>,
+    to_host: &mpsc::Sender<Result<pb::MachineToHost, Status>>,
+    sent_through: &mut u64,
+) -> bool {
+    let after = *sent_through;
+    let reading = Arc::clone(store);
+    let read = tokio::task::spawn_blocking(move || journal::entries_after(&reading, after)).await;
+    let entries = match read {
+        Ok(Ok(entries)) => entries,
+        Ok(Err(error)) => {
+            crate::log::say!("humatad2: warning: the journal wasn't sent to the host: {}", crate::status::chain(&error));
+            return true;
+        }
+        Err(error) => {
+            crate::log::say!("humatad2: warning: reading the journal stopped: {error}");
+            return true;
+        }
+    };
+    for entry in entries {
+        let seq = entry.seq;
+        let message = pb::MachineToHost {
+            message: Some(pb::machine_to_host::Message::Journal(entry)),
+        };
+        if to_host.send(Ok(message)).await.is_err() {
+            return false;
+        }
+        *sent_through = seq;
+    }
+    true
 }

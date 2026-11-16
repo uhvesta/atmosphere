@@ -19,6 +19,9 @@ struct LinkState {
 pub(crate) struct HostLink {
     on_host: bool,
     state: watch::Sender<LinkState>,
+    /// Counts the journal entries written, so an open uplink sends them as
+    /// they come.
+    journal: watch::Sender<u64>,
 }
 
 impl HostLink {
@@ -29,11 +32,22 @@ impl HostLink {
             reachable: on_host,
             generation: 0,
         });
-        Self { on_host, state }
+        let (journal, _) = watch::channel(0);
+        Self { on_host, state, journal }
     }
 
     pub(crate) fn on_host(&self) -> bool {
         self.on_host
+    }
+
+    /// Says an entry was added to the journal.
+    pub(crate) fn journal_written(&self) {
+        self.journal.send_modify(|written| *written = written.wrapping_add(1));
+    }
+
+    /// Changes each time an entry is added to the journal.
+    pub(crate) fn journal_writes(&self) -> watch::Receiver<u64> {
+        self.journal.subscribe()
     }
 
     pub(crate) fn reachable(&self) -> bool {

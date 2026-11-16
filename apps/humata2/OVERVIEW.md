@@ -346,7 +346,8 @@ The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so i
 
 ### Pick up here (minion AWAY)
 - **AWAY (2026-11-16, manager minion AWAY, batch 3; plan in workflow/milestones/AWAY.md Lane; picks D217, D220, D223):** keep working with the host closed. Committed: the host link and uplink (a machine knows whether its host is reachable), containment of a machine's agents with its boundary suite, the passphrase settings, and the policy copy sent to machines and kept across restarts (80afbeae). D220, which reads the rules from that copy on a machine, is at main's gate (`away/seams_d220.py` in the session scratchpad).
-- **In flight:** T6a, the approval passphrase logs a terminal in on a machine while its host is away (D223). The test is `tests/pending/away_login.rs`. The seam is `away/seams_t6.py`, which moves the test in. A worker is writing cli_login.rs, identity.rs and status.rs.
+- **Done since:** the approval passphrase logs a terminal in on a machine while its host is away (D223, 0fdac687); the AWAY test harness is `tests/common/away.rs` (a pty terminal that reads its screen, and the host's end of the link).
+- **In flight:** T5, a machine journals its Inbox and sends the journal to its host (D225); `tests/away_inbox.rs` also shows `humata inbox` answering on the machine with the passphrase login (T6b).
 - **Exact next:** T5/T7 (an agent's request on a machine while away waits in the machine's inbox, `humata inbox` answers it there with the passphrase login, and on reconnect the journal replays it into the host's Inbox, where the first answer wins), then T9 (the AW-7 table as a boundary suite and flow §26.10 on the remote rig).
 
 ### Pick up here (minion FILES)

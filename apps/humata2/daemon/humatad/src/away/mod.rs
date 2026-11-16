@@ -3,12 +3,14 @@
 //! the approval passphrase a machine checks while it isn't, and the copy of
 //! the host's policy it judges calls by meanwhile.
 
+mod journal;
 mod link;
 mod lockout;
 mod passphrase;
 mod policy_copy;
 mod uplink;
 
+pub(crate) use journal::record as record_journal;
 pub(crate) use link::HostLink;
 pub(crate) use lockout::{CheckError, Checked, check_passphrase};
 pub(crate) use passphrase::{set_approval_passphrase, verifier};

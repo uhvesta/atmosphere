@@ -196,6 +196,16 @@ impl Inbox {
             }
             return Err(status::store(error, &self.machine, doing));
         }
+        // The machine's journal takes the change too, as it is made (D225).
+        let before = entry.request.borrow().request.state();
+        crate::away::record_journal(
+            &self.store,
+            &self.guard.host_link(),
+            &entry.session,
+            before,
+            &next.request,
+        )
+        .await;
         entry.request.send_replace(next);
         Ok(())
     }
@@ -671,7 +681,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             ));
         };
         // An Ask verdict is fine too: the question is the request.
-        self.guard.check(&caller, &inbox_ask(agent))?;
+        self.guard.check_inbox_ask(&caller, &inbox_ask(agent))?;
         let request = request.into_inner();
         if request.question.trim().is_empty() {
             return Err(status::missing("question"));
@@ -730,7 +740,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             ));
         };
         // Asking ahead is asking; this also loads the channel's rules.
-        self.guard.check(&caller, &inbox_ask(agent))?;
+        self.guard.check_inbox_ask(&caller, &inbox_ask(agent))?;
         let request = request.into_inner();
         let capability = match request.capability {
             0 => return Err(status::missing("capability")),

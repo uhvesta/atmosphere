@@ -159,7 +159,7 @@ impl Inbox {
         ask: Ask,
     ) -> Result<PermissionWait, Status> {
         // An Ask verdict is fine: the card is the ask.
-        self.guard.check(caller, &inbox_ask(agent))?;
+        self.guard.check_inbox_ask(caller, &inbox_ask(agent))?;
         let session = agent.session.id.to_string();
         let key = format!("{session}/{}", ask.key);
         let mut state = self.state.lock().await;

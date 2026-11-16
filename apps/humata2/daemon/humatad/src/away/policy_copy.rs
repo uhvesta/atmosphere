@@ -70,6 +70,11 @@ pub(crate) enum CopyError {
     NotHex,
 }
 
+/// The revision of the copy this machine holds, 0 if it was never sent one.
+pub(super) fn held_revision(store: &Store) -> Result<u64, StoreError> {
+    Ok(store.setting(COPY_KEY)?.map_or(0, |saved| saved.revision))
+}
+
 /// Where the copy is made (on the host) or put in force (on a machine).
 pub(crate) struct PolicySource {
     guard: Arc<Guard>,
@@ -79,6 +84,11 @@ pub(crate) struct PolicySource {
 impl PolicySource {
     pub(crate) fn new(guard: Arc<Guard>, store: Arc<Store>) -> Arc<Self> {
         Arc::new(Self { guard, store })
+    }
+
+    /// The store the copy is kept in.
+    pub(super) fn store(&self) -> &Arc<Store> {
+        &self.store
     }
 
     /// Changes each time the copy would.

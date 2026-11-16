@@ -41,6 +41,9 @@ pub(crate) enum Checked {
 enum Judged {
     Done(Checked),
     WaitForHost,
+    /// Allowed while the Mac is away only if the call is kept in the
+    /// journal for it.
+    Journal,
 }
 
 impl Guard {
@@ -72,6 +75,21 @@ impl Guard {
     pub(crate) fn check(&self, caller: &Caller, call: &Call) -> Result<Checked, Status> {
         match self.judge(caller, call)? {
             Judged::Done(checked) => Ok(checked),
+            // Only the Inbox journals what it takes yet (D225).
+            Judged::WaitForHost | Judged::Journal => {
+                Err(status::refused(&Refusal::HostUnreachable))
+            }
+        }
+    }
+
+    /// Checks an agent's ask: a question, an ask-ahead or a permission
+    /// card. Like [`Guard::check`], but while the Mac is away the ask is
+    /// taken, since it waits in this machine's Inbox and every change to
+    /// that Inbox is journaled for the host (AW-3, D225).
+    pub(crate) fn check_inbox_ask(&self, caller: &Caller, call: &Call) -> Result<Checked, Status> {
+        match self.judge(caller, call)? {
+            Judged::Done(checked) => Ok(checked),
+            Judged::Journal => Ok(Checked::Allowed),
             Judged::WaitForHost => Err(status::refused(&Refusal::HostUnreachable)),
         }
     }
@@ -90,6 +108,7 @@ impl Guard {
             match self.judge(caller, call)? {
                 Judged::Done(checked) => return Ok(checked),
                 Judged::WaitForHost => self.link.until_reachable().await,
+                Judged::Journal => return Err(status::refused(&Refusal::HostUnreachable)),
             }
         }
     }
@@ -128,10 +147,14 @@ impl Guard {
                 effect: Effect::Apply,
                 ..
             } => Ok(Judged::Done(Checked::Allowed)),
-            // The away journal and last copy are AWAY T5. Until they exist, a
-            // call that would need them is refused as one that needs the Mac.
             Verdict::Allowed {
-                effect: Effect::Journal | Effect::LastCopy,
+                effect: Effect::Journal,
+                ..
+            } => Ok(Judged::Journal),
+            // The last copy isn't read yet: a call that would need it is
+            // refused as one that needs the Mac.
+            Verdict::Allowed {
+                effect: Effect::LastCopy,
                 ..
             } => Err(status::refused(&Refusal::HostUnreachable)),
             Verdict::Ask(request) => Ok(Judged::Done(Checked::Ask(request))),
