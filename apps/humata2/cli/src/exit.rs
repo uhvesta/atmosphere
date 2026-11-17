@@ -1,3 +1,4 @@
+// VERIFY dummy comment: closed without merging.
 //! Exit codes (CLI.md §7, D26). Scripts branch on these or on
 //! `error.kind`, never on the text.
 
