@@ -20,23 +20,24 @@ How to read this file, and what the tags mean: [README](README.md).
    **Expect:** nothing changes on the daemon. The page reads the Desk list.
    **Status: Fakes only.** `desktop/tests/native/desk.rs::the_desk_page_lists_open_documents_and_closed`. The live client lists real Desk sessions (`clients/live/tests/desk.rs::a_started_session_is_on_the_desk_on_real`), but no test opens this page on a real daemon.
 
-2. **Do:** click **New desk session**. Type the title "Checkout errors from Slack". Leave **Runs** on Claude Code, **Machine** on This Mac and the folder on **A new scratch folder**. Leave **Repos** empty. Click **Start**.
-   **See:** the dialog (frame 40) shows the folder it will use, then "Starting…". The session page opens.
+2. **Do:** click **New desk session**. Type the title "Checkout errors from Slack". Leave **Runs** on Claude Code and **Machine** on This Mac. Leave **Repos** empty. There's no folder to pick. Click **Start**.
+   **See:** the dialog (frame 40, re-drawn for DOCV) shows no path, then "Starting…". The session page opens.
    **Expect:**
    - The folder `~/Humata/desk/checkout-errors-from-slack` exists, and the agent runs in it.
+   - The folder is a git repo of its own with no commit, so it isn't kept (DV-1, DV-4).
    - A taken name gets the next suffix (`…-2`).
    - The Desk list has one open session.
    - Event: none. Desk sessions have no event of their own, so the Desk page reloads its list instead of hearing about it.
-   **Status:** the dialog is **Fakes only**: `desktop/tests/native/desk.rs::a_new_desk_session_starts_from_the_form_and_opens`. The start itself **Works** in the daemon: `daemon/humatad/tests/desk.rs::a_scratch_session_runs_its_agent_in_a_folder_named_from_its_title` and `::a_taken_name_gets_the_next_suffix`.
+   **Status:** the dialog is **Fakes only**: `desktop/tests/native/desk.rs::a_new_desk_session_starts_from_the_form_and_opens`. The start itself **Works** in the daemon: `daemon/humatad/tests/desk.rs::a_scratch_session_runs_its_agent_in_a_folder_named_from_its_title` and `::a_taken_name_gets_the_next_suffix`. The dialog with no folder choice, and the repo, are **Not built: DOCV** (DK-14, DV-1).
 
 3. **Do:** look at the session page.
    **See:**
    - The agent's own TUI in the main tab.
-   - A folder bar above the tabs (frame 37): the folder with a "scratch" chip, a machine picker, **Add repo** and **Keep folder**.
+   - A folder bar above the tabs (frame 37): the folder with a "Not kept · goes 7 days after close" chip, a machine picker, **Add repo** and **Keep folder**.
    - No **Fork** button.
    - The sidebar lists the session under Desk, not under a channel.
    **Expect:** the session has no branch and no board.
-   **Status: Fakes only.** `desktop/tests/native/desk.rs::a_desk_sessions_page_has_the_folder_bar_and_no_fork` and `::the_sidebar_lists_desk_sessions_only_on_the_desk`.
+   **Status: Fakes only.** `desktop/tests/native/desk.rs::a_desk_sessions_page_has_the_folder_bar_and_no_fork` and `::the_sidebar_lists_desk_sessions_only_on_the_desk`. The chip's wording is **Not built: DOCV** (DK-3).
 
 4. **Do:** click into the terminal, press ⌘V, then Return.
    **See:** the thread has more than one line, so the terminal asks before it sends the paste. I accept, and the agent starts reading.
@@ -85,6 +86,7 @@ How to read this file, and what the tags mean: [README](README.md).
    - **Keep** takes the delete time away.
    - **Reopen** resumes the same conversation in the same folder.
    - Reopening is refused once the folder is gone.
+   - The folder holds the agent's notes and no version, so Close asks first, in one line, and offers **Save version and close** and **Close**. I click **Close**: the notes are already in `#payments/shared/`. This part is **Not built: DOCV** (DV-4).
    **Status: Works.** `clients/live/tests/desk.rs::closing_and_reopening_on_real` and `::a_kept_folder_has_no_days_left_on_real`; `daemon/humatad/tests/desk.rs::closing_stops_the_agent_and_keeps_the_folder_for_seven_days`, `::reopening_resumes_the_conversation_in_the_same_folder` and `::reopening_is_refused_when_the_folder_is_gone`. The screen is **Fakes only**: `desktop/tests/native/desk.rs::closing_a_desk_session_lists_it_under_closed` and `::keeping_and_reopening_a_closed_session`.
 
 10. **Do:** weeks later, click **Clean up…**, tick the old closed sessions and click delete.
@@ -92,12 +94,12 @@ How to read this file, and what the tags mean: [README](README.md).
     **Expect:**
     - Only the ticked sessions are deleted.
     - If the list changed since the dialog opened, nothing is deleted and the new list is shown.
-    - A picked folder is never deleted.
+    - A folder picked before D451 is never deleted. A kept folder goes only when I tick its session.
     **Status: Works.** `clients/live/tests/desk.rs::clean_up_deletes_only_the_ticked_session_on_real` and `::a_stale_clean_up_deletes_nothing_on_real`; `daemon/humatad/tests/desk.rs::work_not_pushed_holds_the_folder_and_says_why` and `::cleaning_up_a_picked_session_leaves_its_folder`. The dialog is **Fakes only**: `desktop/tests/native/desk.rs::cleaning_up_deletes_the_ticked_closed_sessions`.
 
 ## Expected outcome
 
-Either the work lives on as a `#payments` session with the same conversation (step 8, not built), or the Desk session is closed and its scratch folder is gone after 7 days. `#payments/shared/` keeps the notes either way.
+Either the work lives on as a `#payments` session with the same conversation (step 8, not built), or the Desk session is closed and its folder, never saved as a version, is gone after 7 days. `#payments/shared/` keeps the notes either way.
 
 ## Gaps this flow shows
 
