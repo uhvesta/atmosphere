@@ -744,6 +744,10 @@ impl TerminalPane {
             .border_color(theme.border)
             .bg(theme.popover)
             .shadow_md()
+            // A press inside the bar is the bar's: the view around the pane
+            // gives the program the keys on a press, and must not take them
+            // from the find field.
+            .on_click(|_, _, cx| cx.stop_propagation())
             .on_action(cx.listener(|pane, _: &Escape, window, cx| pane.close_find(window, cx)))
             .child(
                 div()

@@ -180,6 +180,11 @@ pub(crate) struct Terminals {
     shell: Rc<Cell<Option<EntityId>>>,
     /// The look of the last sync, for the lines drawn under a terminal.
     look: Option<Look>,
+    /// Set when the last sync made a new view for the tab that takes the
+    /// session's keys, as a Stop and Resume does: whether the view it
+    /// replaced had focus. The shell gives the new view focus, as it does a
+    /// session it opens.
+    replaced: Option<bool>,
 }
 
 fn toast(message: String) -> AppAction {
@@ -214,7 +219,14 @@ impl Terminals {
             generations: HashMap::new(),
             shell: Rc::new(Cell::new(None)),
             look: None,
+            replaced: None,
         }
+    }
+
+    /// Whether the last sync replaced the view of the tab that takes the
+    /// session's keys, and if so whether the old view had focus.
+    pub(crate) fn take_replaced(&mut self) -> Option<bool> {
+        self.replaced.take()
     }
 
     /// A replica for `key` and the task that opens its link and feeds it.
@@ -393,7 +405,12 @@ impl Terminals {
                 ReplicaEvent::Pane(PaneEvent::Failed(error)) => {
                     ui.send(toast(error.to_string()), cx)
                 }
-                ReplicaEvent::Failed(error) => ui.send(toast(error.to_string()), cx),
+                ReplicaEvent::Failed(error) => {
+                    let (session, tab) = key.clone();
+                    if !ui.read(|state| ended_on_purpose(state, &session, tab)) {
+                        ui.send(toast(error.to_string()), cx);
+                    }
+                }
                 ReplicaEvent::InputUncertain(_) => ui.send(
                     toast(
                         "Something you typed may not have reached the terminal. Check what it shows before typing it again."
@@ -626,8 +643,23 @@ impl Terminals {
                 reopen.push(key.clone());
             }
         }
+        let keys = match focus_target(state) {
+            (Route::Session(id), Some(Tab::Terminal(tab)), side)
+                if side != Some(FullScreen::Panel) =>
+            {
+                Some((id, tab))
+            }
+            _ => None,
+        };
         for key in reopen {
-            self.entries.remove(&key);
+            if let Some(gone) = self.entries.remove(&key)
+                && keys.as_ref() == Some(&key)
+            {
+                let had_focus = gone.replica.read(cx).pane().is_some_and(|pane| {
+                    pane.read(cx).focus_handle(cx).contains_focused(window, cx)
+                });
+                self.replaced = Some(self.replaced.unwrap_or(false) || had_focus);
+            }
         }
         let font = state.settings.preferences.font_size;
         let free_hidden = state.settings.preferences.free_hidden_terminals;
@@ -967,6 +999,20 @@ impl Terminals {
                     None => cx.propagate(),
                 }
             })
+            // A press, a pointer's or an accessibility one, gives the
+            // program the keys, unless something in the pane, say its
+            // find bar, already has them.
+            .on_click({
+                let replica = entry.replica.clone();
+                move |_, window, cx| {
+                    let held = replica.read(cx).pane().is_some_and(|pane| {
+                        pane.read(cx).focus_handle(cx).contains_focused(window, cx)
+                    });
+                    if !held {
+                        replica.update(cx, |replica, cx| replica.focus_input(window, cx));
+                    }
+                }
+            })
             .child(entry.replica.clone())
             .children(notice)
             .test_support()
@@ -1053,6 +1099,22 @@ pub(crate) fn grid_text(pane: &Entity<TerminalPane>, cx: &mut App) -> String {
             .collect::<Vec<_>>()
             .join("\n")
     })
+}
+
+/// Whether the tab's terminal ending was asked for: its session's agent is
+/// being stopped or ended from the close dialog, or is stopped, exited or
+/// failed to resume already. Its link ending then is expected, not a
+/// failure to toast; the session page says how the agent stands.
+fn ended_on_purpose(state: &AppState, session: &SessionId, tab: usize) -> bool {
+    let closing = state.session.closing.as_ref().is_some_and(|confirm| {
+        confirm.session == *session && confirm.tab == tab && confirm.sending.is_some()
+    });
+    let ended = tab == 0
+        && state
+            .workspace
+            .session(session)
+            .is_some_and(|found| found.status.agent_ended() || found.resume_failed.is_some());
+    closing || ended
 }
 
 /// Whether a group of the open session shows this tab right now.
@@ -1222,6 +1284,27 @@ mod tests {
     use super::*;
     // `gpui_kit::*` brings GPUI's `test` macro in, which shadows the std one.
     use ::core::prelude::v1::test;
+
+    /// A Stop the person asked for ends the agent's link on purpose, so
+    /// that ending is not toasted; a live session's link ending still is.
+    #[test]
+    fn a_stopped_agents_link_ending_is_expected() {
+        let mut workspace = humata2_clients::fixture::design();
+        let (clients, _) = humata2_clients::Clients::fake(
+            workspace.clone(),
+            std::sync::Arc::new(tca::TestClock::new()),
+        );
+        let mut state = AppState::launch(&clients);
+        let id = workspace.sessions[0].id.clone();
+        workspace.sessions[0].status = Status::Idle;
+        workspace.sessions[0].resume_failed = None;
+        state.workspace = std::sync::Arc::new(workspace.clone());
+        assert!(!ended_on_purpose(&state, &id, 0));
+        workspace.sessions[0].status = Status::AgentStopped;
+        state.workspace = std::sync::Arc::new(workspace);
+        assert!(ended_on_purpose(&state, &id, 0));
+        assert!(!ended_on_purpose(&state, &id, 1));
+    }
 
     #[test]
     fn only_web_and_mail_links_open() {

@@ -324,6 +324,14 @@ impl Render for Shell {
             // keys back (D781).
             window.focus(&self.focus, cx);
         }
+        // A Stop and Resume makes the tab a new view, which nothing has
+        // focused: it takes the keys again, as a session just opened does,
+        // when the old view had them or nothing else has them now.
+        if let Some(had_focus) = self.terminals.take_replaced()
+            && (had_focus || window.focused(cx).is_none() || self.focus.is_focused(window))
+        {
+            self.focus_target = None;
+        }
         self.documents.sync(&self.ui, window, cx);
         let target = self.ui.read(|state| {
             (!state.dialog_holds_keys()).then(|| crate::terminals::focus_target(state))

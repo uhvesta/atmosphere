@@ -35,6 +35,10 @@ pub struct RunningHolder {
     pub machine: MachineId,
     /// A stopped session (D784 "Stop"): nothing runs, and Resume revives it.
     pub stopped: bool,
+    /// Its session's agent terminal, a plain shell's included: Stop,
+    /// Resume and End for good go through the session, never the
+    /// running-holder calls, which refuse it.
+    pub agent_tab: bool,
 }
 
 impl RunningHolder {

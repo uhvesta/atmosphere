@@ -312,6 +312,12 @@ impl FakeDaemon {
         terminal_link::notice(&self.inner().links, session, tab, notice);
     }
 
+    /// Ends the links of the views following a tab, as the daemon's end
+    /// when the tab's program is stopped; a view opens a new one.
+    pub fn end_terminal_links(&self, session: &SessionId, tab: usize) {
+        terminal_link::end(&mut self.inner().links, session, tab);
+    }
+
     /// What it holds now.
     #[must_use]
     pub fn workspace(&self) -> Workspace {

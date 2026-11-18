@@ -180,6 +180,7 @@ mod tests {
             attached: false,
             machine: MachineId::new("devbox-1"),
             stopped: false,
+            agent_tab: false,
         }
     }
 

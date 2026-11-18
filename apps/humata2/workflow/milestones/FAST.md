@@ -1,6 +1,6 @@
 # FAST: An optional fast mode makes Humata measurably lighter and quicker
 
-- **Status:** blocked
+- **Status:** done (in 0.2.5, d716424c, 2026-11-18)
 - **Depends on:** RELEASE2 (VERIFY): profile and tune only once behaviour is settled and covered by tests
 - **Unblocks:** RELEASE3
 - **Layer:** L10 · **Lane:** perf

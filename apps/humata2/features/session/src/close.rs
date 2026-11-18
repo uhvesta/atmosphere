@@ -388,6 +388,12 @@ pub(crate) fn ended_text(title: &str, machine: &str) -> String {
     format!("Ended and archived {title} on {machine}.")
 }
 
+/// The toast after End for good closed the Desk session `title` on
+/// `machine`; Reopen on the Desk brings it back.
+pub(crate) fn desk_ended_text(title: &str, machine: &str) -> String {
+    format!("Ended {title} on {machine}. Its folder stays on the Desk, where Reopen resumes it.")
+}
+
 /// `session`'s agent and machine, as the dialog names them; empty when the
 /// session isn't in the workspace.
 pub(crate) fn agent_and_machine(state: &SessionState, session: &SessionId) -> (String, String) {

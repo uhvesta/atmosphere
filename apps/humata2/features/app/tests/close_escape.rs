@@ -30,6 +30,7 @@ fn holder() -> RunningHolder {
         attached: false,
         machine: MachineId::new("devbox-1"),
         stopped: false,
+        agent_tab: false,
     }
 }
 

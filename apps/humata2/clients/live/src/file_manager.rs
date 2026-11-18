@@ -141,11 +141,7 @@ fn detail_of(status: &Status) -> Option<pb::Error> {
 
 /// The daemon's words for a failure: what failed, then what to do.
 fn words(error: &pb::Error) -> String {
-    if error.fix.is_empty() {
-        error.message.clone()
-    } else {
-        format!("{} {}", error.message, error.fix)
-    }
+    crate::connection::said(&error.message, &error.fix)
 }
 
 fn machine_of(id: Option<&pb::MachineId>, fallback: &MachineId) -> MachineId {

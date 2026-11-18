@@ -70,11 +70,7 @@ fn now_secs() -> i64 {
 
 /// The daemon's words for a failure: its message, then its fix.
 fn words(error: &pb::Error) -> String {
-    if error.fix.is_empty() {
-        error.message.clone()
-    } else {
-        format!("{} {}", error.message, error.fix)
-    }
+    crate::connection::said(&error.message, &error.fix)
 }
 
 /// The failures the app says more plainly than the daemon's words: gh signed

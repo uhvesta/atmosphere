@@ -1044,6 +1044,70 @@ impl Agents {
         store.put_agent(&now)?;
         Ok(true)
     }
+
+    /// Follows session `session`'s agent into conversation `id`, which its
+    /// own CLI's hook says it is in now: Copilot's `/clear` and `/restart`
+    /// start another conversation in the same running agent. Saves the
+    /// launch naming `id`, in its commands and its file, so a resume, fork
+    /// or read takes up that conversation. Nothing changes, and false, when
+    /// the launch names `id` already; when `id`'s file isn't written yet (a
+    /// resume needs it, and the CLI writes it by the end of the first turn,
+    /// whose hook says it again); when another session's agent holds `id`;
+    /// or when the launch's file doesn't name its id, so `id`'s file can't
+    /// be told. Blocking: it reads the store and checks the file.
+    pub fn follow_conversation(
+        &self,
+        store: &humata2_store::Store,
+        session: &str,
+        id: &str,
+    ) -> Result<bool, humata2_store::StoreError> {
+        let Some(agent) = store.agent(session)? else {
+            return Ok(false);
+        };
+        let old = agent.launch.conversation_id.as_str();
+        if old.is_empty() || old == id || self.get(&agent.launch.agent).is_err() {
+            return Ok(false);
+        }
+        let Some(file) = agent
+            .launch
+            .conversation_file
+            .to_str()
+            .filter(|file| file.contains(old))
+            .map(|file| PathBuf::from(file.replace(old, id)))
+        else {
+            return Ok(false);
+        };
+        if !file.is_file() {
+            return Ok(false);
+        }
+        let taken = store
+            .agents()?
+            .iter()
+            .any(|other| other.session != session && other.launch.conversation_id == id);
+        if taken {
+            return Ok(false);
+        }
+        let mut launch = agent.launch.clone();
+        bind(&mut launch, id, file);
+        // Read again just before saving, so a state saved meanwhile is kept.
+        let Some(mut now) = store.agent(session)? else {
+            return Ok(false);
+        };
+        if now.launch.conversation_id != agent.launch.conversation_id {
+            return Ok(false);
+        }
+        // The conversation left behind stays the session's, as a start
+        // fresh keeps it (PER-15), so it can still be read and found.
+        if agent.launch.conversation_file.is_file() {
+            let ended = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX));
+            store.push_previous_conversation(session, old, &agent.launch.conversation_file, ended)?;
+        }
+        now.launch = launch;
+        store.put_agent(&now)?;
+        Ok(true)
+    }
 }
 
 /// Makes `launch` name conversation `id`, kept at `file`: the placeholder id

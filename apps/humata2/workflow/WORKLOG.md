@@ -6,44 +6,32 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
-- **State (2026-11-17):** closing out the 0.2 release. Gate 30 reported and its failures went to fix agents; the
-  fast tier is running for the release commit. VERIFY started early and runs beside it.
-- **Done:** everything DAG.md marks done: D0, P0, W1, FRAMES1, FRAMES2, LOOK1, LOOK2, FL-D, FL, BUG, BUG2, TIDY,
-  DESK, ASK, MACH, REVIEW, BOARD, FORK, FILES, AWAY, FIND, HOOKS, NEWCH. humata2-v0.1.0 is released and installed.
-- **Code in, fast tier green pending, closing with the 0.2 release (commit: pending):** VIEWS, PR, SAFE, STOP,
-  UPGRADE, DOCV, NOPATH, REPOS, POLISH, STACK, ROAM, TERM, AGENTKINDS, AGENTSET, MACHINESCRIPTS, OWNERFIX. V1 closes
-  with 0.2 too. TERM's remaining batch (`retag_live.py`, the vim Escape check) is not recorded as run; check its Lane
-  before the commit. So are the 13 golden frames Fable approved and native `29-permission-route`.
-- **VERIFY: in progress, started early** (owner, 2026-11-17 14:05). The first real-agent Copilot pass is about 60%
-  done: results in `flows/cases/results/copilot-*.md`, feedback in `flows/cases/results/FEEDBACK.md`, lane log in
-  `workflow/milestones/VERIFY.md`. About 20 fixes landed test-first (D743–D757, GAPS_REVIEW). Copilot reruns are
-  pending on the 0.2 build.
-- **Cut (owner, 2026-11-16, D485):** LINUX, ANYHOST, the browser client and TERM's browser half. macOS desktop only.
+- **State (2026-11-18 08:30):** RELEASE3 (0.3) in progress.
+  - Shipped: humata2-v0.2.1 through v0.2.5, all installed in /Applications. FAST is done in 0.2.5 (D787–D789).
+  - Every milestone before RELEASE3 is done; see DAG.md.
+- **The 0.3 batch** (uncommitted, focused tests green). It comes from the owner-screen drive (admin daemon in an isolated HOME, Copilot, 2026-11-18):
+  - real-VM SSH flows; a channel with no repos starts in an empty folder;
+  - End for good, Desk sessions included;
+  - Stop refuses an agent with no conversation yet;
+  - failed sessions stay listed; This Mac's system line;
+  - Copilot `/clear` and `/restart` are followed through its conversation hook;
+  - after Resume, the terminal takes keys;
+  - a press on the Inbox terminal focuses it;
+  - the scrollbars no longer cover the trust box.
+  - GAPS_REVIEW.md has an entry for each.
 - **Next:**
-  1. Fast tier green.
-  2. Slow tier once: the power-cut suites, live flows, rebuild, archive and PR review.
-  3. Commit and push.
-  4. Release 0.2 and install it in /Applications.
-  5. Rebuild the VERIFY binaries from the 0.2 build.
-  6. Copilot reruns:
-     - remote flows 1 and 2;
-     - the fork lane;
-     - sync, for VF-5;
-     - files flow 4, with a `stat` of each file for VF-58;
-     - files flow 5 as a pull (D755);
-     - one lane without `say.sh`, to prove BUG-T1 is fixed (`session type` submits, D754);
-     - a check that the lanes ran on Haiku.
-  7. Fix what the reruns find, test-first.
-  8. The app-open run (bug reports end to end on the owner's screen): ask the owner first.
-  9. RELEASE2, then FAST, then RELEASE3.
-- **Test policy (2026-11-17):** the fast tier is the default run. Each fix runs only its focused tests. The slow tier
-  (power-cut suites, live flows, rebuild, archive, PR review) runs once before each release.
-- **VM logins:** Copilot only, until 2026-11-18 00:00 PST. After that, copy no more logins; logins already in place
-  may keep being used. Codex and Claude Code are deferred by the owner.
-- **Owner-only:** grow the `h2-terminal-c1` VM disk from 4 to 6 GiB. It has 1.3 GiB free, and adding a machine
-  needs 2 GiB.
-- **Not ours in the tree:** Codex C1's `engine/`, `ui-prototype/`, C1_HANDOFF, LAYOUT, `bazel/toolchains/`; `.claude/`,
-  `.nvimlog`. Main owns `terminal/` and `daemon/holder/` now (C1 stopped).
+  1. Fix the failing fast-tier test: `power_cut_focus_test` start cut at the box.
+  2. Fast tier with fast mode off and on.
+  3. A live drive of the fixed flows on screen.
+  4. Commit and push.
+  5. The slow tier, including `live_flows_ssh_test` with `TERMINAL_LAB_SSH_CONFIG`.
+  6. Release 0.3 and install it.
+  7. Then AGENTS2: Claude Code and Codex on structured channels, with screen parsing as the fallback only.
+- **Owner's deadline:** work until 12:00 PST 2026-11-18. The "permission for anything" window ended at 08:20.
+- **Cut (owner, 2026-11-16, D485):** LINUX, ANYHOST, the browser client and TERM's browser half. macOS desktop only.
+- **Test policy:** the fast tier is the default. Focused tests cover each fix. The slow tier runs once before each release.
+- **Owner-only:** grow the `h2-terminal-c1` VM disk from 4 to 6 GiB.
+- **Not ours in the tree:** Codex C1's `engine/`, `ui-prototype/`, C1_HANDOFF, LAYOUT, `bazel/toolchains/`; `.claude/` and `.nvimlog`.
 - **Lane limit:** 10. Opinions go to Fable 5.2, not the owner.
 
 ## Roster

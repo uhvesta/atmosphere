@@ -30,6 +30,7 @@ fn holder(tab: Option<&str>, session: Option<&str>, title: &str, agent: Agent, s
         attached: false,
         machine: mac(),
         stopped,
+        agent_tab: false,
     }
 }
 
@@ -181,4 +182,39 @@ fn adopting_a_terminal_no_channel_has_puts_it_in_a_session() {
     store.receive_matching("listed again", |a| matches!(a, A::Loaded(_, Ok(_))), |_| {});
     assert!(store.state().not_in_a_channel().is_none(), "it is no longer an orphan");
     assert!(daemon.running_holders_now().iter().all(|holder| !holder.is_orphan()));
+}
+
+/// A Desk shell session's own terminal: a plain shell, but its session's
+/// agent tab, which the daemon's running-holder calls refuse.
+fn shell_session_row(session: &SessionId) -> RunningHolder {
+    RunningHolder {
+        agent_tab: true,
+        ..holder(Some("shell-agent-tab"), Some(session.as_str()), "shell1", Agent::Shell, false)
+    }
+}
+
+#[test]
+fn ending_a_shell_sessions_own_terminal_for_good_archives_its_session() {
+    let (mut store, daemon, session) = seeded(false);
+    daemon.set_running_holders(vec![shell_session_row(&session)]);
+    loaded(&mut store);
+    store.send(A::Row(shell_session_row(&session), RowAction::EndForGood), |_| {});
+    store.send(A::ConfirmEnd, |_| {});
+    store.receive_matching(
+        "archive it",
+        |a| matches!(a, A::Delegate(RunningDelegate::ArchiveSession(id)) if *id == session),
+        |_| {},
+    );
+    assert!(store.state().error.is_none(), "{:?}", store.state().error);
+}
+
+#[test]
+fn stopping_a_shell_sessions_own_terminal_stops_its_session() {
+    let (mut store, daemon, session) = seeded(false);
+    daemon.set_running_holders(vec![shell_session_row(&session)]);
+    loaded(&mut store);
+    store.send(A::Row(shell_session_row(&session), RowAction::Stop), |_| {});
+    store.receive_matching("stopped", |a| matches!(a, A::Done(Ok(()))), |_| {});
+    let status = daemon.workspace().session(&session).map(|found| found.status);
+    assert_eq!(status, Some(Status::AgentStopped));
 }

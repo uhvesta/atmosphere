@@ -63,6 +63,12 @@ pub(super) fn exit(links: &[LinkTap], session: &SessionId, tab: usize, code: i32
     }
 }
 
+/// Ends the links of the views following a tab, as the daemon's do when the
+/// tab's program is stopped: each view sees its link close.
+pub(super) fn end(links: &mut Vec<LinkTap>, session: &SessionId, tab: usize) {
+    links.retain(|tap| tap.key.0 != *session || tap.key.1 != tab);
+}
+
 /// Hands `notice` to the views following a tab.
 pub(super) fn notice(links: &[LinkTap], session: &SessionId, tab: usize, notice: TerminalNotice) {
     for tap in links
@@ -174,10 +180,12 @@ fn start(
         offset: screen.len() as u64,
     };
     let shared = shared.clone();
+    // Only the tap keeps the link open, so ending the tap ends the link.
+    let frames = frames.downgrade();
     let sink = LinkSink::new(move |frame| {
-        if frames.is_closed() {
+        let Some(frames) = frames.upgrade().filter(|frames| !frames.is_closed()) else {
             return Err(SendError::Closed);
-        }
+        };
         match frame {
             ClientFrame::Resize {
                 cols,

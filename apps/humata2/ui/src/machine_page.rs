@@ -314,6 +314,27 @@ pub(crate) fn machine_page(
     page.test_support().into_any_element()
 }
 
+/// The machine's system line: its OS, architecture, address and how it is
+/// reached, and its daemon's version. A part its machine didn't report is
+/// left out, never drawn as an empty "· ·".
+fn system_line(os: &str, arch: &str, address: &str, reach: &str, version: &str) -> String {
+    let address = match (address.trim(), reach.trim()) {
+        ("", "") => String::new(),
+        ("", reach) => format!("({reach})"),
+        (address, "") => address.to_owned(),
+        (address, reach) => format!("{address} ({reach})"),
+    };
+    let version = match version.trim() {
+        "" => String::new(),
+        version => format!("humatad {version}"),
+    };
+    [os.trim(), arch.trim(), address.as_str(), version.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 fn header(
     ui: &Rc<Ui>,
     wrap: Wrap,
@@ -325,13 +346,12 @@ fn header(
     // they don't work, but read as off (frames 79 and 80).
     let read_only = state.upgrade().read_only();
     let system = state.detail.as_ref().map(|detail| {
-        format!(
-            "{} · {} · {} ({}) · humatad {}",
-            detail.os,
-            detail.arch,
-            detail.address,
-            reach_name(&detail.reach),
-            detail.daemon_version
+        system_line(
+            &detail.os,
+            &detail.arch,
+            &detail.address,
+            &reach_name(&detail.reach),
+            &detail.daemon_version,
         )
     });
     col()
@@ -1835,4 +1855,24 @@ fn preview_body(
         }
     }
     body
+}
+
+#[cfg(test)]
+mod system_line_tests {
+    use ::core::prelude::v1::test;
+
+    use super::system_line;
+
+    #[test]
+    fn a_part_the_machine_did_not_report_is_left_out() {
+        assert_eq!(
+            system_line("macOS 26.1", "arm64", "", "", "0.2.5"),
+            "macOS 26.1 · arm64 · humatad 0.2.5"
+        );
+        assert_eq!(
+            system_line("macOS 26.1", "arm64", "10.0.0.2", "ssh", "0.2.5"),
+            "macOS 26.1 · arm64 · 10.0.0.2 (ssh) · humatad 0.2.5"
+        );
+        assert!(!system_line("", "", "", "", "").contains('·'));
+    }
 }

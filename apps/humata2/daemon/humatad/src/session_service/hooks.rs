@@ -7,7 +7,9 @@
 //! Settings › Agents › "Ask in the Inbox" is off (D782, was D199's one
 //! switch). The `question` event does the same for the agent's own ask-user
 //! form (D761): its card is an Inbox question, and the session needs you
-//! while it's held.
+//! while it's held. The `conversation` event holds nothing: the agent's
+//! hook names the conversation its CLI is in now, and when a Copilot
+//! `/clear` or `/restart` has moved it to another one, the session follows.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -36,6 +38,8 @@ const KEEPALIVE: Duration = Duration::from_secs(15);
 /// agent's own ask-user form (D761).
 const PERMISSION: &str = "permission";
 const QUESTION: &str = "question";
+/// The event of a hook that says which conversation its CLI is in.
+const CONVERSATION: &str = "conversation";
 
 impl SessionSvc {
     pub(super) async fn hook_of(
@@ -60,6 +64,17 @@ impl SessionSvc {
         let request = request.into_inner();
         let (sender, receiver) = mpsc::channel(4);
         let kind = Agent::parse(&request.agent);
+        if request.event == CONVERSATION {
+            let named = kind.and_then(|kind| {
+                agent_hooks::parse_conversation(kind, &request.payload).ok()
+            });
+            if let Some(id) = named {
+                self.follow_conversation(&agent.session.id.to_string(), id)
+                    .await?;
+            }
+            let _ = sender.try_send(Ok(final_reply(Vec::new())));
+            return Ok(Response::new(ReceiverStream::new(receiver)));
+        }
         let hooked = match (request.event.as_str(), kind) {
             (PERMISSION, Some(kind)) => agent_hooks::parse_permission(kind, &request.payload)
                 .ok()
@@ -121,6 +136,30 @@ impl SessionSvc {
             }
         }
         Ok(Response::new(ReceiverStream::new(receiver)))
+    }
+}
+
+impl SessionSvc {
+    /// Session `session`'s agent says its CLI is in conversation `id`: the
+    /// session's agent record follows it there when it moved, and the feed
+    /// is told, so a resume takes up the conversation the person was in.
+    async fn follow_conversation(&self, session: &str, id: String) -> Result<(), Status> {
+        let (store, agents, key) = (
+            self.starter.store.clone(),
+            self.starter.agents.clone(),
+            session.to_owned(),
+        );
+        let followed = crate::channel_service::blocking(move || {
+            agents.follow_conversation(&store, &key, &id)
+        })
+        .await?
+        .map_err(|error| {
+            status::store(error, &self.machine, "save the conversation the agent moved to")
+        })?;
+        if followed {
+            self.tell.session(session, pb::Change::Updated, None).await;
+        }
+        Ok(())
     }
 }
 

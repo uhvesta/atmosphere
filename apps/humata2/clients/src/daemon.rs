@@ -209,7 +209,7 @@ pub enum DaemonError {
     },
     /// What was asked about is gone.
     #[error(
-        "{what} no longer exists. It may have been archived or deleted from another window; reload to see what is there now"
+        "{what} no longer exists on its machine: it ended, or was archived or deleted. Reload to see what is there now"
     )]
     NotFound {
         /// What was asked about.

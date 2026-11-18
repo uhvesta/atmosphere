@@ -223,9 +223,7 @@ impl SessionSvc {
                 .map(|repo| repo.branch),
             Err(status) => {
                 progress.fail(failure_of(&status));
-                self.drop_asked(&id).await;
-                let (store, removing) = (self.starter.store.clone(), id);
-                let _ = blocking(move || store.remove_session(&removing)).await;
+                self.remove_placed_then_asked(&id).await;
                 return Err(status);
             }
         };
@@ -250,9 +248,7 @@ impl SessionSvc {
                 if let Some(progress) = host.take() {
                     progress.fail(failure_of(&status));
                 }
-                self.drop_asked(&id).await;
-                let (store, removing) = (self.starter.store.clone(), id);
-                let _ = blocking(move || store.remove_session(&removing)).await;
+                self.remove_placed_then_asked(&id).await;
                 Err(status)
             }
         }

@@ -294,8 +294,21 @@ impl Render for InboxTerminal {
             // the screen never moves.
             .p(px(INSET - if focused { 1. } else { 0. }))
             .overflow_hidden()
-            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-                click.update(cx, |replica, cx| replica.focus_input(window, cx));
+            .on_mouse_down(MouseButton::Left, {
+                let click = click.clone();
+                move |_, window, cx| {
+                    click.update(cx, |replica, cx| replica.focus_input(window, cx));
+                }
+            })
+            // An accessibility press is a click, not a mouse-down: it
+            // takes the keys the same way.
+            .on_click(move |_, window, cx| {
+                let held = click.read(cx).pane().is_some_and(|pane| {
+                    pane.read(cx).focus_handle(cx).contains_focused(window, cx)
+                });
+                if !held {
+                    click.update(cx, |replica, cx| replica.focus_input(window, cx));
+                }
             })
             // Clipped to the inset, so it shows on all four sides.
             .child(div().size_full().overflow_hidden().child(replica))

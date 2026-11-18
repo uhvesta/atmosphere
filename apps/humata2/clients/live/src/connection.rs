@@ -477,9 +477,26 @@ fn migration_needed(error: &pb::Error, machine: &MachineId) -> Option<DaemonErro
 /// status details, else the status message.
 fn daemon_words(status: &Status) -> String {
     match daemon_error(status) {
-        Some(error) if !error.fix.is_empty() => format!("{} {}", error.message, error.fix),
-        Some(error) => error.message,
+        Some(error) => said(&error.message, &error.fix),
         None => status.message().to_owned(),
+    }
+}
+
+/// What failed and what to do, as two sentences: the daemon words each as
+/// a clause with no end stop, so the fix starts a new sentence instead of
+/// running on from the failure.
+pub(crate) fn said(message: &str, fix: &str) -> String {
+    let (message, fix) = (message.trim(), fix.trim());
+    match (message.is_empty(), fix.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => message.to_owned(),
+        (true, false) => fix.to_owned(),
+        (false, false) => {
+            let stop = if message.ends_with(['.', '!', '?', ':']) { "" } else { "." };
+            let mut letters = fix.chars();
+            let first: String = letters.next().map(char::to_uppercase).into_iter().flatten().collect();
+            format!("{message}{stop} {first}{}", letters.as_str())
+        }
     }
 }
 
@@ -558,6 +575,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_failure_and_its_fix_read_as_two_sentences() {
+        assert_eq!(said("it failed", "restore it"), "it failed. Restore it");
+        assert_eq!(said("it failed.", "restore it"), "it failed. Restore it");
+        assert_eq!(said("it failed", ""), "it failed");
+        assert_eq!(said("", "restore it"), "restore it");
+    }
+
+    #[test]
     fn a_cue_during_a_read_that_found_nothing_reads_again() {
         let mut state = State::default();
         assert!(state.restart_cue());
@@ -624,7 +649,9 @@ mod tests {
         let DaemonError::Refused { reason, .. } = &error else {
             panic!("expected the daemon's own words, got {error:?}");
         };
-        assert!(reason.contains("couldn't start copilot") && reason.contains("install it"), "{reason}");
+        // The fix starts its own sentence, so its first letter may be raised.
+        let said = reason.to_lowercase();
+        assert!(said.contains("couldn't start copilot") && said.contains("install it"), "{reason}");
     }
 
     #[test]

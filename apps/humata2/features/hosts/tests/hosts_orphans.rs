@@ -29,6 +29,7 @@ fn holder(session: Option<&str>, stopped: bool) -> RunningHolder {
         attached: false,
         machine: devbox(),
         stopped,
+        agent_tab: false,
     }
 }
 

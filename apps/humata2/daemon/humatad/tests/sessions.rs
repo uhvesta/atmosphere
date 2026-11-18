@@ -184,6 +184,26 @@ async fn a_started_session_tells_its_own_folder_and_the_clones_inside_it() {
     assert_eq!(get_session(&daemon, &id).await.folder, session.folder);
 }
 
+/// CH-10: a channel with no repos is valid, and its session starts in an
+/// empty folder of its own.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_with_no_repos_starts_its_session_in_an_empty_folder() {
+    let (daemon, _world) = start_world().await;
+    let (channel, _) = create_channel(&daemon, "Scratch", &[]).await;
+    let (id, operation) = start_session(&daemon, &channel, "A question").await;
+    assert_eq!(
+        operation.state,
+        pb::OperationState::Succeeded as i32,
+        "{:?}",
+        operation.error
+    );
+    let session = wait_status(&daemon, &id, Status::Working).await;
+
+    assert!(session.repos.is_empty(), "{:?}", session.repos);
+    let folder = PathBuf::from(&session.folder);
+    assert!(folder.is_dir(), "{folder:?}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn typed_input_reaches_the_agent_and_a_reattach_replays_it() {
     let fix = Fixture::new().await;

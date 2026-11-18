@@ -131,6 +131,7 @@ fn holder(session: Option<&str>, title: &str, agent: Agent, pid: Option<u32>, fo
         attached: false,
         machine: devbox(),
         stopped: pid.is_none(),
+        agent_tab: false,
     }
 }
 

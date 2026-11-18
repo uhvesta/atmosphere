@@ -896,6 +896,10 @@ message RunningHolder {
   // revives it; a stopped shell keeps its tab and ResumeRunningHolder
   // revives it.
   bool stopped = 12;
+  // It is its session's agent terminal, even when that agent is a plain
+  // shell: StopSession, ResumeSession and archiving the session handle it,
+  // and the running-holder calls refuse it.
+  bool agent_tab = 13;
 }
 
 message ListRunningHoldersResponse {

@@ -269,13 +269,12 @@ impl Starter {
                 .map(|r| (r.owner.clone(), r.name.clone()))
                 .collect(),
         };
-        if chosen.is_empty() {
-            return Err(match channel.repos.first() {
-                Some(r) => not_ready(&r.owner, &r.name, &r.main),
-                None => StartError::NoRepos {
-                    channel: channel.id.clone(),
-                },
-            });
+        // CH-10: a channel with no repos starts its sessions in an empty
+        // folder; one whose repos are all still cloning waits for them.
+        if chosen.is_empty()
+            && let Some(r) = channel.repos.first()
+        {
+            return Err(not_ready(&r.owner, &r.name, &r.main));
         }
         Ok(chosen)
     }
@@ -526,11 +525,7 @@ impl Starter {
                 .map(|r| (r.owner.clone(), r.name.clone()))
                 .collect(),
         };
-        if chosen.is_empty() {
-            return Err(StartError::NoRepos {
-                channel: channel.id.clone(),
-            });
-        }
+        // CH-10: no repos is a session in an empty folder, as on the host.
         let this = self.clone();
         let (picked, repos, title, typed) =
             (channel.clone(), chosen.clone(), request.title.clone(), request.branch.clone());
@@ -631,6 +626,13 @@ impl Starter {
         .await??;
         point("sessions.start.recorded");
         progress("write_record");
+        // CH-10: with no repos nothing clones into the folder, and the
+        // agent starts in it.
+        let folder = session.folder.clone();
+        blocking(move || {
+            std::fs::create_dir_all(&folder).map_err(|source| StartError::MakeFolder { path: folder, source })
+        })
+        .await??;
         self.clone_repos(channel, detail, progress).await?;
         self.set_step(detail, StartStep::Cloned).await
     }

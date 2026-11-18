@@ -1283,7 +1283,7 @@ impl Render for TerminalReplica {
             let width = f32::from(view.grid().size().cols) * cell.width + 1.;
             let height = f32::from(view.grid().size().rows) * cell.height + 1.;
             let wheel = self.scroll.clone();
-            div()
+            let pan = div()
                 .id("terminal-replica-pan")
                 .test_support()
                 .size_full()
@@ -1332,7 +1332,18 @@ impl Render for TerminalReplica {
                     .top_0()
                     .left_0()
                     .size_full(),
-                )
+                );
+            // The bars go on a frame that doesn't scroll: on the panned area
+            // itself they would be laid out in its content and move with
+            // it, so a view scrolled to its bottom row drew them part way up,
+            // over the screen.
+            div()
+                .id("terminal-replica-frame")
+                .relative()
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .child(pan)
                 .horizontal_scrollbar(&self.scroll)
                 .vertical_scrollbar(&self.scroll)
                 .into_any_element()

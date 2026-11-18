@@ -33,9 +33,9 @@ milestone file; agents read that file, not this one.
 | [FRAMES2](milestones/FRAMES2.md) | The screens for machines, files, forks, PR reviews and views are drawn and signed off | L1 | docs | FRAMES1: same files and the same lane; the earlier frames set the patterns | done (43f7fff2) |
 | [LOOK1](milestones/LOOK1.md) | The session page and sidebar look like the goldens | L0 | UI | D0: the frames and rules it matches are the tidied ones | done (ed5882ed) |
 | [LOOK2](milestones/LOOK2.md) | Every other screen looks like the goldens | L1 | UI | LOOK1: shares the shell, theme and sidebar; and C1 must release the UI files; P0: the panels and native tests must be split before a second manager edits them; W1*: frames 18, 29, 31, 32, 33 change; the app matches the redrawn ones before this closes | done (this commit; look_test under 0.5% per frame; fakes bundle installed) |
-| [POLISH](milestones/POLISH.md) | The app feels native and decluttered, like the goldens, one fix at a time | L1 | UI | LOOK1: polishes what LOOK1 drew | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [STACK](milestones/STACK.md) | One command turns my commits into a linked stack of PRs, with our template and a review-history table | L1 | tools | none: standalone CLI in tools/stack | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [ROAM](milestones/ROAM.md) | Agents propose channel repos, Desk sessions move into channels, each channel has its own Desk, and any agent conversation forks and moves | L2 | daemon+app | spec first; builds on FL, DESK, TERM | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
+| [POLISH](milestones/POLISH.md) | The app feels native and decluttered, like the goldens, one fix at a time | L1 | UI | LOOK1: polishes what LOOK1 drew | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [STACK](milestones/STACK.md) | One command turns my commits into a linked stack of PRs, with our template and a review-history table | L1 | tools | none: standalone CLI in tools/stack | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [ROAM](milestones/ROAM.md) | Agents propose channel repos, Desk sessions move into channels, each channel has its own Desk, and any agent conversation forks and moves | L2 | daemon+app | spec first; builds on FL, DESK, TERM | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
 | [FL-D](milestones/FL-D.md) | The daemon holds a real local session that survives restarts | L0 | daemon | D0: the rules it builds are the tidied ones | done (9ec5b5ed) |
 | [FL](milestones/FL.md) | First light: a real session in the app that survives a reboot (0.1) | L1 | daemon + UI seam | FL-D: the app needs real Session and Channel services and holders; LOOK1: a real terminal needs the session page, tabs and sidebar; P0: the real client follows the per-service client traits P0 splits out; FRAMES1: New channel, clone progress and "Couldn't resume" have no frame yet | done (0bdf1434; humata2-v0.1.0 installed) |
 | [BUG](milestones/BUG.md) | Report a bug as text an agent can act on | L1 | third builder (`report/`) | LOOK1: a recording names targets by their place in the view tree, which must be stable; P0: the app wiring adds an overlay and actions in the split files | done (ed5882ed) |
@@ -50,33 +50,34 @@ milestone file; agents read that file, not this one.
 | [FILES](milestones/FILES.md) | Move files and keep disks tidy | L3 | daemon + UI | MACH: transfers ride the machine link; Storage is per machine; FRAMES2: the file manager, transfers tray and Storage have no frame yet | done (0bdf1434; Storage per machine owed) |
 | [AWAY](milestones/AWAY.md) | Keep working with the host closed | L3 | daemon | MACH: away mode is machines without the host; ASK: a machine judges requests against a copy of the rules | done (48e1c866, 2026-11-16) |
 | [FIND](milestones/FIND.md) | Find and reach anything | L3 | UI + daemon | MACH: search runs over the conversation mirror from every machine; LOOK2: the palette and the Pinned section are drawn there | done (this commit; owed §26.22 steps 1, 3, 4) |
-| [VIEWS](milestones/VIEWS.md) | Agents prepare views; I choose to open them | L4 | UI + daemon | ASK: preparing a view is rule-gated; REVIEW: a prepared review opens in the diff and editor; FRAMES2: the prepared view's tab and Showing bar have no frame yet | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [PR](milestones/PR.md) | Review a pull request with an agent beside me | L4 | UI + daemon | REVIEW: a PR review is the review surface plus drafts; ASK: the review chat's tools are scoped by access; FRAMES2: the PR dialog, review session and Submit review have no frame yet | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [SAFE](milestones/SAFE.md) | Nothing is lost, ever | L4 | daemon | MACH: add machine and install must exist to be cut; FORK: moves and forks must exist to be cut; FILES: transfers must exist to be cut | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [STOP](milestones/STOP.md) | Stop everything on a machine, and bring it back later | L4 | daemon + UI | MACH: a machine page and link must exist; SAFE*: reuses its shutdown, bring-back, restart report and doctor | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
+| [VIEWS](milestones/VIEWS.md) | Agents prepare views; I choose to open them | L4 | UI + daemon | ASK: preparing a view is rule-gated; REVIEW: a prepared review opens in the diff and editor; FRAMES2: the prepared view's tab and Showing bar have no frame yet | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [PR](milestones/PR.md) | Review a pull request with an agent beside me | L4 | UI + daemon | REVIEW: a PR review is the review surface plus drafts; ASK: the review chat's tools are scoped by access; FRAMES2: the PR dialog, review session and Submit review have no frame yet | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [SAFE](milestones/SAFE.md) | Nothing is lost, ever | L4 | daemon | MACH: add machine and install must exist to be cut; FORK: moves and forks must exist to be cut; FILES: transfers must exist to be cut | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [STOP](milestones/STOP.md) | Stop everything on a machine, and bring it back later | L4 | daemon + UI | MACH: a machine page and link must exist; SAFE*: reuses its shutdown, bring-back, restart report and doctor | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
 | [LINUX](milestones/LINUX.md) | The same app on Linux | L5 | exclusive (nothing else builds) | SAFE: the owner's rule: the Linux batch runs only after all infrastructure work; ASK: its boundary suites are part of the batch; BUG: its suites are part of the batch | **cut** (owner, 2026-11-16: scope is the macOS desktop only, D485) |
 | [ANYHOST](milestones/ANYHOST.md) | Any client, any host | L6 | daemon | LINUX: a self-hosted host is a Linux host; its suites run in the VM | **cut** (owner, 2026-11-16, with the browser client: macOS desktop only, D485) |
 | [HOOKS](milestones/HOOKS.md) | Agents tell Humata when a turn ends and ask for approval in the Inbox, without terminal guesswork | L3 | daemon | ASK: asks land as Inbox requests; FL: turn ends already detected | done (0bdf1434; live hook checks owed) |
 | [NEWCH](milestones/NEWCH.md) | New channel lets me pick repos from gh and machines, as drawn | L4 | UI + clients | MACH: machines and online state; FL: channel creation and clone progress; REVIEW*: shares ui/ and look_test | done (48e1c866, 2026-11-16) |
-| [TERM](milestones/TERM.md) | Session tabs run on the reusable terminal in the desktop app (the browser half is cut, D485) | L4 | ui + clients | FL: app on the real daemon; DESK*/REVIEW*: share ui/ and look_test | code in, fast tier green pending, closing with the 0.2 release (commit: pending); its remaining batch (`retag_live.py`, the vim Escape check; see its Lane) is not yet recorded as run |
-| [UPGRADE](milestones/UPGRADE.md) | Any Humata found at another version is upgraded at once | L4 | daemon + clients + UI | MACH: link + Hello version; STOP*/SAFE*: re-exec and cut safety | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [DOCV](milestones/DOCV.md) | A proposal doc keeps versions I can step back and forward through, in a folder Humata makes for me | L4 | daemon + UI | DESK: Desk folders and the New desk session dialog; REVIEW: the document tab, comments and diff view | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [NOPATH](milestones/NOPATH.md) | I pick repos and machines, never folders: Humata places everything under roots I set once | L4 | docs, then daemon + UI | FILES: transfers and the file manager; DOCV*: shares the Desk folder rules | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [REPOS](milestones/REPOS.md) | A repo I add once is known everywhere, and I find repos by fuzzy search scoped to my usual orgs unless I widen it | L4 | daemon + clients + UI | NEWCH: the repo picker and D274 search; NOPATH*: drops the local-path source | code in, fast tier green pending, closing with the 0.2 release (commit: pending) |
-| [V1](milestones/V1.md) | Replace Humata 1 (1.0) | L7 | main | BOARD, PR, VIEWS, AWAY, FIND, NEWCH, TERM, HOOKS, UPGRADE, SAFE, DOCV, NOPATH, REPOS, ROAM, POLISH, AGENTKINDS, AGENTSET, MACHINESCRIPTS, OWNERFIX: every §26 flow passes; STOP: a last-resort stop exists; TIDY: no dropped designs ship. (LINUX and ANYHOST are cut, D485.) | closing with 0.2 (commit: pending) |
-| [AGENTKINDS](milestones/AGENTKINDS.md) | Codex and Copilot start, resume and fork like Claude | L3 | daemon + CLI | HOOKS: agent hooks report turns; ROAM: conversation adapters (Copilot) | code in, fast tier green pending, closing with the 0.2 release (commit: pending) (built-in Codex and Copilot; resume, fork and attach fixes; D670–675) |
-| [MACHINESCRIPTS](milestones/MACHINESCRIPTS.md) | I script what happens when a machine is added, reconnects, or a session arrives on or leaves it | L4 | daemon + CLI + clients + UI | MACH: add, reconnect and the peer link; FORK: the move (`MoveSession`); AGENTKINDS: a step can start Codex or Copilot; UPGRADE: the `~/.humata2/config` push to machines | code in, fast tier green pending, closing with the 0.2 release (commit: pending) (rules on added, connected, upgraded, session-arrived and session-leaving; D680–689) |
-| [AGENTSET](milestones/AGENTSET.md) | I choose which agents Humata offers, and Humata installs only its own tools unless I say otherwise | L4 | daemon + clients + features + UI | AGENTKINDS: the built-in kinds it switches; MACHINESCRIPTS: `agents.toml` ships beside `repos.toml`, and its `start` step uses the same gate; UPGRADE: Humata's own tools are always installed and upgraded | code in, fast tier green pending, closing with the 0.2 release (commit: pending) (Settings › Agents switches; third-party CLIs installed only with the per-agent "Install when missing"; D720–729) |
-| OWNERFIX (no milestone file; WORKLOG) | The frames Fable asked to fix look right, and PR drafts are kept when a review is archived | L4 | UI + daemon | LOOK2: the frames it fixes; PR: drafts on archive (D513 ruling) | in progress |
-| [RELEASE](milestones/RELEASE.md) | The macOS desktop app is published and installed | L8 | main | V1: release what replaces Humata 1 | blocked |
-| [VERIFY](milestones/VERIFY.md) | Every user flow is reproduced, reviewed for usability, and its fixes are covered by tests | L9 | cases, reproduction, review, TDD fixes | RELEASE: the final jank review runs on what was released | in progress, started early (owner, 2026-11-17 14:05): the first real-agent Copilot pass is about 60% (results in `flows/cases/results/`, feedback in `flows/cases/results/FEEDBACK.md`, lane log in VERIFY.md); about 20 fixes landed test-first (D743–D757); Copilot reruns are pending on the 0.2 build. Copilot only for now; Codex and Claude Code deferred by the owner |
-| [RELEASE2](milestones/RELEASE2.md) | The jank-review fixes are published and installed | L10 | main | VERIFY: publish the jank-review fixes | blocked |
-| [FAST](milestones/FAST.md) | An optional fast mode makes Humata measurably lighter and quicker | L11 | perf | RELEASE2: profile from the published post-review build; VERIFY: profile and tune only once behaviour is settled and covered by tests | blocked |
-| [RELEASE3](milestones/RELEASE3.md) | Fast mode is published and installed | L12 | main | FAST: publish fast mode | blocked |
+| [TERM](milestones/TERM.md) | Session tabs run on the reusable terminal in the desktop app (the browser half is cut, D485) | L4 | ui + clients | FL: app on the real daemon; DESK*/REVIEW*: share ui/ and look_test | done (released in 0.2.1–0.2.5, 2026-11-17/18); its remaining batch (`retag_live.py`, the vim Escape check; see its Lane) is not yet recorded as run |
+| [UPGRADE](milestones/UPGRADE.md) | Any Humata found at another version is upgraded at once | L4 | daemon + clients + UI | MACH: link + Hello version; STOP*/SAFE*: re-exec and cut safety | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [DOCV](milestones/DOCV.md) | A proposal doc keeps versions I can step back and forward through, in a folder Humata makes for me | L4 | daemon + UI | DESK: Desk folders and the New desk session dialog; REVIEW: the document tab, comments and diff view | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [NOPATH](milestones/NOPATH.md) | I pick repos and machines, never folders: Humata places everything under roots I set once | L4 | docs, then daemon + UI | FILES: transfers and the file manager; DOCV*: shares the Desk folder rules | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [REPOS](milestones/REPOS.md) | A repo I add once is known everywhere, and I find repos by fuzzy search scoped to my usual orgs unless I widen it | L4 | daemon + clients + UI | NEWCH: the repo picker and D274 search; NOPATH*: drops the local-path source | done (released in 0.2.1–0.2.5, 2026-11-17/18) |
+| [V1](milestones/V1.md) | Replace Humata 1 (1.0) | L7 | main | BOARD, PR, VIEWS, AWAY, FIND, NEWCH, TERM, HOOKS, UPGRADE, SAFE, DOCV, NOPATH, REPOS, ROAM, POLISH, AGENTKINDS, AGENTSET, MACHINESCRIPTS, OWNERFIX: every §26 flow passes; STOP: a last-resort stop exists; TIDY: no dropped designs ship. (LINUX and ANYHOST are cut, D485.) | done (released as 0.2.x, 2026-11-17/18) |
+| [AGENTKINDS](milestones/AGENTKINDS.md) | Codex and Copilot start, resume and fork like Claude | L3 | daemon + CLI | HOOKS: agent hooks report turns; ROAM: conversation adapters (Copilot) | done (released in 0.2.1–0.2.5, 2026-11-17/18) (built-in Codex and Copilot; resume, fork and attach fixes; D670–675) |
+| [MACHINESCRIPTS](milestones/MACHINESCRIPTS.md) | I script what happens when a machine is added, reconnects, or a session arrives on or leaves it | L4 | daemon + CLI + clients + UI | MACH: add, reconnect and the peer link; FORK: the move (`MoveSession`); AGENTKINDS: a step can start Codex or Copilot; UPGRADE: the `~/.humata2/config` push to machines | done (released in 0.2.1–0.2.5, 2026-11-17/18) (rules on added, connected, upgraded, session-arrived and session-leaving; D680–689) |
+| [AGENTSET](milestones/AGENTSET.md) | I choose which agents Humata offers, and Humata installs only its own tools unless I say otherwise | L4 | daemon + clients + features + UI | AGENTKINDS: the built-in kinds it switches; MACHINESCRIPTS: `agents.toml` ships beside `repos.toml`, and its `start` step uses the same gate; UPGRADE: Humata's own tools are always installed and upgraded | done (released in 0.2.1–0.2.5, 2026-11-17/18) (Settings › Agents switches; third-party CLIs installed only with the per-agent "Install when missing"; D720–729) |
+| OWNERFIX (no milestone file; WORKLOG) | The frames Fable asked to fix look right, and PR drafts are kept when a review is archived | L4 | UI + daemon | LOOK2: the frames it fixes; PR: drafts on archive (D513 ruling) | done (in 0.2.2) |
+| [RELEASE](milestones/RELEASE.md) | The macOS desktop app is published and installed | L8 | main | V1: release what replaces Humata 1 | done (humata2-v0.2.1 through v0.2.5 published and installed, 2026-11-17/18) |
+| [VERIFY](milestones/VERIFY.md) | Every user flow is reproduced, reviewed for usability, and its fixes are covered by tests | L9 | cases, reproduction, review, TDD fixes | RELEASE: the final jank review runs on what was released | closing with 0.3: Copilot passes and the owner-screen drive (2026-11-18) found the bugs fixed in 0.2.2–0.2.5 and the 0.3 batch (End for good, /clear and /restart following, terminal focus after Resume, Inbox terminal clicks, empty-channel sessions, real-VM SSH flows); Codex and Claude Code move to AGENTS2 |
+| [RELEASE2](milestones/RELEASE2.md) | The jank-review fixes are published and installed | L10 | main | VERIFY: publish the jank-review fixes | done (0.2.2–0.2.4 carry the VERIFY fixes) |
+| [FAST](milestones/FAST.md) | An optional fast mode makes Humata measurably lighter and quicker | L11 | perf | RELEASE2: profile from the published post-review build; VERIFY: profile and tune only once behaviour is settled and covered by tests | done (in 0.2.5: no idle blink in fast mode or in background windows, holder scrollback 42→18 MiB, new idle-cost benches; D787–D789) |
+| [RELEASE3](milestones/RELEASE3.md) | Fast mode is published and installed | L12 | main | FAST: publish fast mode | in progress: 0.3 carries the VERIFY batch on top of 0.2.5 fast mode; fast tier on and off, then slow tier, then release |
+| [AGENTS2](milestones/AGENTS2.md) | Claude Code and Codex are first-class agents, read through their own structured channels | L13 | daemon + agent_hooks + clients + UI | RELEASE3: starts after 0.3 (owner, 2026-11-18) | next |
 
 ## Critical path
 
-Fast tier green → slow tier once → commit and push → release 0.2 → VERIFY's Copilot reruns and fixes → RELEASE2 → FAST → RELEASE3.
+Fast tier (fast mode off and on) → slow tier once → commit and push → release 0.3 (RELEASE3) → AGENTS2.
 
 - Gate 30 has reported (605 of 678 passed) and its failures went to fix agents lane by lane
   (2026-11-17). Every "code in" lane, OWNERFIX included, and V1 close
@@ -158,28 +159,29 @@ graph TD
   HOOKS["HOOKS: done"]
   FIND["FIND: done"]
   NEWCH["NEWCH: done"]
-  VIEWS["VIEWS: code in, closing with 0.2"]
-  PR["PR: code in, closing with 0.2"]
-  SAFE["SAFE: code in, closing with 0.2"]
-  STOP["STOP: code in, closing with 0.2"]
-  UPGRADE["UPGRADE: code in, closing with 0.2"]
-  DOCV["DOCV: code in, closing with 0.2"]
-  NOPATH["NOPATH: code in, closing with 0.2"]
-  REPOS["REPOS: code in, closing with 0.2"]
-  POLISH["POLISH: code in, closing with 0.2"]
-  STACK["STACK: code in, closing with 0.2"]
-  ROAM["ROAM: code in, closing with 0.2"]
-  TERM["TERM: code in, closing with 0.2"]
-  AGENTKINDS["AGENTKINDS: code in, closing with 0.2"]
-  MACHINESCRIPTS["MACHINESCRIPTS: code in, closing with 0.2"]
-  AGENTSET["AGENTSET: code in, closing with 0.2"]
-  OWNERFIX["OWNERFIX: code in, closing with 0.2"]
-  V1["V1: closing with 0.2"]
-  RELEASE["RELEASE: blocked"]
-  VERIFY["VERIFY: in progress, started early"]
-  RELEASE2["RELEASE2: blocked"]
-  FAST["FAST: blocked"]
-  RELEASE3["RELEASE3: blocked"]
+  VIEWS["VIEWS: done"]
+  PR["PR: done"]
+  SAFE["SAFE: done"]
+  STOP["STOP: done"]
+  UPGRADE["UPGRADE: done"]
+  DOCV["DOCV: done"]
+  NOPATH["NOPATH: done"]
+  REPOS["REPOS: done"]
+  POLISH["POLISH: done"]
+  STACK["STACK: done"]
+  ROAM["ROAM: done"]
+  TERM["TERM: done"]
+  AGENTKINDS["AGENTKINDS: done"]
+  MACHINESCRIPTS["MACHINESCRIPTS: done"]
+  AGENTSET["AGENTSET: done"]
+  OWNERFIX["OWNERFIX: done"]
+  V1["V1: done"]
+  RELEASE["RELEASE: done"]
+  VERIFY["VERIFY: closing with 0.3"]
+  RELEASE2["RELEASE2: done"]
+  FAST["FAST: done (0.2.5)"]
+  RELEASE3["RELEASE3: in progress (0.3)"]
+  AGENTS2["AGENTS2: next"]
   LINUX["LINUX: cut (D485)"]
   ANYHOST["ANYHOST: cut (D485)"]
   classDef cut fill:#ddd,stroke:#999,color:#666
@@ -295,4 +297,5 @@ graph TD
   VERIFY ==> RELEASE2
   RELEASE2 ==> FAST
   FAST ==> RELEASE3
+  RELEASE3 ==> AGENTS2
 ```

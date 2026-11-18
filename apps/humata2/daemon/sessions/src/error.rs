@@ -117,8 +117,6 @@ pub enum StartError {
         owner: String,
         name: String,
     },
-    #[error("the channel {channel} has no repositories to start a session in; add one first")]
-    NoRepos { channel: String },
     #[error(
         "{owner}/{name} is not cloned yet ({state}); wait for the channel's setup to finish, or \
          if it failed, fix the cause and set the channel up again"
@@ -164,6 +162,15 @@ pub enum StartError {
     FirstMessage {
         #[source]
         source: humata2_holder::HolderError,
+    },
+    #[error(
+        "could not make the session folder {path}: {source}; check that the channel's folder \
+         is writable and the disk has space, then start the session again"
+    )]
+    MakeFolder {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
     },
     #[error("could not remove {path}: {source}; delete the folder by hand")]
     Remove {

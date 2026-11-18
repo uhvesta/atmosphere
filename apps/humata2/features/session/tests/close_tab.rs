@@ -280,3 +280,39 @@ fn a_file_tab_closes_without_asking() {
     assert!(store.state().closing.is_none());
     assert!(!tabs(&store).iter().any(|tab| matches!(tab, Tab::View(_))));
 }
+
+/// A Desk session has no archive (D182.2): End for good of its agent closes
+/// it on the Desk, whose Reopen brings it back, instead of being refused.
+#[test]
+fn ending_a_desk_sessions_agent_for_good_closes_it_on_the_desk() {
+    let mut workspace = fixture::design();
+    fixture::desk(&mut workspace);
+    let plan = SessionId::new("desk-plan-q4");
+    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let mut state = SessionState {
+        workspace: Arc::new(workspace),
+        open: Some(plan.clone()),
+        ..Default::default()
+    };
+    state.views.insert(
+        plan.clone(),
+        SessionView {
+            groups: vec![TabGroup {
+                tabs: vec![Tab::Terminal(0), Tab::Terminal(1)],
+                selected: 0,
+            }],
+            ..Default::default()
+        },
+    );
+    let mut store = TestStore::new(state, Sessions::new(clients)).non_exhaustive();
+    store.send(A::Close(C::Ask { group: 0, index: 0 }), |_| {});
+    store.send(A::Close(C::Choose(CloseChoice::EndForGood)), |_| {});
+    store.receive_matching(
+        "the Desk close finished",
+        |a| matches!(a, A::DeskEnded { session, result: Ok(()), .. } if *session == plan),
+        |_| {},
+    );
+    assert_eq!(store.state().error, None);
+    let closed = fakes.daemon.workspace().desk.sessions.get(&plan).is_some_and(|desk| desk.closed.is_some());
+    assert!(closed, "the Desk session is closed");
+}

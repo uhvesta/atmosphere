@@ -1,6 +1,6 @@
 # RELEASE3: Fast mode is published and installed
 
-- **Status:** blocked
+- **Status:** in progress (0.3, 2026-11-18)
 - **Depends on:** FAST: publish fast mode
 - **Unblocks:** nothing; the last milestone
 - **Layer:** L12 · **Lane:** main

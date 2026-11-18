@@ -1,6 +1,6 @@
 # RELEASE2: The jank-review fixes are published and installed
 
-- **Status:** blocked
+- **Status:** done (0.2.2–0.2.4, 2026-11-17/18)
 - **Depends on:** VERIFY: publish the jank-review fixes
 - **Unblocks:** FAST
 - **Layer:** L10 · **Lane:** main

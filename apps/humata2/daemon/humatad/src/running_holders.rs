@@ -13,7 +13,7 @@ mod let_go;
 pub(crate) use adopt::adopt;
 pub(crate) use let_go::let_go;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -339,6 +339,10 @@ fn listed(
             None => None,
         };
         let started = now.checked_sub(holder.elapsed).unwrap_or(UNIX_EPOCH);
+        // A session's agent tab, a plain shell's included, ends through
+        // its session: the running-holder calls refuse it (`shell_tab`).
+        let agent_tab = record.is_some()
+            && (tab.kind == TabKind::Agent || agents.get(&holder.socket).is_some_and(|agent| agent.tab == tab.id));
         let entry = pb::RunningHolder {
             tab: Some(pb::TabId { value: tab.id.clone() }),
             session: record.as_ref().map(|record| pb::SessionId { value: record.id.clone() }),
@@ -362,13 +366,19 @@ fn listed(
                 .is_some_and(|record| crate::read_marks::is_viewed(&record.id)),
             machine: Some(pb::MachineId { value: machine.to_owned() }),
             stopped: false,
+            agent_tab,
         };
         match record {
             Some(record) => sessions.push((record.title, entry)),
             None => orphans.push((started, entry)),
         }
     }
-    let mut stopped = stopped_sessions(store, machine)?;
+    let running: HashSet<String> = sessions
+        .iter()
+        .filter(|(_, entry)| entry.agent_tab)
+        .filter_map(|(_, entry)| entry.session.as_ref().map(|session| session.value.clone()))
+        .collect();
+    let mut stopped = stopped_sessions(store, machine, &running)?;
     // A shell the user stopped keeps its tab: it is listed stopped, by its
     // tab, until it is resumed or ended (D784).
     let mut shells: Vec<TabRecord> = by_socket
@@ -399,6 +409,7 @@ fn listed(
             attached: false,
             machine: Some(pb::MachineId { value: machine.to_owned() }),
             stopped: true,
+            agent_tab: false,
         });
     }
     sessions.sort_by(|a, b| a.0.cmp(&b.0));
@@ -411,13 +422,21 @@ fn listed(
         .collect())
 }
 
-/// The sessions whose agent the user stopped and that aren't archived, by
-/// title: Resume revives each (D784 "Stop").
-fn stopped_sessions(store: &Store, machine: &str) -> Result<Vec<pb::RunningHolder>, RunningError> {
+/// The sessions whose agent the user stopped, or whose resume failed, and
+/// that aren't archived, by title: nothing runs for them, and each stays
+/// listed so it is accounted for until it is resumed, started fresh or
+/// archived (D784 "Stop"). One whose agent's own holder is listed already
+/// isn't listed twice.
+fn stopped_sessions(
+    store: &Store,
+    machine: &str,
+    listed: &HashSet<String>,
+) -> Result<Vec<pb::RunningHolder>, RunningError> {
     let read = |doing| move |source| RunningError::Store { doing, source };
     let mut rows = Vec::new();
     for agent in store.agents().map_err(read("list the agents"))? {
-        if agent.state != AgentState::Stopped
+        if !matches!(agent.state, AgentState::Stopped | AgentState::ResumeFailed { .. })
+            || listed.contains(&agent.session)
             || store.archive(&agent.session).map_err(read("read an archive"))?.is_some()
         {
             continue;
@@ -437,6 +456,7 @@ fn stopped_sessions(store: &Store, machine: &str) -> Result<Vec<pb::RunningHolde
             attached: false,
             machine: Some(pb::MachineId { value: machine.to_owned() }),
             stopped: true,
+            agent_tab: true,
             title: record.title,
         });
     }
@@ -630,6 +650,61 @@ fn unix_ms(at: SystemTime) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use humata2_store::ResumeFailure;
+
+    fn session_with_agent(store: &Store, id: &str, title: &str, state: AgentState) {
+        store
+            .put_session(&SessionRecord {
+                id: id.to_owned(),
+                channel: DESK_CHANNEL.to_owned(),
+                machine: "ma_1".to_owned(),
+                title: title.to_owned(),
+                agent: "copilot".to_owned(),
+                folder: PathBuf::from("/w/desk").join(title),
+                created_unix_ms: 1,
+            })
+            .unwrap();
+        store
+            .put_agent(&AgentRecord {
+                session: id.to_owned(),
+                tab: format!("tb_{id}"),
+                launch: humata2_store::AgentLaunch {
+                    agent: "copilot".to_owned(),
+                    folder: PathBuf::from("/w/desk").join(title),
+                    ..Default::default()
+                },
+                state,
+                generation: 1,
+                interruptions: Vec::new(),
+                updated_unix_ms: 1,
+            })
+            .unwrap();
+    }
+
+    /// D784: a session whose resume failed has nothing running, but it is
+    /// still listed with the stopped ones, so it is accounted for; one with
+    /// a holder listed already isn't listed twice.
+    #[test]
+    fn a_session_whose_resume_failed_is_listed_with_the_stopped_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let failed = AgentState::ResumeFailed {
+            reason: ResumeFailure::ConversationFileMissing,
+            exit_code: None,
+        };
+        session_with_agent(&store, "se_failed", "copilot1", failed);
+        session_with_agent(&store, "se_stopped", "codex1", AgentState::Stopped);
+        session_with_agent(&store, "se_running", "claude1", AgentState::Running { holder_pid: 7 });
+        session_with_agent(&store, "se_listed", "zed1", AgentState::Stopped);
+        let listed = HashSet::from(["se_listed".to_owned()]);
+
+        let rows = stopped_sessions(&store, "ma_1", &listed).unwrap();
+        let sessions: Vec<_> = rows
+            .iter()
+            .map(|row| (row.session.as_ref().map(|id| id.value.as_str()), row.stopped))
+            .collect();
+        assert_eq!(sessions, vec![(Some("se_stopped"), true), (Some("se_failed"), true)]);
+    }
 
     #[test]
     fn a_holder_in_this_folder_is_read_with_its_folder_and_agent() {

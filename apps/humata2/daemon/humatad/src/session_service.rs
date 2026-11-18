@@ -971,6 +971,51 @@ impl SessionSvc {
         if conversation_unknown(&agent.launch, &self.starter.agents) {
             return Err(stop_unknown_conversation(&id));
         }
+        // D784: Stop keeps a session to resume, and resuming takes up the
+        // agent's conversation file. A running agent that hasn't written
+        // one yet (no first message, or not signed in) would leave a
+        // session that can only fail to resume, so it isn't stopped.
+        if matches!(agent.state, AgentState::Running { .. })
+            && conversation_unwritten(&agent.launch, &self.starter.agents)
+        {
+            // D670: a CLI that picks its own conversation id has written it
+            // somewhere the launch doesn't name yet; learn it first, and
+            // keep it in what is saved below.
+            // An agent just started may be writing it now, so it is given a
+            // moment before Stop is refused.
+            let (store, agents, home, key, file) = (
+                self.starter.store.clone(),
+                self.starter.agents.clone(),
+                self.starter.home.clone(),
+                id.clone(),
+                agent.launch.conversation_file.clone(),
+            );
+            let launch = agent.launch.clone();
+            let learned = blocking(move || -> Result<Option<humata2_store::AgentLaunch>, StoreError> {
+                let until = std::time::Instant::now() + UNWRITTEN_GRACE;
+                loop {
+                    if file.is_file() {
+                        return Ok(Some(launch));
+                    }
+                    if agents.learn_conversation(&store, &home, &key)? {
+                        return Ok(store.agent(&key)?.map(|found| found.launch));
+                    }
+                    if std::time::Instant::now() >= until {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            })
+            .await?
+            .map_err(|error| status::store(error, &self.machine, "learn the agent's conversation"))?;
+            match learned {
+                Some(launch) => agent.launch = launch,
+                None => {
+                    let name = self.starter.agents.person_name(&agent.launch.agent);
+                    return Err(stop_unwritten_conversation(&id, &name));
+                }
+            }
+        }
         match agent.state {
             // Saved as launching with no start of this daemon live for it:
             // its old holder may still run the agent. It is ended first, and
@@ -1706,7 +1751,9 @@ fn choose_repos(
             .filter(|r| ready(r) && !left_out.contains(&(r.owner.clone(), r.name.clone())))
             .map(|r| (r.owner.clone(), r.name.clone()))
             .collect();
-        if chosen.is_empty() {
+        // CH-10: a channel with no repos starts its sessions in an empty
+        // folder; only repos that are all still cloning hold a start back.
+        if chosen.is_empty() && !channel.repos.is_empty() {
             return Err(status::failure(
                 Code::FailedPrecondition,
                 pb::Error {
@@ -1785,14 +1832,6 @@ pub(crate) fn start_error(error: &StartError) -> (Code, pb::Error) {
                 field("repos", Problem::UnknownValue),
             ),
         ),
-        StartError::NoRepos { .. } => (
-            Code::FailedPrecondition,
-            error_of(
-                error,
-                "add a repository to the channel first",
-                field("repos", Problem::Missing),
-            ),
-        ),
         StartError::NotReady { .. } => (
             Code::FailedPrecondition,
             error_of(
@@ -1850,7 +1889,7 @@ pub(crate) fn start_error(error: &StartError) -> (Code, pb::Error) {
             Code::AlreadyExists,
             error_of(error, "start the session with another title", None),
         ),
-        StartError::Store { .. } => (
+        StartError::Store { .. } | StartError::MakeFolder { .. } => (
             Code::Unavailable,
             error_of(
                 error,
@@ -2002,6 +2041,33 @@ async fn run_start(
 fn conversation_unknown(launch: &humata2_store::AgentLaunch, agents: &Agents) -> bool {
     launch.conversation_id.is_empty()
         && !agents.get(&launch.agent).is_ok_and(humata2_sessions::AgentKind::is_shell)
+}
+
+/// How long Stop waits for a just-started agent to write its conversation
+/// file before it is refused for not having one.
+const UNWRITTEN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether `launch`'s agent keeps a conversation file and hasn't written
+/// it yet. A plain shell keeps none.
+fn conversation_unwritten(launch: &humata2_store::AgentLaunch, agents: &Agents) -> bool {
+    !launch.conversation_file.as_os_str().is_empty()
+        && !agents.get(&launch.agent).is_ok_and(humata2_sessions::AgentKind::is_shell)
+        && !launch.conversation_file.is_file()
+}
+
+/// Stop refused for an agent that hasn't written its conversation yet.
+fn stop_unwritten_conversation(session: &str, agent: &str) -> Status {
+    status::failure(
+        Code::FailedPrecondition,
+        pb::Error {
+            message: format!(
+                "session {session}'s {agent} hasn't started its conversation yet, so a stopped session would have nothing to resume"
+            ),
+            fix: "send it a first message (sign it in first if it asks), then stop it; or keep it running, or End it for good".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
 }
 
 /// Stop refused for an agent whose conversation isn't known.
@@ -3159,6 +3225,12 @@ mod tests {
         assert!(choose_repos(&channel, &[]).is_err());
         assert!(choose_repos(&channel, &[choice("a", "api", true)]).is_err());
         assert!(choose_repos(&channel, &[choice("a", "nope", true)]).is_err());
+    }
+
+    #[test]
+    fn a_channel_with_no_repos_starts_with_none() {
+        let channel = channel(&[]);
+        assert_eq!(choose_repos(&channel, &[]).unwrap(), Vec::<(String, String)>::new());
     }
 
     #[test]

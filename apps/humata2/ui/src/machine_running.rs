@@ -335,6 +335,19 @@ pub(crate) fn listing(
     for (index, holder) in listed.iter().enumerate() {
         main = main.child(holder_row(&draw, index, "running-session", holder));
     }
+    // A row's Stop, Resume or End for good the daemon refused says why,
+    // under the rows, instead of the dialog closing as if it had worked.
+    if let Some(error) = &state.running.error {
+        main = main.child(
+            div()
+                .id("machine-page-running-error")
+                .px(px(12.))
+                .py(px(8.))
+                .text_size(px(12.))
+                .text_color(rgb(RED_STATUS))
+                .child(error.clone()),
+        );
+    }
     let orphans = state.running.not_in_a_channel().map(|orphans| {
         let mut group = card();
         for (index, holder) in orphans.iter().enumerate() {

@@ -1154,6 +1154,10 @@ async fn this_macs_page_reads_this_machines_own_health() {
         .await
         .unwrap()
         .into_inner();
+    // Its system line and Health "Humata" row are filled, never "· ·".
+    let mac = detail.machine.as_ref().expect("This Mac is described");
+    assert!(!mac.os.is_empty() && !mac.arch.is_empty(), "{mac:?}");
+    assert!(!mac.daemon_version.is_empty(), "{mac:?}");
     let health = detail.health.expect("This Mac has health");
     assert!(health.disk_total_bytes > 0, "{health:?}");
     assert!(health.disk_free_bytes <= health.disk_total_bytes, "{health:?}");

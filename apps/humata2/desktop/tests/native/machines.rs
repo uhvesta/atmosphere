@@ -193,6 +193,7 @@ fn running_list(now: i64) -> Vec<humata2_clients::RunningHolder> {
             attached: false,
             machine: MachineId::new("devbox-1"),
             stopped: pid.is_none(),
+            agent_tab: false,
         }
     };
     let mut ledger = holder(Some("ledger"), "Ledger schema migration", Agent::Claude, Some(40_117), "~/Humata/payments-rewrite/ledger", 26 * 60);

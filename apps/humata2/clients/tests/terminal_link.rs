@@ -165,3 +165,22 @@ fn a_tab_that_does_not_exist_has_no_link() {
     let result = block_on(daemon.link(&session, 99));
     assert!(matches!(result, Err(DaemonError::NotFound { .. })));
 }
+
+#[test]
+fn ending_a_tabs_links_closes_them_after_what_was_sent() {
+    let daemon = daemon();
+    let (session, _) = printed(&daemon);
+    let mut link = block_on(daemon.link(&session, 0)).expect("the link opens");
+    daemon.end_terminal_links(&session, 0);
+    let ended = block_on(async {
+        loop {
+            match tokio::time::timeout(GUARD, link.frames.recv()).await {
+                Ok(Some(_)) => {}
+                Ok(None) => return true,
+                Err(_) => return false,
+            }
+        }
+    });
+    assert!(ended, "the link closes");
+    assert_eq!(link.sink.send(resize(80, 24)), Err(SendError::Closed));
+}

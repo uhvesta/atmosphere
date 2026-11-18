@@ -210,6 +210,19 @@ impl SessionSvc {
         let _ = blocking(move || std::fs::remove_file(path)).await;
     }
 
+    /// The start of `session` failed before the machine took it: the host's
+    /// record goes, then its journal. In that order, so a power cut between
+    /// leaves the journal, which the next start reads and drops for a record
+    /// that is gone or asks the machine again for one that stayed; never a
+    /// record nothing runs and no journal to ask again (D432). A record that
+    /// can't be removed keeps its journal for the same reason.
+    pub(super) async fn remove_placed_then_asked(&self, session: &str) {
+        let (store, removing) = (self.starter.store.clone(), session.to_owned());
+        if let Ok(Ok(())) = blocking(move || store.remove_session(&removing)).await {
+            self.drop_asked(session).await;
+        }
+    }
+
     /// What the remote side tells once the machine answered the start of
     /// `session`: its file goes.
     pub(super) fn answered_hook(&self, session: &str) -> Answered {

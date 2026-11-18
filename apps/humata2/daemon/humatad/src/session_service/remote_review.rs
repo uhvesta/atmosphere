@@ -267,8 +267,7 @@ impl SessionSvc {
         // The review's records on the host, with each clone on the pull
         // request's own branch as the machine will make it (PR-6).
         if let Err(status) = self.record_review(&id, &review).await {
-            self.drop_asked(&id).await;
-            self.remove_placed(&id).await;
+            self.remove_placed_then_asked(&id).await;
             fail(&host, &status);
             return Err(status);
         }
@@ -290,8 +289,7 @@ impl SessionSvc {
             Err(error) => {
                 let status = Status::from(error);
                 fail(&host, &status);
-                self.drop_asked(&id).await;
-                self.remove_placed(&id).await;
+                self.remove_placed_then_asked(&id).await;
                 Err(status)
             }
         }
@@ -351,12 +349,6 @@ impl SessionSvc {
         })
         .await?
         .map_err(|error| status::store(error, &held, "save the review's pull requests"))
-    }
-
-    /// Takes back the host's record of a review start the machine refused.
-    async fn remove_placed(&self, session: &str) {
-        let (store, removing) = (self.starter.store.clone(), session.to_owned());
-        let _ = blocking(move || store.remove_session(&removing)).await;
     }
 
     /// The machine's side of the host's relayed review start: the same start

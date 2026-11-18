@@ -47,8 +47,7 @@ impl Shared {
             return Ok(operation);
         }
         let reason = match operation.error {
-            Some(error) if !error.fix.is_empty() => format!("{} {}", error.message, error.fix),
-            Some(error) => error.message,
+            Some(error) => crate::connection::said(&error.message, &error.fix),
             None => "it didn't finish. Try again".to_owned(),
         };
         Err(DaemonError::Refused {

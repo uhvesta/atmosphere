@@ -57,6 +57,7 @@ fn holder(found: pb::RunningHolder, machine: &MachineId) -> RunningHolder {
             .filter(|id| !id.value.is_empty())
             .map_or_else(|| machine.clone(), |id| map::machine_id(Some(id))),
         stopped,
+        agent_tab: found.agent_tab,
     }
 }
 

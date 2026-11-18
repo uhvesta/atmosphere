@@ -46,7 +46,8 @@ fn shell(inner: &Inner, machine: &MachineId, tab: &HolderTab, what: &str) -> Res
                 .ok_or_else(|| DaemonError::NotFound {
                     what: "That terminal".to_owned(),
                 })?;
-            if inner.running[at].session.is_some() && inner.running[at].agent != Agent::Shell {
+            let listed = &inner.running[at];
+            if listed.agent_tab || (listed.session.is_some() && listed.agent != Agent::Shell) {
                 return Err(agent_tab());
             }
             Ok(Some(at))

@@ -220,6 +220,13 @@ async fn every_holder_of_ours_is_listed_attaches_and_ends_only_when_asked() {
 
     // An agent's tab is its session's to stop, resume or end.
     let agent = agent_tab(&daemon, &id).await;
+    // The list says which row is a session's agent, so a client sends it
+    // through the session's calls, not these.
+    assert!(
+        listed.iter().any(|holder| holder.tab.as_ref() == Some(&agent) && holder.agent_tab),
+        "the session's agent tab isn't marked as its agent: {listed:?}"
+    );
+    assert!(!orphan_row.agent_tab, "an orphan is marked as a session's agent");
     for refused in [
         end(&daemon, &agent).await,
         stop(&daemon, &agent).await,
@@ -358,4 +365,45 @@ async fn a_stopped_session_resumes_in_the_same_conversation_and_folder() {
     assert_eq!(after.folder, before.folder);
     let agent = agent_tab(&daemon, &id).await;
     assert!(Attach::try_start(&daemon, open(&agent, 0)).await.is_ok());
+}
+
+/// D784: Stop keeps a session to resume in its conversation. An agent
+/// that hasn't written its conversation yet (never sent a first message,
+/// or not signed in) isn't stopped: it keeps running, so it isn't left
+/// stopped with nothing to resume. Once it has written one, it stops.
+#[tokio::test]
+async fn an_agent_with_no_conversation_written_yet_is_not_stopped() {
+    let dir = folder();
+    let world = World::new(dir.path());
+    let args = world.args();
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let daemon = Daemon::start_with_env(common::Build::Admin, dir, &refs, &[]).await;
+    world.remote("acme", "api");
+    let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (id, _) = start_session(&daemon, &channel, "Fix login").await;
+    let running = common::wait_running(&daemon, &id).await;
+    let conversation = world.conversation(&running.conversation_id);
+    // As an agent that hasn't written its conversation yet: the test
+    // agent writes it as it starts, so it is taken away once it's there.
+    let deadline = Instant::now() + DEADLINE;
+    while !conversation.is_file() {
+        assert!(Instant::now() < deadline, "the test agent never wrote its conversation");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    std::fs::remove_file(&conversation).unwrap();
+
+    let stop = || async {
+        daemon
+            .session_service()
+            .await
+            .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
+            .await
+    };
+    let refused = stop().await.expect_err("an agent with no conversation yet was stopped");
+    assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+    assert!(is_running(&get_session(&daemon, &id).await), "the refused stop ended the agent");
+
+    std::fs::write(&conversation, b"").unwrap();
+    stop().await.expect("an agent with its conversation written stops");
+    assert!(!is_running(&get_session(&daemon, &id).await));
 }

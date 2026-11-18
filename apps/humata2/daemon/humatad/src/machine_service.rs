@@ -1595,6 +1595,11 @@ impl pb::machine_service_server::MachineService for MachineSvc {
                     name: "This Mac".to_owned(),
                     is_this_mac: true,
                     reachability: pb::Reachability::Online as i32,
+                    // Named as a peer's Hello names them, so This Mac's
+                    // page fills its system line and Health "Humata" row.
+                    os: std::env::consts::OS.replace("macos", "darwin"),
+                    arch: std::env::consts::ARCH.to_owned(),
+                    daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
                     root,
                     stop_delivered: sessions_stopped.is_some(),
                     sessions_stopped,

@@ -86,9 +86,11 @@ impl RunningState {
 }
 
 /// A shell's row goes through the running-holder calls by its tab; an
-/// agent's through its session.
+/// agent's through its session. A session's agent terminal is its
+/// session's even when that agent is a plain shell: the daemon refuses
+/// the running-holder calls for it.
 fn is_shell(holder: &RunningHolder) -> bool {
-    holder.is_orphan() || (holder.agent == Agent::Shell && holder.tab.is_some())
+    holder.is_orphan() || (holder.agent == Agent::Shell && holder.tab.is_some() && !holder.agent_tab)
 }
 
 /// Where Adopt… puts a terminal.

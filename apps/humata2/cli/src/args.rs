@@ -1153,6 +1153,9 @@ pub enum HookEventArg {
     Permission,
     /// The agent's own ask-user form (D761).
     Question,
+    /// Which conversation the agent's CLI is in now, so a `/clear` that
+    /// starts another one is the one a resume takes up.
+    Conversation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

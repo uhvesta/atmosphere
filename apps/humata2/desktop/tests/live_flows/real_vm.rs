@@ -168,13 +168,26 @@ impl Admin {
 
 /// The shell function that removes one run's user, mount and files. Used by
 /// the sweep of old runs and by Drop; every step is best effort.
-const CLEANUP: &str = r#"h2e_cleanup() {
+///
+/// It waits for logind to forget the user's uid. logind keeps a user
+/// `UserStopDelaySec` (10 s) after its last session, and the next run's
+/// user gets the same uid back from `useradd`: its `enable-linger` lands on
+/// the closing user, which starts no `user@<uid>.service`, and the stop
+/// that follows takes the new user's runtime folder too.
+const CLEANUP: &str = r#"h2e_forget_uid() {
+  i=0
+  while loginctl show-user "$1" >/dev/null 2>&1 && [ "$i" -lt 150 ]; do i=$((i+1)); sleep 0.2; done
+  sudo systemctl reset-failed "user@$1.service" "user-runtime-dir@$1.service" 2>/dev/null || true
+}
+h2e_cleanup() {
   u=$1; base=/var/tmp/h2e-$u
+  uid=$(id -u "$u" 2>/dev/null || true)
   sudo loginctl disable-linger "$u" 2>/dev/null || true
   sudo loginctl terminate-user "$u" 2>/dev/null || true
   sudo pkill -KILL -u "$u" 2>/dev/null || true
   i=0
   while sudo pgrep -u "$u" >/dev/null 2>&1 && [ "$i" -lt 50 ]; do i=$((i+1)); sleep 0.2; done
+  [ -z "$uid" ] || h2e_forget_uid "$uid"
   sudo umount "$base/home" 2>/dev/null || sudo umount -l "$base/home" 2>/dev/null || true
   sudo userdel "$u" 2>/dev/null || true
   sudo rm -rf --one-file-system "$base"
@@ -356,7 +369,7 @@ impl Vm {
     fn make_user(&self, keys: &[String]) -> Result<(), VmError> {
         let keys = keys.join("\n");
         let script = format!(
-            r#"set -eu
+            r#"{CLEANUP}set -eu
 u={user}; base={base}
 sudo mkdir -p "$base/home"
 sudo truncate -s 3G "$base/home.img"
@@ -369,8 +382,11 @@ sudo install -d -m 700 -o "$u" -g "$u" "$base/home/.ssh"
 printf '%s\n' {keys} | sudo tee "$base/home/.ssh/authorized_keys" >/dev/null
 sudo chown "$u:" "$base/home/.ssh/authorized_keys"
 sudo chmod 600 "$base/home/.ssh/authorized_keys"
-sudo loginctl enable-linger "$u"
 uid=$(id -u "$u")
+# A run that ended without its cleanup may have left logind holding this uid.
+h2e_forget_uid "$uid"
+if loginctl show-user "$uid" >/dev/null 2>&1; then echo "logind still holds uid $uid from an earlier user" >&2; exit 1; fi
+sudo loginctl enable-linger "$u"
 i=0
 until systemctl is-active --quiet "user@$uid.service"; do
   i=$((i+1))

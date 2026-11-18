@@ -831,9 +831,11 @@ impl RemoteWork {
     }
 
     /// Starts session `session` on `machine` as above, telling `answered` once the machine
-    /// answered the start with the session or refused it, also when that
-    /// answer only comes on a later link (D432). Not told when the machine
-    /// couldn't be asked at all.
+    /// answered the start with the session, also when that answer only comes
+    /// on a later link, or refused it on a later link (D432). Not told when
+    /// this call fails: the caller then removes its record before it drops
+    /// the journal, so a power cut between leaves the journal, never a
+    /// record alone.
     pub(crate) async fn start_session_answered(
         &self,
         machine: &str,
@@ -866,12 +868,11 @@ impl RemoteWork {
                         operation: shown,
                     });
                 }
-                failed => {
-                    if let Some(answered) = &answered {
-                        answered();
-                    }
-                    return Err(failed);
-                }
+                // Not told answered here: the caller removes the host's
+                // record first and drops the journal after it. A journal
+                // gone before the record, and a power cut between, would
+                // leave a record on the host that nothing runs (D432).
+                failed => return Err(failed),
             },
         };
         if let Some(answered) = &answered {

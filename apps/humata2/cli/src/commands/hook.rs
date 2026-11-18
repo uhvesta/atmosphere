@@ -6,6 +6,8 @@
 //! or the cap below. Empty output is "no decision" to every agent, so its
 //! own prompt asks. `humata hook <agent> question` is the same for the
 //! agent's own ask-user form: the card is an Inbox question (D761).
+//! `humata hook <agent> conversation` tells the daemon which conversation
+//! the agent's CLI is in, as the payload names it; it holds nothing.
 
 use std::time::Duration;
 
@@ -38,6 +40,7 @@ pub(super) async fn hook<D: Daemon, C: Console>(
     let event = match event {
         HookEventArg::Permission => "permission",
         HookEventArg::Question => "question",
+        HookEventArg::Conversation => "conversation",
     };
     let Ok(payload) = ctx.console.stdin() else {
         return Ok(Done::printed());

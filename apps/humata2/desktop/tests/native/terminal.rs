@@ -441,3 +441,57 @@ fn an_unfocused_terminal_does_not_receive_palette_keystrokes() {
     app.settle();
     assert_ne!(app.fakes.daemon.workspace().terminal_bytes[&key], before);
 }
+
+fn links_opened(app: &App, key: &(SessionId, usize)) -> usize {
+    let call = format!("terminal link {} {}", key.0, key.1);
+    app.fakes
+        .daemon
+        .calls()
+        .iter()
+        .filter(|made| **made == call)
+        .count()
+}
+
+/// A Stop and Resume ends the tab's link and the app makes its terminal
+/// again: the new one takes the keys the old one had, with no click.
+#[test]
+fn a_terminal_made_again_after_its_link_ends_takes_the_keys() {
+    let mut app = App::new(fixture::design());
+    app.cx
+        .update_window(app.window, |_, window, _| window.activate_window())
+        .unwrap();
+    app.settle();
+    app.open("ledger", Panel::Info);
+    app.click("terminal");
+    let key = (SessionId::new("ledger"), 0);
+    let opened = links_opened(&app, &key);
+    app.fakes.daemon.end_terminal_links(&key.0, key.1);
+    app.settle();
+    assert!(links_opened(&app, &key) > opened, "the tab opened a new link");
+    let before = app.fakes.daemon.workspace().terminal_bytes[&key].clone();
+    press(&mut app, &["p", "w", "d", "enter"]);
+    assert_ne!(app.fakes.daemon.workspace().terminal_bytes[&key], before);
+}
+
+/// A press on the terminal's area, its margin around the screen included,
+/// gives the program the keys.
+#[test]
+fn a_press_on_the_terminal_margin_gives_it_the_keys() {
+    let mut app = App::new(fixture::design());
+    app.cx
+        .update_window(app.window, |_, window, _| window.activate_window())
+        .unwrap();
+    app.settle();
+    app.open("ledger", Panel::Info);
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.blur(cx);
+            window.click_at("terminal-area", point(px(4.), px(4.)), cx);
+        })
+        .unwrap();
+    app.settle();
+    let key = (SessionId::new("ledger"), 0);
+    let before = app.fakes.daemon.workspace().terminal_bytes[&key].clone();
+    press(&mut app, &["p", "w", "d", "enter"]);
+    assert_ne!(app.fakes.daemon.workspace().terminal_bytes[&key], before);
+}

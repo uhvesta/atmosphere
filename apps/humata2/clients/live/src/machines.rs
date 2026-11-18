@@ -138,8 +138,7 @@ fn words(error: &pb::Error) -> String {
     match (error.message.is_empty(), error.fix.is_empty()) {
         (true, true) => "the daemon didn't say why".to_owned(),
         (false, true) => error.message.clone(),
-        (true, false) => error.fix.clone(),
-        (false, false) => format!("{} {}", error.message, error.fix),
+        (false, false) | (true, false) => crate::connection::said(&error.message, &error.fix),
     }
 }
 

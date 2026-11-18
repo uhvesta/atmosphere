@@ -633,6 +633,13 @@ pub enum SessionAction {
     },
     /// Archive the open session.
     Archive,
+    /// A Desk session's End for good, which is the Desk's Close: Archive
+    /// is for channel sessions only (D182.2), finished.
+    DeskEnded {
+        session: SessionId,
+        title: String,
+        result: Result<(), DaemonError>,
+    },
     /// Open or close the header's ⋯ menu (SE-7).
     Menu(bool),
     /// An item of the ⋯ menu was picked; the menu closes.
@@ -1679,6 +1686,16 @@ impl Reducer for Sessions {
                         .workspace
                         .session(&id)
                         .map_or_else(String::new, |s| s.title.clone());
+                    // A Desk session has no archive (D182.2): ending it for
+                    // good closes it on the Desk, so its agent and shells
+                    // stop and its folder stays (DK-11).
+                    if state.workspace.session(&id).is_some_and(humata2_clients::desk::is_desk) {
+                        let client = self.clients.desk.clone();
+                        return Effect::future(async move {
+                            let result = client.close(&id).await;
+                            SessionAction::DeskEnded { session: id, title, result }
+                        });
+                    }
                     let daemon = self.clients.daemon.clone();
                     return Effect::future(async move {
                         let result = daemon.plan_archive(&id).await;
@@ -1688,6 +1705,21 @@ impl Reducer for Sessions {
                             result,
                         }
                     });
+                }
+            }
+            SessionAction::DeskEnded { session, title, result } => {
+                state.ending_for_good = None;
+                match result {
+                    Ok(()) => {
+                        let machine = close::machine_of(state, &session);
+                        if state.open.as_ref() == Some(&session) {
+                            state.open = None;
+                        }
+                        return Effect::send(SessionAction::Delegate(Delegate::Toast(close::desk_ended_text(
+                            &title, &machine,
+                        ))));
+                    }
+                    Err(error) => state.error = Some(error.to_string()),
                 }
             }
             SessionAction::ArchivePlanned {

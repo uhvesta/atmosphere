@@ -82,6 +82,26 @@ async fn end_of_a_session_archives_it_by_the_plan() {
 }
 
 #[tokio::test]
+async fn end_of_a_desk_session_closes_it_on_the_desk() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::session::GET_SESSION,
+        &pb::Session {
+            id: support::session("se_1"),
+            channel: Some(pb::ChannelId { value: "desk".into() }),
+            ..Default::default()
+        },
+    );
+    let console = FakeConsole::pipe();
+    let code = run(&daemon, &console, &["--json", "--yes", "session", "end", "se_1"]).await;
+    assert_eq!(code, exit::OK, "{}", console.stderr());
+    let sent: pb::CloseDeskSessionRequest = daemon.only(rpc::desk::CLOSE_DESK_SESSION);
+    assert_eq!(sent.session, support::session("se_1"));
+    assert!(!daemon.called(rpc::session::ARCHIVE_SESSION));
+    assert!(!daemon.called(rpc::session::PLAN_ARCHIVE));
+}
+
+#[tokio::test]
 async fn neither_a_session_nor_a_tab_is_a_usage_error() {
     let daemon = FakeDaemon::new();
     let console = FakeConsole::pipe();

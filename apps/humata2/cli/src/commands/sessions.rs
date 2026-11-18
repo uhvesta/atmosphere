@@ -309,7 +309,8 @@ pub(super) async fn session<D: Daemon, C: Console>(
             ctx.change(rpc::machine::END_RUNNING_HOLDER, &request).await
         }
         // End for good of a session is Archive (D784, Fable's ruling).
-        SessionCommand::End { session, tab: None } => archive(ctx, &named(session)?, pb::ArchiveChoice::Archive).await,
+        // A Desk session has no archive (D182.2): it ends by the Desk's Close.
+        SessionCommand::End { session, tab: None } => end_for_good(ctx, &named(session)?).await,
         SessionCommand::Running => {
             let request = pb::ListRunningHoldersRequest {
                 machine: Some(ctx.machine_or_this().await?),
@@ -523,6 +524,27 @@ fn named(session: Option<String>) -> Result<String, CliError> {
 }
 
 /// Archive `session` by its plan, as `choice` says.
+/// The channel id every Desk session carries (DK-2).
+const DESK_CHANNEL: &str = "desk";
+
+/// Ends `session` for good: Archive for a channel session, the Desk's Close
+/// for a Desk session, which keeps its folder for Reopen (DK-11).
+async fn end_for_good<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, session: &str) -> Result<Done, CliError> {
+    let id = ctx.session(session).await?;
+    let found: pb::Session = ctx
+        .call(rpc::session::GET_SESSION, &pb::GetSessionRequest { id: Some(id.clone()) })
+        .await?;
+    if found.channel.as_ref().is_some_and(|channel| channel.value == DESK_CHANNEL) {
+        let request = pb::CloseDeskSessionRequest {
+            idempotency_key: ctx.key(),
+            session: Some(id),
+            ..Default::default()
+        };
+        return ctx.change(rpc::desk::CLOSE_DESK_SESSION, &request).await;
+    }
+    archive(ctx, &id.value, pb::ArchiveChoice::Archive).await
+}
+
 async fn archive<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     session: &str,

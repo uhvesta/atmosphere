@@ -11,6 +11,9 @@
 //!   each CLI of Humata's own MCP server for the session (D748).
 //! - [`parse_question`] and [`render_question`] do the same for an agent's
 //!   own ask-user form, which becomes an Inbox question (D761).
+//! - [`parse_conversation`] reads the conversation a Copilot hook says its
+//!   CLI is in, so a `/clear` or `/restart` that starts another one in the
+//!   same running agent is followed, and a resume takes that one up.
 //! - OpenCode has no hooks: the `humata opencode` wrapper hands each
 //!   `permission.asked` event's `data` over as the payload, and posts what
 //!   [`render_permission`] writes as the body of OpenCode's reply (D201a).
@@ -112,6 +115,8 @@ pub enum PayloadError {
     NotAQuestion { agent: Agent, why: &'static str },
     #[error("Copilot asks to bypass its sandbox, which an approval from the Inbox doesn't cover")]
     SandboxBypass,
+    #[error("the hook payload doesn't name a {agent:?} conversation: {why}")]
+    NotAConversation { agent: Agent, why: &'static str },
 }
 
 /// The message a deny sends when the user gave no note.
@@ -250,6 +255,40 @@ fn ask_key(parts: &[&str]) -> String {
         .collect()
 }
 
+/// The longest conversation id taken from a hook.
+const CONVERSATION_ID_MAX: usize = 128;
+
+/// The conversation `agent`'s hook payload says its CLI is in now. Only
+/// Copilot's hooks say: their `sessionId` is Copilot's own id for the
+/// conversation, the name of its `session-state/<id>` folder. A payload of
+/// a subagent (one with an `agentId`) names the child's conversation, not
+/// the session's, so it names none here. An id is letters, digits, `-` and
+/// `_` only, so it never names a path of its own.
+pub fn parse_conversation(agent: Agent, payload: &[u8]) -> Result<String, PayloadError> {
+    let none = |why: &'static str| PayloadError::NotAConversation { agent, why };
+    if agent != Agent::Copilot {
+        return Err(none("only Copilot's hooks name the conversation they run in"));
+    }
+    if payload.len() > PAYLOAD_MAX {
+        return Err(PayloadError::TooBig {
+            size: payload.len(),
+        });
+    }
+    let value: Value = serde_json::from_slice(payload).map_err(PayloadError::NotJson)?;
+    if !value.is_object() {
+        return Err(none("the payload isn't a JSON object"));
+    }
+    if value.get("agentId").is_some_and(|id| !id.is_null()) {
+        return Err(none("it is a subagent's hook"));
+    }
+    let id = str_field(&value, "sessionId").ok_or_else(|| none("there is no sessionId"))?;
+    let plain = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    if id.is_empty() || id.len() > CONVERSATION_ID_MAX || !id.chars().all(plain) {
+        return Err(none("sessionId isn't a plain id"));
+    }
+    Ok(id.to_owned())
+}
+
 /// What the permission hook prints for `decision`.
 pub fn render_permission(agent: Agent, decision: &Decision) -> Vec<u8> {
     let answer = match (agent, decision) {
@@ -314,6 +353,16 @@ pub fn permission_command(agent: Agent, humata: &Path, socket: &Path) -> String 
 fn question_command(agent: Agent, humata: &Path, socket: &Path) -> String {
     format!(
         "{} hook {} question 2>/dev/null || true",
+        humata_call(humata, socket),
+        agent.name(),
+    )
+}
+
+/// The shell command an agent's hook runs to say which conversation its
+/// CLI is in: the payload on its stdin names it.
+fn conversation_command(agent: Agent, humata: &Path, socket: &Path) -> String {
+    format!(
+        "{} hook {} conversation >/dev/null 2>&1 || true",
         humata_call(humata, socket),
         agent.name(),
     )
@@ -411,13 +460,22 @@ pub fn copilot_plugin(humata: &Path, socket: &Path) -> Vec<PluginFile> {
         "bash": question_command(Agent::Copilot, humata, socket),
         "timeoutSec": HOLD_SECONDS,
     });
+    // `/clear` and `/restart` start another conversation in the running
+    // agent: its session start says so, and so do the prompt and the end of
+    // each turn, by when the conversation's file is written.
+    let conversation = json!({
+        "type": "command",
+        "bash": conversation_command(Agent::Copilot, humata, socket),
+        "timeoutSec": 10,
+    });
     let hooks = json!({
         "version": 1,
         "hooks": {
+            "sessionStart": [conversation.clone()],
             "preToolUse": [question],
-            "userPromptSubmitted": [turn("working", 10)],
+            "userPromptSubmitted": [turn("working", 10), conversation.clone()],
             "postToolUse": [turn("working", 10)],
-            "agentStop": [turn("idle", 10)],
+            "agentStop": [turn("idle", 10), conversation],
             "errorOccurred": [turn("idle", 10)],
             "permissionRequest": [permission, turn("needs-input", 10)],
         },

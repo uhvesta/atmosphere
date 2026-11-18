@@ -410,6 +410,7 @@ pub mod rpc {
 
     service!(desk, "DeskService" {
         KEEP_DESK_FOLDER = "KeepDeskFolder" -> "DeskSession",
+        CLOSE_DESK_SESSION = "CloseDeskSession" -> "DeskSession",
     });
 
     service!(terminal, "TerminalService" {
@@ -581,6 +582,7 @@ pub mod rpc {
         history::SEARCH_SESSIONS,
         history::READ_TURNS,
         desk::KEEP_DESK_FOLDER,
+        desk::CLOSE_DESK_SESSION,
         // REPOS
         repos::SEARCH_REPOS,
         repos::LIST_REPO_LIBRARY,
