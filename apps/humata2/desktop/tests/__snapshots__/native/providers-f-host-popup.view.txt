@@ -1,0 +1,57 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" collapsed
+    Button "Unfold"
+  TreeItem "web"
+    Button "Unfold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Button "Add a machine…"
+Dialog "Add machine" focused
+  #input
+    TextInput "or type a host" value="" placeholder="or type a host"
+  Button "Host"
+  ListBox "Hosts and providers"
+    ListBoxOption "devbox-2" selected
+    ListBoxOption "Lima VM"
+    ListBoxOption "Hetzner Cloud"
+    ListBoxOption "Manage providers…"
+  Button "Cancel"
+  Button "Add"
+ListItem "This Mac"
+ListItem "devbox-1" selected
+  Button "Free space…" disabled
+text "gh 2.83"
+text "claude 2.4"
+text "codex 0.98"
+ListItem "gpu-box"
+  Button "Reconnect"
+Button "Free space…" disabled
+Button "Open a shell"
+ListItem "cloud-vm-3"
+  Button "Start"

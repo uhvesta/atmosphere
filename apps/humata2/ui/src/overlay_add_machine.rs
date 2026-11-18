@@ -474,13 +474,13 @@ impl AddMachineDialog {
                 .child(host_popup(&ui, state, picked, locked, look, wrap))
                 .child(
                     div()
+                        .flex_shrink_0()
                         .text_size(px(11.5))
                         .text_color(rgb(look.secondary))
-                        .child("from ~/.ssh/config, or type a host"),
+                        .child("from ~/.ssh/config"),
                 )
-                .child(div().flex_1())
                 .child(
-                    div().w(px(150.)).flex_shrink_0().child(
+                    div().flex_1().min_w_0().child(
                         Input::new(&self.host.input)
                             .disabled(locked)
                             .aria_label("or type a host"),

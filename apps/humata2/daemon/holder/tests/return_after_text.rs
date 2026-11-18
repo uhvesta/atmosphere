@@ -53,10 +53,7 @@ impl Agent {
     /// A holder running the stand-in in `mode` (see `fake/agent_tui.rs`).
     fn in_mode(mode: &str) -> Self {
         // Socket paths must be short, so not under the test's own temp.
-        let dir = tempfile::Builder::new()
-            .prefix("h2r")
-            .tempdir_in("/tmp")
-            .unwrap();
+        let dir = humata2_tmp_folder::folder("h2r");
         let gate = dir.path().join("gate");
         let made = std::process::Command::new("mkfifo").arg(&gate).status().unwrap();
         assert!(made.success(), "mkfifo failed");

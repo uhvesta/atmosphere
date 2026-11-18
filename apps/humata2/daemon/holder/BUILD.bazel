@@ -173,6 +173,7 @@ rust_test(
     },
     deps = [
         ":holder",
+        "//apps/humata2/testing/tmp_folder",
         "@crates//:tempfile",
         "@crates//:tokio",
     ],

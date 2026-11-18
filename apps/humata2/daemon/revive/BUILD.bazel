@@ -65,6 +65,7 @@ rust_test(
         ":revive_faults",
         "//apps/humata2/daemon/holder:holder_faults",
         "//apps/humata2/daemon/store:store_faults",
+        "//apps/humata2/testing/tmp_folder",
         "@crates//:rustix",
         "@crates//:serde_json",
         "@crates//:tempfile",

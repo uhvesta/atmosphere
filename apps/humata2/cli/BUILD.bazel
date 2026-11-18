@@ -117,6 +117,7 @@ rust_test(
         "//apps/humata2/daemon/humatad:grpc",
         "//apps/humata2/daemon/machines:fake_machine",
         "//apps/humata2/daemon/store",
+        "//apps/humata2/testing/tmp_folder",
         "@crates//:hyper-util",
         "@crates//:prost",
         "@crates//:rustix",

@@ -8,6 +8,10 @@
 //! as a stopped boot sweeps them (D269). Its service manager starts the
 //! daemon again, which reads the record, counts what was ended here, and
 //! sweeps whatever is left (D261), so the machine stays stopped.
+//!
+//! A daemon that already took a stop and left its socket to start itself
+//! again is not ended: its next run sweeps, and a late SSH stop that killed
+//! it there would leave the machine with no daemon to finish the stop.
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -126,6 +130,7 @@ pub(crate) async fn run(args: StopArgs) -> Result<(), DaemonError> {
         stop_id,
         reason,
         by,
+        listening: listening(&socket).await,
     };
     let killed = match blocking(move || hard.stop()).await? {
         Next::Done(said) => {
@@ -206,12 +211,27 @@ async fn ask_daemon(socket: &Path, stop_id: &str, reason: &str, by: Option<&str>
     }
 }
 
+/// Whether a daemon listens on `socket`. One that took a stop has removed
+/// its socket and is starting itself again into the sweep; one that hangs
+/// keeps it. A probe that can't tell counts as listening.
+async fn listening(socket: &Path) -> bool {
+    match tokio::time::timeout(ASK_DEADLINE, UnixStream::connect(socket)).await {
+        Ok(Err(error)) => !matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        ),
+        Ok(Ok(_)) | Err(_) => true,
+    }
+}
+
 /// The hard way: for a daemon that doesn't answer.
 struct Hard {
     state: PathBuf,
     stop_id: String,
     reason: String,
     by: Option<String>,
+    /// Whether a daemon listened on the socket once it didn't answer.
+    listening: bool,
 }
 
 impl Hard {
@@ -224,6 +244,16 @@ impl Hard {
             Ok(StopState::Stopped(record)) if record.ended.is_some() => {
                 return Ok(Next::Done(format!(
                     "This machine's sessions are stopped already (stop {}).",
+                    record.stop_id
+                )));
+            }
+            // Stopped, and the daemon holding the lock has left its socket:
+            // it took this stop (or an earlier one) and is starting itself
+            // again, and that next run sweeps. Ending it would leave the
+            // machine with no daemon to finish the stop (D261).
+            Ok(StopState::Stopped(record)) if !self.listening && self.lock_holder()?.is_some() => {
+                return Ok(Next::Done(format!(
+                    "This machine's sessions are being stopped already (stop {}); its daemon is starting itself again to end them.",
                     record.stop_id
                 )));
             }
@@ -282,26 +312,7 @@ impl Hard {
     /// Kills the daemon that holds the state lock, if one does. True when
     /// one was killed.
     fn end_daemon(&self) -> Result<bool, StopCliError> {
-        let path = self.state.join("daemon.lock");
-        let lock_failed = |source| StopCliError::Lock {
-            path: path.clone(),
-            source,
-        };
-        let file = match File::open(&path) {
-            Ok(file) => file,
-            // No daemon has ever run here.
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(source) => return Err(lock_failed(source)),
-        };
-        match file.try_lock() {
-            // Nobody holds it: no daemon runs, and the lock is let go here.
-            Ok(()) => return Ok(false),
-            Err(std::fs::TryLockError::WouldBlock) => {}
-            Err(std::fs::TryLockError::Error(source)) => return Err(lock_failed(source)),
-        }
-        let text = std::fs::read_to_string(&path).map_err(lock_failed)?;
-        let Some(pid) = text.trim().parse::<u32>().ok().and_then(|pid| i32::try_from(pid).ok()).and_then(Pid::from_raw)
-        else {
+        let Some(pid) = self.lock_holder()? else {
             return Ok(false);
         };
         // The lock's holder wrote its own pid; SIGKILL can't be refused or
@@ -314,6 +325,30 @@ impl Hard {
                 source,
             }),
         }
+    }
+
+    /// The daemon that holds the state lock, as the pid it wrote there;
+    /// none when nobody holds it.
+    fn lock_holder(&self) -> Result<Option<Pid>, StopCliError> {
+        let path = self.state.join("daemon.lock");
+        let lock_failed = |source| StopCliError::Lock {
+            path: path.clone(),
+            source,
+        };
+        let file = match File::open(&path) {
+            Ok(file) => file,
+            // No daemon has ever run here.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(lock_failed(source)),
+        };
+        match file.try_lock() {
+            // Nobody holds it: no daemon runs, and the lock is let go here.
+            Ok(()) => return Ok(None),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(source)) => return Err(lock_failed(source)),
+        }
+        let text = std::fs::read_to_string(&path).map_err(lock_failed)?;
+        Ok(text.trim().parse::<u32>().ok().and_then(|pid| i32::try_from(pid).ok()).and_then(Pid::from_raw))
     }
 }
 
@@ -329,7 +364,61 @@ mod tests {
             stop_id: "s1".to_owned(),
             reason: "agents running wild".to_owned(),
             by: by.map(str::to_owned),
+            listening: true,
         }
+    }
+
+    /// A stand-in daemon: a process whose pid is in `dir`'s lock file, and
+    /// the lock held for it as long as the returned file is open.
+    fn lock_holder(dir: &TempDir) -> (std::process::Child, File) {
+        let child = std::process::Command::new("/bin/sleep").arg("60").spawn().expect("sleep runs");
+        let path = dir.path().join("daemon.lock");
+        std::fs::write(&path, format!("{}\n", child.id())).expect("a lock file");
+        let lock = File::open(&path).expect("the lock file opens");
+        lock.try_lock().expect("the lock is free");
+        (child, lock)
+    }
+
+    /// Whether `child` was ended by a signal, waiting for it if so.
+    fn was_killed(child: &mut std::process::Child) -> bool {
+        match child.try_wait().expect("the child can be asked") {
+            Some(_) => true,
+            None => {
+                std::thread::sleep(Duration::from_millis(100));
+                child.try_wait().expect("the child can be asked").is_some()
+            }
+        }
+    }
+
+    #[test]
+    fn a_daemon_that_left_its_socket_after_taking_a_stop_is_left_to_sweep_it() {
+        let dir = TempDir::new().expect("a temp dir");
+        hard(&dir, None).stop().expect("recorded");
+        let (mut daemon, _lock) = lock_holder(&dir);
+        let late = Hard {
+            stop_id: "s1".to_owned(),
+            listening: false,
+            ..hard(&dir, Some("host-mac"))
+        };
+
+        let next = late.stop().expect("answered");
+
+        assert!(matches!(next, Next::Done(_)), "the stop went on the hard way");
+        assert!(!was_killed(&mut daemon), "the daemon starting itself into the sweep was ended");
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+    }
+
+    #[test]
+    fn a_stopped_daemon_that_listens_and_does_not_answer_is_ended() {
+        let dir = TempDir::new().expect("a temp dir");
+        hard(&dir, None).stop().expect("recorded");
+        let (mut daemon, _lock) = lock_holder(&dir);
+
+        let next = hard(&dir, None).stop().expect("taken");
+
+        assert!(matches!(next, Next::Sweep { killed: true }));
+        let _ = daemon.wait();
     }
 
     #[test]

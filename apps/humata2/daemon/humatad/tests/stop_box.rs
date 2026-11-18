@@ -734,6 +734,9 @@ macro_rules! cut_tests {
     ($run:ident: $($name:ident => $point:literal, $cut:ident, $n:literal;)*) => {$(
         #[tokio::test(flavor = "multi_thread")]
         async fn $name() {
+            if !common::in_this_shard($n) {
+                return;
+            }
             $run($point, Cut::$cut, $n).await;
         }
     )*};

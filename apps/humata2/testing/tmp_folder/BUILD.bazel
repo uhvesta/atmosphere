@@ -1,0 +1,23 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Short /tmp folders for tests whose sockets need short paths, swept of
+# the holders a killed test left running.
+rust_library(
+    name = "tmp_folder",
+    testonly = True,
+    srcs = ["src/lib.rs"],
+    crate_name = "humata2_tmp_folder",
+    visibility = [
+        "//apps/humata2/cli:__pkg__",
+        "//apps/humata2/daemon:__subpackages__",
+    ],
+    deps = [
+        "@crates//:rustix",
+        "@crates//:tempfile",
+    ],
+)
+
+rust_test(
+    name = "tmp_folder_test",
+    crate = ":tmp_folder",
+)

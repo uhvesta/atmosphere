@@ -96,14 +96,7 @@ pub fn in_this_shard(index: usize) -> bool {
 /// A folder for a daemon: its socket and state go in here. Under /tmp,
 /// since socket paths must be short.
 pub fn folder() -> TempDir {
-    use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::Builder::new()
-        .prefix("h2d")
-        .tempdir_in("/tmp")
-        .unwrap();
-    // The daemon refuses a socket folder other users can open.
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    dir
+    humata2_tmp_folder::folder("h2d")
 }
 
 /// The state folder a daemon in `dir` uses, made the way the daemon wants

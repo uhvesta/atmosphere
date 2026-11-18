@@ -63,10 +63,7 @@ struct World {
 
 impl World {
     fn new() -> Self {
-        let dir = tempfile::Builder::new()
-            .prefix("h2r")
-            .tempdir_in("/tmp")
-            .unwrap();
+        let dir = humata2_tmp_folder::folder("h2r");
         let root = dir.path().to_owned();
         for folder in ["state", "conv", "h", "logs", "work"] {
             fs::create_dir_all(root.join(folder)).unwrap();

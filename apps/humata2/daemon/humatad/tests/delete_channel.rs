@@ -248,6 +248,9 @@ async fn until<F: std::future::Future<Output = bool>>(what: &str, mut done: impl
 
 #[tokio::test]
 async fn the_plan_lists_every_session_item_and_request_and_changes_nothing() {
+    if !common::in_this_shard(0) {
+        return;
+    }
     let fixture = Fixture::new().await;
     let dirty = fixture.session("Dirty").await;
     std::fs::write(clone_of(&dirty).join("wip.txt"), "wip\n").unwrap();
@@ -290,6 +293,9 @@ async fn the_plan_lists_every_session_item_and_request_and_changes_nothing() {
 
 #[tokio::test]
 async fn unpushed_work_blocks_the_delete_until_the_user_ticks_delete_that_work() {
+    if !common::in_this_shard(0) {
+        return;
+    }
     let fixture = Fixture::new().await;
     let dirty = fixture.session("Dirty").await;
     std::fs::write(clone_of(&dirty).join("wip.txt"), "wip\n").unwrap();
@@ -316,6 +322,9 @@ async fn unpushed_work_blocks_the_delete_until_the_user_ticks_delete_that_work()
 
 #[tokio::test]
 async fn deleting_stops_the_agents_withdraws_the_requests_and_sends_the_folder_to_trash() {
+    if !common::in_this_shard(1) {
+        return;
+    }
     let fixture = Fixture::new().await;
     let one = fixture.session("One").await;
     fixture.session("Two").await;
@@ -363,6 +372,9 @@ async fn deleting_stops_the_agents_withdraws_the_requests_and_sends_the_folder_t
 
 #[tokio::test]
 async fn restoring_from_the_trash_brings_the_channel_back_with_its_sessions_archived() {
+    if !common::in_this_shard(0) {
+        return;
+    }
     let fixture = Fixture::new().await;
     let one = fixture.session("One").await;
     let clone = clone_of(&one);
@@ -390,6 +402,9 @@ async fn restoring_from_the_trash_brings_the_channel_back_with_its_sessions_arch
 
 #[tokio::test]
 async fn a_plan_that_no_longer_matches_does_nothing() {
+    if !common::in_this_shard(0) {
+        return;
+    }
     let fixture = Fixture::new().await;
     fixture.session("One").await;
     let plan = fixture.plan().await.unwrap();
@@ -416,6 +431,9 @@ async fn a_plan_that_no_longer_matches_does_nothing() {
 
 #[tokio::test]
 async fn an_agent_cannot_plan_or_delete_a_channel() {
+    if !common::in_this_shard(1) {
+        return;
+    }
     let fixture = Fixture::new().await;
     let one = fixture.session("One").await;
     let (token, _attach) = shell_token(&fixture.daemon, one.id.as_ref().unwrap()).await;
@@ -449,6 +467,9 @@ async fn an_agent_cannot_plan_or_delete_a_channel() {
 
 #[tokio::test]
 async fn a_delete_cut_short_finishes_after_a_restart() {
+    if !common::in_this_shard(0) {
+        return;
+    }
     let mut fixture = Fixture::new().await;
     fixture.session("One").await;
     let folder = fixture.folder();
@@ -491,6 +512,9 @@ const DELETE_POINTS: &[&str] = &[
 /// and no note of the delete is left.
 #[tokio::test]
 async fn a_delete_cut_at_any_point_finishes_at_restart_with_nothing_left() {
+    if !common::in_this_shard(1) {
+        return;
+    }
     for point in DELETE_POINTS {
         let mut fixture = Fixture::new().await;
         fixture.session("One").await;

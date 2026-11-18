@@ -4,7 +4,7 @@
 //! with `bazel run //apps/humata2/desktop:native_test_record`.
 use super::*;
 use humata2_clients::machines::{
-    AddEvent, AddFailure, AddOutcome, ChannelFolder, Choices, Fix, GhLogin, LoginEvent, LoginReason,
+    AddEvent, AddFailure, AddOutcome, Call, ChannelFolder, Choices, Fix, GhLogin, LoginEvent, LoginReason,
     MachineDetail, MachineHealth, OperationId, PromptKind, Provider, Reach, ReachRule, SshHost,
     StepKind, StepStatus, StepUpdate,
 };
@@ -74,6 +74,43 @@ fn add_machine_failed_step_reference_image() {
     app.snapshot("56-add-machine");
 }
 
+/// With the failed step's dialog holding focus (no input has it), Enter
+/// retries the add, as it does from an input.
+#[test]
+fn enter_retries_a_failed_add_while_the_dialog_card_has_focus() {
+    let mut app = App::new(fixture::design());
+    app.fakes.machines.set_choices(host("devbox-2"));
+    app.fakes.machines.script_add(vec![
+        started(),
+        step(StepKind::Install, StepStatus::Failed, "Stopped here. Nothing was installed."),
+        AddEvent::Outcome(AddOutcome::Failed(AddFailure {
+            step: StepKind::Install,
+            title: "Install humatad failed on devbox-2".to_owned(),
+            what: "Humata can't write to ~/.local/bin on devbox-2.".to_owned(),
+            fix: None,
+        })),
+    ]);
+    hosts_page(&mut app);
+    app.send(AppAction::AddMachine(Add::Open));
+    app.click("add-machine-host-popup");
+    app.click("add-machine-host devbox-2");
+    app.click("add-machine-start");
+    assert!(app.contains("add-machine-failure"));
+
+    app.cx
+        .update_window(app.window, |_, window, cx| window.press("enter", cx))
+        .expect("window stays open");
+    app.settle();
+
+    assert!(
+        app.fakes
+            .machines
+            .calls()
+            .contains(&Call::Retry(OperationId::new("op-1"))),
+        "Enter asks to retry the failed operation"
+    );
+}
+
 fn login_step(kind: StepKind, detail: &str) -> LoginEvent {
     LoginEvent::Step(StepUpdate { step: kind, status: StepStatus::Done, detail: detail.to_owned() })
 }
@@ -89,6 +126,7 @@ fn login_app() -> App {
             label: "Corporate SSH".to_owned(),
             interactive: true,
             params: Vec::new(),
+            unset: Vec::new(),
         }],
     });
     app.fakes.machines.script_add(vec![
@@ -263,4 +301,45 @@ fn machine_page_with(holders: impl FnOnce(i64) -> Vec<humata2_clients::RunningHo
     app.send(AppAction::Switch(Route::Machine(MachineId::new("devbox-1"))));
     assert!(app.contains("machine-overview"));
     app
+}
+
+/// Frame F (PROVIDERS): the Host pop-up ends with a divider and Manage
+/// providers…; a provider with an unset variable says what it needs and
+/// keeps Add from starting.
+#[test]
+fn providers_f_host_popup_ends_with_manage_providers() {
+    let mut app = App::new(fixture::design());
+    let mut choices = host("devbox-2");
+    choices.providers = vec![
+        Provider {
+            id: "lima".to_owned(),
+            label: "Lima VM".to_owned(),
+            interactive: false,
+            params: Vec::new(),
+            unset: Vec::new(),
+        },
+        Provider {
+            id: "hcloud".to_owned(),
+            label: "Hetzner Cloud".to_owned(),
+            interactive: false,
+            params: Vec::new(),
+            unset: vec!["HCLOUD_TOKEN".to_owned()],
+        },
+    ];
+    app.fakes.machines.set_choices(choices);
+    hosts_page(&mut app);
+    app.send(AppAction::AddMachine(Add::Open));
+    app.click("add-machine-host-popup");
+    assert!(app.contains("add-machine-host-menu"));
+    assert!(app.contains("add-machine-manage-providers"));
+    app.snapshot("providers-f-host-popup");
+
+    app.click("add-machine-provider hcloud");
+    app.send(AppAction::AddMachine(Add::SetName("cx-1".to_owned())));
+    assert!(app.contains("add-machine-needs-variable"), "the unset variable is named");
+    app.click("add-machine-start");
+    assert!(
+        !app.fakes.machines.calls().iter().any(|call| matches!(call, Call::Add(..))),
+        "Add doesn't start while a variable is unset"
+    );
 }

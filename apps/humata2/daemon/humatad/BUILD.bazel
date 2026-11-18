@@ -276,6 +276,7 @@ rust_library(
         "//apps/humata2/daemon/machines",
         "//apps/humata2/daemon/machines:fake_machine",
         "//apps/humata2/daemon/store",
+        "//apps/humata2/testing/tmp_folder",
         "@crates//:hyper-util",
         "@crates//:prost",
         "@crates//:rustix",
@@ -412,6 +413,8 @@ POWER_CUT_SHARDS = 2
 # Rig suites with many tests of their own, each a host and boxes for
 # minutes: shared out so each shard stays within a large test's time.
 RIG_SHARDS = {
+    # Cuts a delete at each of its points and restarts the daemon each time.
+    "delete_channel": 2,
     "stop_box": 4,
 }
 
@@ -476,6 +479,7 @@ RIG_TESTS.extend(LINUX_VM_TESTS)
             "//apps/humata2/daemon/passphrase",
             "//apps/humata2/daemon/store",
             "//apps/humata2/terminal/vt:ghostty_vt",
+            "//apps/humata2/testing/tmp_folder",
             "@crates//:hmac",
             "@crates//:hyper-util",
             "@crates//:prost",

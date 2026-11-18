@@ -108,9 +108,8 @@ pub fn add_machine(look: Look) -> Div {
                 .gap(px(10.))
                 .child(div().w(px(50.)).flex_shrink_0().text_color(c(look.secondary)).child("Host"))
                 .child(popup(look, "devbox-2").w(px(180.)))
-                .child(secondary(look, "from ~/.ssh/config, or type a host"))
-                .child(div().flex_1())
-                .child(field(look, "or type a host", true).w(px(150.))),
+                .child(secondary(look, "from ~/.ssh/config").flex_shrink_0())
+                .child(field(look, "or type a host", true).flex_1().min_w_0()),
         )
         .child(steps(
             look,

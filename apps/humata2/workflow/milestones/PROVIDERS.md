@@ -69,3 +69,20 @@ No new page. Add a **Providers** block in Settings › Machines, above Scripts, 
     - "Manage providers…" with frame F;
     - the unset-variable error;
     - refusals that point to Settings.
+- 15:15: the follow-up lane landed.
+  - Built and tested:
+    - RemoveProvider;
+    - ListProviders returning the commands;
+    - "Manage providers…" ending the Host pop-up;
+    - the unset-variable error, with "Open Settings", blocking Add;
+    - refusals pointing at Settings › Machines › Providers.
+  - Frame F is recorded (`providers-f-host-popup`). The Host row overflow it exposed (pre-existing in frame 56) is fixed: the hint is now "from ~/.ssh/config" and the field flexes. Fable approved native 56, design 56 and F.
+  - **Live rerun (exit), CLI against a fresh `humatad2_admin`.** An agent session's token came from the shell the daemon starts. Results:
+    - `whoami` shows the agent.
+    - The agent's `provider ls` lists lima, and its `provider config show` succeeds.
+    - The agent's `provider import cloud.toml --reason …` makes one Inbox request ("provider live asks you to import a machine provider"). The preview shows the file and every command.
+    - The user's `inbox approve` imports it. The agent's `provider ls` then shows Test Cloud with CLOUD_TOKEN unset.
+    - The agent's `provider rm` is refused with "ask the user to remove it in Settings › Machines › Providers". The user's `rm` works.
+  - The app side is covered by the headless native frames A–F, per the no-windows rule.
+
+**Status: done.**
