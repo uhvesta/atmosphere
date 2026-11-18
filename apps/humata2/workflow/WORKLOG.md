@@ -6,10 +6,12 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
-- **State (2026-11-18 10:50):** humata2-v0.3.1 (f2ce016b) released and installed 10:37: Humata-installed agent skills (D790), look-only vs review skills (D791), fresh sessions move off a box again (StopSessionRequest.for_move).
-- **In 0.3.2 (uncommitted, tests running):** Mermaid zoom and pan (D794), Desk top sessions in the sidebar on every page (D793), agents ask through MCP to import providers into the Inbox (D792), and the first-message trust-box race fix (`await_keys` before the gate; red check confirmed).
+- **State (2026-11-18 12:00):** humata2-v0.3.3 released and installed (092b6191). In it: Claude Code and Codex on structured channels with the ready gate and a quiet screen fallback (AGENTS2 part), STACKVIEW T0–T3 (stack engine, per-layer notes and undo; no UI yet), LIVEHOLDER T0–T5 (holder take-over onto a new build, lost-in-move report; nothing calls it yet), and the Files panel showing every repo (fair-share cap, paged fetch).
+- **Priority (owner 11:50):** "Claude code and codex matter less". Order: STACKVIEW (S1b seam = D803 from_stack + D802 importance, then T3b/T3c, T4–T9 and frames 119–121 for Fable) → LIVEHOLDER T6–T14 (Migrate moves terminals, then renames, moves, Archive, Hide, channel delete, cross-machine) → PROGRESS → test tiers → AGENTS2 rest (C3–C5, other sends through the ready gate, F1, O1–O3).
+- **PROGRESS (owner 11:47, new, not planned yet):** "could we show some progress indicators". Main's reading: long operations that look frozen (cloning a session's repos, moves and holder migrations, big diff loads, an agent's turn with elapsed time). Fable decides placement and look; any new frames go to Fable. Needs a milestone file.
+- **STACKVIEW S1b:** the proto script is at the scratchpad `stackview/s1b_from_stack_proto.py`; scratchpads don't survive. If it's gone, the manager regenerates it from D802/D803. Applying it needs one sweep over `pb::ReviewPlan`, `pb::ReviewLayer` and `pb::FileSummary` literals.
 - **Owed:** the full fast tier with fast mode off and on; the slow tier (`live_flows_ssh_test` with `TERMINAL_LAB_SSH_CONFIG=$HOME/.lima/h2-terminal-c1/ssh.config`, power_cut_both); an on-screen drive only when the owner says the screen is free. Remove machine (`forget.rs`) and the Desk watch (`remote_view.rs`) still hit the D784 refusal for a fresh remote agent.
-- **Open milestones, planning in parallel (10:50):** AGENTS2, STACKVIEW, LIVEHOLDER. Managers write plans in each milestone's Lane section and wait for "go" until 0.3.2 is committed.
+- **Open milestones (12:00):** STACKVIEW, LIVEHOLDER, AGENTS2 (deprioritized). Each Lane section says where it stopped. Managers have finished; resume with fresh managers pointed at the milestone files.
 - **Owner's deadline:** work until 12:00 PST 2026-11-18. The "permission for anything" window ended at 08:20.
 - **Cut (owner, 2026-11-16, D485):** LINUX, ANYHOST, the browser client and TERM's browser half. macOS desktop only.
 - **Test policy:** the fast tier is the default. Focused tests cover each fix. The slow tier runs once before each release.
@@ -349,3 +351,4 @@ Apply order after gate 18: b17u, b17d, WIRE-B b5, TERM q1–r1, repin, record, g
   D802 importance + D803 from_stack planned), LIVEHOLDER T0–T5 (take-over, lost-in-move report). Owner asks logged
   in STACKVIEW.md (from_stack, importance). Next: S1b seam + T3b/T3c; LIVEHOLDER T6; AGENTS2 C3–C5; Files panel
   multi-repo fix; progress indicators (Fable); full fast + slow tier.
+- 2026-11-18 11:54 main: humata2-v0.3.3 released and installed (092b6191: Files panel shows every repo). Owner: Claude Code/Codex matter less; progress indicators asked for (PROGRESS, unplanned).
