@@ -1,0 +1,1 @@
+{"session_id":"abc123","transcript_path":"/home/u/.claude/projects/p/abc123.jsonl","cwd":"/work/api","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"toolu_03GHI","tool_input":{"command":"ls","description":"List files"}}

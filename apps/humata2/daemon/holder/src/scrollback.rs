@@ -33,6 +33,26 @@ impl Scrollback {
         }
     }
 
+    /// A scrollback as it was: `runs` (start offset and bytes, oldest
+    /// first) kept up to `limit`, the next byte at offset `end`.
+    pub(crate) fn restore(limit: usize, end: u64, runs: Vec<(u64, Vec<u8>)>) -> Self {
+        let mut kept = 0;
+        let mut rebuilt = VecDeque::new();
+        for (start, bytes) in runs {
+            kept += bytes.len();
+            rebuilt.push_back(Run {
+                start,
+                bytes: VecDeque::from(bytes),
+            });
+        }
+        Self {
+            runs: rebuilt,
+            kept,
+            end,
+            limit: limit.max(1),
+        }
+    }
+
     pub(crate) fn limit(&self) -> usize {
         self.limit
     }

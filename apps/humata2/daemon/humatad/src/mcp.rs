@@ -204,6 +204,8 @@ impl GrpcDaemon {
             lines: review::lines(arguments.get("lines")),
             side: review::side(arguments),
             highlights,
+            layer: String::new(),
+            whole_stack: false,
         })?;
         let change = self
             .review_chat()
@@ -2199,6 +2201,7 @@ mod review {
                     }
                 })
                 .collect(),
+            stack: None,
         }
     }
 
@@ -2242,6 +2245,8 @@ mod review {
                 upto: upto as i32,
                 untracked: untracked as i32,
                 untracked_paths: strings(repo.get("untracked_paths")),
+                head: String::new(),
+                worktree_paths: Vec::new(),
             }),
             include_paths: strings(repo.get("include_paths")),
             exclude_paths: strings(repo.get("exclude_paths")),

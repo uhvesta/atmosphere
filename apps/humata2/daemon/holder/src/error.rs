@@ -45,6 +45,35 @@ pub enum HolderError {
     Refused { socket: PathBuf, message: String },
 
     #[error(
+        "the terminal's holder at {} is from a build too old to move onto a new one in place; the holder and the program in it keep running. Move its session with the \"Migrate the holders\" item in the Inbox instead",
+        socket.display()
+    )]
+    TooOldToMove { socket: PathBuf },
+
+    #[error(
+        "the terminal's holder at {} started moving onto the new build and didn't answer again within the time allowed, so the move is lost. The program in the tab may still be running, or may be gone with the holder; its output up to the move is saved beside the socket, so open the tab again to see what is left of it",
+        socket.display()
+    )]
+    LostInMove { socket: PathBuf },
+
+    #[error(
+        "the handoff {} can't be used; the holder can't take over from it, and the handoff is kept for you to look at",
+        path.display()
+    )]
+    Handoff {
+        path: PathBuf,
+        #[source]
+        source: crate::handoff::HandoffError,
+    },
+
+    #[error("couldn't take over {what} from the holder that moved onto this build; the terminal is lost, so open a new tab")]
+    Adopt {
+        what: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "couldn't listen on {}; check that its folder belongs to you",
         socket.display()
     )]

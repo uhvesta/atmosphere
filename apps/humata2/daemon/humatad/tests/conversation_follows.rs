@@ -4,7 +4,9 @@
 //! wrote into Copilot's plugin names it from the payload on its stdin. The
 //! session's conversation becomes that one, a Stop then Resume takes it up,
 //! a conversation not written yet is passed over until a later hook names
-//! it again, and another session's agent is left where it is.
+//! it again, and another session's agent is left where it is. Claude
+//! Code's `/clear` and Codex's `/new` are followed the same way, from the
+//! `session_id` their hooks (Claude) and wrapper (Codex) name (D799).
 
 mod common;
 
@@ -70,19 +72,66 @@ impl Fixture {
             .to_owned()
     }
 
+    /// The command Claude Code runs for `event` to name its conversation,
+    /// as the daemon wrote it into the hooks file Claude is given.
+    fn claude_conversation_hook(&self, event: &str) -> String {
+        let file = self.daemon.state.join("claude-hooks.json");
+        let text = std::fs::read_to_string(&file).expect("read Claude's hooks file");
+        let hooks: Value = serde_json::from_str(&text).expect("claude-hooks.json is JSON");
+        hooks["hooks"][event]
+            .as_array()
+            .unwrap_or_else(|| panic!("no {event} hooks"))
+            .iter()
+            .filter_map(|group| group["hooks"].as_array())
+            .flatten()
+            .filter_map(|hook| hook["command"].as_str())
+            .find(|command| command.contains("conversation"))
+            .unwrap_or_else(|| panic!("no {event} hook names the conversation"))
+            .to_owned()
+    }
+
     /// Copilot, in the session's terminal, runs its `event` hook with a
     /// payload naming conversation `id`; returns once the hook has exited.
     async fn hook_names(&self, attach: &mut Attach, event: &str, id: &str, name: &str) {
-        let input = self.daemon.dir.path().join(format!("{name}.in"));
         let payload = serde_json::json!({
             "sessionId": id,
             "timestamp": 1_795_016_795_934_i64,
             "cwd": "/work/api",
             "source": "new",
         });
+        let command = self.conversation_hook(event);
+        self.run_hook(attach, &command, &payload, name).await;
+    }
+
+    /// Claude Code, in the session's terminal, runs its `event` hook with
+    /// the payload it sends after `/clear`, naming conversation `id`.
+    async fn claude_names(&self, attach: &mut Attach, event: &str, id: &str, name: &str) {
+        let payload = serde_json::json!({
+            "session_id": id,
+            "transcript_path": format!("/home/u/.claude/projects/-work-api/{id}.jsonl"),
+            "cwd": "/work/api",
+            "hook_event_name": event,
+            "source": "clear",
+        });
+        let command = self.claude_conversation_hook(event);
+        self.run_hook(attach, &command, &payload, name).await;
+    }
+
+    /// The `humata codex` wrapper, in the session's terminal, names thread
+    /// `id` as Codex's app-server announced it after `/new`; it reaches the
+    /// daemon as `humata hook codex conversation` does.
+    async fn codex_names(&self, attach: &mut Attach, id: &str, name: &str) {
+        let payload = serde_json::json!({ "session_id": id, "source": "thread/started" });
+        let command = self
+            .claude_conversation_hook("SessionStart")
+            .replace("hook claude conversation", "hook codex conversation");
+        self.run_hook(attach, &command, &payload, name).await;
+    }
+
+    async fn run_hook(&self, attach: &mut Attach, command: &str, payload: &Value, name: &str) {
+        let input = self.daemon.dir.path().join(format!("{name}.in"));
         std::fs::write(&input, payload.to_string()).expect("write a test file");
         let done = self.daemon.dir.path().join(format!("{name}.done"));
-        let command = self.conversation_hook(event);
         attach
             .type_text(&format!(
                 "{{ {command}; }} < '{}'; echo $? > '{}'\r",
@@ -196,4 +245,87 @@ async fn only_the_session_whose_agent_moved_follows() {
     fix.hook_names(&mut other_shell, "userPromptSubmitted", CLEARED, "other").await;
     assert_eq!(fix.conversation(&stayed).await, stayed_in);
     assert_eq!(fix.conversation(&moved).await, CLEARED);
+}
+
+/// Stops session `id` and resumes it; returns the conversation it runs in.
+async fn stop_and_resume(fix: &Fixture, id: &pb::SessionId) -> String {
+    fix.daemon
+        .session_service()
+        .await
+        .stop_session(pb::StopSessionRequest {
+            idempotency_key: None,
+            id: Some(id.clone()),
+            for_move: false,
+        })
+        .await
+        .expect("the session stops");
+    let deadline = Instant::now() + WAIT;
+    while is_running(&get_session(&fix.daemon, id).await) {
+        assert!(Instant::now() < deadline, "the stopped session still runs");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let resumed = fix
+        .daemon
+        .session_service()
+        .await
+        .resume_session(pb::ResumeSessionRequest {
+            idempotency_key: None,
+            id: Some(id.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect("the resume is taken")
+        .into_inner();
+    let done = finished(&fix.daemon, &resumed).await;
+    assert_eq!(done.state, pb::OperationState::Succeeded as i32, "{done:?}");
+    wait_running(&fix.daemon, id).await.conversation_id
+}
+
+#[tokio::test]
+async fn a_claude_conversation_cleared_is_followed_and_resume_takes_it_up() {
+    let fix = Fixture::new().await;
+    let (id, before) = fix.session("Fix login").await;
+    let (_token, mut shell) = shell_token(&fix.daemon, &id).await;
+
+    fix.writes(CLEARED);
+    fix.claude_names(&mut shell, "SessionStart", CLEARED, "start").await;
+    assert_eq!(fix.conversation(&id).await, CLEARED, "the session stayed in {before}");
+    drop(shell);
+    assert_eq!(stop_and_resume(&fix, &id).await, CLEARED);
+}
+
+#[tokio::test]
+async fn a_claude_conversation_not_written_at_clear_is_followed_at_the_turns_end() {
+    let fix = Fixture::new().await;
+    let (id, before) = fix.session("Fix login").await;
+    let (_token, mut shell) = shell_token(&fix.daemon, &id).await;
+
+    fix.claude_names(&mut shell, "SessionStart", CLEARED, "start").await;
+    assert_eq!(fix.conversation(&id).await, before);
+    fix.writes(CLEARED);
+    fix.claude_names(&mut shell, "Stop", CLEARED, "stop").await;
+    assert_eq!(fix.conversation(&id).await, CLEARED);
+}
+
+#[tokio::test]
+async fn claude_names_its_conversation_at_each_prompt_too() {
+    let fix = Fixture::new().await;
+    let (id, _) = fix.session("Fix login").await;
+    let (_token, mut shell) = shell_token(&fix.daemon, &id).await;
+    fix.writes(CLEARED);
+    fix.claude_names(&mut shell, "UserPromptSubmit", CLEARED, "prompt").await;
+    assert_eq!(fix.conversation(&id).await, CLEARED);
+}
+
+#[tokio::test]
+async fn a_codex_thread_started_by_new_is_followed_and_resume_takes_it_up() {
+    let fix = Fixture::new().await;
+    let (id, before) = fix.session("Fix login").await;
+    let (_token, mut shell) = shell_token(&fix.daemon, &id).await;
+
+    fix.writes(CLEARED);
+    fix.codex_names(&mut shell, CLEARED, "thread").await;
+    assert_eq!(fix.conversation(&id).await, CLEARED, "the session stayed in {before}");
+    drop(shell);
+    assert_eq!(stop_and_resume(&fix, &id).await, CLEARED);
 }

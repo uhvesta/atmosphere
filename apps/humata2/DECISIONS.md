@@ -4575,3 +4575,94 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - **Reverse:**
   - Holders: drop `MoveTo`, which returns Migrate to D373's restart.
   - Each audited path: put back its stop/resume.
+
+## D803: A stack review can be read from the repo's own stack metadata, so the agent no longer spells out the layers (owner, 2026-11-18, to spend fewer tokens; picks by Fable 5.2; amends D800). Decided, planned (STACKVIEW T3b)
+- **Owner, 11:35:** "Are we tastefully basing our diffs off of an internal data metadata and then translating this to GitHub stacked PRs and stuff? This way we could possibly spend less tokens on it."
+- **This reverses two lines of STACKVIEW's first plan:** "Humata does not run `stack` itself" and "changes to `tools/stack`" being out of scope.
+- **What the agent sends:** `review_prepare` takes `from_stack: {repo, tip?, topics?: {<topic>: {title?, purpose?}}}`.
+  - The repo alone is enough.
+  - The agent names the repo, never a path. The daemon reads the stack in the calling session's checkout of that repo.
+  - An unknown topic key is refused, and the error lists the real topic names.
+- **Mixing with explicit layers:**
+  - Explicit `layers` may follow the stack's layers: other repos, or a not-yet-committed worktree layer on top. D800's checks run over the whole list.
+  - An explicit range layer in the from_stack repo is refused: "make it a topic, or send that repo as explicit layers".
+- **How the daemon reads it:**
+  - It runs `stack status --json --offline` and turns each topic into a layer, in chain order, with the range `base_commit..head` that the tool reports.
+  - It keeps each layer's head alive under a ref of its own, because a rebuilt topic's head may have no other ref.
+  - One repo per call. Topics are never joined by name across repos.
+- **Titles:**
+  - A layer's title is the subject of the topic's first commit.
+  - The topic name shows beside it as written, never humanized.
+  - The purpose is empty unless the agent passes one.
+  - A layer's identity is its topic name.
+- **Forks:** a stack that forks is refused, naming its leaf topics, unless the agent passes `tip`. The layers are then the chain from the root to that tip.
+- **Merged topics:** no special handling. A topic whose commits are still local is a layer.
+- **Network and GitHub:**
+  - Reading the stack needs no network and no GitHub login.
+  - The PR number, link and Merged chip come afterwards from a best-effort online `stack status --json`. If that fails they are simply absent, and nothing is said.
+  - Opening and updating PRs stays the stack tool's job, from the same metadata.
+- **Refusals, each saying what to do:**
+  - A restack is in progress: "finish or abort it, then send again".
+  - No commit between trunk and HEAD carries a Topic trailer: "add trailers, or send explicit layers".
+  - More than 50 topics: D800's limit.
+  - The stack tool is missing or too old: also raises the VIP Inbox "Migrate stack CLI on <machine>", per the force-upgrade rule. Nothing is guessed from git in its place.
+- **Drift:**
+  - It re-reads the stack the same way and matches layers by topic name.
+  - A topic whose head or base_commit changed is Moved.
+  - A topic that is gone, or no longer on the tip's chain, is Missing.
+  - New topics above the sent tip are HeadMoved.
+  - A re-read that hits a restack keeps the last reading and shows nothing.
+- **Refresh:** refreshing a moved from_stack review is done by the daemon, without the agent. It adopts new ranges, appends new topics and drops missing ones. It keeps the state of unchanged layers, and the agent's titles and purposes by topic name.
+- **The tools/stack change, additive only:**
+  - `head` and `base_commit` per topic in `--json`, from `local::rebuild`'s `Tip`.
+  - An `--offline` flag: no fetch and no gh. Trunk and remote come from config and the remote-tracking ref, the merged set is empty, and the GitHub fields are null.
+  - `copy_onto` keeps the source commits' author and committer identity and dates, so a rebuilt topic gets the same commit ids on every run. A test checks that two runs of status give the same heads.
+- **Reverse:** drop `from_stack`. Explicit layers are unchanged. The tools/stack additions can stay.
+
+## D802: An agent can say which files matter and order each layer's files (owner, 2026-11-18; picks by Fable 5.2). Decided, planned (STACKVIEW T3c)
+- **Owner, 11:40:** "Also we want AI to be able to order diffs and files based on importance."
+- **What's new:**
+  - A review plan, and each layer of a stack, can carry an importance list: files marked key or skim, everything else normal. This is cheap for the agent: paths and a tier, no prose.
+  - Each layer can also carry its own order and groups, as the plan already does.
+- **Numbering:** this entry follows D803 in the file because D803 was written first, while these rulings were pending.
+- **Wire:**
+  - A new message, `ReviewImportance {RepoPath file; Tier tier}`, with tiers key, skim and normal. `RepoPath` is unchanged.
+  - Fields:
+    - `ReviewPlan.importance = 7`
+    - `ReviewLayer.order = 5`, `.groups = 6` and `.importance = 7`
+    - `FileSummary.tier = 10`
+  - These are Fable's shapes, renumbered around D803's `ReviewPlan.from_stack = 6` and `ReviewLayer.topic = 4`.
+  - The same file twice in one list is refused. A path not in the diff is treated the way `order` treats one.
+  - The plan stores only what the agent sent. The daemon works out the final tier on each `FileSummary` it serves.
+- **Defaults:**
+  - An unlisted file is normal.
+  - The daemon marks some files skim by itself:
+    - lockfiles by name (Cargo.lock, cargo-bazel-lock.json, MODULE.bazel.lock, package-lock.json, yarn.lock, pnpm-lock.yaml, go.sum, Podfile.lock);
+    - paths that .gitattributes marks `linguist-generated`;
+    - renames with no content change.
+  - It never reads file content to decide.
+  - These marks are worked out when the files are served and are never stored.
+  - The agent's tier wins either way. TIER_NORMAL un-skims a file.
+- **Key files:**
+  - They carry a small filled accent dot before the name, in the file list and the diff header, with a "Key file" tooltip. There is no label or badge.
+  - They are not reordered when the agent sent an order.
+  - With no order sent, today's order stays, except that key files come first within each repo, keeping their relative order.
+- **Skim files:**
+  - They draw last in their repo as one folded row, "12 files to skim". Click, Return or right-arrow opens it; left-arrow folds it.
+  - Opened, they show dimmed, with their diffs collapsed to the header until clicked.
+  - They leave their groups, and a group left empty draws no header.
+  - The files total still counts them.
+- **Keys:** while the skim row is folded, next and previous file (alt-cmd-down and up) treat it as one stop and skip its files. Once it is opened, they step through them. There is no new shortcut.
+- **A picked layer** uses its own order, groups and importance, and nothing from the plan.
+- **Whole stack** uses the plan's when they were sent. When they weren't:
+  - Order: the layers' orders joined, bottom layer first, each file at its first appearance.
+  - Groups: none.
+  - Importance: a file is key if any layer says so, and skim only if every layer touching it says so.
+- **Repos** are ordered by where each first appears in the order. There is no separate field.
+- **Look-only stacks** show all of this, because it helps reading and is not review chrome. Plain reviews, without a stack, behave the same.
+- **Not now:** ordering hunks inside a file is a follow-up. Hunks stay in file order, and the agent points at one with a note.
+- **Frames:**
+  - 119 (Whole stack) gains the folded row, and 120 (a layer picked) gains a key dot and that layer's own order.
+  - A new frame, 121-diff-stack-skim-open, shows the fold opened.
+  - Fable approves all three once they are rendered.
+- **Reverse:** drop the importance lists, `FileSummary.tier`, and the layers' order and groups. The plan's order and groups are unchanged.

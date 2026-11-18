@@ -258,17 +258,23 @@ fn ask_key(parts: &[&str]) -> String {
 /// The longest conversation id taken from a hook.
 const CONVERSATION_ID_MAX: usize = 128;
 
-/// The conversation `agent`'s hook payload says its CLI is in now. Only
-/// Copilot's hooks say: their `sessionId` is Copilot's own id for the
-/// conversation, the name of its `session-state/<id>` folder. A payload of
-/// a subagent (one with an `agentId`) names the child's conversation, not
-/// the session's, so it names none here. An id is letters, digits, `-` and
-/// `_` only, so it never names a path of its own.
+/// The conversation `agent`'s hook payload says its CLI is in now. Copilot
+/// names it in `sessionId`, Claude Code and Codex in `session_id`: the id
+/// of the conversation, the name of its `session-state/<id>` folder for
+/// Copilot. A Claude subagent's hook (one with a non-null `agent_id`) names
+/// the child's conversation, not the session's, so it names none here, and
+/// a Copilot subagent's (one with a non-null `agentId`) names none either.
+/// OpenCode's hooks name none. An id is letters, digits, `-` and `_` only,
+/// so it never names a path of its own.
 pub fn parse_conversation(agent: Agent, payload: &[u8]) -> Result<String, PayloadError> {
     let none = |why: &'static str| PayloadError::NotAConversation { agent, why };
-    if agent != Agent::Copilot {
-        return Err(none("only Copilot's hooks name the conversation they run in"));
-    }
+    let key = match agent {
+        Agent::Copilot => "sessionId",
+        Agent::Claude | Agent::Codex => "session_id",
+        Agent::OpenCode => {
+            return Err(none("OpenCode's hooks name no conversation"));
+        }
+    };
     if payload.len() > PAYLOAD_MAX {
         return Err(PayloadError::TooBig {
             size: payload.len(),
@@ -278,13 +284,17 @@ pub fn parse_conversation(agent: Agent, payload: &[u8]) -> Result<String, Payloa
     if !value.is_object() {
         return Err(none("the payload isn't a JSON object"));
     }
-    if value.get("agentId").is_some_and(|id| !id.is_null()) {
+    let subagent = match agent {
+        Agent::Copilot => "agentId",
+        _ => "agent_id",
+    };
+    if value.get(subagent).is_some_and(|id| !id.is_null()) {
         return Err(none("it is a subagent's hook"));
     }
-    let id = str_field(&value, "sessionId").ok_or_else(|| none("there is no sessionId"))?;
+    let id = str_field(&value, key).ok_or_else(|| none("there is no session id"))?;
     let plain = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     if id.is_empty() || id.len() > CONVERSATION_ID_MAX || !id.chars().all(plain) {
-        return Err(none("sessionId isn't a plain id"));
+        return Err(none("the session id isn't a plain id"));
     }
     Ok(id.to_owned())
 }
@@ -383,6 +393,27 @@ pub fn claude_permission_hook(humata: &Path, socket: &Path) -> serde_json::Value
     json!({
         "type": "command",
         "command": permission_command(Agent::Claude, humata, socket),
+        "timeout": HOLD_SECONDS,
+    })
+}
+
+/// The Claude hook entry that says which conversation the CLI is in, run
+/// in the background on each session start, prompt and turn end (D799).
+pub fn claude_conversation_hook(humata: &Path, socket: &Path) -> serde_json::Value {
+    json!({
+        "type": "command",
+        "command": conversation_command(Agent::Claude, humata, socket),
+        "async": true,
+        "timeout": 10,
+    })
+}
+
+/// The blocking Claude hook that answers an ask-user form in the Inbox and
+/// holds for the answer, the same as Copilot's `ask_user` one (D761).
+pub fn claude_question_hook(humata: &Path, socket: &Path) -> serde_json::Value {
+    json!({
+        "type": "command",
+        "command": question_command(Agent::Claude, humata, socket),
         "timeout": HOLD_SECONDS,
     })
 }

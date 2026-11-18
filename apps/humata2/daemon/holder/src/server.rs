@@ -5,18 +5,21 @@ use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File};
 use std::future::Future;
-use std::io::{ErrorKind, PipeReader, Read, Write};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::io::{ErrorKind, PipeReader, PipeWriter, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::net::UnixStream as StdUnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use rustix::event::{PollFd, PollFlags};
 use rustix::fs::{Mode, OFlags};
-use rustix::process::{Pid, Signal};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, WaitOptions};
 use rustix::pty::OpenptFlags;
 use rustix::termios::Winsize;
 use tokio::io::AsyncWriteExt;
@@ -30,6 +33,11 @@ use crate::protocol::{
 };
 use crate::saved::{SYNC_EVERY, SaveLog};
 use crate::scrollback::Scrollback;
+
+#[path = "take_over.rs"]
+mod take_over;
+
+pub use take_over::{check_take_over, handoff_versions, take_over};
 
 /// Live output a slow client can fall this many chunks behind before it
 /// is caught up from the scrollback instead.
@@ -120,6 +128,18 @@ struct Shared {
     /// Test builds only: where each sync says how far it got.
     #[cfg(feature = "faults")]
     synced_at: PathBuf,
+    /// The socket this holder serves.
+    socket: PathBuf,
+    /// The listening socket's descriptor, handed on when moving.
+    listener: RawFd,
+    /// Held by the reader while it reads the terminal and keeps what it
+    /// read, so a move can stop it between two reads.
+    gate: Mutex<()>,
+    /// Held while the program is reaped, and by a move: the exit code
+    /// once the program was reaped, so no move loses it.
+    reaped: Mutex<Option<i32>>,
+    /// A move is under way.
+    moving: AtomicBool,
 }
 
 impl Shared {
@@ -308,7 +328,7 @@ pub async fn serve(options: ServeOptions, ready: impl FnOnce()) -> Result<(), Ho
             .map(|(log, kept)| (Some(log), kept)),
         None => Ok((None, Scrollback::new(options.scrollback_bytes))),
     }
-    .and_then(|(saved, kept)| start(&options, kept, saved));
+    .and_then(|(saved, kept)| start(&options, kept, saved, listener.as_raw_fd()));
     let shared = match started {
         Ok(shared) => shared,
         Err(error) => {
@@ -324,7 +344,18 @@ pub async fn serve(options: ServeOptions, ready: impl FnOnce()) -> Result<(), Ho
     #[cfg(feature = "faults")]
     let _ = SERVING.set(options.socket.clone());
     ready();
+    serve_clients(shared, listener, &options.socket, &pid_file).await;
+    Ok(())
+}
 
+/// Serves clients on `listener` until one shuts the holder down or it gets
+/// SIGTERM, then cleans up beside the socket.
+async fn serve_clients(
+    shared: Arc<Shared>,
+    listener: UnixListener,
+    socket: &Path,
+    pid_file: &Path,
+) {
     let syncing = shared.clone();
     let sync = tokio::spawn(async move {
         sync_after_writes(&syncing.wrote, || {
@@ -374,11 +405,10 @@ pub async fn serve(options: ServeOptions, ready: impl FnOnce()) -> Result<(), Ho
     }
     #[cfg(feature = "faults")]
     let _ = fs::remove_file(&shared.synced_at);
-    let _ = fs::remove_file(&pid_file);
+    let _ = fs::remove_file(pid_file);
     drop(listener);
-    let _ = fs::remove_file(&options.socket);
+    let _ = fs::remove_file(socket);
     shared.end_program().await;
-    Ok(())
 }
 
 /// Test builds only: the socket this holder serves, so a fault can be
@@ -569,6 +599,7 @@ fn start(
     options: &ServeOptions,
     mut kept: Scrollback,
     mut saved: Option<SaveLog>,
+    listener: RawFd,
 ) -> Result<Arc<Shared>, HolderError> {
     let opened = |source| HolderError::OpenPty { source };
     let (master, pty) = open_pty(options.cols, options.rows).map_err(opened)?;
@@ -601,7 +632,7 @@ fn start(
             Ok(())
         });
     }
-    let mut child = command.spawn().map_err(started)?;
+    let child = command.spawn().map_err(started)?;
     // The program holds the only copies of its side now, so reading ends
     // when it and what it started close the terminal.
     drop(command);
@@ -638,22 +669,69 @@ fn start(
         started: tokio::time::Instant::now(),
         #[cfg(feature = "faults")]
         synced_at: synced_path(&options.socket),
+        socket: options.socket.clone(),
+        listener,
+        gate: Mutex::new(()),
+        reaped: Mutex::new(None),
+        moving: AtomicBool::new(false),
     });
 
-    let (exit_read, mut exit_write) = std::io::pipe().map_err(started)?;
+    let (exit_read, exit_write) = std::io::pipe().map_err(started)?;
+    start_threads(&shared, reader, exit_read, exit_write, group, None);
+    Ok(shared)
+}
+
+/// Starts the threads that pass on the program's output and wait for its
+/// exit. `known` is its exit code if it was reaped already, as by the
+/// image a holder moved from.
+fn start_threads(
+    shared: &Arc<Shared>,
+    reader: File,
+    exit_read: PipeReader,
+    mut exit_write: PipeWriter,
+    child: Option<Pid>,
+    known: Option<i32>,
+) {
+    if let Some(code) = known {
+        let _ = exit_write.write_all(&code.to_le_bytes());
+    }
     let printing = shared.clone();
     std::thread::spawn(move || read_output(&reader, exit_read, &printing));
-    std::thread::spawn(move || {
-        let code = match child.wait() {
-            Ok(status) => status
-                .code()
-                .or_else(|| status.signal().map(|signal| 128 + signal))
-                .unwrap_or(-1),
-            Err(_) => -1,
-        };
-        let _ = exit_write.write_all(&code.to_le_bytes());
-    });
-    Ok(shared)
+    if known.is_none()
+        && let Some(pid) = child
+    {
+        let waiting = shared.clone();
+        std::thread::spawn(move || wait_for_exit(pid, &waiting, exit_write));
+    }
+}
+
+/// Waits for the program to exit, reaps it and sends its exit code on
+/// `exit`. It waits without reaping first, so a move can happen while it
+/// waits and the image it moves onto still finds the program to reap; the
+/// reaping is under the lock a move takes.
+fn wait_for_exit(pid: Pid, shared: &Shared, mut exit: PipeWriter) {
+    loop {
+        match rustix::process::waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+        ) {
+            Err(rustix::io::Errno::INTR) => {}
+            _ => break,
+        }
+    }
+    let mut reaped = shared
+        .reaped
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let code = match rustix::process::waitpid(Some(pid), WaitOptions::empty()) {
+        Ok(Some((_, status))) => status
+            .exit_status()
+            .or_else(|| status.terminating_signal().map(|signal| 128 + signal))
+            .unwrap_or(-1),
+        _ => -1,
+    };
+    *reaped = Some(code);
+    let _ = exit.write_all(&code.to_le_bytes());
 }
 
 /// Passes on what the program prints until its terminal closes, and its
@@ -686,6 +764,11 @@ fn read_output(reader: &File, mut exit: PipeReader, shared: &Shared) {
         let exited = fds.get(1).is_some_and(|fd| !fd.revents().is_empty());
         drop(fds);
         if printed {
+            // A move waits here, between two reads.
+            let _gate = shared
+                .gate
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             // Ends at EOF, or EIO on macOS and Linux once the program's
             // side has closed.
             match (&*reader).read(&mut buffer) {
@@ -719,6 +802,12 @@ fn exit_code(exit: &mut PipeReader) -> i32 {
 }
 
 async fn connection(shared: Arc<Shared>, stream: UnixStream) {
+    // A copy of the socket for the one thing written outside `feed`: the
+    // word that a move is under way, which must be sent before the move.
+    let Ok(copy) = stream.as_fd().try_clone_to_owned() else {
+        return;
+    };
+    let told = Arc::new(StdUnixStream::from(copy));
     let (mut read, mut write) = stream.into_split();
     let from = match read_frame(&mut read).await {
         Ok(Some(frame)) => match ClientFrame::decode(&frame) {
@@ -736,7 +825,7 @@ async fn connection(shared: Arc<Shared>, stream: UnixStream) {
         },
         _ => return,
     };
-    let _ = feed(&shared, from, read, &mut write).await;
+    let _ = feed(&shared, from, read, &mut write, told).await;
 }
 
 /// Sends the backlog from `from`, then live output, until the client goes.
@@ -745,6 +834,7 @@ async fn feed(
     from: u64,
     read: OwnedReadHalf,
     write: &mut OwnedWriteHalf,
+    told: Arc<StdUnixStream>,
 ) -> Result<(), std::io::Error> {
     let (welcome, backlog, mut live) = shared.backlog(from);
     write.write_all(&ServerFrame::Welcome(welcome).encode()).await?;
@@ -752,7 +842,7 @@ async fn feed(
     let mut cursor = send_backlog(write, from, welcome.end, &backlog).await?;
 
     let (replies, mut replying) = mpsc::channel(16);
-    let commands = tokio::spawn(commands(shared.clone(), read, replies));
+    let commands = tokio::spawn(commands(shared.clone(), read, replies, told));
     let fed = loop {
         tokio::select! {
             reply = replying.recv() => match reply {
@@ -829,7 +919,12 @@ async fn send_backlog(
 }
 
 /// Carries out what the client asks, answering through `replies`.
-async fn commands(shared: Arc<Shared>, mut read: OwnedReadHalf, replies: mpsc::Sender<Vec<u8>>) {
+async fn commands(
+    shared: Arc<Shared>,
+    mut read: OwnedReadHalf,
+    replies: mpsc::Sender<Vec<u8>>,
+    told: Arc<StdUnixStream>,
+) {
     // Dropped with the connection: a keyed input cut off before its last
     // chunk types nothing.
     let mut pending: Option<Pending> = None;
@@ -887,6 +982,22 @@ async fn commands(shared: Arc<Shared>, mut read: OwnedReadHalf, replies: mpsc::S
                     .await_keys(Duration::from_millis(u64::from(starting_ms)))
                     .await,
             }),
+            Ok(ClientFrame::MoveTo { path }) => {
+                let moving = shared.clone();
+                let told = told.clone();
+                let handle = tokio::runtime::Handle::current();
+                let path = PathBuf::from(OsString::from_vec(path));
+                // Returns only if the move failed.
+                let failed = tokio::task::spawn_blocking(move || {
+                    take_over::try_move(&moving, &path, &told, &handle)
+                })
+                .await;
+                Some(ServerFrame::Refused {
+                    message: failed.unwrap_or_else(|_| {
+                        "the move was interrupted; the holder is unchanged, try again".to_owned()
+                    }),
+                })
+            }
             Ok(ClientFrame::Resize { cols, rows }) => {
                 shared.resize(cols, rows).err().map(|error| refused(&error))
             }

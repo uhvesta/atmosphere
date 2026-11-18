@@ -1,0 +1,23 @@
+[package]
+name = "humata2-codex"
+description = "Humata 2's link to Codex's own app-server: its messages, turns, thread ids, Inbox asks and the `humata codex` wrapper (D795)."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_codex"
+path = "src/lib.rs"
+
+[dependencies]
+futures-util = { version = "0.3", features = ["sink"] }
+rustix = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

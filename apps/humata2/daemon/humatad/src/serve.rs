@@ -540,6 +540,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let history_agents = agents.clone();
     // D782: the Inbox reads each agent's own "Ask in the Inbox".
     let inbox_agents = agents.clone();
+    let ready_agents = agents.clone();
     let reports = state.join("restarts");
     private_folder(&reports)?;
     // D373: which holder file each holder is spawned from.
@@ -581,9 +582,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // D763: a start's first message waits for the agent's input to clear
     // (D762's gate), and one left unsent is asked about in the Inbox.
     let start_messages = Arc::new(crate::start_message::StartMessages::default());
+    // D797: an agent with a structured ready signal is waited for by it.
+    let ready_signal = Arc::new(crate::start_ready::Ready::default());
     starter.first_message = humata2_sessions::FirstMessage::default()
         .with_gate(Arc::new(crate::input_gate::StartGate))
-        .with_held(start_messages.clone());
+        .with_held(start_messages.clone())
+        .with_signal(ready_signal.clone());
     let feed = Arc::new(Feed::default());
     // AWAY: the peer link's PeerUplink, and whether the host is reachable.
     // AW-8: the policy copy, made here on the host, put in force on a machine.
@@ -628,6 +632,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // D782: each ask reads its agent's own switch.
     inbox.use_agents(inbox_agents);
     start_messages.tell(inbox.clone(), store.clone(), machine.clone());
+    ready_signal.tell(inbox.clone(), store.clone(), machine.clone(), ready_agents);
     // D261: a stopped boot ends every holder, withdraws the Inbox's pending
     // requests and settles the record; that is its start.
     if let crate::stop::boot::Mode::Stopped(record) = stop_mode {

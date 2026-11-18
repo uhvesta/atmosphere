@@ -23,6 +23,7 @@ use crate::plan::{Anchor, FileRef, Group, Note, NoteTarget, ReviewPlan};
 use crate::spec::{
     Base, Compare, DiffSpec, PathFilter, RepoSpec, Untracked, Upto, Whitespace, default_repo_spec,
 };
+use crate::stack::{CheckedStack, Layer, LayerRepo, Part, Stack};
 
 /// A message that can't be turned into a diff, plan or view: what is
 /// missing or wrong, for the caller to fix.
@@ -173,13 +174,18 @@ fn repo_spec_from_pb(spec: &pb::RepoDiffSpec) -> Result<RepoSpec, WireError> {
         }
     };
     let compare = spec.compare.clone().unwrap_or_default();
+    // A head or worktree paths pin the compare to commits (D800); unset
+    // upto and untracked then mean commits only and no untracked files.
+    let pinned = !compare.head.is_empty() || !compare.worktree_paths.is_empty();
     let upto = match compare.upto() {
         P::Commits => Upto::Commits,
         P::Staged => Upto::Staged,
+        P::Unspecified if pinned => Upto::Commits,
         P::Unspecified | P::Unstaged => Upto::Unstaged,
     };
     let untracked = match compare.untracked() {
         U::None => Untracked::None,
+        U::Unspecified if pinned => Untracked::None,
         U::Unspecified | U::All => Untracked::All,
         U::Paths if compare.untracked_paths.is_empty() => {
             return Err(WireError::Invalid {
@@ -198,7 +204,12 @@ fn repo_spec_from_pb(spec: &pb::RepoDiffSpec) -> Result<RepoSpec, WireError> {
     Ok(RepoSpec {
         repo: repo_key(repo),
         base,
-        compare: Compare { upto, untracked },
+        compare: Compare {
+            upto,
+            untracked,
+            head: (!compare.head.is_empty()).then(|| compare.head.clone()),
+            worktree_paths: compare.worktree_paths.clone(),
+        },
         paths: PathFilter {
             include: spec.include_paths.clone(),
             exclude: spec.exclude_paths.clone(),
@@ -243,6 +254,8 @@ fn repo_spec_to_pb(spec: &RepoSpec) -> pb::RepoDiffSpec {
             upto: upto as i32,
             untracked: untracked as i32,
             untracked_paths,
+            head: spec.compare.head.clone().unwrap_or_default(),
+            worktree_paths: spec.compare.worktree_paths.clone(),
         }),
         include_paths: spec.paths.include.clone(),
         exclude_paths: spec.paths.exclude.clone(),
@@ -670,6 +683,7 @@ pub fn plan_from_pb(plan: &pb::ReviewPlan) -> Result<ReviewPlan, WireError> {
             .iter()
             .map(note_from_pb)
             .collect::<Result<_, _>>()?,
+        stack: plan.stack.as_ref().map(stack_from_pb).transpose()?,
     })
 }
 
@@ -711,7 +725,13 @@ fn note_from_pb(note: &pb::ReviewNote) -> Result<Note, WireError> {
         target,
         text: note.text.clone(),
         anchor: None,
+        layer: layer_from_wire(&note.layer),
     })
+}
+
+/// A layer title off the wire: empty is the whole stack.
+fn layer_from_wire(layer: &str) -> Option<String> {
+    (!layer.is_empty()).then(|| layer.to_owned())
 }
 
 fn note_to_pb(note: &Note, outdated: bool) -> pb::ReviewNote {
@@ -735,6 +755,7 @@ fn note_to_pb(note: &Note, outdated: bool) -> pb::ReviewNote {
         }),
         quoted: anchor.map(|anchor| anchor.quoted.clone()).unwrap_or_default(),
         outdated,
+        layer: note.layer.clone().unwrap_or_default(),
     }
 }
 
@@ -752,6 +773,7 @@ pub fn plan_to_pb(plan: &ReviewPlan, outdated: &[bool]) -> pb::ReviewPlan {
             .enumerate()
             .map(|(index, note)| note_to_pb(note, outdated.get(index).copied().unwrap_or(false)))
             .collect(),
+        stack: plan.stack.as_ref().map(|stack| stack_to_pb(stack, None)),
     }
 }
 
@@ -875,6 +897,8 @@ pub fn view_from_pb(view: &pb::ReviewViewState) -> Result<ViewState, WireError> 
             .iter()
             .map(highlight_from_pb)
             .collect::<Result<_, _>>()?,
+        stack: view.stack.as_ref().map(stack_from_pb).transpose()?,
+        layer: layer_from_wire(&view.layer),
     })
 }
 
@@ -895,6 +919,8 @@ pub fn view_to_pb(view: &ViewState) -> pb::ReviewViewState {
             })
             .collect(),
         highlights: view.highlights.iter().map(highlight_to_pb).collect(),
+        stack: view.stack.as_ref().map(|stack| stack_to_pb(stack, None)),
+        layer: view.layer.clone().unwrap_or_default(),
     }
 }
 
@@ -940,6 +966,7 @@ pub fn note_from_anchor(anchor: Option<&pb::CommentAnchor>, text: &str) -> Resul
         target,
         text: text.to_owned(),
         anchor: None,
+        layer: layer_from_wire(&anchor.layer),
     })
 }
 
@@ -965,6 +992,7 @@ pub fn user_note_to_pb(note: &UserNote) -> pb::Comment {
             blob_sha: anchor.map(|anchor| anchor.blob.clone()).unwrap_or_default(),
             detached: false,
             outdated: note.outdated,
+            layer: note.note.layer.clone().unwrap_or_default(),
             ..pb::CommentAnchor::default()
         }),
         text: note.note.text.clone(),
@@ -1027,12 +1055,20 @@ pub fn change_to_pb(change: &Change, at: i64) -> pb::ReviewChange {
         ChangeKind::Focus(place) => place.as_ref().map(|place| C::Focus(place_to_pb(place))),
         ChangeKind::Note(note) => Some(C::Note(user_note_to_pb(note))),
         ChangeKind::NoteDropped(id) => Some(C::NoteDropped(pb::CommentId { value: id.clone() })),
-        ChangeKind::Order { order, groups } => Some(C::Plan(pb::ReviewPlan {
+        ChangeKind::Order {
+            order,
+            groups,
+            stack,
+            ..
+        } => Some(C::Plan(pb::ReviewPlan {
             spec: None,
             order: order.iter().map(repo_path).collect(),
             groups: groups.iter().map(group_to_pb).collect(),
             notes: Vec::new(),
+            stack: stack.as_ref().map(|stack| stack_to_pb(stack, None)),
         })),
+        // D800: needs a ReviewChange arm (seam)
+        ChangeKind::Layer(_) => None,
     };
     pb::ReviewChange {
         undo_id: change.undo_id.clone(),
@@ -1053,6 +1089,120 @@ pub fn denied(error: &ChatError) -> Option<pb::Denied> {
     matches!(error, ChatError::SwitchOff { .. }).then(|| pb::Denied {
         source: pb::denied::Source::ReviewSwitchOff as i32,
         ..pb::Denied::default()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Stacks (D800)
+
+/// A stack for the wire. With `resolved`, each layer repo carries the
+/// commits it resolved to when the stack was checked.
+#[must_use]
+pub fn stack_to_pb(stack: &Stack, resolved: Option<&CheckedStack>) -> pb::ReviewStack {
+    pb::ReviewStack {
+        layers: stack
+            .layers
+            .iter()
+            .map(|layer| layer_to_pb(layer, resolved))
+            .collect(),
+    }
+}
+
+fn layer_to_pb(layer: &Layer, resolved: Option<&CheckedStack>) -> pb::ReviewLayer {
+    pb::ReviewLayer {
+        title: layer.title.clone(),
+        purpose: layer.purpose.clone().unwrap_or_default(),
+        repos: layer
+            .repos
+            .iter()
+            .map(|repo| layer_repo_to_pb(&layer.title, repo, resolved))
+            .collect(),
+    }
+}
+
+fn layer_repo_to_pb(
+    title: &str,
+    repo: &LayerRepo,
+    resolved: Option<&CheckedStack>,
+) -> pb::ReviewLayerRepo {
+    use pb::review_layer_repo::Part as P;
+    let part = match &repo.part {
+        Part::Range { base, head } => P::Range(pb::ReviewLayerRange {
+            base: base.clone(),
+            head: head.clone(),
+        }),
+        Part::Worktree { include_paths } => P::Worktree(pb::ReviewLayerWorktree {
+            include_paths: include_paths.clone(),
+        }),
+    };
+    pb::ReviewLayerRepo {
+        repo: Some(repo_ref(&repo.repo)),
+        part: Some(part),
+        pull_request: repo.pull_request.clone().unwrap_or_default(),
+        resolved: resolved
+            .and_then(|checked| checked.resolved(title, &repo.repo))
+            .map(|found| pb::ReviewLayerResolved {
+                base_commit: found.base_commit.clone(),
+                head_commit: found.head_commit.clone(),
+                ..Default::default()
+            }),
+    }
+}
+
+/// A stack from the wire.
+///
+/// # Errors
+///
+/// [`WireError`] for a layer repo without a repo or a part.
+pub fn stack_from_pb(stack: &pb::ReviewStack) -> Result<Stack, WireError> {
+    let layers: Vec<Layer> = stack
+        .layers
+        .iter()
+        .map(layer_from_pb)
+        .collect::<Result<_, _>>()?;
+    Ok(Stack::new(layers))
+}
+
+fn layer_from_pb(layer: &pb::ReviewLayer) -> Result<Layer, WireError> {
+    let repos: Vec<LayerRepo> = layer
+        .repos
+        .iter()
+        .map(layer_repo_from_pb)
+        .collect::<Result<_, _>>()?;
+    Ok(Layer {
+        title: layer.title.clone(),
+        purpose: (!layer.purpose.is_empty()).then(|| layer.purpose.clone()),
+        repos,
+    })
+}
+
+fn layer_repo_from_pb(repo: &pb::ReviewLayerRepo) -> Result<LayerRepo, WireError> {
+    use pb::review_layer_repo::Part as P;
+    let key = repo_key(
+        repo.repo
+            .as_ref()
+            .ok_or_else(|| missing("layers.repos.repo"))?,
+    );
+    let part = match &repo.part {
+        Some(P::Range(range)) => Part::Range {
+            base: range.base.clone(),
+            head: range.head.clone(),
+        },
+        Some(P::Worktree(worktree)) => Part::Worktree {
+            include_paths: worktree.include_paths.clone(),
+        },
+        None => {
+            return Err(WireError::Invalid {
+                field: "layers.repos.part",
+                value: key,
+                expected: "each layer repo needs a range (its base and head revs) or a worktree (its include_paths); set one",
+            });
+        }
+    };
+    Ok(LayerRepo {
+        repo: key,
+        part,
+        pull_request: (!repo.pull_request.is_empty()).then(|| repo.pull_request.clone()),
     })
 }
 
@@ -1119,6 +1269,8 @@ mod tests {
                     compare: Compare {
                         upto: Upto::Staged,
                         untracked: Untracked::Paths(vec!["migrations/".to_owned()]),
+                        head: None,
+                        worktree_paths: Vec::new(),
                     },
                     paths: PathFilter {
                         include: vec!["src/".to_owned()],
@@ -1248,6 +1400,7 @@ mod tests {
                     last: 4,
                     quoted: vec!["a".to_owned(), "b".to_owned()],
                 }),
+                layer: Some("codec".to_owned()),
             },
             undo_id: "change-2".to_owned(),
             outdated: true,
@@ -1266,5 +1419,102 @@ mod tests {
         };
         assert!(denied(&off).is_some());
         assert!(denied(&ChatError::NothingBack).is_none());
+    }
+
+    // D800: a layer's compare and a stack on the wire.
+
+    #[test]
+    fn a_compare_with_a_head_and_worktree_paths_round_trips() {
+        let spec = DiffSpec {
+            repos: vec![
+                RepoSpec::new(
+                    "acme/api",
+                    Base::Rev {
+                        rev: "codec".to_owned(),
+                    },
+                    Compare::at("journal"),
+                ),
+                RepoSpec::new(
+                    "acme/web",
+                    Base::Rev {
+                        rev: "HEAD".to_owned(),
+                    },
+                    Compare::worktree(vec!["src/".to_owned()]),
+                ),
+            ],
+        };
+        let back = spec_from_pb(&spec_to_pb(&spec)).expect("the spec reads back");
+        assert_eq!(back, spec);
+    }
+
+    #[test]
+    fn a_head_on_the_wire_with_upto_unset_means_commits_only() {
+        let wire = pb::DiffSpec {
+            repos: vec![pb::RepoDiffSpec {
+                repo: Some(repo_ref("acme/api")),
+                base: Some(pb::DiffSpecBase {
+                    base: Some(pb::diff_spec_base::Base::Rev("codec".to_owned())),
+                }),
+                compare: Some(pb::DiffSpecCompare {
+                    head: "journal".to_owned(),
+                    ..pb::DiffSpecCompare::default()
+                }),
+                ..pb::RepoDiffSpec::default()
+            }],
+        };
+        let spec = spec_from_pb(&wire).expect("a head alone is valid");
+        assert_eq!(spec.repos[0].compare, Compare::at("journal"));
+    }
+
+    fn three_layer_stack() -> Stack {
+        Stack::new(vec![
+            Layer {
+                title: "codec".to_owned(),
+                purpose: Some("Adds the zstd codec".to_owned()),
+                repos: vec![
+                    LayerRepo {
+                        repo: "acme/api".to_owned(),
+                        part: Part::Range {
+                            base: "main".to_owned(),
+                            head: "codec".to_owned(),
+                        },
+                        pull_request: Some("acme/api#412".to_owned()),
+                    },
+                    LayerRepo {
+                        repo: "acme/web".to_owned(),
+                        part: Part::Range {
+                            base: "main".to_owned(),
+                            head: "codec".to_owned(),
+                        },
+                        pull_request: None,
+                    },
+                ],
+            },
+            Layer {
+                title: "Not committed yet".to_owned(),
+                purpose: None,
+                repos: vec![LayerRepo {
+                    repo: "acme/api".to_owned(),
+                    part: Part::Worktree {
+                        include_paths: vec!["src/journal/".to_owned()],
+                    },
+                    pull_request: None,
+                }],
+            },
+        ])
+    }
+
+    #[test]
+    fn a_stack_round_trips_through_the_wire() {
+        let stack = three_layer_stack();
+        let back = stack_from_pb(&stack_to_pb(&stack, None)).expect("the stack reads back");
+        assert_eq!(back, stack);
+    }
+
+    #[test]
+    fn a_layer_repo_with_neither_range_nor_worktree_is_refused() {
+        let mut wire = stack_to_pb(&three_layer_stack(), None);
+        wire.layers[0].repos[0].part = None;
+        assert!(stack_from_pb(&wire).is_err());
     }
 }

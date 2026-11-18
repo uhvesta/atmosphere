@@ -277,6 +277,37 @@ impl Inbox {
             .await
     }
 
+    /// D797: raises the card that says `agent_name` is waiting in its
+    /// terminal, with its held first message `text` under it. Its one
+    /// action is Approve ("Send it now"). Held as a permission card is:
+    /// dropping the wait withdraws it.
+    pub(crate) async fn raise_waiting(
+        self: &Arc<Self>,
+        caller: &Caller,
+        agent: &AgentCaller,
+        agent_name: &str,
+        text: String,
+    ) -> Result<PermissionWait, Status> {
+        self.raise_held(caller, agent, "waiting-in-terminal", false, |id| {
+            let mut card = card(
+                id,
+                agent,
+                agent_name,
+                &self.machine,
+                Ask {
+                    tool: String::new(),
+                    command: text,
+                    description: Some("Send it now types this message into the agent. Nothing else is sent.".to_owned()),
+                    edits_files: false,
+                    key: String::new(),
+                },
+            );
+            card.action_title = format!("{agent_name} is waiting in its terminal");
+            card
+        })
+        .await
+    }
+
     /// Raises a question card for the agent's own ask-user form (D761),
     /// held by its hook as a permission card is: Reply or Deny, left out of
     /// Answer all, withdrawn once no hook holds it.

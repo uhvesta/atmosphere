@@ -27,6 +27,21 @@ pub trait HeldMessages: Send + Sync {
     fn unsent(&self, session: &str, text: &str, resend: Resend);
 }
 
+/// A boxed future, as the signal's methods return.
+pub type Boxed<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+/// D797: the structured signal an agent gives that it is up and ready for
+/// its first message, such as Claude's SessionStart hook.
+pub trait StartSignal: Send + Sync {
+    /// Whether `session`'s agent gives a ready signal. If not, its first
+    /// message waits for the screen check instead.
+    fn expects(&self, session: &str) -> Boxed<bool>;
+    /// Resolves once `session`'s first message `text`, held, may be sent:
+    /// the agent was heard, or the person chose to send it now. There is no
+    /// deadline.
+    fn released(&self, session: &str, text: &str) -> Boxed<()>;
+}
+
 /// Tries a first message that wasn't sent again, as a new start would.
 pub type Resend = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
@@ -35,6 +50,7 @@ pub type Resend = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> +
 pub struct FirstMessage {
     gate: Option<Arc<dyn WriteGate>>,
     held: Option<Arc<dyn HeldMessages>>,
+    signal: Option<Arc<dyn StartSignal>>,
     wait: Duration,
 }
 
@@ -43,6 +59,7 @@ impl Default for FirstMessage {
         Self {
             gate: None,
             held: None,
+            signal: None,
             wait: ANSWER_WAIT,
         }
     }
@@ -58,6 +75,13 @@ impl FirstMessage {
     /// A message that waits is told to `held`.
     pub fn with_held(mut self, held: Arc<dyn HeldMessages>) -> Self {
         self.held = Some(held);
+        self
+    }
+
+    /// An agent that gives a ready signal gets its message once `signal`
+    /// says so, not when its screen looks clear (D797).
+    pub fn with_signal(mut self, signal: Arc<dyn StartSignal>) -> Self {
+        self.signal = Some(signal);
         self
     }
 
@@ -86,6 +110,17 @@ impl FirstMessage {
         socket: &Path,
         message: &str,
     ) -> Result<(), HolderError> {
+        if let Some(signal) = self.signal.clone() {
+            if signal.expects(session).await {
+                let (first, session) = (self.clone(), session.to_owned());
+                let (socket, message) = (socket.to_owned(), message.to_owned());
+                tokio::spawn(async move {
+                    signal.released(&session, &message).await;
+                    first.deliver_once_heard(&session, &socket, &message).await;
+                });
+                return Ok(());
+            }
+        }
         let ready = self.ready(socket);
         // The gate looks only once the agent is up. Right after its launch
         // a slow start (a loaded machine) hasn't drawn its own question
@@ -124,6 +159,36 @@ impl FirstMessage {
         };
         tokio::spawn(follow.run());
         Ok(())
+    }
+}
+
+impl FirstMessage {
+    /// Types `message`, once, into an agent that was heard (D797): its
+    /// input needs no screen check. One that isn't sent is told to the
+    /// person as a first message that ran out of waiting is.
+    async fn deliver_once_heard(&self, session: &str, socket: &Path, message: &str) {
+        let sent = humata2_holder::deliver(socket, message.as_bytes(), TYPE_PAUSE, None, None, self.wait).await;
+        match sent {
+            Ok(true) => {
+                if let Some(gate) = self.gate.clone() {
+                    confirm_logged(&*gate, socket, message).await;
+                }
+            }
+            Ok(false) | Err(_) => {
+                if let Some(held) = &self.held {
+                    let again = Follow {
+                        session: session.to_owned(),
+                        socket: socket.to_owned(),
+                        message: message.to_owned(),
+                        held: None,
+                        ready: self.ready(socket),
+                        first: self.clone(),
+                        resend: true,
+                    };
+                    held.unsent(session, message, Box::new(move || again.run()));
+                }
+            }
+        }
     }
 }
 

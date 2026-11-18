@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use crate::model::Side;
 use crate::plan::{FileRef, Group, Note, NoteState, NoteTarget, ReviewPlan};
 use crate::spec::DiffSpec;
+use crate::stack::Stack;
 
 /// PR-25: "Agent may: Focus, Notes, Order", all on by default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +157,10 @@ pub struct ViewState {
     pub groups: Vec<Group>,
     pub viewed: Vec<ViewedFile>,
     pub highlights: Vec<Highlight>,
+    /// The stack the review is told as (D800), if it has one.
+    pub stack: Option<Stack>,
+    /// The title of the layer showing; `None` is the whole stack.
+    pub layer: Option<String>,
 }
 
 /// A note for the user (PR-23): anchored like a plan's notes, so it is
@@ -209,7 +214,11 @@ pub enum ChangeKind {
     Order {
         order: Vec<FileRef>,
         groups: Vec<Group>,
+        stack: Option<Stack>,
+        layer: Option<String>,
     },
+    /// Show this layer (`None` is the whole stack).
+    Layer(Option<String>),
 }
 
 /// What `review_context` returns.
@@ -245,8 +254,35 @@ pub enum ChatError {
     )]
     NothingToUndo { undo_id: String },
 
+    #[error(
+        "{}",
+        no_such_layer_message(layer, known)
+    )]
+    NoSuchLayer { layer: String, known: Vec<String> },
+
     #[error("there is nowhere to go back to: the agent hasn't moved the view")]
     NothingBack,
+}
+
+fn no_such_layer_message(layer: &str, known: &[String]) -> String {
+    if known.is_empty() {
+        "this review shows no stack; send one with review_prepare".to_owned()
+    } else {
+        format!(
+            "the stack has no layer titled \"{layer}\"; its layers are {}. Call review_context for the stack",
+            known.join(", ")
+        )
+    }
+}
+
+/// The title a layer has in `stack`, matching trimmed and ignoring case.
+fn layer_title(stack: &Stack, wanted: &str) -> Option<String> {
+    let wanted = wanted.trim().to_lowercase();
+    stack
+        .layers
+        .iter()
+        .find(|layer| layer.title.trim().to_lowercase() == wanted)
+        .map(|layer| layer.title.clone())
 }
 
 /// At most this many changes can be undone; the oldest is forgotten
@@ -270,7 +306,11 @@ pub enum Replaced {
         order: Vec<FileRef>,
         groups: Vec<Group>,
         added: Vec<String>,
+        stack: Option<Stack>,
+        layer: Option<String>,
     },
+    /// The layer showing before the agent moved it.
+    Layer { layer: Option<String> },
 }
 
 /// A change Undo can take back, as it is saved with the review so Undo
@@ -462,6 +502,49 @@ impl ReviewChat {
         ))
     }
 
+    /// Moves the view to a layer of the stack, or to the whole stack for
+    /// `None`. The title is matched trimmed, ignoring case.
+    ///
+    /// # Errors
+    ///
+    /// [`ChatError::SwitchOff`] when Focus is off; [`ChatError::NoSuchLayer`]
+    /// when there is no stack or it has no such layer.
+    pub fn focus_layer(&mut self, layer: Option<String>) -> Result<Change, ChatError> {
+        self.switches.allow(ChatTool::Focus)?;
+        let title = match layer {
+            None => None,
+            Some(wanted) => {
+                let found = self
+                    .view
+                    .stack
+                    .as_ref()
+                    .and_then(|stack| layer_title(stack, &wanted));
+                match found {
+                    Some(title) => Some(title),
+                    None => {
+                        let known = self.view.stack.as_ref().map_or_else(Vec::new, |stack| {
+                            stack.layers.iter().map(|layer| layer.title.clone()).collect()
+                        });
+                        return Err(ChatError::NoSuchLayer {
+                            layer: wanted,
+                            known,
+                        });
+                    }
+                }
+            }
+        };
+        let before = Replaced::Layer {
+            layer: std::mem::replace(&mut self.view.layer, title.clone()),
+        };
+        let summary = title.clone().unwrap_or_else(|| "Whole stack".to_owned());
+        Ok(self.record(
+            ChangeTool::Tool(ChatTool::Focus),
+            summary,
+            ChangeKind::Layer(title),
+            before,
+        ))
+    }
+
     /// `review_note`: a note for the user. Anchor it first
     /// ([`crate::Checkout::anchor_notes_blocking`]) so it can go outdated.
     ///
@@ -567,10 +650,16 @@ impl ReviewChat {
                 },
             );
         }
+        let layer = match (&plan.stack, &self.view.layer) {
+            (Some(stack), Some(showing)) => layer_title(stack, showing),
+            _ => None,
+        };
         let before = Replaced::Order {
             order: std::mem::replace(&mut self.view.order, plan.order.clone()),
             groups: std::mem::replace(&mut self.view.groups, plan.groups.clone()),
             added,
+            stack: std::mem::replace(&mut self.view.stack, plan.stack.clone()),
+            layer: std::mem::replace(&mut self.view.layer, layer.clone()),
         };
         let summary = format!("{} files, {} groups", plan.order.len(), plan.groups.len());
         Ok(self.record(
@@ -579,6 +668,8 @@ impl ReviewChat {
             ChangeKind::Order {
                 order: plan.order,
                 groups: plan.groups,
+                stack: plan.stack,
+                layer,
             },
             before,
         ))
@@ -620,13 +711,30 @@ impl ReviewChat {
                 order,
                 groups,
                 added,
+                stack,
+                layer,
             } => {
                 for id in added {
                     self.notes.remove(&id);
                 }
                 self.view.order.clone_from(&order);
                 self.view.groups.clone_from(&groups);
-                (ChangeKind::Order { order, groups }, String::new())
+                self.view.stack.clone_from(&stack);
+                self.view.layer.clone_from(&layer);
+                (
+                    ChangeKind::Order {
+                        order,
+                        groups,
+                        stack,
+                        layer,
+                    },
+                    String::new(),
+                )
+            }
+            Replaced::Layer { layer } => {
+                self.view.layer.clone_from(&layer);
+                let summary = layer.clone().unwrap_or_else(|| "Whole stack".to_owned());
+                (ChangeKind::Layer(layer), summary)
             }
         };
         let seq = self.next_seq + 1;
@@ -820,6 +928,7 @@ mod tests {
             },
             text: "rounds half away from zero".to_owned(),
             anchor: None,
+            layer: None,
         }
     }
 

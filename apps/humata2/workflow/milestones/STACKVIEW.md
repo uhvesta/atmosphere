@@ -121,15 +121,39 @@ Rules to decide in the lane and record as a decision:
   - `ui/src/panel_changes.rs` (the Diff panel's files list and base
     picker), `review/src/view` (the review pane).
 - Tools: `tools/stack/src/status.rs` (`stack status --json`: `topics` with
-  `parent`, `depth`, `branch`, `base`, `number`), for what an agent has in
-  hand when it builds the payload. Humata does not run `stack` itself.
+  `parent`, `depth`, `branch`, `base`, `number`). Since the D800 amendment
+  (T3b), the daemon runs it for `review_prepare {from_stack}` and builds the
+  layers itself, so the agent no longer sends them by hand. GitHub stacked
+  PRs stay the job of `tools/stack`, built from the same metadata.
 - Frames: none draws a stack. The layer list needs a frame and a Fable
   golden pick before the UI closes (D76).
 
+## Owner additions (2026-11-18 11:35–11:45, both in scope)
+- **Stacks come from the stack tool's metadata, not the agent's tokens.**
+  `review_prepare {from_stack: "<repo>"}` makes the daemon run
+  `stack status --json` (tools/stack/src/status.rs: topic, parent, depth,
+  branch, base, number) and build the layers. Topic names become titles and
+  numbers become PR links; the agent may add a purpose per layer. Drift
+  re-reads the stack. GitHub stacked PRs stay tools/stack's job, from the
+  same metadata. Hand-built layers stay for cross-repo stacks and
+  uncommitted work. Small additive tools/stack changes are allowed.
+  Fable rules on: what the agent still sends, a machine without `stack`,
+  and multi-repo stacks (D800 amendment).
+- **The agent orders by importance.** Each file gets an importance: key,
+  normal or skim. Skim files fold up at the end ("12 files to skim"); key
+  files are marked. Each layer has its own order and groups, and the agent
+  may order repos within a layer. Ordering hunks within a file is Fable's
+  call: now or a follow-up. With no order sent, today's order stays.
+  Importance shows on look-only stacks too. Needs a proto seam (D802).
+- Exit adds: a from_stack review of a tools/stack stack opens with the
+  right layers and PRs, with no layers sent by the agent; skim files fold
+  and key files lead.
+
 ## Out of scope
-- Detecting stacks in the daemon or the app. The agent works the layers
-  out (`skills/shared/stacks.md`) and the user can edit nothing but which
-  layer shows. A person-made stack (a picker that builds layers) is a
+- Detecting stacks other than through `stack status` (the D800 amendment).
+  For any other stack the agent sends the layers
+  (`skills/shared/stacks.md`), and the user can change only which layer
+  shows. A person-made stack (a picker that builds layers) is a
   follow-up.
 - Any reviewing: findings, verdicts and drafts are `review-humata-change`
   and the existing note and draft tools.
@@ -137,7 +161,7 @@ Rules to decide in the lane and record as a decision:
 - Marking a layer reviewed, and per-layer Viewed. Mark reviewed (RV-28)
   stays per repo.
 - A CLI command for `review_prepare`.
-- Changes to `tools/stack`.
+- Changes to `tools/stack` beyond the additive ones T3b needs.
 
 ## Lane (written by the manager)
 - **Design notes** (rules in D800, picked by Fable 5.2):
@@ -360,6 +384,58 @@ Rules to decide in the lane and record as a decision:
     `chat.rs` (ViewState stack/layer, Focus layer, Replaced, Undo/Back, keep
     layer on re-prepare), and `wire` for view/context/change. Passes
     `review_diff:review_diff_unit_test` and the new cases in `stack_test`.
+  - **T3b: review from the repo's stack metadata (D803).** The agent sends
+    `review_prepare {from_stack: {repo, tip?, topics?}}`, and the daemon
+    builds the layers from `stack status --json --offline`. This saves the
+    tokens of spelling out layers. It runs after T3 is green, in two parts:
+    - **T3b-1, `tools/stack`, additive only:**
+      - `head` and `base_commit` per topic in `--json`, from
+        `local::rebuild`'s `Tip`.
+      - `--offline`: no fetch and no gh. The GitHub fields are null and the
+        merged set is empty.
+      - Commits that `copy_onto` makes keep the source identity and dates,
+        so they get the same ids on every run.
+      - Tests in `tools/stack` (status run twice gives the same heads;
+        offline needs no gh). Haiku 5.5 high.
+    - **T3b-2, `review_diff`:** a new `from_stack.rs` with
+      `StackSource::read_blocking(checkout, tip, overrides)`. It parses the
+      status JSON into `Vec<Layer>`, in chain order, titled by each topic's
+      first commit subject, and keeps the topic name on `Layer`.
+      - Refusals: a fork without `tip`, an unknown override, a restack in
+        progress, no topics, a tool that is missing or too old (the
+        Outdated case raises Migrate), and an explicit range in the same
+        repo.
+      - Drift by topic name, and pinning refs for the heads.
+      - Failing tests come first, in `tests/from_stack.rs`, run against a
+        JSON fixture and a fake runner so they need no real CLI.
+      - Sonnet medium.
+    - **Seam S1b** (proto): `ReviewPlan.from_stack` (`ReviewFromStack{repo,
+      tip, map<string, ReviewTopicOverride> topics}`) and
+      `ReviewLayer.topic`. The MCP schema in `tools.rs` is part of seam S2.
+  - **T3c: importance and per-layer order (D802).** It runs after T3b-2.
+    - **Seam S1b**, shared with T3b, adds `ReviewImportance`,
+      `ReviewPlan.importance`, `ReviewLayer.order`, `.groups` and
+      `.importance`, and `FileSummary.tier`.
+    - **`review_diff`:**
+      - In `plan.rs`, `Tier`, plus `importance` on the plan and on each
+        layer.
+      - In `stack.rs`, each `Layer` gets its order and groups.
+      - A new `importance.rs` with the auto-skim rules (lockfile names,
+        `linguist-generated` from `git check-attr`, pure renames) and the
+        rule that works out a file's tier.
+      - In `ReviewPlan::arrange`, key files first when no order was sent,
+        skim files last as a folded section, and groups left empty
+        dropped.
+      - Whole stack joins the layers' orders, then their importance.
+      - `wire` carries all of it.
+    - **Tests first,** in `tests/importance.rs`: the auto-skims, the agent
+      winning either way, a duplicate refused, the arrangement with and
+      without an order, and the Whole stack join.
+    - **Reducer and UI:** they draw the key dot, the folded skim row and
+      its keys, as part of T7 and T8. Frames 119 and 120 gain the dot and
+      the folded row, and a new frame 121 shows the fold opened.
+    - **Hunk order** is a follow-up.
+    - Sonnet medium.
   - **T4: daemon services.** `review.rs` (checked_plan with stack, get_diff
     for a layer, focus_review with layer, context with drift, saved/undo),
     `review/views.rs` (draft offer, recheck). Failing test
@@ -429,4 +505,47 @@ Rules to decide in the lane and record as a decision:
     `//apps/humata2/desktop:native_test`; `:design_test` (then record 119
     and 120).
   - Before commit, the fast tier: clippy on the touched crates.
-- Ready to commit: no
+- **Status, 2026-11-18 11:30:**
+  - Passed G1 (main ran `review_diff:specs_test`, `:stack_test` and
+    `:review_diff_unit_test`):
+    - **T0.** Failing tests in `review_diff`: `tests/specs.rs` gains 5
+      cases, the new `tests/stack.rs` has 18, and `src/wire.rs` unit tests
+      gain 4. Seam S1 (`review.proto`) was applied by main. The proto
+      literal sweep adds the new fields to the existing literals in
+      humatad, clients, cli and tests.
+    - **T1.** `Compare.head` and `worktree_paths`, `Compare::at` and
+      `Compare::worktree`, `DiffError::ConflictingCompare`, `Seed::Tree`,
+      and the label.
+    - **T2.** New `src/stack.rs`: `check_blocking`, `layer_spec`, `whole`,
+      `resolved` and `drift_blocking`.
+    - **T2b.** `wire` reads and writes the compare's `head` and
+      `worktree_paths`, and has `stack_to_pb` and `stack_from_pb`.
+  - Unverified: the humatad, cli and clients/live builds (blocked while
+    LIVEHOLDER's holder crate does not compile). Main reruns them then.
+  - **T3, gate 2 (main):** `stack_chat_test` (10 cases), `notes_test`,
+    `specs_test` and `stack_test` passed. humatad2 built and
+    `humatad2_unit_test` passed. `review_diff_unit_test` was missing
+    `layer: None` in the `line_note` helper at chat.rs:922. Main fixed it,
+    and gate 3 reruns it. T3 is green if gate 3 passes.
+  - Earlier T3 notes: the failing tests are in
+    `review_diff/tests/stack_chat.rs` (10 cases). A worker is adding
+    `ReviewPlan.stack`, `Note.layer`, `ViewState.stack` and `.layer`,
+    `ReviewChat::focus_layer`, `ChatError::NoSuchLayer`,
+    `ChangeKind::Layer` and `Replaced::Layer`, keeping the layer across
+    a re-prepare, Undo of stack and layer, and the wire for all of it.
+    It also covers humatad's stored undo (`review.rs`) and comment
+    anchors (`review/comments.rs`). Gate: `review_diff:stack_chat_test`
+    and `:review_diff_unit_test`, then a humatad build.
+  - Planned at 11:45 from the owner's input: T3b reads the repo's stack
+    metadata (D803, amends D800), and T3c adds importance and per-layer
+    order (D802). Both proto changes are in one seam, S1b, at
+    `scratchpad/stackview/s1b_from_stack_proto.py`. Main applies it with
+    one literal sweep after T3 is green, and then the T3b and T3c workers
+    start.
+  - Not started: T4 and T5 (daemon and MCP), T6 and T7 (clients and
+    reducer), T8 (UI and frames 119-121, which need Fable's approval)
+    and T9 (skills). Seams S2 and later (`tools.rs`, `model.rs`, keys and
+    palette, `design.rs`) are not written yet. A `ReviewChange` arm for a
+    layer move is needed (seam).
+- Ready to commit: T0-T2b yes (additive and unused outside `review_diff`).
+  T3 only once its gate passes.

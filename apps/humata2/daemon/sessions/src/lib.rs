@@ -57,7 +57,7 @@ pub use rename::BranchRename;
 pub use recover::{Leftovers, Recovery, recover};
 pub use setup::{NewChannel, clone_mains, create_channel};
 pub use start::{RepoName, ReviewStart, StartRequest, Started, Starter};
-pub use first_message::{FirstMessage, GateRefusal, HeldMessages, Resend, WriteGate};
+pub use first_message::{Boxed, FirstMessage, GateRefusal, HeldMessages, Resend, StartSignal, WriteGate};
 pub use fork::{ForkCopy, ForkPlan, ForkRequest, handover_file};
 pub use continue_in::ContinueRequest;
 pub use agents::{FollowError, TurnsError};

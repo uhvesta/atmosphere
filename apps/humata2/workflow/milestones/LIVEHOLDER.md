@@ -68,7 +68,7 @@ Moving terminals between machines (that's a move, D757). Keeping a session alive
 ## Lane
 
 - **Manager:** Opus 5.5 (opened 2026-11-18 10:50, plan only until main's "go").
-- **State:** plan written; D801 ruled by Fable 5.2; waiting for main's "go" (other lanes' WIP in `holder/src/client.rs`, `humatad`, `sessions` must be committed first).
+- **State:** batch 1 (holder) and T5 written (see the Workers log, 'Where it stops at 12:00'); T1–T4 with one worker, now done. Batch 2 (T5–T14) not started. `holders.rs` and revive resume are free now (AGENTKINDS is done). T8's `sessions/src/agents.rs` change is a seam to ask AGENTS2 for.
 - **Goal:** a holder upgrade re-execs in place (same pid, child keeps running, screen and scrollback carry over, viewers reattach); every path that ends a holder today keeps the terminal running or records why it can't.
 - **Exit:** the Exit list above, proved by the failing tests listed below.
 
@@ -252,4 +252,23 @@ D801 (Fable 5.2, 2026-11-18) rules A–K. Plan changes from it:
 
 ### Workers
 
-None yet (plan only).
+- 2026-11-18 11:14: "go" for batch 1 (main, after 0.3.2 df0f1684). T0 done by the manager: `holder/tests/take_over.rs` (14 cases), `holder/tests/take_over_faults.rs` and the `take_over_faults_test` BUILD target. Targets sent to main.
+- 2026-11-18 11:15: one Sonnet worker on T1–T4 together (`holder/src/*`, new `handoff.rs`, `take_over.rs`). Deadline 11:45. Reason: the four tasks share `server.rs` and `client.rs`.
+- 2026-11-18 11:22: the worker handed back T1–T4, written but unbuilt: `handoff.rs` (v1, FNV checksum, unit tests), `take_over.rs` (MoveTo path, adopt), the waiter on `waitid NOWAIT` under a reap lock, the `--handoff-versions`, `--check-take-over` and `--take-over` flags, the faults abort, and client `move_to` with the retry before `Outdated`. Main is building and running the holder tests. Its earlier compile break (11:18) came from exports added before the code behind them; fixed.
+- 2026-11-18 11:27, gate 2. Green: `holder_unit_test`, `take_over_faults_test` and the 7 existing holder tests. `take_over_test`: 10 of 14 passed. Four failed (keyed input across a move, typing after a move, moved twice, identical screen): each was refused because the new build "didn't answer within 2 seconds".
+  - Diagnosis: one 2 s limit covered both runs of the new build. The first run, `--handoff-versions`, is the first exec of a freshly copied binary, which macOS scans before it runs, so under parallel load it timed out.
+  - Fix (manager, in `take_over.rs`): the versions query gets 20 s, since nothing is held yet; the check, run while output is frozen, keeps 2 s (D801 A1). Waiting on the rerun.
+- 2026-11-18 11:29, T5 (manager), in `revive/src/report.rs` only:
+  - a restart-report entry gets `lost` ("its terminal was lost while moving onto the new holder build; what it printed is kept") when `<socket>.handoff` exists and no holder pid is alive (checked with `ps`; nothing is signalled);
+  - the marker is removed once the entry is reported;
+  - 3 unit tests, run in `revive_unit_test`. Unbuilt at the time of writing.
+
+**Where it stops at 12:00 (owner stop):**
+- **T0–T4:** written. Green except `take_over_test`, pending the timeout fix's rerun.
+- **T5:** done in `report.rs`.
+  - Not done: the planned `revive/tests/lost_in_move.rs` end-to-end test, i.e. a reconcile over a store with a `.handoff` beside a dead holder.
+  - Not done: revive's stale Launching/Resuming branch (`reconcile.rs:347-394`) doesn't yet skip a holder with a live `.handoff`. It is only reachable if Migrate moves a Launching or Resuming agent, which T6 must never do.
+  - Not done: `report.rs`'s `handoff_path` copies `holder/src/take_over.rs`'s naming. Export one from the holder crate, then use it here.
+- **T6–T14:** not started.
+  - Next, T6: `upgrade/holders.rs` `move_or_restart`, moving only Running agents and shells.
+  - T8 needs a seam from AGENTS2 for `sessions/src/agents.rs`.

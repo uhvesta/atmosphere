@@ -1,7 +1,7 @@
-//! A Copilot hook names the conversation its CLI is in, so a `/clear` or
-//! `/restart` that starts another one in the same running agent can be
-//! followed; and the plugin runs that hook when a conversation starts, at
-//! each prompt and at the end of each turn.
+//! A Copilot, Claude Code or Codex hook names the conversation its CLI is
+//! in, so a `/clear`, `/restart` or `/new` that starts another one in the
+//! same running agent can be followed (D799); and the plugin runs that hook
+//! when a conversation starts, at each prompt and at the end of each turn.
 
 use std::path::Path;
 
@@ -11,6 +11,11 @@ use serde_json::Value;
 const SESSION_START: &[u8] = include_bytes!("../testdata/copilot/session_start_new.json");
 const AGENT_STOP: &[u8] = include_bytes!("../testdata/copilot/agent_stop.json");
 const SUBAGENT_PROMPT: &[u8] = include_bytes!("../testdata/copilot/user_prompt_subagent.json");
+const CLAUDE_CLEARED: &[u8] = include_bytes!("../testdata/claude/session_start_clear.json");
+const CLAUDE_STOP: &[u8] = include_bytes!("../testdata/claude/stop.json");
+const CLAUDE_SUBAGENT: &[u8] = include_bytes!("../testdata/claude/stop_subagent.json");
+const CODEX_THREAD: &[u8] = include_bytes!("../testdata/codex/thread_started.json");
+const CODEX_STOP: &[u8] = include_bytes!("../testdata/codex/stop.json");
 
 #[test]
 fn a_session_start_names_the_new_conversation() {
@@ -53,9 +58,59 @@ fn a_payload_with_no_id_or_not_json_names_none() {
 }
 
 #[test]
-fn other_agents_hooks_name_no_conversation() {
-    for agent in [Agent::Claude, Agent::Codex, Agent::OpenCode] {
+fn opencodes_hooks_name_no_conversation() {
+    for payload in [SESSION_START, CLAUDE_CLEARED, CODEX_THREAD] {
+        assert!(parse_conversation(Agent::OpenCode, payload).is_err());
+    }
+}
+
+#[test]
+fn one_agents_payload_names_no_conversation_for_another() {
+    // Copilot's `sessionId` isn't Claude's or Codex's `session_id`.
+    for agent in [Agent::Claude, Agent::Codex] {
         assert!(parse_conversation(agent, SESSION_START).is_err(), "{agent:?}");
+    }
+    assert!(parse_conversation(Agent::Copilot, CLAUDE_CLEARED).is_err());
+}
+
+#[test]
+fn a_claude_session_start_after_clear_names_the_new_conversation() {
+    let id = parse_conversation(Agent::Claude, CLAUDE_CLEARED).expect("a conversation");
+    assert_eq!(id, "7c1e2a90-5b3d-4f6e-9a21-0d8c4b7e3f15");
+}
+
+#[test]
+fn the_end_of_a_claude_turn_names_its_conversation() {
+    let id = parse_conversation(Agent::Claude, CLAUDE_STOP).expect("a conversation");
+    assert_eq!(id, "abc123");
+}
+
+#[test]
+fn a_claude_subagents_hook_names_no_conversation_of_the_session() {
+    assert!(matches!(
+        parse_conversation(Agent::Claude, CLAUDE_SUBAGENT),
+        Err(PayloadError::NotAConversation { .. })
+    ));
+}
+
+#[test]
+fn a_codex_thread_names_its_conversation() {
+    let id = parse_conversation(Agent::Codex, CODEX_THREAD).expect("a conversation");
+    assert_eq!(id, "019b2c4d-7e8f-7a01-b234-56789abcdef0");
+    let id = parse_conversation(Agent::Codex, CODEX_STOP).expect("a conversation");
+    assert_eq!(id, "019a-thread");
+}
+
+#[test]
+fn a_claude_or_codex_id_that_could_name_a_path_is_refused() {
+    for agent in [Agent::Claude, Agent::Codex] {
+        for id in ["../other", "a/b", "", "with space"] {
+            let payload = serde_json::json!({ "session_id": id }).to_string();
+            assert!(
+                parse_conversation(agent, payload.as_bytes()).is_err(),
+                "{agent:?} took {id:?}"
+            );
+        }
     }
 }
 

@@ -1,0 +1,12 @@
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"019b2c4d-7e8f-7a01-b234-56789abcdef0","path":"/home/u/.codex/sessions/2026/11/18/rollout-2026-11-18T09-30-00-019b2c4d-7e8f-7a01-b234-56789abcdef0.jsonl","cwd":"/work/api","parentThreadId":null,"cliVersion":"0.169.0","status":{"type":"idle"},"turns":[]}}}
+{"jsonrpc":"2.0","method":"turn/started","params":{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","turn":{"id":"7","status":"inProgress","items":[]}}}
+{"jsonrpc":"2.0","id":0,"method":"item/commandExecution/requestApproval","params":{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","turnId":"7","itemId":"call_a1","startedAtMs":1795016795934,"command":"cargo publish --dry-run","cwd":"/work/api","reason":"Check the crate packages"}}
+{"jsonrpc":"2.0","method":"serverRequest/resolved","params":{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","requestId":0}}
+{"jsonrpc":"2.0","id":1,"method":"item/fileChange/requestApproval","params":{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","turnId":"7","itemId":"call_b2","startedAtMs":1795016796000,"reason":"Write the new config"}}
+{"jsonrpc":"2.0","id":2,"method":"item/tool/requestUserInput","params":{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","turnId":"7","itemId":"call_9f8e","isBlocking":true,"questions":[{"id":"deploy_target","header":"Deploy","question":"Which environment should I deploy to?","isOther":true,"isSecret":false,"options":[{"label":"staging","description":"Safe to break"},{"label":"production","description":"Customers see it"}]}]}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","turnId":"7","itemId":"msg_1","delta":"Deploying"}}
+{"jsonrpc":"2.0","method":"some/futureMethod","params":{"anything":[1,2,3]}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","turn":{"id":"7","status":"completed","items":[]}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","turn":{"id":"8","status":"interrupted","items":[]}}}
+{"jsonrpc":"2.0","method":"thread/started","params":{"thread":{"id":"019b2c4e-0000-7000-8000-subagent0001","path":null,"cwd":"/work/api","parentThreadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","status":{"type":"idle"},"turns":[]}}}
+{"jsonrpc":"2.0","id":3,"result":{"thread":{"id":"019b2c4d-7e8f-7a01-b234-56789abcdef0"}}}

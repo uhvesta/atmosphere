@@ -15,7 +15,7 @@ const PRE_TOOL_BASH: &[u8] = include_bytes!("../testdata/copilot/pre_tool_bash.j
 const COPILOT_SHELL: &[u8] = include_bytes!("../testdata/copilot/permission_shell.json");
 
 fn rendered(reply: &Reply) -> Value {
-    serde_json::from_slice(&render_question(Agent::Copilot, reply)).expect("JSON")
+    serde_json::from_slice(&render_question(Agent::Copilot, ASK_TEXT, reply)).expect("JSON")
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn a_decline_tells_copilot_something_with_or_without_a_note() {
 
 #[test]
 fn no_answer_is_empty_output_so_the_form_opens() {
-    assert!(render_question(Agent::Copilot, &Reply::Undecided).is_empty());
+    assert!(render_question(Agent::Copilot, ASK_TEXT, &Reply::Undecided).is_empty());
 }
 
 #[test]

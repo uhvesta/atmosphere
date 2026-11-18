@@ -9,6 +9,7 @@ use crate::checkout::Checkout;
 use crate::error::{DiffError, PlanError};
 use crate::model::{FileChunk, FileSummary, RepoDiff, Side};
 use crate::spec::DiffSpec;
+use crate::stack::Stack;
 
 /// What `review_prepare` carries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -21,6 +22,8 @@ pub struct ReviewPlan {
     /// and runs until the next group.
     pub groups: Vec<Group>,
     pub notes: Vec<Note>,
+    /// The layers the change is told as (D800), if it is a stack.
+    pub stack: Option<Stack>,
 }
 
 /// A file of one repo.
@@ -46,6 +49,8 @@ pub struct Note {
     /// What the note was written against, recorded when the plan is
     /// prepared ([`Checkout::anchor_notes_blocking`]).
     pub anchor: Option<Anchor>,
+    /// The title of the layer the note is on; `None` is the whole stack.
+    pub layer: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

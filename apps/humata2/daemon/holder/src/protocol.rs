@@ -29,6 +29,7 @@ const SHUTDOWN: u8 = 4;
 const KEYED_INPUT: u8 = 5;
 const KEY_QUERY: u8 = 6;
 const AWAIT_KEYS: u8 = 7;
+const MOVE_TO: u8 = 8;
 
 const WELCOME: u8 = 101;
 const OUTPUT: u8 = 102;
@@ -39,6 +40,7 @@ const REFUSED: u8 = 106;
 const KEYED_WRITTEN: u8 = 107;
 const KEY_ANSWER: u8 = 108;
 const KEYS_READ: u8 = 109;
+const MOVING: u8 = 110;
 
 /// Where the terminal stands when a client attaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +69,9 @@ pub(crate) enum ClientFrame {
     /// terminal's line editing is off), or once it has run for
     /// `starting_ms`.
     AwaitKeys { starting_ms: u32 },
+    /// Asks the holder to move onto the build at this path (bytes of the
+    /// path), in place. An older holder closes the connection.
+    MoveTo { path: Vec<u8> },
 }
 
 pub(crate) enum ServerFrame {
@@ -86,6 +91,9 @@ pub(crate) enum ServerFrame {
     /// The answer to `AwaitKeys`: whether the program reads keys itself
     /// now. `false` when it ran for the time given or ended first.
     KeysRead { ready: bool },
+    /// The holder is about to run the new build in place: this connection
+    /// ends, and the socket answers again once it has.
+    Moving,
 }
 
 #[derive(Debug)]
@@ -220,6 +228,7 @@ impl ClientFrame {
                 .rest(data),
             Self::KeyQuery { key } => Frame::new(KEY_QUERY).key(key),
             Self::AwaitKeys { starting_ms } => Frame::new(AWAIT_KEYS).u32(*starting_ms),
+            Self::MoveTo { path } => Frame::new(MOVE_TO).rest(path),
         }
         .finish()
     }
@@ -254,6 +263,11 @@ impl ClientFrame {
             AWAIT_KEYS => Self::AwaitKeys {
                 starting_ms: body.u32()?,
             },
+            MOVE_TO => {
+                return Ok(Self::MoveTo {
+                    path: body.rest().to_vec(),
+                });
+            }
             _ => return Err(FrameError::Malformed("a client sent a frame of no known kind")),
         };
         body.end()?;
@@ -286,6 +300,7 @@ impl ServerFrame {
                 Frame::new(KEY_ANSWER).u8(u8::from(*arrived)).u64(*instance)
             }
             Self::KeysRead { ready } => Frame::new(KEYS_READ).u8(u8::from(*ready)),
+            Self::Moving => Frame::new(MOVING),
         }
         .finish()
     }
@@ -329,6 +344,7 @@ impl ServerFrame {
             KEYS_READ => Self::KeysRead {
                 ready: body.u8()? != 0,
             },
+            MOVING => Self::Moving,
             REFUSED => {
                 return Ok(Self::Refused {
                     message: String::from_utf8_lossy(body.rest()).into_owned(),

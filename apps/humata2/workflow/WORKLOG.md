@@ -342,3 +342,10 @@ Apply order after gate 18: b17u, b17d, WIRE-B b5, TERM q1–r1, repin, record, g
   the 0.2 build.
 - 2026-11-17 main: new test policy: fast tier by default, focused tests per fix, slow tier once before each release.
 - 2026-11-18 10:37 main: humata2-v0.3.1 released and installed (f2ce016b). 10:50: AGENTS2, STACKVIEW and LIVEHOLDER managers opened, plan-only; 0.3.2 batch under test.
+- 2026-11-18 11:11 main: humata2-v0.3.2 released and installed (df0f1684).
+- 2026-11-18 11:45 main: gates 1–5 green (agent_hooks, codex, review_diff incl. stack_chat, holder incl. take_over
+  ×5 runs, revive, humatad ready_gate/screen_questions/humatad2_unit, sessions); //apps/humata2/... builds. Committed
+  AGENTS2 (hooks, Codex link, ready gate, quiet screen fallback), STACKVIEW T0–T3 (engine, per-layer notes/undo,
+  D802 importance + D803 from_stack planned), LIVEHOLDER T0–T5 (take-over, lost-in-move report). Owner asks logged
+  in STACKVIEW.md (from_stack, importance). Next: S1b seam + T3b/T3c; LIVEHOLDER T6; AGENTS2 C3–C5; Files panel
+  multi-repo fix; progress indicators (Fable); full fast + slow tier.

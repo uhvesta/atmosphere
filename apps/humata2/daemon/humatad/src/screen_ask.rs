@@ -26,6 +26,9 @@
 //! - A list the screen's height cuts off, on a tab no one who can type is
 //!   attached to, grows the screen to [`START_ROWS`] rows once, and the
 //!   look after raises the card (D786, [`grows`]).
+//! - A session whose agent was heard on its structured channel since its
+//!   launch (Claude's hooks, Codex's link) asks there: its screen is not
+//!   read for a question (D798).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -164,6 +167,7 @@ pub(crate) fn quiet(session: &str, holder_pid: u32) {
 
 /// `session`'s agent exited or its holder is gone: withdraws its question.
 pub(crate) fn gone(session: &str) {
+    crate::start_ready::forget(session);
     let Some(asks) = ASKS.get().cloned() else {
         return;
     };
@@ -211,6 +215,11 @@ impl Asks {
     }
 
     async fn look(self: &Arc<Self>, session: &str, holder_pid: u32) {
+        // D798: an agent heard on its structured channel asks there; its
+        // screen raises nothing.
+        if crate::start_ready::is_heard(session) {
+            return;
+        }
         let Some((record, tab, index)) = self.agent_of(session, holder_pid).await else {
             return;
         };

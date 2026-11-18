@@ -217,6 +217,13 @@ message DiffSpecCompare {
   Upto upto = 1;
   Untracked untracked = 2;
   repeated string untracked_paths = 3;
+  // The new side ends at this commit, branch or tag, not at the
+  // checkout (D800). Upto and untracked must then be left unset.
+  string head = 4;
+  // Working-tree files under these pathspecs (tracked changes and
+  // untracked files git doesn't ignore) laid over the new side, which is
+  // HEAD unless head is set. Nothing else from the working tree counts.
+  repeated string worktree_paths = 5;
 }
 
 enum DiffWhitespace {
@@ -455,6 +462,8 @@ message CommentAnchor {
   // RV-27: for a comment made in a diff, what it was compared against, as
   // the user saw it named ("origin/main", "review 3"). Empty outside a diff.
   string base = 8;
+  // The stack layer the anchor is on (D800); empty for Whole stack.
+  string layer = 9;
 }
 
 message CommentDestination {
@@ -937,6 +946,61 @@ message ReviewPlan {
   repeated RepoPath order = 2;
   repeated ReviewGroup groups = 3;
   repeated ReviewNote notes = 4;
+  // A stack of layers (RV-36, D800): sent instead of spec, which the
+  // daemon fills with the Whole stack.
+  ReviewStack stack = 5;
+}
+
+// The layers of a change, bottom of the stack first (D800).
+message ReviewStack {
+  repeated ReviewLayer layers = 1;
+}
+
+message ReviewLayer {
+  // Unique in the stack ignoring case; how every call names the layer.
+  string title = 1;
+  // At most one line, for navigating, never a finding.
+  string purpose = 2;
+  repeated ReviewLayerRepo repos = 3;
+}
+
+message ReviewLayerRepo {
+  RepoRef repo = 1;
+  oneof part {
+    ReviewLayerRange range = 2;
+    ReviewLayerWorktree worktree = 3;
+  }
+  // owner/repo#n, empty for none.
+  string pull_request = 4;
+  // Filled by the daemon: the commits the revs resolved to at prepare,
+  // and whether they have drifted since.
+  ReviewLayerResolved resolved = 5;
+}
+
+// `git diff base..head`, the revs as sent.
+message ReviewLayerRange {
+  string base = 1;
+  string head = 2;
+}
+
+// Work not committed, on top of HEAD, under these pathspecs.
+message ReviewLayerWorktree {
+  repeated string include_paths = 1;
+}
+
+message ReviewLayerResolved {
+  enum Drift {
+    DRIFT_UNSPECIFIED = 0;  // as NONE
+    DRIFT_NONE = 1;
+    DRIFT_MOVED = 2;        // a rev moved and the chain or ancestry broke
+    DRIFT_MISSING = 3;      // a rev no longer resolves in this clone
+    DRIFT_HEAD_MOVED = 4;   // HEAD left the top head under a worktree layer
+  }
+  string base_commit = 1;
+  string head_commit = 2;
+  Drift drift = 3;
+  // Files in this layer's diff of this repo (numstat), 0 when drifted.
+  uint32 files = 4;
 }
 
 // A titled section of the order, from `first` until the next group.
@@ -966,6 +1030,8 @@ message ReviewNote {
   // Set when read back: its lines changed since (kept, shown at the old
   // lines). `lines` then holds where they are now when they only moved.
   bool outdated = 9;
+  // The layer the note is on (D800); empty for Whole stack.
+  string layer = 10;
 }
 
 message PreparedView {
@@ -1087,6 +1153,10 @@ message ReviewViewState {
   repeated ReviewGroup groups = 4;
   repeated ViewedFile viewed = 5;
   repeated Highlight highlights = 6;
+  // The stack the review shows, if any (D800).
+  ReviewStack stack = 7;
+  // The layer showing; empty for Whole stack.
+  string layer = 8;
 }
 
 message ReportReviewViewRequest {
@@ -1120,6 +1190,10 @@ message FocusReviewRequest {
   DiffSide side = 5;
   // Replace the agent's highlights; empty clears them.
   repeated Highlight highlights = 6;
+  // Move to this stack layer (D800); empty keeps the layer showing
+  // unless whole_stack is set.
+  string layer = 7;
+  bool whole_stack = 8;
 }
 
 // One change the agent made to the view, as the app applies it and the

@@ -1646,14 +1646,26 @@ fn undo_to_stored(entry: &Undoable, session: &str) -> stored::ReviewUndo {
             order,
             groups,
             added,
+            stack,
+            layer,
         } => {
             added_notes.clone_from(added);
             Before::Order(view(ViewState {
                 order: order.clone(),
                 groups: groups.clone(),
+                stack: stack.clone(),
+                layer: layer.clone(),
                 ..ViewState::default()
             }))
         }
+        // The store has no arm for a layer move (D800 seam), so it rides in
+        // a Focus view with only `layer` set; `undo_from_stored` reads that
+        // back. Undoing a move *to* Whole stack after a restart (no layer to
+        // go back to) restores as a Focus with no place instead.
+        Replaced::Layer { layer } => Before::Focus(view(ViewState {
+            layer: layer.clone(),
+            ..ViewState::default()
+        })),
     };
     stored::ReviewUndo {
         undo_id: entry.undo_id.clone(),
@@ -1675,9 +1687,13 @@ fn undo_from_stored(entry: stored::ReviewUndo) -> Option<Undoable> {
     let before = match entry.before? {
         Before::Focus(bytes) => {
             let view = view(&bytes)?;
-            Replaced::Focus {
-                place: view.open,
-                highlights: view.highlights,
+            if view.open.is_none() && view.highlights.is_empty() && view.layer.is_some() {
+                Replaced::Layer { layer: view.layer }
+            } else {
+                Replaced::Focus {
+                    place: view.open,
+                    highlights: view.highlights,
+                }
             }
         }
         Before::AddedNote(id) => Replaced::NoNote(id),
@@ -1690,6 +1706,8 @@ fn undo_from_stored(entry: stored::ReviewUndo) -> Option<Undoable> {
                 order: view.order,
                 groups: view.groups,
                 added: entry.added_notes,
+                stack: view.stack,
+                layer: view.layer,
             }
         }
     };
@@ -1982,6 +2000,7 @@ fn chat_failed(error: &ChatError) -> Status {
     let (code, field) = match error {
         ChatError::NotInReview { .. } => (Code::FailedPrecondition, "file"),
         ChatError::NoSuchNote { .. } => (Code::NotFound, "note_id"),
+        ChatError::NoSuchLayer { .. } => (Code::FailedPrecondition, "layer"),
         _ => (Code::FailedPrecondition, "undo_id"),
     };
     status::failure(

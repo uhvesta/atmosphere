@@ -47,6 +47,12 @@ pub enum DiffError {
     NoMergeBase { repo: PathBuf, branch: String },
 
     #[error(
+        "the comparison for {} mixes a head or worktree paths with other levels ({reason}); leave upto and untracked unset when sending a head or worktree paths",
+        repo.display()
+    )]
+    ConflictingCompare { repo: PathBuf, reason: String },
+
+    #[error(
         "the repository in {} has no commits yet, so there is nothing to compare commits against; compare uncommitted changes only, or make a first commit",
         repo.display()
     )]

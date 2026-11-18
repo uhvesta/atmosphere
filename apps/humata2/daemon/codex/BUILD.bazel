@@ -1,0 +1,51 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Codex's own app-server, as the `humata codex` wrapper's link uses it
+# (D795): what each of its messages means for the turn, the thread and the
+# Inbox; the link that reports turns, names the thread and passes asks to
+# the daemon; and the wrapper that runs `codex app-server` on a 0600 socket
+# with the TUI on `--remote`, falling back to plain Codex with its hooks.
+# Message shapes from codex-cli 0.169.0's app-server schema (testdata/).
+rust_library(
+    name = "codex",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "humata2_codex",
+    visibility = ["//apps/humata2/cli:__pkg__"],
+    deps = [
+        "@crates//:futures-util",
+        "@crates//:rustix",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tokio-tungstenite",
+    ],
+)
+
+rust_test(
+    name = "codex_unit_test",
+    crate = ":codex",
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        compile_data = glob(["testdata/**"]),
+        deps = [
+            ":codex",
+            "@crates//:futures-util",
+            "@crates//:serde_json",
+            "@crates//:tempfile",
+            "@crates//:tokio",
+            "@crates//:tokio-tungstenite",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

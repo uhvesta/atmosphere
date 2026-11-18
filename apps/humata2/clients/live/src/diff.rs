@@ -47,6 +47,8 @@ pub(crate) fn spec_to_wire(repos: &[RepoDiffSpec]) -> Option<pb::DiffSpec> {
                     upto: Upto::Unstaged as i32,
                     untracked: Untracked::All as i32,
                     untracked_paths: Vec::new(),
+                    head: String::new(),
+                    worktree_paths: Vec::new(),
                 }),
                 ..pb::RepoDiffSpec::default()
             })

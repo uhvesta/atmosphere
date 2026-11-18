@@ -831,13 +831,28 @@ fn hooks_json(humata: &Path, socket: &Path) -> serde_json::Value {
     if let Some(hooks) = permission[0]["hooks"].as_array_mut() {
         hooks.push(humata2_agent_hooks::claude_permission_hook(humata, socket));
     }
+    // D799: every session start (startup, resume, clear, compact, fork)
+    // names its conversation, as the prompt and the turn's end do.
+    let mut session_start = group(None, "idle");
+    let mut prompt = group(None, "working");
+    let mut stop = group(None, "idle");
+    let conversation = humata2_agent_hooks::claude_conversation_hook(humata, socket);
+    for hook_group in [&mut session_start, &mut prompt, &mut stop] {
+        if let Some(hooks) = hook_group[0]["hooks"].as_array_mut() {
+            hooks.push(conversation.clone());
+        }
+    }
     serde_json::json!({
         "hooks": {
-            "SessionStart": group(Some("startup|resume"), "idle"),
-            "UserPromptSubmit": group(None, "working"),
+            "SessionStart": session_start,
+            "UserPromptSubmit": prompt,
             "PostToolBatch": group(None, "working"),
-            "Stop": group(None, "idle"),
+            "Stop": stop,
             "StopFailure": group(None, "idle"),
+            "PreToolUse": [{
+                "matcher": "AskUserQuestion",
+                "hooks": [humata2_agent_hooks::claude_question_hook(humata, socket)],
+            }],
             "PermissionRequest": permission,
             "PermissionDenied": group(None, "working"),
             "Elicitation": group(None, "needs-input"),
@@ -1100,9 +1115,12 @@ mod tests {
             assert_eq!(state_of(event), state, "{event}");
             assert_eq!(hooks[event][0]["hooks"][0]["async"], true, "{event}");
         }
-        assert_eq!(hooks["SessionStart"][0]["matcher"], "startup|resume");
+        // Every SessionStart source fires, `clear` included (D799), and
+        // Claude's own questions are held for the Inbox (D796).
+        assert!(hooks["SessionStart"][0].get("matcher").is_none());
         assert!(hooks["Stop"][0].get("matcher").is_none());
-        assert_eq!(hooks.len(), 9);
+        assert_eq!(hooks["PreToolUse"][0]["matcher"], "AskUserQuestion");
+        assert_eq!(hooks.len(), 10);
     }
 
     #[test]

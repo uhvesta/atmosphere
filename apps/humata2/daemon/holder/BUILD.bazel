@@ -98,6 +98,20 @@ rust_test(
     ],
 )
 
+# A holder build that crashes right after taking a holder over (D801 B).
+rust_test(
+    name = "take_over_faults_test",
+    srcs = ["tests/take_over_faults.rs"],
+    data = [":humata2_holder_faults"],
+    env = {"HUMATA2_HOLDER": "$(rootpath :humata2_holder_faults)"},
+    deps = [
+        ":holder_faults",
+        "@crates//:rustix",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
 [
     rust_test(
         name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
@@ -116,6 +130,7 @@ rust_test(
         exclude = [
             "tests/power_cut.rs",
             "tests/return_after_text.rs",
+            "tests/take_over_faults.rs",
         ],
     )
 ]

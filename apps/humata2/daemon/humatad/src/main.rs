@@ -71,6 +71,7 @@ mod screen_question;
 mod script_tokens;
 mod serve;
 mod start_message;
+mod start_ready;
 mod session_service;
 mod skills_service;
 mod status;

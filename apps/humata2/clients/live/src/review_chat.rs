@@ -207,6 +207,8 @@ fn view_to_wire(view: &ReviewView) -> pb::ReviewViewState {
             })
             .collect(),
         highlights: view.highlights.iter().map(highlight_to_wire).collect(),
+        stack: None,
+        layer: String::new(),
     }
 }
 
@@ -357,6 +359,8 @@ impl ReviewChatClient for LiveReviewChat {
                     lines: lines_to_wire(request.lines),
                     side: side_to_wire(request.side),
                     highlights: request.highlights.iter().map(highlight_to_wire).collect(),
+                    layer: String::new(),
+                    whole_stack: false,
                 })
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?

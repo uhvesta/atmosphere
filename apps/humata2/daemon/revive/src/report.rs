@@ -109,6 +109,10 @@ struct Entry {
     conversation_id: Option<String>,
     holder_pid_saved: Option<u32>,
     holder_pid_now: Option<u32>,
+    /// Set when its holder was lost while moving onto a new holder build
+    /// (D801 B): the move's handoff was left beside a holder that's gone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lost: Option<&'static str>,
     files: Vec<Found>,
     #[serde(skip)]
     socket: PathBuf,
@@ -125,6 +129,9 @@ impl Entry {
         let mut line = format!("{} {} (tab {}): was {}", self.kind, self.session.as_deref().unwrap_or("-"), self.tab, self.was);
         if let Some(pid) = self.holder_pid_saved {
             let _ = write!(line, " in holder {pid}");
+        }
+        if let Some(lost) = self.lost {
+            let _ = write!(line, "; {lost}");
         }
         let _ = write!(line, "; {}", self.status);
         if let Some(reason) = self.reason {
@@ -324,6 +331,7 @@ impl Restart {
             conversation_id: Some(launch.conversation_id.clone()),
             holder_pid_saved,
             holder_pid_now: None,
+            lost: lost_in_move(&launch.holder_socket),
             files: vec![
                 Found::look("conversation", &launch.conversation_file),
                 Found::look("folder", &launch.folder),
@@ -356,6 +364,7 @@ impl Restart {
             conversation_id: None,
             holder_pid_saved: Some(tab.holder_pid).filter(|pid| *pid != 0),
             holder_pid_now: None,
+            lost: lost_in_move(&tab.holder_socket),
             files: vec![
                 Found::look("scrollback", &humata2_holder::saved_scrollback_path(&tab.holder_socket)),
                 Found::look("holder_log", &log),
@@ -421,6 +430,14 @@ impl Restart {
         let Some(entry) = self.entries.last_mut() else { return };
         if entry.brought_back() {
             entry.holder_pid_now = humata2_holder::holder_pid(&entry.socket);
+        }
+        if entry.lost.is_some() {
+            // Reported once: the session was dealt with above.
+            if let Err(error) = fs::remove_file(handoff_path(&entry.socket))
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!("humata2 revive: couldn't remove the move marker beside {}: {error}", entry.socket.display());
+            }
         }
         let action = format!("{} {}: {}", entry.kind, entry.session.as_deref().unwrap_or(&entry.tab), entry.status);
         if !entry.brought_back() {
@@ -624,4 +641,64 @@ fn write_beside(folder: &Path, name: &str, bytes: &[u8]) -> Result<(), ReviveErr
         let _ = fs::remove_file(&temp);
     }
     written.map_err(|source| ReviveError::RestartJson { path, source })
+}
+
+/// The marker a holder moving onto a new build writes beside its socket
+/// and the new build removes once it serves (D801 A).
+fn handoff_path(socket: &Path) -> PathBuf {
+    let mut path = socket.as_os_str().to_owned();
+    path.push(".handoff");
+    PathBuf::from(path)
+}
+
+/// Why a holder is gone, if it was lost moving onto a new holder build:
+/// its move marker is still there and no holder answers for it. A marker
+/// beside a live holder is a move in progress and says nothing.
+fn lost_in_move(socket: &Path) -> Option<&'static str> {
+    let marker = handoff_path(socket);
+    if !marker.exists() {
+        return None;
+    }
+    // Asked of `ps`, which signals nothing.
+    let alive = humata2_holder::holder_pid(socket).is_some_and(|pid| {
+        std::process::Command::new("ps")
+            .args(["-o", "pid=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|out| out.status.success() && !out.stdout.trim_ascii().is_empty())
+    });
+    (!alive).then_some("its terminal was lost while moving onto the new holder build; what it printed is kept")
+}
+
+#[cfg(test)]
+mod lost_in_move_tests {
+    use super::*;
+
+    fn socket(dir: &Path) -> PathBuf {
+        dir.join("t.sock")
+    }
+
+    #[test]
+    fn no_marker_is_not_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(lost_in_move(&socket(dir.path())), None);
+    }
+
+    #[test]
+    fn a_marker_beside_a_holder_that_is_gone_is_lost() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = socket(dir.path());
+        fs::write(handoff_path(&socket), b"H2HANDOFF").unwrap();
+        // No pid file: no holder answers for it.
+        assert!(lost_in_move(&socket).is_some());
+    }
+
+    #[test]
+    fn a_marker_beside_a_live_holder_is_a_move_in_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = socket(dir.path());
+        fs::write(handoff_path(&socket), b"H2HANDOFF").unwrap();
+        // This test's own process stands in for the live holder.
+        fs::write(socket.with_extension("pid"), std::process::id().to_string()).unwrap();
+        assert_eq!(lost_in_move(&socket), None);
+    }
 }

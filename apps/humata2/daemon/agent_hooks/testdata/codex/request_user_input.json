@@ -1,0 +1,1 @@
+{"threadId":"019b2c4d-7e8f-7a01-b234-56789abcdef0","turnId":"7","itemId":"call_9f8e","isBlocking":true,"questions":[{"id":"deploy_target","header":"Deploy","question":"Which environment should I deploy to?","isOther":true,"isSecret":false,"options":[{"label":"staging","description":"Safe to break"},{"label":"production","description":"Customers see it"}]}]}

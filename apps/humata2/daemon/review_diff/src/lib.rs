@@ -46,6 +46,7 @@ mod passage;
 mod plan;
 mod snapshot;
 mod spec;
+mod stack;
 pub mod wire;
 
 use std::collections::BTreeMap;
@@ -74,6 +75,9 @@ pub use plan::{
     Section,
 };
 pub use snapshot::KEPT_SNAPSHOTS;
+pub use stack::{
+    CheckedStack, Drift, DriftKind, Layer, LayerRepo, Part, Resolved, Stack, StackError,
+};
 pub use spec::{
     Base, BaseContext, Compare, DiffSpec, PathFilter, RepoSpec, Untracked, Upto, Whitespace,
 };

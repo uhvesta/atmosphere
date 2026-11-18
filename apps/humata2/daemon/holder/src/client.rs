@@ -288,6 +288,19 @@ pub async fn keyed_input(
     key: &str,
     data: &[u8],
 ) -> Result<KeyedInput, HolderError> {
+    // A connection closed by a holder that is moving looks like an old
+    // holder: once more on a new connection tells them apart.
+    match keyed_input_once(socket, key, data).await {
+        Err(HolderError::Outdated { .. }) => keyed_input_once(socket, key, data).await,
+        other => other,
+    }
+}
+
+async fn keyed_input_once(
+    socket: &Path,
+    key: &str,
+    data: &[u8],
+) -> Result<KeyedInput, HolderError> {
     check_key(key)?;
     if data.len() > MAX_KEYED {
         return Err(HolderError::KeyedInputTooLarge {
@@ -337,6 +350,13 @@ pub async fn keyed_input(
 /// Asks the holder at `socket` whether the keyed input `key` was typed. A
 /// holder from a build before keyed input is [`HolderError::Outdated`].
 pub async fn key_arrived(socket: &Path, key: &str) -> Result<KeyState, HolderError> {
+    match key_arrived_once(socket, key).await {
+        Err(HolderError::Outdated { .. }) => key_arrived_once(socket, key).await,
+        other => other,
+    }
+}
+
+async fn key_arrived_once(socket: &Path, key: &str) -> Result<KeyState, HolderError> {
     check_key(key)?;
     let mut attachment = attach(socket, u64::MAX).await?;
     Ok(match ask(&mut attachment.events, &mut attachment.control, key).await? {
@@ -382,6 +402,13 @@ pub enum ReadsKeys {
 /// has run for `starting` is taken to keep doing so: one that has run that
 /// long gets no wait at all.
 pub async fn await_keys(socket: &Path, starting: Duration) -> Result<ReadsKeys, HolderError> {
+    match await_keys_once(socket, starting).await {
+        Err(HolderError::Outdated { .. }) => await_keys_once(socket, starting).await,
+        other => other,
+    }
+}
+
+async fn await_keys_once(socket: &Path, starting: Duration) -> Result<ReadsKeys, HolderError> {
     let starting_ms = u32::try_from(starting.as_millis()).unwrap_or(u32::MAX);
     let Attachment {
         mut events,
@@ -762,7 +789,8 @@ impl Events {
             Some(
                 ServerFrame::KeyedWritten { .. }
                 | ServerFrame::KeyAnswer { .. }
-                | ServerFrame::KeysRead { .. },
+                | ServerFrame::KeysRead { .. }
+                | ServerFrame::Moving,
             ) => {
                 return Err(self.protocol("it answered keyed input on the events connection"));
             }
@@ -875,5 +903,80 @@ impl Control {
                 socket: self.socket.clone(),
                 source,
             })
+    }
+}
+
+/// A holder that moved onto another build in place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Moved;
+
+/// How long after "moving" the holder gets to answer again.
+const MOVE_WAIT: Duration = Duration::from_secs(5);
+
+/// Asks the holder at `socket` to run the build at `holder` in place: same
+/// process, same program, same terminal. A holder from a build before
+/// moving is [`HolderError::TooOldToMove`] and keeps running as it was.
+pub async fn move_to(socket: &Path, holder: &Path) -> Result<Moved, HolderError> {
+    use std::os::unix::ffi::OsStrExt;
+    let Attachment {
+        mut events,
+        mut control,
+        ..
+    } = attach(socket, u64::MAX).await?;
+    let asked = control
+        .send(ClientFrame::MoveTo {
+            path: holder.as_os_str().as_bytes().to_vec(),
+        })
+        .await;
+    let first = match asked {
+        Ok(()) => events.reply().await,
+        Err(_) => Ok(None),
+    };
+    match first {
+        Ok(Some(ServerFrame::Moving)) => {}
+        Ok(Some(ServerFrame::Refused { message })) => {
+            return Err(HolderError::Refused {
+                socket: socket.to_owned(),
+                message,
+            });
+        }
+        Ok(Some(_)) => return Err(events.protocol("it answered a move with something else")),
+        Ok(None) | Err(HolderError::Lost { .. }) => {
+            older_holder(socket).await?;
+            return Err(HolderError::TooOldToMove {
+                socket: socket.to_owned(),
+            });
+        }
+        Err(error) => return Err(error),
+    }
+    // The connection ends with the old image; a refusal here means the
+    // exec failed and the holder carries on as it was.
+    let ended = tokio::time::timeout(MOVE_WAIT, async {
+        loop {
+            match events.reply().await {
+                Ok(Some(ServerFrame::Refused { message })) => return Some(message),
+                Ok(Some(_)) => {}
+                _ => return None,
+            }
+        }
+    })
+    .await;
+    if let Ok(Some(message)) = ended {
+        return Err(HolderError::Refused {
+            socket: socket.to_owned(),
+            message,
+        });
+    }
+    let deadline = tokio::time::Instant::now() + MOVE_WAIT;
+    loop {
+        if attach(socket, u64::MAX).await.is_ok() {
+            return Ok(Moved);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(HolderError::LostInMove {
+                socket: socket.to_owned(),
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

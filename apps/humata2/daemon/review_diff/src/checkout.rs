@@ -159,6 +159,9 @@ impl Checkout {
     }
 
     fn new_tree(&self, compare: &Compare, paths: &PathFilter) -> Result<String, DiffError> {
+        if compare.head.is_some() || !compare.worktree_paths.is_empty() {
+            return self.pinned_tree(compare);
+        }
         if compare.upto == Upto::Commits && compare.untracked == Untracked::None {
             return match self.head()? {
                 Some(head) => self.tree_of(&head),
@@ -202,6 +205,64 @@ impl Checkout {
         scratch.write_tree()
     }
 
+    /// The new side for a compare with a head or worktree paths: the head's
+    /// tree (HEAD's without one), with the working-tree state under the
+    /// paths laid over it in a private index.
+    fn pinned_tree(&self, compare: &Compare) -> Result<String, DiffError> {
+        if compare.upto != Upto::Commits || compare.untracked != Untracked::None {
+            return Err(DiffError::ConflictingCompare {
+                repo: self.path().to_owned(),
+                reason: format!(
+                    "upto {:?}, untracked {:?}",
+                    compare.upto, compare.untracked
+                ),
+            });
+        }
+        let start = match &compare.head {
+            Some(head) => self.tree_of(head)?,
+            None => match self.head()? {
+                Some(head) => self.tree_of(&head)?,
+                None => self.empty_tree()?,
+            },
+        };
+        if compare.worktree_paths.is_empty() {
+            return Ok(start);
+        }
+        let scratch = self.scratch_index(Seed::Tree(start.clone()))?;
+        let mut specs = vec!["--".to_owned()];
+        specs.extend(compare.worktree_paths.iter().cloned());
+        let with = |prefix: &[&str]| -> Vec<String> {
+            prefix
+                .iter()
+                .map(|arg| (*arg).to_owned())
+                .chain(specs.iter().cloned())
+                .collect()
+        };
+        // Every file that is tracked (by the user's index or the start
+        // tree) or untracked under the paths: `update-index --remove`
+        // takes a missing file out and `--add` puts the on-disk content in.
+        let mut names = self.git.run(with(&["ls-files", "-z"]))?;
+        names.extend(self.git.run(with(&[
+            "ls-files",
+            "-z",
+            "--others",
+            "--exclude-standard",
+        ]))?);
+        let mut in_tree: Vec<String> = ["ls-tree", "-r", "-z", "--name-only"]
+            .map(str::to_owned)
+            .to_vec();
+        in_tree.push(start);
+        in_tree.extend(specs.iter().cloned());
+        names.extend(self.git.run(&in_tree)?);
+        if !names.is_empty() {
+            scratch.git.run_with_input(
+                ["update-index", "--add", "--remove", "-z", "--stdin"],
+                &names,
+            )?;
+        }
+        scratch.write_tree()
+    }
+
     /// `rev` as a commit id.
     pub(crate) fn commit(&self, rev: &str) -> Result<String, DiffError> {
         self.git
@@ -241,6 +302,9 @@ impl Checkout {
                     .map_err(|source| DiffError::io("copy the index", &self.index, source))?;
             }
             Seed::UserIndex => {}
+            Seed::Tree(tree) => {
+                git.run(["read-tree", tree.as_str()])?;
+            }
             Seed::Head => {
                 if self.head()?.is_some() {
                     git.run(["read-tree", "HEAD"])?;
@@ -327,6 +391,8 @@ enum Seed {
     UserIndex,
     /// HEAD's tree, for commits plus untracked files.
     Head,
+    /// An arbitrary tree.
+    Tree(String),
 }
 
 struct Scratch {

@@ -168,6 +168,7 @@ fn plan() -> pb::PrepareViewRequest {
                     ..pb::ReviewNote::default()
                 },
             ],
+            stack: None,
         })),
     }
 }

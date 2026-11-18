@@ -4177,6 +4177,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-codex"
+version = "0.0.0"
+dependencies = [
+ "futures-util",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "humata2-contain"
 version = "0.0.0"
 dependencies = [

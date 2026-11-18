@@ -1068,13 +1068,22 @@ impl Agents {
         if old.is_empty() || old == id || self.get(&agent.launch.agent).is_err() {
             return Ok(false);
         }
-        let Some(file) = agent
-            .launch
-            .conversation_file
-            .to_str()
-            .filter(|file| file.contains(old))
-            .map(|file| PathBuf::from(file.replace(old, id)))
-        else {
+        let Ok(kind) = self.get(&agent.launch.agent) else {
+            return Ok(false);
+        };
+        let file = if kind.conversation_format == ConversationFormat::CodexRollout {
+            // Codex names a rollout by its start time and keeps it in that
+            // day's folder, so the old file's name can't be edited.
+            codex_rollout(&agent.launch.conversation_file, id)
+        } else {
+            agent
+                .launch
+                .conversation_file
+                .to_str()
+                .filter(|file| file.contains(old))
+                .map(|file| PathBuf::from(file.replace(old, id)))
+        };
+        let Some(file) = file else {
             return Ok(false);
         };
         if !file.is_file() {
@@ -1163,6 +1172,47 @@ impl AgentKind {
         }
         found.map(|(_, id, file)| (id, file))
     }
+}
+
+/// The one rollout of Codex conversation `id` under the `sessions` folder
+/// that holds `current` (its placeholder or bound file), found at year,
+/// month, day depth without following symlinks. None when `id` isn't a
+/// plain id (so it can't name a path or pattern), when there is no such
+/// folder or rollout, when more than one matches, or when a folder can't
+/// be read (the next hook names `id` again).
+fn codex_rollout(current: &Path, id: &str) -> Option<PathBuf> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    let sessions = current.ancestors().find(|dir| dir.file_name().is_some_and(|name| name == "sessions"))?;
+    let entries = |dir: &Path, want_dir: bool| -> Option<Vec<PathBuf>> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()? {
+            let entry = entry.ok()?;
+            let kind = entry.file_type().ok()?;
+            if (want_dir && kind.is_dir()) || (!want_dir && kind.is_file()) {
+                found.push(entry.path());
+            }
+        }
+        Some(found)
+    };
+    let suffix = format!("-{id}.jsonl");
+    let mut matches = Vec::new();
+    for year in entries(sessions, true)? {
+        for month in entries(&year, true)? {
+            for day in entries(&month, true)? {
+                matches.extend(entries(&day, false)?.into_iter().filter(|file| {
+                    file.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(&suffix))
+                }));
+            }
+        }
+    }
+    if matches.len() == 1 { matches.pop() } else { None }
 }
 
 /// Every `rollout-*.jsonl` three folders down in `sessions` (year, month,
@@ -1839,5 +1889,114 @@ mod tests {
         let shell = Agents::builtin().with_shell(Path::new("/bin/sh"), &[]).with_humata_tools(&tools());
         let mut launch = launch_of(&shell, SHELL, home, folder);
         assert!(!shell.with_tools_in(&mut launch), "the shell has none to take");
+    }
+
+    /// Saves a running Codex session whose launch is `launch`.
+    fn save_codex(store: &humata2_store::Store, id: &str, launch: humata2_store::AgentLaunch) {
+        store
+            .put_session(&humata2_store::SessionRecord {
+                id: id.to_owned(),
+                channel: "desk".to_owned(),
+                machine: String::new(),
+                title: id.to_owned(),
+                agent: "codex".to_owned(),
+                folder: launch.folder.clone(),
+                created_unix_ms: 1,
+            })
+            .unwrap();
+        store
+            .put_agent(&humata2_store::AgentRecord {
+                session: id.to_owned(),
+                tab: format!("{id}_tab"),
+                launch,
+                state: humata2_store::AgentState::Running { holder_pid: 7 },
+                generation: 1,
+                interruptions: Vec::new(),
+                updated_unix_ms: 1,
+            })
+            .unwrap();
+    }
+
+    /// Writes a Codex rollout for `id` in day folder `day`, as codex-cli
+    /// 0.169.0 names a conversation started that day.
+    fn rollout_on(codex: &Path, day: &str, id: &str, cwd: &Path) -> PathBuf {
+        let folder = codex.join("sessions").join(day);
+        std::fs::create_dir_all(&folder).unwrap();
+        let stamp = day.replace('/', "-");
+        let file = folder.join(format!("rollout-{stamp}T09-30-00-{id}.jsonl"));
+        let meta = serde_json::json!({
+            "type": "session_meta",
+            "payload": {"id": id, "cwd": cwd, "cli_version": "0.169.0"},
+        });
+        std::fs::write(&file, format!("{meta}\n")).unwrap();
+        file
+    }
+
+    /// Codex's `/new` starts a conversation whose rollout is in another day
+    /// folder under another name: following it finds that file by its id,
+    /// and resume takes it up (AGENTS2, D799).
+    #[test]
+    fn a_codex_conversation_is_followed_by_id_into_a_later_day_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let folder = home.join("Humata/ch/sessions/s.1");
+        std::fs::create_dir_all(&folder).unwrap();
+        let store = humata2_store::Store::open(dir.path().join("state")).unwrap();
+        let agents = Agents::builtin();
+        let codex = home.join(".codex");
+        let mut launch = launch_of(&agents, "codex", &home, &folder);
+        rollout_on(&codex, "2026/11/16", "1111-first", &folder);
+        assert!(agents.bind_found(&home, &mut launch, &HashSet::new()));
+        save_codex(&store, "se_codex", launch);
+
+        // Named before its rollout is written: nothing changes yet.
+        assert!(!agents.follow_conversation(&store, "se_codex", "2222-after-new").unwrap());
+        let file = rollout_on(&codex, "2026/11/18", "2222-after-new", &folder);
+        assert!(agents.follow_conversation(&store, "se_codex", "2222-after-new").unwrap());
+
+        let saved = store.agent("se_codex").unwrap().unwrap();
+        assert_eq!(saved.launch.conversation_id, "2222-after-new");
+        assert_eq!(saved.launch.conversation_file, file);
+        assert!(saved.launch.resume_argv.iter().any(|arg| arg == "2222-after-new"));
+        assert!(!saved.launch.resume_argv.iter().any(|arg| arg == "1111-first"));
+    }
+
+    /// The thread a fresh Codex session names before any folder scan binds
+    /// it, so a session started under the wrapper needs no scan (D795).
+    #[test]
+    fn an_unbound_codex_session_is_bound_by_the_thread_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let folder = home.join("Humata/ch/sessions/s.1");
+        std::fs::create_dir_all(&folder).unwrap();
+        let store = humata2_store::Store::open(dir.path().join("state")).unwrap();
+        let agents = Agents::builtin();
+        save_codex(&store, "se_codex", launch_of(&agents, "codex", &home, &folder));
+        let file = rollout_on(&home.join(".codex"), "2026/11/18", "3333-thread", &folder);
+
+        assert!(agents.follow_conversation(&store, "se_codex", "3333-thread").unwrap());
+        let saved = store.agent("se_codex").unwrap().unwrap();
+        assert_eq!(saved.launch.conversation_id, "3333-thread");
+        assert_eq!(saved.launch.conversation_file, file);
+        assert!(!agents.unbound(&saved.launch));
+    }
+
+    /// An id that could name a path, or match more than one rollout, is
+    /// never followed.
+    #[test]
+    fn a_codex_id_that_could_name_a_path_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let folder = home.join("Humata/ch/sessions/s.1");
+        std::fs::create_dir_all(&folder).unwrap();
+        let store = humata2_store::Store::open(dir.path().join("state")).unwrap();
+        let agents = Agents::builtin();
+        save_codex(&store, "se_codex", launch_of(&agents, "codex", &home, &folder));
+        rollout_on(&home.join(".codex"), "2026/11/18", "4444-real", &folder);
+        for id in ["../4444-real", "*", "4444-*", "2026/11/18/rollout"] {
+            assert!(!agents.follow_conversation(&store, "se_codex", id).unwrap(), "{id:?}");
+        }
+        let saved = store.agent("se_codex").unwrap().unwrap();
+        assert_eq!(saved.launch.conversation_id, "placeholder-id");
     }
 }

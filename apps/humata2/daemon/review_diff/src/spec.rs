@@ -47,6 +47,13 @@ pub enum Base {
 pub struct Compare {
     pub upto: Upto,
     pub untracked: Untracked,
+    /// Ends the new side at this commit instead of HEAD (a stack layer's
+    /// range). Needs `upto` [`Upto::Commits`] and no untracked files.
+    pub head: Option<String>,
+    /// Git pathspecs whose working-tree state (staged, unstaged and
+    /// untracked files) is laid over the end commit; nothing outside them
+    /// enters. Needs `upto` [`Upto::Commits`] and no untracked files.
+    pub worktree_paths: Vec<String>,
 }
 
 /// Commits only, plus what is staged, or plus unstaged changes too.
@@ -158,6 +165,8 @@ impl Compare {
         Self {
             upto: Upto::Unstaged,
             untracked: Untracked::All,
+            head: None,
+            worktree_paths: Vec::new(),
         }
     }
 
@@ -167,6 +176,26 @@ impl Compare {
         Self {
             upto: Upto::Commits,
             untracked: Untracked::None,
+            head: None,
+            worktree_paths: Vec::new(),
+        }
+    }
+
+    /// Committed work up to `head` instead of HEAD.
+    #[must_use]
+    pub fn at(head: impl Into<String>) -> Self {
+        Self {
+            head: Some(head.into()),
+            ..Self::commits()
+        }
+    }
+
+    /// HEAD plus the working-tree state under `paths`.
+    #[must_use]
+    pub fn worktree(paths: Vec<String>) -> Self {
+        Self {
+            worktree_paths: paths,
+            ..Self::commits()
         }
     }
 }

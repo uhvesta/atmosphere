@@ -163,3 +163,66 @@ The owner's approval to copy agent logins into scratch homes ended at 08:20, so 
 - `//apps/humata2/daemon/humatad:conversation_follows_test`: Claude `/clear` and Codex `/new` are followed, and Stop then Resume take up the newest conversation (mirroring the Copilot test).
 - `//apps/humata2/daemon/codex:events_test`: recorded app-server frames map to turns, thread, ask and resolved; an unknown method is ignored.
 - `//apps/humata2/daemon/humatad:ready_gate_test`: a start message waits until the session is heard; after 20 s the waiting card is raised; it is withdrawn and the message is sent when the signal arrives; "Send it now" sends; typed keys always pass.
+
+### Status (2026-11-18)
+
+- 11:15: "go" received after 0.3.2 (df0f1684). Failing tests are written for the targets listed above:
+  - `agent_hooks:conversations_test`
+  - `agent_hooks:agent_questions_test`, which is new
+  - `agent_hooks:questions_test`, whose `render_question` now takes the payload
+  - `sessions:sessions_unit_test`, with three Codex follow-by-id tests
+  - `humatad:conversation_follows_test`, with Claude's `/clear`, Stop and prompt, and Codex's `/new`
+  - `codex:events_test`, in the new crate
+- Fixtures were written from the documented and schema shapes. They are not live recordings, because those are owed.
+- Main adds the new crate (`daemon/codex`, with its Cargo.toml and BUILD.bazel) to the members list and repins.
+- Workers dispatched at 11:16:
+  - A1+A2: conversation parsing and Claude's hooks file (Haiku);
+  - A3+A4: questions (Sonnet);
+  - B1: Codex follow by id (Sonnet);
+  - C1: reading codex frames (Sonnet).
+- 11:18: A1+A2, A3+A4, B1 and C1 report their code written. I fixed a clippy precedence issue in `codex_rollout` and updated the `hooks_json` unit test for the new SessionStart matcher and the PreToolUse entry. Batch 1 went to main, adding `humatad:humatad2_unit_test`.
+- 11:25: wrote the failing `codex:link_test` against a fake app-server on a unix socket. It covers:
+  - the handshake and the loaded thread;
+  - `/new` naming another thread;
+  - turns, including an interrupted one shown as stopped;
+  - an approval and a question each going to the Inbox and back;
+  - an ask answered in the TUI being withdrawn;
+  - an undecided ask sending nothing;
+  - reconnecting after a drop.
+
+  C2, the link, is dispatched (Sonnet).
+- G1 (main): agent_hooks `conversations_test`, `agent_questions_test` and `questions_test`, plus `codex:events_test`, PASS. `sessions_unit_test`, `conversation_follows_test` and `humatad2_unit_test` did not build, only because LIVEHOLDER's holder crate doesn't compile yet; main reruns them.
+- 11:30: C2 wrote `codex/src/link.rs`, which is not compiled yet. It includes:
+  - the handshake and resume of loaded threads, with naming deduped across reconnects;
+  - asks raised as tasks keyed by request id, aborted on serverRequest/resolved;
+  - approvals answered accept or decline from the hook-shaped answer, and an empty body sending nothing.
+
+  I added `codex:codex_unit_test` for its decision-mapping unit test. Batch 2 to main: `codex:codex_unit_test`, `codex:link_test` and `codex:events_test`.
+- 11:30: wrote the failing `humatad:ready_gate_test` (tests/ready_gate.rs, D797). It covers:
+  - Claude's first message waiting for SessionStart, and Codex's for its thread, not for a clear screen;
+  - keys typed into the terminal passing while the message is held;
+  - the 20 s "waiting in its terminal" card, with Approve as "Send it now";
+  - the signal withdrawing the card and sending the message once;
+  - no card for a session heard early;
+  - format none keeping the screen check.
+
+  E1 is dispatched (Sonnet): a new `humatad/src/ready.rs` with a per-session heard signal set by conversation hooks, gating the first message by kind.
+- Gate 1 rerun (main): every batch 1 target PASSES, including `sessions_unit_test`, `conversation_follows_test` and `humatad2_unit_test`. humatad2, cli and clients/live build. Gate 2, the codex targets, is running.
+- 11:40: E1 is written, not compiled yet:
+  - a StartSignal trait in sessions' first_message.rs;
+  - humatad/src/start_ready.rs, with a heard registry set by any conversation hook and a 20 s card from Inbox::raise_waiting, whose Approve is "Send it now";
+  - Claude and Codex gated; Copilot and none keep the screen check.
+
+  Batch 3 to main: `ready_gate_test`, `sessions_unit_test`, `humatad2_unit_test` and `screen_questions_test`. The worker overwrote and then restored `humatad/src/ready.rs`; main confirmed it is identical to HEAD. Batch 3 runs as gate 3 after gate 2.
+- 11:32 (main): gates 2 and 3 are green: `codex_unit_test`, `link_test`, `events_test`, `ready_gate_test`, `sessions_unit_test`, `humatad2_unit_test` and `screen_questions_test`. Main is committing batches 1–3.
+- 11:33: E2 (D798), first part. `screen_ask::look` raises nothing for a session whose structured channel was heard since its launch (`start_ready::is_heard`), and `screen_ask::gone` forgets it (`start_ready::forget`). There are two new cases in `ready_gate_test`: heard means no screen card, not yet heard means the screen card still comes. Batch 4 to main: `ready_gate_test`, `screen_questions_test` and `humatad2_unit_test`.
+  E2, still to do:
+  - the fallback resuming when the Codex link drops (the link must report a drop to the daemon);
+  - a structured card replacing a screen card for the same ask;
+  - a Claude Notification `permission_prompt` or `elicitation_dialog` raising D797's waiting card;
+  - withdrawal rules per channel, including "answered in the terminal" on a late Inbox answer.
+- Not started, next after the owner's 12:00 stop:
+  - C3–C5: serve and the wrapper, `humata codex`, and the kind switch;
+  - the composer, Inbox and MCP sends going through E1's gate (only the start message is gated so far);
+  - F1: VERIFY by kind;
+  - O1–O3: still owed live.

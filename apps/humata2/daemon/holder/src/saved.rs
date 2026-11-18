@@ -170,10 +170,21 @@ fn put_record(out: &mut Vec<u8>, kind: u8, offset: u64, data: &[u8]) {
 
 /// FNV-1a: enough to tell a record cut short or never written from a
 /// whole one.
-fn checksum(bytes: &[u8]) -> u64 {
+pub(crate) fn checksum(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
+}
+
+/// What a holder that moves onto another build hands over about its open
+/// log, so the next image appends to the same file where this one stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SaveParts {
+    pub(crate) path: PathBuf,
+    pub(crate) len: u64,
+    pub(crate) reserved: u64,
+    pub(crate) ahead: u64,
+    pub(crate) failed: bool,
 }
 
 /// The open log a running holder appends its output to.
@@ -233,6 +244,40 @@ impl SaveLog {
 
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// What the next image needs to go on with this log. Call it after
+    /// everything written is synced.
+    pub(crate) fn parts(&self) -> SaveParts {
+        SaveParts {
+            path: self.path.clone(),
+            len: self.len,
+            reserved: self.reserved,
+            ahead: self.ahead,
+            failed: self.failed,
+        }
+    }
+
+    /// Opens the log `parts` describes to append to, as it was left: it
+    /// isn't read or rewritten.
+    pub(crate) fn reopen(parts: SaveParts) -> Result<Self, HolderError> {
+        let file = File::open(OpenOptions::new().read(true).write(true), &parts.path).map_err(
+            |source| HolderError::Saved {
+                path: parts.path.clone(),
+                source,
+            },
+        )?;
+        Ok(Self {
+            path: parts.path,
+            file,
+            len: parts.len,
+            reserved: parts.reserved,
+            unsynced: false,
+            made_unsynced: false,
+            ahead: parts.ahead,
+            reserved_at: None,
+            failed: parts.failed,
+        })
     }
 
     /// Saves `data`, printed at `offset` and already pushed to `kept`.

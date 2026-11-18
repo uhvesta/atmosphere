@@ -1684,6 +1684,7 @@ fn to_pb(comment: &UserComment, session: &str) -> pb::Comment {
             detached: anchor.detached,
             outdated: comment.outdated,
             base: anchor.base.clone(),
+            layer: String::new(),
         }),
         text: comment.text.clone(),
         author: Some(actor_of(&comment.author, session)),

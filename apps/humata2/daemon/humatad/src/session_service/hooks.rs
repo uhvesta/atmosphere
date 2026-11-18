@@ -65,6 +65,8 @@ impl SessionSvc {
         let (sender, receiver) = mpsc::channel(4);
         let kind = Agent::parse(&request.agent);
         if request.event == CONVERSATION {
+            // D797: any conversation hook says the agent is up.
+            crate::start_ready::heard(&agent.session.id.to_string());
             let named = kind.and_then(|kind| {
                 agent_hooks::parse_conversation(kind, &request.payload).ok()
             });
@@ -81,7 +83,7 @@ impl SessionSvc {
                 .map(|ask| Hooked::Permission(kind, ask)),
             (QUESTION, Some(kind)) => agent_hooks::parse_question(kind, &request.payload)
                 .ok()
-                .map(|asked| Hooked::Question(kind, asked)),
+                .map(|asked| Hooked::Question(kind, asked, request.payload.clone())),
             _ => None,
         };
         // Not an ask this daemon answers, or the user keeps this agent's
@@ -115,7 +117,7 @@ impl SessionSvc {
                     drop(wait);
                 });
             }
-            Hooked::Question(kind, asked) => {
+            Hooked::Question(kind, asked, payload) => {
                 let asked = Question {
                     question: asked.question,
                     choices: asked.choices,
@@ -128,7 +130,7 @@ impl SessionSvc {
                 let asking = super::Asking::hold(&agent.session.id.to_string());
                 tokio::spawn(async move {
                     let mut wait = wait;
-                    let render = move |decision| question_stdout(kind, decision);
+                    let render = move |decision| question_stdout(kind, &payload, decision);
                     hold(wait.decided(), render, sender, DAEMON_HOLD).await;
                     drop(asking);
                     drop(wait);
@@ -166,7 +168,8 @@ impl SessionSvc {
 /// What a hook holds a card for.
 enum Hooked {
     Permission(Agent, agent_hooks::Ask),
-    Question(Agent, agent_hooks::Question),
+    /// The question, and the payload it was parsed from, which its answer needs.
+    Question(Agent, agent_hooks::Question, Vec<u8>),
 }
 
 /// What `agent`'s permission hook prints for `decision`.
@@ -181,14 +184,14 @@ fn permission_stdout(agent: Agent, decision: Decision) -> Vec<u8> {
 }
 
 /// What `agent`'s ask-user hook prints for `decision` (D761).
-fn question_stdout(agent: Agent, decision: Decision) -> Vec<u8> {
+fn question_stdout(agent: Agent, payload: &[u8], decision: Decision) -> Vec<u8> {
     let reply = match decision {
         Decision::Reply { text } => agent_hooks::Reply::Answer(text),
         Decision::Deny { message } => agent_hooks::Reply::Declined { message },
         // A question card takes no approval.
         Decision::Allow | Decision::Undecided => agent_hooks::Reply::Undecided,
     };
-    agent_hooks::render_question(agent, &reply)
+    agent_hooks::render_question(agent, payload, &reply)
 }
 
 /// Waits for `decided` until the hook lets go or `limit` passes, sending

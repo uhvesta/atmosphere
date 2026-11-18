@@ -169,9 +169,11 @@ impl Checkout {
 /// RV-31's "Comparing: …" line for a spec.
 pub(crate) fn label(spec: &RepoSpec) -> String {
     let mut label = match &spec.base {
-        Base::MergeBase { with } => format!("{with}...HEAD"),
+        Base::MergeBase { with } => {
+            format!("{with}...{}", spec.compare.head.as_deref().unwrap_or("HEAD"))
+        }
         Base::Rev { rev } if rev == "HEAD" => "HEAD".to_owned(),
-        Base::Rev { rev } => format!("{rev}..HEAD"),
+        Base::Rev { rev } => format!("{rev}..{}", spec.compare.head.as_deref().unwrap_or("HEAD")),
         Base::Snapshot { n: Some(n) } => format!("since review {n}"),
         Base::Snapshot { n: None } => "since last review".to_owned(),
         Base::ForkPoint => "since the fork".to_owned(),
@@ -191,6 +193,10 @@ pub(crate) fn label(spec: &RepoSpec) -> String {
             label.push_str(" + untracked in ");
             label.push_str(&paths.join(", "));
         }
+    }
+    if !spec.compare.worktree_paths.is_empty() {
+        label.push_str(" + ");
+        label.push_str(&spec.compare.worktree_paths.join(", "));
     }
     if !spec.paths.include.is_empty() {
         label.push_str(" (only ");

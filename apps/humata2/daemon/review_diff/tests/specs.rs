@@ -45,7 +45,11 @@ fn since_main(compare: Compare) -> RepoSpec {
 }
 
 fn compare(upto: Upto, untracked: Untracked) -> Compare {
-    Compare { upto, untracked }
+    Compare {
+        upto,
+        untracked,
+        ..Compare::commits()
+    }
 }
 
 #[test]
@@ -318,4 +322,109 @@ async fn several_repos_are_diffed_together_in_the_specs_order() {
         clones.diff(&unknown, &context()).await,
         Err(DiffError::UnknownRepo { .. })
     ));
+}
+
+// D800: a diff with its own new side, for the layers of a stack.
+
+#[test]
+fn a_range_with_a_head_shows_only_its_commits_whatever_is_checked_out() {
+    let repo = pull_request();
+    let spec = RepoSpec::new(
+        "api",
+        Base::Rev {
+            rev: "feature~1".to_owned(),
+        },
+        Compare::at("feature"),
+    );
+    // On feature with staged, unstaged and untracked work: none of it counts.
+    assert_eq!(paths(&diff(&repo, &spec)), ["b.txt"]);
+    // Checked out somewhere else entirely: the same diff.
+    repo.git(&["stash", "-u", "-q"]);
+    repo.git(&["checkout", "-q", "main"]);
+    assert_eq!(paths(&diff(&repo, &spec)), ["b.txt"]);
+    assert_eq!(added(&hunks(&repo, &diff(&repo, &spec), "b.txt", &spec)), ["buzz"]);
+}
+
+#[test]
+fn worktree_paths_lay_only_the_work_under_them_over_head() {
+    let repo = pull_request();
+    let only_new = RepoSpec::new(
+        "api",
+        Base::Rev {
+            rev: "HEAD".to_owned(),
+        },
+        Compare::worktree(vec!["new/".to_owned()]),
+    );
+    assert_eq!(paths(&diff(&repo, &only_new)), ["new/u.txt"]);
+    let tracked = RepoSpec::new(
+        "api",
+        Base::Rev {
+            rev: "HEAD".to_owned(),
+        },
+        Compare::worktree(vec!["a.txt".to_owned(), "s.txt".to_owned()]),
+    );
+    // Staged and unstaged tracked work under the paths, nothing else.
+    assert_eq!(paths(&diff(&repo, &tracked)), ["a.txt", "s.txt"]);
+    let ignored = RepoSpec::new(
+        "api",
+        Base::Rev {
+            rev: "HEAD".to_owned(),
+        },
+        Compare::worktree(vec![".".to_owned()]),
+    );
+    assert!(diff(&repo, &ignored).file("debug.log").is_none());
+}
+
+#[test]
+fn a_head_with_worktree_paths_ends_at_head_plus_the_work_under_them() {
+    let repo = pull_request();
+    let spec = RepoSpec::new(
+        "api",
+        Base::Rev {
+            rev: "feature~1".to_owned(),
+        },
+        Compare {
+            head: Some("feature".to_owned()),
+            worktree_paths: vec!["other/".to_owned()],
+            ..Compare::commits()
+        },
+    );
+    assert_eq!(paths(&diff(&repo, &spec)), ["b.txt", "other/v.txt"]);
+}
+
+#[test]
+fn a_head_or_worktree_paths_with_a_checkout_level_is_refused() {
+    let repo = pull_request();
+    for compare in [
+        Compare {
+            head: Some("feature".to_owned()),
+            ..Compare::everything()
+        },
+        Compare {
+            worktree_paths: vec!["new/".to_owned()],
+            upto: Upto::Staged,
+            ..Compare::commits()
+        },
+    ] {
+        let spec = since_main(compare.clone());
+        let error = repo
+            .checkout()
+            .diff_blocking(&spec, &context())
+            .expect_err("a conflicting compare is refused");
+        assert!(
+            matches!(error, DiffError::ConflictingCompare { .. }),
+            "for {compare:?}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn a_head_that_does_not_resolve_is_an_unknown_revision() {
+    let repo = pull_request();
+    let spec = since_main(Compare::at("no-such-branch"));
+    let error = repo
+        .checkout()
+        .diff_blocking(&spec, &context())
+        .expect_err("an unknown head is refused");
+    assert!(matches!(error, DiffError::UnknownRevision { .. }), "{error:?}");
 }

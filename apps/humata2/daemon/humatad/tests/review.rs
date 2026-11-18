@@ -179,6 +179,8 @@ fn focus(path: &str, first: u32, last: u32) -> pb::FocusReviewRequest {
         lines: Some(pb::LineRange { first, last }),
         side: pb::DiffSide::New as i32,
         highlights: Vec::new(),
+        layer: String::new(),
+        whole_stack: false,
     }
 }
 
@@ -795,6 +797,7 @@ fn plan(order: &[&str], notes: Vec<pb::ReviewNote>) -> pb::PrepareViewRequest {
             order: order.iter().map(|path| file(path)).collect(),
             groups: Vec::new(),
             notes,
+            stack: None,
         })),
     }
 }
