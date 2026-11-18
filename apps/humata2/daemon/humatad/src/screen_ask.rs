@@ -165,6 +165,10 @@ struct Asked {
     choices: Vec<String>,
     /// The choice the screen highlights now, from 0.
     highlighted: usize,
+    /// Whether `choices` is the whole list (D785). A list cut off by a
+    /// screen too short for it (Copilot scrolls it, so 24 rows show only
+    /// `1. Yes`) is not: its card offers no choice, only the terminal.
+    whole: bool,
 }
 
 impl Asks {
@@ -246,10 +250,17 @@ impl Asks {
         let caller = Caller::Agent(agent.clone());
         let card = Question {
             question: card_text(&record.agent, question, &asked),
-            choices: asked.choices.clone(),
+            // None of a cut-off list (D785): with no choices and only
+            // choices taken, no reply is taken, so the card leads to the
+            // terminal and Dismiss only.
+            choices: asked.offered(),
             // Its choices too, so a card raised again with more of them is
             // a new card, not the one being withdrawn.
-            key: format!("screen/{question:?}/{}", asked.choices.join("\u{1f}")),
+            key: format!(
+                "screen/{question:?}/{}/{}",
+                asked.whole,
+                asked.choices.join("\u{1f}")
+            ),
             only_choices: true,
         };
         let still_asked = still_asks(tab.holder_socket.clone(), question);
@@ -401,7 +412,15 @@ impl Asked {
     /// Whether the card for `self` is the card for `other`: the same words
     /// and choices, wherever the highlight is.
     fn same_card(&self, other: &Asked) -> bool {
-        self.words == other.words && self.choices == other.choices
+        self.words == other.words && self.choices == other.choices && self.whole == other.whole
+    }
+
+    /// The choices the card offers: every one, or none when the screen
+    /// shows only part of the list (D785). A part offered as the whole
+    /// would let one tap on Yes trust a folder the person could not see
+    /// how to refuse.
+    fn offered(&self) -> Vec<String> {
+        if self.whole { self.choices.clone() } else { Vec::new() }
     }
 }
 
@@ -409,10 +428,15 @@ impl Asked {
 /// `Some(None)` when it asks none, `None` when it can't be read.
 async fn read_screen(socket: &Path) -> Option<Option<(ScreenQuestion, Asked)>> {
     let screen = crate::holders::screen_at(socket).await.ok()?;
-    Some(screen_question::asked_on(&screen).and_then(|question| {
-        let asked = read_asked(&screen)?;
-        Some((question, asked))
-    }))
+    Some(asked_of(&screen))
+}
+
+/// The question `screen` asks and what its card shows, if it asks one.
+fn asked_of(screen: &str) -> Option<(ScreenQuestion, Asked)> {
+    let question = screen_question::asked_on(screen)?;
+    let mut asked = read_asked(screen)?;
+    asked.whole &= answers_complete(question, &asked.choices);
+    Some((question, asked))
 }
 
 /// Checks an answer to the card for `question` against the screen of the
@@ -476,9 +500,26 @@ fn keys_for(
     Ok(moves(shown.highlighted, row))
 }
 
+/// Whether `choices` holds every answer `question` must offer, whatever
+/// the screen's footer says (D785): folder trust always offers a way to
+/// refuse, so a list without a No is a part of one.
+fn answers_complete(question: ScreenQuestion, choices: &[String]) -> bool {
+    match question {
+        ScreenQuestion::FolderTrust => {
+            choices.len() >= 2
+                && choices
+                    .iter()
+                    .any(|choice| choice == "No" || choice.starts_with("No,") || choice.starts_with("No "))
+        }
+    }
+}
+
 /// The card's words for `question`, asked by `agent`.
 fn card_text(agent: &str, question: ScreenQuestion, asked: &Asked) -> String {
     let note = match question {
+        _ if !asked.whole => {
+            "Its screen is too short to show every choice, so none is offered here: open its terminal to see them all and answer there. Humata never answers this for you."
+        }
         ScreenQuestion::FolderTrust => {
             "Yes lets the agent read, change and run the files in that folder. Humata never answers this for you: it picks only what you reply."
         }
@@ -501,7 +542,9 @@ fn moves(from: usize, to: usize) -> Vec<u8> {
 
 /// The question and its numbered choices as `screen` shows them: the line
 /// that asks (one ending in `?`), a folder path just above it, and the
-/// `1. …`, `2. …` rows after it. `None` if it lists no choices.
+/// `1. …`, `2. …` rows after it. `None` if it lists no choices. The list
+/// is not whole when it starts past `1.` or a row below it says the list
+/// scrolls (D785); [`answers_complete`] checks the choices themselves.
 fn read_asked(screen: &str) -> Option<Asked> {
     let rows: Vec<String> = screen.lines().map(unboxed).collect();
     let asks = rows.iter().rposition(|row| row.ends_with('?'))?;
@@ -518,16 +561,28 @@ fn read_asked(screen: &str) -> Option<Asked> {
     words.push(rows[asks].clone());
     let mut choices = Vec::new();
     let mut highlighted = 0;
-    for row in &rows[asks + 1..] {
+    // The number the first row shown carries: a list scrolled down starts
+    // past 1.
+    let mut first = 1;
+    let mut after = rows.len();
+    for (at, row) in rows.iter().enumerate().skip(asks + 1) {
         if row.is_empty() && choices.is_empty() {
             continue;
         }
         let marked = row.starts_with(HIGHLIGHT);
         let rest = row.trim_start_matches(HIGHLIGHT).trim_start();
-        let Some((number, text)) = rest.split_once(". ") else {
+        let numbered = rest
+            .split_once(". ")
+            .and_then(|(number, text)| Some((number.parse::<usize>().ok()?, text)));
+        let Some((number, text)) = numbered else {
+            after = at;
             break;
         };
-        if number.parse::<usize>().ok() != Some(choices.len() + 1) {
+        if choices.is_empty() && number >= 1 {
+            first = number;
+        }
+        if number != first + choices.len() {
+            after = at;
             break;
         }
         if marked {
@@ -535,10 +590,14 @@ fn read_asked(screen: &str) -> Option<Asked> {
         }
         choices.push(without_key(text.trim()).to_owned());
     }
+    let scrolls = rows[after..]
+        .iter()
+        .any(|row| row.to_lowercase().contains("to scroll"));
     (!choices.is_empty()).then_some(Asked {
         words,
         choices,
         highlighted,
+        whole: first == 1 && !scrolls,
     })
 }
 
@@ -697,14 +756,77 @@ mod tests {
         assert_eq!(keys("No").expect("picked"), [DOWN, DOWN].concat());
     }
 
+    /// Copilot's trust box as VERIFY 0.2.3 captured it on a headless 80x24
+    /// pty (e2e023 c6c): too short for the box, Copilot shows only `1. Yes`
+    /// and scrolls the rest.
+    const COPILOT_TRUST_CLIPPED: &str = r#" [Current]  Sessions   Issues   Pull requests   Gists
+
+                                                                               ┃
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                         │
+│ ──────────────────────────────────────────────────────────────────────────── │
+│ │ /private/tmp/claude-501/-Users-avestabarzegar-oss-atmosphere-khodr/b04a6 │ │
+│ │ 34e-8063-4fd8-9208-8df4fee17944/scratchpad/verify/lanes/e2/root/Humata/c │ │
+│ │ 6/sessions/trust3                                                        │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                                                                              │
+│ Copilot can read files in this folder and, with your permission, edit them   │
+│ or run code and shell commands. It will remember your permissions for the    │
+│ rest of this session.                                                        │
+│                                                                              │
+│ Git commands run in this folder may use configuration from the enclosing     │
+│ repository and execute programs configured by that repository.               │
+│                                                                              │
+│ Do you trust the files in this folder?                                       │
+│                                                                              │
+│ ❯ 1. Yes                                                                     │
+│                                                                              │
+│ ↑/↓ to navigate · pgup/pgdn to scroll · enter to select · esc to cancel      │
+╰──────────────────────────────────────────────────────────────────────────────╯"#;
+
+    /// D785: a list the screen cuts off is never offered as the whole: the
+    /// card for the clipped box has no choice to tap, so no one-tap Yes,
+    /// and its words send the person to the terminal.
+    #[test]
+    fn a_trust_box_clipped_by_a_short_screen_offers_no_choice_only_the_terminal() {
+        let (question, asked) = asked_of(COPILOT_TRUST_CLIPPED).expect("a question");
+        assert_eq!(question, ScreenQuestion::FolderTrust);
+        assert!(!asked.whole);
+        assert!(asked.offered().is_empty());
+        assert!(card_text("copilot", question, &asked).contains("terminal"));
+    }
+
+    /// D785: the same holds without the footer that says the list scrolls:
+    /// a trust list with no way to refuse is cut off.
+    #[test]
+    fn a_trust_list_without_its_no_is_cut_off_whatever_the_footer_says() {
+        let unfooted = COPILOT_TRUST_CLIPPED.replace("pgup/pgdn to scroll · ", "");
+        let (_, asked) = asked_of(&unfooted).expect("a question");
+        assert!(asked.offered().is_empty());
+        let two = COPILOT_TRUST_FRESH.replace("│   3. No (Esc)  ", "│                ");
+        let (_, asked) = asked_of(&two).expect("a question");
+        assert!(asked.offered().is_empty());
+    }
+
+    #[test]
+    fn a_list_scrolled_past_its_first_choice_is_cut_off() {
+        let scrolled = COPILOT_TRUST_FRESH.replace("│ ❯ 1. Yes      ", "│                ");
+        let (_, asked) = asked_of(&scrolled).expect("a question");
+        assert!(asked.offered().is_empty());
+    }
+
     #[test]
     fn a_reply_to_a_card_read_off_a_box_still_drawing_picks_its_row_on_the_full_box() {
-        let early = read_asked(
+        let (_, early) = asked_of(
             "│ Do you trust the files in this folder? │\n│                │\n│ ❯ 1. Yes       │",
         )
         .expect("a question");
-        assert_eq!(early.choices, ["Yes"]);
-        let full = read_asked(COPILOT_TRUST_MOVED).expect("a question");
+        // D785: this test once took ["Yes"] as the early card's choices,
+        // which offered a one-tap Yes with no way to say No. A box still
+        // drawing shows a part of the list, so its card offers none.
+        assert!(early.offered().is_empty());
+        let (_, full) = asked_of(COPILOT_TRUST_MOVED).expect("a question");
+        assert_eq!(full.offered().len(), 3);
         assert!(!early.same_card(&full));
         let now = (ScreenQuestion::FolderTrust, full);
         assert_eq!(

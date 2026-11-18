@@ -192,6 +192,31 @@ pub(crate) async fn running(
     Ok(record)
 }
 
+/// Points `record`'s tab at the holder `spawned`, with a new generation and
+/// an empty reply record when it named another, in one commit; the agent
+/// record is left as it is. [`running`] then finds the tab already naming
+/// it and keeps its generation.
+async fn hand_tab_to(
+    store: &Arc<Store>,
+    record: &AgentRecord,
+    spawned: &Spawned,
+    created: i64,
+) -> Result<(), ReviveError> {
+    let (generation, new_holder) = holder_generation(store, record, spawned.pid).await?;
+    if !new_holder {
+        return Ok(());
+    }
+    let mut tab = agent_tab(record, spawned.pid, created);
+    tab.holder_generation = generation;
+    let fresh = fresh_replies(generation);
+    blocking({
+        let store = store.clone();
+        move || store.put_tab_with_replies(&tab, &fresh)
+    })
+    .await?
+    .map_err(|source| store_error(&record.session, "point the agent's tab at its new holder", source))
+}
+
 /// The generation the agent's tab has for the holder `pid`, and whether
 /// that holder is new to the tab: the saved tab's own when it already names
 /// `pid`, one more when it names another process (a new holder, so clients
@@ -300,6 +325,14 @@ pub(crate) async fn resume(
     let argv = record.launch.resume_argv.clone();
     let spawned = start_holder(config, &record, &argv, variables, Some(&line)).await?;
     point("revive.resume.spawned");
+    // SEC-15 trusts the process tree of the holder the tab names, and the
+    // resumed agent's own tools call in while it is still being checked:
+    // the tab names the new holder from now on, not once it's verified.
+    if let Err(error) = hand_tab_to(store, &record, &spawned, created).await {
+        // The record still says resuming: the next reconcile resumes again.
+        stop_holder(&socket, Some(spawned.pid)).await;
+        return Err(error);
+    }
 
     // A start fresh's first message that was kept but not typed is this
     // conversation's first message, and says what the session is about: the

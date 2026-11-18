@@ -534,7 +534,12 @@ by the host over the stdio link the host started.
   refuse an agent tab with FailedPrecondition; Adopt makes a running holder
   no session names a session in the channel given, the Desk when none, and
   refuses one a session already has; an agent caller of Stop, End or Adopt
-  needs the machine destroy switch; an offline machine refuses them at once); the host
+  needs the machine destroy switch; an offline machine refuses them at once),
+  and `LetGoOfHost`, which only the host's daemon sends, when it forgets or
+  removes the machine and again at each later link (D784: the machine drops
+  the host's sessions and their channels it still records, keeps their tabs
+  with no session so every holder keeps running under Not in a channel, and
+  ends nothing; a host refuses it); the host
   relays those last groups for the user only, never for an agent)
   to the machine's own socket
   daemon, which runs them as the user's, marked as from the host. Before

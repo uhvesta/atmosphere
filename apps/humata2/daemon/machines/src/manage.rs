@@ -566,6 +566,9 @@ impl Machines {
             undo_pending: false,
             provider: None,
         };
+        // Again under the claim: a removal of the name may have started, or
+        // still be letting its sessions go, since the add was planned (D783).
+        self.not_being_removed(&name)?;
         if !self.hosts.insert_new(entry.clone())? {
             return Err(ManageError::NameTaken { machine: name });
         }
@@ -655,6 +658,9 @@ impl Machines {
                 link: None,
             }),
         };
+        // Again under the claim: a removal of the name may have started, or
+        // still be letting its sessions go, since the add was planned (D783).
+        self.not_being_removed(&name)?;
         if !self.hosts.insert_new(entry.clone())? {
             return Err(ManageError::NameTaken { machine: name });
         }
@@ -861,14 +867,35 @@ impl Machines {
     /// user's presence: removes humatad2 and its service from the machine,
     /// forgets the host key, drops the entry.
     pub fn remove(&self, machine: &str, drive: &mut Drive<'_>) -> Result<(), ManageError> {
+        let result = self.remove_holding_name(machine, drive);
+        self.removal_done(machine);
+        result
+    }
+
+    /// As [`Self::remove`], but a removal that goes through keeps the name
+    /// being removed until [`Self::removal_done`], so what the host still
+    /// does for the machine it removed (D783: archiving its sessions,
+    /// withdrawing its requests) ends before an add of the name can start.
+    /// One that fails lets the name go at once: it is still `Removing` in
+    /// hosts.json when it couldn't reach the machine, which `name_free` reads.
+    pub fn remove_holding_name(
+        &self,
+        machine: &str,
+        drive: &mut Drive<'_>,
+    ) -> Result<(), ManageError> {
         let result = self.claim(machine).and_then(|_busy| {
             let entry = self.get(machine)?;
             self.remove_claimed(machine, entry, drive)
         });
-        // One that couldn't reach the machine is still `Removing` in
-        // hosts.json, which `name_free` reads.
-        lock_set(&self.removing).remove(machine);
+        if result.is_err() {
+            self.removal_done(machine);
+        }
         result
+    }
+
+    /// The removal of `machine` is over: an add of its name goes ahead.
+    pub fn removal_done(&self, machine: &str) {
+        lock_set(&self.removing).remove(machine);
     }
 
     /// Notes that removing `machine` was asked for and [`Self::remove`] will
@@ -877,12 +904,15 @@ impl Machines {
         lock_set(&self.removing).insert(machine.to_owned());
     }
 
-    /// `name` can be added: no machine has it, or a removal still holds it.
+    /// `name` can be added: no machine has it and no removal holds it. A
+    /// removal holds the name after its entry has left hosts.json, until
+    /// [`Self::removal_done`] (D783).
     fn name_free(&self, name: &str) -> Result<(), ManageError> {
+        self.not_being_removed(name)?;
         let Some(entry) = self.hosts.get(name)? else {
             return Ok(());
         };
-        if entry.state == EntryState::Removing || lock_set(&self.removing).contains(name) {
+        if entry.state == EntryState::Removing {
             return Err(ManageError::BeingRemoved {
                 machine: name.to_owned(),
             });
@@ -890,6 +920,16 @@ impl Machines {
         Err(ManageError::NameTaken {
             machine: name.to_owned(),
         })
+    }
+
+    /// Refuses `name` while a removal of it is under way (D760, D783).
+    fn not_being_removed(&self, name: &str) -> Result<(), ManageError> {
+        if lock_set(&self.removing).contains(name) {
+            return Err(ManageError::BeingRemoved {
+                machine: name.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// LD-12: forgets a machine that is lost, on this host only, without

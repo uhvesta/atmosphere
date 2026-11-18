@@ -3,6 +3,7 @@
 //! it has focus (Escape too), never sizes the tab, and gives focus back to
 //! the list when the item goes.
 use super::*;
+use gpui_kit::{Pixels, SharedString};
 use humata2_clients::Event;
 use humata2_clients::model::{RequestId, RequestKind};
 
@@ -129,4 +130,150 @@ fn a_withdrawn_item_takes_its_terminal_and_gives_focus_back() {
             assert_eq!(printed(&app, &next), before);
         }
     }
+}
+
+/// The window `height` points tall, redrawn.
+fn resize(app: &mut App, height: f32) {
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.resize(size(px(1280.), px(height)));
+            window.bounds_changed(cx);
+        })
+        .expect("resize");
+    app.settle();
+    app.draw();
+    app.settle();
+    app.draw();
+}
+
+/// At the last paint: the terminal box, the screen inside it, one row's
+/// height, Dismiss, and the bottom of the window, where the detail ends.
+struct Layout {
+    frame: Bounds<Pixels>,
+    screen: Bounds<Pixels>,
+    line: f32,
+    dismiss: Bounds<Pixels>,
+    window_bottom: f32,
+}
+
+fn layout(app: &mut App, id: &RequestId) -> Layout {
+    let dismiss = SharedString::from(format!("dismiss {id}"));
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            // The grid is the tab's 24 rows and a pixel.
+            let grid = window.find("terminal").bounds();
+            Layout {
+                frame: window.find("inbox-terminal").bounds(),
+                screen: window.find("terminal-replica-pan").bounds(),
+                line: (f32::from(grid.size.height) - 1.) / 24.,
+                dismiss: window.find(dismiss).bounds(),
+                window_bottom: f32::from(window.viewport_size().height),
+            }
+        })
+        .unwrap()
+}
+
+fn bottom(bounds: Bounds<Pixels>) -> f32 {
+    f32::from(bounds.origin.y + bounds.size.height)
+}
+
+#[test]
+fn the_box_shows_whole_rows_inside_its_inset_and_dismiss_stays_in_view() {
+    let (mut app, _, id) = inbox();
+    for height in [760., 600.] {
+        resize(&mut app, height);
+        let at = layout(&mut app, &id);
+        assert!(f32::from(at.frame.size.height) <= 420.5, "{height}: at most 420 pt");
+        let rows = (f32::from(at.screen.size.height) - 1.) / at.line;
+        assert!((rows - rows.round()).abs() < 0.05, "{height}: whole rows, not {rows}");
+        assert!(rows.round() >= 8., "{height}: {rows} rows");
+        for (inner, outer) in [
+            (at.screen.origin.x, at.frame.origin.x),
+            (at.screen.origin.y, at.frame.origin.y),
+        ] {
+            assert!(f32::from(inner - outer) >= 8.5, "{height}: the inset shows");
+        }
+        assert!(bottom(at.frame) - bottom(at.screen) >= 8.5, "{height}: the inset shows under the screen");
+        assert!(
+            f32::from(at.frame.origin.x + at.frame.size.width - at.screen.origin.x - at.screen.size.width) >= 8.5,
+            "{height}: the inset shows beside the screen"
+        );
+        assert!(bottom(at.dismiss) <= at.window_bottom - 19.5, "{height}: Dismiss is in view");
+    }
+}
+
+#[test]
+fn a_short_window_keeps_eight_rows_and_the_detail_scrolls() {
+    let (mut app, _, id) = inbox();
+    resize(&mut app, 380.);
+    let at = layout(&mut app, &id);
+    let rows = (f32::from(at.screen.size.height) - 1.) / at.line;
+    assert!(rows.round() >= 8., "{rows} rows");
+    assert!(bottom(at.dismiss) > at.window_bottom, "Dismiss is under the fold");
+}
+
+/// The design workspace whose waiting questions are on a tab their session
+/// doesn't have, so no terminal can be shown.
+fn workspace_without_screens() -> Workspace {
+    let mut workspace = workspace();
+    for request in workspace.requests.iter_mut().filter(|r| r.answer.is_none()) {
+        request.on_screen = Some(9);
+    }
+    workspace
+}
+
+fn hint(app: &mut App) -> String {
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            window.find("inbox-screen-hint").label().unwrap_or_default().to_owned()
+        })
+        .unwrap()
+}
+
+#[test]
+fn the_hint_sends_you_to_the_terminal_only_while_it_shows() {
+    let (mut app, _, _) = inbox();
+    assert!(hint(&mut app).contains("terminal"), "{}", hint(&mut app));
+    let mut app = App::new(workspace_without_screens());
+    app.settle();
+    app.send(AppAction::Navigate(Route::Inbox));
+    app.draw();
+    app.settle();
+    assert!(!app.contains("terminal-replica"), "no screen to show");
+    assert!(!hint(&mut app).contains("terminal"), "{}", hint(&mut app));
+}
+
+/// The bounds of a request's row in the Inbox list.
+fn row(app: &mut App, id: &RequestId) -> Bounds<Pixels> {
+    let row = SharedString::from(format!("global-request {id}"));
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| window.find(row).bounds())
+        .unwrap()
+}
+
+// The row's time is a plain label, not in the view snapshots, so the test
+// reads the row: a title that wrapped would make it taller.
+#[test]
+fn a_long_title_stays_on_one_line() {
+    let mut workspace = workspace();
+    let Some(long) = workspace.requests.iter_mut().find(|r| r.answer.is_none()) else {
+        panic!("the design workspace has a waiting request");
+    };
+    long.title = "Copilot asks: Do you trust the files in this folder? ".repeat(6);
+    let long = long.id.clone();
+    let mut app = App::new(workspace);
+    app.send(AppAction::Navigate(Route::Inbox));
+    let others: Vec<RequestId> = app.ui.read(|state| {
+        state.inbox.shown().into_iter().map(|r| r.id.clone()).filter(|id| *id != long).collect()
+    });
+    let Some(other) = others.first() else {
+        panic!("the Inbox lists another request");
+    };
+    let (long_row, other_row) = (row(&mut app, &long), row(&mut app, other));
+    assert!(
+        (f32::from(long_row.size.height) - f32::from(other_row.size.height)).abs() < 0.5,
+        "the title stays on one line"
+    );
 }

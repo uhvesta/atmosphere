@@ -221,6 +221,25 @@ impl pb::machine_service_server::MachineService for BoxMachineSvc {
         }))
     }
 
+    /// D784, D783: the host forgot or removed this machine; its holders
+    /// keep running here, no session or channel naming them.
+    async fn let_go_of_host(
+        &self,
+        request: Request<pb::LetGoOfHostRequest>,
+    ) -> Result<Response<pb::LetGoOfHostResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::host_only(&caller, "humata.v1.MachineService.LetGoOfHost")?;
+        let request = request.into_inner();
+        let sessions = request.sessions.into_iter().map(|id| id.value).collect();
+        let channels = request.channels.into_iter().map(|id| id.value).collect();
+        let let_go = crate::running_holders::let_go(self.storage.store(), sessions, channels)
+            .await
+            .map_err(|error| error.into_status(&self.machine))?;
+        Ok(Response::new(pb::LetGoOfHostResponse {
+            let_go: let_go.into_iter().map(|value| pb::SessionId { value }).collect(),
+        }))
+    }
+
     async fn trim_logs(
         &self,
         request: Request<pb::TrimLogsRequest>,

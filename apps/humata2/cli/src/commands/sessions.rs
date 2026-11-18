@@ -13,7 +13,7 @@ use crate::resolve;
 
 pub(super) async fn attach<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
-    session: &str,
+    session: Option<String>,
     tab: Option<String>,
     read_only: bool,
 ) -> Result<Done, CliError> {
@@ -21,7 +21,20 @@ pub(super) async fn attach<D: Daemon, C: Console>(
     if ctx.flags.dry_run {
         return Err(CliError::AttachDryRun);
     }
-    let session = ctx.session(session).await?;
+    let Some(session) = session else {
+        // A terminal no session holds: the tab alone names it.
+        let tab = tab.ok_or(CliError::Missing {
+            flag: "<session> or --tab <tab>",
+        })?;
+        let open = pb::AttachOpen {
+            session: None,
+            tab: Some(pb::TabId { value: tab }),
+            read_only,
+            ..Default::default()
+        };
+        return streams::attach(ctx, open).await;
+    };
+    let session = ctx.session(&session).await?;
     let tab = match tab {
         Some(value) => pb::TabId { value },
         None => {
@@ -109,19 +122,42 @@ mod tests {
 /// the new tab instead, for a script to attach to later.
 pub(super) async fn shell<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
-    machine: &str,
+    machine: Option<String>,
+    session: Option<String>,
 ) -> Result<Done, CliError> {
-    let request = pb::OpenMachineShellRequest {
-        idempotency_key: ctx.key(),
-        machine: Some(ctx.machine(machine).await?),
+    let tab: pb::Tab = match (machine, session) {
+        (_, Some(session)) => {
+            let request = pb::OpenShellTabRequest {
+                idempotency_key: ctx.key(),
+                session: Some(ctx.session(&session).await?),
+                ..Default::default()
+            };
+            if ctx.flags.json || ctx.flags.dry_run {
+                return ctx.change(rpc::terminal::OPEN_SHELL_TAB, &request).await;
+            }
+            ctx.call(rpc::terminal::OPEN_SHELL_TAB, &request).await?
+        }
+        (Some(machine), None) => {
+            let request = pb::OpenMachineShellRequest {
+                idempotency_key: ctx.key(),
+                machine: Some(ctx.machine(&machine).await?),
+            };
+            if ctx.flags.json || ctx.flags.dry_run {
+                return ctx.change(rpc::terminal::OPEN_MACHINE_SHELL, &request).await;
+            }
+            ctx.call(rpc::terminal::OPEN_MACHINE_SHELL, &request).await?
+        }
+        (None, None) => {
+            return Err(CliError::Missing {
+                flag: "<machine> or --session <session>",
+            });
+        }
     };
-    if ctx.flags.json || ctx.flags.dry_run {
-        return ctx.change(rpc::terminal::OPEN_MACHINE_SHELL, &request).await;
-    }
-    let tab: pb::Tab = ctx.call(rpc::terminal::OPEN_MACHINE_SHELL, &request).await?;
+    // HO-6: a shell on another machine is attached through the host by its machine.
     let open = pb::AttachOpen {
         session: tab.session,
         tab: tab.id,
+        machine: tab.machine,
         ..Default::default()
     };
     streams::attach(ctx, open).await
@@ -246,7 +282,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
         }
         SessionCommand::Stop { tab: Some(tab), .. } => {
             let request = pb::StopRunningHolderRequest {
-                machine: ctx.machine_flag().await?,
+                machine: Some(ctx.machine_or_this().await?),
                 tab: Some(pb::TabId { value: tab }),
             };
             ctx.change(rpc::machine::STOP_RUNNING_HOLDER, &request).await
@@ -260,14 +296,14 @@ pub(super) async fn session<D: Daemon, C: Console>(
         }
         SessionCommand::Resume { tab: Some(tab), .. } => {
             let request = pb::ResumeRunningHolderRequest {
-                machine: ctx.machine_flag().await?,
+                machine: Some(ctx.machine_or_this().await?),
                 tab: Some(pb::TabId { value: tab }),
             };
             ctx.change(rpc::machine::RESUME_RUNNING_HOLDER, &request).await
         }
         SessionCommand::End { tab: Some(tab), .. } => {
             let request = pb::EndRunningHolderRequest {
-                machine: ctx.machine_flag().await?,
+                machine: Some(ctx.machine_or_this().await?),
                 tab: Some(pb::TabId { value: tab }),
             };
             ctx.change(rpc::machine::END_RUNNING_HOLDER, &request).await
@@ -276,9 +312,17 @@ pub(super) async fn session<D: Daemon, C: Console>(
         SessionCommand::End { session, tab: None } => archive(ctx, &named(session)?, pb::ArchiveChoice::Archive).await,
         SessionCommand::Running => {
             let request = pb::ListRunningHoldersRequest {
-                machine: ctx.machine_flag().await?,
+                machine: Some(ctx.machine_or_this().await?),
             };
             reply(ctx, rpc::machine::LIST_RUNNING_HOLDERS, &request).await
+        }
+        SessionCommand::Adopt { tab } => {
+            let request = pb::AdoptRunningHolderRequest {
+                machine: Some(ctx.machine_or_this().await?),
+                tab: Some(pb::TabId { value: tab }),
+                channel: ctx.channel_flag().await?,
+            };
+            ctx.change(rpc::machine::ADOPT_RUNNING_HOLDER, &request).await
         }
         SessionCommand::Resume { session, fresh, tab: None } => {
             use pb::resume_session_request::Mode;
@@ -328,12 +372,12 @@ pub(super) async fn session<D: Daemon, C: Console>(
             )
             .await
         }
-        SessionCommand::Restore { session } => {
+        SessionCommand::Restore { session, stopped } => {
             let request = pb::RestoreSessionRequest {
                 idempotency_key: ctx.key(),
                 id: Some(ctx.session(&session).await?),
                 machine: ctx.machine_flag().await?,
-                stopped: false,
+                stopped,
             };
             ctx.change(rpc::session::RESTORE_SESSION, &request).await
         }

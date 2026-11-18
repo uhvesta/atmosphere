@@ -282,7 +282,7 @@ ones to decide on.
 | 50 | A repo cannot be added to a running session (`session_service.rs:2366-2372`). | no owner (ROAM waits on it) | agents-06 |
 | 51 | A session cannot be deleted, and a repo cannot be dropped from one (`session_service.rs:2331-2386`). | no milestone | macro-16 |
 | 52 | The app cannot delete a channel. Only the CLI can. | no milestone | macro-16 |
-| 53 | A channel that other machines hold, or that has live sessions elsewhere, cannot be deleted (`channel_service/delete.rs:425-433`). | no milestone | macro-16 |
+| 53 | A channel that other machines hold, or that has live sessions elsewhere, cannot be deleted yet. Plan and delete both refuse it up front, naming each machine (online or offline) and its live sessions, with the fix (`refuse_held_elsewhere` in `channel_service/delete.rs`). | no milestone | macro-16 |
 | 54 | The Storage page has no Empty trash, and deleted sessions and channels have no restore screen. | no milestone | macro-16 |
 | 55 | A session cannot be handed to another person. | no milestone | macro-03 |
 

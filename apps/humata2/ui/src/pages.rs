@@ -280,7 +280,7 @@ pub(crate) fn session_header(
                     )),
             )
         })
-        .when(matches!(session.status, Status::Exited { .. }), |bar| {
+        .when(crate::session_tabs::offers_resume(session), |bar| {
             bar.child(
                 widgets::primary_in(look,
                     ui,

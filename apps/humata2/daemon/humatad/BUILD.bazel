@@ -377,6 +377,17 @@ RIG_TESTS.append("own_copy_remote")
 # D784: the host lists, stops, resumes and ends a box's holders there.
 RIG_TESTS.append("running_holders_remote")
 
+# HO-6: a machine shell opened, attached, stopped, resumed and ended on a box
+# through the host.
+RIG_TESTS.append("machine_shell_remote")
+
+# D784: a failed resume on a box ends the holder it started there.
+RIG_TESTS.append("resume_exits_at_once_remote")
+
+# CH-24, D784: no delete plan for a channel another machine holds, and the
+# refusal tells online machines from offline ones as they are.
+RIG_TESTS.append("channel_delete_remote")
+
 # Single power cuts picked from the suites below, one test each: the quick
 # check to queue while working on recovery.
 RIG_TESTS.append("power_cut_focus")
@@ -399,6 +410,15 @@ POWER_CUT_SHARDS = 2
 RIG_SHARDS = {
     "stop_box": 4,
 }
+
+# Rig suites that check a Linux box (D784's remote amendment): built for
+# Linux only, so the Linux VM batch runs them with `//apps/humata2/daemon/...`
+# (testing/linux/BATCH.md) and the Mac skips them.
+LINUX_VM_TESTS = [
+    "machine_shell_remote_linux",
+]
+
+RIG_TESTS.extend(LINUX_VM_TESTS)
 
 # Each test starts humatad2 and humata2_holder as the real binaries and
 # talks to them over gRPC on a socket of its own: the admin daemon with
@@ -441,6 +461,7 @@ RIG_SHARDS = {
             src.removeprefix("tests/").removesuffix(".rs"),
             0,
         ),
+        target_compatible_with = ["@platforms//os:linux"] if src.removeprefix("tests/").removesuffix(".rs") in LINUX_VM_TESTS else [],
         deps = [
             ":grpc",
             "//apps/humata2/chunk:humata2_chunk",

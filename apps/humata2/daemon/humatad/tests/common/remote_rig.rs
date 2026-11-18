@@ -769,6 +769,14 @@ impl Rig {
         self.add_as(name, "again").await;
     }
 
+    /// Adds `name` again, the same machine with its daemon and holders as
+    /// they are, after the host forgot or removed it, and returns once its
+    /// link is up.
+    #[allow(dead_code)]
+    pub async fn add_again(&self, name: &str) {
+        self.add_as(name, "again").await;
+    }
+
     /// Adds `name` as [`add`](Self::add) does; `round` keeps each add's
     /// idempotency keys its own.
     async fn add_as(&self, name: &str, round: &str) {

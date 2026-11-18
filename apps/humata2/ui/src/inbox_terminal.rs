@@ -1,9 +1,11 @@
 //! The live terminal under a question read off its agent's screen, in the
 //! wide Inbox (D781). It draws the tab at the tab's own size: the font
 //! shrinks to fit the columns, down to 9 pt, and a wider screen scrolls
-//! sideways. The box is as tall as the rows, at most 420, and opens
-//! scrolled to the bottom. It never takes focus by itself: a click in it,
-//! or Tab from the list, gives it focus, shown by a 2 pt accent border.
+//! sideways. The box shows whole rows only, opens scrolled to the bottom,
+//! and is at most 420 pt and at most what the detail has left under the card
+//! and above the hint, so Dismiss stays in view; below 8 rows the detail
+//! scrolls instead. It never takes focus by itself: a click in it, or Tab
+//! from the list, gives it focus, shown by a 2 pt accent border.
 use crate::terminals::{Link, font_theme, grid_text};
 use crate::{bridge::Ui, theme::Look, widgets::row};
 use gpui_kit::base::TestTextExt as _;
@@ -19,12 +21,88 @@ use terminal_grid::Grid as _;
 use terminal_replica::TerminalReplica;
 use terminal_view::Theme;
 
-/// The tallest the box grows; more rows scroll.
+/// The tallest the box grows, border and inset included; more rows scroll.
 const MAX_HEIGHT: f32 = 420.;
+/// The fewest rows the box shows when the detail is short: the detail
+/// scrolls instead.
+const MIN_ROWS: u16 = 8;
 /// The smallest font the screen shrinks to before it scrolls sideways.
 const MIN_FONT: f32 = 9.;
-/// Inside the box, around the screen.
+/// Inside the box, around the screen, on all four sides.
 const INSET: f32 = 8.;
+/// The box's frame, top and bottom: the inset and a 1 pt border each.
+const FRAME: f32 = 2. * (INSET + 1.);
+/// The Inbox detail's padding, and the gap between its card, terminal and
+/// hint.
+pub(crate) const DETAIL_PAD: f32 = 20.;
+pub(crate) const DETAIL_GAP: f32 = 12.;
+
+/// A part of the Inbox's detail whose height the box fits under.
+#[derive(Clone, Copy)]
+pub(crate) enum Measured {
+    /// The detail's visible height.
+    Pane,
+    /// The open item's card.
+    Card,
+    /// The hint row with Dismiss.
+    Hint,
+}
+
+/// What the Inbox's detail measured at its last paint, and whether its
+/// terminal shows a screen (the hint says where to answer by it).
+#[derive(Default)]
+pub(crate) struct InboxRoom {
+    pane: Cell<f32>,
+    card: Cell<f32>,
+    hint: Cell<f32>,
+    screen: Cell<bool>,
+}
+
+impl InboxRoom {
+    /// An element, drawn over `part` at its full size, that records its
+    /// height at each paint and redraws once when it changed.
+    pub(crate) fn measure(ui: &Rc<Ui>, part: Measured) -> impl IntoElement {
+        let ui = ui.clone();
+        canvas(
+            move |bounds, window, _| {
+                let room = ui.inbox_room();
+                let cell = match part {
+                    Measured::Pane => &room.pane,
+                    Measured::Card => &room.card,
+                    Measured::Hint => &room.hint,
+                };
+                let height = f32::from(bounds.size.height);
+                if (cell.get() - height).abs() >= 0.5 {
+                    cell.set(height);
+                    window.refresh();
+                }
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+
+    /// The most the box can take: the detail less its padding, the card,
+    /// the hint and the gaps between them. `None` until it was measured.
+    fn room(&self) -> Option<f32> {
+        let pane = self.pane.get();
+        (pane > 0.).then(|| {
+            pane - 2. * DETAIL_PAD - self.card.get() - self.hint.get() - 2. * DETAIL_GAP
+        })
+    }
+
+    /// Whether the open item's terminal shows its screen.
+    pub(crate) fn screen(&self) -> bool {
+        self.screen.get()
+    }
+
+    pub(crate) fn set_screen(&self, screen: bool) {
+        self.screen.set(screen);
+    }
+}
 
 /// The view the Inbox's detail draws under the card.
 pub(crate) struct InboxTerminal {
@@ -39,8 +117,11 @@ pub(crate) struct InboxTerminal {
     look: Option<Look>,
     /// The box's width at the last paint, to fit the font to.
     width: Rc<Cell<Pixels>>,
-    /// Whether it has been scrolled to the bottom since it opened.
+    /// Whether it has been scrolled to the bottom since it opened or
+    /// changed how many rows it shows.
     at_bottom: bool,
+    /// How many rows it showed at the last render.
+    rows_shown: u16,
 }
 
 impl InboxTerminal {
@@ -60,6 +141,7 @@ impl InboxTerminal {
             look: None,
             width: Rc::new(Cell::new(px(0.))),
             at_bottom: false,
+            rows_shown: 0,
         })
     }
 
@@ -99,6 +181,16 @@ impl InboxTerminal {
             )
             .child("to try there.")
             .into_any_element()
+    }
+
+    /// Whether it draws the screen (or is opening it), not the reason it
+    /// can't: as [`Render`] decides.
+    pub(crate) fn shows_screen(&self, cx: &App) -> bool {
+        let Some((replica, link)) = &self.shown else {
+            return false;
+        };
+        replica.read(cx).pane().is_some()
+            || !matches!(&*link.borrow(), Link::Ended { why: Some(_), .. })
     }
 }
 
@@ -154,15 +246,27 @@ impl Render for InboxTerminal {
                 cx.notify();
             }
         }
+        // Whole rows only: as many as fit in 420 pt and in what the detail
+        // has left, at least 8 (the detail scrolls then), at most the tab's.
         let line = cell.map_or(18., |cell| cell.height);
-        let height = (f32::from(rows) * line + 1.).min(MAX_HEIGHT);
+        let most = self.ui.inbox_room().room().map_or(MAX_HEIGHT, |room| room.min(MAX_HEIGHT));
+        // The grid is a pixel taller than its rows.
+        let fit = ((most - FRAME - 1.) / line).floor().clamp(0., f32::from(u16::MAX)) as u16;
+        let shown = fit.max(MIN_ROWS).min(rows.max(1));
+        let height = f32::from(shown) * line + 1.;
+        // A box that grew or shrank under the card opens at the bottom again,
+        // where the question is.
+        if shown != self.rows_shown {
+            self.rows_shown = shown;
+            self.at_bottom = false;
+        }
         if !self.at_bottom {
             let scroll = replica.read(cx).viewport_scroll().clone();
             let bottom = scroll.max_offset().y;
             if bottom > px(0.) {
                 scroll.set_offset(point(scroll.offset().x, -bottom));
                 self.at_bottom = true;
-            } else if f32::from(rows) * line + 1. <= MAX_HEIGHT && cell.is_some() {
+            } else if shown >= rows && cell.is_some() {
                 self.at_bottom = true;
             } else {
                 cx.notify();
@@ -181,17 +285,20 @@ impl Render for InboxTerminal {
             .test_support()
             .relative()
             .w_full()
-            .h(px(height + 2. * INSET + 4.))
+            .h(px(height + FRAME))
             .rounded(px(8.))
             .bg(rgb(look.term))
             .border(px(if focused { 2. } else { 1. }))
             .border_color(rgb(if focused { look.accent } else { look.line }))
-            .p(px(INSET + if focused { 0. } else { 1. }))
+            // The 2 pt focus border takes a point of the inset's place, so
+            // the screen never moves.
+            .p(px(INSET - if focused { 1. } else { 0. }))
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 click.update(cx, |replica, cx| replica.focus_input(window, cx));
             })
-            .child(replica)
+            // Clipped to the inset, so it shows on all four sides.
+            .child(div().size_full().overflow_hidden().child(replica))
             .child(
                 canvas(
                     move |bounds, window, _| {

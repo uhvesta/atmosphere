@@ -31,10 +31,14 @@ impl AppState {
     /// Whether something over the page holds the keyboard, so a terminal
     /// must not take focus from it: an overlay, a session's inline sheet,
     /// a Desk dialog or pop-up, the Add machine dialog, the Humata folder
-    /// sheet, Review a pull request, or Submit review.
+    /// sheet, Review a pull request, Submit review, the close-tab dialog, or
+    /// the running list's End for good… and Adopt… (D784).
     #[must_use]
     pub fn dialog_holds_keys(&self) -> bool {
         !self.overlays.is_empty()
+            || self.session.closing.is_some()
+            || self.machine_page.running.confirm_end.is_some()
+            || self.machine_page.running.adopting.is_some()
             || self.session.fork.is_some()
             || self.session.moving.is_some()
             || self.session.continuing.is_some()

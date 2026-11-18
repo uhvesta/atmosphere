@@ -68,7 +68,7 @@ fn an_agent_on_a_remote_machine_asks_with_three_ways_to_close() {
     let mut app = app_titled(ThemeMode::Light, "desk-brin-rfc", "BRIN rollout RFC");
     ask(&mut app, "desk-brin-rfc");
     assert!(closing(&app));
-    for id in ["close-dialog", "close-cancel", "close-end", "close-stop", "close-keep", "close-always"] {
+    for id in ["close-dialog-root", "close-cancel", "close-end", "close-stop", "close-keep", "close-always"] {
         assert!(app.contains(id), "{id} is drawn");
     }
     shoot(&mut app, "close-agent-remote");
@@ -81,7 +81,9 @@ fn a_shell_on_this_mac_asks_without_an_archive_line() {
     let mut app = app_titled(ThemeMode::Dark, "desk-tidy-infra", "");
     ask(&mut app, "desk-tidy-infra");
     assert!(closing(&app));
-    assert!(app.contains("close-dialog"));
+    // The card itself sits inside the focus trap, which takes the id the
+    // window can find; its root group is found.
+    assert!(app.contains("close-dialog-root"));
     shoot(&mut app, "close-shell-this-mac");
     let asked = app.ui.read(|state| state.session.closing.clone()).expect("asking");
     assert_eq!(asked.agent, "Shell");
@@ -204,6 +206,53 @@ fn ending_a_session_row_asks_once() {
     let mut app = machine_page_app(ThemeMode::Light, true);
     app.click("running-orphan-menu-0-button");
     app.click("running-orphan-menu-0-2");
-    assert!(app.contains("running-end-dialog"));
+    let asked = app.ui.read(|state| state.machine_page.running.confirm_end.is_some());
+    assert!(asked, "End session… asks to confirm");
+    assert!(app.contains("running-dialog") && app.contains("running-end-confirm"));
     shoot(&mut app, "machine-running-end");
+}
+
+/// The toasts the app is showing, in order.
+fn toasts(app: &App) -> Vec<String> {
+    app.ui.read(|state| state.toasts.iter().map(|toast| toast.text.clone()).collect())
+}
+
+#[test]
+fn with_always_keep_running_on_a_close_asks_nothing_and_says_it_still_runs() {
+    let mut app = app_titled(ThemeMode::Light, "desk-brin-rfc", "BRIN rollout RFC");
+    app.send(AppAction::Session(SessionAction::Close(CloseAction::SetAlwaysKeepRunning(true))));
+    ask(&mut app, "desk-brin-rfc");
+    assert!(!closing(&app), "no dialog once Always keep running is on");
+    assert_eq!(toasts(&app).len(), 1, "one toast says the agent still runs");
+    shoot(&mut app, "close-keep-running-toast");
+}
+
+#[test]
+fn end_for_good_archives_the_session_and_says_so() {
+    let mut app = app_titled(ThemeMode::Light, "desk-brin-rfc", "BRIN rollout RFC");
+    ask(&mut app, "desk-brin-rfc");
+    app.click("close-end");
+    if app.contains("archive-confirm") {
+        app.click("archive-confirm");
+    }
+    assert!(!closing(&app));
+    assert!(
+        app.ui.read(|state| state.workspace.session(&SessionId::new("desk-brin-rfc")).is_none_or(|s| s.archived)),
+        "the session is archived"
+    );
+    assert_eq!(toasts(&app).len(), 1, "one toast, with Undo");
+    shoot(&mut app, "close-ended-toast");
+}
+
+/// Frame 28: a Hosts row's "N sessions" counts the orphans running there.
+#[test]
+fn the_hosts_row_counts_a_machines_running_orphans() {
+    let mut app = App::new(fixture::design());
+    let orphans = [39_001, 39_002].map(|pid| holder(None, "", Agent::Shell, Some(pid), "~/scratch/probe"));
+    app.fakes.daemon.set_running_holders(orphans.to_vec());
+    app.fold_quiet_channels();
+    app.send(AppAction::Switch(Route::Hosts));
+    let counted = app.ui.read(|state| state.hosts.orphans.get(&devbox()).copied());
+    assert_eq!(counted, Some(2));
+    shoot(&mut app, "hosts-orphans");
 }

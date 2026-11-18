@@ -685,7 +685,7 @@ pub(super) async fn agents<D: Daemon, C: Console>(
                 presence,
             }).await
         }
-        AgentsCommand::Edit { agent: name, fields } => {
+        AgentsCommand::Edit { agent: name, fields, asks_in_inbox } => {
             let listed: pb::ListAgentsResponse = ctx
                 .call(
                     rpc::agents::LIST_AGENTS,
@@ -718,14 +718,31 @@ pub(super) async fn agents<D: Daemon, C: Console>(
                     });
                 }
             };
+            let switch = pb::SetAgentEnabledRequest {
+                agent: agent.id.clone(),
+                asks_in_inbox,
+                ..Default::default()
+            };
+            let only_the_switch = asks_in_inbox.is_some() && !fields.any();
             apply(&mut agent, fields);
             let revision = agent.revision;
-            ctx.change_present(rpc::agents::UPDATE_AGENT, |presence| pb::UpdateAgentRequest {
-                idempotency_key: key.clone(),
-                agent: Some(agent.clone()),
-                expected_revision: revision,
-                presence,
-            }).await
+            let updated = if only_the_switch {
+                None
+            } else {
+                Some(
+                    ctx.change_present(rpc::agents::UPDATE_AGENT, |presence| pb::UpdateAgentRequest {
+                        idempotency_key: key.clone(),
+                        agent: Some(agent.clone()),
+                        expected_revision: revision,
+                        presence,
+                    })
+                    .await?,
+                )
+            };
+            if asks_in_inbox.is_none() {
+                return updated.ok_or(CliError::Missing { flag: "a field to change" });
+            }
+            ctx.change(rpc::agents::SET_AGENT_ENABLED, &switch).await
         }
     }
 }

@@ -1038,6 +1038,7 @@ impl SessionSvc {
             && !self.guard.host_link().on_host();
         let loaded = Loaded { moved: moved.then_some(MOVED), ..loaded };
         desk_service::refuse_if_closed(&self.starter.store, &self.machine, &id).await?;
+        self.refuse_if_archived(&id).await?;
         let own = matches!(caller, Caller::Agent(agent) if agent.session.id.as_str() == id);
         if let Some(asked) = self.gate(
             caller,

@@ -598,3 +598,334 @@ async fn removing_a_reachable_machine_ends_its_sessions_there() {
         agent.state
     );
 }
+
+/// Restarts the host so a removal that went through holds, with the
+/// machine already gone from Hosts but its sessions not yet archived, until
+/// the returned FIFO is opened for writing.
+async fn hold_removals(rig: &mut Rig) -> std::path::PathBuf {
+    let hold = rig.host.dir.path().join("hold-removal.fifo");
+    assert!(std::process::Command::new("mkfifo").arg(&hold).status().unwrap().success());
+    let named = hold.display().to_string();
+    rig.restart_host(&[("HUMATA2_HOLD_AT", "remove.name_held"), ("HUMATA2_HOLD_FIFO", named.as_str())]).await;
+    hold
+}
+
+/// Lets the held removal go on.
+async fn release(hold: &std::path::Path) {
+    let hold = hold.to_owned();
+    let opened = tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(hold).map(drop));
+    tokio::time::timeout(LONG, opened)
+        .await
+        .expect("the removal never got to where it is held")
+        .unwrap()
+        .expect("the held removal's FIFO opens");
+}
+
+/// Once Hosts no longer lists `id`. Read again each time the Machines feed
+/// tells of a change, opened before the first read.
+async fn unlisted(rig: &Rig, id: &pb::MachineId) {
+    let mut feed = pb::event_service_client::EventServiceClient::new(rig.channel().await)
+        .subscribe(pb::SubscribeRequest { topics: vec![pb::Topic::Machines as i32], ..Default::default() })
+        .await
+        .expect("the host's Machines feed opens")
+        .into_inner();
+    let deadline = tokio::time::Instant::now() + LONG;
+    loop {
+        let listed = machines(rig).await.list_machines(pb::ListMachinesRequest::default()).await.unwrap().into_inner();
+        if !listed.machines.iter().any(|machine| machine.id.as_ref() == Some(id)) {
+            return;
+        }
+        match tokio::time::timeout_at(deadline, feed.message()).await {
+            Ok(Ok(Some(_))) => {}
+            other => panic!("{} is still listed while it is being removed ({other:?})", id.value),
+        }
+    }
+}
+
+/// D783: while a removal still archives the machine's sessions, after the
+/// machine has left Hosts, an add of its name is refused as the name being
+/// removed, so a machine added under it never meets them half let go of.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_add_of_a_removed_machines_name_waits_until_its_sessions_are_let_go_of() {
+    let mut rig = Rig::start_seen(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host, one.clone()]).await;
+    let old = rig.start_on(&channel, &one, "Old work").await;
+    rig.wait_session(&old, "live", is_live).await;
+    let hold = hold_removals(&mut rig).await;
+
+    let plan = machines(&rig)
+        .await
+        .plan_remove_machine(pb::PlanRemoveMachineRequest { id: Some(one.clone()) })
+        .await
+        .expect("the removal is planned")
+        .into_inner();
+    let started = machines(&rig)
+        .await
+        .remove_machine(pb::RemoveMachineRequest { id: Some(one.clone()), plan: plan.token, ..Default::default() })
+        .await
+        .expect("the removal starts")
+        .into_inner();
+    unlisted(&rig, &one).await;
+
+    let add = machines(&rig)
+        .await
+        .add_ssh_machine(pb::AddSshMachineRequest {
+            idempotency_key: Some(pb::IdempotencyKey { value: "add-box-1-early".to_owned() }),
+            ssh_host: "me@box-1.internal".to_owned(),
+            name: "box-1".to_owned(),
+            root: String::new(),
+            trust_host_key_fingerprint: String::new(),
+        })
+        .await;
+    match add {
+        Err(refused) => assert_eq!(refused.code(), Code::Aborted, "{refused:?}"),
+        Ok(operation) => {
+            let ended = rig.ended(&operation.into_inner()).await;
+            assert_eq!(ended.state, pb::OperationState::Failed as i32, "the add went ahead: {ended:?}");
+            assert!(
+                !matches!(ended.error.and_then(|error| error.kind), Some(pb::error::Kind::HostKeyUnknown(_))),
+                "the add reached the machine while the old one's sessions were still being let go of"
+            );
+        }
+    }
+
+    release(&hold).await;
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    assert_eq!(rig.session(&old).await.status(), pb::SessionStatus::Archived);
+}
+
+/// D783: removing a machine archives each of its sessions with the work it
+/// last reported, as forgetting one does.
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_machine_archives_its_sessions_with_their_lost_work() {
+    let rig = Rig::start_seen(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host, one.clone()]).await;
+    let on_box = with_work(&rig, &channel, "box-1", "On the box", "on-the-box").await;
+
+    remove(&rig, &one).await;
+
+    let summary = rig.session(&on_box).await.archive.expect("box-1's session is archived");
+    assert!(summary.machine_removed);
+    assert_eq!(summary.lost.len(), 1, "{summary:?}");
+    assert_eq!(summary.lost[0].dirty_files, 1, "{summary:?}");
+}
+
+/// `machine` taken out of `channel` alone, with no live session there to
+/// decide on.
+async fn leave_channel(rig: &Rig, channel: &pb::Channel, machine: &pb::MachineId) {
+    let mut channels = pb::channel_service_client::ChannelServiceClient::new(rig.channel().await);
+    let plan = channels
+        .plan_remove_machine(pb::PlanRemoveChannelMachineRequest { channel: channel.id.clone(), machine: Some(machine.clone()) })
+        .await
+        .expect("taking the machine out of the channel is planned")
+        .into_inner();
+    let started = channels
+        .remove_machine(pb::RemoveChannelMachineRequest {
+            idempotency_key: None,
+            channel: channel.id.clone(),
+            machine: Some(machine.clone()),
+            dispositions: Vec::new(),
+            plan: plan.token,
+        })
+        .await
+        .expect("taking the machine out of the channel starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+}
+
+/// D783: a channel that holds a session of the removed machine is told on
+/// the Channels feed once the session is marked, even when the channel no
+/// longer lists the machine, so its view needn't piece it together from
+/// the Sessions feed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_holding_a_removed_machines_session_is_told_of_it() {
+    let rig = Rig::start_seen(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Ledger", &[REPO], &[host, one.clone()]).await;
+    let earlier = rig.start_on(&channel, &one, "Archived first").await;
+    rig.wait_session(&earlier, "live", is_live).await;
+    archive(&rig, &earlier).await;
+    leave_channel(&rig, &channel, &one).await;
+    let mut feed = pb::event_service_client::EventServiceClient::new(rig.channel().await)
+        .subscribe(pb::SubscribeRequest {
+            channels: channel.id.iter().cloned().collect(),
+            topics: vec![pb::Topic::Channels as i32],
+            ..Default::default()
+        })
+        .await
+        .expect("the host's Channels feed opens")
+        .into_inner();
+
+    remove(&rig, &one).await;
+
+    let deadline = tokio::time::Instant::now() + LONG;
+    loop {
+        match tokio::time::timeout_at(deadline, feed.message()).await {
+            Ok(Ok(Some(event))) => {
+                if let Some(pb::event::Payload::Channel(shown)) = event.payload
+                    && shown.id == channel.id
+                {
+                    return;
+                }
+            }
+            other => panic!("Ledger was never told that box-1's session in it was marked removed ({other:?})"),
+        }
+    }
+}
+
+/// How long a test waits for box-1 to show it let go of the host's session.
+const LET_GO: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// box-1's running holders, listed through the host.
+async fn box_holders(rig: &Rig) -> Vec<pb::RunningHolder> {
+    machines(rig)
+        .await
+        .list_running_holders(pb::ListRunningHoldersRequest { machine: Some(Rig::box_id("box-1")) })
+        .await
+        .expect("box-1's running holders are listed")
+        .into_inner()
+        .holders
+}
+
+/// A rig with a live session on box-1 and the pid of the holder its agent
+/// runs in.
+async fn live_on_box() -> (Rig, pb::SessionId, u32) {
+    let rig = Rig::start_seen(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host, one.clone()]).await;
+    let id = rig.start_on(&channel, &one, "Keeps running").await;
+    rig.wait_session(&id, "live", is_live).await;
+    let pid = box_holders(&rig)
+        .await
+        .into_iter()
+        .find(|row| row.session.as_ref() == Some(&id))
+        .expect("the session's holder is listed before the forget")
+        .pid;
+    (rig, id, pid)
+}
+
+/// The listed holder `pid` once box-1 lists it with no session and no
+/// channel. A holder that stops being listed was ended, which forgetting
+/// never does.
+async fn let_go_of(rig: &Rig, pid: u32) -> pb::RunningHolder {
+    let deadline = tokio::time::Instant::now() + LET_GO;
+    loop {
+        // Added again, box-1 may answer only once its new link settles.
+        let listed = machines(rig)
+            .await
+            .list_running_holders(pb::ListRunningHoldersRequest { machine: Some(Rig::box_id("box-1")) })
+            .await;
+        let rows = match listed {
+            Ok(listed) => listed.into_inner().holders,
+            Err(status) if status.code() == tonic::Code::Unavailable && tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                continue;
+            }
+            Err(status) => panic!("box-1's running holders aren't listed after it was added again: {status:?}"),
+        };
+        let Some(row) = rows.iter().find(|row| row.pid == pid) else {
+            panic!("holder {pid} isn't running on box-1 any more: forgetting ended it ({rows:?})");
+        };
+        if row.session.is_none() && row.channel.is_none() && !row.desk {
+            return row.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "box-1 still lists holder {pid} as session {:?} in channel {:?}, not under Not in a channel",
+            row.session,
+            row.channel
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Ends the listed holder through the host and waits until box-1 no longer
+/// lists it.
+async fn end_holder(rig: &Rig, row: &pb::RunningHolder) {
+    machines(rig)
+        .await
+        .end_running_holder(pb::EndRunningHolderRequest { machine: Some(Rig::box_id("box-1")), tab: row.tab.clone() })
+        .await
+        .expect("a holder box-1 let go of ends through the host");
+    let deadline = tokio::time::Instant::now() + LET_GO;
+    while box_holders(rig).await.iter().any(|listed| listed.pid == row.pid) {
+        assert!(tokio::time::Instant::now() < deadline, "the ended holder {} is still listed", row.pid);
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// D784: forgetting box-1 while it answers ends nothing there: box-1 lets
+/// go of the host's session at once, so its holder keeps running with no
+/// session or channel, and once box-1 is added again it is listed under
+/// Not in a channel and ends when asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn forgetting_a_machine_that_answers_leaves_its_holders_running_unowned() {
+    let (rig, id, pid) = live_on_box().await;
+
+    let plan = plan(&rig).await;
+    machines(&rig).await.forget_machine(forget(&plan, "forget-online")).await.expect("box-1 is forgotten");
+
+    let store = rig.the("box-1").store();
+    assert!(
+        store.session(&id.value).expect("box-1's store reads").is_none(),
+        "box-1 still holds the forgotten host's session {}",
+        id.value
+    );
+    assert!(
+        rig.the("box-1").tabs().iter().all(|tab| tab.session.as_deref() != Some(id.value.as_str())),
+        "a tab on box-1 still names the forgotten host's session"
+    );
+    rig.add_again("box-1").await;
+    let row = let_go_of(&rig, pid).await;
+    end_holder(&rig, &row).await;
+}
+
+/// D784: forgetting box-1 while it is offline ends nothing there; when it
+/// links again, added back, it lets go of the host's session, so its holder
+/// is listed under Not in a channel and ends when asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_forgotten_offline_lets_go_of_its_sessions_when_it_links_again() {
+    let (rig, _id, pid) = live_on_box().await;
+    rig.link_lost("box-1").await;
+
+    let plan = plan(&rig).await;
+    machines(&rig).await.forget_machine(forget(&plan, "forget-offline")).await.expect("box-1 is forgotten");
+    rig.dials_through("box-1");
+    rig.add_again("box-1").await;
+
+    let row = let_go_of(&rig, pid).await;
+    end_holder(&rig, &row).await;
+}
+
+/// D784: a holder box-1 let go of when it was forgotten is adopted into
+/// the Desk, so it is a session again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_holder_let_go_of_by_a_forget_is_adopted() {
+    let (rig, _id, pid) = live_on_box().await;
+    let plan = plan(&rig).await;
+    machines(&rig).await.forget_machine(forget(&plan, "forget-adopt")).await.expect("box-1 is forgotten");
+    rig.add_again("box-1").await;
+    let row = let_go_of(&rig, pid).await;
+
+    let adopted = machines(&rig)
+        .await
+        .adopt_running_holder(pb::AdoptRunningHolderRequest {
+            machine: Some(Rig::box_id("box-1")),
+            tab: row.tab.clone(),
+            channel: None,
+        })
+        .await
+        .expect("a holder box-1 let go of is adopted")
+        .into_inner()
+        .session
+        .expect("the adopted session is named");
+    let listed = box_holders(&rig).await;
+    assert!(
+        listed.iter().any(|again| again.pid == pid && again.session.as_ref() == Some(&adopted)),
+        "the adopted holder isn't listed as its new session: {listed:?}"
+    );
+}

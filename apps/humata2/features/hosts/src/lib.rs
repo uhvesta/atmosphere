@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use humata2_clients::machines::{MachineDetail, Started};
 use humata2_clients::model::{MachineId, Recovery, RootPlan, SessionId};
-use humata2_clients::{Clients, DaemonError, Workspace};
+use humata2_clients::{Clients, DaemonError, RunningHolder, Workspace};
 use tca::{Effect, Reducer};
 
 /// The sheet that changes a machine's Humata folder (PL-1, FC-10, ST-5),
@@ -80,6 +80,9 @@ pub struct HostsState {
     pub starting: BTreeSet<MachineId>,
     /// The Change… sheet for a machine's Humata folder, when open.
     pub root_change: Option<RootChange>,
+    /// Orphan holders running on each machine, as last read (D784, frame
+    /// 28): its row's "N sessions" counts them too.
+    pub orphans: BTreeMap<MachineId, usize>,
 }
 
 impl HostsState {
@@ -112,6 +115,9 @@ pub enum Delegate {
 pub enum HostsAction {
     /// The data changed.
     Show(Arc<Workspace>),
+    /// The page was opened: every online machine's holders are read again,
+    /// so orphans started since are counted (D784, frame 28).
+    Opened,
     /// The hosts connected at the last run came back at launch.
     Restore(BTreeSet<MachineId>),
     /// Open the Add machine dialog (the app does it).
@@ -124,6 +130,8 @@ pub enum HostsAction {
     Connected(MachineId, Result<Vec<(SessionId, Recovery)>, DaemonError>),
     /// A machine's health was read.
     Health(MachineId, Result<MachineDetail, DaemonError>),
+    /// A machine's running holders were read, for its row's orphan count.
+    Holders(MachineId, Result<Vec<RunningHolder>, DaemonError>),
     /// A stopped machine's Start sessions: opens the Start confirm. Does
     /// nothing for a machine whose sessions run.
     StartSessions(MachineId),
@@ -175,6 +183,16 @@ impl Hosts {
         let call = self.clients.machines.detail(&machine);
         Effect::future(async move { HostsAction::Health(machine, call.await) })
     }
+
+    /// Read the holders of each machine that is online in `now` and was
+    /// not in `before`, for the rows' orphan counts (D784, frame 28).
+    fn read_holders(&self, before: &Workspace, now: &Workspace) -> Effect<HostsAction> {
+        let was_online = |id: &MachineId| before.machine(id).is_some_and(|machine| machine.online);
+        Effect::merge(now.machines.iter().filter(|machine| machine.online && !was_online(&machine.id)).map(|machine| {
+            let (id, call) = (machine.id.clone(), self.clients.daemon.running_holders(&machine.id));
+            Effect::future(async move { HostsAction::Holders(id, call.await) })
+        }))
+    }
 }
 
 impl Reducer for Hosts {
@@ -183,6 +201,10 @@ impl Reducer for Hosts {
 
     fn reduce(&self, state: &mut HostsState, action: HostsAction) -> Effect<HostsAction> {
         match action {
+            HostsAction::Opened => {
+                let workspace = state.workspace.clone();
+                return self.read_holders(&Workspace::default(), &workspace);
+            }
             HostsAction::Show(workspace) => {
                 let before = state.selected.clone();
                 if !state
@@ -192,13 +214,15 @@ impl Reducer for Hosts {
                 {
                     state.selected = workspace.machines.first().map(|m| m.id.clone());
                 }
+                let holders = self.read_holders(&state.workspace, &workspace);
                 state.workspace = workspace;
                 // Only a new selection is read: Show comes on every change of the data.
                 if state.selected != before
                     && let Some(id) = state.selected.clone()
                 {
-                    return self.read_health(id);
+                    return Effect::merge([self.read_health(id), holders]);
                 }
+                return holders;
             }
             HostsAction::Select(id) => {
                 if state.workspace.machine(&id).is_some() {
@@ -210,6 +234,18 @@ impl Reducer for Hosts {
             HostsAction::Health(machine, result) => {
                 if let Ok(detail) = result {
                     state.health.insert(machine, detail);
+                }
+            }
+            // A failed read keeps the last count.
+            HostsAction::Holders(machine, result) => {
+                if let Ok(holders) = result {
+                    let orphans = holders.iter().filter(|holder| holder.is_orphan() && !holder.stopped).count();
+                    // None is kept as no entry.
+                    if orphans == 0 {
+                        state.orphans.remove(&machine);
+                    } else {
+                        state.orphans.insert(machine, orphans);
+                    }
                 }
             }
             HostsAction::Restore(previously) => state.previously = previously,

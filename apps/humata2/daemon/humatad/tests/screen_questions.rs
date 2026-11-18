@@ -41,6 +41,10 @@ enum Draw {
     /// All of it at once; once it is answered, the logo goes on animating
     /// above the agent's prompt, so its output doesn't go quiet.
     WholeThenAnimating,
+    /// As VERIFY 0.2.3 saw Copilot draw it on a headless 80x24 pty: the
+    /// box too short for its list, so only `1. Yes` shows above a footer
+    /// that says the list scrolls (D785).
+    Clipped,
 }
 
 /// The rows of Copilot 1.0.113's folder trust box, as VERIFY captured it,
@@ -54,6 +58,19 @@ const BOX_TOP: &str = r"  '╭────────────────�
   '│                                                          │' \
   '│ ❯ 1. Yes                                                 │' \
   '│   2. Yes, and remember this folder for future sessions   │'";
+/// The same box as Copilot draws it on a screen too short for its list
+/// (VERIFY 0.2.3, e2e023 c6c), narrowed and with a made-up folder.
+const BOX_CLIPPED: &str = r"  '╭──────────────────────────────────────────────────────────╮' \
+  '│ Confirm folder trust                                     │' \
+  '│ ╭──────────────────────────────────────────────────────╮ │' \
+  '│ │ /work/api                                            │ │' \
+  '│ ╰──────────────────────────────────────────────────────╯ │' \
+  '│ Do you trust the files in this folder?                   │' \
+  '│                                                          │' \
+  '│ ❯ 1. Yes                                                 │' \
+  '│                                                          │' \
+  '│ ↑/↓ to navigate · pgup/pgdn to scroll · enter to select  │' \
+  '╰──────────────────────────────────────────────────────────╯'";
 const BOX_REST: &str = r"  '│   3. No (Esc)                                            │' \
   '│                                                          │' \
   '│ ↑/↓ to navigate · enter to select · esc to cancel        │' \
@@ -104,6 +121,7 @@ logo=$!
             format!("printf '%s\\n' \\\n{BOX_TOP} \\\n{BOX_REST}\n"),
             "",
         ),
+        Draw::Clipped => (String::new(), format!("printf '%s\\n' \\\n{BOX_CLIPPED}\n"), ""),
     };
     // Drawn on row 3 with the cursor saved and put back, so it leaves the
     // lines the agent prints alone.
@@ -470,8 +488,9 @@ async fn a_trust_box_drawn_in_steps_offers_every_choice_and_no_picks_the_no_row(
 #[tokio::test(flavor = "multi_thread")]
 async fn a_trust_box_that_finishes_drawing_while_its_agent_keeps_writing_ends_with_every_choice() {
     let fix = Fixture::drawing(Draw::InStepsWhileAnimating).await;
-    // The card read off the box before its No row showed.
-    fix.wait_pending_where(|card| question_of(card).choices == CHOICES[..2])
+    // The card read off the box before its No row showed offers no choice
+    // (D785): two of three, with no No, is a part of the list.
+    fix.wait_pending_where(|card| question_of(card).choices.is_empty())
         .await;
     let card = fix
         .wait_pending_where(|card| question_of(card).choices == CHOICES)
@@ -480,6 +499,23 @@ async fn a_trust_box_that_finishes_drawing_while_its_agent_keeps_writing_ends_wi
     fix.answer(&id, reply("No")).await.expect("pick No");
     // ESC [ B twice (two rows down), then the line's end.
     assert_eq!(wait_answer(&fix.answer).await, "1b5b421b5b42");
+}
+
+/// D785 (VERIFY 0.2.3): a trust box clipped to `1. Yes` by a short pty,
+/// with no one attached to resize it, is raised as a card with no choice:
+/// a reply of Yes is refused and nothing is typed, so the person answers
+/// in the terminal. Before, the card offered Yes alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_trust_box_clipped_to_its_first_choice_offers_no_choice_and_takes_no_yes() {
+    let fix = Fixture::drawing(Draw::Clipped).await;
+    let card = fix.wait_pending().await;
+    assert!(question_of(&card).choices.is_empty(), "{:?}", question_of(&card).choices);
+    assert!(card.on_screen.is_some());
+    let id = card.id.clone().expect("card has an id");
+    assert!(fix.answer(&id, reply("Yes")).await.is_err());
+    assert!(fix.answer(&id, reply("1")).await.is_err());
+    assert_eq!(fix.request(&id).await.state, pb::RequestState::Pending as i32);
+    assert!(!fix.answer.exists());
 }
 
 /// D767 amendment (wave 3): a trust box the person answers on the screen

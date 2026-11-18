@@ -96,7 +96,9 @@ pub enum Command {
     },
     /// A session's terminal, here.
     Attach {
-        session: String,
+        /// Optional with `--tab`, which names a terminal no session holds.
+        #[arg(required_unless_present = "tab")]
+        session: Option<String>,
         #[arg(long)]
         tab: Option<String>,
         /// Watch without typing; not counted as a writer.
@@ -105,8 +107,14 @@ pub enum Command {
     },
     #[command(subcommand)]
     Session(SessionCommand),
-    /// A shell on a machine.
-    Shell { machine: String },
+    /// A shell on a machine, or with `--session` a new shell tab in that
+    /// session.
+    Shell {
+        #[arg(required_unless_present = "session", conflicts_with = "session")]
+        machine: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+    },
     /// A session's conversation.
     Conversation { session: String },
     /// Board items. `--global` and `--session` pick the board for every
@@ -504,6 +512,12 @@ pub enum SessionCommand {
     /// Every terminal of ours on `--machine` (default: this one): running
     /// sessions, stopped ones, and those no channel has.
     Running,
+    /// Put a terminal no channel holds (see `session running`) into
+    /// `--channel`, or the Desk without it, on `--machine`. It keeps running.
+    Adopt {
+        /// The terminal's tab, as `session running` lists it.
+        tab: String,
+    },
     Archive {
         session: String,
         /// Commit, push and open PRs first.
@@ -513,7 +527,12 @@ pub enum SessionCommand {
         delete_work: bool,
     },
     Delete { session: String },
-    Restore { session: String },
+    Restore {
+        session: String,
+        /// Bring it back stopped, as End for good's undo does.
+        #[arg(long)]
+        stopped: bool,
+    },
     Rebuild { session: String },
     Move {
         session: String,
@@ -1004,6 +1023,9 @@ pub enum AgentsCommand {
         agent: String,
         #[command(flatten)]
         fields: AgentFields,
+        /// Whether this agent's own questions go to the Inbox.
+        #[arg(long, value_name = "true|false")]
+        asks_in_inbox: Option<bool>,
     },
 }
 
@@ -1019,6 +1041,17 @@ pub struct AgentFields {
     pub models: Vec<String>,
     #[arg(long = "variable")]
     pub variables: Vec<String>,
+}
+
+impl AgentFields {
+    /// Whether any field was given.
+    pub fn any(&self) -> bool {
+        self.launch.is_some()
+            || self.resume_args.is_some()
+            || self.fork_args.is_some()
+            || !self.models.is_empty()
+            || !self.variables.is_empty()
+    }
 }
 
 #[derive(Debug, Subcommand)]

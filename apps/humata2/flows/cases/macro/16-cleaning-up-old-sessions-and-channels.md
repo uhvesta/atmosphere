@@ -139,19 +139,19 @@ Layer: macro. Platforms: macOS for this Mac (the host and the app); box-1 is Lin
 
 - **When:** acme is also on box-1, and box-1 is holding a session in it.
 - **I do:** confirm the channel delete.
-- **I see:** the delete is refused. The message says to bring each machine online and remove the channel from it first.
-- **State and events:** nothing is deleted.
-- **Expected outcome:** refused, with the fix named.
-- **Status:** Not built. `daemon/humatad/src/channel_service/delete.rs:425-429` returns `not_built("deleting a channel that other machines hold: ...")`. No milestone is named for it in the code.
+- **I see:** no plan is offered. The plan is refused up front with FailedPrecondition. The message names each machine that holds the channel, as online or offline as it really is, and the live sessions there with their uncommitted and unpushed work. The fix says to move each session I want to keep to the Desk, then remove each machine from the channel (Remove machine, or `humata channel machine rm`), reconnecting an offline one first, and plan again.
+- **State and events:** nothing is planned or deleted.
+- **Expected outcome:** refused before any plan, with the fix named.
+- **Status:** Refused, not built. `refuse_held_elsewhere` in `daemon/humatad/src/channel_service/delete.rs` refuses in PlanDeleteChannel and again in DeleteChannel. Tested by `daemon/humatad/tests/channel_delete_remote.rs` (rig). The relayed remote delete comes after 0.2.4.
 
 ### Deleting a channel with live sessions elsewhere
 
 - **When:** a session in acme is running on box-1 when I delete acme.
 - **I do:** confirm the delete.
-- **I see:** the delete is refused as not built.
-- **State and events:** nothing is deleted.
+- **I see:** no plan is offered. The plan is refused up front, naming box-1 (online or offline) and each live session there, with the same fix as above.
+- **State and events:** nothing is planned or deleted.
 - **Expected outcome:** refused; the sessions keep running.
-- **Status:** Not built. `daemon/humatad/src/channel_service/delete.rs:433` returns `not_built("deleting a channel with live sessions on other machines")`. The plan's own test (`daemon/humatad/tests/delete_channel.rs::deleting_stops_the_agents_withdraws_the_requests_and_sends_the_folder_to_trash`) covers only sessions on this machine.
+- **Status:** Refused, not built. The same `refuse_held_elsewhere` in `daemon/humatad/src/channel_service/delete.rs` covers it. `daemon/humatad/tests/channel_delete_remote.rs::a_channel_with_a_live_session_on_an_online_box_gets_no_plan_apply_would_refuse` checks that the refusal names the session and doesn't call the online box offline. The offline case is in the same file.
 
 ### The plan no longer matches
 
@@ -246,8 +246,8 @@ Layer: macro. Platforms: macOS for this Mac (the host and the app); box-1 is Lin
 | B3. Archive with unpushed work refused | Works (real daemon); "delete the work" control Code, no test | `daemon/humatad/tests/archive.rs::plain_archive_is_refused_while_there_is_unpushed_work` |
 | B4. Fork of an archived parent | Works (real daemon) | `daemon/humatad/tests/archive.rs::forks_move_up_while_their_parent_is_archived_and_back_on_restore` |
 | B5. Archive cut by restart | Works (real daemon) | `daemon/humatad/tests/archive.rs::an_archive_cut_at_any_point_is_finished_at_restart` |
-| B6. Channel held by other machines | Not built | `daemon/humatad/src/channel_service/delete.rs:425-429` |
-| B7. Channel with live sessions elsewhere | Not built | `daemon/humatad/src/channel_service/delete.rs:433` |
+| B6. Channel held by other machines | Refused up front, not built | `refuse_held_elsewhere` in `daemon/humatad/src/channel_service/delete.rs` |
+| B7. Channel with live sessions elsewhere | Refused up front, not built | `refuse_held_elsewhere` in `daemon/humatad/src/channel_service/delete.rs` |
 | B8. Plan no longer matches | Works (real daemon) | `daemon/humatad/tests/delete_channel.rs::a_plan_that_no_longer_matches_does_nothing` |
 | B9. Channel delete cut by restart | Works (real daemon) | `daemon/humatad/tests/delete_channel.rs::a_delete_cut_at_any_point_finishes_at_restart_with_nothing_left` |
 | B10. Agent cannot delete a channel | Works (real daemon) | `daemon/humatad/tests/delete_channel.rs::an_agent_cannot_plan_or_delete_a_channel` |
@@ -259,7 +259,7 @@ Layer: macro. Platforms: macOS for this Mac (the host and the app); box-1 is Lin
 
 **Not built**
 - Deleting one session outright (`PlanDelete`, `DeleteSession`, `PlanDropRepo`, `DropRepo`): `daemon/humatad/src/session_service.rs:2331-2386`. No milestone found; `OVERVIEW.md:446` says DeleteSession is not served.
-- Deleting a channel with live sessions on other machines, and a channel that other machines hold: `daemon/humatad/src/channel_service/delete.rs:425-433`.
+- Deleting a channel with live sessions on other machines, and a channel that other machines hold. Both are refused up front, naming the machines and sessions, with the fix: `refuse_held_elsewhere` in `daemon/humatad/src/channel_service/delete.rs`. The relayed delete comes after 0.2.4.
 - The app's channel delete: no UI or client calls `PlanDeleteChannel` or `DeleteChannel`. The daemon and CLI have it, with no CLI test.
 - The Storage page's Empty trash, and any UI to restore a deleted channel or session. Only the Files page's trash is in `ui/src/file_manager.rs`.
 

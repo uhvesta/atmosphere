@@ -20,6 +20,7 @@ use tca::{Effect, LocalStore, Observation, Reducer};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
+use crate::inbox_terminal::InboxRoom;
 use crate::record::Recorder;
 
 /// A part of the window that redraws on its own.
@@ -74,6 +75,9 @@ pub struct Ui {
     /// on its agent's screen (D781): set by the shell's terminals, drawn by
     /// the Inbox's detail.
     inbox_terminal: RefCell<Option<AnyView>>,
+    /// What the Inbox's detail measured, for that terminal to fit under its
+    /// card, and whether it shows a screen (D781).
+    inbox_room: InboxRoom,
 }
 
 impl Ui {
@@ -96,6 +100,7 @@ impl Ui {
             clients,
             recorder,
             inbox_terminal: RefCell::new(None),
+            inbox_room: InboxRoom::default(),
         });
         ui.observe();
         ui
@@ -191,6 +196,8 @@ impl Ui {
                         state.add_machine.clone(),
                         state.hosts.clone(),
                         state.machine_page.clone(),
+                        // The close-tab dialog (D784).
+                        state.session.closing.clone(),
                     ),
                 )
             },
@@ -245,6 +252,12 @@ impl Ui {
     /// The Inbox's terminal for its open item, if it shows one (D781).
     pub(crate) fn inbox_terminal(&self) -> Option<AnyView> {
         self.inbox_terminal.borrow().clone()
+    }
+
+    /// What the Inbox's detail measured, and whether its terminal shows a
+    /// screen.
+    pub(crate) const fn inbox_room(&self) -> &InboxRoom {
+        &self.inbox_room
     }
 
     /// Sets the Inbox's terminal; `None` when its open item shows none.

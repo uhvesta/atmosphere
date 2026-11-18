@@ -421,6 +421,7 @@ impl Host {
             window_bytes: 0,
             accept_codecs: Vec::new(),
             checkpoint_engine: String::new(),
+            machine: None,
         };
         to.send(pb::AttachClientMessage { message: Some(pb::attach_client_message::Message::Open(open)) }).await.unwrap();
         let from = self.terminals().await.attach(ReceiverStream::new(outgoing)).await.unwrap().into_inner();

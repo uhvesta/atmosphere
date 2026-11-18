@@ -91,7 +91,9 @@ pub(crate) fn page(
             .sessions
             .iter()
             .filter(|s| s.machine == machine.id && !s.archived)
-            .count();
+            .count()
+            // Orphans count too (D784, frame 28).
+            + state.hosts.orphans.get(&machine.id).copied().unwrap_or(0);
         let stopped = health.is_some_and(|h| h.stopped);
         // Its sessions are stopped and the stop reached it (frame 74).
         let sessions_stopped = machine.stop.as_ref().is_some_and(|stop| stop.delivered);

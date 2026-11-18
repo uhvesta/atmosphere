@@ -1471,7 +1471,10 @@ impl Reducer for Sessions {
                 }
             }
             SessionAction::Resume => {
-                if let Some(id) = state.open.clone() {
+                // D784: an archived session comes back only by Restore.
+                if let Some(id) = state.open.clone()
+                    && !open_session(state).is_some_and(|session| session.archived)
+                {
                     return self.done(|daemon| daemon.resume(&id));
                 }
             }

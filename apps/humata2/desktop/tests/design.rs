@@ -293,18 +293,17 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     // D782 (2026-11-17): each agent's "Ask in the Inbox" switch; Fable
     // accepted the native capture on 2026-11-17.
     ("117-settings-agents-ask-in-inbox", LIGHT, agent_asks::ask_in_inbox),
+    // D781 (2026-11-17): a question on its agent's screen with its live
+    // terminal under the card; Fable approved them with its fixes.
+    ("114-inbox-screen-question", LIGHT, screen_question::unfocused),
+    ("115-inbox-screen-question-dark", DARK, screen_question::focused),
+    ("116-inbox-screen-question-no-terminal", LIGHT, screen_question::offline_screen),
 ];
 
 /// Frames not yet approved: drawn into the test's undeclared outputs
 /// (`candidates/<name>.png`) for review, never checked against a golden.
 /// Move one into [`FRAMES`] and record it once it is approved.
-const CANDIDATES: &[(&str, Look, Draw)] = &[
-    // D781 (2026-11-17): a question on its agent's screen with its live
-    // terminal under the card.
-    ("114-inbox-screen-question", LIGHT, screen_question::unfocused),
-    ("115-inbox-screen-question-dark", DARK, screen_question::focused),
-    ("116-inbox-screen-question-no-terminal", LIGHT, screen_question::offline_screen),
-];
+const CANDIDATES: &[(&str, Look, Draw)] = &[];
 
 // The glob import brings in gpui's own `test` attribute, so name std's.
 #[::core::prelude::v1::test]

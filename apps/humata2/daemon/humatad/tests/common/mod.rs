@@ -605,6 +605,7 @@ pub fn open(tab: &pb::TabId, from_offset: u64) -> pb::AttachOpen {
         window_bytes: 0,
         accept_codecs: Vec::new(),
         checkpoint_engine: String::new(),
+        machine: None,
     }
 }
 

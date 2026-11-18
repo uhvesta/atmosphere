@@ -93,6 +93,14 @@ pub(super) fn resume(daemon: &FakeDaemon, session: &SessionId) -> Reply<()> {
         format!("resume {session}"),
         move |inner| {
             let found = inner.session_mut(&id)?;
+            if found.archived {
+                return Err(DaemonError::Refused {
+                    what: format!("Resuming session {id}"),
+                    reason: format!(
+                        "session {id} was ended for good, so it can't be resumed. Restore it first (Undo, or `humata session restore`); it comes back stopped, and then it can be resumed"
+                    ),
+                });
+            }
             found.status = Status::Idle;
             found.turn = Turn::Ended;
             found.recovery = None;

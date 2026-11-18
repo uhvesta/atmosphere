@@ -122,8 +122,8 @@ pub fn inbox_row(look: Look, title: &'static str, from: &'static str, when: &'st
                 .items_center()
                 .gap(px(6.))
                 .when(vip, |row| row.child(div().px(px(4.)).rounded(px(3.)).bg(c(PURPLE)).text_size(px(9.5)).font_weight(FontWeight::BOLD).text_color(c(0xffffff)).child("VIP")))
-                .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(title))
-                .child(div().text_size(px(11.)).text_color(c(if on { look.selection_text } else { look.secondary })).child(when)),
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).child(title))
+                .child(div().flex_shrink_0().text_size(px(11.)).text_color(c(if on { look.selection_text } else { look.secondary })).child(when)),
         )
         .child(div().text_size(px(11.5)).text_color(c(if on { look.selection_text } else { look.secondary })).child(from))
 }

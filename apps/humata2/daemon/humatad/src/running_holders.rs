@@ -8,8 +8,10 @@
 //! the user asked to with [`end`].
 
 mod adopt;
+mod let_go;
 
 pub(crate) use adopt::adopt;
+pub(crate) use let_go::let_go;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use humata2_grpc::humata::v1 as pb;
 use humata2_holder::process::{Snapshot, holder_names};
 use humata2_sessions::DESK_CHANNEL;
-use humata2_store::{AgentState, SessionRecord, Store, StoreError, TabKind, TabRecord};
+use humata2_store::{AgentRecord, AgentState, SessionRecord, Store, StoreError, TabKind, TabRecord};
 use tonic::Status;
 
 use crate::status;
@@ -285,16 +287,39 @@ fn listed(
         .into_iter()
         .map(|tab| (tab.holder_socket.clone(), tab))
         .collect();
+    // A resume saves its agent's tab only once the agent took up its
+    // conversation (a restore's agent has no tab until then), so a holder
+    // still being checked is found by the agent's own socket. It is that
+    // session's, and gets no tab here: the resume saves it, or ends the
+    // holder when it fails.
+    let agents: HashMap<PathBuf, AgentRecord> = store
+        .agents()
+        .map_err(read("list the agents"))?
+        .into_iter()
+        .map(|agent| (agent.launch.holder_socket.clone(), agent))
+        .collect();
     let mut sessions = Vec::new();
     let mut orphans = Vec::new();
     for holder in seen {
         let tab = match by_socket.remove(&holder.socket) {
             Some(tab) => tab,
-            None => {
-                let tab = orphan_tab(store, &holder, now)?;
-                store.put_tab(&tab).map_err(read("save a tab for a holder no session names"))?;
-                tab
-            }
+            None => match agents.get(&holder.socket) {
+                Some(agent) => TabRecord {
+                    id: agent.tab.clone(),
+                    session: Some(agent.session.clone()),
+                    kind: TabKind::Agent,
+                    title: agent.launch.agent.clone(),
+                    holder_socket: holder.socket.clone(),
+                    holder_pid: holder.pid,
+                    created_unix_ms: unix_ms(now.checked_sub(holder.elapsed).unwrap_or(UNIX_EPOCH)),
+                    holder_generation: 0,
+                },
+                None => {
+                    let tab = orphan_tab(store, &holder, now)?;
+                    store.put_tab(&tab).map_err(read("save a tab for a holder no session names"))?;
+                    tab
+                }
+            },
         };
         let record = match tab.session.as_deref() {
             Some(id) => store.session(id).map_err(read("read a holder's session"))?,

@@ -693,6 +693,11 @@ impl Terminals {
         }
         let lost_focus = self.sync_inbox(ui, state, look, window, cx);
         ui.set_inbox_terminal(self.inbox.as_ref().map(|inbox| inbox.view.clone().into()));
+        let screen = self
+            .inbox
+            .as_ref()
+            .is_some_and(|inbox| inbox.view.read(cx).shows_screen(cx));
+        ui.inbox_room().set_screen(screen);
         lost_focus
     }
 

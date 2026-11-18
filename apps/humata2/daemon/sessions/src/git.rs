@@ -89,15 +89,21 @@ fn settle(tmp: &Path, dest: &Path) -> Result<(), GitError> {
 }
 
 /// Fsyncs every file and folder under `path`, and `path` itself. Links
-/// aren't followed.
+/// aren't followed. An entry that is gone by the time it is reached (a
+/// temp file git removed after it returned) has nothing left to put on
+/// disk and is skipped; `path` itself must exist.
 pub(crate) fn sync_tree(path: &Path) -> std::io::Result<()> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            sync_tree(&entry.path())?;
-        } else if kind.is_file() {
-            fs::File::open(entry.path())?.sync_all()?;
+        let synced = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => sync_tree(&entry.path()),
+            Ok(kind) if kind.is_file() => fs::File::open(entry.path()).and_then(|file| file.sync_all()),
+            Ok(_) => Ok(()),
+            Err(error) => Err(error),
+        };
+        match synced {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            other => other?,
         }
     }
     humata2_durable::sync_dir(path)

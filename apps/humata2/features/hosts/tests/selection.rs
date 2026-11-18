@@ -12,8 +12,11 @@ fn selected_host_survives_refresh_and_falls_back_when_removed() {
         s.workspace = workspace.clone();
         s.selected = Some(MachineId::new("this-mac"));
     });
-    // The fake's default detail is an error, which leaves the state as it was.
-    store.receive_matching("Health", |a| matches!(a, A::Health(..)), |_| {});
+    // The fake's default detail is an error, which leaves the state as it was;
+    // the two online machines' holder reads find no orphans (D784, frame 28).
+    for _ in 0..3 {
+        store.receive_matching("Health or Holders", |a| matches!(a, A::Health(..) | A::Holders(..)), |_| {});
+    }
     store.send(A::Select(MachineId::new("devbox-1")), |s| {
         s.selected = Some(MachineId::new("devbox-1"))
     });

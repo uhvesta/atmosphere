@@ -1,7 +1,9 @@
 //! Home's grouped lists and the wide Inbox, over the existing feature state.
 use crate::{
     bridge::Ui,
-    chrome, request_card,
+    chrome,
+    inbox_terminal::{DETAIL_GAP, DETAIL_PAD, InboxRoom, Measured},
+    request_card,
     theme::Look,
     widgets::{self, col, row},
 };
@@ -170,10 +172,11 @@ fn home_row(
     } else {
         None
     };
-    let need = asked.is_some() || matches!(session.status, Status::NeedsYou | Status::Exited { .. });
+    let resumable = crate::session_tabs::offers_resume(session);
+    let need = asked.is_some() || session.status == Status::NeedsYou || resumable;
     let label = if asked.is_some() {
         Some("Review")
-    } else if matches!(session.status, Status::Exited { .. }) {
+    } else if resumable {
         Some("Resume")
     } else if session.status == Status::NeedsYou {
         Some("Review")
@@ -239,8 +242,7 @@ fn home_row(
             let ui = ui.clone();
             let url = open_url.clone();
             let session = session.id.clone();
-            let exited = asked.is_none()
-                && matches!(session_status(state, &session), Some(Status::Exited { .. }));
+            let exited = asked.is_none() && resumable;
             let button_id = SharedString::from(format!("{group}-action-{index}"));
             let button = if need && !exited {
                 widgets::push_primary_shape(button_id, label, look)
@@ -272,10 +274,6 @@ fn home_row(
         .on_click(move |_, _, cx| ui2.send(AppAction::Navigate(Route::Session(id.clone())), cx))
         .test_support()
 }
-fn session_status(state: &AppState, id: &humata2_clients::model::SessionId) -> Option<Status> {
-    state.workspace.session(id).map(|s| s.status)
-}
-
 fn card(look: Look) -> Div {
     col()
         .w_full()
@@ -664,15 +662,26 @@ fn asked_from(session: Option<&Session>, answer: Option<&Answer>, on_screen: boo
 
 /// Under a question on its agent's screen: the live terminal at full width,
 /// then the hint and Dismiss (D781). The terminal is the one the Inbox links
-/// for the open item; until it is made, the hint shows alone.
+/// for the open item; until it is made, the hint shows alone. The hint sends
+/// you to the terminal only while it shows the screen.
 fn screen_question(ui: &Rc<Ui>, state: &AppState, request: &Request, look: Look) -> AnyElement {
     let pending = state.inbox.pending.contains(&request.id);
+    let hint = if ui.inbox_room().screen() {
+        "Answer in the terminal or pick a choice above. Dismiss closes this item and presses nothing."
+    } else {
+        "Pick a choice above. Dismiss closes this item and presses nothing."
+    };
     col()
         .w_full()
-        .gap(px(12.))
+        .gap(px(DETAIL_GAP))
         .children(ui.inbox_terminal())
         .child(
             row()
+                .id("inbox-screen-hint")
+                .role(Role::Group)
+                .aria_label(hint)
+                .test_support()
+                .relative()
                 .gap(px(12.))
                 .items_center()
                 .child(
@@ -681,9 +690,7 @@ fn screen_question(ui: &Rc<Ui>, state: &AppState, request: &Request, look: Look)
                         .min_w_0()
                         .text_size(px(11.5))
                         .text_color(rgb(look.secondary))
-                        .child(
-                            "Answer in the terminal or pick a choice above. Dismiss closes this item and presses nothing.",
-                        ),
+                        .child(hint),
                 )
                 .child(
                     request_card::button(
@@ -695,7 +702,8 @@ fn screen_question(ui: &Rc<Ui>, state: &AppState, request: &Request, look: Look)
                         false,
                     )
                     .disabled(pending),
-                ),
+                )
+                .child(InboxRoom::measure(ui, Measured::Hint)),
         )
         .into_any_element()
 }
@@ -765,11 +773,16 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                                     .child(
                                         div()
                                             .flex_1()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .text_ellipsis()
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(request.title.clone()),
                                     )
                                     .child(
                                         div()
+                                            .flex_shrink_0()
                                             .text_size(px(11.))
                                             .text_color(rgb(if on {
                                                 0xffffff
@@ -810,17 +823,21 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
         .child(
             col()
                 .id("global-inbox-detail")
+                .relative()
                 .flex_1()
                 .min_w_0()
                 .h_full()
                 .overflow_y_scroll()
-                .p(px(20.))
-                .gap(px(12.))
+                .p(px(DETAIL_PAD))
+                .gap(px(DETAIL_GAP))
+                .child(InboxRoom::measure(ui, Measured::Pane))
                 .children(selected.map(|r| {
                     div()
+                        .relative()
                         .w_full()
                         .max_w(px(560.))
                         .child(request_card::card(ui, state, r, true, look))
+                        .child(InboxRoom::measure(ui, Measured::Card))
                 }))
                 .children(
                     selected

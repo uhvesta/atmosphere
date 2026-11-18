@@ -486,6 +486,16 @@ pub(super) fn decide(
             }
             if only_choices {
                 let choices = choices_of(current);
+                if choices.is_empty() {
+                    // D785: the agent's screen showed only part of its
+                    // choices, so the card offers none to pick.
+                    return Err(status::invalid_field(
+                        "answer.reply.text",
+                        Problem::NotAllowedHere,
+                        format!("request {id} offers no choice here: the agent's screen is too short to show them all, so none was taken and nothing was typed"),
+                        "open the session's terminal, which shows every choice, and answer there; or dismiss the card",
+                    ));
+                }
                 let Some(choice) = choice_named(&choices, &reply.text) else {
                     return Err(status::invalid_field(
                         "answer.reply.text",

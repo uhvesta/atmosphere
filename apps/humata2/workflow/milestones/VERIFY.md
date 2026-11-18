@@ -273,3 +273,5 @@ Coach: VERIFY (Opus 5.5), opened 2026-11-16.
   - no deleting personal or uncommitted data;
   - no auto-killing the owner's sessions;
   - one bazel.
+
+- 2026-11-18 02:50 — **E2E on 0.2.3 (fdfdd6a2), live Copilot (claude-haiku-5.5).** The CLI, holder and Linux machine tools are copied from the installed /Applications/Humata 2.app. The daemon is `humatad2_admin` (fastbuild, batch run 170) because the release `humatad2` refuses CLI calls until `humata login` is approved in the app, which a headless run can't do (by design). The admin build includes main's post-cut D783 follow-up edits (forget_machine/manage/forget). Lanes e1 (stop/resume, end, keep running), e2 (adopt, per-agent Inbox switch, Inbox terminal) and e3 (remote humata2-linux) report by 05:30, with each failure sent as soon as it's found. Close-dialog pixels stay covered by native_test.

@@ -1061,6 +1061,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             }));
             // A forget the last run began and didn't answer is finished now.
             tokio::spawn(machine_service::finish_forgets(work.clone(), last_start.clone()));
+            // D784: a machine forgotten or removed lets go of this host's sessions at each link.
+            tokio::spawn(machine_service::follow_let_go(work.clone()));
             // FM-8, FM-9: transfers reach other machines over their links.
             transfers.use_links(work.links());
             // D195: the host moves sessions between machines.

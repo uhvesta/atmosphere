@@ -62,6 +62,7 @@ pub fn open(
             window_bytes,
             accept_codecs: vec![pb::ChunkCodec::None as i32],
             checkpoint_engine: SNAPSHOT_ENGINE.to_owned(),
+            machine: None,
         })),
     }
 }

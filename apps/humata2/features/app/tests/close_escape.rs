@@ -73,3 +73,38 @@ fn escape_cancels_end_for_good_and_adopt_on_the_machine_page() {
     store.send(A::Escape, |_| {});
     assert!(store.state().machine_page.running.adopting.is_none());
 }
+
+#[test]
+fn the_close_dialog_and_running_confirms_hold_the_keys_from_a_terminal() {
+    let id = SessionId::new("ledger");
+    let mut held = store(Route::Session(id.clone()), |state| {
+        state.session.closing = Some(CloseConfirm {
+            session: id.clone(),
+            group: 0,
+            index: 0,
+            tab: 0,
+            kind: CloseKind::Agent,
+            title: Some("Ledger".to_owned()),
+            agent: "Claude Code".to_owned(),
+            machine: "This Mac".to_owned(),
+            always_keep_running: false,
+            sending: None,
+            error: None,
+        });
+    });
+    assert!(held.state().dialog_holds_keys(), "the close dialog holds the keys");
+    held.send(A::Escape, |_| {});
+    assert!(!held.state().dialog_holds_keys(), "Escape gives them back");
+
+    let mut held = store(Route::Machine(MachineId::new("devbox-1")), |state| {
+        state.machine_page.running.confirm_end = Some(holder());
+    });
+    assert!(held.state().dialog_holds_keys(), "End for good… holds the keys");
+    held.send(A::Escape, |_| {});
+    assert!(!held.state().dialog_holds_keys());
+
+    let mut held = store_adopting();
+    assert!(held.state().dialog_holds_keys(), "Adopt… holds the keys");
+    held.send(A::Escape, |_| {});
+    assert!(!held.state().dialog_holds_keys());
+}

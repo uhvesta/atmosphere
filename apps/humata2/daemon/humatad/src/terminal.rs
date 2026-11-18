@@ -1404,7 +1404,14 @@ impl Core {
             && let Some(machine) = id_of(request.machine.clone().map(|machine| machine.value))
             && machine != self.config.machine
         {
-            return Ok(Gated::Done(remote.open_machine_shell(&machine, request).await?.into_inner()));
+            // HO-6: the machine opens it in its own tab model, as a shell of its own.
+            // It may know itself by another name than the host does, so it is sent
+            // no name (its own), and the tab comes back under the host's name for it,
+            // which is what an attach names to be relayed there.
+            let relayed = pb::OpenMachineShellRequest { machine: None, ..request };
+            let mut tab = remote.open_machine_shell(&machine, relayed).await?.into_inner();
+            tab.machine = Some(pb::MachineId { value: machine });
+            return Ok(Gated::Done(tab));
         }
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
             return Ok(Gated::Done(tab));
@@ -1416,9 +1423,9 @@ impl Core {
                 pb::EntityKind::Machine,
                 &machine,
                 format!(
-                    "machine {machine} isn't this one, and this daemon can't open shells elsewhere yet"
+                    "machine {machine} isn't this one, and this daemon doesn't reach other machines"
                 ),
-                "open the shell through that machine's own daemon",
+                "open the shell through the Humata host that has the machine added; it relays the shell there",
             ));
         }
         let tab = self.open_shell(None, self.config.root.clone()).await?;
@@ -1887,6 +1894,28 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             }
             // D783: a machine added later under its name doesn't have it.
             self.refuse_if_machine_gone(&record).await?;
+            return Ok(Response::new(remote.attach(&machine, open, incoming).await?));
+        }
+        // HO-6: a machine shell on another machine, named by the machine its open
+        // gave. Its tab record is there; typing into it is checked as typing into
+        // any machine shell, then the stream is relayed as a session's is. The
+        // machine is sent no name, so it attaches its own tab.
+        if session.is_none()
+            && let Some(remote) = &self.config.remote
+            && let Some(machine) = id_of(open.machine.clone().map(|machine| machine.value))
+            && machine != self.config.machine
+        {
+            // UP-1, D281 e: a writable attach on a machine at another release is refused.
+            if !open.read_only {
+                crate::upgrade::gate::machine_ready(
+                    &self.config.migrations,
+                    &pb::MachineId {
+                        value: machine.clone(),
+                    },
+                )?;
+            }
+            self.check_input(&caller, Target::Global)?;
+            let open = pb::AttachOpen { machine: None, ..open };
             return Ok(Response::new(remote.attach(&machine, open, incoming).await?));
         }
         let tab = self.tab(&id, session.as_deref()).await?;

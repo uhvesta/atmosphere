@@ -191,6 +191,9 @@ const MACHINE_METHODS: (&str, &[&str]) = (
         "ResumeRunningHolder",
         "EndRunningHolder",
         "AdoptRunningHolder",
+        // D784, D783: a machine the host forgot or removed lets go of the
+        // host's sessions, its holders still running.
+        "LetGoOfHost",
     ],
 );
 
@@ -836,6 +839,7 @@ mod tests {
             "/humata.v1.MachineService/ResumeRunningHolder",
             "/humata.v1.MachineService/EndRunningHolder",
             "/humata.v1.MachineService/AdoptRunningHolder",
+            "/humata.v1.MachineService/LetGoOfHost",
         ] {
             assert!(allows(allowed), "{allowed}");
         }

@@ -1,8 +1,9 @@
 //! D781: a question read off its agent's screen, in the wide Inbox. The
 //! card offers the choices; under it the live terminal draws the tab at its
-//! own size (100x24 here, Copilot's folder-trust box at the bottom), then a
-//! hint row with Dismiss. Frame 114 is unfocused, 115 focused with the
-//! cursor drawn, 116 has no terminal because its machine is offline.
+//! own size (100x24 here, Copilot's folder-trust box at the bottom; its
+//! last 21 rows, whole rows only), then a hint row with Dismiss. Frame 114
+//! is unfocused, 115 focused with the cursor drawn, 116 has no terminal
+//! because its machine is offline.
 
 use gpui_kit::{prelude::*, *};
 
@@ -22,8 +23,12 @@ enum Screen {
     Offline,
 }
 
+/// The rows the box shows: whole rows only, the last ones, so the first
+/// rows are above it.
+const SHOWN: usize = 21;
+
 /// The 24 rows of the agent's screen; the box opens scrolled to the bottom,
-/// so the first row is above it.
+/// so the first rows are above it.
 fn rows() -> [&'static str; 24] {
     [
         "",
@@ -53,26 +58,32 @@ fn rows() -> [&'static str; 24] {
     ]
 }
 
+/// Where the cursor sits on the highlighted row: right after "❯ 1. Yes".
+const CURSOR_AFTER: &str = " │ ❯ 1. Yes";
+
 fn terminal(look: Look, focused: bool) -> Div {
     let row = |index: usize, text: &'static str| {
         let highlight = index == 20;
-        div()
-            .h(px(LINE))
-            .flex()
-            .whitespace_nowrap()
-            .text_color(c(if highlight { look.accent } else if index >= 15 { look.term_text } else { look.term_dim }))
-            .child(text)
-            .when(focused && index == 20, |row| {
-                row.child(div().w(px(FONT * 0.6)).h(px(LINE - 3.)).bg(c(look.term_text)))
-            })
+        let color = c(if highlight { look.accent } else if index >= 15 { look.term_text } else { look.term_dim });
+        let line = div().h(px(LINE)).flex().whitespace_nowrap().text_color(color);
+        // Focused, the cursor takes the place of the space after the
+        // choice, so the box's right edge stays in its column.
+        match text.strip_prefix(CURSOR_AFTER).and_then(|rest| rest.strip_prefix(' ')) {
+            Some(rest) if focused && highlight => line
+                .child(CURSOR_AFTER)
+                .child(div().w(px(FONT * 0.6)).h(px(LINE - 3.)).flex_shrink_0().bg(c(look.term_text)))
+                .child(rest),
+            _ => line.child(text),
+        }
     };
-    // Scrolled to the bottom: the rows that fit, the last ones.
-    let fit = ((420. - 2. * 8.) / LINE) as usize;
+    // Scrolled to the bottom: whole rows only, the last ones, in a box as
+    // tall as them plus the 8 pt inset and the border.
     let all = rows();
-    let first = all.len().saturating_sub(fit);
+    let first = all.len() - SHOWN;
     div()
         .w_full()
-        .h(px(420.))
+        .h(px(SHOWN as f32 * LINE + 2. * 8. + 2.))
+        .flex_shrink_0()
         .rounded(px(8.))
         .bg(c(look.term))
         .border(px(if focused { 2. } else { 1. }))
@@ -81,7 +92,6 @@ fn terminal(look: Look, focused: bool) -> Div {
         .overflow_hidden()
         .flex()
         .flex_col()
-        .justify_end()
         .font_family(MONO)
         .text_size(px(FONT))
         .line_height(px(LINE))
@@ -91,10 +101,11 @@ fn terminal(look: Look, focused: bool) -> Div {
 fn card_body(look: Look) -> Div {
     card(look)
         .max_w(px(560.))
-        .p(px(14.))
+        .p(px(12.))
         .flex()
         .flex_col()
-        .gap(px(10.))
+        .gap(px(8.))
+        .border_color(c(ORANGE))
         .child(
             div()
                 .flex()
@@ -130,7 +141,7 @@ fn card_body(look: Look) -> Div {
         ))
 }
 
-fn hint(look: Look) -> Div {
+fn hint(look: Look, terminal: bool) -> Div {
     div()
         .flex()
         .items_center()
@@ -141,7 +152,11 @@ fn hint(look: Look) -> Div {
                 .min_w_0()
                 .text_size(px(11.5))
                 .text_color(c(look.secondary))
-                .child("Answer in the terminal or pick a choice above. Dismiss closes this item and presses nothing."),
+                .child(if terminal {
+                    "Answer in the terminal or pick a choice above. Dismiss closes this item and presses nothing."
+                } else {
+                    "Pick a choice above. Dismiss closes this item and presses nothing."
+                }),
         )
         .child(button(look, Kind::Secondary, "Dismiss"))
 }
@@ -195,7 +210,7 @@ fn screen_question(look: Look, screen: Screen) -> Div {
                     .child(card_body(look))
                     .when(screen != Screen::Offline, |detail| detail.child(terminal(look, screen == Screen::Focused)))
                     .when(screen == Screen::Offline, |detail| detail.child(offline(look)))
-                    .child(hint(look)),
+                    .child(hint(look, screen != Screen::Offline)),
             ),
     )
 }

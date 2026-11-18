@@ -726,10 +726,15 @@ pub(crate) fn body(
                                             IconName::CircleX,
                                             0xff453a,
                                             format!(
-                                                "{} exited with code {code}. Resume starts it again with this conversation.",
-                                                session.agent.command()
+                                                "{} exited with code {code}.{}",
+                                                session.agent.command(),
+                                                if offers_resume(session) {
+                                                    " Resume starts it again with this conversation."
+                                                } else {
+                                                    ""
+                                                }
                                             ),
-                                            Some(
+                                            offers_resume(session).then(|| {
                                                 widgets::send(
                                                     ui,
                                                     "resume-terminal",
@@ -739,8 +744,8 @@ pub(crate) fn body(
                                                 .outline()
                                                 .h(px(24.))
                                                 .px(px(11.))
-                                                .into_any_element(),
-                                            ),
+                                                .into_any_element()
+                                            }),
                                         )),
                                         // Frame 64: read-only until the agent resumes.
                                         (0, Status::Moving) => {
@@ -987,11 +992,34 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
     )
 }
 
+/// Whether the session offers Resume: it exited, and was not ended for good
+/// (D784: only Restore or Undo brings an archived session back).
+pub(crate) fn offers_resume(session: &Session) -> bool {
+    matches!(session.status, Status::Exited { .. }) && !session.archived
+}
+
 #[cfg(test)]
 mod tests {
     // Named, not `super::*`: the module's gpui glob brings in gpui's own
     // `test` attribute, which would shadow the built-in one.
-    use super::{copy_progress, step_rows};
+    use ::core::prelude::v1::test;
+
+    use super::{copy_progress, offers_resume, step_rows};
+    use humata2_clients::fixture;
+    use humata2_clients::model::Status;
+
+    #[test]
+    fn an_exited_session_offers_resume_unless_it_was_archived() {
+        let mut session = fixture::design().sessions.remove(0);
+        session.status = Status::Exited { code: 1 };
+        session.archived = false;
+        assert!(offers_resume(&session));
+        session.archived = true;
+        assert!(!offers_resume(&session));
+        session.archived = false;
+        session.status = Status::Idle;
+        assert!(!offers_resume(&session));
+    }
     use humata2_clients::machines::OperationId;
     use humata2_clients::model::{MachineId, MoveProgress, MoveStep, MoveStepState};
 

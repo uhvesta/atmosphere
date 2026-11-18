@@ -57,7 +57,7 @@ mod scripts;
 mod stack_settings;
 pub(crate) use box_storage::BoxMachineSvc;
 pub(crate) use change_root::start_layout;
-pub(crate) use forget::{Forgetting, finish_forgets};
+pub(crate) use forget::{Forgetting, finish_forgets, follow_let_go};
 pub(crate) use stack_settings::agents_changed;
 
 /// What stopping or starting the host's own sessions through the machine
@@ -197,8 +197,14 @@ impl Work {
 
     /// `machine` was removed: its watchers end and its reports go.
     fn forget_peer(&self, machine: &str) {
-        self.relay_links.forget(machine);
+        self.forget_link(machine);
         self.reports.forget(machine);
+    }
+
+    /// As [`Self::forget_peer`], keeping what the machine last reported:
+    /// a removal reads it when it archives the sessions (D783).
+    fn forget_link(&self, machine: &str) {
+        self.relay_links.forget(machine);
         lock(&self.probes).remove(machine);
         self.forget_stop(machine);
     }
@@ -262,6 +268,8 @@ impl Work {
                 status::chain(&error)
             );
         }
+        // What it last reported is in the archives now (D783).
+        self.reports.forget(machine);
     }
 
     /// `machine`'s health (HO-3, HO-4) and the sizes of its Humata folders
@@ -1725,14 +1733,21 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         // While its link is still up, so the machine itself ends them (D784).
         self.work.end_removed_sessions(&name).await;
         self.work.link_down(&name);
-        self.work.forget_peer(&name);
+        // Its reports stay until its sessions are archived with what they
+        // last said (`removed`), so the archive keeps the lost work (D783).
+        self.work.forget_link(&name);
         self.work.forget_journal(&name).await;
         let work = self.work.clone();
         let operation = self.run(progress, Arc::new(move |machines, drive| {
-            machines.remove(&name, drive)?;
+            machines.remove_holding_name(&name, drive)?;
+            // A test holds here to show an add of the name waits (D783).
+            crate::fault::hold_blocking("remove.name_held");
             // Only once the removal is done: one that fails leaves the
-            // machine listed and in its channels (D760).
+            // machine listed and in its channels (D760). The name is held
+            // until it ends, so a machine added under it takes on none of
+            // this one's sessions or requests (D783).
             work.removed(&name, &Handle::current());
+            machines.removal_done(&name);
             Ok(None)
         }));
         Ok(Response::new(operation))
@@ -1995,6 +2010,23 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         Ok(Response::new(pb::AdoptRunningHolderResponse {
             session: Some(pb::SessionId { value: session }),
         }))
+    }
+
+    /// D784: only a machine's own daemon lets go of a host's sessions; the
+    /// host sends it when it forgets or removes that machine.
+    async fn let_go_of_host(
+        &self,
+        _request: Request<pb::LetGoOfHostRequest>,
+    ) -> Result<Response<pb::LetGoOfHostResponse>, Status> {
+        Err(status::failure(
+            tonic::Code::FailedPrecondition,
+            pb::Error {
+                message: "this daemon is the host: it keeps its sessions, so it has no host to let go of".to_owned(),
+                fix: "to free another machine's holders, forget or remove that machine from Hosts; it lets go of this host's sessions itself and its holders keep running".to_owned(),
+                retry: None,
+                kind: None,
+            },
+        ))
     }
 
     async fn clear_build_cache(

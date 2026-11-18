@@ -88,6 +88,14 @@ service MachineService {
   // session already holds, and for a holder that isn't running. An agent
   // caller needs the machine-destroy switch (off by default).
   rpc AdoptRunningHolder(AdoptRunningHolderRequest) returns (AdoptRunningHolderResponse);
+  // D784, D783: the host forgot or removed this machine, so the machine
+  // lets go of the host's sessions and channels it still records. Each
+  // session's record goes; its tabs stay with no session, so every holder
+  // keeps running, listed under "Not in a channel" for the user to attach,
+  // adopt or end. A channel goes once none of its sessions is left. Ends
+  // nothing. Only the host calls it, over the machine's link, at the forget
+  // and again at each later link; the host itself refuses it.
+  rpc LetGoOfHost(LetGoOfHostRequest) returns (LetGoOfHostResponse);
   // SEAM (MACHINESCRIPTS, D687): the rules in machine-scripts.toml, the script
   // names in the scripts folder and each rule's last run per machine.
   rpc ListMachineScripts(ListMachineScriptsRequest) returns (ListMachineScriptsResponse);
@@ -931,4 +939,17 @@ message AdoptRunningHolderRequest {
 message AdoptRunningHolderResponse {
   // The session the holder is now.
   SessionId session = 1;
+}
+
+message LetGoOfHostRequest {
+  // The host's sessions recorded on this machine, which the host archived
+  // as their machine removed. One this machine doesn't record is skipped.
+  repeated SessionId sessions = 1;
+  // Their channels that no longer list this machine.
+  repeated ChannelId channels = 2;
+}
+
+message LetGoOfHostResponse {
+  // The sessions this machine let go of: those it still recorded.
+  repeated SessionId let_go = 1;
 }

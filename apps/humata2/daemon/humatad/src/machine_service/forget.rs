@@ -52,6 +52,11 @@ pub(crate) trait Forgetting: Send + Sync + 'static {
     /// Remove machine does to them (D784). One the machine doesn't end is
     /// logged and left; nothing here fails the removal.
     async fn end_sessions_on(&self, machine: &str);
+
+    /// What `machine` should let go of (D784): the sessions recorded on it
+    /// whose archive says their machine was removed, and their channels
+    /// that no longer list it. Reads only.
+    async fn let_go_on(&self, machine: &str) -> Result<pb::LetGoOfHostRequest, Status>;
 }
 
 /// The forget plans handed out, the answers already given and the sessions'
@@ -370,6 +375,10 @@ impl Work {
             .archive_lost(name, pb::WithdrawReason::SessionArchived)
             .await?;
         self.withdraw_removed(name).await?;
+        // D784: a machine that answers lets go of the host's sessions now,
+        // its holders still running; one that doesn't is told at its next
+        // link (`follow_let_go`).
+        self.tell_to_let_go(name).await;
         // What an earlier, cut short run archived is no longer listed by the
         // sessions' side; the answer is the same as the first call's.
         for value in planned.into_iter().rev() {
@@ -396,6 +405,72 @@ impl Work {
         settled();
         forgetting.remember(hosts_file, key, name, &archived);
         Ok(archived)
+    }
+}
+
+/// How long a machine has to let go of the host's sessions.
+const LET_GO_DEADLINE: Duration = Duration::from_secs(30);
+
+impl Work {
+    /// Tells `machine`, if its link is up, to let go of the host's
+    /// sessions the host archived as their machine removed, and of their
+    /// channels (D784, D783). Its holders keep running there, under Not in
+    /// a channel. Nothing is queued: a machine that is down, or doesn't
+    /// answer, is told again at its next link. A failure is logged.
+    async fn tell_to_let_go(&self, machine: &str) {
+        let Ok(hook) = self.forgetting.hook() else {
+            return;
+        };
+        let request = match hook.let_go_on(machine).await {
+            Ok(request) if request.sessions.is_empty() => return,
+            Ok(request) => request,
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: couldn't read which of this host's sessions {machine} should let go of: {}; it is told again when it next links",
+                    error.message()
+                );
+                return;
+            }
+        };
+        let Ok(channel) = self.relay_links.channel(machine) else {
+            return;
+        };
+        let mut client = pb::machine_service_client::MachineServiceClient::new(channel);
+        let failed = match tokio::time::timeout(LET_GO_DEADLINE, client.let_go_of_host(Request::new(request))).await {
+            Ok(Ok(_)) => return,
+            Ok(Err(refused)) => status::error_of(&refused)
+                .map(|error| format!("{} ({})", error.message, error.fix))
+                .unwrap_or_else(|| refused.message().to_owned()),
+            Err(_) => format!("it didn't answer within {} seconds", LET_GO_DEADLINE.as_secs()),
+        };
+        crate::log::say!(
+            "humatad2: {machine} didn't let go of this host's sessions it was forgotten or removed with: {failed}. Its holders keep running there and it is told again when it next links; until then `humata session running --machine {machine}` may still list them in their old sessions"
+        );
+    }
+}
+
+/// For the daemon's life: each machine already up, then each that links,
+/// is told to let go of the host's sessions it was forgotten or removed
+/// with (D784), so a machine forgotten while offline lets go once it is
+/// back. Spawn it once the SessionService's hook is set.
+pub(crate) async fn follow_let_go(work: Arc<Work>) {
+    let mut links = work.relay_links.watch_all();
+    let up: Vec<String> = work
+        .relay_links
+        .states()
+        .into_iter()
+        .filter(|(_, state)| matches!(state, crate::host_relay::LinkState::Up { .. }))
+        .map(|(machine, _)| machine)
+        .collect();
+    for machine in up {
+        let work = work.clone();
+        tokio::spawn(async move { work.tell_to_let_go(&machine).await });
+    }
+    while let Some((machine, state)) = links.next().await {
+        if matches!(state, crate::host_relay::LinkState::Up { .. }) {
+            let work = work.clone();
+            tokio::spawn(async move { work.tell_to_let_go(&machine).await });
+        }
     }
 }
 

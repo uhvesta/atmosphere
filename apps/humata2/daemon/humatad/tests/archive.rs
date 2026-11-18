@@ -319,6 +319,34 @@ async fn undo_of_end_for_good_gives_it_back_stopped_and_resume_revives_it() {
     assert!(said.contains("before the archive") && said.contains("after the resume"));
 }
 
+/// End for good can't be resumed (D784): only Restore brings it back. Found
+/// live in VERIFY 0.2.3, where Resume started a new agent for an archived
+/// session.
+#[tokio::test]
+async fn an_ended_session_refuses_resume_and_starts_no_agent() {
+    let fixture = Fixture::new(NEVER).await;
+    let session = fixture.session("Fix login").await;
+    let id = session.id.clone().unwrap();
+
+    succeeded(&fixture.archive(&id, pb::ArchiveChoice::Archive).await);
+    let refused = fixture
+        .daemon
+        .session_service()
+        .await
+        .resume_session(pb::ResumeSessionRequest {
+            idempotency_key: None,
+            id: Some(id.clone()),
+            ..Default::default()
+        })
+        .await
+        .expect_err("an archived session was resumed");
+    assert_eq!(refused.code(), tonic::Code::FailedPrecondition, "{refused:?}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let after = get_session(&fixture.daemon, &id).await;
+    assert!(after.archive.is_some(), "the refused resume unarchived it: {after:?}");
+    assert_eq!(after.status, Status::Archived as i32, "an agent runs for an archived session: {after:?}");
+}
+
 #[tokio::test]
 async fn the_clones_go_when_the_window_closes_and_restore_clones_what_was_pushed() {
     let fixture = Fixture::new("0").await;

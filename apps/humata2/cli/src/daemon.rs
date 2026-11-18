@@ -276,6 +276,7 @@ pub mod rpc {
         STOP_RUNNING_HOLDER = "StopRunningHolder" -> "StopRunningHolderResponse",
         RESUME_RUNNING_HOLDER = "ResumeRunningHolder" -> "ResumeRunningHolderResponse",
         END_RUNNING_HOLDER = "EndRunningHolder" -> "EndRunningHolderResponse",
+        ADOPT_RUNNING_HOLDER = "AdoptRunningHolder" -> "AdoptRunningHolderResponse",
     });
 
     service!(provider, "ProviderService" {
@@ -383,6 +384,7 @@ pub mod rpc {
         LIST_AGENTS = "ListAgents" -> "ListAgentsResponse",
         ADD_AGENT = "AddAgent" -> "AgentDefinition",
         UPDATE_AGENT = "UpdateAgent" -> "AgentDefinition",
+        SET_AGENT_ENABLED = "SetAgentEnabled" -> "AgentDefinition",
     });
 
     service!(marks, "MarkService" {
@@ -412,6 +414,7 @@ pub mod rpc {
 
     service!(terminal, "TerminalService" {
         OPEN_MACHINE_SHELL = "OpenMachineShell" -> "Tab",
+        OPEN_SHELL_TAB = "OpenShellTab" -> "Tab",
         ATTACH = "Attach" -> "AttachServerMessage",
         TYPE = "Type" -> "TypeResponse",
         LIST_QUEUED = "ListQueued" -> "ListQueuedResponse",
@@ -500,6 +503,7 @@ pub mod rpc {
         machine::STOP_RUNNING_HOLDER,
         machine::RESUME_RUNNING_HOLDER,
         machine::END_RUNNING_HOLDER,
+        machine::ADOPT_RUNNING_HOLDER,
         provider::LIST_PROVIDERS,
         provider::GET_PROVIDERS_CONFIG,
         provider::SET_PROVIDERS_CONFIG,
@@ -570,6 +574,7 @@ pub mod rpc {
         agents::LIST_AGENTS,
         agents::ADD_AGENT,
         agents::UPDATE_AGENT,
+        agents::SET_AGENT_ENABLED,
         marks::SET_MARKS,
         marks::LIST_PINNED,
         marks::REORDER_PINNED,
@@ -584,6 +589,7 @@ pub mod rpc {
         repos::GET_REPO_SCOPE,
         repos::UPDATE_REPO_SCOPE,
         terminal::OPEN_MACHINE_SHELL,
+        terminal::OPEN_SHELL_TAB,
         terminal::ATTACH,
         terminal::TYPE,
         terminal::LIST_QUEUED,

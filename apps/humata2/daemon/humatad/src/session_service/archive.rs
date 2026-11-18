@@ -47,6 +47,8 @@ enum ArchiveError {
     AlreadyArchived { session: String },
     #[error("session {session} is not archived")]
     NotArchived { session: String },
+    #[error("session {session} was ended for good, so it can't be resumed")]
+    Ended { session: String },
     #[error("session {session} has work that isn't pushed: {work}")]
     HasWork { session: String, work: String },
     #[error(
@@ -928,6 +930,20 @@ impl SessionSvc {
             return Ok(Gated::Ask(asked));
         }
         Err(status::not_built(method))
+    }
+
+    /// End for good can't be resumed (D784): an archived session comes back
+    /// only through Restore, which leaves it stopped for a resume.
+    pub(super) async fn refuse_if_archived(&self, id: &str) -> Result<(), Status> {
+        if self.read_lineage().await?.is_archived(id) {
+            return Err(failed(
+                Code::FailedPrecondition,
+                &ArchiveError::Ended { session: id.to_owned() },
+                "restore it first (Undo, or `humata session restore`); it comes back stopped, and then it can be resumed",
+                None,
+            ));
+        }
+        Ok(())
     }
 
     async fn read_lineage(&self) -> Result<Lineage, Status> {

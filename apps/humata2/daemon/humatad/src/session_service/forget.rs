@@ -4,7 +4,7 @@
 //! records. Nothing here dials the machine: the host's records, its last
 //! pointers and its mirror are all it has, and all it needs (SL-4).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{ArchiveRow, ArchiveState, SessionDetail, SessionRecord};
@@ -201,6 +201,35 @@ impl Forgetting for SessionSvc {
         self.leave_channels(machine).await
     }
 
+    async fn let_go_on(&self, machine: &str) -> Result<pb::LetGoOfHostRequest, Status> {
+        let (store, name) = (self.starter.store.clone(), machine.to_owned());
+        blocking(move || -> Result<pb::LetGoOfHostRequest, humata2_store::StoreError> {
+            let mut request = pb::LetGoOfHostRequest::default();
+            let mut channels = BTreeSet::new();
+            for record in store.sessions()?.into_iter().filter(|record| record.machine == name) {
+                let removed = store
+                    .archive(&record.id)?
+                    .and_then(|row| pb::ArchiveSummary::decode(row.summary.as_slice()).ok())
+                    .is_some_and(|summary| summary.machine_removed);
+                if !removed {
+                    continue;
+                }
+                if record.channel != humata2_sessions::DESK_CHANNEL
+                    && store
+                        .channel(&record.channel)?
+                        .is_some_and(|channel| !channel.machines.contains(&name))
+                {
+                    channels.insert(record.channel.clone());
+                }
+                request.sessions.push(pb::SessionId { value: record.id });
+            }
+            request.channels = channels.into_iter().map(|value| pb::ChannelId { value }).collect();
+            Ok(request)
+        })
+        .await?
+        .map_err(|error| status::store(error, &self.machine, "read which sessions the machine should let go of"))
+    }
+
     async fn end_sessions_on(&self, machine: &str) {
         let Some(remote) = self.remote.clone() else {
             return;
@@ -277,11 +306,45 @@ impl Forgetting for SessionSvc {
         for id in &marked {
             self.tell.session(id, pb::Change::Updated, None).await;
         }
+        let told: HashSet<String> = gone.iter().map(|session| session.record.id.clone()).chain(marked).collect();
+        self.tell_channels_of(told).await;
         Ok(done)
     }
 }
 
 impl SessionSvc {
+    /// Tells each channel that holds one of `sessions`, after the sessions
+    /// themselves, so a channel view is told on the Channels feed too, even
+    /// one that no longer lists their machine (D783). One that can't be
+    /// read is logged: the Sessions feed has told of each session already.
+    async fn tell_channels_of(&self, sessions: HashSet<String>) {
+        if sessions.is_empty() {
+            return;
+        }
+        let (store, feed) = (self.starter.store.clone(), self.tell.feed.clone());
+        let told = blocking(move || -> Result<(), humata2_store::StoreError> {
+            let channels: BTreeSet<String> = store
+                .sessions()?
+                .into_iter()
+                .filter(|record| sessions.contains(&record.id))
+                .map(|record| record.channel)
+                .collect();
+            for channel in channels {
+                crate::channel_service::tell_channel(&feed, &store, &channel, pb::Change::Updated, None);
+            }
+            Ok(())
+        })
+        .await;
+        let problem = match told {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error.to_string(),
+            Err(status) => status.message().to_owned(),
+        };
+        crate::log::say!(
+            "humatad2: the channels of a removed machine's sessions couldn't be told of them: {problem}. Their sessions show archived; reopen a channel to see it updated"
+        );
+    }
+
     /// Marks every archived session that ran on `machine` as its machine
     /// removed (D783), each under its lifecycle lock so an archive step in
     /// flight isn't overwritten. The sessions marked now; one marked before

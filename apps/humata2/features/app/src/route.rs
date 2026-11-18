@@ -180,6 +180,10 @@ impl App {
             Route::Board(scope) => {
                 effects.push(self.child(state, AppAction::Board(BoardAction::SetScope(scope))));
             }
+            Route::Hosts => {
+                state.session.open = None;
+                effects.push(self.child(state, AppAction::Hosts(humata2_hosts::HostsAction::Opened)));
+            }
             Route::Machine(id) => {
                 state.session.open = None;
                 effects.push(self.machine_page(

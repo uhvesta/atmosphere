@@ -179,6 +179,8 @@ mod channel;
 mod channel_desk;
 #[path = "native/channel_desk_reopen.rs"]
 mod channel_desk_reopen;
+#[path = "native/close_running.rs"]
+mod close_running;
 #[path = "native/desk.rs"]
 mod desk;
 #[path = "native/desk_events.rs"]

@@ -129,6 +129,26 @@ async fn archiving_on_box_1_frees_its_clones_there_and_lists_it_archived_on_the_
     assert!(rig.the("box-1").tabs().is_empty(), "its agent stopped on box-1");
 }
 
+/// End for good on a box can't be resumed either (D784): the host refuses
+/// the relayed resume, and no agent starts on box-1. Found live in VERIFY
+/// 0.2.3 on this Mac.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ended_session_on_box_1_refuses_resume_and_starts_no_agent() {
+    let (rig, _channel, id) = on_box().await;
+    let ended = archive(&rig, &id).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    rig.wait_session(&id, "archived", |s| s.archive.is_some()).await;
+
+    let refused = sessions(&rig)
+        .await
+        .resume_session(pb::ResumeSessionRequest { id: Some(id.clone()), ..Default::default() })
+        .await
+        .expect_err("an archived session on box-1 was resumed");
+    assert_eq!(refused.code(), tonic::Code::FailedPrecondition, "{refused:?}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(rig.the("box-1").tabs().is_empty(), "an agent started on box-1 for an archived session");
+}
+
 /// MV-8 elsewhere: box-1's archive restored on this Mac, after its folder
 /// was freed, is a fresh clone of its branch with the conversation.
 #[tokio::test(flavor = "multi_thread")]

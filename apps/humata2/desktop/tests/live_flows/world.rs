@@ -1072,11 +1072,42 @@ impl World {
     }
 }
 
+/// Copies every file in `from` into `to`, best effort: a failing case's
+/// logs are kept for whoever looks into it, and nothing here may hide the
+/// case's own panic.
+fn keep_logs(from: &Path, to: &Path) {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return;
+    };
+    if std::fs::create_dir_all(to).is_err() {
+        return;
+    }
+    for entry in entries.flatten() {
+        let _ = std::fs::copy(entry.path(), to.join(entry.file_name()));
+    }
+}
+
 impl Drop for World {
     fn drop(&mut self) {
         if let Some(mut child) = self.daemon.take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        // A failed case keeps the host's and devbox-1's daemon logs in the
+        // test's undeclared outputs, before their folders go.
+        if std::thread::panicking()
+            && let Some(out) = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR")
+        {
+            let case = std::thread::current().name().unwrap_or("case").replace("::", "-");
+            let kept = PathBuf::from(out).join("live-flow-logs").join(case);
+            keep_logs(&self.dir.path().join("state").join("logs"), &kept.join("host"));
+            if let Some(devbox) = &mut self.devbox {
+                if let Some(mut child) = devbox.child.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+                keep_logs(&devbox.state.join("logs"), &kept.join("devbox-1"));
+            }
         }
         drop(self.devbox.take());
         // Holders, their shells and what runs in them (a `yes` flood), and

@@ -114,8 +114,9 @@ impl SessionListed {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 struct Listing {
     live: BTreeMap<String, SessionListed>,
-    /// Sessions of the channel that live on another machine.
-    elsewhere: BTreeSet<String>,
+    /// Sessions of the channel that live on another machine, with the
+    /// machine each lives on.
+    elsewhere: BTreeMap<String, String>,
     archived: BTreeMap<String, String>,
     items: BTreeSet<String>,
     requests: BTreeSet<String>,
@@ -186,7 +187,7 @@ fn list(store: &Store, channel: &str, machine: &str) -> Result<Listing, ListErro
             continue;
         }
         if !session.machine.is_empty() && session.machine != machine {
-            listing.elsewhere.insert(session.id);
+            listing.elsewhere.insert(session.id, session.machine);
             continue;
         }
         let mut repos = Vec::new();
@@ -366,6 +367,63 @@ impl ChannelSvc {
         Ok(listing)
     }
 
+    /// Refuses the delete of a channel another machine holds, or that has
+    /// live sessions on another machine: this humatad2 can't delete it there
+    /// yet, so the plan is refused up front rather than offering one the
+    /// delete would turn down (VERIFY 0.2.3, D784). The refusal names each
+    /// such machine as it is now, online or offline, and the live sessions
+    /// the host knows of there with the work each last reported.
+    async fn refuse_held_elsewhere(&self, channel: &ChannelRecord, listing: &Listing) -> Result<(), Status> {
+        let mut machines: BTreeSet<&String> =
+            channel.machines.iter().filter(|machine| **machine != self.machine).collect();
+        machines.extend(listing.elsewhere.values());
+        if machines.is_empty() {
+            return Ok(());
+        }
+        let up = self.remote.as_ref().map(|remote| remote.machines_up()).unwrap_or_default();
+        let mut held = Vec::new();
+        let mut offline = Vec::new();
+        for machine in machines {
+            let sessions: Vec<String> = self
+                .remote_sessions_of(&channel.id, machine)
+                .await?
+                .iter()
+                .map(described)
+                .collect();
+            let listed = match sessions.len() {
+                0 => "no live sessions".to_owned(),
+                1 => format!("live session {}", sessions[0]),
+                _ => format!("live sessions {}", sessions.join(", ")),
+            };
+            if up.contains(machine) {
+                held.push(format!("{machine} (online) holds it, with {listed}"));
+            } else {
+                held.push(format!("{machine} (offline) holds it, with {listed} when it last reported"));
+                offline.push(machine.as_str());
+            }
+        }
+        let mut fix = "deleting a channel that other machines hold isn't built into this humatad2 yet, so nothing was planned or changed. To delete it now: move each session there that you want to keep to the Desk (that keeps it), then take each of those machines out of the channel (Remove machine in the app, or `humata channel machine rm <channel> <machine>`), which asks what to do with each session still there, and plan the delete again".to_owned();
+        if !offline.is_empty() {
+            fix.push_str(&format!(
+                ". Reconnect {} first: a machine that can't be reached can't end its sessions",
+                offline.join(", ")
+            ));
+        }
+        Err(status::failure(
+            Code::FailedPrecondition,
+            pb::Error {
+                message: format!(
+                    "channel \"{}\" can't be deleted yet: {}",
+                    channel.name,
+                    held.join("; ")
+                ),
+                fix,
+                retry: None,
+                kind: None,
+            },
+        ))
+    }
+
     pub(super) async fn plan_delete_channel_of(
         &self,
         caller: &Caller,
@@ -379,6 +437,7 @@ impl ChannelSvc {
         self.user_deletes(caller, &id, false)?;
         let channel = self.find(&id).await?;
         let listing = self.listing(&id).await?;
+        self.refuse_held_elsewhere(&channel, &listing).await?;
         let work = |id: &String, session: &SessionListed| pb::SessionWork {
             session: Some(pb::SessionId { value: id.clone() }),
             title: session.title.clone(),
@@ -386,7 +445,6 @@ impl ChannelSvc {
             unpushed_commits: session.unpushed(),
         };
         let machine = |id: &String| pb::MachineId { value: id.clone() };
-        let others: Vec<&String> = channel.machines.iter().filter(|m| **m != self.machine).collect();
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         let desk_sessions = match self.desk.get().and_then(|handle| handle.get()) {
             Some(desk) => desk.desks_of_channel(&id).await?,
@@ -422,9 +480,9 @@ impl ChannelSvc {
                 .map(|id| pb::RequestId { value: id.clone() })
                 .collect(),
             machines: vec![machine(&self.machine)],
-            // Other machines' folders are not deleted yet (D194): the plan
-            // names them so the person knows the delete will say so.
-            offline_machines: others.into_iter().map(machine).collect(),
+            // A plan is made only for a channel no other machine holds
+            // (refuse_held_elsewhere), so no machine's return is waited on.
+            offline_machines: Vec::new(),
             desk_sessions,
         })
     }
@@ -452,15 +510,8 @@ impl ChannelSvc {
             )
         })?;
         let channel = self.find(&id).await?;
-        if channel.machines.iter().any(|machine| *machine != self.machine) {
-            return Err(status::not_built(
-                "deleting a channel that other machines hold: bring each of them online and remove it from the channel first",
-            ));
-        }
         let now = self.listing(&id).await?;
-        if !now.elsewhere.is_empty() {
-            return Err(status::not_built("deleting a channel with live sessions on other machines"));
-        }
+        self.refuse_held_elsewhere(&channel, &now).await?;
         let changes = now.changes_since(&before);
         if !changes.is_empty() {
             self.deletes.take(&token);
@@ -854,6 +905,19 @@ fn owed_deletes(root: &Path, operations: &crate::restart::Operations) -> Vec<(Pa
         }
     }
     notes
+}
+
+/// A session on another machine as a refusal names it: its title, and the
+/// work it would lose if it has any.
+fn described(session: &pb::SessionWork) -> String {
+    if session.dirty_files == 0 && session.unpushed_commits == 0 {
+        format!("\"{}\"", session.title)
+    } else {
+        format!(
+            "\"{}\" ({} uncommitted files, {} unpushed commits)",
+            session.title, session.dirty_files, session.unpushed_commits
+        )
+    }
 }
 
 /// A plan that no longer matches (NV-27).
