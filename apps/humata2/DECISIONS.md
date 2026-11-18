@@ -4331,3 +4331,247 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - **Shared reference files:** the diff spec fields moved from render's guide to `skills/shared/diff-spec.md`, and the stack rules are `skills/shared/stacks.md`, because render, review and order all need them and shared files are copied into every installed skill (D790).
 - **Not verified:** whether `review_note` is accepted outside a PR review session. The skill tries it and, if refused, sends its findings as the `notes` of one `review_prepare`, which works in any session. STACKVIEW's lane should settle it.
 - **Reverse:** delete `skills/review-humata-change`, restore render's and order's descriptions, and drop RV-36 and the PR-22 amendment.
+
+## D794: Mermaid diagrams zoom and pan in place and open large in the view, and are drawn again sharp once a zoom rests (owner, 2026-11-18). Decided (by the brief), built
+
+- **Asked by the owner:** "I cant zoom in and navigate around mermaid diagrams".
+- **In place:** pinch, or ⌘-scroll (Ctrl-scroll elsewhere), zooms about the pointer. A drag pans while zoomed and selects no text. A plain scroll still scrolls the document, so a diagram never traps the page. The frame keeps its size: zooming never measures the document again, it only repaints (`cx.notify`, not `invalidate_inline_layout`).
+- **Controls:** shown only while the pointer is over the diagram or it has focus: zoom out, zoom in, Fit, Open. `+` (or `=`), `-` and `0` zoom, zoom out and fit a focused diagram. A click focuses it.
+- **Open:** Open, or a double-click, shows the diagram in place of the document inside the same view, with a toolbar (name, zoom %, zoom out, zoom in, Fit, 100%, Close). It zooms the same way, and a plain scroll pans there. Escape or Close returns and focuses the diagram again. It is an overlay inside `MarkdownView`, not an app tab: the crate stays generic and no app wiring is needed. Moving it into a real tab is the app's call later, when it has a diagram tab kind.
+- **Sharpness and memory:** each diagram keeps its laid-out SVG next to its picture. Once a zoom has rested for 150 ms, the diagram is drawn again at the smallest scale bucket (2, 4, 8 or 16 times natural) that is sharp at that zoom and the screen's scale. The nearest sharper picture already drawn stands in until then. The cache is keyed by source, theme and bucket. Zoomed pictures are capped at 4 and 24M pixels in all, oldest first; base pictures are never dropped for them. One picture is capped at 8192 px a side and 12M pixels, so a very deep zoom into a large diagram gets slightly soft rather than using more memory. Every picture the cache drops is freed on the GPU (`drop_image`).
+- **Keyed by the block's first byte:** a zoom resets when text above the diagram changes. The opened diagram closes if its block goes.
+- **Code:** `markdown/src/zoom.rs` (pure viewport math, key mapping and bucket choice), `markdown/src/view/diagram_zoom.rs` (state, handlers, controls, Open), and `markdown/src/mermaid.rs` (`Drawn`, `raster`, bucketed keys, bounded zoomed pictures).
+- **Tests:** `markdown:markdown_test` and `:markdown_fast_test` (`zoom::tests`: fit, zoom about the pointer, limits, pan edges, bad input, keys, buckets; `mermaid::tests`: a zoomed picture is kept beside the base, only a few zoomed pictures are kept). `markdown/headless:rendering` (`a_zoomed_diagram_is_drawn_again_sharp_once_it_rests_and_a_plain_scroll_never_zooms`, `a_double_clicked_diagram_opens_large_and_escape_brings_the_document_back`).
+- **Reverse:** delete `zoom.rs` and `view/diagram_zoom.rs`. Restore `render_diagram`'s plain `img`, the two-part cache key, and `render` returning a picture. Narrow the BUILD glob back to `src/*.rs`.
+
+## D793: The sidebar's Desk lists the Desk sessions you used last on every page, up to a number set in Settings, and folds like a channel (owner, 2026-11-18; supersedes D148's sidebar bullet and D100's "only on the Desk"; amends DK-1). Decided (by Fable), built
+
+- **Asked by the owner:** "I want the top 3-5 (configurable) desk sessions to appear if I expand it to appear on the side always."
+- **The Desk row folds.** While there is at least one open Desk session, the Desk row has a trailing chevron in its count slot: ChevronDown open, ChevronRight folded, small, tertiary (selection text when the row is selected). The chevron toggles the fold. A click on the row still opens the Desk page. With no open Desk session there is no chevron and the row is a plain link, as before.
+- **Keyboard**, only while the row has a chevron: the Desk row is a stop. ← on it folds, → unfolds or goes to its first row, Enter opens the Desk page. ← on a row under it goes to the Desk row.
+- **Fold:** open by default, kept between launches as `Folding.desk` (true is folded; `#[serde(default)]` so older saved folding reads as open). Expand all opens it and Collapse all folds it.
+- **Open, on every page** (the Desk page included), the same rows: at most N Desk sessions. The session the main area shows always takes one of the N. Membership is that session, then the most recently used (`last_used.order` descending, ties by id). The rows are drawn in the order the sessions were started, so a row doesn't move when used; the Desk page's Sort doesn't apply. When some are left out, a last row "K more" opens the Desk page; it is a keyboard stop.
+- **Folded:** nothing under Desk on any page. On a Desk session's page the Desk row is highlighted, since that session has no row of its own.
+- **N:** Settings › Layout › **Desk sessions in sidebar**, under Sidebar shows Pinned: a pop-up like Terminal font with 3, 4, 5, 8 and All; 5 unless changed. Note: "The ones you used last, under Desk on every page." A hand-edited count is brought into 1–20. The palette finds it (it is in `Row::ALL`).
+- **Storage:** app Preferences (`Preferences.desk_rows`), as D787's fast mode; no environment variable. Reverse when the app reads daemon settings at launch: move it into the portable sections of `~/.humata2/config/settings.toml` through SettingsService. Rejected: the app reading a config TOML itself.
+- **Goldens:** approved: the trailing ChevronDown on the Desk row in the `desk_side` frames (36–43, 55 and the others drawn by `design/desk.rs`), and 29-settings gaining one row whose pop-up reads "5". Rejected: any diff in frames without Desk sessions, the empty Desk, or the roam channel-desk frames. The folded state and the "K more" row get no design golden.
+- **Gives up:** D148's full list on the Desk page; a sidebar that matches the Desk page's sort.
+- **Code:** `features/sidebar/src/lib.rs` (`RowKey::Desk`, `RowKey::DeskMore`, `Delegate::OpenDesk`, `SidebarAction::SetDeskLimit`, `desk_more`, `desk_open`, `desk_limit`, `rebuild_desk`, `desk_pick`; `desk_shown` is gone), `features/settings/src/lib.rs` (`DeskRows`, `Row::DeskRowsInSidebar`, `DeskRowsMenu`, `SetDeskRows`), `features/app` (the cap set at launch and whenever Settings changes it; `OpenDesk` switches to the Desk page; `desk_in_sidebar` is gone), `ui/src/sidebar_desk.rs` (Desk row, chevron, "K more"), `ui/src/settings.rs` (the pop-up).
+- **Tests:** `features/sidebar:desk_cap_test`, `:desk_test`, `features/settings:desk_rows_test`, `features/app:desk_test`, `desktop:native_test` (`the_sidebar_lists_desk_sessions_on_every_page`, `the_desk_chevron_folds_its_sessions_and_the_row_still_opens_the_desk`, `a_capped_desk_counts_the_rest_and_more_opens_the_desk`), `desktop:design_test`.
+- **Reverse:** set the pop-up to All, put the route gate back (`desk_in_sidebar`, `desk_shown`), and drop `Folding.desk`.
+
+## D792: An agent asks the user to import a machine provider through the Inbox; the card shows the whole file and only the user's approval adds it (owner's ask, Fable 5.2's picks, 2026-11-18; amends MP-23; adds an IN-17 row; uses D771, D38.6). Decided (by Fable), built
+
+- **Asked by the owner:** "I also want to be able to have the mcp put smth in my inbox for importing providers because apparently right now it doesnt work."
+- **Why it didn't work:** `provider_import` was on the MCP user-only list (HOST_SECRETS), so an agent got `user_only` with advice to use `inbox_ask`, and nothing reached the Inbox. `inbox_ask` only makes a question card, which imports nothing. ProviderService's Preview/Import refuse agents, the Inbox had no preview for an import, and no deferred approve-runs-the-import path existed.
+- **MP-23, amended:** only the user adds or changes a provider. Humata never loads a provider from a repo or from any file on its own. The user imports a file in Settings; an agent may only ask, by handing over the file's text, and the ask goes to the Inbox. Either way the import shows the full text, every command each provider runs and the providers it replaces, and it is added only after the user, present, confirms. An agent's ask is never allowed without asking, never Always-allowed, and never part of Approve all.
+- **Capability:** `PROVIDER_IMPORT = 49`, "Ask you to import a machine provider". Tier Ask me (no Allow): a rule offers Ask me and Never only, starts at Ask me, no "Always allow …", never low-risk while away, needs the Mac, scope Global. No Desk switch covers it. It is a row in Settings › Agent access like every rule (every new action gets a switch).
+- **RPC:** new agent-only `ProviderService.RequestProviderImport {idempotency_key, text, file_name, reason}` → `SetProvidersConfigResponse`. `PreviewProviderImport`/`ImportProvider` are untouched and stay the user's. A user's call to the new RPC is `failed_precondition`, pointing at PreviewProviderImport.
+- **Before the Inbox:** text over 64 KiB, a missing reason, or a file with problems (bad TOML, no providers, a provider missing `create`, a merge that doesn't parse) is `invalid_argument` at once, with the problems listed; nothing is asked. A Never rule is `denied` at once.
+- **The card:** `RequestPreview.provider_import = 15` (`ProviderImportPreview`: text, file name, providers with labels, every command per provider and action, replaced ids), kind MACHINE, the agent's reason. No plan token is shown. The app shows it as text: adds/replaces lines, the commands with a note that they run on the Mac or on `run_on` when a machine is made, then the file whole. Approve all and Deny all leave it out (`Request::answered_in_bulk`, by its operation id `provider.request_import`).
+- **Approve:** the held call writes the merged providers file worked out when the agent asked, only if the file's revision is still the one it was asked against; otherwise the result is `plan_stale` and nothing is written. Asks dedupe by idempotency key (TP-14).
+- **MCP:** `provider_import {file_text, file_name?, reason, wait_seconds?}` is a tool now (removed from §7's user-only list); it waits like every asked call and returns `{decision, imported, revision}`.
+- **Follow-ups, not built:** the held call isn't kept across a daemon restart (the card is, as for every deferred call); a machine's daemon doesn't forward the ask to the host yet (Fable: forward as a `ForwardedCall`, `host_unreachable` while away, never journal); `humata provider import` from inside a session doesn't ask yet; a Settings import UI.
+- **Code:** `daemon/access` (`Capability::ProviderImport`, its policy arm), `daemon/humatad/src/provider_service.rs` (`request_provider_import`, `write_asked`) and `provider_service/ask.rs` (`AskError`, the card), `daemon/humatad/src/mcp.rs`, `daemon/mcp/src/tools.rs`, `daemon/mcp/src/user_only.rs`, `clients/live/src/inbox.rs`, `clients/src/model.rs`, `features/inbox/src/lib.rs`, the three protos.
+- **Tests:** `daemon/access:provider_import_test`; `daemon/humatad:provider_import_test` (approve adds it, deny adds nothing, stale after a change, a file with problems asks nothing, Never denies, the user can't use the ask); `daemon/humatad:mcp_test` (`an_agents_provider_import_waits_in_the_inbox_and_approving_adds_the_provider`); `features/inbox:provider_import_test`; `clients/live` unit test for the card; `daemon/mcp:schemas_test` golden.
+- **Reverse:** drop the capability, the RPC, the preview and the tool, and put `provider_import` back on the user-only list.
+
+## D795: Codex runs under a `humata codex` wrapper that owns Codex's app-server and links it to the daemon; Codex hooks and their trust step are left for older Codex and user-defined kinds (owner's AGENTS2 direction, Fable 5.2's pick, 2026-11-18; amends D202 and D670; follows D201). Decided (by Fable), not built
+
+- **Asked by the owner:** "I don't like the fact you parse the terminal screen." AGENTS2 reads Codex through its own structured channel.
+- **Shape:** the built-in `codex` kind's program is `humata codex`. It starts `codex app-server --listen unix://<session state>/codex.sock` and runs Codex's TUI on it with `--remote`. A second client on that socket, the link, gives the daemon these things:
+  - turns: turn/started and turn/completed; an interrupted turn shows as "stopped by you";
+  - the thread id, from thread/started, so `/new` is followed;
+  - approvals: item/commandExecution|fileChange/requestApproval, as Inbox asks;
+  - questions: item/tool/requestUserInput, as Inbox questions with options.
+  The first answer wins. Codex's own popup stays as the fallback (verified live on 0.169.0, HOOKS-research.md). Wrapper sessions get no Humata hooks, so they need no trust step.
+- **Conditions:**
+  - The app-server is the wrapper's child inside the PTY. It lives and dies with the holder, never with the daemon, and the link reconnects after a daemon restart. The state folder is 0700 and the socket 0600.
+  - The transport is `tokio-tungstenite` over `UnixStream`, in a single-job crate, added through main.
+  - Parsing is tolerant: unknown methods and fields are ignored.
+  - If the app-server doesn't come up, or the handshake fails, the wrapper execs plain Codex on the shipped `-c hooks` path with D202's trust row. That path is frozen. Running Codex sessions stay on hooks plus the D670 scan until the owner ends them; none is restarted to migrate. D670 stays for import.
+  - The wrapper never changes Codex's approval policy, its sandbox, or the owner's own Codex config or hooks. Codex's exit status passes through, and the TUI is never relaunched on its own.
+  - After a move, the wrapper starts a fresh app-server at the new place and resumes the recorded thread.
+- **Not chosen:**
+  - hooks plus the trust step: the step stays, and the hooks can't answer a question;
+  - both channels: the hook surface would be built twice;
+  - `--dangerously-bypass-hook-trust`: it also runs a cloned repo's own hooks.
+- **Reverse:** point the codex kind back at `codex … -c hooks=` (still built), and delete the wrapper and the link crate.
+
+## D796: Claude Code's own questions (AskUserQuestion) are answered from the Inbox through a PreToolUse hook that returns the answers (AGENTS2, Fable 5.2's pick, 2026-11-18; extends D191's hooks to Claude questions). Decided (by Fable), not built
+
+- **Shape:** a PreToolUse hook matched to `AskUserQuestion` blocks and raises the questions in the Inbox. It returns `permissionDecision: "allow"` with `updatedInput` carrying the questions and `answers`, so the tool returns the person's answer and Claude's dialog never opens. Multi-select and free-text "Other" are both supported.
+- **The way out:**
+  - The card shows the live terminal and has "Answer in the terminal", which releases the hook with no output so the dialog opens.
+  - If the daemon is unreachable, the hook times out, or the card is dismissed, the hook exits 0 with no output and the dialog opens. It never denies on failure.
+  - The hook's timeout is long, as for the PermissionRequest hook.
+  - The card is withdrawn when the hook process ends, and on Stop, interrupt or SessionEnd.
+- **Fallback:** a deny that carries the answer as its reason (Copilot's way), used only if a live check shows that `allow` plus `updatedInput` still opens the dialog.
+- **Reverse:** drop the matcher from the Claude hooks file.
+
+## D797: Humata's own sends wait for the agent's structured ready signal instead of reading its screen; after 20 s the Inbox says the agent is waiting in its terminal (AGENTS2, Fable 5.2's ruling, 2026-11-18; amends D762 and D767; uses D781's card form). Decided (by Fable), not built
+
+- **Ready signals:**
+  - Claude: a SessionStart hook of any source. It runs only once workspace trust is accepted.
+  - Codex: the wrapper's thread/started.
+  - Copilot: its sessionStart hook.
+  Kinds without a signal keep the screen check. No screen matchers are added.
+- **Only Humata's sends wait:** the start message, composer and Inbox sends, and MCP sends. Keys the person types into the terminal always pass straight through. There is no deadline after which Humata sends anyway: a held message stays queued until the signal arrives or the session ends.
+- **The card:** 20 s after the holder launches the agent, the session needs you. The Inbox gets "<Agent> is waiting in its terminal", with the live terminal and the held message under it. Its one action, "Send it now", releases the held message by the person's explicit choice; it never answers the agent's screen. The card is withdrawn when the signal arrives, and the queue then flushes in order.
+- **Codex:** this rests on a live check that thread/started comes after Codex's trust and first-run screens and before the first prompt. If it doesn't, Codex keeps the screen check for now.
+- **Reverse:** make the gate the screen check again for every kind.
+
+## D798: Once an agent's structured channel is heard, the screen fallback stays quiet for its session; each structured ask is withdrawn where it was answered (AGENTS2, Fable 5.2's ruling, 2026-11-18; narrows D786). Decided (by Fable), not built
+
+- **Suppression follows the link, not a held ask:**
+  - Once a session's structured channel has been heard, `screen_ask` raises nothing for that session.
+  - If the channel drops, the fallback resumes.
+  - When the channel returns, the structured card replaces any screen-raised card for the same ask.
+- **Observe-only prompts:** a Claude Notification of `permission_prompt` or `elicitation_dialog` with no held ask raises D797's "waiting in its terminal" card, not a screen parse. `idle_prompt` is ignored.
+- **When a card goes:**
+  - a Codex card on serverRequest/resolved;
+  - a Claude card when its hook process ends;
+  - every held ask for a session at turn end, interrupt, SessionEnd, Stop or End.
+  An Inbox answer that comes after the ask is resolved does nothing, and the card says it was answered in the terminal.
+- **Reverse:** let `screen_ask` raise whatever the link holds.
+
+## D799: AGENTS2 follows Claude's conversation on every main-thread SessionStart and Codex's on the latest thread; it starts with three live checks and cuts what the exit doesn't need (AGENTS2, Fable 5.2's ruling, 2026-11-18). Decided (by Fable), not built
+
+- **Live checks before building:**
+  1. For Claude, `allow` plus `updatedInput.answers` suppresses the AskUserQuestion dialog.
+  2. For Codex, thread/started fires after trust and first run and before the first prompt, and fires again with a new id on `/new`.
+  3. For Claude, SessionStart `source=clear` carries the new `session_id` and `transcript_path`.
+- **Amended by main, 2026-11-18:** the live checks are owed until the owner can watch, because the approval to copy agent logins ended at 08:20. Each part is built with its fallback wired and tested on recorded fixtures, so a check's result only flips a switch (AGENTS2.md › Lane › Owed: O1 `ClaudeAnswer`, O2 `ReadySignal`, O3 the SessionStart `clear` matcher).
+- **Following:**
+  - Claude: every SessionStart without `agent_id` sets the session's conversation to its `session_id`, whatever the source. Payloads with `agent_id` never do.
+  - Codex: the latest thread/started wins. Its rollout file is found by id under `<home>/.codex/sessions`.
+  - Resume always uses the last recorded id.
+- **Cut:**
+  - new Codex hooks;
+  - tracking either agent's subagents;
+  - compact handling beyond recording the id;
+  - migrating running sessions;
+  - a per-session "which channel" UI;
+  - new upgrade tests;
+  - new screen matchers or recordings for Claude and Codex.
+- **Added:**
+  - The VERIFY Copilot cases run by agent kind (copilot, claude, codex) rather than as copies.
+  - The fast tier uses replayed app-server frames for Codex, and the real hook commands fed recorded payloads for Claude.
+  - The live drive runs once, in the slow tier, before release.
+- **Order:**
+  1. The Codex wrapper and link.
+  2. Alongside it, Claude's questions and conversation following.
+  3. The ready gate and the doubles rule.
+  4. VERIFY by kind, and the live drive.
+
+## D800: A review can be a stack of layers that the owner steps through across repos, only looking, never reviewing (owner, 2026-11-18; picks by Fable 5.2). Decided, planned (STACKVIEW)
+
+- **Asked by the owner:** "If its a stack of changes I want to see it as a stack. I want to see it across the entire stack for all repos involved. … sometimes i just wanna look at the code."
+- **Payload:** `review_prepare` takes `stack` or `spec`, never both and never neither. A stack's layers are listed bottom first. A layer has:
+  - a trimmed `title`, which is the layer's identity everywhere: unique ignoring case, at most 60 characters;
+  - an optional `purpose`: one line, at most 120 characters;
+  - one or more repos, each listed once.
+
+  At most 50 layers. Over any limit is refused, stating the limit; nothing is truncated.
+- **Range layer:** a two-dot `base..head`, with the revs kept as sent. The commits they resolve to at prepare are stored beside them.
+  - Both revs must resolve, and base must be an ancestor of head.
+  - In each repo the range layers must chain: each base is the previous range layer's head.
+- **Forks are refused.** A forked stack is sent as one review per branch.
+- **Worktree layer:** HEAD plus the working-tree files under `include_paths`: tracked changes, and untracked files that gitignore allows. At least one path is required; overlapping paths are allowed.
+  - In a repo with range layers, the worktree layers sit above them, and HEAD must be at the top range head.
+  - An empty worktree layer is accepted and shows "No changes".
+- **Whole stack** is derived by the daemon, never sent. It is the union of the layers: per repo, from the first base to the top head, plus the worktree overlay limited to the union of the worktree layers' paths. To include everything uncommitted, an agent sends `"."`.
+- **Whitespace and renames** are set per review and apply to every layer.
+- **Drift:** when a kept rev moves and breaks ancestry or the chain, when it is gone (for example after a move), or when HEAD leaves the top head, that layer's repo shows "Moved since it was sent" with one action: ask the agent to send it again. A wrong diff is never shown.
+- **Notes:** a note may carry `layer`.
+  - A layered note is anchored against its layer's diff. It also shows in Whole stack where its quoted lines are still found.
+  - An unlayered note, and a `review_note` sent without `layer`, belong to Whole stack.
+- **Order and groups** apply within whichever layer shows; groups are no longer the layer stand-in.
+- **View:**
+  - The layer list sits at the top of the Diff panel's file list: Whole stack first, then layers 1..N, where 1 is the bottom.
+  - Each row shows its pull requests (collapsing to "+N" when they don't fit) and its file count. The purpose shows on the selected row only.
+  - At most about 6 rows show; the list scrolls.
+  - The base picker is hidden while a stack shows.
+  - Repos a layer does not touch are not shown.
+  - A stack without notes draws no review chrome.
+- **Keys:** `alt-cmd-down` and `alt-cmd-up` step to the next and previous row, with no wrap. The palette gets Next layer, Previous layer and Whole stack.
+- **Agent:**
+  - `review_focus` takes `layer` and applies at once with Undo (PR-24).
+  - `review_context` returns the stack, the layer showing, and per layer the resolved commits and drift.
+  - A new `review_prepare` keeps the layer showing if its title still exists, else shows Whole stack.
+- **Offers, Undo, Revert and restarts:**
+  - Outside a review chat the stack arrives as an offer, "3 layers over 2 repos" (VW-2), which opens at Whole stack.
+  - Undo and Revert restore the stack, the layer and the bases as one unit.
+  - The stack and the layer survive restarts and moves (PR-26).
+- **Not per layer:** Viewed and Mark reviewed stay per file and per repo. Layer diffs are computed only when a layer is picked, and cached by commit.
+- **D791's open item:** `review_note` works in any review chat, not only a PR review; a daemon test pins this.
+- **Goldens:** new frames 119-diff-stack-whole and 120-diff-stack-layer, using the milestone's three-layer example. Frames 84-86 do not change. Fable approves the pictures once they are rendered.
+- **Reverse:**
+  - Drop `stack` and `layer` from the tool schema and the proto fields (unused, reserved).
+  - Remove `stack.rs` and the layer list.
+  - Put the groups stand-in back in the skills.
+
+## D801: Terminals keep running: holders move onto a new build in place, and rename, move, archive, delete and automatic closes keep them running (LIVEHOLDER)
+
+- **Asked:** 2026-11-18, by the LIVEHOLDER manager. Owner rule the same day: "As much as possible I want terminals to keep running."
+- **Decided (by Fable 5.2), 2026-11-18.** Amends D373 (shells move too; idle wait only for holders too old to move), D753 (its shell refusal text applies only to pre-LIVEHOLDER shells) and D784 (channel delete and the channel-desk watch).
+- **A. Re-exec in place.** Same pid, so the program stays its child (waitpid, exit code, pid file). An `SCM_RIGHTS` handover to a new process is rejected: the program would be reparented. Amendments:
+  - Negotiate `--handoff-versions` before quiescing.
+  - Bound the check at about 2 s, and kill and reap the check child on timeout.
+  - Reap every child by its pid, never `waitpid(-1)`.
+  - In the new image: reset the signal mask and dispositions, then `waitpid(child, WNOHANG)` once.
+  - Clear CLOEXEC on the listener and master only after the check child has exited, and set it again if the exec fails.
+  - Refuse `MoveTo` while a keyed input or `AwaitKeys` is pending; the daemon retries.
+  - Send each client `Moving` before the exec, so it reconnects at once and resends un-acked keyed input under the same keys.
+  - Carry everything Welcome serves: terminal modes, any partial escape or UTF-8 tail, and `holder_generation`.
+  - Welcome reports the build. The daemon rewrites `holder_builds` only after it reconnects and sees the new build.
+  - fsync `.handoff` before the check. The old image deletes it on any refusal; the new one deletes it once serving. `.handoff` with a dead pid means lost in the move; with a live pid it means in progress, and revive leaves it alone.
+- **B. Crash safety: a precheck, the marker and a report. No keeper process.** A keeper can neither serve nor report the exit code.
+  - `--check-take-over` runs the real take-over code minus adopting the fds.
+  - Migrate moves one holder first as a canary (an idle one if any), confirms its reconnect and Welcome, then moves the rest. It stops at the first failure and marks the item Failed.
+  - A loss reads "lost while moving to the new holder build": scrollback kept, agents offer Resume, shells read ended.
+- **C. Migrate moves agents and shells with no idle wait** (subject to A's busy retry).
+  - The item's body says it moves N terminals without restarting them.
+  - It lists separately only holders too old to move. Their agents restart once at an idle moment (D373). Their shells are never restarted or ended and never hold the item open.
+- **D. Channel rename keeps agents running.**
+  - Rename the folder and rewrite the records at once.
+  - Each running agent keeps its started-under path and conversation key with a pending re-key flag. Every stop/resume path re-keys from the original key to the current path before resuming. Agents not keyed by cwd skip it.
+  - An old→new alias symlink lives while any holder started under the old path runs:
+    - it is recorded with the channel and re-pointed on a later rename;
+    - it is removed when the last such holder ends, and at reconcile;
+    - placement treats its name as taken;
+    - Bin, copy and delete walks never follow it.
+  - Swap atomically where possible (`renamex_np(RENAME_SWAP)` / `RENAME_EXCHANGE`); otherwise rename, then symlink.
+  - A mid-turn agent needs no confirm.
+  - Cross-filesystem renames keep today's stop/resume, and the confirm says why.
+  - No "pending re-key" status is shown.
+- **E. Desk move to a channel on the same filesystem** is a rename with D's handling. Terminals keep running; undo is the rename back. Across filesystems today's copy stays, and its confirm says they restart. Same-machine MoveSession stays refused.
+- **F. LIVEHOLDER builds D784's Archive ask.**
+  - `ArchiveSession{end}`: unset keeps it running. An agent caller needs the destroy switch to end.
+  - The archived session leaves the sidebar and stays on the machine page as "archived". Open attaches it without restoring it.
+  - Confirm: Cancel, red-text "End and archive", blue "Archive" (Return). End is never focused.
+- **G. Desk close.** Hide is a view action and never calls `desk_service/close.rs`. Only End or End for good does, and an agent caller needs the destroy switch.
+- **H. Channel delete (amends D784).** The confirm's default is to move the live sessions to the Desk and keep them running.
+  - Confirm: Cancel, red-text "End them and delete", blue "Move N to the Desk and delete" (Return).
+  - The move is E in reverse. Stopped and exited sessions go to the Bin.
+  - A terminal that can't move (shared channel folder, cross-filesystem) is named with the reason.
+  - An agent caller's delete moves them; End needs the destroy switch.
+  - For an offline machine, the choice is carried to the next link.
+- **I. Automatic ends.**
+  - The channel-desk watch never ends a live holder: it detaches the session to "Not in a channel".
+  - `carry_service` release leaves the old machine's shells running under "Not in a channel"; the move confirm names them.
+  - These stay, each with its reason:
+    - `terminal.rs:1024` rolls back Humata's own failed create; nothing ran.
+    - Revive's stale Launching/Resuming undoes a start Humata never finished. It matches on record state only and never on a live `.handoff`.
+    - The stopped-boot sweep finishes the owner's Stop.
+    - Remove machine is explicit and named.
+- **J. Cross-machine move: freeze, don't overlap.**
+  - Order: freeze the old agent (new holder `Freeze`/`Thaw` frames: SIGSTOP/SIGCONT to the groups `end_by_pid` targets; the holder serves the frozen screen; the running list reads "Paused for move") → carry → resume on the new machine → confirm → end the old one. On any failure, thaw it.
+  - The move note records the freeze, so revive thaws or completes after a crash.
+  - Shells are never frozen.
+  - A holder without `Freeze` is refused as Outdated, naming Migrate.
+- **K. PER-6 now reads:** "A running terminal's program is never restarted to change its holder's build. A new holder build takes each running holder over in place: same process, same program, same screen and scrollback, and viewers reconnect by themselves. A take-over that can't be proven safe is refused before it starts and the terminal carries on as it was. A holder that can't hand itself over keeps running on its own build; its agent restarts once, at an idle moment, only after the owner clicks Migrate, and its shell is never restarted."
+  - New sibling rule PER-32: "Humata ends a running terminal only when the owner ends it (End, End for good, Stop, the End choice in a confirm, removing its machine) or to undo a start Humata itself never finished. Rename, move, archive, close and upgrade keep it running, or say why they can't before acting."
+- **Reverse:**
+  - Holders: drop `MoveTo`, which returns Migrate to D373's restart.
+  - Each audited path: put back its stop/resume.

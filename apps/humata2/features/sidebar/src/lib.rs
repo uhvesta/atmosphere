@@ -7,6 +7,11 @@
 //! The keyboard cursor moves over the rows (↑ ↓ Home End, ← folds or goes to
 //! the parent, → unfolds or goes to the first child, Enter opens). Opening
 //! is the parent's business: the sidebar only says what to open.
+//!
+//! The Desk row lists Desk sessions under it on every page (DK-1, D793): the
+//! session you are on and the ones used last, up to a cap, drawn in the
+//! order they were started, then a "more" row for the rest. It folds like a
+//! channel.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -28,6 +33,12 @@ pub enum RowKey {
     /// stop of its own for the keyboard, between the channel and its Desk
     /// sessions.
     ChannelDesk(ChannelId),
+    /// The Desk row under Board, a stop while there are open Desk sessions
+    /// (D793): it folds them, and Enter opens the Desk page.
+    Desk,
+    /// The last row under the Desk, counting the Desk sessions not listed;
+    /// it opens the Desk page (D793).
+    DeskMore,
 }
 
 /// What a row shows.
@@ -81,6 +92,10 @@ pub struct Folding {
     pub channels: BTreeSet<ChannelId>,
     /// Sessions whose forks are folded.
     pub sessions: BTreeSet<SessionId>,
+    /// Whether the Desk is folded (D793). Folding saved before the Desk
+    /// could fold reads as open.
+    #[serde(default)]
+    pub desk: bool,
 }
 
 /// The sidebar's state.
@@ -92,16 +107,22 @@ pub struct SidebarState {
     pub folding: Folding,
     /// The rows to draw, top to bottom.
     pub rows: Arc<Vec<Row>>,
-    /// The open Desk sessions, in the order they were started, for the view
-    /// to draw under its Desk row (DK-1). A row doesn't move when its session
-    /// is used (D148). Each is a session row at depth 1 with no forks to fold
-    /// (DK-12).
+    /// The Desk sessions to draw under the Desk row, on every page (DK-1,
+    /// D793): the one the main area shows and the ones used last, up to
+    /// `desk_limit`, in the order they were started, so a row doesn't move
+    /// when its session is used (D148). Empty while the Desk is folded. Each
+    /// is a session row at depth 1 with no forks to fold (DK-12). ↑ and ↓
+    /// walk the Desk row, these and the "more" row before the channels.
     pub desk: Arc<Vec<Row>>,
-    /// Whether the view is drawing the Desk rows right now (only while the
-    /// Desk page or a Desk session shows). The app sets it; while it is
-    /// set, ↑ and ↓ walk through `desk` too, before the channels, in the
-    /// order they are drawn.
-    pub desk_shown: bool,
+    /// How many open Desk sessions `desk` leaves out, for the "more" row;
+    /// 0 while the Desk is folded.
+    pub desk_more: usize,
+    /// How many Desk sessions are open. The Desk row folds, and is a stop
+    /// for the keyboard, only while there are some.
+    pub desk_open: usize,
+    /// At most how many Desk sessions `desk` lists; `None` lists them all.
+    /// The app sets it from Settings.
+    pub desk_limit: Option<usize>,
     /// Each channel's open Desk sessions, in the order they were started
     /// (CD-2): the view draws a Desk row under the channel, above its
     /// sessions, while the channel has any. Each is a session row at depth
@@ -139,6 +160,8 @@ pub enum Delegate {
     OpenSession(SessionId),
     /// Open a channel's page on its Desk tab.
     OpenChannelDesk(ChannelId),
+    /// Open the Desk page.
+    OpenDesk,
 }
 
 /// What happens in the sidebar.
@@ -150,6 +173,8 @@ pub enum SidebarAction {
     Restore(Folding),
     /// The main area now shows this.
     SetCurrent(Option<RowKey>),
+    /// At most this many Desk sessions under the Desk row; `None` for all.
+    SetDeskLimit(Option<usize>),
     /// A row's chevron was clicked.
     Toggle(RowKey),
     /// Open every channel and fork tree (⌥⌘→).
@@ -194,6 +219,12 @@ impl Reducer for Sidebar {
                     state.cursor.clone_from(&current);
                 }
                 state.current = current;
+                // The session shown always has a row under the Desk.
+                state.rebuild_desk();
+            }
+            SidebarAction::SetDeskLimit(limit) => {
+                state.desk_limit = limit;
+                state.rebuild_desk();
             }
             SidebarAction::Toggle(key) => {
                 state.toggle(&key);
@@ -217,6 +248,7 @@ impl Reducer for Sidebar {
                     .filter(|session| state.workspace.forks(&session.id).next().is_some())
                     .map(|session| session.id.clone())
                     .collect();
+                state.fold_desk();
                 state.rebuild();
             }
             SidebarAction::Activate(key) => {
@@ -240,6 +272,7 @@ fn open(key: &RowKey) -> Effect<SidebarAction> {
         RowKey::Channel(id) => Delegate::OpenChannel(id.clone()),
         RowKey::Session(id) => Delegate::OpenSession(id.clone()),
         RowKey::ChannelDesk(id) => Delegate::OpenChannelDesk(id.clone()),
+        RowKey::Desk | RowKey::DeskMore => Delegate::OpenDesk,
     }))
 }
 
@@ -276,8 +309,32 @@ impl SidebarState {
                 }
             }
             // The Desk row folds with its channel.
-            RowKey::ChannelDesk(_) => {}
+            RowKey::ChannelDesk(_) | RowKey::DeskMore => {}
+            RowKey::Desk => {
+                if self.folding.desk {
+                    self.folding.desk = false;
+                } else {
+                    self.fold_desk();
+                }
+            }
         }
+    }
+
+    /// Folds the Desk; a cursor on a row under it goes to the Desk row.
+    fn fold_desk(&mut self) {
+        self.folding.desk = true;
+        if self
+            .cursor
+            .as_ref()
+            .is_some_and(|key| self.under_desk(key))
+        {
+            self.cursor = Some(RowKey::Desk);
+        }
+    }
+
+    /// Whether `key` is a row drawn under the Desk row.
+    fn under_desk(&self, key: &RowKey) -> bool {
+        *key == RowKey::DeskMore || self.desk.iter().any(|row| row.key.as_ref() == Some(key))
     }
 
     fn selectable(&self) -> Vec<usize> {
@@ -289,19 +346,24 @@ impl SidebarState {
             .collect()
     }
 
-    /// Where ↑ or ↓ goes when Desk rows are showing and the cursor is on a
-    /// row: the neighbour in drawing order (the Desk rows, then the
-    /// channels, each open channel's own Desk sessions right under it and
-    /// above its sessions, CD-2). `None` leaves the move to the tree alone.
+    /// Where ↑ or ↓ goes when there are Desk rows and the cursor is on a
+    /// row: the neighbour in drawing order (the Desk row, its sessions and
+    /// its "more" row, then the channels, each open channel's own Desk
+    /// sessions right under it and above its sessions, CD-2). `None` leaves
+    /// the move to the tree alone.
     fn walk_with_desk(&self, movement: Move) -> Option<RowKey> {
-        let desk_shown = self.desk_shown && !self.desk.is_empty();
-        if !desk_shown && self.channel_desks.is_empty() {
+        let desk = self.desk_open > 0;
+        if !desk && self.channel_desks.is_empty() {
             return None;
         }
         let mut order: Vec<RowKey> = Vec::new();
         for row in self.rows.iter() {
-            if desk_shown && matches!(row.kind, RowKind::Section("Channels")) {
+            if desk && matches!(row.kind, RowKind::Section("Channels")) {
+                order.push(RowKey::Desk);
                 order.extend(self.desk.iter().filter_map(|desk| desk.key.clone()));
+                if self.desk_more > 0 {
+                    order.push(RowKey::DeskMore);
+                }
             }
             order.extend(row.key.clone());
             if let Some(RowKey::Channel(id)) = &row.key
@@ -328,6 +390,43 @@ impl SidebarState {
             && let Some(key) = self.walk_with_desk(movement)
         {
             self.cursor = Some(key);
+            return;
+        }
+        // On the Desk row, ← folds and → unfolds or goes to its first row;
+        // under it, ← goes back to the Desk row.
+        if self.cursor == Some(RowKey::Desk) {
+            match movement {
+                Move::Out => {
+                    if !self.folding.desk {
+                        self.fold_desk();
+                        self.rebuild_desk();
+                    }
+                    return;
+                }
+                Move::In => {
+                    if self.folding.desk {
+                        self.folding.desk = false;
+                        self.rebuild_desk();
+                    } else if let Some(first) = self
+                        .desk
+                        .first()
+                        .and_then(|row| row.key.clone())
+                        .or_else(|| (self.desk_more > 0).then_some(RowKey::DeskMore))
+                    {
+                        self.cursor = Some(first);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if let Some(key) = &self.cursor
+            && self.under_desk(key)
+            && matches!(movement, Move::Out | Move::In)
+        {
+            if movement == Move::Out {
+                self.cursor = Some(RowKey::Desk);
+            }
             return;
         }
         // On a channel's Desk row, → goes into its Desk sessions and ← back
@@ -413,11 +512,16 @@ impl SidebarState {
 
     /// Whether a row with `key` is listed, in the tree or under the Desk.
     fn lists(&self, key: &RowKey) -> bool {
-        if let RowKey::ChannelDesk(id) = key {
-            return self
-                .channel_desks
-                .get(id)
-                .is_some_and(|desks| !desks.is_empty());
+        match key {
+            RowKey::ChannelDesk(id) => {
+                return self
+                    .channel_desks
+                    .get(id)
+                    .is_some_and(|desks| !desks.is_empty());
+            }
+            RowKey::Desk => return self.desk_open > 0,
+            RowKey::DeskMore => return self.desk_more > 0,
+            RowKey::Channel(_) | RowKey::Session(_) => {}
         }
         self.index_of(key).is_some()
             || self
@@ -512,21 +616,6 @@ impl SidebarState {
             }
         }
         self.rows = Arc::new(rows);
-        self.desk = Arc::new(
-            workspace
-                .sessions
-                .iter()
-                .filter(|session| {
-                    !session.archived
-                        && workspace
-                            .desk
-                            .sessions
-                            .get(&session.id)
-                            .is_some_and(|record| record.closed.is_none())
-                })
-                .map(|session| session_row(RowKey::Session(session.id.clone()), 1, session, None))
-                .collect(),
-        );
         let mut channel_desks: std::collections::BTreeMap<ChannelId, Vec<Row>> =
             std::collections::BTreeMap::new();
         for session in &workspace.sessions {
@@ -542,6 +631,47 @@ impl SidebarState {
                 .push(session_row(RowKey::Session(session.id.clone()), 1, session, None));
         }
         self.channel_desks = Arc::new(channel_desks);
+        self.rebuild_desk();
+    }
+
+    /// Picks the rows under the Desk again (D793), then drops a cursor on a
+    /// row that is gone. Called when the data, the fold, the cap or the
+    /// session shown changed.
+    fn rebuild_desk(&mut self) {
+        let workspace = &self.workspace;
+        let open: Vec<(&humata2_clients::model::Session, u64)> = workspace
+            .sessions
+            .iter()
+            .filter(|session| !session.archived)
+            .filter_map(|session| {
+                let record = workspace.desk.sessions.get(&session.id)?;
+                record
+                    .closed
+                    .is_none()
+                    .then_some((session, record.last_used.order))
+            })
+            .collect();
+        self.desk_open = open.len();
+        if self.folding.desk {
+            self.desk = Arc::new(Vec::new());
+            self.desk_more = 0;
+        } else {
+            let current = match &self.current {
+                Some(RowKey::Session(id)) => Some(id),
+                _ => None,
+            };
+            let keep = desk_pick(&open, current, self.desk_limit);
+            let rows: Vec<Row> = open
+                .iter()
+                .zip(&keep)
+                .filter(|(_, kept)| **kept)
+                .map(|((session, _), _)| {
+                    session_row(RowKey::Session(session.id.clone()), 1, session, None)
+                })
+                .collect();
+            self.desk_more = open.len() - rows.len();
+            self.desk = Arc::new(rows);
+        }
         if self
             .cursor
             .as_ref()
@@ -550,6 +680,32 @@ impl SidebarState {
             self.cursor = None;
         }
     }
+}
+
+/// Which of the open Desk sessions, in start order with how recently each
+/// was used, get a row under a cap of `limit` (D793): the one `current`
+/// names, then the most recently used. `None` keeps them all.
+fn desk_pick(
+    open: &[(&humata2_clients::model::Session, u64)],
+    current: Option<&SessionId>,
+    limit: Option<usize>,
+) -> Vec<bool> {
+    let Some(limit) = limit.filter(|limit| *limit < open.len()) else {
+        return vec![true; open.len()];
+    };
+    let is_current = |index: usize| Some(&open[index].0.id) == current;
+    let mut by_use: Vec<usize> = (0..open.len()).collect();
+    by_use.sort_by(|&a, &b| {
+        is_current(b)
+            .cmp(&is_current(a))
+            .then_with(|| open[b].1.cmp(&open[a].1))
+            .then_with(|| open[a].0.id.cmp(&open[b].0.id))
+    });
+    let mut keep = vec![false; open.len()];
+    for index in by_use.into_iter().take(limit.max(1)) {
+        keep[index] = true;
+    }
+    keep
 }
 
 fn session_row(

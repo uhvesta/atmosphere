@@ -87,6 +87,13 @@ impl FirstMessage {
         message: &str,
     ) -> Result<(), HolderError> {
         let ready = self.ready(socket);
+        // The gate looks only once the agent is up. Right after its launch
+        // a slow start (a loaded machine) hasn't drawn its own question
+        // yet, so the screen looks clear, and the message would go into
+        // the question it draws next and answer it.
+        if ready.is_some() {
+            humata2_holder::await_keys(socket, KEYS_WAIT).await?;
+        }
         let clear = match &ready {
             Some(ready) => ready().await,
             None => true,
@@ -119,6 +126,11 @@ impl FirstMessage {
         Ok(())
     }
 }
+
+/// How long after the agent started the gate waits for it to read keys
+/// itself, as `type_then_return` does: one still editing lines by then (a
+/// shell's `read`) is taken to keep doing so.
+const KEYS_WAIT: Duration = Duration::from_secs(5);
 
 /// The pause before the return (D671).
 pub(crate) const TYPE_PAUSE: Duration = Duration::from_millis(400); // D671 (Provisional): own write after a longer pause

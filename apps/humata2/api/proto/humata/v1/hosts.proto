@@ -122,6 +122,13 @@ service ProviderService {
   rpc PreviewProviderImport(PreviewProviderImportRequest) returns (ProviderImportPlan);
   // MP-23. User-only, with presence; adds exactly what the plan showed.
   rpc ImportProvider(ImportProviderRequest) returns (SetProvidersConfigResponse);
+  // MP-23, D792: an agent asks to import a provider file it hands over as
+  // text. A file with problems is refused at once with them; otherwise the
+  // call waits in the Inbox (PROVIDER_IMPORT, Ask me or Never) with the
+  // whole file and its commands on the card, and the user's approval writes
+  // it, or fails plan_stale when the providers file changed since. Agents
+  // only; the user imports with PreviewProviderImport and ImportProvider.
+  rpc RequestProviderImport(RequestProviderImportRequest) returns (SetProvidersConfigResponse);
   // MP-4, MP-19: params must be the provider's declared ones. Steps: create,
   // identity, connect, check, install, service, register.
   rpc CreateMachine(CreateMachineRequest) returns (Operation);
@@ -587,6 +594,16 @@ message ImportProviderRequest {
   IdempotencyKey idempotency_key = 1;
   PlanToken plan = 2;
   PresenceProof presence = 3;
+}
+
+message RequestProviderImportRequest {
+  IdempotencyKey idempotency_key = 1;
+  // The provider TOML, at most 64 KiB.
+  string text = 2;
+  // A label for the card; the daemon never reads a path.
+  string file_name = 3;
+  // Why, in the agent's words, for the card.
+  string reason = 4;
 }
 
 message SetProvidersConfigResponse {

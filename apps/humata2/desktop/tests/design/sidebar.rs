@@ -241,10 +241,17 @@ fn channels(look: Look, side: Side) -> Div {
         .child(channel(look, side, "web", false, None, false))
 }
 
-/// The Desk row; on the Desk and its sessions, the open sessions under it (D100).
+/// The Desk row and, while there are open Desk sessions, its fold chevron and
+/// those sessions under it, on every page (D100, D793).
 fn desk(look: Look, side: Side) -> Div {
-    let mut list = div().flex().flex_col().child(nav(look, side, IconName::SquareTerminal, "Desk", None));
-    if side.desk && !side.empty {
+    let open = side.desk && !side.empty;
+    let on = side.selected == "Desk";
+    let chevron = open.then(|| {
+        small_icon(IconName::ChevronDown, if on { look.selection_text } else { look.tertiary }).into_any_element()
+    });
+    let glyph = icon(IconName::SquareTerminal, if on { look.selection_text } else { look.accent });
+    let mut list = div().flex().flex_col().child(row(look, Some(glyph.into_any_element()), "Desk", chevron, 0., on));
+    if open {
         list = list
             .child(session(look, side, St::Working, "Plan Q4 board", 18., None))
             .child(session(look, side, St::Idle, "BRIN rollout RFC", 18., None))

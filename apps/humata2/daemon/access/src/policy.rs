@@ -921,6 +921,8 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
         (C::NetworkReach, Target::Network(network)) if network.machine == me.machine => {
             need_exactly(C::NetworkReach, GrantTarget::Network(network.clone()))
         }
+        // MP-23, D792: the providers file is the Mac's, so the ask names no machine.
+        (C::ProviderImport, Target::Global) => need(C::ProviderImport),
         // MACHINESCRIPTS (D688): run now has no per-machine action kind; the channel's switch decides.
         (C::MachineScriptRun, Target::Global | Target::Machine(_)) => need(C::MachineScriptRun),
         (C::MachineProvision | C::MachineDestroy | C::MachineSessionsStop, Target::Machine(action)) => need_exactly(

@@ -10,7 +10,7 @@ use gpui_kit::component::{Sizable as _, button::Button};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::model::Agent;
-use humata2_settings::{AgentsAction, FONT_SIZES, Row, Section, SettingsAction as A, Theme};
+use humata2_settings::{AgentsAction, DeskRows, FONT_SIZES, Row, Section, SettingsAction as A, Theme};
 use std::rc::Rc;
 fn dim(look: Look, text: impl Into<SharedString>) -> Div {
     div()
@@ -283,6 +283,82 @@ fn font_menu(ui: &Rc<Ui>, current: u8, look: Look) -> impl IntoElement {
                 .test_support()
         }))
 }
+/// The Desk sessions in sidebar pop-up (D793): the closed control, and the
+/// choices under it while open.
+fn desk_rows_popup(ui: &Rc<Ui>, rows: DeskRows, open: bool, look: Look) -> Div {
+    let label = SharedString::from(rows.label());
+    let toggle = {
+        let ui = ui.clone();
+        row()
+            .id("settings-desk-rows")
+            .role(Role::Button)
+            .aria_label(format!("Desk sessions in sidebar: {label}"))
+            .flex_shrink_0()
+            .gap(px(6.))
+            .h(px(24.))
+            .pl(px(9.))
+            .pr(px(5.))
+            .rounded(px(6.))
+            .bg(rgb(look.fill))
+            .border_1()
+            .border_color(rgb(look.line))
+            .text_size(px(12.))
+            .cursor_pointer()
+            .child(label)
+            .child(chrome::icon(IconName::ChevronsUpDown, look.secondary, 12.))
+            .on_click(move |_, _, cx| ui.send(AppAction::Settings(A::DeskRowsMenu), cx))
+            .test_support()
+    };
+    div()
+        .relative()
+        .flex_shrink_0()
+        .child(toggle)
+        .when(open, |wrap| wrap.child(deferred(desk_rows_menu(ui, rows, look))))
+}
+fn desk_rows_menu(ui: &Rc<Ui>, current: DeskRows, look: Look) -> impl IntoElement {
+    col()
+        .id("settings-desk-rows-menu")
+        .role(Role::ListBox)
+        .aria_label("Desk sessions in sidebar")
+        .absolute()
+        .top(px(28.))
+        .right(px(0.))
+        .w(px(120.))
+        .p(px(4.))
+        .gap(px(1.))
+        .rounded(px(8.))
+        .bg(rgb(look.card))
+        .border_1()
+        .border_color(rgb(look.line))
+        .shadow_lg()
+        .occlude()
+        .text_size(px(12.))
+        .children(DeskRows::OPTIONS.map(|rows| {
+            let ui = ui.clone();
+            let label = rows.label();
+            let picked = rows == current;
+            row()
+                .id(SharedString::from(format!(
+                    "settings-desk-rows-{}",
+                    label.to_lowercase()
+                )))
+                .role(Role::ListBoxOption)
+                .aria_label(label.clone())
+                .aria_selected(picked)
+                .gap(px(8.))
+                .h(px(26.))
+                .px(px(8.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .hover(move |x| x.bg(rgb(look.fill)))
+                .child(div().w(px(12.)).flex_shrink_0().children(
+                    picked.then(|| chrome::icon(IconName::Check, look.accent, 12.)),
+                ))
+                .child(label)
+                .on_click(move |_, _, cx| ui.send(AppAction::Settings(A::SetDeskRows(rows)), cx))
+                .test_support()
+        }))
+}
 fn button(
     ui: &Rc<Ui>,
     id: impl Into<ElementId>,
@@ -482,6 +558,13 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                             look,
                         )
                         .into_any_element(),
+                    ))
+                    .child(setting(
+                        look,
+                        "Desk sessions in sidebar",
+                        "The ones you used last, under Desk on every page.",
+                        desk_rows_popup(ui, prefs.desk_rows, state.settings.desk_rows_menu, look)
+                            .into_any_element(),
                     ))
                     .child(setting(
                         look,

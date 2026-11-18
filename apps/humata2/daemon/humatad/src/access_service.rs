@@ -769,6 +769,7 @@ fn capability_info(capability: Capability) -> pb::CapabilityInfo {
         | C::MarksChange
         | C::TrashEmpty
         | C::HostSecrets
+        | C::ProviderImport
         | C::ChannelDelete => S::Global,
         C::SharedWrite
         | C::FilesFetchLocal

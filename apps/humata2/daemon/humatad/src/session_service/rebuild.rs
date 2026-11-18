@@ -1158,6 +1158,11 @@ enum NoteFailed {
 /// Types `note` into the agent's terminal and presses return, once the
 /// input gate lets text in (D762).
 async fn type_note(socket: &std::path::Path, note: &str) -> Result<(), NoteFailed> {
+    // The gate looks only once the agent is up: one slow to start hasn't
+    // drawn its own question yet, and the note would answer it.
+    humata2_holder::await_keys(socket, std::time::Duration::from_secs(5))
+        .await
+        .map_err(NoteFailed::Holder)?;
     let deadline = tokio::time::Instant::now() + NOTE_WAIT;
     while let Err(refused) = crate::input_gate::guard(socket).await {
         if tokio::time::Instant::now() >= deadline {

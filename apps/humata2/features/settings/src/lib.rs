@@ -59,6 +59,61 @@ pub struct Preferences {
     /// FAST (D787): trade small comforts for less CPU and fewer redraws.
     /// Terminal cursors stop blinking, so an idle terminal draws nothing.
     pub fast_mode: bool,
+    /// At most how many Desk sessions the sidebar lists under Desk (D793).
+    pub desk_rows: DeskRows,
+}
+
+/// How many Desk sessions the sidebar lists under Desk (D793).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DeskRows {
+    /// At most this many.
+    Count(u8),
+    /// Every open one.
+    All,
+}
+
+/// The Desk rows' compiled-in default (D793).
+const DESK_ROWS: DeskRows = DeskRows::Count(5);
+
+/// The fewest and most Desk rows a saved count gives, so a hand-edited
+/// value still makes a usable sidebar.
+const DESK_ROW_COUNTS: std::ops::RangeInclusive<u8> = 1..=20;
+
+impl Default for DeskRows {
+    fn default() -> Self {
+        DESK_ROWS
+    }
+}
+
+impl DeskRows {
+    /// The pop-up's choices, in order.
+    pub const OPTIONS: [Self; 5] = [
+        Self::Count(3),
+        Self::Count(4),
+        Self::Count(5),
+        Self::Count(8),
+        Self::All,
+    ];
+
+    /// The cap the sidebar applies, in range; `None` lists them all.
+    #[must_use]
+    pub fn limit(self) -> Option<usize> {
+        match self {
+            Self::Count(count) => Some(usize::from(
+                count.clamp(*DESK_ROW_COUNTS.start(), *DESK_ROW_COUNTS.end()),
+            )),
+            Self::All => None,
+        }
+    }
+
+    /// How the pop-up names it.
+    #[must_use]
+    pub fn label(self) -> String {
+        match self.limit() {
+            Some(count) => count.to_string(),
+            None => "All".to_owned(),
+        }
+    }
 }
 
 /// Fast mode's compiled-in default: off.
@@ -94,6 +149,7 @@ impl Default for Preferences {
             free_hidden_terminals: true,
             option_as_alt: false,
             fast_mode: fast_mode_default(std::env::var(FAST_MODE_VAR).ok().as_deref()),
+            desk_rows: DESK_ROWS,
         }
     }
 }
@@ -153,6 +209,8 @@ pub enum Row {
     TerminalFont,
     /// Pinned rows at the top of the sidebar.
     SidebarShowsPinned,
+    /// How many Desk sessions the sidebar lists (D793).
+    DeskRowsInSidebar,
     /// Long diff lines wrap.
     LongLines,
     /// Ask before risky bulk answers.
@@ -171,10 +229,11 @@ pub enum Row {
 
 impl Row {
     /// Every row, in the order the page shows them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Appearance,
         Self::TerminalFont,
         Self::SidebarShowsPinned,
+        Self::DeskRowsInSidebar,
         Self::LongLines,
         Self::ConfirmBulkApprovals,
         Self::DefaultAgent,
@@ -191,6 +250,7 @@ impl Row {
             Self::Appearance => "Appearance",
             Self::TerminalFont => "Terminal font",
             Self::SidebarShowsPinned => "Sidebar shows Pinned",
+            Self::DeskRowsInSidebar => "Desk sessions in sidebar",
             Self::LongLines => "Long lines",
             Self::ConfirmBulkApprovals => "Confirm bulk approvals",
             Self::DefaultAgent => "Default agent",
@@ -206,9 +266,11 @@ impl Row {
     #[must_use]
     pub const fn section(self) -> Section {
         match self {
-            Self::Appearance | Self::TerminalFont | Self::SidebarShowsPinned | Self::LongLines => {
-                Section::Layout
-            }
+            Self::Appearance
+            | Self::TerminalFont
+            | Self::SidebarShowsPinned
+            | Self::DeskRowsInSidebar
+            | Self::LongLines => Section::Layout,
             Self::ConfirmBulkApprovals | Self::FreeHiddenTerminals | Self::FastMode => {
                 Section::General
             }
@@ -240,6 +302,8 @@ pub struct SettingsState {
     pub agents: AgentsState,
     /// Whether the terminal font size list is open.
     pub font_menu: bool,
+    /// Whether the Desk sessions in sidebar list is open (D793).
+    pub desk_rows_menu: bool,
     /// The row the palette opened the page at.
     pub revealed: Option<Row>,
 
@@ -268,6 +332,10 @@ pub enum SettingsAction {
     FontMenu,
     /// Pick the terminal font size and close the list.
     SetFontSize(u8),
+    /// Open or close the Desk sessions in sidebar list (D793).
+    DeskRowsMenu,
+    /// Pick how many Desk sessions the sidebar lists and close the list.
+    SetDeskRows(DeskRows),
     /// Wrap diffs or not.
     ToggleWrap,
     /// Ask before risky bulk answers or not.
@@ -379,6 +447,7 @@ impl Reducer for Settings {
             SettingsAction::Section(section) => {
                 state.section = section;
                 state.font_menu = false;
+                state.desk_rows_menu = false;
                 state.revealed = None;
                 if section == Section::Agents {
                     return self.read_asks();
@@ -393,6 +462,7 @@ impl Reducer for Settings {
                 state.section = section;
                 state.revealed = Some(row);
                 state.font_menu = false;
+                state.desk_rows_menu = false;
                 if section == Section::Agents {
                     return self.read_asks();
                 }
@@ -406,6 +476,11 @@ impl Reducer for Settings {
             SettingsAction::SetFontSize(size) => {
                 preferences.font_size = size.clamp(*FONT_SIZES.start(), *FONT_SIZES.end());
                 state.font_menu = false;
+            }
+            SettingsAction::DeskRowsMenu => state.desk_rows_menu = !state.desk_rows_menu,
+            SettingsAction::SetDeskRows(rows) => {
+                preferences.desk_rows = rows;
+                state.desk_rows_menu = false;
             }
             SettingsAction::TogglePinned => preferences.show_pinned = !preferences.show_pinned,
             SettingsAction::SetTheme(theme) => preferences.theme = theme,

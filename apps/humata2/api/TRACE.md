@@ -322,7 +322,7 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | MP-18..MP-20 | CreateMachine steps in Operation | operation_get | `humata ops` | |
 | MP-21 | ProviderService.RunProviderAction, DeleteWhatWasMade | machine_start, machine_stop, machine_delete | `humata provider delete` | |
 | MP-22 | built-in Lima provider in ListProviders | — | `humata provider ls` | |
-| MP-23 | ProviderService.PreviewProviderImport/ImportProvider, SetProvidersConfig | — (user-only) | `humata provider import` | |
+| MP-23 | ProviderService.PreviewProviderImport/ImportProvider, SetProvidersConfig; RequestProviderImport (agent's ask, D792) | `provider_import` (asks, D792) | `humata provider import` | |
 | MP-24 | CreateMachine, RunProviderAction under MACHINE_* capabilities | machine_create, machine_start, machine_stop | — | |
 
 ### SL: source of truth (8)

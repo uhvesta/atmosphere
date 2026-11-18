@@ -72,6 +72,8 @@ fn row_id(row: &Row, index: usize) -> ElementId {
         Some(RowKey::ChannelDesk(id)) => {
             ElementId::Name(format!("sidebar-channel-desk-{}", id.0).into())
         }
+        Some(RowKey::Desk) => ElementId::Name("sidebar-desk".into()),
+        Some(RowKey::DeskMore) => ElementId::Name("sidebar-desk-more".into()),
         None => ElementId::Name(format!("sidebar-section-{index}").into()),
     }
 }
@@ -288,7 +290,7 @@ fn draw_row(
     item.test_support().into_any_element()
 }
 
-pub(crate) fn nav(
+fn nav(
     ui: &Rc<Ui>,
     id: &'static str,
     title: &'static str,
@@ -565,11 +567,12 @@ impl Render for Sidebar {
             let ui = ui.clone();
             move |action, cx: &mut App| ui.send(AppAction::Pinned(action), cx)
         });
-        let shown = current.as_ref().map(|key| match key {
-            RowKey::Session(id) => humata2_clients::marks::Thing::Session(id.clone()),
+        let shown = current.as_ref().and_then(|key| match key {
+            RowKey::Session(id) => Some(humata2_clients::marks::Thing::Session(id.clone())),
             RowKey::Channel(id) | RowKey::ChannelDesk(id) => {
-                humata2_clients::marks::Thing::Channel(id.clone())
+                Some(humata2_clients::marks::Thing::Channel(id.clone()))
             }
+            RowKey::Desk | RowKey::DeskMore => None,
         });
         let pinned = ui.read(|s| {
             crate::sidebar_pinned::section(&s.pinned, &s.workspace, shown.as_ref(), look, &send_pinned)

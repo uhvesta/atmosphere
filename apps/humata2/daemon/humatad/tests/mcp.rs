@@ -766,6 +766,66 @@ async fn ask_for_port(
     }
 }
 
+/// MP-23, D792: `provider_import` was user-only, so an agent got
+/// `user_only` and nothing reached the Inbox. Now its ask waits there with
+/// the file on the card, and the user's approval adds the provider.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_provider_import_waits_in_the_inbox_and_approving_adds_the_provider() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let channel = fixture.daemon.channel().await;
+    let mut inbox = pb::inbox_service_client::InboxServiceClient::new(channel.clone());
+    let mut providers = pb::provider_service_client::ProviderServiceClient::new(channel);
+    let file = "[providers.corp]\nlabel = \"Corp\"\ncreate = 'corp-make {name}'\nconnect = 'corp-reach {name} -- {cmd}'\n";
+
+    mcp.send(json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "provider_import",
+            "arguments": { "file_text": file, "file_name": "corp.toml", "reason": "the task needs a Corp VM" },
+        },
+    }))
+    .await;
+    let deadline = Instant::now() + WAIT;
+    let asked = loop {
+        let waiting = inbox
+            .list_requests(pb::ListRequestsRequest::default())
+            .await
+            .unwrap()
+            .into_inner()
+            .requests;
+        if let Some(found) = waiting.into_iter().next() {
+            break found;
+        }
+        assert!(Instant::now() < deadline, "the import never reached the Inbox");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(asked.capability(), pb::Capability::ProviderImport);
+    assert!(matches!(
+        asked.preview.as_ref().and_then(|preview| preview.preview.as_ref()),
+        Some(pb::request_preview::Preview::ProviderImport(preview)) if preview.text == file
+    ));
+    inbox
+        .answer_request(answered(
+            asked.id.as_ref().unwrap(),
+            pb::request_answer::Answer::Approve(pb::Approve {}),
+        ))
+        .await
+        .unwrap();
+    let done = mcp.response(1).await;
+
+    assert_eq!(done["isError"], false, "{done}");
+    assert_eq!(done["structuredContent"]["result"]["imported"], true, "{done}");
+    let config = providers
+        .get_providers_config(pb::GetProvidersConfigRequest::default())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(config.toml, file);
+}
+
 fn answered(id: &pb::RequestId, answer: pb::request_answer::Answer) -> pb::AnswerRequestRequest {
     pb::AnswerRequestRequest {
         id: Some(id.clone()),

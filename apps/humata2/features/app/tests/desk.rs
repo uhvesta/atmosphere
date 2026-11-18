@@ -10,6 +10,8 @@ use humata2_clients::model::{MachineId, SessionId};
 use humata2_clients::{Clients, FileRoot, Fakes, Folder, Workspace, fixture};
 use humata2_files::FilesAction;
 use humata2_desk::{Delegate, DeskAction as D, NewAction, Sort};
+use humata2_settings::{DeskRows, SettingsAction};
+use humata2_sidebar::{RowKey, SidebarAction};
 use tca::{TestClock, TestStore};
 
 fn desk_workspace() -> Workspace {
@@ -236,18 +238,67 @@ fn the_desk_lists_open_sessions_by_last_use() {
     assert_eq!(first(&store), Some(SessionId::new("desk-tidy-infra")));
 }
 
+/// The Desk sessions listed under the sidebar's Desk row.
+fn sidebar_desk(store: &TestStore<App>) -> Vec<SessionId> {
+    store
+        .state()
+        .sidebar
+        .desk
+        .iter()
+        .filter_map(|row| match &row.key {
+            Some(RowKey::Session(id)) => Some(id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The app on Home with the daemon's Desk loaded.
+fn loaded_home() -> (TestStore<App>, Fakes) {
+    let (mut store, fakes) = setup(desk_workspace(), Route::Home);
+    store.send(A::Loaded(Ok(fakes.daemon.workspace())), |_| {});
+    store.skip_received();
+    (store, fakes)
+}
+
 #[test]
-fn the_sidebar_lists_the_desk_on_its_page_and_its_sessions_only() {
-    let (mut store, _fakes) = setup(desk_workspace(), Route::Desk);
-    assert!(store.state().desk_in_sidebar());
-    let route_of = |store: &mut TestStore<App>, route: Route| {
+fn the_sidebar_lists_the_desk_sessions_on_every_page() {
+    let (mut store, _fakes) = loaded_home();
+    let all = sidebar_desk(&store);
+    assert_eq!(all.len(), 3);
+    for route in [
+        Route::Desk,
+        Route::Session(SessionId::new("ledger")),
+        Route::Session(SessionId::new("desk-plan-q4")),
+        Route::Home,
+    ] {
         store.send(A::Navigate(route), |_| {});
         store.skip_received();
-        store.state().desk_in_sidebar()
-    };
-    assert!(route_of(&mut store, Route::Session(SessionId::new("desk-plan-q4"))));
-    assert!(!route_of(&mut store, Route::Home));
-    assert!(!route_of(&mut store, Route::Session(SessionId::new("ledger"))));
+        assert_eq!(sidebar_desk(&store), all);
+    }
+}
+
+#[test]
+fn settings_caps_the_sidebar_desk_rows_and_the_more_row_opens_the_desk() {
+    let (mut store, _fakes) = loaded_home();
+    store.send(A::Settings(SettingsAction::SetDeskRows(DeskRows::Count(1))), |_| {});
+    store.skip_received();
+    assert_eq!(sidebar_desk(&store).len(), 1);
+    assert_eq!(store.state().sidebar.desk_more, 2);
+    store.send(A::Sidebar(SidebarAction::Activate(RowKey::DeskMore)), |_| {});
+    store.skip_received();
+    assert_eq!(store.state().route, Route::Desk);
+    store.send(A::Settings(SettingsAction::SetDeskRows(DeskRows::All)), |_| {});
+    store.skip_received();
+    assert_eq!(sidebar_desk(&store).len(), 3);
+}
+
+#[test]
+fn the_desk_fold_is_saved() {
+    let (mut store, _fakes) = loaded_home();
+    assert!(!store.state().saved().folding.desk);
+    store.send(A::Sidebar(SidebarAction::Toggle(RowKey::Desk)), |_| {});
+    assert!(store.state().saved().folding.desk);
+    assert!(sidebar_desk(&store).is_empty());
 }
 
 #[test]

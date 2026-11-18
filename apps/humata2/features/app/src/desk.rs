@@ -27,17 +27,6 @@ impl AppState {
     pub fn is_desk_session(&self, id: &SessionId) -> bool {
         self.workspace.session(id).is_some_and(desk::is_desk)
     }
-
-    /// Whether the sidebar lists the open Desk sessions under its Desk row:
-    /// on the Desk page and on a Desk session's page (D100).
-    #[must_use]
-    pub fn desk_in_sidebar(&self) -> bool {
-        match &self.route {
-            Route::Desk => true,
-            Route::Session(id) => self.is_desk_session(id),
-            _ => false,
-        }
-    }
 }
 
 impl App {

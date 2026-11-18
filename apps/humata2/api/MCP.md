@@ -275,6 +275,7 @@ rule named until the user changes the rule (IN-18).
 | `session_push` | `session.push` / PlanPush + PushAndOpenPullRequests | GIT_PUSH (Ask, IN-24); review sessions follow PR-7 and PR-8 instead | `{repos?: string[], open_pr?: bool, title?, body?}` → `{operation_id}` | pushes and opens PRs; the card shows repos, branch, commits and PR title. An uncontained agent pushing with its own git credentials is not stopped (SEC-5) | host |
 | `pr_review_start` | `review.start` / StartReview | PR_REVIEW_START (Ask) | `{prs: string[], machine, agent?}` → `{operation_id, session}` | a PR review session, read-only (PR-7) | host |
 | `machine_add_ssh`, `machine_create`, `machine_start`, `machine_stop`, `machine_reconnect`, `skills_sync` | `machine.*`, `skills.sync` | MACHINE_PROVISION (Ask) | `{ssh_host, name}`, `{provider, name, params}`, `{machine}`… → `{operation_id}` | as in Hosts | host |
+| `provider_import` | `provider.import` / RequestProviderImport | PROVIDER_IMPORT (Ask me or Never; no Allow, no Always allow, never in Approve all; D792) | `{file_text (at most 64 KiB), file_name?, reason, wait_seconds?}` → `{decision, imported, revision}` | MP-23: the card shows the file whole, every command each provider runs (on the Mac, or `run_on`, when a machine is made with it) and the ids it replaces; approving writes it, or fails `plan_stale` when the providers file changed since the ask. A file with problems is refused at once (`invalid_argument`) and nothing is asked. No path is read | host; a machine's daemon doesn't forward it yet |
 | `trash_restore` | `trash.restore` / RestoreFromTrash | TRASH_RESTORE (Ask) | `{trash_item_id}` → `{restored}` | | host |
 | `channel_create` | `channel.create` / CreateChannel | CHANNEL_CREATE (Ask) | `{name, repos, machines}` → `{channel}` | | host |
 | `session_stop`, `session_archive` of another session | `session.*` | SESSION_STOP_OTHER (**Ask me**, D306; archive joins this row, D21) | `{session}` | | waits for the user |
@@ -360,7 +361,7 @@ one by name anyway gets `user_only`, whose `fix` says to ask the user with
 | `review.submit`, `review.set_push_allowed` | PR-8, PR-12: only the user posts or lets an agent push |
 | `diff.mark_reviewed`, `view.set_state`, the user's own comments and `comment.send` | The user's review state (RV-*, VW-*, SM-*) |
 | `trash.empty` | Not undoable |
-| `host.set_variable`, `host.remove_variable`, `host.trust_new_key`, `providers.set_config`, `provider.import`, `provider.login`, `provider.make_unattended` | Secrets and host identity (HO-13, MP-23) |
+| `host.set_variable`, `host.remove_variable`, `host.trust_new_key`, `providers.set_config`, `provider.login`, `provider.make_unattended` | Secrets and host identity (HO-13, MP-23). An agent asks to import a provider with `provider_import` (§6, D792) |
 | `machine.change_root`, `machine.set_vm_tier` | MACHINE_SETTINGS: root and the VM tier change what every agent there can reach |
 | `machine.shell`, `terminal.attach` with input, `terminal.open_shell_tab`, `terminal.send_queued_now` | TERMINAL_INPUT: a shell is beyond every rule. An agent types into another session only through `session_type` |
 | `bridge.close` of a forward the agent didn't open | The user's view of the bridge (HO-4) |

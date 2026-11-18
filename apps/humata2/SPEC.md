@@ -859,10 +859,17 @@ Frames 34–43 in `desktop/tests/__snapshots__/design/` are approved goldens
 in the sidebar. DK-6 (empty states) is in §22, and DK-7–DK-9 (markdown
 review) are in §11.
 
-- **DK-1** The sidebar has a **Desk** row under Board. While the Desk page
-  or a Desk session is showing, every open Desk session is listed under it,
-  in the order they were started; a row does not move when its session is
-  used. A Desk session belongs to no channel. It runs an agent's
+- **DK-1** The sidebar has a **Desk** row under Board. While there are
+  open Desk sessions the row has a chevron and folds like a channel (←/→,
+  Expand all and Collapse all include it); it starts expanded and the fold
+  is kept between launches. Expanded, it lists Desk sessions under it on
+  every page: the session you are on and the ones used last, up to the
+  number set in Settings › Layout › **Desk sessions in sidebar** (3, 4, 5, 8
+  or All; 5 unless changed). They are drawn in the order they were started,
+  and a row does not move when its session is used. When some are not
+  listed, a last row, "K more", opens the Desk page. Folded, no sessions are
+  listed under it on any page, and the Desk row is highlighted while a Desk
+  session is showing (D793). A Desk session belongs to no channel. It runs an agent's
   TUI or a plain terminal, with tabs, the two tab groups (SE-27) and the side
   panels like any session.
 - **DK-2** A Desk session works in a folder Humata makes for it under the
@@ -2431,6 +2438,7 @@ and frame 37 a Desk session's.
   | Push its branch or open a pull request (IN-24) | Ask me |
   | Open a network connection through the host (HO-11) | Ask me |
   | Add, create, start or stop machines; sync skills (MP-24) | Ask me |
+  | Ask you to import a machine provider (MP-23; Ask me or Never, no Allow) | Ask me |
   | Restore from trash | Ask me |
   | Create a channel | Ask me |
   | Add a repo to a channel (CH-26) | Ask me |
@@ -2916,10 +2924,14 @@ status = "hcloud server describe {name} -o json | jq -c '{state: .status}'"
 
 ### Who may set up machines
 
-- **MP-23** Only the user adds or changes a provider, in Settings. Humata
-  never loads a provider from a repo or from any file an agent can write.
-  Importing a provider file shows its full text and every command it will
-  run; it is added only after the user confirms.
+- **MP-23** Only the user adds or changes a provider. Humata never loads a
+  provider from a repo or from any file on its own. The user imports a
+  provider file in Settings; an agent may only ask, by handing over the
+  file's text, and the ask goes to the Inbox. Either way the import shows
+  the file's full text, every command each provider will run and the
+  providers it replaces, and it is added only after the user, present,
+  confirms. An agent's ask is never allowed without asking, never
+  Always-allowed, and never part of Approve all (D792).
 - **MP-24** An agent may ask to create, start or stop a machine; under the
   defaults each goes to the Inbox (IN-17). Removing, forgetting or deleting
   a machine is Never by default.

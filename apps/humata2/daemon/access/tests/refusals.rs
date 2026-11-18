@@ -615,8 +615,9 @@ fn the_capability_list_matches_the_trace_matrix() {
     // GLOBAL_BOARD_WRITE joined Ask me with D155, CHANNEL_REPO_ADD with D304,
     // SESSION_STOP_OTHER with D306 (SESSION_DELETE_OTHER took its Never place).
     assert_eq!(count(Tier::AskMe), 19);
-    // DESK_MOVE_TO_CHANNEL joined NETWORK_REACH with D305.
-    assert_eq!(count(Tier::AskNoAllow), 2);
+    // DESK_MOVE_TO_CHANNEL joined NETWORK_REACH with D305, PROVIDER_IMPORT
+    // with D792.
+    assert_eq!(count(Tier::AskNoAllow), 3);
     // MACHINE_SCRIPT_RUN joined them with D688.
     assert_eq!(count(Tier::NeverByDefault), 5);
     assert_eq!(count(Tier::UserOnly), 11);

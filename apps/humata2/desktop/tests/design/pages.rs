@@ -418,6 +418,7 @@ pub fn settings(look: Look) -> Div {
                             .child(setting("Appearance", "Follows the system unless you pick one.", segmented(look, &["System", "Light", "Dark"], 0)))
                             .child(setting("Terminal font", "Used by every terminal and the diff.", popup(look, "Menlo 12")))
                             .child(setting("Sidebar shows Pinned", "Pinned sessions, reviews and machines at the top.", switch(look, true)))
+                            .child(setting("Desk sessions in sidebar", "The ones you used last, under Desk on every page.", popup(look, "5")))
                             .child(setting("Long lines", "Code in the diff, the editor, Files and reviews.", segmented(look, &["Wrap", "Scroll"], 0))),
                     )
             ),

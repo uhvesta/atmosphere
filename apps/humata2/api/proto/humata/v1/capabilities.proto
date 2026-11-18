@@ -142,6 +142,11 @@ enum Capability {
   // (humata machine script run). Default Never. Triggered runs are the
   // owner's own automation and need no capability.
   CAPABILITY_MACHINE_SCRIPT_RUN = 48;
+  // "Ask you to import a machine provider" (MP-23, D792): an agent hands
+  // over a provider file's text and the Inbox shows it whole, with every
+  // command it runs. Ask me or Never; no "Always allow ...", never low-risk,
+  // never part of Approve all, and no Desk switch covers it.
+  CAPABILITY_PROVIDER_IMPORT = 49;
 
   // ----- User-only: no rule, never granted, no MCP tool. -----
 

@@ -1,41 +1,119 @@
-//! The Desk in the sidebar (DK-1, DK-12): a Desk row under Board, and on the
-//! Desk page and on a Desk session's page the open Desk sessions under it,
-//! in the order they were started (frames 25, 36; D148).
+//! The Desk in the sidebar (DK-1, DK-12, D793): a Desk row under Board and,
+//! while it is not folded, on every page, the Desk sessions under it: the
+//! one showing and the ones used last, up to the cap Settings sets, in the
+//! order they were started (frames 25, 36; D148), then "K more" for the rest.
 
 use std::rc::Rc;
 
 use crate::bridge::Ui;
 use crate::chrome;
-use crate::sidebar::nav;
 use crate::theme::Look;
 use gpui_kit::assets::IconName;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
 use humata2_sidebar::{Row, RowKey, RowKind, SidebarAction};
 
-/// The Desk row, and, when the sidebar lists them, the open Desk sessions
-/// under it.
+/// The Desk row, the Desk sessions the sidebar lists under it and, when
+/// some are left out, the "more" row.
 pub(crate) fn rows(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
-    let mut list = div().flex().flex_col().child(nav(
-        ui,
-        "sidebar-desk",
-        "Desk",
-        IconName::SquareTerminal,
-        Route::Desk,
-        state.route == Route::Desk,
-        None,
-        look,
-    ));
-    if state.desk_in_sidebar() {
-        list = list.children(
-            state
-                .sidebar
-                .desk
-                .iter()
-                .filter_map(|entry| session(ui, state, entry, look)),
-        );
+    let mut list = div().flex().flex_col().child(desk_row(ui, state, look));
+    list = list.children(
+        state
+            .sidebar
+            .desk
+            .iter()
+            .filter_map(|entry| session(ui, state, entry, look)),
+    );
+    if state.sidebar.desk_more > 0 {
+        list = list.child(more_row(ui, state, look));
     }
     list
+}
+
+/// The Desk row: a click opens the Desk page; while there are open Desk
+/// sessions its chevron folds them. Folded, it is highlighted while a Desk
+/// session shows, since that session has no row of its own.
+fn desk_row(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
+    let folded = state.sidebar.folding.desk;
+    let on = match &state.route {
+        Route::Desk => true,
+        Route::Session(id) => folded && state.is_desk_session(id),
+        _ => false,
+    };
+    let at_cursor = state.sidebar.cursor.as_ref() == Some(&RowKey::Desk);
+    let open = ui.clone();
+    let mut row = div()
+        .id("sidebar-desk")
+        .role(Role::Link)
+        .aria_label("Desk")
+        .aria_selected(on)
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .h(px(26.))
+        .mx(px(10.))
+        .px(px(8.))
+        .rounded(px(6.))
+        .when(at_cursor && !on, |x| x.bg(rgb(look.fill)))
+        .when(on, |x| x.bg(rgb(look.selection)).text_color(rgb(0xffffff)))
+        .child(chrome::icon(
+            IconName::SquareTerminal,
+            if on { 0xffffff } else { look.accent },
+            15.,
+        ))
+        .child(div().flex_1().child("Desk"));
+    if state.sidebar.desk_open > 0 {
+        let fold = ui.clone();
+        row = row.aria_expanded(!folded).child(
+            div()
+                .id("sidebar-desk-fold")
+                .size(px(12.))
+                .flex_shrink_0()
+                .role(Role::Button)
+                .aria_label(if folded { "Unfold" } else { "Fold" })
+                .child(chrome::icon(
+                    if folded {
+                        IconName::ChevronRight
+                    } else {
+                        IconName::ChevronDown
+                    },
+                    if on { 0xffffff } else { look.tertiary },
+                    12.,
+                ))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    fold.send(AppAction::Sidebar(SidebarAction::Toggle(RowKey::Desk)), cx)
+                })
+                .test_support(),
+        );
+    }
+    row.on_click(move |_, _, cx| open.send(AppAction::Switch(Route::Desk), cx))
+        .test_support()
+}
+
+/// "K more": the Desk sessions the cap leaves out; it opens the Desk page.
+fn more_row(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
+    let at_cursor = state.sidebar.cursor.as_ref() == Some(&RowKey::DeskMore);
+    let label = format!("{} more", state.sidebar.desk_more);
+    let ui = ui.clone();
+    div()
+        .id("sidebar-desk-more")
+        .role(Role::Link)
+        .aria_label(label.clone())
+        .flex()
+        .items_center()
+        .h(px(26.))
+        .mx(px(10.))
+        .pl(px(26.))
+        .pr(px(8.))
+        .rounded(px(6.))
+        .text_color(rgb(look.tertiary))
+        .when(at_cursor, |x| x.bg(rgb(look.fill)))
+        .child(label)
+        .on_click(move |_, _, cx| {
+            ui.send(AppAction::Sidebar(SidebarAction::Activate(RowKey::DeskMore)), cx)
+        })
+        .test_support()
 }
 
 /// The Desk row under an open channel while it has open Desk sessions

@@ -28,6 +28,7 @@ rust_library(
             ":settings",
             "//apps/humata2/clients",
             "//libs/tca-rust:tca",
+            "@crates//:serde_json",
         ],
     )
     for src in glob(

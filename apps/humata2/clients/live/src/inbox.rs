@@ -201,6 +201,33 @@ fn kind(request: &pb::InboxRequest) -> RequestKind {
     }
 }
 
+/// An agent's provider import as its card shows it (MP-23, D792): what it
+/// adds and replaces, every command it runs, then the file whole.
+fn provider_import_text(import: &pb::ProviderImportPreview) -> String {
+    let id = |provider: Option<&pb::ProviderId>| provider.map_or("", |id| id.value.as_str()).to_owned();
+    let replaced: Vec<String> = import.replaces.iter().map(|each| each.value.clone()).collect();
+    let mut lines: Vec<String> = import
+        .providers
+        .iter()
+        .map(|provider| {
+            let shown = id(provider.id.as_ref());
+            let verb = if replaced.contains(&shown) { "Replaces" } else { "Adds" };
+            format!("{verb} {shown} ({})", provider.label)
+        })
+        .collect();
+    lines.push("Commands it runs on the Mac, or on its run_on machine, when a machine is made with it:".to_owned());
+    lines.extend(
+        import
+            .commands
+            .iter()
+            .map(|command| format!("{} {}: {}", id(command.provider.as_ref()), command.action, command.command)),
+    );
+    let name = if import.file_name.is_empty() { "The file" } else { import.file_name.as_str() };
+    lines.push(format!("{name}:"));
+    lines.push(import.text.clone());
+    lines.join("\n")
+}
+
 /// A repo of a new session or fork, with what its copy takes on disk when
 /// it copies anything (26.5).
 fn new_session_repo(repo: &pb::new_session_preview::Repo) -> String {
@@ -295,6 +322,7 @@ fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
         ),
         P::AccessAhead(ahead) => Preview::Text(ahead.target_label.clone()),
         P::Migrate(migrate) => Preview::Migrate(migrate_card(migrate)),
+        P::ProviderImport(import) => Preview::Text(provider_import_text(import)),
     }
 }
 
@@ -849,6 +877,37 @@ mod tests {
         assert_eq!(lines.len(), 2, "{text}");
         assert!(lines[0].contains("api") && lines[0].contains("1.5 GB"), "{text}");
         assert!(lines[1].contains("web") && !lines[1].contains(" B"), "a repo that copies nothing names no size: {text}");
+    }
+
+    #[test]
+    fn an_agents_provider_import_card_shows_every_command_and_the_whole_file() {
+        let id = |value: &str| Some(pb::ProviderId { value: value.into() });
+        let file = "[providers.corp]\nlabel = \"Corp\"\ncreate = 'corp-make {name}'\n";
+        let wire = pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::ProviderImport(pb::ProviderImportPreview {
+                text: file.into(),
+                file_name: "corp.toml".into(),
+                providers: vec![pb::provider_import_preview::Provider { id: id("corp"), label: "Corp".into() }],
+                commands: vec![
+                    pb::provider_import_preview::Command {
+                        provider: id("corp"),
+                        action: "create".into(),
+                        command: "corp-make {name}".into(),
+                    },
+                    pb::provider_import_preview::Command {
+                        provider: id("corp"),
+                        action: "connect".into(),
+                        command: "corp-reach {name} -- {cmd}".into(),
+                    },
+                ],
+                replaces: vec![],
+            })),
+        };
+        let Preview::Text(text) = preview(Some(&wire)) else {
+            panic!("a provider import's card is text");
+        };
+        assert!(text.contains(file), "the whole file: {text}");
+        assert!(text.contains("corp-make {name}") && text.contains("corp-reach {name} -- {cmd}"), "{text}");
     }
 
     #[test]

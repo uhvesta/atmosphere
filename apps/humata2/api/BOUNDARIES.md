@@ -225,7 +225,10 @@ SEC-7's list, each with its capability:
   ACCESS_CHANGE.
 - Settings, agents and their launch commands (ST-*), Contain agents
   (SEC-6), providers (MP-23), channel settings that aren't CHANNEL_CHANGE:
-  SETTINGS_CHANGE.
+  SETTINGS_CHANGE. An agent may only ask to import a provider file
+  (PROVIDER_IMPORT, Ask me or Never, never Always allow or Approve all;
+  D792); the Inbox shows the file whole and only the user's approval adds
+  it.
 - Pin, unpin, VIP, the pinned order (NV-20..25); view state (AR-5):
   MARKS_CHANGE.
 - Submit a PR review; "Let the agent push" (PR-8, PR-12): PR_SUBMIT.

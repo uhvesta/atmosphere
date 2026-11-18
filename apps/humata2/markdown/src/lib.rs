@@ -18,6 +18,7 @@ mod image;
 mod mermaid;
 mod theme;
 mod view;
+mod zoom;
 
 pub use anchor::{Anchor, AnchorStatus, AnchorTarget, Comment, SourceSelection};
 pub use diff::{BlockChange, DeletedBlock, RenderedDiff, diff};

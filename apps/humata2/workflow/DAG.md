@@ -74,12 +74,12 @@ milestone file; agents read that file, not this one.
 | [FAST](milestones/FAST.md) | An optional fast mode makes Humata measurably lighter and quicker | L11 | perf | RELEASE2: profile from the published post-review build; VERIFY: profile and tune only once behaviour is settled and covered by tests | done (in 0.2.5: no idle blink in fast mode or in background windows, holder scrollback 42→18 MiB, new idle-cost benches; D787–D789) |
 | [RELEASE3](milestones/RELEASE3.md) | Fast mode is published and installed | L12 | main | FAST: publish fast mode | done (humata2-v0.3.0, 953bb942, released and installed 2026-11-18 08:56; focused tests only, by the owner's 9:30 deadline; full fast tier on/off and slow tier still owed) |
 | [AGENTS2](milestones/AGENTS2.md) | Claude Code and Codex are first-class agents, read through their own structured channels | L13 | daemon + agent_hooks + clients + UI | RELEASE3: starts after 0.3 (owner, 2026-11-18) | next |
-| [STACKVIEW](milestones/STACKVIEW.md) | An agent sends a change as a stack of layers, and I step through it across repos | L13 | api + daemon + clients + UI | RELEASE3: builds on the released review view; parallel to AGENTS2, no shared files | open (owner, 2026-11-18; D791, RV-36) |
-| [LIVEHOLDER](milestones/LIVEHOLDER.md) | My terminals keep running: a version bump, a rename or a move never ends them | L13 | daemon/holder + upgrade + revive | RELEASE3: builds on Migrate the holders (D373); parallel to AGENTS2 and STACKVIEW | open (owner, 2026-11-18) |
+| [STACKVIEW](milestones/STACKVIEW.md) | An agent sends a change as a stack of layers, and I step through it across repos | L13 | api + daemon + clients + UI | RELEASE3: builds on the released review view; parallel to AGENTS2, no shared files | planning (owner, 2026-11-18; D791, RV-36) |
+| [LIVEHOLDER](milestones/LIVEHOLDER.md) | My terminals keep running: a version bump, a rename or a move never ends them | L13 | daemon/holder + upgrade + revive | RELEASE3: builds on Migrate the holders (D373); parallel to AGENTS2 and STACKVIEW | planning (owner, 2026-11-18) |
 
 ## Critical path
 
-Fast tier (fast mode off and on) → slow tier once → commit and push → release 0.3 (RELEASE3) → AGENTS2.
+Fast tier (fast mode off and on) → slow tier once → commit and push → release 0.3 (RELEASE3) → 0.3.1 (released 10:37) → AGENTS2, STACKVIEW and LIVEHOLDER in parallel.
 
 - Gate 30 has reported (605 of 678 passed) and its failures went to fix agents lane by lane
   (2026-11-17). Every "code in" lane, OWNERFIX included, and V1 close

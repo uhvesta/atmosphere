@@ -1,12 +1,12 @@
 //! The sidebar's Desk rows: the open Desk sessions in the order they were
-//! started, kept out of the channels (DK-1, D148).
+//! started, kept out of the channels (DK-1, D148, D793).
 
 use std::sync::Arc;
 
 use humata2_clients::model::SessionId;
 use humata2_clients::{Workspace, fixture};
 use humata2_sidebar::{Delegate, Move, RowKey, Sidebar, SidebarAction as A, SidebarState};
-use tca::TestStore;
+use tca::{Reducer, TestStore};
 
 fn with_desk() -> Workspace {
     let mut workspace = fixture::design();
@@ -125,9 +125,9 @@ fn a_pinned_desk_session_still_shows_under_the_desk() {
     store.finish();
 }
 
-/// A store over `workspace`, its Desk rows showing or not, and where the
-/// rows it draws begin and end.
-fn walking(workspace: Workspace, shown: bool) -> (TestStore<Sidebar>, Landmarks) {
+/// A store over `workspace`, its Desk folded or not, and where the rows it
+/// draws begin and end (the Desk rows as they are before any fold).
+fn walking(workspace: Workspace, folded: bool) -> (TestStore<Sidebar>, Landmarks) {
     let mut state = SidebarState::new(Arc::new(workspace));
     let keys = |rows: &[humata2_sidebar::Row]| -> Vec<RowKey> {
         rows.iter().filter_map(|row| row.key.clone()).collect()
@@ -139,7 +139,9 @@ fn walking(workspace: Workspace, shown: bool) -> (TestStore<Sidebar>, Landmarks)
         first_channel: channel,
         desk: keys(&state.desk),
     };
-    state.desk_shown = shown;
+    if folded {
+        let _ = Sidebar.reduce(&mut state, A::Toggle(RowKey::Desk));
+    }
     (TestStore::new(state, Sidebar), landmarks)
 }
 
@@ -154,7 +156,7 @@ fn go(store: &mut TestStore<Sidebar>, movement: Move, to: &RowKey) {
 
 #[test]
 fn down_walks_from_the_first_desk_row_through_the_desk_into_the_channels() {
-    let (mut store, marks) = walking(with_desk(), true);
+    let (mut store, marks) = walking(with_desk(), false);
     let (Some(first), Some(channel)) = (marks.desk.first().cloned(), marks.first_channel.clone())
     else {
         panic!("the fixture has Desk rows and channels");
@@ -172,8 +174,8 @@ fn down_walks_from_the_first_desk_row_through_the_desk_into_the_channels() {
 }
 
 #[test]
-fn up_walks_from_the_first_channel_back_through_the_desk() {
-    let (mut store, marks) = walking(with_desk(), true);
+fn up_walks_from_the_first_channel_back_through_the_desk_to_its_row() {
+    let (mut store, marks) = walking(with_desk(), false);
     let Some(channel) = marks.first_channel.clone() else {
         panic!("the fixture has channels");
     };
@@ -184,12 +186,13 @@ fn up_walks_from_the_first_channel_back_through_the_desk() {
     for key in marks.desk.iter().rev() {
         go(&mut store, Move::Up, key);
     }
+    go(&mut store, Move::Up, &RowKey::Desk);
     store.finish();
 }
 
 #[test]
-fn up_from_the_first_desk_row_stays_there() {
-    let (mut store, marks) = walking(with_desk(), true);
+fn up_from_the_first_desk_row_goes_to_the_desk_row_and_stays_there() {
+    let (mut store, marks) = walking(with_desk(), false);
     let Some(first) = marks.desk.first().cloned() else {
         panic!("the fixture has Desk rows");
     };
@@ -197,13 +200,14 @@ fn up_from_the_first_desk_row_stays_there() {
         state.cursor = Some(first.clone());
         state.current = Some(first.clone());
     });
-    go(&mut store, Move::Up, &first);
+    go(&mut store, Move::Up, &RowKey::Desk);
+    go(&mut store, Move::Up, &RowKey::Desk);
     store.finish();
 }
 
 #[test]
 fn enter_on_a_desk_row_opens_that_session() {
-    let (mut store, marks) = walking(with_desk(), true);
+    let (mut store, marks) = walking(with_desk(), false);
     let Some(key) = marks.desk.get(1).cloned() else {
         panic!("the fixture has Desk rows");
     };
@@ -220,8 +224,8 @@ fn enter_on_a_desk_row_opens_that_session() {
 }
 
 #[test]
-fn with_the_desk_rows_not_showing_down_skips_them() {
-    let (mut store, marks) = walking(with_desk(), false);
+fn with_the_desk_folded_down_skips_its_rows() {
+    let (mut store, marks) = walking(with_desk(), true);
     let Some(channel) = marks.first_channel.clone() else {
         panic!("the fixture has channels");
     };

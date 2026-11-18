@@ -8,7 +8,8 @@
 //!
 //! The providers file is `providers.toml` beside `hosts.json`, replaced
 //! whole. Its revision is a hash of its text, so it survives restarts and
-//! a stale editor is refused. Agents see no providers and set none (MP-23).
+//! a stale editor is refused. Agents see no providers and set none (MP-23);
+//! an agent may only ask the user to import a file, in the Inbox (D792).
 //!
 //! A machine's `create` that ran leaves what it made if a later step
 //! fails; the failed operation remembers which provider and params made
@@ -34,7 +35,7 @@ use tokio::runtime::Handle;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
-use crate::channel_service::{self, Gated, answer_gated};
+use crate::channel_service::{self, Gated, answer_gated, answer_gated_showing};
 use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
 use crate::inbox::Inbox;
@@ -45,6 +46,7 @@ use crate::machine_service::{
 use crate::operations::{Operations, Started};
 use crate::status;
 
+mod ask;
 mod import;
 
 /// What a failed create left, for DeleteWhatWasMade.
@@ -474,6 +476,31 @@ fn write_whole(path: &Path, text: &str) -> std::io::Result<()> {
     result
 }
 
+/// Writes an approved ask's merged providers file, unless the file changed
+/// since the agent asked (D792).
+fn write_asked(work: &Work, merged: &str, base: u64) -> Result<pb::SetProvidersConfigResponse, Status> {
+    let (_, current) = current_revision(work)?;
+    if current != base {
+        return Err(ask::stale());
+    }
+    let path = providers_path(work.machines.hosts_file());
+    write_whole(&path, merged).map_err(|source| {
+        status::internal(
+            format!(
+                "couldn't save the providers file {}: {source}. Free some disk space or fix the folder's permissions, then ask the agent to ask again",
+                path.display()
+            ),
+            "",
+        )
+    })?;
+    Ok(pb::SetProvidersConfigResponse {
+        problems: Vec::new(),
+        revision: Some(pb::Revision {
+            value: revision(merged, true),
+        }),
+    })
+}
+
 fn problems_of(error: &ConfigError) -> Vec<pb::ProviderConfigProblem> {
     let invalid = |field: &str, message: String, fix: &str| pb::Error {
         message,
@@ -747,6 +774,55 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
                 value: revision(&planned.merged, true),
             }),
         }))
+    }
+
+    /// MP-23, D792: an agent asks the user to import a provider file. A
+    /// file with problems is refused at once; otherwise the ask waits in
+    /// the Inbox under PROVIDER_IMPORT (Ask me or Never) showing the file
+    /// whole, and approving writes it while the providers file is as it
+    /// was when the agent asked.
+    async fn request_provider_import(
+        &self,
+        request: Request<pb::RequestProviderImportRequest>,
+    ) -> Result<Response<pb::SetProvidersConfigResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        match &caller {
+            Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
+            Caller::User(_) | Caller::Script(_) => return Err(ask::not_for_the_user()),
+            Caller::Agent(_) => {}
+        }
+        let request = request.into_inner();
+        ask::check(&request).map_err(ask::AskError::into_status)?;
+        let (current, base) = current_revision(&self.work)?;
+        let plan = import::plan(&request.text, &current, &self.providers()?);
+        let merged = ask::merged(&plan).map_err(ask::AskError::into_status)?;
+        let call = Call::Use {
+            capability: Capability::ProviderImport,
+            target: Target::Global,
+        };
+        // Never allowed without asking: an approved ask is only the rerun.
+        let asked = channel_service::gate(&self.guard, &caller, &call, false)?.ok_or_else(|| {
+            status::internal(
+                "an agent's provider import was let through without asking the user, so nothing was asked or added; the import rule offers only Ask me and Never",
+                "",
+            )
+        })?;
+        let card = crate::inbox::BoardAsk {
+            preview: ask::preview(&request, &plan),
+            reason: request.reason.clone(),
+        };
+        let key = request.idempotency_key.as_ref().map(|key| key.value.clone());
+        let work = self.work.clone();
+        answer_gated_showing(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.SetProvidersConfigResponse",
+            Ok(Gated::Ask(asked)),
+            Some(card),
+            move || async move { write_asked(&work, &merged, base).map(Gated::Done) },
+        )
+        .await
     }
 
     /// Checks the provider, the name and the params before anything runs,

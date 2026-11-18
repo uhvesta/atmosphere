@@ -20,7 +20,7 @@ DEPS = [
 [
     rust_library(
         name = "markdown" + engine,
-        srcs = glob(["src/*.rs"]),
+        srcs = glob(["src/**/*.rs"]),
         # GPUI's macros find gpui-kit through it.
         compile_data = ["Cargo.toml"],
         crate_name = "humata2_markdown",

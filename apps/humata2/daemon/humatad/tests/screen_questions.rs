@@ -18,6 +18,11 @@ use common::{
 };
 use humata2_grpc::humata::v1 as pb;
 
+/// How long after its launch [`Draw::Late`] draws the box: past the start
+/// a session's first message is sent at, and well inside the time a
+/// starting agent gets to read keys itself (five seconds).
+const LATE_BY: Duration = Duration::from_secs(1);
+
 const CHOICES: [&str; 3] = [
     "Yes",
     "Yes, and remember this folder for future sessions",
@@ -29,6 +34,9 @@ const CHOICES: [&str; 3] = [
 enum Draw {
     /// All of it at once.
     Whole,
+    /// All of it at once, but only after [`LATE_BY`], as an agent's CLI
+    /// slow to start on a loaded machine draws it, after its launch.
+    Late,
     /// First only the start of the box, its first choice alone, quiet with
     /// it for longer than a quiet spell, then the screen cleared and the
     /// whole box drawn, as Copilot was seen to before the rest showed.
@@ -92,6 +100,11 @@ fn agent_script(world: &World, draw: Draw) -> String {
     }
     let (before, ask, after) = match draw {
         Draw::Whole => (String::new(), format!("printf '%s\\n' \\\n{BOX_TOP} \\\n{BOX_REST}\n"), ""),
+        Draw::Late => (
+            format!("sleep {}\n", LATE_BY.as_secs()),
+            format!("printf '%s\\n' \\\n{BOX_TOP} \\\n{BOX_REST}\n"),
+            "",
+        ),
         Draw::FirstRowFirst => (
             r"printf '%s\n' \
   '│ Do you trust the files in this folder?                   │' \
@@ -584,10 +597,26 @@ async fn typing_at_the_prompt_after_the_trust_box_was_answered_on_the_screen_is_
 /// meanwhile, is sent once.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_asking_in_its_terminal_raises_no_card_but_needs_you_until_answered() {
+    asks_in_its_terminal_holding_the_first_message(Draw::Whole).await;
+}
+
+/// D762: an agent slow to start draws its trust box only after the
+/// session's start would send its first message. The message still waits
+/// for the box to be answered: it is never typed into the box, where it
+/// would answer it (the flake under load this case pins).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_message_waits_for_a_trust_box_drawn_after_the_launch() {
+    asks_in_its_terminal_holding_the_first_message(Draw::Late).await;
+}
+
+/// The trust box drawn as `draw` says, in the terminal of an agent whose
+/// Ask in the Inbox is off: no card, the session needs you until the box is
+/// answered there, and the held first message is sent once after.
+async fn asks_in_its_terminal_holding_the_first_message(draw: Draw) {
     let dir = folder();
     let marker = dir.path().join("first-message-ran");
     let fix = Fixture::starting(
-        Draw::Whole,
+        draw,
         Start {
             asks_in_terminal: true,
             first_message: format!("run:echo sent >> '{}'", marker.display()),
@@ -606,6 +635,7 @@ async fn an_agent_asking_in_its_terminal_raises_no_card_but_needs_you_until_answ
     assert_eq!(pending, 0, "a card was raised for an agent asking in its terminal");
     assert_eq!(fix.status().await, pb::SessionStatus::NeedsInput);
     assert!(!marker.exists(), "the first message was sent over the trust box");
+    assert!(!fix.answer.exists(), "something answered the trust box");
 
     let mut attach = fix.attach().await;
     attach.type_text("\r").await;

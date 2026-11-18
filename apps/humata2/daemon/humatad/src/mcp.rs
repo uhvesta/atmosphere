@@ -1187,6 +1187,36 @@ impl GrpcDaemon {
     }
 }
 
+impl GrpcDaemon {
+    /// `provider_import` (MP-23, D792): asks the user to import the provider
+    /// file the agent hands over. It always waits in the Inbox; a file with
+    /// problems is refused before anything is asked.
+    async fn provider_import(&self, call: Call) -> Result<Reply, ToolError> {
+        let arguments = &call.arguments;
+        let request = self.request(pb::RequestProviderImportRequest {
+            idempotency_key: Some(key(&call)),
+            text: text(arguments, "file_text"),
+            file_name: text(arguments, "file_name"),
+            reason: text(arguments, "reason"),
+        })?;
+        let saved = pb::provider_service_client::ProviderServiceClient::new(self.channel.clone())
+            .request_provider_import(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(imported_json(&saved), None))
+    }
+}
+
+/// An import the user approved and Humata saved.
+fn imported_json(saved: &pb::SetProvidersConfigResponse) -> Value {
+    json!({
+        "decision": "approved",
+        "imported": saved.problems.is_empty(),
+        "revision": saved.revision.as_ref().map(|revision| revision.value.to_string()),
+    })
+}
+
 impl Daemon for GrpcDaemon {
     /// The tools `call` dispatches below; every other one answers
     /// `not_built`, so `tools/list` leaves it out. Keep the two in step.
@@ -1241,7 +1271,8 @@ impl Daemon for GrpcDaemon {
             Operation::ReviewDraftEdit |
             Operation::ReviewDraftDrop |
             Operation::ReviewSummaryDraft |
-            Operation::PrReviewStart
+            Operation::PrReviewStart |
+            Operation::ProviderImport
         )
     }
 
@@ -1307,6 +1338,7 @@ impl Daemon for GrpcDaemon {
             Operation::ReviewSummaryDraft => self.review_summary_draft(call).await,
             Operation::PrReviewStart => self.pr_review_start(call).await,
             Operation::DeskSessionMoveToChannel => self.desk_move_to_channel(call).await,
+            Operation::ProviderImport => self.provider_import(call).await,
             other => Err(not_built(other)),
         };
         pending_or(reply)
@@ -1720,6 +1752,9 @@ fn approved_result(result_type: &str, bytes: &[u8]) -> Value {
         "humata.v1.Operation" => pb::Operation::decode(bytes)
             .ok()
             .map(|operation| json!({ "operation": operation.id.map(|id| id.value) })),
+        "humata.v1.SetProvidersConfigResponse" => pb::SetProvidersConfigResponse::decode(bytes)
+            .ok()
+            .map(|saved| imported_json(&saved)),
         "humata.v1.ExplainResponse" => pb::ExplainResponse::decode(bytes)
             .ok()
             .map(|r| explain_json(&r)),

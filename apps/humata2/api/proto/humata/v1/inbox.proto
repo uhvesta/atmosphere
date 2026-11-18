@@ -224,6 +224,7 @@ message RequestPreview {
     PushPreview push = 12;
     AccessAheadPreview access_ahead = 13;
     MigratePreview migrate = 14;
+    ProviderImportPreview provider_import = 15;
   }
 }
 
@@ -360,6 +361,30 @@ enum MigratePhase {
   MIGRATE_PHASE_WAITING = 1;
   MIGRATE_PHASE_MIGRATING = 2;
   MIGRATE_PHASE_FAILED = 3;
+}
+
+// MP-23, D792: an agent's ask to import a provider file. The card shows the
+// file whole, every command each provider runs (on the Mac, or run_on, when
+// a machine is made with it) and the providers it replaces. Approving writes
+// it while the providers file is as it was when asked.
+message ProviderImportPreview {
+  // The file's text exactly as the agent gave it.
+  string text = 1;
+  // The name the agent gave it; a label only, never read.
+  string file_name = 2;
+  message Provider {
+    ProviderId id = 1;
+    string label = 2;
+  }
+  repeated Provider providers = 3;
+  message Command {
+    ProviderId provider = 1;
+    string action = 2;   // "create", "connect", "start", …
+    string command = 3;
+  }
+  repeated Command commands = 4;
+  // Ids already in the providers file (or the built-in Lima) it replaces.
+  repeated ProviderId replaces = 5;
 }
 
 // UP-1, D281: "Migrate the daemon on gpu". One per (thing, machine)

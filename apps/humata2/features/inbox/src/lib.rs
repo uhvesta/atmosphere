@@ -370,12 +370,12 @@ impl InboxState {
     }
 
     /// How many shown waiting requests Allow all and Deny all answer: every
-    /// one but the Migrate items.
+    /// one but the Migrate items and agents' provider imports (D792).
     #[must_use]
     pub fn bulk_count(&self) -> usize {
         self.shown()
             .into_iter()
-            .filter(|request| request.answer.is_none() && request.kind != RequestKind::Migrate)
+            .filter(|request| request.answer.is_none() && request.answered_in_bulk())
             .count()
     }
 
@@ -568,7 +568,7 @@ impl Inbox {
         let ids: Vec<_> = state
             .shown()
             .into_iter()
-            .filter(|request| request.answer.is_none() && request.kind != RequestKind::Migrate)
+            .filter(|request| request.answer.is_none() && request.answered_in_bulk())
             .map(|request| request.id.clone())
             .collect();
         let answer = match bulk {
@@ -892,9 +892,7 @@ impl Reducer for Inbox {
                     .shown()
                     .iter()
                     .any(|request| {
-                        request.answer.is_none()
-                            && request.kind != RequestKind::Migrate
-                            && !request.undoable
+                        request.answer.is_none() && request.answered_in_bulk() && !request.undoable
                     });
                 if bulk == Bulk::ApproveAll && risky {
                     state.confirm = Some(bulk);

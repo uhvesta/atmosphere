@@ -302,6 +302,11 @@ impl AppState {
             }
         }
         state.settings.preferences = saved.preferences;
+        // D793: the Desk rows in the sidebar start capped as Settings says.
+        let _ = Sidebar.reduce(
+            &mut state.sidebar,
+            SidebarAction::SetDeskLimit(state.settings.preferences.desk_rows.limit()),
+        );
         // Settings › Show pinned (ST-18) decides whether the Pinned section shows.
         state.pinned.shown = state.settings.preferences.show_pinned;
         state.settings.has_key = clients
@@ -684,6 +689,7 @@ impl App {
                 D::OpenChannel(id) => self.switch(state, Route::Channel(id.clone())),
                 D::OpenSession(id) => self.switch(state, Route::Session(id.clone())),
                 D::OpenChannelDesk(id) => self.handle(state, AppAction::OpenChannelDesk(id.clone())),
+                D::OpenDesk => self.switch(state, Route::Desk),
             },
             AppAction::Session(SessionAction::Delegate(delegate)) => match delegate {
                 S::Archived(id, title, frees) => {
@@ -917,8 +923,15 @@ impl Reducer for App {
         } else {
             Effect::none()
         };
+        // Settings › Desk sessions in sidebar caps the rows under Desk (D793).
+        let limit = state.settings.preferences.desk_rows.limit();
+        let desk = if state.sidebar.desk_limit == limit {
+            Effect::none()
+        } else {
+            self.child(state, AppAction::Sidebar(SidebarAction::SetDeskLimit(limit)))
+        };
         let save = self.persist(state);
-        effect.and(hits).and(page).and(refusal).and(add).and(save)
+        effect.and(hits).and(page).and(refusal).and(add).and(desk).and(save)
     }
 }
 

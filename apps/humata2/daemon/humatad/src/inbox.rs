@@ -1555,7 +1555,11 @@ fn kind_of(capability: Capability) -> pb::RequestKind {
         | C::SessionDeleteOther
         | C::DeskMoveToChannel
         | C::GitPush => pb::RequestKind::Session,
-        C::MachineProvision | C::MachineDestroy | C::MachineSessionsStop | C::MachineScriptRun => {
+        C::MachineProvision
+        | C::MachineDestroy
+        | C::MachineSessionsStop
+        | C::MachineScriptRun
+        | C::ProviderImport => {
             pb::RequestKind::Machine
         },
         _ => pb::RequestKind::Channel,

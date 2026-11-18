@@ -251,15 +251,50 @@ fn sorting_by_title_closes_the_pop_up() {
 }
 
 #[test]
-fn the_sidebar_lists_desk_sessions_only_on_the_desk() {
+fn the_sidebar_lists_desk_sessions_on_every_page() {
+    let mut app = desk_app();
+    for route in [Route::Home, Route::Desk, Route::Session(SessionId::new("ledger"))] {
+        app.send(AppAction::Navigate(route));
+        for id in OPEN {
+            assert!(app.contains(&format!("sidebar-session-{id}")), "{id}");
+        }
+    }
+}
+
+/// D793: the Desk row's chevron folds its sessions; a click on the row
+/// still opens the Desk page, and the fold survives it.
+#[test]
+fn the_desk_chevron_folds_its_sessions_and_the_row_still_opens_the_desk() {
     let mut app = desk_app();
     app.send(AppAction::Navigate(Route::Home));
-    assert!(app.contains("sidebar-desk"));
-    assert!(!app.contains("sidebar-session-desk-plan-q4"));
-    app.click("sidebar-desk");
+    app.click("sidebar-desk-fold");
+    assert_eq!(route(&app), Route::Home);
     for id in OPEN {
-        assert!(app.contains(&format!("sidebar-session-{id}")), "{id}");
+        assert!(!app.contains(&format!("sidebar-session-{id}")), "{id}");
     }
+    app.click("sidebar-desk");
+    assert_eq!(route(&app), Route::Desk);
+    assert!(!app.contains("sidebar-session-desk-plan-q4"));
+    app.click("sidebar-desk-fold");
+    assert!(app.contains("sidebar-session-desk-plan-q4"));
+}
+
+/// D793: capped in Settings, the sidebar keeps the rest behind "more",
+/// which opens the Desk page.
+#[test]
+fn a_capped_desk_counts_the_rest_and_more_opens_the_desk() {
+    let mut app = desk_app();
+    app.send(AppAction::Settings(humata2_settings::SettingsAction::SetDeskRows(
+        humata2_settings::DeskRows::Count(1),
+    )));
+    app.send(AppAction::Navigate(Route::Home));
+    let listed = OPEN
+        .iter()
+        .filter(|id| app.contains(&format!("sidebar-session-{id}")))
+        .count();
+    assert_eq!(listed, 1);
+    app.click("sidebar-desk-more");
+    assert_eq!(route(&app), Route::Desk);
 }
 
 #[test]

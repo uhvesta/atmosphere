@@ -58,6 +58,8 @@ pub enum Capability {
     // Ask me, no Allow (D20).
     NetworkReach,
     DeskMoveToChannel,
+    // An agent asks to import a machine provider (MP-23, D792).
+    ProviderImport,
     // Ask me by default (D306).
     SessionStopOther,
     // Never by default.
@@ -139,7 +141,7 @@ const SETTINGS_NONE: &[Decision] = &[];
 
 impl Capability {
     /// Every capability, once.
-    pub const ALL: [Capability; 54] = [
+    pub const ALL: [Capability; 55] = [
         Self::OwnBoardWrite,
         Self::ChannelRead,
         Self::ChannelBoardAdd,
@@ -175,6 +177,7 @@ impl Capability {
         Self::ChannelRepoAdd,
         Self::NetworkReach,
         Self::DeskMoveToChannel,
+        Self::ProviderImport,
         Self::SessionStopOther,
         Self::SessionDeleteOther,
         Self::MachineSessionsStop,
@@ -232,7 +235,7 @@ impl Capability {
             | Self::ChannelCreate
             | Self::ChannelRepoAdd
             | Self::SessionStopOther => Tier::AskMe,
-            Self::NetworkReach | Self::DeskMoveToChannel => Tier::AskNoAllow,
+            Self::NetworkReach | Self::DeskMoveToChannel | Self::ProviderImport => Tier::AskNoAllow,
             Self::SessionDeleteOther
             | Self::MachineSessionsStop
             | Self::ChannelChange
@@ -298,6 +301,7 @@ impl Capability {
             | Self::ChannelCreate
             | Self::ChannelRepoAdd
             | Self::DeskMoveToChannel
+            | Self::ProviderImport
             | Self::ChannelChange
             | Self::MachineScriptRun
             | Self::AccessChange
@@ -413,6 +417,7 @@ impl Capability {
             Self::ChannelRepoAdd => "add a repo to a channel",
             Self::NetworkReach => "open a network connection through the Mac",
             Self::DeskMoveToChannel => "move a Desk session into a channel",
+            Self::ProviderImport => "ask you to import a machine provider",
             Self::SessionStopOther => "stop or archive another session",
             Self::SessionDeleteOther => "delete another session",
             Self::MachineSessionsStop => "stop or start all sessions on a machine",

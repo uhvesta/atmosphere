@@ -202,6 +202,8 @@ operations! {
     MachineStop => "machine_stop", "machine.stop";
     /// `MachineService.ReconnectMachine`.
     MachineReconnect => "machine_reconnect", "machine.reconnect";
+    /// `ProviderService.RequestProviderImport` (MP-23, D792): always asks.
+    ProviderImport => "provider_import", "provider.import";
     /// `SkillsService.PreviewSkillsSync` and `SyncSkills`.
     SkillsSync => "skills_sync", "skills.sync";
     /// `TrashService.RestoreFromTrash`.
@@ -356,6 +358,7 @@ pub(crate) fn capability_name(capability: Capability) -> &'static str {
         Capability::ChannelChange => "channel_change",
         Capability::MachineDestroy => "machine_destroy",
         Capability::MachineScriptRun => "machine_script_run",
+        Capability::ProviderImport => "provider_import",
         Capability::InboxAnswer => "inbox_answer",
         Capability::AccessChange => "access_change",
         Capability::SettingsChange => "settings_change",
@@ -1317,6 +1320,18 @@ fn definition(operation: Operation) -> Definition {
         Op::MachineStop => machine_only(
             "Stop a provider's machine. Usually asks the user first.",
             Effect::Remove,
+        ),
+        Op::ProviderImport => define(
+            "Ask the user to import a machine provider file. Always asks: the Inbox shows the whole file and every command it runs, and only the user's approval adds it. A file with problems is refused at once.",
+            Effect::Create,
+            asks(vec![
+                req(
+                    "file_text",
+                    string().describe("The provider TOML, at most 64 KiB, exactly as it should be imported"),
+                ),
+                opt("file_name", string().describe("A name for the Inbox card; no file is read")),
+                req("reason", string().describe("Why the task needs this provider")),
+            ]),
         ),
         Op::MachineReconnect => machine_only(
             "Reconnect to a machine. Usually asks the user first.",

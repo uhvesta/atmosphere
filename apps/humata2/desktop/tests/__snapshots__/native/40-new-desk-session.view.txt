@@ -8,7 +8,8 @@ Navigation "Sidebar"
   Link "Home"
   Link "Inbox"
   Link "Board"
-  Link "Desk" selected
+  Link "Desk" selected expanded
+    Button "Fold"
   TreeItem "Plan Q4 board"
   TreeItem "BRIN rollout RFC"
   TreeItem "Tidy infra items"

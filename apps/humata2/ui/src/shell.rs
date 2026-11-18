@@ -821,6 +821,7 @@ fn escape_closes_something(state: &humata2_app::AppState) -> bool {
         || state.report.form.is_some()
         || state.navigation_overlay
         || state.settings.font_menu
+        || state.settings.desk_rows_menu
         || state.session.terminal_menu.is_some()
         || state.session.menu
         || state.hosts.start_confirm.is_some()

@@ -105,6 +105,12 @@ impl App {
                 AppAction::Settings(humata2_settings::SettingsAction::FontMenu),
             );
         }
+        if state.settings.desk_rows_menu {
+            return self.child(
+                state,
+                AppAction::Settings(humata2_settings::SettingsAction::DeskRowsMenu),
+            );
+        }
         if state.navigation_overlay {
             state.navigation_overlay = false;
             return Effect::none();

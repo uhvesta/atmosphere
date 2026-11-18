@@ -948,7 +948,19 @@ impl Request {
             _ => None,
         }
     }
+
+    /// Whether Approve all and Deny all answer it. A Migrate item is
+    /// answered only with Migrate (D281), and an agent's provider import
+    /// only one by one (MP-23, D792).
+    #[must_use]
+    pub fn answered_in_bulk(&self) -> bool {
+        self.kind != RequestKind::Migrate && self.operation != PROVIDER_IMPORT_OPERATION
+    }
 }
+
+/// The operation id of an agent's ask to import a provider file
+/// (`ProviderService.RequestProviderImport`, D792).
+pub const PROVIDER_IMPORT_OPERATION: &str = "provider.request_import";
 
 /// How a request was answered.
 #[derive(Clone, Debug, PartialEq, Eq)]

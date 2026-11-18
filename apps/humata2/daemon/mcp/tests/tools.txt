@@ -44,6 +44,7 @@ network_close
 network_connect
 operation_get
 pr_review_start
+provider_import
 repo_library
 repo_search
 review_commits

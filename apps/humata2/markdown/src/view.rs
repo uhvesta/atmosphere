@@ -23,9 +23,9 @@ use gpui_kit::component::text::FrontmatterPlugin;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    Hsla, ImageSource, InteractiveElement as _, IntoElement, KeyBinding, ListOffset, ObjectFit, ParentElement as _,
+    Hsla, ImageSource, InteractiveElement as _, IntoElement, KeyBinding, ListOffset, ParentElement as _,
     Pixels, Render, Role, SharedString, SharedUri, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Subscription, WeakEntity, Window, actions, canvas, div, img, px, relative,
+    Subscription, WeakEntity, Window, actions, canvas, div, px,
 };
 
 use crate::anchor::{AnchorStatus, AnchorTarget, Comment, SourceSelection};
@@ -34,6 +34,10 @@ use crate::document::{BlockKind, Document, LineRange, ParseStats, byline_text, f
 use crate::image::{self, ImageCache, ImageEntry, ImageStats};
 use crate::mermaid::{self, DiagramBlock, DiagramEntry, DiagramStats, MermaidCache};
 use crate::theme::{MarkdownTheme, hex};
+
+mod diagram_zoom;
+
+use diagram_zoom::Zooms;
 
 /// The key context of the view, for apps that bind its actions themselves.
 pub const KEY_CONTEXT: &str = "MarkdownView";
@@ -255,6 +259,8 @@ struct Shared {
     image_settings: RwLock<ImageSettings>,
     /// The first byte of each diagram block a comment is on, for its frame.
     commented_diagrams: RwLock<HashSet<usize>>,
+    /// How far each diagram is zoomed, and the one opened large.
+    zooms: Zooms,
 }
 
 /// A poisoned lock still holds whole data here; keep using it.
@@ -272,7 +278,7 @@ impl Shared {
         let _ = view.update(cx, |view, cx| view.resource_ready(cx));
     }
 
-    fn render_diagram(&self, node: &MarkdownNode, cx: &mut App) -> AnyElement {
+    fn render_diagram(self: &Arc<Self>, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> AnyElement {
         let Some(block) = node.data::<DiagramBlock>() else {
             return div().into_any_element();
         };
@@ -280,38 +286,34 @@ impl Shared {
         let theme = &look.theme;
         let name = mermaid::first_line(&block.source).to_owned();
         let commented = read(&self.commented_diagrams).contains(&block.bytes.start);
-        let frame = div()
-            .id(("md-diagram", block.bytes.start))
-            .test_support()
-            .my_2()
-            .p_2()
-            .rounded_md()
-            .border_1()
-            .border_color(if commented { theme.comment.opacity(1.) } else { theme.border })
-            .when(commented, |frame| frame.border_2());
+        let start = block.bytes.start;
+        let border = if commented { theme.comment.opacity(1.) } else { theme.border };
+        // The frame, on a div that may already measure its children.
+        let framed = move |inner: gpui_kit::Div| {
+            inner
+                .id(("md-diagram", start))
+                .test_support()
+                .my_2()
+                .p_2()
+                .rounded_md()
+                .border_1()
+                .border_color(border)
+                .when(commented, |frame| frame.border_2())
+        };
+        let frame = framed(div());
         let entry = if block.closed {
-            self.diagrams.get(&block.source, look.mermaid_key)
+            self.diagrams.get(&block.source, look.mermaid_key, crate::zoom::BASE_RASTER)
         } else {
             None
         };
         match entry {
-            Some(DiagramEntry::Ready(image)) => {
-                let size = image.size(0);
-                // Drawn at twice the pixels; shown at its own size or narrower.
-                let width = px(size.width.0 as f32 / 2.);
-                let height = px(size.height.0 as f32 / 2.);
-                frame
+            Some(DiagramEntry::Ready(drawn)) => {
+                // The zoom reads the look itself.
+                drop(look);
+                drop(frame);
+                self.render_zoomable(block, &name, &drawn, framed, window, cx)
                     .role(Role::Image)
                     .aria_label(format!("Diagram: {name}"))
-                    .flex()
-                    .justify_center()
-                    .child(
-                        img(ImageSource::Render(image))
-                            .w(width)
-                            .h(height)
-                            .max_w(relative(1.))
-                            .object_fit(ObjectFit::Contain),
-                    )
                     .into_any_element()
             }
             Some(DiagramEntry::Failed(error)) => {
@@ -338,7 +340,7 @@ impl Shared {
                     .into_any_element()
             }
             _ => {
-                if block.closed && self.diagrams.begin(&block.source, look.mermaid_key) {
+                if block.closed && self.diagrams.begin(&block.source, look.mermaid_key, crate::zoom::BASE_RASTER) {
                     self.start_diagram(block.source.clone(), look.mermaid.clone(), look.mermaid_key, cx);
                 }
                 let shown = if block.closed {
@@ -374,7 +376,12 @@ impl Shared {
                 Ok(image) => DiagramEntry::Ready(image),
                 Err(error) => DiagramEntry::Failed(Arc::new(error)),
             };
-            cache.finish(source, key, entry);
+            let evicted = cache.finish(source, key, crate::zoom::BASE_RASTER, entry);
+            cx.update(|cx| {
+                for image in evicted {
+                    cx.drop_image(image, None);
+                }
+            });
             Self::resource_ready(&view, cx);
         })
         .detach();
@@ -483,8 +490,8 @@ impl MarkdownPlugin for DiagramPlugin {
         mermaid::parse(node, cx)
     }
 
-    fn render(&self, node: &MarkdownNode, _window: &mut Window, cx: &mut App) -> impl IntoElement {
-        self.shared.render_diagram(node, cx)
+    fn render(&self, node: &MarkdownNode, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.shared.render_diagram(node, window, cx)
     }
 }
 
@@ -592,6 +599,7 @@ impl MarkdownView {
                 allow_remote: options.allow_remote_images,
             }),
             commented_diagrams: RwLock::new(HashSet::new()),
+            zooms: Zooms::default(),
         });
         let mut extensions = MarkdownExtensions::default()
             .frontmatter()
@@ -762,6 +770,14 @@ impl MarkdownView {
             })
             .collect();
         write(&self.shared.commented_diagrams, diagrams);
+        let starts: HashSet<usize> = self
+            .document
+            .blocks()
+            .iter()
+            .filter(|block| matches!(block.kind, BlockKind::Mermaid { .. }))
+            .map(|block| block.bytes.start)
+            .collect();
+        self.shared.zooms.retain(&starts);
         self.marks_generation += 1;
         self.synced = None;
     }
@@ -1664,9 +1680,15 @@ impl Focusable for MarkdownView {
 }
 
 impl Render for MarkdownView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.theme.clone();
+        let opened = (self.mode == ViewMode::Rendered).then(|| self.shared.zooms.opened()).flatten();
         let body = match (self.options.layout, self.mode) {
+            _ if opened.is_some() => {
+                let fill = self.options.layout == Layout::Scroll;
+                let shared = self.shared.clone();
+                opened.map_or_else(|| div().into_any_element(), |open| shared.render_open(&open, fill, window, cx))
+            }
             (Layout::Scroll, ViewMode::Rendered) => self.render_rendered(cx),
             (layout, _) => {
                 self.stats.labelled_blocks = 0;

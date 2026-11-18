@@ -563,6 +563,10 @@ pub async fn deliver(
     loop {
         let Some(waiting) = held.as_mut() else {
             if let Some(ready) = &ready {
+                // Asked only once the program is up: one still starting
+                // hasn't drawn its question yet, so its input looks clear,
+                // and the text would answer the question it draws next.
+                await_keys(socket, KEYS_LIMIT).await?;
                 while !ready().await {
                     if left().is_zero() {
                         return Ok(false);

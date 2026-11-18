@@ -7,7 +7,12 @@
 use gpui_kit::gpui;
 use gpui_kit::prelude::*;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, Entity, Role, TestAppContext};
+use std::time::Duration;
+
+use gpui_kit::{
+    AnyWindowHandle, Bounds, Entity, InputEvent as _, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, Role, ScrollDelta, ScrollEvent, TestAppContext, point, px,
+};
 use humata2_markdown::{
     Anchor, AnchorStatus, Comment, CommentMarks, Document, MarkdownEvent, MarkdownOptions, MarkdownView, MermaidCache,
 };
@@ -345,4 +350,101 @@ fn a_ten_thousand_line_document_draws_only_what_is_on_screen(cx: &mut TestAppCon
     assert!(present(cx, window, ("md-block", 4998usize)));
     let stats = markdown(cx, &pane).read_with(cx, |view, _| view.stats());
     assert!(stats.labelled_blocks < 60, "{stats:?}");
+}
+
+fn bounds(cx: &mut TestAppContext, window: AnyWindowHandle, id: impl Into<gpui_kit::ElementId>) -> Bounds<Pixels> {
+    let id = id.into();
+    cx.update_window(window, |_, window, _| window.find(id).bounds())
+        .expect("the window is open")
+}
+
+/// A wheel scroll of `by` pixels at `position`, with ⌘ (Ctrl elsewhere) held
+/// or not.
+fn scroll(cx: &mut TestAppContext, window: AnyWindowHandle, position: Point<Pixels>, by: f32, zoom_key: bool) {
+    let modifiers = Modifiers {
+        platform: zoom_key && cfg!(target_os = "macos"),
+        control: zoom_key && !cfg!(target_os = "macos"),
+        ..Modifiers::default()
+    };
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_event(
+            ScrollEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.), px(by))),
+                modifiers,
+                ..Default::default()
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .expect("the window is open");
+}
+
+/// Let a zoom rest, then draw what resting starts.
+fn rest(cx: &mut TestAppContext, window: AnyWindowHandle) {
+    frame(cx, window);
+    cx.executor().advance_clock(Duration::from_secs(1));
+    frame(cx, window);
+}
+
+#[gpui_kit::test]
+fn a_zoomed_diagram_is_drawn_again_sharp_once_it_rests_and_a_plain_scroll_never_zooms(cx: &mut TestAppContext) {
+    init(cx);
+    let options = MarkdownOptions::new("Diagram");
+    let cache = options.diagrams.clone();
+    let (window, _) = open(cx, FIXED, options, WIDTH, 600.);
+    frame(cx, window);
+    let id = diagram_id(FIXED);
+    let before = bounds(cx, window, id);
+    assert_eq!(cache.stats().renders, 1);
+
+    scroll(cx, window, before.center(), 300., false);
+    rest(cx, window);
+    assert_eq!(cache.stats().renders, 1, "a plain scroll doesn't zoom");
+
+    scroll(cx, window, before.center(), 300., true);
+    rest(cx, window);
+    assert_eq!(cache.stats().renders, 2, "the zoomed diagram is drawn once more, larger");
+    let after = bounds(cx, window, id);
+    let moved = (f32::from(after.size.width) - f32::from(before.size.width)).abs()
+        + (f32::from(after.size.height) - f32::from(before.size.height)).abs()
+        + (f32::from(after.origin.y) - f32::from(before.origin.y)).abs();
+    assert!(moved < 1., "zooming keeps the diagram's place in the document: {before:?} became {after:?}");
+
+    // Zooming more within the same picture's reach draws nothing new.
+    scroll(cx, window, before.center(), 5., true);
+    rest(cx, window);
+    assert_eq!(cache.stats().renders, 2);
+}
+
+#[gpui_kit::test]
+fn a_double_clicked_diagram_opens_large_and_escape_brings_the_document_back(cx: &mut TestAppContext) {
+    init(cx);
+    let (window, _) = open(cx, FIXED, MarkdownOptions::new("Diagram"), WIDTH, 600.);
+    frame(cx, window);
+    let id = diagram_id(FIXED);
+    let opened = ("md-diagram-opened", id.1);
+    let position = bounds(cx, window, id).center();
+    cx.update_window(window, |_, window, cx| {
+        let modifiers = Modifiers::default();
+        window.dispatch_event(MouseMoveEvent { position, pressed_button: None, modifiers }.to_platform_input(), cx);
+        for click_count in [1, 2] {
+            let button = MouseButton::Left;
+            window.dispatch_event(
+                MouseDownEvent { button, position, modifiers, click_count, first_mouse: false }.to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(MouseUpEvent { button, position, modifiers, click_count }.to_platform_input(), cx);
+        }
+    })
+    .expect("the window is open");
+    frame(cx, window);
+    assert!(present(cx, window, opened), "a double-click opens the diagram");
+    assert!(!present(cx, window, id), "opened, it stands in for the document");
+
+    cx.simulate_keystrokes(window, "escape");
+    frame(cx, window);
+    assert!(!present(cx, window, opened));
+    assert_eq!(role(cx, window, id), Some(Role::Image), "Escape returns to the document");
 }

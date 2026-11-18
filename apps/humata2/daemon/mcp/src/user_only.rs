@@ -35,7 +35,6 @@ const NAMES: &[(&str, Option<Capability>)] = &[
     ("host_remove_variable", Some(Capability::HostSecrets)),
     ("host_trust_new_key", Some(Capability::HostSecrets)),
     ("providers_set_config", Some(Capability::HostSecrets)),
-    ("provider_import", Some(Capability::HostSecrets)),
     ("provider_login", Some(Capability::HostSecrets)),
     ("provider_make_unattended", Some(Capability::HostSecrets)),
     ("machine_change_root", Some(Capability::MachineSettings)),

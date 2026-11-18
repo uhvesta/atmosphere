@@ -437,6 +437,7 @@ pub(crate) fn capability(capability: Capability) -> pb::Capability {
         C::ChannelChange => P::ChannelChange,
         C::MachineDestroy => P::MachineDestroy,
         C::MachineScriptRun => P::MachineScriptRun,
+        C::ProviderImport => P::ProviderImport,
         C::InboxAnswer => P::InboxAnswer,
         C::AccessChange => P::AccessChange,
         C::SettingsChange => P::SettingsChange,

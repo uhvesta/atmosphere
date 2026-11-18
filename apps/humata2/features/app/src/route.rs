@@ -119,8 +119,6 @@ impl App {
 
     /// Tells the features what the route now shows.
     pub(super) fn arrive(&self, state: &mut AppState) -> Effect<AppAction> {
-        // The sidebar's keyboard cursor walks the Desk rows only while they show.
-        state.sidebar.desk_shown = state.desk_in_sidebar();
         // NV-37, SE-13: the side panel's collapsed state belongs to each
         // session. `session.open` is still the session being left here.
         if let Some(left) = &state.session.open {
