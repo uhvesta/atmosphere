@@ -285,6 +285,7 @@ rust_test(
         "//apps/humata2/engine:engine_test_support",
         "//apps/humata2/features/app",
         "//apps/humata2/features/hosts",
+        "//apps/humata2/features/settings",
         "//apps/humata2/testing/flow",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",

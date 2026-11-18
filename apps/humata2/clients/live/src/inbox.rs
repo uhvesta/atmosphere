@@ -7,8 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    AccessRule, Answer, AskedBy, Capability, ChannelId, CopyCard, Grant, GrantId, HolderNote, HolderSession,
-    MigrateCard, MigrateFailure, MigrateStep, MigrateStepState,
+    AccessRule, Answer, AskedBy, Capability, ChannelId, CopyCard, DiffLine, Grant, GrantId, HolderNote,
+    HolderSession, LineKind, MigrateCard, MigrateFailure, MigrateStep, MigrateStepState,
     MigratePhase, MigrateThing, Preview, Release, Request, RequestId, RequestKind, RuleSetting,
 };
 use humata2_grpc::humata::v1 as pb;
@@ -180,8 +180,10 @@ fn rules(reply: &pb::ChannelRules, titles: &BTreeMap<i32, String>, now: i64) -> 
 fn kind(request: &pb::InboxRequest) -> RequestKind {
     use pb::request_preview::Preview as P;
     let preview = request.preview.as_ref().and_then(|preview| preview.preview.as_ref());
+    let edits_files = request.kind == pb::RequestKind::Files as i32;
     match preview {
-        Some(P::Command(_)) => return RequestKind::Command,
+        // An agent's file edit comes as the edit's text: it edits files.
+        Some(P::Command(_)) if !edits_files => return RequestKind::Command,
         Some(P::Network(_)) => return RequestKind::Network,
         Some(P::Question(_)) => return RequestKind::Question,
         Some(P::Push(_)) => return RequestKind::Merge,
@@ -199,6 +201,32 @@ fn kind(request: &pb::InboxRequest) -> RequestKind {
             RequestKind::Command
         }
     }
+}
+
+/// An agent's file edit, its path then `-`/`+` lines or a patch, as diff
+/// lines: the path and the patch's own headers grey, removals red, additions
+/// green, every line whole.
+fn edit_lines(edit: &str) -> Vec<DiffLine> {
+    edit.lines()
+        .enumerate()
+        .map(|(at, line)| {
+            let kind = if at == 0
+                || line.starts_with("@@")
+                || line.starts_with("***")
+                || line.starts_with("+++")
+                || line.starts_with("---")
+            {
+                LineKind::Hunk
+            } else if line.starts_with('+') {
+                LineKind::Added
+            } else if line.starts_with('-') {
+                LineKind::Removed
+            } else {
+                LineKind::Context
+            };
+            DiffLine { kind, old: None, new: None, text: line.to_owned() }
+        })
+        .collect()
 }
 
 /// An agent's provider import as its card shows it (MP-23, D792): what it
@@ -486,6 +514,12 @@ fn request(request: &pb::InboxRequest, titles: &BTreeMap<i32, String>, now: i64)
         reason: request.reason.clone(),
         preview: {
             let mut shown = preview(request.preview.as_ref());
+            if kind(request) == RequestKind::FileEdit
+                && let Preview::Command(edit) = &shown
+            {
+                let lines = edit_lines(edit);
+                shown = Preview::Diff(lines);
+            }
             if let (Preview::Migrate(card), Some(Answer::Approved)) = (&mut shown, answer(request)) {
                 card.migrated = answered_ago(request, now);
             }
@@ -843,6 +877,35 @@ mod tests {
         assert!(matches!(always.answer, Some(A::Always(ref each)) if each.target == Some(target)));
         let reply = request_answer(Answer::Replied { text: "yes".into() }, None);
         assert!(matches!(reply.answer, Some(A::Reply(ref each)) if each.text == "yes"));
+    }
+
+    #[test]
+    fn an_agents_file_edit_is_an_edit_card_drawn_as_diff_lines() {
+        let command = |kind: pb::RequestKind| {
+            let mut wire = pending();
+            wire.kind = kind as i32;
+            wire.preview = Some(pb::RequestPreview {
+                preview: Some(pb::request_preview::Preview::Command(pb::CommandPreview {
+                    command: "/w/a.rs\n-let a = 1;\n+let a = 2;".into(),
+                    ..Default::default()
+                })),
+            });
+            request(&wire, &BTreeMap::new(), 0)
+        };
+        let edit = command(pb::RequestKind::Files);
+        assert_eq!(edit.kind, RequestKind::FileEdit);
+        let Preview::Diff(lines) = edit.preview else {
+            panic!("a diff, not {:?}", edit.preview);
+        };
+        let kinds: Vec<LineKind> = lines.iter().map(|line| line.kind).collect();
+        assert_eq!(kinds, [LineKind::Hunk, LineKind::Removed, LineKind::Added]);
+        assert!(lines[0].text.contains("/w/a.rs"));
+        assert!(lines[1].text.contains("let a = 1;") && lines[2].text.contains("let a = 2;"));
+
+        // Any other agent tool stays a command.
+        let other = command(pb::RequestKind::Session);
+        assert_eq!(other.kind, RequestKind::Command);
+        assert!(matches!(other.preview, Preview::Command(_)));
     }
 
     #[test]

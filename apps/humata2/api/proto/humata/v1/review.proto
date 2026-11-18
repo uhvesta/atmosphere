@@ -272,6 +272,10 @@ message FileSummary {
   string new_blob_sha = 8;
   // git's rename score, 0–100, for CHANGE_KIND_RENAMED.
   uint32 similarity = 9;
+  // The sides' git file modes, the octal digits read as a number (100644,
+  // 100755, 120000). 0 for a missing side.
+  uint32 old_mode = 10;
+  uint32 new_mode = 11;
 }
 
 message RepoDiff {
@@ -311,6 +315,8 @@ message DiffLine {
   uint32 old_line = 2;
   uint32 new_line = 3;
   string text = 4;
+  // git follows this line with "\ No newline at end of file".
+  bool no_newline = 5;
 }
 
 message Hunk {

@@ -67,6 +67,11 @@ pub struct FileSummary {
     /// The new side's blob id: the file's content hash, which per-file
     /// Viewed records (RV-29). `None` for a deleted file.
     pub new_blob: Option<String>,
+    /// The old side's git mode as its octal digits read as a number (100644);
+    /// 0 for an added file.
+    pub old_mode: u32,
+    /// The new side's mode; 0 for a deleted file.
+    pub new_mode: u32,
 }
 
 impl FileSummary {
@@ -167,6 +172,8 @@ pub struct DiffLine {
     pub new_line: Option<u32>,
     /// The text without its mark and line ending.
     pub text: String,
+    /// git marks this line "\ No newline at end of file".
+    pub no_newline: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

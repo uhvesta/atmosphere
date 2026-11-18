@@ -138,7 +138,7 @@ impl LoginSvc {
                     pb::EntityKind::Provider,
                     id,
                     format!("there is no provider {id} in the providers file"),
-                    "add it back in Settings › Machine providers, or add the machine again",
+                    "add it back in Settings › Machines › Providers, or add the machine again",
                 )
             })
     }
@@ -246,7 +246,7 @@ impl LoginSvc {
         let (session, handle) = LoginSession::open(
             resolved.name.clone(),
             &invocation,
-            &(),
+            &crate::host_vars::Installed,
             size(open.cols, 80),
             size(open.rows, 24),
         )
@@ -322,7 +322,7 @@ impl LoginSvc {
         let work = self.work.clone();
         let target = name.clone();
         let result = tokio::task::spawn_blocking(move || {
-            humata2_machines::make_unattended(&work.machines, &target, method, &SystemRunner::new(&()))
+            humata2_machines::make_unattended(&work.machines, &target, method, &SystemRunner::new(&crate::host_vars::Installed))
         })
         .await
         .map_err(|error| {

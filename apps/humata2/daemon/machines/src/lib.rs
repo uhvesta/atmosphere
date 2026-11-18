@@ -31,7 +31,7 @@ mod takeover;
 
 pub use check::Facts;
 pub use error::{
-    ConfigError, FieldProblem, IdentityError, KnownHostsError, NameError, Problem, ProblemKind, Problems,
+    ConfigError, FieldProblem, HostVariablesError, IdentityError, KnownHostsError, NameError, Problem, ProblemKind, Problems,
     QuoteError, Remedy, RunError, SetupError, TakeoverError, ValuesError,
 };
 pub use identity::{parse_identity, HostKey, Identity, SshAccess, SshTarget};

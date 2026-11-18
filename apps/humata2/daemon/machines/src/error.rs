@@ -44,7 +44,7 @@ pub struct QuoteError {
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error(
-        "the providers file isn't valid TOML at line {line}: {message}. Fix that line in Settings › Machine providers"
+        "the providers file isn't valid TOML at line {line}: {message}. Fix that line in Settings › Machines › Providers"
     )]
     Syntax {
         line: usize,
@@ -63,7 +63,7 @@ pub struct Problems(pub Vec<Problem>);
 
 impl fmt::Display for Problems {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "the providers file needs fixing in Settings › Machine providers:")?;
+        write!(f, "the providers file needs fixing in Settings › Machines › Providers:")?;
         for problem in &self.0 {
             write!(f, "\n- {problem}")?;
         }
@@ -154,7 +154,7 @@ pub enum ValuesError {
 #[derive(Debug, Error)]
 pub enum IdentityError {
     #[error(
-        "the identity command printed key material. It must print paths only (`ssh.identity_file`, `ssh.ssh_config`), never a key; nothing it printed was kept or shown. Change the identity command in Settings › Machine providers"
+        "the identity command printed key material. It must print paths only (`ssh.identity_file`, `ssh.ssh_config`), never a key; nothing it printed was kept or shown. Change the identity command in Settings › Machines › Providers"
     )]
     KeyMaterial,
     #[error(
@@ -165,7 +165,7 @@ pub enum IdentityError {
         source: serde_json::Error,
     },
     #[error(
-        "identity field `{field}` {problem}; fix the identity command in Settings › Machine providers"
+        "identity field `{field}` {problem}; fix the identity command in Settings › Machines › Providers"
     )]
     Field { field: String, problem: FieldProblem },
 }
@@ -218,7 +218,20 @@ pub enum RunError {
         "the provider lists host variable `{name}`, which isn't set; set it in Settings › This Mac › Variables, then try again"
     )]
     MissingHostVariable { name: String },
+    #[error("couldn't read host variable `{name}` for the provider's command, so it didn't run")]
+    UnreadableHostVariable {
+        name: String,
+        #[source]
+        source: HostVariablesError,
+    },
 }
+
+/// Where the host variables are kept couldn't be read. Never read as "not
+/// set": the command that needed one doesn't run. The store's own error,
+/// which says how to fix it, is the source.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct HostVariablesError(pub Box<dyn std::error::Error + Send + Sync + 'static>);
 
 /// Humata's own `known_hosts` file can't be used (MP-9).
 #[derive(Debug, Error)]
@@ -247,7 +260,7 @@ pub enum KnownHostsError {
 #[derive(Debug, Error)]
 pub enum SetupError {
     #[error(
-        "the provider's `{action}` command failed ({exit}); {}. Fix the cause and try again, or change the command in Settings › Machine providers",
+        "the provider's `{action}` command failed ({exit}); {}. Fix the cause and try again, or change the command in Settings › Machines › Providers",
         output_said(.printed)
     )]
     CommandFailed {
@@ -437,7 +450,7 @@ pub enum TakeoverError {
 pub enum Remedy {
     /// Run the failed step again.
     TryAgain,
-    /// Change the provider in Settings › Machine providers.
+    /// Change the provider in Settings › Machines › Providers.
     FixProvider,
     /// Log in through a real terminal (MP-12).
     OpenInteractively,

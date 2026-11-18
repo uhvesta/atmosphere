@@ -3,8 +3,8 @@
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    DiffBase, DiffLine, FileDiff, LineKind, PushChoice, PushPlan, PushRepo, RepoBase, RepoBases,
-    RepoDiff, RepoDiffSpec, SessionFile, SessionId,
+    DiffBase, DiffLine, FileChange, FileDiff, LineKind, PushChoice, PushPlan, PushRepo, RepoBase,
+    RepoBases, RepoDiff, RepoDiffSpec, SessionFile, SessionId,
 };
 use humata2_grpc::humata::v1 as pb;
 
@@ -462,11 +462,24 @@ impl Shared {
                         }
                     }
                 }
+                let change = match pb::ChangeKind::try_from(summary.change) {
+                    Ok(pb::ChangeKind::Added) => FileChange::Added,
+                    Ok(pb::ChangeKind::Deleted) => FileChange::Deleted,
+                    Ok(pb::ChangeKind::Renamed) => FileChange::Renamed,
+                    _ => FileChange::Modified,
+                };
+                let old_path = (change == FileChange::Renamed && !summary.old_path.is_empty())
+                    .then(|| summary.old_path.clone());
                 files.push(FileDiff {
                     path: summary.path.clone(),
                     added: summary.added,
                     removed: summary.removed,
                     lines,
+                    change,
+                    old_path,
+                    similarity: summary.similarity,
+                    binary: summary.binary,
+                    error: None,
                 });
             }
             diffs.push(RepoDiff {

@@ -41,6 +41,11 @@ impl App {
             AddDelegate::Toast(text) => state.toast(text, &clock),
             // The Inbox's own Migrate click, on the item the dialog names.
             AddDelegate::Migrate(request) => self.child(state, AppAction::Inbox(InboxAction::Migrate(request))),
+            // Providers and their host variables live in Settings › Machines.
+            AddDelegate::ManageProviders => {
+                let go = self.navigate(state, Route::Settings);
+                go.and(self.child(state, AppAction::Settings(SettingsAction::Section(Section::Machines))))
+            }
         };
         effect.and(asked)
     }

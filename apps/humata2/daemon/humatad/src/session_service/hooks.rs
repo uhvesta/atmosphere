@@ -86,6 +86,15 @@ impl SessionSvc {
                 .map(|asked| Hooked::Question(kind, asked, request.payload.clone())),
             _ => None,
         };
+        // A call of Humata's own tool that only files an Inbox request is
+        // let through, whoever keeps the agent's asks: the request it files
+        // is the card the user answers, so a second one would ask twice.
+        if let Some(Hooked::Permission(kind, ask)) = &hooked
+            && only_files_an_inbox_request(&ask.tool)
+        {
+            let _ = sender.try_send(Ok(final_reply(permission_stdout(*kind, Decision::Allow))));
+            return Ok(Response::new(ReceiverStream::new(receiver)));
+        }
         // Not an ask this daemon answers, or the user keeps this agent's
         // asks in its own terminal (D782): no decision, no card.
         let hooked = match hooked {
@@ -170,6 +179,32 @@ enum Hooked {
     Permission(Agent, agent_hooks::Ask),
     /// The question, and the payload it was parsed from, which its answer needs.
     Question(Agent, agent_hooks::Question, Vec<u8>),
+}
+
+/// Humata's own MCP tools whose call only files an Inbox request: the
+/// daemon asks the user on that card, so the call itself needs no approval.
+const ONLY_FILE_AN_INBOX_REQUEST: &[humata2_mcp::Operation] = &[humata2_mcp::Operation::ProviderImport];
+
+/// Whether `tool`, as an agent's permission ask names it, is one of
+/// [`ONLY_FILE_AN_INBOX_REQUEST`] on Humata's server: Claude's and Codex's
+/// `mcp__humata__<tool>`, Copilot's `humata/<tool>` or `humata-<tool>`,
+/// OpenCode's `humata_<tool>`.
+fn only_files_an_inbox_request(tool: &str) -> bool {
+    let server = agent_hooks::MCP_SERVER;
+    let named = [
+        format!("mcp__{server}__"),
+        format!("{server}/"),
+        format!("{server}-"),
+        format!("{server}_"),
+    ]
+    .iter()
+    .find_map(|prefix| tool.strip_prefix(prefix.as_str()))
+    .map(str::to_owned);
+    named.is_some_and(|name| {
+        ONLY_FILE_AN_INBOX_REQUEST
+            .iter()
+            .any(|operation| operation.tool_name() == name)
+    })
 }
 
 /// What `agent`'s permission hook prints for `decision`.
@@ -365,6 +400,28 @@ mod tests {
         let expected = DAEMON_HOLD.as_secs() / KEEPALIVE.as_secs();
         assert!(before.len() as u64 >= expected, "{} keepalives", before.len());
         assert!(before.iter().all(|reply| reply.keepalive));
+    }
+
+    #[test]
+    fn only_humatas_own_request_filing_tools_skip_the_card() {
+        for tool in [
+            "mcp__humata__provider_import",
+            "humata/provider_import",
+            "humata-provider_import",
+            "humata_provider_import",
+        ] {
+            assert!(only_files_an_inbox_request(tool), "{tool}");
+        }
+        for tool in [
+            "Bash",
+            "provider_import",
+            "mcp__other__provider_import",
+            "other/provider_import",
+            "mcp__humata__machine_create",
+            "mcp__humata__provider_import_all",
+        ] {
+            assert!(!only_files_an_inbox_request(tool), "{tool}");
+        }
     }
 
     #[tokio::test(start_paused = true)]

@@ -32,7 +32,7 @@ Navigation "Sidebar"
   Link "Settings"
 Splitter "Resize the sidebar"
 Button "Add a machine…"
-Dialog "Add machine"
+Dialog "Add machine" focused
   List "Steps"
     ListItem "Log in: done"
     ListItem "Check the system (arch, disk, git, gh): done"

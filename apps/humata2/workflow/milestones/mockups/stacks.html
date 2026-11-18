@@ -1,0 +1,117 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Stacks across repos</title><style>
+:root{
+  --sidebar:#e9e7ea;--panel:#f6f5f7;--line:#dcdadd;--text:#1d1d1f;--sec:#6e6e73;--ter:#a1a1a6;
+  --accent:#0a6cff;--fill:#eceaee;--card:#fff;--term:#fff;--content:#fff;
+  --addrow:rgba(48,209,88,.12);--delrow:rgba(240,93,93,.12);--addword:rgba(48,209,88,.30);--delword:rgba(240,93,93,.30);
+  --green:#1f9d45;--red:#d93a3a;
+}
+.dark{
+  --sidebar:#2a2a2d;--panel:#252527;--line:#3a3a3d;--text:#e8e8ea;--sec:#98989e;--ter:#6a6a70;
+  --accent:#3b8cff;--fill:#323235;--card:#2a2a2c;--term:#1a1a1b;--content:#1e1e1f;
+  --addrow:rgba(48,209,88,.16);--delrow:rgba(240,93,93,.16);--addword:rgba(48,209,88,.34);--delword:rgba(240,93,93,.34);
+  --green:#30d158;--red:#f05d5d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px;background:#d9d7db;font:12.5px -apple-system,".SF NS",system-ui,sans-serif;color:#1d1d1f}
+h1{font-size:17px;margin:0 0 4px} .cap{color:#555;margin:0 0 14px;max-width:1100px;line-height:1.45}
+h2{font-size:14px;margin:30px 0 4px}
+.win{width:1280px;height:760px;border-radius:11px;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.25);display:flex;background:var(--content);color:var(--text)}
+.win.short{height:430px}
+.sb{width:230px;background:var(--sidebar);border-right:1px solid var(--line);padding:14px 10px;flex-shrink:0}
+.lights{display:flex;gap:8px;margin-bottom:22px}.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.sbi{padding:6px 8px;border-radius:6px;color:var(--text);margin:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sbi.on{background:var(--fill)} .sbh{color:var(--sec);font-size:11px;margin:14px 8px 4px}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:52px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;background:var(--content)}
+.top .t{display:flex;flex-direction:column}.top .t small{color:var(--sec);font-size:11px}.top .t b{font-size:14px}
+.term{flex:1;background:var(--term);font:12px Menlo,monospace;color:var(--text);padding:14px 16px;line-height:1.55;white-space:pre;overflow:hidden}
+.term .d{color:var(--sec)}
+.split{flex:1;display:flex;min-height:0}
+.panel{width:530px;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;flex-shrink:0;min-height:0}
+.rail{width:64px;background:var(--sidebar);border-left:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:60px;flex-shrink:0}
+.rail div{width:52px;height:47px;border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--sec);gap:2px}
+.rail div.on{background:var(--fill);color:var(--accent)} .rail div span{font-size:15px}
+.ph{height:36px;display:flex;align-items:center;padding:0 10px 0 14px;gap:8px;border-bottom:1px solid var(--line);flex-shrink:0}
+.ph b{font-size:13px}
+.chip{border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--sec);font-size:11.5px;background:var(--card);white-space:nowrap}
+.sp{flex:1}
+.ib{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:var(--sec);font-size:13px}
+.tip{position:relative}.tip em{display:none}
+.fbar{height:34px;display:flex;align-items:center;gap:8px;padding:0 10px 0 12px;border-bottom:1px solid var(--line);flex-shrink:0;background:var(--panel);cursor:pointer}
+.fbar .r{color:var(--sec)} .fbar .n{font-weight:600} .fbar .dir{color:var(--ter)}
+.fbar .cnt{color:var(--sec);font-size:11.5px}
+.step{color:var(--sec);font-size:14px;padding:0 3px}
+.code{flex:1;background:var(--content);font:12px/18.5px Menlo,monospace;overflow:hidden;min-height:0}
+.hk{height:24px;display:flex;align-items:center;padding-left:14px;background:var(--panel);color:var(--sec);font:11.5px Menlo,monospace;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.ln{display:flex;white-space:pre}
+.ln .g{width:38px;text-align:right;padding-right:6px;color:var(--ter);flex-shrink:0}
+.ln .g2{width:34px;text-align:right;padding-right:6px;color:var(--ter);flex-shrink:0}
+.ln .s{width:14px;flex-shrink:0;color:var(--sec)}
+.ln.a{background:var(--addrow)} .ln.d{background:var(--delrow)}
+.ln.a .s{color:var(--green)} .ln.d .s{color:var(--red)}
+.ln .wa{background:var(--addword);border-radius:2px} .ln .wd{background:var(--delword);border-radius:2px}
+.nonl{color:var(--ter);font-style:italic;padding-left:58px;font:11px Menlo,monospace;height:18px;display:flex;align-items:center}
+.cardc{margin:6px 14px 8px 58px;max-width:720px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:12.5px -apple-system,system-ui;color:var(--text)}
+.cardc .h{display:flex;gap:6px;color:var(--sec);font-size:11.5px;margin-bottom:4px}.cardc .h .sp{flex:1}
+.lnk{color:var(--sec)} .btn{background:var(--accent);color:#fff;border-radius:6px;padding:4px 10px;font-size:12px;white-space:nowrap}
+.foot{height:40px;border-top:1px solid var(--line);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0;background:var(--panel)}
+.qb{color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 9px;background:var(--card);font-size:12px}
+.list{width:300px;border-right:1px solid var(--line);background:var(--panel);overflow:hidden;flex-shrink:0;display:flex;flex-direction:column}
+.filter{margin:8px 10px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;color:var(--ter);background:var(--card);font-size:12px}
+.repo{display:flex;align-items:center;gap:6px;padding:6px 12px 4px;font-weight:600}
+.repo .c{color:var(--sec);font-weight:400;width:10px}.repo .tot{margin-left:auto;font-weight:400;font-size:11.5px}
+.repo .vs{color:var(--ter);font-weight:400;font-size:11px}
+.fr{display:flex;align-items:center;gap:6px;padding:4px 12px 4px 18px;white-space:nowrap}
+.fr.on{background:var(--fill);border-radius:6px;margin:0 6px;padding-left:12px}
+.mk{width:14px;font-size:10.5px;font-weight:700;text-align:center;flex-shrink:0}
+.mk.A{color:var(--green)}.mk.D{color:var(--red)}.mk.R{color:var(--sec)}
+.fr .nm{flex-shrink:0}.fr .dir{color:var(--ter);overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.fr .num{font-size:11px;color:var(--sec);flex-shrink:0}.fr .num i{font-style:normal;color:var(--green)}.fr .num u{text-decoration:none;color:var(--red)}
+.badge{background:var(--fill);color:var(--sec);border-radius:8px;padding:0 6px;font-size:10.5px}
+.fh{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--content);flex-shrink:0}
+.fh .r{color:var(--sec)} .fh .n{font-weight:600}
+.fnote{color:var(--sec);font-size:11.5px;padding:0 14px 6px;background:var(--content);border-bottom:1px solid var(--line)}
+.fhwrap{flex-shrink:0}
+.pane{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--content)}
+.ann{background:#fff8d6;border:1px solid #e6d58a;color:#5a4a00;border-radius:6px;padding:6px 10px;margin:8px 0 0;max-width:1280px;font-size:12px;line-height:1.45}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--sec)}
+.row3{display:flex;gap:24px;align-items:flex-start}
+.mini{width:530px;height:330px;border-radius:9px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.2);background:var(--panel);color:var(--text);display:flex;flex-direction:column}
+</style><style>
+.stk{border-bottom:1px solid var(--line);padding:6px 0;background:var(--panel)}
+.stk .hd{color:var(--sec);font-size:11px;padding:2px 12px 4px;display:flex}
+.lr{display:flex;align-items:flex-start;gap:8px;padding:5px 10px;margin:0 6px;border-radius:6px}
+.lr.on{background:var(--fill)}
+.lr .no{width:16px;height:16px;border-radius:4px;border:1px solid var(--line);font-size:10.5px;display:flex;align-items:center;justify-content:center;color:var(--sec);flex-shrink:0;margin-top:1px;background:var(--card)}
+.lr.on .no{background:var(--accent);border-color:var(--accent);color:#fff}
+.lr .bd{flex:1;min-width:0}.lr .ti{font-weight:600}.lr .pu{color:var(--sec);font-size:11.5px;margin-top:1px}
+.lr .pr{color:var(--sec);font-size:11px;white-space:nowrap}.lr .fc{color:var(--ter);font-size:11px;white-space:nowrap;width:44px;text-align:right}
+.lr .wt{color:var(--ter);font-size:11px;font-style:italic}
+.kd{width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0}
+.skim{display:flex;gap:6px;align-items:center;padding:5px 12px 5px 18px;color:var(--sec);font-size:12px}
+.line{width:1px;background:var(--line);margin:0 auto}
+.drift{margin:4px 12px 6px 18px;padding:6px 8px;border-radius:6px;background:var(--fill);color:var(--sec);font-size:11.5px;display:flex;gap:8px;align-items:center}
+</style></head><body>
+<h1>Stacks across repos (mockup)</h1>
+<p class="cap">An agent sends "Journal compression" as 3 layers over api and web: 1 codec (api #412, web #88), 2 journal (api #413), 3 not committed yet (api). Drawn in the redesigned diff view's style; this part isn't built yet (STACKVIEW's UI task, frames 119–121).</p>
+<h2>1 · Whole stack: every layer's change in both repos, key files first (dot), lockfiles and generated files folded to skim</h2><div class="win "><div class="main">
+<div class="top"><div class="lights" style="margin:0"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div><div style="width:6px"></div>
+<div class="t"><small># payments-rewrite › Journal compression</small><b>Diff</b></div><span class="chip">Whole stack · 3 layers</span><div class="sp"></div><span class="qb">Show the terminal</span></div>
+<div class="split"><div class="list" style="width:330px"><div class="stk"><div class="hd">Stack · 3 layers over 2 repos<span class="sp"></span>⌥⌘↑↓</div><div class="lr on"><span class="no">≡</span><div class="bd"><div class="ti" style="font-weight:600">Whole stack</div></div><span class="pr">api #412 #413 · web #88</span><span class="fc">14 files</span></div><div class="lr "><span class="no">3</span><div class="bd"><div class="ti" style="">Not committed yet</div></div><span class="pr"><span class="wt">api · uncommitted</span></span><span class="fc">2 files</span></div><div class="lr "><span class="no">2</span><div class="bd"><div class="ti" style="">journal</div></div><span class="pr">api #413</span><span class="fc">5 files</span></div><div class="lr "><span class="no">1</span><div class="bd"><div class="ti" style="">codec</div></div><span class="pr">api #412 · web #88</span><span class="fc">7 files</span></div></div><div class="repo"><span class="c">⌄</span>api <span class="vs">#412 #413</span><span class="tot"><i style="font-style:normal;color:var(--green)">+486</i> <span style="color:var(--red)">−61</span></span></div><div class="fr on"><span class="mk A">A</span><span class="kd"></span><span class="nm">zstd.rs</span><span class="dir">src/codec/</span><span class="num"><i>+212</i></span></div><div class="fr "><span class="mk M"></span><span class="nm">mod.rs</span><span class="dir">src/codec/</span><span class="num"><i>+4</i></span></div><div class="fr "><span class="mk M"></span><span class="kd"></span><span class="nm">pages.rs</span><span class="dir">src/journal/</span><span class="num"><i>+148</i> <u>−52</u></span></div><div class="fr "><span class="mk M"></span><span class="nm">writer.rs</span><span class="dir">src/journal/</span><span class="num"><i>+61</i> <u>−9</u></span></div><div class="fr "><span class="mk A">A</span><span class="nm">journal_tests.rs</span><span class="dir">tests/</span><span class="num"><i>+58</i></span></div><div class="skim">› 3 files to skim · Cargo.lock, codec.rs (generated), README.md</div><div class="repo"><span class="c">⌄</span>web <span class="vs">#88</span><span class="tot"><i style="font-style:normal;color:var(--green)">+39</i> <span style="color:var(--red)">−6</span></span></div><div class="fr "><span class="mk M"></span><span class="kd"></span><span class="nm">codec.ts</span><span class="dir">src/lib/</span><span class="num"><i>+31</i> <u>−6</u></span></div><div class="fr "><span class="mk M"></span><span class="nm">package.json</span><span class="dir"></span><span class="num"><i>+1</i></span></div><div class="skim">› 1 file to skim · package-lock.json</div></div><div class="pane"><div class="fh"><span class="r">api ·</span><span class="r">src/codec/</span><span class="n">zstd.rs</span><span class="r" style="font-size:11.5px">· added in 1 codec</span><div class="sp"></div><span class="ib">↗</span></div><div class="code"><div class="hk">pub struct Zstd</div><div class="ln a"><span class="g2"></span><span class="g2">1</span><span class="s">+</span><span>use zstd::stream::{encode_all, decode_all};</span></div><div class="ln a"><span class="g2"></span><span class="g2">2</span><span class="s">+</span></div><div class="ln a"><span class="g2"></span><span class="g2">3</span><span class="s">+</span>pub struct Zstd { level: i32 }</div><div class="ln a"><span class="g2"></span><span class="g2">4</span><span class="s">+</span></div><div class="ln a"><span class="g2"></span><span class="g2">5</span><span class="s">+</span>impl Codec for Zstd {</div><div class="ln a"><span class="g2"></span><span class="g2">6</span><span class="s">+</span>    fn encode(&amp;self, raw: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {</div><div class="ln a"><span class="g2"></span><span class="g2">7</span><span class="s">+</span>        Ok(encode_all(raw, self.level)?)</div><div class="ln a"><span class="g2"></span><span class="g2">8</span><span class="s">+</span>    }</div><div class="ln a"><span class="g2"></span><span class="g2">9</span><span class="s">+</span>    fn decode(&amp;self, packed: &amp;[u8]) -&gt; Result&lt;Vec&lt;u8&gt;&gt; {</div><div class="ln a"><span class="g2"></span><span class="g2">10</span><span class="s">+</span>        Ok(decode_all(packed)?)</div><div class="ln a"><span class="g2"></span><span class="g2">11</span><span class="s">+</span>    }</div><div class="ln a"><span class="g2"></span><span class="g2">12</span><span class="s">+</span>}</div></div></div></div></div></div>
+<p class="ann">Layers run top-down, 1 at the bottom. Each row shows its pull requests per repo and its file count. ⌥⌘↑/↓ steps rows; the palette has Next layer, Previous layer and Whole stack. No review chrome: a stack with no notes is something to look at, not a review.</p>
+<h2>2 · Layer 2 "journal": only that layer's own diff (#413), only in the repo it touches</h2><div class="win "><div class="main">
+<div class="top"><div class="lights" style="margin:0"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div><div style="width:6px"></div>
+<div class="t"><small># payments-rewrite › Journal compression</small><b>Diff</b></div><span class="chip">Layer 2 of 3 · journal</span><div class="sp"></div><span class="qb">Show the terminal</span></div>
+<div class="split"><div class="list" style="width:330px"><div class="stk"><div class="hd">Stack · 3 layers over 2 repos<span class="sp"></span>⌥⌘↑↓</div><div class="lr "><span class="no">≡</span><div class="bd"><div class="ti" style="font-weight:600">Whole stack</div></div><span class="pr">api #412 #413 · web #88</span><span class="fc">14 files</span></div><div class="lr "><span class="no">3</span><div class="bd"><div class="ti" style="">Not committed yet</div></div><span class="pr"><span class="wt">api · uncommitted</span></span><span class="fc">2 files</span></div><div class="lr on"><span class="no">2</span><div class="bd"><div class="ti" style="">journal</div><div class="pu">Writes journal pages through the codec</div></div><span class="pr">api #413</span><span class="fc">5 files</span></div><div class="lr "><span class="no">1</span><div class="bd"><div class="ti" style="">codec</div></div><span class="pr">api #412 · web #88</span><span class="fc">7 files</span></div></div><div class="repo"><span class="c">⌄</span>api <span class="vs">#413</span><span class="tot"><i style="font-style:normal;color:var(--green)">+209</i> <span style="color:var(--red)">−61</span></span></div><div class="fr on"><span class="mk M"></span><span class="kd"></span><span class="nm">pages.rs</span><span class="dir">src/journal/</span><span class="num"><i>+148</i> <u>−52</u></span></div><div class="fr "><span class="mk M"></span><span class="nm">writer.rs</span><span class="dir">src/journal/</span><span class="num"><i>+61</i> <u>−9</u></span></div><div class="skim">› 3 files to skim · Cargo.lock, mod.rs, README.md</div><div class="skim" style="color:var(--ter)">web isn't in this layer</div></div><div class="pane"><div class="fh"><span class="r">api ·</span><span class="r">src/journal/</span><span class="n">pages.rs</span><div class="sp"></div><span class="ib">↗</span></div><div class="code"><div class="hk">impl Page</div><div class="ln "><span class="g2">40</span><span class="g2">40</span><span class="s"> </span>    pub fn write(&amp;mut self, entry: &amp;Entry) -&gt; Result&lt;()&gt; {</div><div class="ln d"><span class="g2">41</span><span class="g2"></span><span class="s">−</span>        self.buf.extend_from_slice(<span class="wd">&amp;entry.bytes()</span>);</div><div class="ln a"><span class="g2"></span><span class="g2">41</span><span class="s">+</span>        let packed = self.<span class="wa">codec.encode(&amp;entry.bytes())?</span>;</div><div class="ln a"><span class="g2"></span><span class="g2">42</span><span class="s">+</span>        self.buf.extend_from_slice(&amp;packed);</div><div class="ln "><span class="g2">42</span><span class="g2">43</span><span class="s"> </span>        self.len += 1;</div><div class="ln "><span class="g2">43</span><span class="g2">44</span><span class="s"> </span>        Ok(())</div><div class="ln "><span class="g2">44</span><span class="g2">45</span><span class="s"> </span>    }</div><div class="hk">fn read_page</div><div class="ln "><span class="g2">88</span><span class="g2">89</span><span class="s"> </span>fn read_page(raw: &amp;[u8]) -&gt; Result&lt;Page&gt; {</div><div class="ln d"><span class="g2">89</span><span class="g2"></span><span class="s">−</span>    Page::parse(<span class="wd">raw</span>)</div><div class="ln a"><span class="g2"></span><span class="g2">90</span><span class="s">+</span>    Page::parse(&amp;<span class="wa">ZSTD.decode(raw)?</span>)</div><div class="ln "><span class="g2">90</span><span class="g2">91</span><span class="s"> </span>}</div></div></div></div></div></div>
+<p class="ann">The selected layer shows its one-line purpose. Its diff is base..head of that layer, so it's right whatever is checked out. web isn't in this layer, so it's left out with one quiet line.</p>
+<h2>3 · Beside the terminal (dark), layer 1 picked, one repo moved since it was sent · the Inbox offer</h2><div class="row3"><div class="mini dark" style="height:520px;width:530px">
+<div class="ph"><b>Diff</b><span class="chip">Layer 1 of 3 · codec</span><div class="sp"></div><div class="ib">⤢</div><div class="ib">✕</div></div>
+<div class="stk"><div class="hd">Stack · 3 layers over 2 repos<span class="sp"></span>⌥⌘↑↓</div><div class="lr "><span class="no">≡</span><div class="bd"><div class="ti" style="font-weight:600">Whole stack</div></div><span class="pr">api #412 #413 · web #88</span><span class="fc">14 files</span></div><div class="lr "><span class="no">3</span><div class="bd"><div class="ti" style="">Not committed yet</div></div><span class="pr"><span class="wt">api · uncommitted</span></span><span class="fc">2 files</span></div><div class="lr "><span class="no">2</span><div class="bd"><div class="ti" style="">journal</div></div><span class="pr">api #413</span><span class="fc">5 files</span></div><div class="lr on"><span class="no">1</span><div class="bd"><div class="ti" style="">codec</div><div class="pu">Adds the zstd codec to api and web</div></div><span class="pr">api #412 · web #88</span><span class="fc">7 files</span></div></div>
+<div class="drift">web moved since it was sent<span class="sp"></span><span class="qb">Ask the agent to send it again</span></div>
+<div class="fbar"><span class="step">⌄</span><span class="r">api ·</span><span class="n">zstd.rs</span><span class="dir">src/codec/</span><div class="sp"></div><span class="cnt">1 of 7</span><span class="step">‹</span><span class="step">›</span></div>
+<div class="code"><div class="hk">pub struct Zstd</div><div class="ln a"><span class="g2"></span><span class="g2">1</span><span class="s">+</span>use zstd::stream::{encode_all, decode_all};</div><div class="ln a"><span class="g2"></span><span class="g2">2</span><span class="s">+</span></div><div class="ln a"><span class="g2"></span><span class="g2">3</span><span class="s">+</span>pub struct Zstd { level: i32 }</div><div class="ln a"><span class="g2"></span><span class="g2">4</span><span class="s">+</span></div><div class="ln a"><span class="g2"></span><span class="g2">5</span><span class="s">+</span>impl Codec for Zstd {</div></div>
+</div>
+<div class="mini" style="height:240px;width:420px"><div class="ph"><b>Inbox</b></div>
+<div class="cardc" style="margin:14px;max-width:none"><div class="h"><b style="color:var(--text)">Copilot</b>· Journal compression<span class="sp"></span>now</div>Sent a change to look at: <b>3 layers over 2 repos</b> (api, web).<div style="margin-top:8px;display:flex;gap:6px"><span class="btn">Open the stack</span><span class="qb">Later</span></div></div></div></div>
+<p class="ann">If a repo moved after the agent sent the stack, that layer says so where it matters, with one action. The agent's offer reads "3 layers over 2 repos"; opening it starts on Whole stack.</p>
+</body></html>

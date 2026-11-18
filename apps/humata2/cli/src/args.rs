@@ -950,13 +950,64 @@ pub enum VarCommand {
     Rm { machine: String, name: String },
 }
 
+/// The provider file's format, after `provider import`'s long help.
+const PROVIDER_FILE_HELP: &str = concat!(
+    "The provider file\n",
+    "\n",
+    "Each provider is a `[providers.<id>]` table; the id is how commands name it\n",
+    "(`humata provider create <id> <name>`). Its keys:\n",
+    "\n",
+    "  label      The name shown in Add machine. Defaults to the id.\n",
+    "  params     The fields Add machine asks for: a list of\n",
+    "             { name = \"...\", prompt = \"...\", default = \"...\" }. prompt and\n",
+    "             default are optional; a param with no default must be given.\n",
+    "  create     Required. Makes the machine.\n",
+    "  connect    Runs a command on the machine: it must contain {cmd}, which\n",
+    "             Humata replaces with the command, quoted for `sh -c`.\n",
+    "  identity   Instead of connect: prints the machine's SSH details as JSON.\n",
+    "             A provider has exactly one of connect and identity.\n",
+    "  start      Optional. Starts a stopped machine.\n",
+    "  stop       Optional. Stops it.\n",
+    "  delete     Optional. Deletes what create made.\n",
+    "  status     Optional. Prints the machine's state (Running, Stopped, ...).\n",
+    "  env        Optional. Names of this Mac's host variables the commands get,\n",
+    "             by the same name (set them in Settings > This Mac > Variables).\n",
+    "\n",
+    "Each command is run with `sh -c` on this Mac. {name} in any command is the\n",
+    "machine's name; {cmd} may appear only in connect. Every command also gets\n",
+    "HUMATA_NAME, and each param as $HUMATA_<NAME> (the param's name in upper\n",
+    "case): `cpus` arrives as $HUMATA_CPUS. Use the variables in scripts rather\n",
+    "than pasting values into the command text.\n",
+    "\n",
+    "Example: the Lima provider Humata ships\n",
+    "\n",
+    include_str!(env!("HUMATA2_LIMA_PROVIDER")),
+);
+
 #[derive(Debug, Subcommand)]
 pub enum ProviderCommand {
     Ls,
     #[command(subcommand)]
     Config(ProviderConfigCommand),
     /// Add the providers in a TOML file.
-    Import { file: std::path::PathBuf },
+    ///
+    /// The user sees the whole file and every command it will run before
+    /// anything is added. An agent's import is a request that waits for the
+    /// user in the Inbox.
+    #[command(after_long_help = PROVIDER_FILE_HELP)]
+    Import {
+        file: std::path::PathBuf,
+        /// Why the task needs this provider. An agent must give one: the
+        /// user reads it on the Inbox card.
+        #[arg(long, default_value = "")]
+        reason: String,
+    },
+    /// Remove an imported provider by its id.
+    ///
+    /// A built-in provider can't be removed, and neither can one that
+    /// machines still use: delete those machines first. Only the user can
+    /// remove a provider; an agent is told to ask them.
+    Rm { provider: String },
     /// Make a machine with a provider.
     Create {
         provider: String,

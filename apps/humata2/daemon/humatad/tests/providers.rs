@@ -564,7 +564,7 @@ fn as_agent<T>(message: T, token: &str) -> Request<T> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_sees_no_providers_and_can_neither_read_the_file_nor_create_a_machine() {
+async fn an_agent_lists_providers_but_can_neither_change_the_file_nor_create_a_machine() {
     let (daemon, token) = daemon_with_agent().await;
     let mut providers = pb::provider_service_client::ProviderServiceClient::new(daemon.channel().await);
 
@@ -573,13 +573,8 @@ async fn an_agent_sees_no_providers_and_can_neither_read_the_file_nor_create_a_m
         .await
         .unwrap()
         .into_inner();
-    assert!(listed.providers.is_empty());
-
-    let config = providers
-        .get_providers_config(as_agent(pb::GetProvidersConfigRequest::default(), &token))
-        .await
-        .unwrap_err();
-    assert!(matches!(error_of(&config).kind, Some(pb::error::Kind::UserOnly(_) | pb::error::Kind::Denied(_))));
+    // Listing is read-only, so an agent sees the built-ins.
+    assert!(listed.providers.iter().any(|provider| provider.id.as_ref().is_some_and(|id| id.value == "lima")), "{listed:?}");
     providers
         .set_providers_config(as_agent(
             pb::SetProvidersConfigRequest {

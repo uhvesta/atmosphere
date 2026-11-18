@@ -104,10 +104,19 @@ impl CommandDial {
                     command.env(name, value);
                 }
                 humata2_machines::EnvValue::HostVariable(variable) => {
-                    return Err(LinkError::HostVariable {
-                        machine: self.machine.clone(),
-                        variable: variable.clone(),
-                    });
+                    use humata2_machines::HostVariables as _;
+                    let value = crate::host_vars::Installed
+                        .value(variable)
+                        .map_err(|source| LinkError::UnreadableHostVariable {
+                            machine: self.machine.clone(),
+                            variable: variable.clone(),
+                            source,
+                        })?
+                        .ok_or_else(|| LinkError::HostVariable {
+                            machine: self.machine.clone(),
+                            variable: variable.clone(),
+                        })?;
+                    command.env(name, value);
                 }
             }
         }
@@ -717,8 +726,16 @@ pub(crate) enum LinkError {
         source: std::io::Error,
     },
 
-    #[error("the peer link command for {machine} needs host variable {variable}, which the link can't set yet")]
+    #[error("the peer link command for {machine} needs host variable {variable}, which isn't set")]
     HostVariable { machine: String, variable: String },
+
+    #[error("couldn't read host variable {variable} for the peer link command to {machine}")]
+    UnreadableHostVariable {
+        machine: String,
+        variable: String,
+        #[source]
+        source: humata2_machines::HostVariablesError,
+    },
 
     #[error("couldn't speak gRPC over the peer link to {machine}")]
     Connect {
@@ -777,6 +794,7 @@ impl LinkError {
         match self {
             LinkError::HostKey { .. }
             | LinkError::HostVariable { .. }
+            | LinkError::UnreadableHostVariable { .. }
             | LinkError::MachineProofWrong { .. }
             | LinkError::VersionUnsupported { .. }
             | LinkError::UplinkOutOfOrder { .. } => true,
@@ -795,7 +813,10 @@ impl LinkError {
             LinkError::HostKey { source, .. } => source.fix(),
             LinkError::Spawn { .. } => "check that ssh is installed and on PATH for humatad2; Humata dials again on its own",
             LinkError::HostVariable { .. } => {
-                "connect this machine over plain SSH for now, or set the command up without host variables"
+                "set the variable in Settings › This Mac › Variables, then use Reconnect now"
+            }
+            LinkError::UnreadableHostVariable { .. } => {
+                "fix what the message says about this Mac's host variables, then use Reconnect now"
             }
             LinkError::Connect { .. } | LinkError::Call { .. } | LinkError::Ended { .. } | LinkError::Lost { .. } => {
                 "nothing to do if the machine or the network is just down: its sessions keep running, and Humata dials again every 5 to 30 s. Use Reconnect now to try at once"

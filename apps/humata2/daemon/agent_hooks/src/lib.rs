@@ -177,7 +177,7 @@ pub fn parse_permission(agent: Agent, payload: &[u8]) -> Result<Ask, PayloadErro
     let input_json = input.to_string();
     Ok(Ask {
         tool: tool.to_owned(),
-        command: command_of(input),
+        command: command_of(tool, input),
         description: str_field(input, "description").map(str::to_owned),
         edits_files: edits_files(tool),
         key: ask_key(&[agent.name(), tool, &input_json, turn]),
@@ -233,12 +233,88 @@ fn object_field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
     value.get(key).filter(|field| field.is_object())
 }
 
-/// A string `command` whole, otherwise all of the input, so every value shows.
-fn command_of(input: &Value) -> String {
+/// What approving runs, as people read it, with every value of the input on
+/// it: a file edit is its path then its change as `-`/`+` lines, a string
+/// `command` is itself whole, and any other tool (an MCP call) is one
+/// `key: value` line per argument, nothing when it has none.
+fn command_of(tool: &str, input: &Value) -> String {
+    if edits_files(tool)
+        && let Some(edit) = edit_text(input)
+    {
+        return edit;
+    }
     match str_field(input, "command") {
         Some(command) => command.to_owned(),
-        None => serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string()),
+        None => argument_lines(input, &[]),
     }
+}
+
+/// The fields an edit tool names its file with.
+const PATH_FIELDS: [&str; 3] = ["file_path", "path", "notebook_path"];
+/// The fields that hold what an edit takes out, then what it puts in.
+const OLD_FIELDS: [&str; 2] = ["old_string", "old_str"];
+const NEW_FIELDS: [&str; 4] = ["new_string", "new_str", "new_source", "insert_text"];
+/// The fields that hold a whole file an edit writes.
+const CONTENT_FIELDS: [&str; 2] = ["content", "file_text"];
+
+/// An edit tool's input as its path, its change as diff lines, then any
+/// other argument as `key: value`; `None` when it names no file.
+fn edit_text(input: &Value) -> Option<String> {
+    let (field, path) =
+        PATH_FIELDS.iter().find_map(|field| Some((*field, str_field(input, field)?)))?;
+    let mut lines = vec![path.to_owned()];
+    let mut shown = vec![field];
+    shown.extend(change_lines(input, &mut lines));
+    // MultiEdit: each of its edits, in order.
+    if let Some(edits) = input.get("edits").and_then(Value::as_array)
+        && edits.iter().all(Value::is_object)
+    {
+        for edit in edits {
+            let used = change_lines(edit, &mut lines);
+            let rest = argument_lines(edit, &used);
+            if !rest.is_empty() {
+                lines.push(rest);
+            }
+        }
+        shown.push("edits");
+    }
+    let rest = argument_lines(input, &shown);
+    if !rest.is_empty() {
+        lines.push(rest);
+    }
+    Some(lines.join("\n"))
+}
+
+/// What one edit takes out as `-` lines, then what it puts in as `+`
+/// lines; returns the fields it showed.
+fn change_lines(edit: &Value, lines: &mut Vec<String>) -> Vec<&'static str> {
+    let mut used = Vec::new();
+    for (fields, sign) in [(&OLD_FIELDS[..], '-'), (&NEW_FIELDS[..], '+'), (&CONTENT_FIELDS[..], '+')] {
+        if let Some((field, text)) =
+            fields.iter().find_map(|field| Some((*field, str_field(edit, field)?)))
+        {
+            lines.extend(text.lines().map(|line| format!("{sign}{line}")));
+            used.push(field);
+        }
+    }
+    used
+}
+
+/// One `key: value` line per field of `input` not in `skip`: a string as
+/// it is, anything else as compact JSON.
+fn argument_lines(input: &Value, skip: &[&str]) -> String {
+    let Some(fields) = input.as_object() else {
+        return input.to_string();
+    };
+    fields
+        .iter()
+        .filter(|(key, _)| !skip.contains(&key.as_str()))
+        .map(|(key, value)| match value {
+            Value::String(text) => format!("{key}: {text}"),
+            other => format!("{key}: {other}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Hex SHA-256 over the parts, each followed by a NUL so no two splits collide.

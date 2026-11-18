@@ -461,7 +461,7 @@ impl Work {
         cancelled: &dyn Fn() -> bool,
         with: impl FnOnce(&Machines, &mut Drive<'_>) -> R,
     ) -> R {
-        let runner = SystemRunner::new(&());
+        let runner = SystemRunner::new(&crate::host_vars::Installed);
         let mut tell = |event: StepEvent| {
             events(event);
             self.publish_machines();
@@ -896,6 +896,13 @@ impl MachineSvc {
     /// or script is refused, and so is a peer), and the machine is this one
     /// (`None`) or a known box, whose name is returned (HO-7, HO-13).
     fn variables_call(&self, caller: &Caller, id: Option<pb::MachineId>) -> Result<Option<String>, Status> {
+        if matches!(caller, Caller::Agent(_)) {
+            return Err(status::user_only_call(
+                Capability::SettingsChange,
+                "reading or changing host variables",
+                "ask the user to set the variable in Settings › Machines › Providers, under the Commands of the provider that reads it; humata provider ls says which variables each provider reads and whether they are set",
+            ));
+        }
         user_only(caller)?;
         match id.map(|id| id.value).filter(|name| !name.is_empty()) {
             Some(name) if name != self.guard.machine() => {
@@ -1324,7 +1331,7 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
             source: SetupError::Identity(IdentityError::Field { field, .. }),
             ..
         } => (
-            "fix the identity command in Settings › Machine providers so that field is right; what was made is still there (use Delete what was made)",
+            "fix the identity command in Settings › Machines › Providers so that field is right; what was made is still there (use Delete what was made)",
             Some(Kind::ProviderIdentityInvalid(pb::ProviderIdentityInvalid {
                 provider: None,
                 field: field.clone(),
@@ -1337,7 +1344,7 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
             source: SetupError::CommandFailed { exit, .. },
             ..
         } => (
-            "the step's output says why the provider's command failed; fix it in Settings › Machine providers, then try again (Delete what was made removes anything it left)",
+            "the step's output says why the provider's command failed; fix it in Settings › Machines › Providers, then try again (Delete what was made removes anything it left)",
             Some(Kind::ProviderStepFailed(pb::ProviderStepFailed {
                 provider: None,
                 step: match step {
@@ -1409,7 +1416,7 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
             )
         }
         ManageError::RunOnUnsupported { .. } => (
-            "remove `run_on` from the provider in Settings › Machine providers",
+            "remove `run_on` from the provider in Settings › Machines › Providers",
             None,
         ),
         ManageError::ProviderLoginNeeded { machine, reason, .. } => (
@@ -1417,7 +1424,7 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
             Some(Kind::LoginNeedsUser(crate::login_service::login_needs_user(machine, reason))),
         ),
         ManageError::NotProviderMachine { .. } => ("pick a machine the provider made", None),
-        ManageError::ActionUndefined { .. } => ("add the command to the provider in Settings › Machine providers", None),
+        ManageError::ActionUndefined { .. } => ("add the command to the provider in Settings › Machines › Providers", None),
         ManageError::ActionFailed { .. } => (
             "the step's output says why; fix the command or the machine, then run it again",
             None,
@@ -2167,7 +2174,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let (work, machine) = (self.work.clone(), name.clone());
         tokio::task::spawn_blocking(move || {
             work.machines
-                .trust_new_host_key(&machine, &fingerprint, &SystemRunner::new(&()))
+                .trust_new_host_key(&machine, &fingerprint, &SystemRunner::new(&crate::host_vars::Installed))
         })
         .await
         .map_err(|error| status::internal(format!("trusting the host key stopped: {error}"), ""))?

@@ -1,0 +1,57 @@
+Complementary "Changes"
+  text "# pr-reviews › acme/api #482"
+  Button "Show the terminal"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  text "Diff"
+  text "Diff"
+  #review-pr-line
+    text "PR #482 against main · 2 repos"
+  Button "Show the terminal"
+  Button "Close panel"
+  #review-diff
+    #review-repo-acme/api
+      text "api"
+      text "#482"
+    ListBoxOption "acme/api/src/refund.rs" selected
+      text "refund.rs"
+      text "+62"
+      text "−21"
+    Code "acme/api/src/refund.rs"
+      #change-line-0
+        Button "Comment on line 138"
+          text "138"
+        #change-code-0-0
+          text "    let amount = capture.remaining();"
+        text " "
+      #change-line-1
+        Button "Comment on line 139"
+          text "139"
+        #change-code-1-0
+          text "    let cents = amount.floor();"
+        text "−"
+      #review-focus-140
+        #change-line-2
+          Button "Comment on line 140"
+            text "140"
+          #change-code-2-0
+            text "    let cents = amount.round();"
+          text "+"
+      #doc-comment-se_pr_1/c-1
+        text "Draft for GitHub · by Claude Code"
+        text "Draft"
+        text "round() is half-away-from-zero, so a split capture can refund a cent more than was taken. Use floor() on each part."
+        Button "Edit"
+        Button "Drop"
+      #change-line-3
+        Button "Comment on line 141"
+          text "141"
+        #change-code-3-0
+          text "    refund.issue(cents)?;"
+        text " "
+    #review-repo-acme/ledger
+      text "ledger"
+      text "#91"
+  #review-drafts-3-1
+    text "Drafts: 4 (3 by agent, 1 by you)"

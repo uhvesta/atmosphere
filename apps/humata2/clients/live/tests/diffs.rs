@@ -9,7 +9,8 @@ use std::process::{Child, Command};
 use std::time::Duration;
 
 use humata2_clients::model::{
-    Agent, DiffBase, DiffLine, DiffTargets, LineKind, RepoBase, RepoDiff, SessionId, SessionOptions,
+    Agent, DiffBase, DiffLine, DiffTargets, FileChange, LineKind, RepoBase, RepoDiff, SessionId,
+    SessionOptions,
 };
 use humata2_clients::Daemon;
 use humata2_clients_live::{LiveDaemon, LiveOptions};
@@ -615,4 +616,35 @@ async fn a_repository_lists_its_branches_as_of_the_last_fetch() {
         .await
         .expect("list api's branches");
     assert!(!api.branches.iter().any(|branch| branch == "release/2.4"), "{api:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_and_a_binary_file_say_what_they_are() {
+    let host = Host::start().await;
+    let daemon = host.connect().await;
+    let session = host.session(&daemon, "Fix the ledger").await;
+    let clone = clone_of(&host, "ledger").await;
+    let clone_text = clone.display().to_string();
+    git(&["-C", &clone_text, "mv", "README.md", "GUIDE.md"]);
+    std::fs::write(clone.join("logo.bin"), [0, 159, 146, 150]).expect("add a binary file");
+
+    let diff = diff_of(&daemon, &session, "owner/ledger")
+        .await
+        .expect("the session's diff of owner/ledger is loaded");
+
+    let renamed = diff
+        .files
+        .iter()
+        .find(|file| file.path == "GUIDE.md")
+        .expect("the renamed file is in the diff");
+    assert_eq!(renamed.change, FileChange::Renamed);
+    assert_eq!(renamed.old_path.as_deref(), Some("README.md"));
+
+    let binary = diff
+        .files
+        .iter()
+        .find(|file| file.path == "logo.bin")
+        .expect("the binary file is in the diff");
+    assert!(binary.binary);
+    assert!(binary.lines.is_empty());
 }

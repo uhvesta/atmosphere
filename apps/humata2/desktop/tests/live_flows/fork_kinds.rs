@@ -57,6 +57,8 @@ fn setup(runtime: &Runtime) -> Parent {
         agents[0]["conversation_format"] = "claude-jsonl".into();
         agents[0]["version_args"] = serde_json::json!([]);
         std::fs::write(&agents_file, agents.to_string()).expect("write agents.json");
+        // Its first message waits for Claude's SessionStart hook (D797).
+        world.agent_runs_claude_hooks().expect("write the agent");
         world.reboot().await.expect("start the daemon again");
 
         let clients = world.clients().await.expect("connect");

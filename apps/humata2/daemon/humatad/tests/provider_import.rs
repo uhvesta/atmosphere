@@ -313,6 +313,76 @@ async fn an_agent_can_neither_preview_nor_import_a_provider() {
     assert_eq!(config(&daemon).await.toml, "");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_reads_the_providers_and_their_file_but_cannot_set_them() {
+    let (daemon, token) = daemon_with_agent().await;
+    save(&daemon, EXISTING).await;
+    let mut client = providers(&daemon).await;
+
+    let listed = client
+        .list_providers(as_agent(pb::ListProvidersRequest {}, &token))
+        .await
+        .expect("an agent lists the providers")
+        .into_inner()
+        .providers;
+    assert_eq!(label_of(&listed, "kept").as_deref(), Some("Kept"));
+    assert_eq!(label_of(&listed, "other").as_deref(), Some("Other"));
+
+    let shown = client
+        .get_providers_config(as_agent(pb::GetProvidersConfigRequest {}, &token))
+        .await
+        .expect("an agent reads the providers file")
+        .into_inner();
+    assert_eq!(shown.toml, EXISTING);
+
+    let set = client
+        .set_providers_config(as_agent(
+            pb::SetProvidersConfigRequest {
+                idempotency_key: None,
+                toml: String::new(),
+                expected_revision: shown.revision,
+                presence: None,
+            },
+            &token,
+        ))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error_of(&set).kind, Some(pb::error::Kind::UserOnly(_) | pb::error::Kind::Denied(_))),
+        "{set:?}"
+    );
+    assert_eq!(config(&daemon).await.toml, EXISTING);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_variables_value_in_the_providers_file_is_hidden_from_an_agent() {
+    let (daemon, token) = daemon_with_agent().await;
+    let secret = "s3cr3t-cloud-token-value";
+    pb::machine_service_client::MachineServiceClient::new(daemon.channel().await)
+        .set_host_variable(pb::SetHostVariableRequest {
+            idempotency_key: None,
+            id: None,
+            name: "CLOUD_TOKEN".to_owned(),
+            value: secret.to_owned(),
+            presence: None,
+        })
+        .await
+        .expect("the user sets a host variable");
+    let toml = format!("[providers.leaky]\nlabel = \"Leaky\"\ncreate = 'make --token {secret} {{name}}'\nconnect = 'reach-leaky {{name}} -- {{cmd}}'\n");
+    save(&daemon, &toml).await;
+
+    let shown = providers(&daemon)
+        .await
+        .get_providers_config(as_agent(pb::GetProvidersConfigRequest {}, &token))
+        .await
+        .expect("an agent reads the providers file")
+        .into_inner();
+    assert!(!shown.toml.contains(secret), "{}", shown.toml);
+    assert!(shown.toml.contains("[providers.leaky]"), "{}", shown.toml);
+    // The user still sees the file as saved.
+    assert_eq!(config(&daemon).await.toml, toml);
+}
+
 async fn ask(daemon: &Daemon, token: &str, text: &str) -> Result<pb::SetProvidersConfigResponse, tonic::Status> {
     providers(daemon)
         .await

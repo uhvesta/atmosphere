@@ -35,6 +35,7 @@ pub(super) fn editor_app() -> App {
             context(10, 11),
             line(LineKind::Removed, Some(11), None, "gone"),
         ],
+        ..FileDiff::default()
     };
     let api = workspace
         .diffs

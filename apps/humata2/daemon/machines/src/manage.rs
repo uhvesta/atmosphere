@@ -366,12 +366,12 @@ pub enum ManageError {
     #[error("{machine} isn't a machine the {provider} provider made. Pick a machine of that provider")]
     NotProviderMachine { machine: String, provider: String },
     #[error(
-        "the {provider} provider has no `{}` command, so there is nothing to run. Add `{}` to the provider in Settings › Machine providers",
+        "the {provider} provider has no `{}` command, so there is nothing to run. Add `{}` to the provider in Settings › Machines › Providers",
         .action.field(), .action.field()
     )]
     ActionUndefined { provider: String, action: Action },
     #[error(
-        "the provider's {} command for {machine} failed ({exit}). The step's output says why; fix the command in Settings › Machine providers or the machine itself, then run it again",
+        "the provider's {} command for {machine} failed ({exit}). The step's output says why; fix the command in Settings › Machines › Providers or the machine itself, then run it again",
         .action.field()
     )]
     ActionFailed {

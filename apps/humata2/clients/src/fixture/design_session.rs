@@ -698,7 +698,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         );
     }
     workspace.diffs = vec![
-        RepoDiff { session: SessionId::new("ledger"), repo: "ledger".into(), base: "main".into(), files: vec![FileDiff {path: "migrations/0042_accounts.sql".into(),added:41,removed:0,lines:Vec::new()}],comments:Vec::new() },
+        RepoDiff { session: SessionId::new("ledger"), repo: "ledger".into(), base: "main".into(), files: vec![FileDiff {path: "migrations/0042_accounts.sql".into(),added:41,removed:0,lines:Vec::new(), ..FileDiff::default()}],comments:Vec::new() },
         RepoDiff { session: SessionId::new("ledger"), repo: "api".into(), base: "main".into(), files: vec![
             FileDiff {path:"src/client.rs".into(),added:62,removed:21,lines:lines(&[
                 (LineKind::Hunk,"@@ -40,7 +40,12 @@ impl Client {"),
@@ -708,8 +708,10 @@ pub fn design_session(ledger_status: Status) -> Workspace {
                 (LineKind::Added,"        tx.insert_entry(&entry).await?;"),
                 (LineKind::Added,"        tx.insert_legacy(&entry).await?;"),
                 (LineKind::Added,"        tx.commit().await?;"),
-            ],39)},
-            FileDiff {path:"src/entry.rs".into(),added:81,removed:3,lines:Vec::new()},
+            ],39),
+                ..FileDiff::default()
+            },
+            FileDiff {path:"src/entry.rs".into(),added:81,removed:3,lines:Vec::new(), ..FileDiff::default()},
         ],comments:vec![Comment {path:"src/client.rs".into(),line:41,body:"Wrap the two writes in one transaction so a crash can't leave them out of step.".into(),sent:true,context:None}] },
     ];
     // Partial BRIN shares Ledger's working tree (a Shared fork), so its

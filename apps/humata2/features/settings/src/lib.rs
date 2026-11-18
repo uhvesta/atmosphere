@@ -11,6 +11,10 @@ pub use agents::{AgentsAction, AgentsState};
 mod repositories;
 
 pub use repositories::{RepositoriesAction, RepositoriesState};
+// PROVIDERS: Settings › Machines › Providers.
+mod providers;
+
+pub use providers::{ImportDraft, ProvidersAction, ProvidersState, Secret};
 
 use humata2_clients::machines::{
     MachineScripts, SCRIPT_RULES_PATH, SCRIPT_RULES_STARTER, SCRIPTS_FOLDER,
@@ -313,6 +317,8 @@ pub struct SettingsState {
     pub scripts: Option<MachineScripts>,
     /// Why reading the scripts, or opening the rules or folder, failed, as text.
     pub scripts_error: Option<String>,
+    /// PROVIDERS: the Providers block of Machines.
+    pub providers: ProvidersState,
 }
 
 /// What happens on the settings page.
@@ -371,6 +377,8 @@ pub enum SettingsAction {
     EditScriptRules,
     /// Reveal scripts: show the scripts folder in Finder, making it first when it isn't there.
     RevealScripts,
+    /// PROVIDERS: Settings › Machines › Providers.
+    Providers(ProvidersAction),
 }
 
 /// The settings page's reducer.
@@ -434,6 +442,10 @@ impl Reducer for Settings {
             return repositories::reduce(&self.clients, &mut state.repos, action)
                 .map(SettingsAction::Repos);
         }
+        if let SettingsAction::Providers(action) = action {
+            return providers::reduce(&self.clients, &mut state.providers, action)
+                .map(SettingsAction::Providers);
+        }
         if let SettingsAction::Agents(action) = action {
             return agents::reduce(&self.clients, &mut state.agents, &mut state.error, action)
                 .map(SettingsAction::Agents);
@@ -452,9 +464,13 @@ impl Reducer for Settings {
                 if section == Section::Agents {
                     return self.read_asks();
                 }
-                // SEAM (MACHINESCRIPTS): the Scripts block of Machines reads the rules.
+                // SEAM (MACHINESCRIPTS): the Scripts block of Machines reads the rules,
+                // and the Providers block above it the providers (PROVIDERS).
                 if section == Section::Machines {
-                    return self.read_scripts();
+                    return Effect::merge([
+                        self.read_scripts(),
+                        providers::open(&self.clients).map(SettingsAction::Providers),
+                    ]);
                 }
             }
             SettingsAction::Reveal(row) => {
@@ -515,6 +531,7 @@ impl Reducer for Settings {
             SettingsAction::Access(_) => {}
             SettingsAction::Repos(_) => {}
             SettingsAction::Agents(_) => {}
+            SettingsAction::Providers(_) => {}
             SettingsAction::ScriptsShown(result) => match result {
                 Ok(scripts) => {
                     state.scripts = Some(scripts);

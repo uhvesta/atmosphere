@@ -148,6 +148,51 @@ Never by default, and nothing writes rules.
 - Stop a machine only when the owner asked, or you started it for this
   task.
 
+## Machine providers
+
+A provider is a set of commands that make and run a kind of machine (a
+cloud VM, a local VM). You can read them and ask the owner to add one:
+
+    humata provider ls --json                # ids, labels, params, interactive; no commands
+    humata provider config show --json       # the owner's providers file
+    humata provider import <file.toml> --reason "<why the task needs it>" --json --key <key>   # asks the owner in the Inbox
+    humata provider import --help            # the file format, with the Lima provider as example
+
+`provider import` never adds anything itself: it files a request that
+shows the owner the whole file and every command in it, and answers exit
+12 `pending`. Don't repeat it. The MCP tool `provider_import` files the
+same request.
+
+The file has one `[providers.<id>]` table per provider:
+
+    [providers.mycloud]
+    label = "My cloud VM"
+    params = [
+      { name = "size", prompt = "Size", default = "small" },
+      { name = "region", prompt = "Region" },
+    ]
+    env = ["MYCLOUD_TOKEN"]
+    create = "mycloud create --size \"$HUMATA_SIZE\" --region \"$HUMATA_REGION\" {name}"
+    connect = "mycloud ssh {name} -- sh -c {cmd}"
+    start = "mycloud start {name}"
+    stop = "mycloud stop {name}"
+    delete = "mycloud delete --yes {name}"
+    status = "mycloud status {name}"
+
+- `create` is required, and exactly one of `connect` (runs `{cmd}` on the
+  machine; `{cmd}` must appear in it and nowhere else) or `identity`
+  (prints the machine's SSH details as JSON). `start`, `stop`, `delete`
+  and `status` are optional; Humata offers only the actions defined.
+- `{name}` is the machine's name in any command. Each param arrives as
+  `$HUMATA_<NAME>`, upper case (`size` is `$HUMATA_SIZE`), and the name as
+  `$HUMATA_NAME`. Quote them in the script; never paste values into the
+  command text.
+- `env` names host variables of the owner's Mac the commands get by the
+  same name. Never put a token or password in the file: ask the owner to
+  set it in Settings › This Mac › Variables and name it in `env`.
+- `humata provider import --help` shows the full key list and the Lima
+  provider Humata ships as a worked example.
+
 ## What needs the owner
 
 | Action | Default rule |
@@ -161,13 +206,16 @@ Never by default, and nothing writes rules.
 | Move a session to another machine | Asks the owner |
 | Open a network connection through the host | Asks the owner (never Allow) |
 | Add, create, start, stop or reconnect machines; sync skills | Asks the owner |
+| Read the providers and their file | Allowed |
+| Add a machine provider (`provider import`) | Asks the owner (never Allow) |
 | Run a machine script | Never |
 | Remove, forget or delete a machine | Never |
 
 Only the owner, never an agent: a machine's root (`host root`), its VM tier,
 its variables (`host var set|rm`), trusting a changed host key
-(`host trust-key`), provider config, import and login, emptying the trash,
-and `humata shell`.
+(`host trust-key`), editing the provider config, adding providers (an
+agent's import only asks) and provider login, emptying the trash, and
+`humata shell`.
 
 ## Failures
 

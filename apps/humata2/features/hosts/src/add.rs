@@ -265,6 +265,23 @@ impl AddMachineState {
         }
     }
 
+    /// Why the picked provider can't add yet: the host variables its
+    /// commands read that aren't set on this Mac, as the line the dialog
+    /// shows. None for a plain SSH host or a provider with all it needs.
+    #[must_use]
+    pub fn needs_variables(&self) -> Option<String> {
+        let Some(Choice::Provider { id, .. }) = self.effective_choice() else {
+            return None;
+        };
+        let provider = self.providers.iter().find(|provider| provider.id == id)?;
+        let names = match provider.unset.as_slice() {
+            [] => return None,
+            [one] => one.clone(),
+            [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        };
+        Some(format!("{} needs {names}. Set it in Settings > Machines.", provider.label))
+    }
+
     /// What the add targets: the typed host when there is one, else the pop-up's pick.
     #[must_use]
     pub fn effective_choice(&self) -> Option<Choice> {
@@ -286,6 +303,8 @@ pub enum Delegate {
     Migrate(RequestId),
     /// Say this in a toast.
     Toast(String),
+    /// Open Settings › Machines, where providers and their host variables are.
+    ManageProviders,
 }
 
 /// What happens in the dialog.
@@ -303,6 +322,9 @@ pub enum AddMachineAction {
     HostMenu(bool),
     /// Pick a provider; its params start at their defaults.
     SelectProvider(String),
+    /// Manage providers… or Open Settings: close the dialog and open
+    /// Settings › Machines. Nothing happens while an add or login runs.
+    ManageProviders,
     /// Change a provider param.
     SetParam(String, String),
     /// Change the machine's name.
@@ -555,6 +577,11 @@ impl Reducer for AddMachine {
             }
             A::Start => {
                 if !state.open || state.running || state.login.is_some() || state.unattended.is_some() {
+                    return Effect::none();
+                }
+                // A provider whose host variables aren't set would fail at its
+                // first command; the dialog says which to set instead.
+                if state.needs_variables().is_some() {
                     return Effect::none();
                 }
                 let Some(request) = Self::request(state, None) else {
@@ -837,6 +864,13 @@ impl Reducer for AddMachine {
             A::Migrations(items) => {
                 state.migrations = items;
                 return self.after_migrations(state);
+            }
+            A::ManageProviders => {
+                if !state.open || state.running || state.login.is_some() || state.unattended.is_some() {
+                    return Effect::none();
+                }
+                *state = AddMachineState::default();
+                return Effect::send(A::Delegate(Delegate::ManageProviders));
             }
             A::Delegate(_) => {}
         }

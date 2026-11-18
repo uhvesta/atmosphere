@@ -9,7 +9,7 @@
 pub mod comments;
 pub mod order;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -221,6 +221,9 @@ pub struct ReviewState {
     pub pushes: HashMap<(SessionId, String), PushState>,
     /// The review plan each session's view opened, while it shows.
     pub plans: HashMap<SessionId, PlanView>,
+    /// The repositories folded per session, as `(session, repo)`: their
+    /// files are hidden while they are in here. Not saved (DV-7).
+    pub collapsed: HashSet<(SessionId, String)>,
 }
 
 impl ReviewState {
@@ -383,6 +386,12 @@ pub enum ReviewAction {
     Prepared(u64, Arc<Vec<DiffRow>>),
     /// A file header was clicked.
     ToggleFile(String),
+    /// A repository's chevron was clicked in the open session: fold its
+    /// files, or unfold them if they are folded (DV-7).
+    ToggleRepo {
+        /// The repository, as `owner/name`.
+        repo: String,
+    },
     /// Wrap long lines, or not.
     ToggleWrap,
     /// The daemon took this saved comment: forget it.
@@ -912,6 +921,14 @@ impl Reducer for Review {
                         folded.insert(path);
                     }
                     return prepare(state);
+                }
+            }
+            ReviewAction::ToggleRepo { repo } => {
+                if let Some(session) = state.session.clone() {
+                    let key = (session, repo);
+                    if !state.collapsed.remove(&key) {
+                        state.collapsed.insert(key);
+                    }
                 }
             }
             ReviewAction::ToggleWrap => state.wrap = !state.wrap,

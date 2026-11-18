@@ -486,6 +486,8 @@ pub fn file_summary_to_pb(file: &FileSummary) -> pb::FileSummary {
             FileStatus::Renamed { similarity, .. } => u32::from(similarity),
             _ => 0,
         },
+        old_mode: file.old_mode,
+        new_mode: file.new_mode,
     }
 }
 
@@ -536,6 +538,8 @@ pub fn repo_diff_from_pb(diff: &pb::RepoDiff) -> Option<RepoDiff> {
                 binary: file.binary,
                 old_blob: some(&file.old_blob_sha),
                 new_blob: some(&file.new_blob_sha),
+                old_mode: file.old_mode,
+                new_mode: file.new_mode,
             })
             .collect(),
     })
@@ -598,6 +602,7 @@ fn line_to_pb(line: &DiffLine) -> pb::DiffLine {
         old_line: line.old_line.unwrap_or(0),
         new_line: line.new_line.unwrap_or(0),
         text: line.text.clone(),
+        no_newline: line.no_newline,
     }
 }
 
@@ -1230,6 +1235,8 @@ mod tests {
                     binary: false,
                     old_blob: None,
                     new_blob: Some("c".repeat(40)),
+                    old_mode: 0,
+                    new_mode: 100_644,
                 },
                 FileSummary {
                     path: "moved.rs".to_owned(),
@@ -1242,6 +1249,8 @@ mod tests {
                     binary: true,
                     old_blob: Some("d".repeat(40)),
                     new_blob: Some("e".repeat(40)),
+                    old_mode: 100_644,
+                    new_mode: 100_755,
                 },
                 FileSummary {
                     path: "gone.rs".to_owned(),
@@ -1251,6 +1260,8 @@ mod tests {
                     binary: false,
                     old_blob: Some("f".repeat(40)),
                     new_blob: None,
+                    old_mode: 100_644,
+                    new_mode: 0,
                 },
             ],
         };

@@ -27,6 +27,7 @@ fn diff_of(of: &SessionId, repo: &str, paths: &[&str]) -> RepoDiff {
                 added: 1,
                 removed: 0,
                 lines: Vec::new(),
+                ..FileDiff::default()
             })
             .collect(),
         comments: Vec::new(),

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Diff view proposal</title>
+<style>
+:root{
+  --sidebar:#e9e7ea;--panel:#f6f5f7;--line:#dcdadd;--text:#1d1d1f;--sec:#6e6e73;--ter:#a1a1a6;
+  --accent:#0a6cff;--fill:#eceaee;--card:#fff;--term:#fff;--content:#fff;
+  --addrow:rgba(48,209,88,.12);--delrow:rgba(240,93,93,.12);--addword:rgba(48,209,88,.30);--delword:rgba(240,93,93,.30);
+  --green:#1f9d45;--red:#d93a3a;
+}
+.dark{
+  --sidebar:#2a2a2d;--panel:#252527;--line:#3a3a3d;--text:#e8e8ea;--sec:#98989e;--ter:#6a6a70;
+  --accent:#3b8cff;--fill:#323235;--card:#2a2a2c;--term:#1a1a1b;--content:#1e1e1f;
+  --addrow:rgba(48,209,88,.16);--delrow:rgba(240,93,93,.16);--addword:rgba(48,209,88,.34);--delword:rgba(240,93,93,.34);
+  --green:#30d158;--red:#f05d5d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px;background:#d9d7db;font:12.5px -apple-system,".SF NS",system-ui,sans-serif;color:#1d1d1f}
+h1{font-size:17px;margin:0 0 4px} .cap{color:#555;margin:0 0 14px;max-width:1100px;line-height:1.45}
+h2{font-size:14px;margin:30px 0 4px}
+.win{width:1280px;height:760px;border-radius:11px;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.25);display:flex;background:var(--content);color:var(--text)}
+.win.short{height:430px}
+.sb{width:230px;background:var(--sidebar);border-right:1px solid var(--line);padding:14px 10px;flex-shrink:0}
+.lights{display:flex;gap:8px;margin-bottom:22px}.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.sbi{padding:6px 8px;border-radius:6px;color:var(--text);margin:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sbi.on{background:var(--fill)} .sbh{color:var(--sec);font-size:11px;margin:14px 8px 4px}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:52px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;background:var(--content)}
+.top .t{display:flex;flex-direction:column}.top .t small{color:var(--sec);font-size:11px}.top .t b{font-size:14px}
+.term{flex:1;background:var(--term);font:12px Menlo,monospace;color:var(--text);padding:14px 16px;line-height:1.55;white-space:pre;overflow:hidden}
+.term .d{color:var(--sec)}
+.split{flex:1;display:flex;min-height:0}
+.panel{width:530px;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;flex-shrink:0;min-height:0}
+.rail{width:64px;background:var(--sidebar);border-left:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:60px;flex-shrink:0}
+.rail div{width:52px;height:47px;border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--sec);gap:2px}
+.rail div.on{background:var(--fill);color:var(--accent)} .rail div span{font-size:15px}
+.ph{height:36px;display:flex;align-items:center;padding:0 10px 0 14px;gap:8px;border-bottom:1px solid var(--line);flex-shrink:0}
+.ph b{font-size:13px}
+.chip{border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--sec);font-size:11.5px;background:var(--card);white-space:nowrap}
+.sp{flex:1}
+.ib{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:var(--sec);font-size:13px}
+.tip{position:relative}.tip em{display:none}
+.fbar{height:34px;display:flex;align-items:center;gap:8px;padding:0 10px 0 12px;border-bottom:1px solid var(--line);flex-shrink:0;background:var(--panel);cursor:pointer}
+.fbar .r{color:var(--sec)} .fbar .n{font-weight:600} .fbar .dir{color:var(--ter)}
+.fbar .cnt{color:var(--sec);font-size:11.5px}
+.step{color:var(--sec);font-size:14px;padding:0 3px}
+.code{flex:1;background:var(--content);font:12px/18.5px Menlo,monospace;overflow:hidden;min-height:0}
+.hk{height:24px;display:flex;align-items:center;padding-left:14px;background:var(--panel);color:var(--sec);font:11.5px Menlo,monospace;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.ln{display:flex;white-space:pre}
+.ln .g{width:38px;text-align:right;padding-right:6px;color:var(--ter);flex-shrink:0}
+.ln .g2{width:34px;text-align:right;padding-right:6px;color:var(--ter);flex-shrink:0}
+.ln .s{width:14px;flex-shrink:0;color:var(--sec)}
+.ln.a{background:var(--addrow)} .ln.d{background:var(--delrow)}
+.ln.a .s{color:var(--green)} .ln.d .s{color:var(--red)}
+.ln .wa{background:var(--addword);border-radius:2px} .ln .wd{background:var(--delword);border-radius:2px}
+.nonl{color:var(--ter);font-style:italic;padding-left:58px;font:11px Menlo,monospace;height:18px;display:flex;align-items:center}
+.cardc{margin:6px 14px 8px 58px;max-width:720px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:12.5px -apple-system,system-ui;color:var(--text)}
+.cardc .h{display:flex;gap:6px;color:var(--sec);font-size:11.5px;margin-bottom:4px}.cardc .h .sp{flex:1}
+.lnk{color:var(--sec)} .btn{background:var(--accent);color:#fff;border-radius:6px;padding:4px 10px;font-size:12px;white-space:nowrap}
+.foot{height:40px;border-top:1px solid var(--line);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0;background:var(--panel)}
+.qb{color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 9px;background:var(--card);font-size:12px}
+.list{width:300px;border-right:1px solid var(--line);background:var(--panel);overflow:hidden;flex-shrink:0;display:flex;flex-direction:column}
+.filter{margin:8px 10px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;color:var(--ter);background:var(--card);font-size:12px}
+.repo{display:flex;align-items:center;gap:6px;padding:6px 12px 4px;font-weight:600}
+.repo .c{color:var(--sec);font-weight:400;width:10px}.repo .tot{margin-left:auto;font-weight:400;font-size:11.5px}
+.repo .vs{color:var(--ter);font-weight:400;font-size:11px}
+.fr{display:flex;align-items:center;gap:6px;padding:4px 12px 4px 18px;white-space:nowrap}
+.fr.on{background:var(--fill);border-radius:6px;margin:0 6px;padding-left:12px}
+.mk{width:14px;font-size:10.5px;font-weight:700;text-align:center;flex-shrink:0}
+.mk.A{color:var(--green)}.mk.D{color:var(--red)}.mk.R{color:var(--sec)}
+.fr .nm{flex-shrink:0}.fr .dir{color:var(--ter);overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.fr .num{font-size:11px;color:var(--sec);flex-shrink:0}.fr .num i{font-style:normal;color:var(--green)}.fr .num u{text-decoration:none;color:var(--red)}
+.badge{background:var(--fill);color:var(--sec);border-radius:8px;padding:0 6px;font-size:10.5px}
+.fh{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--content);flex-shrink:0}
+.fh .r{color:var(--sec)} .fh .n{font-weight:600}
+.fnote{color:var(--sec);font-size:11.5px;padding:0 14px 6px;background:var(--content);border-bottom:1px solid var(--line)}
+.fhwrap{flex-shrink:0}
+.pane{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--content)}
+.ann{background:#fff8d6;border:1px solid #e6d58a;color:#5a4a00;border-radius:6px;padding:6px 10px;margin:8px 0 0;max-width:1280px;font-size:12px;line-height:1.45}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--sec)}
+.row3{display:flex;gap:24px;align-items:flex-start}
+.mini{width:530px;height:330px;border-radius:9px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.2);background:var(--panel);color:var(--text);display:flex;flex-direction:column}
+</style></head><body>
+
+<h1>Diff view: Fable's proposal (mockup)</h1>
+<p class="cap">The code is the page; the file list is a navigator. One row of chrome per thing, one blue action per screen. These are HTML mockups in the app's own colours (light and dark Look), not app renders.</p>
+
+<h2>1 · Beside the terminal, a file open: the list folds into a one-line file bar</h2>
+<div class="win" id="narrow">
+  <div class="sb"><div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+    <div class="sbh">payments-rewrite</div><div class="sbi on">Ledger schema migration</div><div class="sbi">Retry budget</div><div class="sbi">Docs pass</div></div>
+  <div class="main">
+    <div class="top"><div class="t"><small># payments-rewrite</small><b>Ledger schema migration</b></div><div class="sp"></div><div class="ib tip">⤢</div></div>
+    <div class="split">
+      <div class="term"><span class="d">~/ledger-schema $</span> copilot
+<span class="d">●</span> Moving the ledger writes into one transaction…
+<span class="d">  Edited api/src/client.rs (+62 −21)</span>
+<span class="d">  Edited ledger/migrations/0042_accounts.sql (+41)</span>
+<span class="d">●</span> Running the ledger tests
+<span class="d">  bazel test //ledger/...  </span>
+<span class="d">  28 passed</span>
+<span class="d">●</span> Done. Want me to open a PR for both repos?
+<span class="d">›</span></div>
+      <div class="panel">
+        <div class="ph"><b>Diff</b><span class="chip">vs main ⌄</span><div class="sp"></div>
+          <div class="ib tip">⤢</div><div class="ib">✕</div></div>
+        <div class="fbar"><span class="step">⌄</span><span class="r">api ·</span><span class="n">client.rs</span><span class="dir">src/</span><div class="sp"></div><span class="cnt">2 of 4</span><span class="step">‹</span><span class="step">›</span><span class="ib" title="Open in editor">↗</span></div>
+        <div class="code">
+          <div class="hk">impl Client {</div>
+          <div class="ln"><span class="g">40</span><span class="s"> </span>    pub async fn post(&amp;self, entry: Entry) -&gt; Result&lt;()&gt; {</div>
+          <div class="ln d"><span class="g">41</span><span class="s">−</span>        self.db.<span class="wd">insert_legacy</span>(&amp;entry).await?;</div>
+          <div class="ln a"><span class="g">41</span><span class="s">+</span>        let tx = self.db.<span class="wa">begin</span>().await?;</div>
+          <div class="ln a"><span class="g">42</span><span class="s">+</span>        tx.insert(&amp;entry).await?;</div>
+          <div class="ln a"><span class="g">43</span><span class="s">+</span>        tx.commit().await?;</div>
+          <div class="cardc"><div class="h"><b style="color:var(--text)">You</b>· Draft · line 43<span class="sp"></span><span class="lnk">Edit</span></div>Keep these writes in one transaction.</div>
+          <div class="ln"><span class="g">44</span><span class="s"> </span>        Ok(())</div>
+          <div class="ln"><span class="g">45</span><span class="s"> </span>    }</div>
+          <div class="hk">fn retry_budget</div>
+          <div class="ln"><span class="g">88</span><span class="s"> </span>fn retry_budget(attempts: u32) -&gt; Duration {</div>
+          <div class="ln d"><span class="g">89</span><span class="s">−</span>    Duration::from_millis(<span class="wd">100</span> * attempts as u64)</div>
+          <div class="ln a"><span class="g">89</span><span class="s">+</span>    Duration::from_millis(<span class="wa">250</span> * attempts as u64)</div>
+          <div class="ln"><span class="g">90</span><span class="s"> </span>}</div>
+          <div class="nonl">No newline at end of file</div>
+        </div>
+        <div class="foot"><span class="qb">Push &amp; PR…</span><div class="sp"></div><span class="btn">Send 1 comment</span></div>
+      </div>
+      <div class="rail"><div><span>✉︎</span>Inbox</div><div class="on"><span>±</span>Diff</div><div><span>▤</span>Files</div><div><span>▦</span>Board</div><div><span>📖</span>Journal</div><div><span>ⓘ</span>Info</div></div>
+    </div>
+  </div>
+</div>
+<p class="ann">The two old header rows per repo and the "4 files · 2 repos" summary are gone. Clicking the file bar (or ⌄) opens the list in place in a 220 pt box; picking a file folds it again. ‹ › and ⌥⌘↓/↑ step files. Push &amp; PR is one quiet footer button, shown only when the push plan has something to push. The code gets the whole height.</p>
+
+<h2>2 · Full screen (⌥⌘↩, the ⤢ button, or double-click the panel header)</h2>
+<div class="win">
+  <div class="main">
+    <div class="top"><div class="lights" style="margin:0"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div><div style="width:6px"></div>
+      <div class="t"><small># payments-rewrite › Ledger schema migration</small><b>Diff</b></div><span class="chip">vs main ⌄</span><div class="sp"></div><span class="qb">Show the terminal</span></div>
+    <div class="split">
+      <div class="list">
+        <div class="filter">Filter files</div>
+        <div class="repo"><span class="c">⌄</span>ledger<span class="tot"><i style="font-style:normal;color:var(--green)">+142</i> <span style="color:var(--red)">−18</span></span></div>
+        <div class="fr"><span class="mk A">A</span><span class="nm">0042_accounts.sql</span><span class="dir">migrations/</span><span class="num"><i>+41</i></span></div>
+        <div class="fr"><span class="mk"></span><span class="nm">posting.rs</span><span class="dir">src/</span><span class="num"><i>+101</i> <u>−18</u></span></div>
+        <div class="fr"><span class="mk R">R</span><span class="nm">ledger_tests.rs</span><span class="dir">tests/integration/</span><span class="num">mode</span></div>
+        <div class="repo"><span class="c">⌄</span>api <span class="vs">release/2.4</span><span class="tot"><i style="font-style:normal;color:var(--green)">+143</i> <span style="color:var(--red)">−24</span></span></div>
+        <div class="fr on"><span class="mk R">R</span><span class="nm">client.rs</span><span class="dir">src/</span><span class="badge">2</span><span class="num"><i>+62</i> <u>−21</u></span></div>
+        <div class="fr"><span class="mk"></span><span class="nm">entry.rs</span><span class="dir">src/model/</span><span class="num"><i>+81</i> <u>−3</u></span></div>
+        <div class="fr"><span class="mk A">A</span><span class="nm">logo.png</span><span class="dir">assets/</span><span class="num">bin</span></div>
+        <div class="fr"><span class="mk D">D</span><span class="nm">legacy_insert.rs</span><span class="dir">src/db/</span><span class="num"><u>−212</u></span></div>
+        <div class="repo"><span class="c">›</span>docs<span class="tot"><i style="font-style:normal;color:var(--green)">+12</i> <span style="color:var(--red)">−4</span></span></div>
+      </div>
+      <div class="pane">
+        <div class="fhwrap"><div class="fh" style="border-bottom:0"><span class="r">api ·</span><span class="r">src/</span><span class="n">client.rs</span><div class="sp"></div><span class="ib">↗</span></div>
+        <div class="fnote">Renamed from src/http.rs · 92% alike</div></div>
+        <div class="code">
+          <div class="hk">impl Client {</div>
+          <div class="ln"><span class="g2">40</span><span class="g2">40</span><span class="s"> </span>    pub async fn post(&amp;self, entry: Entry) -&gt; Result&lt;()&gt; {</div>
+          <div class="ln d"><span class="g2">41</span><span class="g2"></span><span class="s">−</span>        self.db.<span class="wd">insert_legacy</span>(&amp;entry).await?;</div>
+          <div class="ln a"><span class="g2"></span><span class="g2">41</span><span class="s">+</span>        let tx = self.db.<span class="wa">begin</span>().await?;</div>
+          <div class="ln a"><span class="g2"></span><span class="g2">42</span><span class="s">+</span>        tx.insert(&amp;entry).await?;</div>
+          <div class="ln a"><span class="g2"></span><span class="g2">43</span><span class="s">+</span>        tx.commit().await?;</div>
+          <div class="cardc" style="margin-left:88px"><div class="h"><b style="color:var(--text)">Agent</b>· line 43<span class="sp"></span><span class="lnk">Reply</span></div>Committing per entry keeps the old retry semantics; batching would change them.</div>
+          <div class="cardc" style="margin-left:88px"><div class="h"><b style="color:var(--text)">You</b>· Draft · line 43<span class="sp"></span><span class="lnk">Edit</span></div>Keep these writes in one transaction.</div>
+          <div class="ln"><span class="g2">42</span><span class="g2">44</span><span class="s"> </span>        Ok(())</div>
+          <div class="ln"><span class="g2">43</span><span class="g2">45</span><span class="s"> </span>    }</div>
+          <div class="hk">fn retry_budget</div>
+          <div class="ln"><span class="g2">87</span><span class="g2">88</span><span class="s"> </span>fn retry_budget(attempts: u32) -&gt; Duration {</div>
+          <div class="ln d"><span class="g2">88</span><span class="g2"></span><span class="s">−</span>    Duration::from_millis(<span class="wd">100</span> * attempts as u64)</div>
+          <div class="ln a"><span class="g2"></span><span class="g2">89</span><span class="s">+</span>    Duration::from_millis(<span class="wa">250</span> * attempts as u64)</div>
+          <div class="ln"><span class="g2">89</span><span class="g2">90</span><span class="s"> </span>}</div>
+        </div>
+      </div>
+    </div>
+    <div class="foot"><span class="qb">Push &amp; PR…</span><div class="sp"></div><span class="btn">Send 1 comment</span></div>
+  </div>
+</div>
+<p class="ann">One title bar instead of two; the base chip sits beside "Diff"; "Show the terminal" (or ⌥⌘↩ / Esc) is the one way back. Flat list per repo, file name first with the folder dimmed; A/D/R marks, "bin" and "mode" instead of +0 −0; the repo shows its branch/base only when it differs ("api release/2.4"); repos collapse (docs). Old and new line numbers in two columns, softer tints, the changed words highlighted, and a quiet "impl Client {" band instead of @@. Comment cards are capped at 720 pt and the code background runs top to bottom.</p>
+
+<h2>3 · A single big file (dark): pinned header with "Change 3 of 212"</h2>
+<div class="win short dark">
+  <div class="main">
+    <div class="top"><div class="lights" style="margin:0"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div><div style="width:6px"></div>
+      <div class="t"><small># data-import › Regenerate fixtures</small><b>Diff</b></div><span class="chip">vs main ⌄</span><div class="sp"></div><span class="qb">Show the terminal</span></div>
+    <div class="split">
+      <div class="list">
+        <div class="repo"><span class="c">⌄</span>large<span class="tot"><i style="font-style:normal;color:var(--green)">+20,000</i> <span style="color:var(--red)">−20,000</span></span></div>
+        <div class="fr on"><span class="mk"></span><span class="nm">big.txt</span><span class="dir">fixtures/</span><span class="num"><i>+20,000</i> <u>−20,000</u></span></div>
+        <div class="fr"><span class="mk A">A</span><span class="nm">dump.bin</span><span class="dir">fixtures/</span><span class="num">bin</span></div>
+      </div>
+      <div class="pane">
+        <div class="fh"><span class="r">large ·</span><span class="r">fixtures/</span><span class="n">big.txt</span><span class="r" style="font-size:11.5px">+20,000 −20,000</span><div class="sp"></div><span class="r" style="font-size:11.5px">Change 3 of 212</span><span class="step">‹</span><span class="step">›</span><span class="ib">↗</span></div>
+        <div class="code">
+          <div class="hk">section 3</div>
+          <div class="ln"><span class="g2">4120</span><span class="g2">4120</span><span class="s"> </span>row,4120,ok,2026-11-18T09:12:00Z</div>
+          <div class="ln d"><span class="g2">4121</span><span class="g2"></span><span class="s">−</span>row,4121,<span class="wd">pending</span>,2026-11-18T09:12:01Z</div>
+          <div class="ln a"><span class="g2"></span><span class="g2">4121</span><span class="s">+</span>row,4121,<span class="wa">ok</span>,2026-11-18T09:12:01Z</div>
+          <div class="ln d"><span class="g2">4122</span><span class="g2"></span><span class="s">−</span>row,4122,<span class="wd">pending</span>,2026-11-18T09:12:02Z</div>
+          <div class="ln a"><span class="g2"></span><span class="g2">4122</span><span class="s">+</span>row,4122,<span class="wa">ok</span>,2026-11-18T09:12:02Z</div>
+          <div class="ln"><span class="g2">4123</span><span class="g2">4123</span><span class="s"> </span>row,4123,ok,2026-11-18T09:12:03Z</div>
+          <div class="ln"><span class="g2">4124</span><span class="g2">4124</span><span class="s"> </span>row,4124,ok,2026-11-18T09:12:04Z</div>
+          <div class="ln d"><span class="g2">4125</span><span class="g2"></span><span class="s">−</span>row,4125,<span class="wd">failed</span>,2026-11-18T09:12:05Z</div>
+          <div class="ln a"><span class="g2"></span><span class="g2">4125</span><span class="s">+</span>row,4125,<span class="wa">ok</span>,2026-11-18T09:12:05Z</div>
+          <div class="ln"><span class="g2">4126</span><span class="g2">4126</span><span class="s"> </span>row,4126,ok,2026-11-18T09:12:06Z</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="ann">Only the rows on screen are drawn, so 40,000 changed lines open at once. The file header stays put while the code scrolls; "Change 3 of 212 ‹ ›" (or ⇧⌥⌘↓/↑) appears only when a file has more than a screen of changes.</p>
+
+<h2>4 · States: the list opened in the narrow panel, nothing changed, a repo that can't be read</h2>
+<div class="row3">
+  <div class="mini">
+    <div class="ph"><b>Diff</b><span class="chip">vs main ⌄</span><div class="sp"></div><div class="ib">⤢</div><div class="ib">✕</div></div>
+    <div class="fbar"><span class="step">⌃</span><span class="r">api ·</span><span class="n">client.rs</span><span class="dir">src/</span><div class="sp"></div><span class="cnt">2 of 4</span></div>
+    <div style="max-height:180px;overflow:hidden;border-bottom:1px solid var(--line)">
+      <div class="repo"><span class="c">⌄</span>ledger<span class="tot"><i style="font-style:normal;color:var(--green)">+142</i> <span style="color:var(--red)">−18</span></span></div>
+      <div class="fr"><span class="mk A">A</span><span class="nm">0042_accounts.sql</span><span class="dir">migrations/</span><span class="num"><i>+41</i></span></div>
+      <div class="fr"><span class="mk"></span><span class="nm">posting.rs</span><span class="dir">src/</span><span class="num"><i>+101</i> <u>−18</u></span></div>
+      <div class="repo"><span class="c">⌄</span>api<span class="tot"><i style="font-style:normal;color:var(--green)">+143</i> <span style="color:var(--red)">−24</span></span></div>
+      <div class="fr on"><span class="mk R">R</span><span class="nm">client.rs</span><span class="dir">src/</span><span class="badge">2</span><span class="num"><i>+62</i> <u>−21</u></span></div>
+      <div class="fr"><span class="mk"></span><span class="nm">entry.rs</span><span class="dir">src/model/</span><span class="num"><i>+81</i> <u>−3</u></span></div>
+    </div>
+    <div class="code"><div class="hk">impl Client {</div><div class="ln"><span class="g">40</span><span class="s"> </span>    pub async fn post(&amp;self, entry: Entry)…</div></div>
+  </div>
+  <div class="mini">
+    <div class="ph"><b>Diff</b><span class="chip">vs main ⌄</span><div class="sp"></div><div class="ib">⤢</div><div class="ib">✕</div></div>
+    <div class="empty"><div>No changes against main</div><span class="qb">Compare with…</span></div>
+  </div>
+  <div class="mini dark">
+    <div class="ph"><b>Diff</b><span class="chip">vs main ⌄</span><div class="sp"></div><div class="ib">⤢</div><div class="ib">✕</div></div>
+    <div class="repo"><span class="c">⌄</span>ledger<span class="tot"><i style="font-style:normal;color:var(--green)">+142</i> <span style="color:var(--red)">−18</span></span></div>
+    <div class="fr"><span class="mk A">A</span><span class="nm">0042_accounts.sql</span><span class="dir">migrations/</span><span class="num"><i>+41</i></span></div>
+    <div class="repo"><span class="c">⌄</span>api</div>
+    <div style="padding:2px 18px 8px;color:var(--sec);font-size:12px;line-height:1.45">Couldn't read api: the clone at ~/Humata/api is gone.<br><span class="qb" style="display:inline-block;margin-top:6px">Try again</span></div>
+    <div class="repo"><span class="c">⌄</span>docs<span class="tot"><i style="font-style:normal;color:var(--green)">+12</i> <span style="color:var(--red)">−4</span></span></div>
+    <div class="fr"><span class="mk"></span><span class="nm">README.md</span><span class="dir"></span><span class="num"><i>+12</i> <u>−4</u></span></div>
+  </div>
+</div>
+<p class="ann">Errors show where they block: one repo failing doesn't hide the others. No spinners; a first load says "Reading changes…".</p>
+</body></html>

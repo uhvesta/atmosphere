@@ -1,0 +1,26 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# DV-9: an isolated home with bare repos, a fake `gh` and one open pull
+# request, for reviewing a PR in the app with no network. Prints how to
+# start humatad2_admin and the app against it:
+#
+#   bazel run //apps/humata2/testing/pr_demo -- /tmp/h2-pr
+sh_binary(
+    name = "pr_demo",
+    srcs = ["pr_demo.sh"],
+    data = ["fake_gh.sh"],
+)
+
+sh_test(
+    name = "pr_demo_test",
+    srcs = ["pr_demo_test.sh"],
+    args = ["$(rootpath :pr_demo)"],
+    data = [":pr_demo"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

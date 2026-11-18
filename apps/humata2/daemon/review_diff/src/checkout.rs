@@ -197,9 +197,12 @@ impl Checkout {
             // side starts from: a staged file isn't untracked.
             let listed = self.git.run(&args)?;
             if !listed.is_empty() {
-                scratch
-                    .git
-                    .run_with_input(["update-index", "--add", "-z", "--stdin"], &listed)?;
+                // `--remove` skips a listed path that vanished since the
+                // listing (a file deleted mid-snapshot), not fails on it.
+                scratch.git.run_with_input(
+                    ["update-index", "--add", "--remove", "-z", "--stdin"],
+                    &listed,
+                )?;
             }
         }
         scratch.write_tree()

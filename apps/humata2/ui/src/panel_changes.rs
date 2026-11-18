@@ -1,13 +1,14 @@
 //! The Diff panel: files, hunks, wrapped lines and comment cards.
 use super::*;
 use crate::comment_cards::{self, StartReattach};
-use crate::document_tab::Documents;
+use crate::document_tab::{Documents, LineFacts};
 use humata2_clients::comments::{Anchor, CommentId, Side};
 use humata2_clients::model::{DiffBase, DiffLine, RepoBase};
 use humata2_review::order::{OrderFile, bottom_up};
 use humata2_review::{PlanRow, PlanRowNote, PushState, RepoPicker};
 use gpui_kit::component::button::ButtonCustomVariant;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 /// A quiet text action of the Diff panel: Push & PR, Add repo… and a lone
 /// base chevron. Its colour stays as drawn on hover and press, where a ghost
@@ -406,16 +407,6 @@ pub(super) fn changes(
         // (frame 68).
         .gap(px(if inline { 4. } else { 1. }))
         .text_size(px(12.5))
-        .when(full && !inline, |list| {
-            list.w(px(300.))
-                .h_full()
-                .flex_shrink_0()
-                .border_r_1()
-                .border_color(rgb(look.line))
-        })
-        .children(review.map(|session| {
-            review_line(state, look, session, diffs.first().map_or("", |diff| diff.base.as_str()), diffs.len(), inline)
-        }))
         .when(review.is_none(), |list| list.child(
             row()
                 .gap(px(6.))
@@ -481,33 +472,27 @@ pub(super) fn changes(
             view.child(refresh_failed_row(ui, error, look))
         })
         .when_some(shown.filter(|_| !inline), |view, (diff, file)| {
-            let digits = file
-                .lines
-                .iter()
-                .flat_map(|l| [l.old, l.new])
-                .flatten()
-                .max()
-                .unwrap_or(1)
-                .to_string()
-                .len();
-            let gutter_width = 34_f32.max((digits as f32 + 1.) * cell_width);
-            let code_width =
-                width - if full { 300. } else { 0. } - gutter_width - cell_width - 2. + 8.;
-            let columns = ((code_width / cell_width).floor().max(4.)) as usize;
-            let scrolling_width = file
-                .lines
-                .iter()
-                .filter(|l| l.kind != LineKind::Hunk)
-                .map(|l| code_wrap::unwrapped(&l.text).display.width())
-                .max()
-                .unwrap_or(0) as f32
-                * cell_width
-                + gutter_width
-                + cell_width;
             let name = format!("{}/{}", diff.repo, file.path);
             let scroll = documents.diff_view(&name);
             let wrap = state.review.wrap;
-            let rows = code_rows(
+            // Counted once per read of the file, not on every frame.
+            let LineFacts { digits, widest } = scroll.facts(&file.lines, line_facts);
+            // The numbers take their digits, an 8 pt left inset, the 4 pt right pad
+            // and the 8 pt the code overlaps, so 20000 is never clipped or flush.
+            let gutter_width = 34_f32.max(digits as f32 * cell_width + 20.);
+            let view_width = width - if full { 300. } else { 0. };
+            let code_width = view_width - gutter_width - cell_width - 2. + 8.;
+            let columns = ((code_width / cell_width).floor().max(4.)) as usize;
+            // On Scroll only the code column moves sideways, as far as the
+            // widest line needs.
+            let max_shift = if wrap {
+                0.
+            } else {
+                (widest as f32 * cell_width + cell_width)
+                    - (view_width - (gutter_width - 8.) - cell_width)
+            };
+            let shift = scroll.shift(max_shift);
+            let rows = CodeRows::new(
                 ui,
                 state,
                 documents,
@@ -519,10 +504,84 @@ pub(super) fn changes(
                     gutter_width,
                     cell_width,
                     line_height,
-                    view_width: width - if full { 300. } else { 0. },
+                    view_width,
                     review: false,
                 },
+                None,
+                shift,
             );
+            let sideways = {
+                let scroll = scroll.clone();
+                move |event: &ScrollEvent, _: &mut Window, cx: &mut App| {
+                    let delta = event.delta.pixel_delta(px(line_height));
+                    if delta.x != px(0.) && scroll.scroll_sideways(f32::from(delta.x), max_shift) {
+                        cx.refresh_windows();
+                    }
+                }
+            };
+            let code = if file.lines.len() > VIRTUAL_FROM {
+                // DV-5: a long file builds only the lines in view. The list
+                // keeps its top line across a rewrap by itself.
+                let state = scroll.rows(&file.lines, wrap, view_width, line_height);
+                let rows = Rc::new(rows);
+                let (session, repo, path) = (diff.session.clone(), diff.repo.clone(), file.path.clone());
+                let guess = scroll.clone();
+                col()
+                    .on_children_prepainted(move |_, _, _| guess.guess_heights(line_height))
+                    .on_scroll_wheel(sideways)
+                    .id(SharedString::from(format!("change-code {name}")))
+                    .role(Role::Code)
+                    .aria_label(name.clone())
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .font_family("Menlo")
+                    .text_size(px(font_size))
+                    .line_height(px(line_height))
+                    .bg(rgb(look.term))
+                    .child(
+                        gpui_kit::list(state, move |index, _, _| {
+                            rows.ui
+                                .read(|state| {
+                                    file_lines(state, &session, &repo, &path)
+                                        .map(|lines| rows.item(lines, index))
+                                })
+                                .unwrap_or_else(|| div().into_any_element())
+                        })
+                        .flex_1()
+                        .w_full()
+                        .py(px(6.)),
+                    )
+                    .into_any_element()
+            } else {
+                let items: Vec<AnyElement> =
+                    (0..file.lines.len()).map(|index| rows.item(&file.lines, index)).collect();
+                col()
+                    .on_scroll_wheel(sideways)
+                    .id(SharedString::from(format!("change-code {name}")))
+                    .role(Role::Code)
+                    .aria_label(name.clone())
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .track_scroll(&scroll.handle)
+                    .overflow_y_scroll()
+                    .overflow_x_hidden()
+                    .child(
+                        col()
+                            .py(px(6.))
+                            .font_family("Menlo")
+                            .text_size(px(font_size))
+                            .line_height(px(line_height))
+                            .bg(rgb(look.term))
+                            .on_children_prepainted(move |children, _, cx| {
+                                scroll.keep_top(width, wrap, &children, cx)
+                            })
+                            .children(items),
+                    )
+                    .into_any_element()
+            };
             view.child(
                 row()
                     .h(px(30.))
@@ -533,7 +592,7 @@ pub(super) fn changes(
                     .border_color(rgb(look.line))
                     .text_size(px(12.))
                     .child(icon(IconName::FileCode, look.secondary, 12.))
-                    .child(text(name.clone()).font_weight(FontWeight::MEDIUM))
+                    .child(text(name).font_weight(FontWeight::MEDIUM))
                     .child(div().flex_1())
                     .child(
                         // No editor client exists yet: drawn, but dimmed and inert.
@@ -542,32 +601,7 @@ pub(super) fn changes(
                             .opacity(0.5),
                     ),
             )
-            .child(
-                col()
-                    .id(SharedString::from(format!("change-code {name}")))
-                    .role(Role::Code)
-                    .aria_label(name)
-                    .test_support()
-                    .flex_1()
-                    .min_h_0()
-                    .track_scroll(&scroll.handle)
-                    .overflow_y_scroll()
-                    .when(!state.review.wrap, |x| x.overflow_x_scroll())
-                    .when(state.review.wrap, |x| x.overflow_x_hidden())
-                    .child(
-                        col()
-                            .py(px(6.))
-                            .font_family("Menlo")
-                            .text_size(px(font_size))
-                            .line_height(px(line_height))
-                            .bg(rgb(look.term))
-                            .when(!state.review.wrap, |body| body.min_w(px(scrolling_width)))
-                            .on_children_prepainted(move |children, _, cx| {
-                                scroll.keep_top(width, wrap, &children, cx)
-                            })
-                            .children(rows)
-                    )
-            )
+            .child(code)
         })
         .when(picked.is_none() && !failed, |view| {
             view.child(nothing_against(look, &current_base))
@@ -579,6 +613,7 @@ pub(super) fn changes(
         .map(|diff| diff.base.clone())
         .filter(|base| !base.is_empty())
         .unwrap_or_else(|| picked_base_name(state, &current_base));
+    let review_base = diffs.first().map_or_else(String::new, |diff| diff.base.clone());
     let menu_open = state.review.base_menu;
     // The repositories are compared with different bases: the header says
     // so instead of naming one (frames 84, 85).
@@ -591,10 +626,10 @@ pub(super) fn changes(
             Panel::Changes,
             full,
             Some(
-                row().gap(px(6.)).when(!per_repo, |line| line.child(secondary(look, "against"))).child(
+                row().gap(px(6.)).when(!per_repo, |line| line.child(secondary(look, "against").flex_shrink_0())).child(
                     div()
                         .relative()
-                        .flex_shrink_0()
+                        .min_w_0()
                         .child(
                             row()
                                 .id("diff-base")
@@ -605,6 +640,7 @@ pub(super) fn changes(
                                     format!("Against {base}")
                                 })
                                 .gap(px(6.))
+                                .min_w_0()
                                 .px(px(9.))
                                 .h(px(24.))
                                 .rounded(px(6.))
@@ -620,10 +656,22 @@ pub(super) fn changes(
                                                 .test_support(),
                                         )
                                     } else {
-                                        chip.child(text(base.clone()))
+                                        // The full base stays in the aria label;
+                                        // the chip shows its start and an ellipsis.
+                                        chip.child(
+                                            text(base.clone())
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .text_ellipsis(),
+                                        )
                                     }
                                 })
-                                .child(icon(IconName::ChevronsUpDown, look.secondary, 12.))
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .child(icon(IconName::ChevronsUpDown, look.secondary, 12.)),
+                                )
                                 .on_click(move |_, _, cx| {
                                     toggle.send(
                                         AppAction::Review(ReviewAction::ToggleBaseMenu),
@@ -644,9 +692,19 @@ pub(super) fn changes(
         );
     col()
         .size_full()
-        // A pull request review starts at its PR line (frame 68): a pull
-        // request's base is GitHub's, so there is no base to pick.
-        .when(review.is_none(), |panel| panel.child(head))
+        // A pull request review's header names the pull request instead
+        // of a base to pick (a pull request's base is GitHub's); Full screen
+        // and Close stay, as on every panel.
+        .child(match review {
+            Some(session) => header(
+                ui,
+                Panel::Changes,
+                full,
+                Some(review_line(state, look, session, &review_base, diffs.len())),
+                look,
+            ),
+            None => head,
+        })
         .child(
             div()
                 .flex_1()
@@ -663,7 +721,26 @@ pub(super) fn changes(
                         .child(list)
                         .test_support()
                         .into_any_element(),
-                    None => list.into_any_element(),
+                    None => div()
+                        .id("changes-files")
+                        .overflow_y_scroll()
+                        .min_h_0()
+                        .test_support()
+                        .when(full, |files| {
+                            files
+                                // Stretched by the row, not h_full: a percent
+                                // height grows with the list and pushes it
+                                // past the window.
+                                .w(px(300.))
+                                .flex_shrink_0()
+                                .border_r_1()
+                                .border_color(rgb(look.line))
+                        })
+                        // Narrow: the list takes at most 220 pt, so the code
+                        // below keeps the rest of the panel.
+                        .when(!full, |files| files.flex_shrink_0().max_h(px(220.)))
+                        .child(list)
+                        .into_any_element(),
                 })
                 .when(!inline || refresh_failed, |body| body.child(view)),
         )
@@ -740,26 +817,32 @@ fn review_pulls<'a>(state: &'a AppState, session: &Session) -> Vec<&'a humata2_c
 
 /// The review's first line (PR-6): its pull request, what it is compared
 /// with and how many repositories it spans (frame 68).
-fn review_line(state: &AppState, look: Look, session: &Session, base: &str, repos: usize, inline: bool) -> impl IntoElement {
+fn review_line(state: &AppState, look: Look, session: &Session, base: &str, repos: usize) -> Div {
     let pulls = review_pulls(state, session);
     let repos = if pulls.is_empty() { repos } else { pulls.len() };
     let name = pulls
         .first()
         .map_or_else(|| "Pull request".to_owned(), |pull| format!("PR #{}", pull.number));
-    row()
+    // The line ellipsizes before the header's buttons give way.
+    div().min_w_0().overflow_hidden().child(row()
         .id("review-pr-line")
         .test_support()
         .gap(px(6.))
-        .px(px(4.))
-        // Inline, the list's gap spaces it from the repository rows.
-        .pb(px(if inline { 0. } else { 6. }))
-        .child(icon(IconName::GitPullRequest, look.secondary, 12.))
-        .child(secondary(
-            look,
-            format!(
-                "{name} against {base} · {repos} repo{}",
-                if repos == 1 { "" } else { "s" }
-            ),
+        .min_w_0()
+        .overflow_hidden()
+        .child(div().flex_shrink_0().child(icon(IconName::GitPullRequest, look.secondary, 12.)))
+        .child(
+            secondary(
+                look,
+                format!(
+                    "{name} against {base} · {repos} repo{}",
+                    if repos == 1 { "" } else { "s" }
+                ),
+            )
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis(),
         ))
 }
 
@@ -876,15 +959,9 @@ fn review_code(
     width: f32,
 ) -> AnyElement {
     let avail = width - 16.;
-    let digits = file
-        .lines
-        .iter()
-        .flat_map(|l| [l.old, l.new])
-        .flatten()
-        .max()
-        .unwrap_or(1)
-        .to_string()
-        .len();
+    let name = format!("{}/{}", diff.repo, file.path);
+    let scroll = documents.diff_view(&name);
+    let LineFacts { digits, .. } = scroll.facts(&file.lines, line_facts);
     // Frame 68's code starts 36 in (wider only for longer numbers), the
     // number ending 8 before it. The sign keeps its own cell, taken from
     // the number column, so the number column is 36 less a cell. Metrics
@@ -894,13 +971,11 @@ fn review_code(
     let gutter_width = numbers - cell_width + 8.;
     let code_width = avail - numbers;
     let columns = ((code_width / cell_width).floor().max(4.)) as usize;
-    let name = format!("{}/{}", diff.repo, file.path);
-    let scroll = documents.diff_view(&name);
     let focus = state.pr_follower.focus.as_ref().filter(|focus| {
         focus.place.path == file.path
             && (focus.place.repo == diff.repo || focus.place.repo.rsplit('/').next() == Some(diff.repo.as_str()))
     });
-    let CodeRows { rows, focus_row, code } = code_rows_focused(
+    let rows = CodeRows::new(
         ui,
         state,
         documents,
@@ -916,6 +991,7 @@ fn review_code(
             review: true,
         },
         focus.and_then(|focus| focus.line().map(|line| (focus.place.side, line))),
+        0.,
     );
     // Frame 68 draws each run of code lines as its own block and the cards
     // between the blocks, 4 apart; a card keeps the panel's line height.
@@ -930,22 +1006,17 @@ fn review_code(
     };
     let mut parts: Vec<AnyElement> = Vec::new();
     let mut lines: Vec<AnyElement> = Vec::new();
-    // The part each row ends up in, so the focus scrolls to its block.
+    // The part the focused line ends up in, so the focus scrolls to its block.
     let mut focus_part = None;
-    for (index, (row, is_code)) in rows.into_iter().zip(code).enumerate() {
-        if is_code {
-            if focus_row == Some(index) {
-                focus_part = Some(parts.len());
-            }
-            lines.push(row);
-        } else {
-            if !lines.is_empty() {
-                parts.push(block().children(std::mem::take(&mut lines)).into_any_element());
-            }
-            if focus_row == Some(index) {
-                focus_part = Some(parts.len());
-            }
-            parts.push(row);
+    for index in 0..file.lines.len() {
+        let (line, cards) = rows.line(&file.lines, index);
+        if rows.focus_index == Some(index) {
+            focus_part = Some(parts.len());
+        }
+        lines.push(line);
+        if !cards.is_empty() {
+            parts.push(block().children(std::mem::take(&mut lines)).into_any_element());
+            parts.extend(cards);
         }
     }
     if !lines.is_empty() {
@@ -1801,6 +1872,7 @@ fn sent_card(look: Look, comment: &Comment) -> Div {
 }
 
 /// What the code rows need to draw, besides the data.
+#[derive(Clone, Copy)]
 struct Metrics {
     look: Look,
     columns: usize,
@@ -1936,21 +2008,32 @@ fn exactly_on(lines: &[DiffLine], side: Side, last: u32) -> Option<usize> {
         .position(|line| line.kind != LineKind::Hunk && at(line, side, last))
 }
 
-/// Everything a click on a line number needs.
+/// Everything a click on a line number needs. The file's lines are looked up
+/// when they're needed, never copied into the target.
 struct Target {
     ui: Rc<Ui>,
     session: SessionId,
     repo: String,
     path: String,
     base: String,
-    lines: Vec<DiffLine>,
     reattach: Rc<RefCell<Option<CommentId>>>,
 }
 
+/// The lines of `repo`'s `path` in `session`'s diff, as the store holds them.
+fn file_lines<'a>(state: &'a AppState, session: &SessionId, repo: &str, path: &str) -> Option<&'a [DiffLine]> {
+    state
+        .workspace
+        .diffs
+        .iter()
+        .filter(|diff| &diff.session == session && diff.repo == repo)
+        .flat_map(|diff| &diff.files)
+        .find(|file| file.path == path)
+        .map(|file| file.lines.as_slice())
+}
+
 impl Target {
-    fn anchor(&self, side: Side, first: u32, last: u32) -> Anchor {
-        let quoted = self
-            .lines
+    fn anchor(&self, lines: &[DiffLine], side: Side, first: u32, last: u32) -> Anchor {
+        let quoted = lines
             .iter()
             .filter(|line| line.kind != LineKind::Hunk)
             .filter(|line| (first..=last).any(|n| at(line, side, n)))
@@ -1969,6 +2052,15 @@ impl Target {
         }
     }
 
+    /// The anchor over `first..=last`, quoting the file's lines as the store
+    /// holds them now.
+    fn anchor_now(&self, side: Side, first: u32, last: u32) -> Anchor {
+        self.ui.read(|state| {
+            let lines = file_lines(state, &self.session, &self.repo, &self.path).unwrap_or_default();
+            self.anchor(lines, side, first, last)
+        })
+    }
+
     /// A number was clicked: it takes a comment being re-attached, or opens
     /// the box on its line, or with `extend` stretches the open box to it
     /// when that box is on the same file and side.
@@ -1979,7 +2071,7 @@ impl Target {
                 AppAction::Comments(CommentsAction::Reattach(
                     self.session.clone(),
                     id,
-                    self.anchor(side, line, line),
+                    self.anchor_now(side, line, line),
                 )),
                 cx,
             );
@@ -2006,128 +2098,201 @@ impl Target {
         self.ui.send(
             AppAction::Comments(CommentsAction::OpenBox(
                 self.session.clone(),
-                self.anchor(side, range.0, range.1),
+                self.anchor_now(side, range.0, range.1),
             )),
             cx,
         );
     }
 }
 
-/// The code lines of one file, each followed by the comments, legacy sent
-/// ones and the open box that are about it.
-fn code_rows(
-    ui: &Rc<Ui>,
-    state: &AppState,
-    documents: &Documents,
-    diff: &RepoDiff,
-    file: &humata2_clients::model::FileDiff,
-    metrics: Metrics,
-) -> Vec<AnyElement> {
-    code_rows_focused(ui, state, documents, diff, file, metrics, None).rows
-}
+/// Files with more lines than this draw them in a virtual list (DV-5): only
+/// the lines in view and a little past it are built each frame. Shorter
+/// files draw every line, so each stays queryable and the frames match the
+/// approved goldens.
+const VIRTUAL_FROM: usize = 1000;
 
-/// A file's drawn rows: its code lines and the cards between them.
+/// Everything one file's code rows need besides its lines, gathered once
+/// per frame and owned, so a virtual list can build any line later in the
+/// frame: the comments by line, the open box, the click target and the
+/// agent's focus.
 struct CodeRows {
-    rows: Vec<AnyElement>,
-    /// The index in `rows` of the line the agent focuses.
-    focus_row: Option<usize>,
-    /// Per row: true for a code line or hunk header, false for a card.
-    code: Vec<bool>,
+    ui: Rc<Ui>,
+    metrics: Metrics,
+    wrap: bool,
+    /// How far Scroll mode has moved the code column left, in pixels.
+    shift: f32,
+    agent: String,
+    session: Option<SessionId>,
+    reviewing: bool,
+    editing: Option<humata2_review::comments::CommentBox>,
+    offers: comment_cards::BoxOffers,
+    box_at: Option<usize>,
+    cards: HashMap<usize, Vec<DaemonComment>>,
+    sent: HashMap<usize, Vec<Comment>>,
+    reattaching: Option<CommentId>,
+    start: StartReattach,
+    input: Entity<gpui_kit::component::input::TextareaState>,
+    target: Option<Rc<Target>>,
+    lit_color: u32,
+    /// The agent's focus, and the index of the first line it is on.
+    focus: Option<(Side, u32)>,
+    focus_index: Option<usize>,
 }
 
-/// `code_rows`, with the line the agent focuses marked (`review-focus-<n>`,
-/// the accent border and a bold number) and the index of its row.
-fn code_rows_focused(
-    ui: &Rc<Ui>,
-    state: &AppState,
-    documents: &Documents,
-    diff: &RepoDiff,
-    file: &humata2_clients::model::FileDiff,
-    metrics: Metrics,
-    focus: Option<(Side, u32)>,
-) -> CodeRows {
-    let mut focus_row = None;
-    let Metrics {
-        look,
-        columns,
-        gutter_width,
-        cell_width,
-        line_height,
-        view_width,
-        review,
-    } = metrics;
-    let fit = |card: AnyElement| div().max_w(px(view_width)).child(card).into_any_element();
-    let session = state
-        .session
-        .open
-        .as_ref()
-        .and_then(|id| state.workspace.session(id));
-    let agent = session.map_or("the agent", |session| session.agent.command());
-    let held = session.and_then(|session| state.comments.sessions.get(&session.id));
-    let editing = held
-        .and_then(|held| held.editing.as_ref())
-        .filter(|b| b.anchor.repo == diff.repo && b.anchor.path == file.path);
-    let box_comment = editing.and_then(|b| b.comment.clone());
-    let reattaching = documents.reattach().borrow().clone();
-    let lit_color = if look.term == 0xffffff { 0xeaf2ff } else { 0x1c2a3f };
-    let cell = documents.reattach();
-    let start: StartReattach = Rc::new(move |id, cx| {
-        *cell.borrow_mut() = Some(id.clone());
-        cx.refresh_windows();
-    });
-    let target = session.map(|session| {
-        Rc::new(Target {
-            ui: ui.clone(),
-            session: session.id.clone(),
-            repo: diff.repo.clone(),
-            path: file.path.clone(),
-            base: diff.base.clone(),
-            lines: file.lines.clone(),
-            reattach: documents.reattach(),
-        })
-    });
+impl CodeRows {
+    /// The rows of `file`, with the line the agent focuses marked
+    /// (`review-focus-<n>`, the accent border and a bold number).
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        ui: &Rc<Ui>,
+        state: &AppState,
+        documents: &Documents,
+        diff: &RepoDiff,
+        file: &humata2_clients::model::FileDiff,
+        metrics: Metrics,
+        focus: Option<(Side, u32)>,
+        shift: f32,
+    ) -> Self {
+        let look = metrics.look;
+        let session = state
+            .session
+            .open
+            .as_ref()
+            .and_then(|id| state.workspace.session(id));
+        let agent = session.map_or("the agent", |session| session.agent.command()).to_owned();
+        let held = session.and_then(|session| state.comments.sessions.get(&session.id));
+        let editing = held
+            .and_then(|held| held.editing.as_ref())
+            .filter(|b| b.anchor.repo == diff.repo && b.anchor.path == file.path);
+        let box_comment = editing.and_then(|b| b.comment.clone());
+        let cell = documents.reattach();
+        let start: StartReattach = Rc::new(move |id, cx| {
+            *cell.borrow_mut() = Some(id.clone());
+            cx.refresh_windows();
+        });
+        let target = session.map(|session| {
+            Rc::new(Target {
+                ui: ui.clone(),
+                session: session.id.clone(),
+                repo: diff.repo.clone(),
+                path: file.path.clone(),
+                base: diff.base.clone(),
+                reattach: documents.reattach(),
+            })
+        });
 
-    // Where each comment, legacy card and the box goes, by line index.
-    let mut cards: Vec<Vec<&DaemonComment>> = vec![Vec::new(); file.lines.len()];
-    if let Some(session) = session {
-        for comment in state
+        // Where each comment, legacy card and the box goes, by line index.
+        let mut cards: HashMap<usize, Vec<DaemonComment>> = HashMap::new();
+        if let Some(session) = session {
+            for comment in state
+                .comments
+                .on_file(&session.id, &diff.repo, &file.path)
+                .into_values()
+                .flatten()
+            {
+                if Some(&comment.id) == box_comment.as_ref() {
+                    continue;
+                }
+                // A review's drafts for GitHub are listed in Submit review and
+                // counted in the footer, so one whose line is in no hunk shown
+                // waits for its hunk rather than sitting under another line
+                // (frame 68).
+                let index = if session.pull_request_review {
+                    exactly_on(&file.lines, comment.anchor.side, comment.anchor.last)
+                } else {
+                    under(&file.lines, comment.anchor.side, comment.anchor.last)
+                };
+                if let Some(index) = index {
+                    cards.entry(index).or_default().push(comment.clone());
+                }
+            }
+        }
+        let mut sent: HashMap<usize, Vec<Comment>> = HashMap::new();
+        for comment in diff
             .comments
-            .on_file(&session.id, &diff.repo, &file.path)
-            .into_values()
-            .flatten()
+            .iter()
+            .filter(|comment| on_path(comment, diff, &file.path))
         {
-            if Some(&comment.id) == box_comment.as_ref() {
-                continue;
-            }
-            // A review's drafts for GitHub are listed in Submit review and
-            // counted in the footer, so one whose line is in no hunk shown
-            // waits for its hunk rather than sitting under another line
-            // (frame 68).
-            let index = if session.pull_request_review {
-                exactly_on(&file.lines, comment.anchor.side, comment.anchor.last)
-            } else {
-                under(&file.lines, comment.anchor.side, comment.anchor.last)
-            };
-            if let Some(index) = index {
-                cards[index].push(comment);
+            if let Some(index) = under(&file.lines, Side::New, comment.line) {
+                sent.entry(index).or_default().push(comment.clone());
             }
         }
-    }
-    let mut sent: Vec<Vec<&Comment>> = vec![Vec::new(); file.lines.len()];
-    for comment in diff
-        .comments
-        .iter()
-        .filter(|comment| on_path(comment, diff, &file.path))
-    {
-        if let Some(index) = under(&file.lines, Side::New, comment.line) {
-            sent[index].push(comment);
+        let box_at = editing.and_then(|b| under(&file.lines, b.anchor.side, b.anchor.last));
+        let offers = match (editing, session) {
+            (Some(b), Some(session)) => {
+                let offers = comment_cards::offers(state, &session.id, &b.anchor.repo);
+                // A draft for GitHub that is being edited can't be drafted again.
+                if held.is_some_and(|held| {
+                    held.comments.iter().any(|c| {
+                        Some(&c.id) == b.comment.as_ref()
+                            && matches!(c.destination, humata2_clients::comments::Destination::PullRequest { .. })
+                    })
+                }) {
+                    offers.without_github()
+                } else {
+                    offers
+                }
+            }
+            _ => comment_cards::BoxOffers::default(),
+        };
+        let focus_index = focus.and_then(|(side, n)| {
+            file.lines
+                .iter()
+                .position(|line| line.kind != LineKind::Hunk && at(line, side, n))
+        });
+        Self {
+            ui: ui.clone(),
+            metrics,
+            wrap: state.review.wrap,
+            shift,
+            agent,
+            reviewing: session.is_some_and(|session| reviewing(state, &session.id)),
+            session: session.map(|session| session.id.clone()),
+            editing: editing.cloned(),
+            offers,
+            box_at,
+            cards,
+            sent,
+            reattaching: documents.reattach().borrow().clone(),
+            start,
+            input: documents.input(),
+            target,
+            lit_color: if look.term == 0xffffff { 0xeaf2ff } else { 0x1c2a3f },
+            focus,
+            focus_index,
         }
     }
-    let box_at = editing.and_then(|b| under(&file.lines, b.anchor.side, b.anchor.last));
 
-    let mut rows = Vec::new();
-    let mut code = Vec::new();
-    for (index, line) in file.lines.iter().enumerate() {
+    /// One item: the line at `index` with the cards under it, as one block.
+    fn item(&self, lines: &[DiffLine], index: usize) -> AnyElement {
+        let (line, cards) = self.line(lines, index);
+        if cards.is_empty() {
+            line
+        } else {
+            col().child(line).children(cards).into_any_element()
+        }
+    }
+
+    /// A card kept inside what can be seen of the code view.
+    fn fit(&self, card: AnyElement) -> AnyElement {
+        div().max_w(px(self.metrics.view_width)).child(card).into_any_element()
+    }
+
+    /// The line at `index` of `lines` (a code line or a hunk header) and the
+    /// cards under it: legacy sent comments, the comments and the open box.
+    fn line(&self, lines: &[DiffLine], index: usize) -> (AnyElement, Vec<AnyElement>) {
+        let Metrics {
+            look,
+            columns,
+            gutter_width,
+            cell_width,
+            line_height,
+            review,
+            ..
+        } = self.metrics;
+        let Some(line) = lines.get(index) else {
+            return (div().into_any_element(), Vec::new());
+        };
         let (sign, bg) = match line.kind {
             LineKind::Added => ("+", Some(look.add)),
             LineKind::Removed => ("−", Some(look.del)),
@@ -2139,25 +2304,26 @@ fn code_rows_focused(
                 .whitespace_nowrap()
                 .text_color(rgb(look.term_dim));
             // PR-19: a review's hunk header offers Ask about the hunk.
-            let ask = target
+            let ask = self
+                .target
                 .as_ref()
-                .filter(|target| reviewing(state, &target.session))
+                .filter(|_| self.reviewing)
                 .and_then(|target| {
-                    let (side, first, last) = span(hunk_lines(&file.lines, index))?;
+                    let (side, first, last) = span(hunk_lines(lines, index))?;
                     let group = SharedString::from(format!("change-hunk-group-{index}"));
                     Some((
                         group.clone(),
                         ask_over(
-                            ui,
+                            &self.ui,
                             look,
                             SharedString::from(format!("change-ask-hunk-{index}")),
                             group,
                             target.session.clone(),
-                            target.anchor(side, first, last),
+                            target.anchor(lines, side, first, last),
                         ),
                     ))
                 });
-            rows.push(match ask {
+            let header = match ask {
                 Some((group, ask)) => div()
                     .id(SharedString::from(format!("change-hunk-{index}")))
                     .group(group)
@@ -2167,18 +2333,17 @@ fn code_rows_focused(
                     .test_support()
                     .into_any_element(),
                 None => header.into_any_element(),
-            });
-            code.push(true);
-            continue;
+            };
+            return (header, Vec::new());
         }
         let (side, number) = side_of(line);
-        let focused = focus_row.is_none()
-            && focus.is_some_and(|(focus_side, n)| at(line, focus_side, n));
+        let focused = self.focus_index == Some(index);
+        let editing = self.editing.as_ref();
         let lit = editing.is_some_and(|b| {
             b.anchor.side == side
                 && number.is_some_and(|n| b.anchor.first <= n && n <= b.anchor.last)
         });
-        let fragments = if state.review.wrap {
+        let fragments = if self.wrap {
             code_wrap::wrapped(&line.text, columns)
         } else {
             vec![code_wrap::unwrapped(&line.text)]
@@ -2196,7 +2361,7 @@ fn code_rows_focused(
             .when(focused, |gutter| {
                 gutter.font_weight(FontWeight::BOLD).text_color(rgb(look.accent))
             });
-        if let (Some(target), Some(n)) = (target.clone(), number) {
+        if let (Some(target), Some(n)) = (self.target.clone(), number) {
             gutter = gutter
                 .role(Role::Button)
                 .aria_label(format!("Comment on line {n}"))
@@ -2206,99 +2371,111 @@ fn code_rows_focused(
                     target.click(side, n, event.modifiers.shift, cx);
                 });
         }
-        let line_row = 
-            row()
-                .id(SharedString::from(format!("change-line-{index}")))
-                .items_start()
-                .w_full()
-                .min_h(px(line_height))
-                .when_some(bg, |row, bg| row.bg(rgb(bg)))
-                .when(lit, |row| row.bg(rgb(lit_color)))
-                .child(gutter.test_support())
-                .child(
-                    text(sign)
-                        .w(px(cell_width))
-                        .h(px(line_height))
-                        .flex_shrink_0()
-                        // Frame 68 draws the sign in the code's first
-                        // cell, a cell clear of the number. A review moves
-                        // it there when that cell is indentation, so it
-                        // never covers code; the columns stay put.
-                        .when(review && line.text.starts_with([' ', '\t']), |sign| {
-                            sign.relative().left(px(cell_width))
-                        })
-                        .text_color(rgb(look.term_text)),
-                )
-                .child(col().flex_1().min_w_0().children(
-                    fragments.into_iter().enumerate().map(|(part, fragment)| {
-                        div()
-                            .id(SharedString::from(format!("change-code-{index}-{part}")))
-                            .h(px(line_height))
-                            .whitespace_nowrap()
-                            .text_color(rgb(look.term_text))
-                            .child(fragment.display)
-                            .test_text(line.text[fragment.source].to_owned())
-                            .test_support()
-                    }),
-                ))
-                .test_support();
-        if focused {
-            focus_row = Some(rows.len());
-            let (_, n) = focus.unwrap_or((side, 0));
-            rows.push(
-                div()
-                    .id(SharedString::from(format!("review-focus-{n}")))
-                    .test_support()
-                    .child(line_row)
-                    .into_any_element(),
-            );
+        let code = col().children(fragments.into_iter().enumerate().map(|(part, fragment)| {
+            div()
+                .id(SharedString::from(format!("change-code-{index}-{part}")))
+                .h(px(line_height))
+                .whitespace_nowrap()
+                .text_color(rgb(look.term_text))
+                .child(fragment.display)
+                .test_text(line.text[fragment.source].to_owned())
+                .test_support()
+        }));
+        // On Scroll the number and sign stay put and only the code column
+        // moves sideways (DIFFVIEW-design › Long lines and the way back).
+        let code = if self.wrap || review {
+            code.flex_1().min_w_0()
         } else {
-            rows.push(line_row.into_any_element());
-        }
-        code.push(true);
-        // Everything after the line until the next one is a card.
-        let cards_from = rows.len();
-        for comment in &sent[index] {
-            rows.push(fit(sent_card(look, comment).into_any_element()));
-        }
-        for comment in &cards[index] {
-            rows.push(fit(comment_cards::card(
-                ui,
-                look,
-                comment,
-                agent,
-                reattaching.as_ref() == Some(&comment.id),
-                &start,
+            col()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .child(code.relative().left(px(-self.shift)))
+        };
+        let line_row = row()
+            .id(SharedString::from(format!("change-line-{index}")))
+            .items_start()
+            .w_full()
+            .min_h(px(line_height))
+            .when_some(bg, |row, bg| row.bg(rgb(bg)))
+            .when(lit, |row| row.bg(rgb(self.lit_color)))
+            .child(gutter.test_support())
+            .child(
+                text(sign)
+                    .w(px(cell_width))
+                    .h(px(line_height))
+                    .flex_shrink_0()
+                    // Frame 68 draws the sign in the code's first
+                    // cell, a cell clear of the number. A review moves
+                    // it there when that cell is indentation, so it
+                    // never covers code; the columns stay put.
+                    .when(review && line.text.starts_with([' ', '\t']), |sign| {
+                        sign.relative().left(px(cell_width))
+                    })
+                    .text_color(rgb(look.term_text)),
             )
-            .into_any_element()));
+            .child(code)
+            .test_support();
+        let line_row = match self.focus.filter(|_| focused) {
+            Some((_, n)) => div()
+                .id(SharedString::from(format!("review-focus-{n}")))
+                .test_support()
+                .child(line_row)
+                .into_any_element(),
+            None => line_row.into_any_element(),
+        };
+        let mut cards = Vec::new();
+        for comment in self.sent.get(&index).into_iter().flatten() {
+            cards.push(self.fit(sent_card(look, comment).into_any_element()));
         }
-        if let (Some(b), Some(session), true) = (editing, session, box_at == Some(index)) {
-            rows.push(fit(comment_cards::open_box(
-                ui,
-                look,
-                &session.id,
-                &b.anchor,
-                &documents.input(),
-                agent,
-                &b.text,
-                &{
-                    let offers = comment_cards::offers(state, &session.id, &b.anchor.repo);
-                    // A draft for GitHub that is being edited can't be drafted again.
-                    if held.is_some_and(|held| {
-                        held.comments.iter().any(|c| {
-                            Some(&c.id) == b.comment.as_ref()
-                                && matches!(c.destination, humata2_clients::comments::Destination::PullRequest { .. })
-                        })
-                    }) {
-                        offers.without_github()
-                    } else {
-                        offers
-                    }
-                },
-            )
-            .into_any_element()));
+        for comment in self.cards.get(&index).into_iter().flatten() {
+            cards.push(self.fit(
+                comment_cards::card(
+                    &self.ui,
+                    look,
+                    comment,
+                    &self.agent,
+                    self.reattaching.as_ref() == Some(&comment.id),
+                    &self.start,
+                )
+                .into_any_element(),
+            ));
         }
-        code.extend(std::iter::repeat_n(false, rows.len() - cards_from));
+        if let (Some(b), Some(session), true) = (editing, self.session.as_ref(), self.box_at == Some(index)) {
+            cards.push(self.fit(
+                comment_cards::open_box(
+                    &self.ui,
+                    look,
+                    session,
+                    &b.anchor,
+                    &self.input,
+                    &self.agent,
+                    &b.text,
+                    &self.offers,
+                )
+                .into_any_element(),
+            ));
+        }
+        (line_row, cards)
     }
-    CodeRows { rows, focus_row, code }
+}
+
+/// The digits of a file's widest line number and its widest line in cells,
+/// as drawn on Scroll (tabs to four-column stops).
+fn line_facts(lines: &[DiffLine]) -> LineFacts {
+    let digits = lines
+        .iter()
+        .flat_map(|l| [l.old, l.new])
+        .flatten()
+        .max()
+        .unwrap_or(1)
+        .to_string()
+        .len();
+    let widest = lines
+        .iter()
+        .filter(|l| l.kind != LineKind::Hunk)
+        .map(|l| code_wrap::unwrapped(&l.text).display.width())
+        .max()
+        .unwrap_or(0);
+    LineFacts { digits, widest }
 }

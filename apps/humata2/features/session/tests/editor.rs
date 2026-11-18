@@ -58,6 +58,7 @@ fn diff() -> FileDiff {
             context(10, 11),
             removed(11, "gone"),
         ],
+        ..FileDiff::default()
     }
 }
 

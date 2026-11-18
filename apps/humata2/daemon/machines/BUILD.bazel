@@ -108,6 +108,12 @@ rust_test(
     ],
 )
 
+# `humata provider import --help` shows the Lima provider as its example.
+exports_files(
+    ["providers/lima.toml"],
+    visibility = ["//apps/humata2/cli:__pkg__"],
+)
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],

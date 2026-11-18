@@ -16,7 +16,7 @@ use humata2_grpc::humata::v1 as pb;
 use tonic::{Code, Status};
 
 use super::{
-    Decided, Entry, Held, Inbox, State, answered_by, id_of, kind_of, lowercase_first, new_id,
+    Decided, Entry, Held, Inbox, State, answered_by, id_of, kind_of, new_id,
     settle, settled,
 };
 use crate::attach;
@@ -196,11 +196,7 @@ fn card(
         state: pb::RequestState::Pending as i32,
         requester: Some(agent.actor()),
         operation: agent.operation(),
-        action_title: format!(
-            "{} asks to {}",
-            agent.title,
-            lowercase_first(asked.capability.label())
-        ),
+        action_title: super::asks_title(&agent.title, asked.capability, false),
         reason: board.as_ref().map(|board| board.reason.clone()).unwrap_or_default(),
         preview: Some(pb::RequestPreview {
             preview: Some(match board {

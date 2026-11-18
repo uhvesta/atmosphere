@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use common::{Attach, Build, Daemon, WAIT, binary, folder, open, state_folder};
 use humata2_fake_machine::{FakeMachine, HOST_KEY};
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{SessionRecord, Store};
+use humata2_store::{ChannelRecord, SessionRecord, Store};
 use serde_json::Value as Json;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
@@ -519,10 +519,24 @@ fn a_first_skills_sync_prints_its_plan_applies_with_its_token_and_the_next_one_h
     assert_eq!(plan["changes"].as_array().map(Vec::len), Some(0), "{}", next.stdout);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn an_agent_cannot_add_or_remove_a_machine_and_sees_none() {
+/// A daemon with one session, and that session's agent token, read from
+/// its own shell tab; the attach keeps the tab open.
+async fn agent_daemon() -> (Daemon, Attach, String) {
     let dir = folder();
     let store = Store::open(state_folder(dir.path()).join("store")).unwrap();
+    store
+        .put_channel(&ChannelRecord {
+            id: "ch_hosts".to_owned(),
+            name: "Hosts".to_owned(),
+            folder: "hosts".to_owned(),
+            branch_prefix: None,
+            default_agent: "zsh".to_owned(),
+            repos: Vec::new(),
+            machines: Vec::new(),
+            revision: 1,
+            created_unix_ms: 0,
+        })
+        .unwrap();
     store
         .put_session(&SessionRecord {
             id: "se_hosts".to_owned(),
@@ -567,6 +581,13 @@ async fn an_agent_cannot_add_or_remove_a_machine_and_sees_none() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
 
+    (daemon, attach, token)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_cannot_add_or_remove_a_machine_and_sees_none() {
+    let (daemon, _attach, token) = agent_daemon().await;
+
     // Adding asks the user first (it is held, or refused); either way it
     // adds nothing.
     let (code, printed) = common::humata_as_agent(
@@ -596,6 +617,41 @@ async fn an_agent_cannot_add_or_remove_a_machine_and_sees_none() {
         printed["result"]["machines"]
             .as_array()
             .is_some_and(|machines| machines.iter().all(|machine| machine["name"] != "box-1")),
+        "{printed}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_reads_the_providers_and_its_import_waits_for_the_user_in_the_inbox() {
+    let (daemon, _attach, token) = agent_daemon().await;
+
+    // Listing and showing are read-only, so an agent gets them.
+    let (code, printed) = common::humata_as_agent(&daemon, &token, &["provider", "ls"]).await;
+    assert_eq!(code, OK, "{printed}");
+    let providers = printed["result"]["providers"].as_array().cloned().unwrap_or_default();
+    assert!(providers.iter().any(|provider| provider["built_in"] == true), "{printed}");
+    let (code, printed) = common::humata_as_agent(&daemon, &token, &["provider", "config", "show"]).await;
+    assert_eq!(code, OK, "{printed}");
+
+    // Importing files an Inbox request the user answers; nothing is added yet.
+    let file = daemon.dir.path().join("box.toml");
+    write(&file, b"[providers.box]\nlabel = \"Box\"\ncreate = 'true'\nconnect = 'sh -c {cmd}'\n");
+    let (code, printed) =
+        common::humata_as_agent(&daemon, &token, &[
+            "provider",
+            "import",
+            file.to_str().unwrap(),
+            "--reason",
+            "the task needs a throwaway box",
+        ])
+        .await;
+    assert_eq!(code, PENDING, "{printed}");
+    let (code, printed) = common::humata(&daemon, &["provider", "ls"]);
+    assert_eq!(code, OK, "{printed}");
+    assert!(
+        printed["result"]["providers"]
+            .as_array()
+            .is_some_and(|providers| providers.iter().all(|provider| provider["id"] != "box")),
         "{printed}"
     );
 }

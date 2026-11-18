@@ -162,6 +162,7 @@ pub(super) fn review_workspace(more: Vec<FileDiff>) -> Workspace {
                     line(LineKind::Added, None, Some(140), "    let cents = amount.round();"),
                     line(LineKind::Context, Some(141), Some(141), "    refund.issue(cents)?;"),
                 ],
+                ..FileDiff::default()
             }]
             .into_iter()
             .chain(more)
@@ -177,6 +178,7 @@ pub(super) fn review_workspace(more: Vec<FileDiff>) -> Workspace {
                 added: 4,
                 removed: 0,
                 lines: Vec::new(),
+                ..FileDiff::default()
             }],
             // Two comments already sent to the agent on acme/ledger (the
             // rail's Diff 2, frame 68); that repo is folded in the frame.
@@ -390,6 +392,7 @@ fn file(path: &str, lines: Vec<DiffLine>) -> FileDiff {
         added: 1,
         removed: 0,
         lines,
+        ..FileDiff::default()
     }
 }
 
@@ -467,4 +470,50 @@ fn files_are_listed_bottom_up() {
             assert!(used.origin.y < user.origin.y);
         })
         .expect("window stays open");
+}
+
+/// The review panel at its narrowest still draws Full screen and Close
+/// inside its edge; the PR line ellipsizes instead.
+#[test]
+fn a_narrow_review_panel_keeps_full_screen_and_close() {
+    let mut app = review();
+    shown(&mut app);
+    app.send(AppAction::Pane(PaneAction::Drag(PaneId::Panel, 220.)));
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let panel = window.find("side-panel").bounds();
+            let right = panel.origin.x + panel.size.width;
+            for id in ["expand-panel", "close-panel"] {
+                let button = window.find(id).bounds();
+                assert!(button.size.width > px(0.), "{id} is drawn");
+                assert!(button.origin.x + button.size.width <= right + px(0.5), "{id} fits");
+            }
+        })
+        .unwrap();
+}
+
+/// Full screen, then Show the terminal: the review goes back beside the
+/// terminal with the same file open.
+#[test]
+fn show_the_terminal_returns_the_review_beside_the_terminal() {
+    let mut app = review();
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    drafts(&app);
+    shown(&mut app);
+    agent_focuses(&mut app, 1, "src/refund.rs", 140);
+    app.click("expand-panel");
+    assert!(app.contains("show-terminal"));
+    app.snapshot("68b-pr-review-full-screen");
+    app.click("show-terminal");
+    assert!(!app.contains("show-terminal"));
+    assert!(app.contains("expand-panel"));
+    let picked = app.ui.read(|state| {
+        state.review.saved.selected.get(&SessionId::new(REVIEW)).cloned()
+    });
+    assert_eq!(
+        picked,
+        Some(("acme/api".to_owned(), "src/refund.rs".to_owned()))
+    );
+    app.snapshot("68c-pr-review-after-show-terminal");
 }

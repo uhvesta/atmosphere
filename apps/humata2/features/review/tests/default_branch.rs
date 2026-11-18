@@ -31,6 +31,7 @@ fn change() -> RepoDiff {
                 new: Some(1),
                 text: "fn a() {}".to_owned(),
             }],
+            ..FileDiff::default()
         }],
         comments: Vec::new(),
     }

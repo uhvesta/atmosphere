@@ -47,6 +47,7 @@ pub struct Shell {
     applied_theme: Option<humata2_settings::Theme>,
     files_name: Entity<InputState>,
     machine_inputs: crate::machine_page::MachinePageInputs,
+    providers_inputs: crate::settings::ProvidersInputs,
     _appearance: Subscription,
     _focus_lost: Subscription,
     viewport: f32,
@@ -124,6 +125,7 @@ impl Shell {
             window,
             cx,
         );
+        let providers_inputs = crate::settings::ProvidersInputs::new(&ui, window, cx);
         let appearance_ui = ui.clone();
         let appearance = window.observe_window_appearance(move |window, cx| {
             if appearance_ui
@@ -170,6 +172,7 @@ impl Shell {
             applied_theme: None,
             files_name,
             machine_inputs,
+            providers_inputs,
             _appearance: appearance,
             _focus_lost: focus_lost,
             viewport: 0.,
@@ -489,6 +492,7 @@ impl Render for Shell {
                     &self.terminals,
                     &self.documents,
                     &self.machine_inputs,
+                    &self.providers_inputs,
                     window,
                     cx,
                 )

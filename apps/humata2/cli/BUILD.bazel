@@ -18,10 +18,17 @@ rust_library(
         ["src/**/*.rs"],
         exclude = ["src/main.rs"],
     ),
-    compile_data = [":descriptors"],
+    compile_data = [
+        ":descriptors",
+        # The example in `provider import --help`.
+        "//apps/humata2/daemon/machines:providers/lima.toml",
+    ],
     crate_name = "humata2_cli",
     crate_root = "src/lib.rs",
-    rustc_env = {"HUMATA2_DESCRIPTORS": "$(execpath :descriptors)"},
+    rustc_env = {
+        "HUMATA2_DESCRIPTORS": "$(execpath :descriptors)",
+        "HUMATA2_LIMA_PROVIDER": "$(execpath //apps/humata2/daemon/machines:providers/lima.toml)",
+    },
     deps = [
         "//apps/humata2/api/proto:humata2_rust",
         "//apps/humata2/chunk:humata2_chunk",

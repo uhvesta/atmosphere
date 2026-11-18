@@ -52,6 +52,7 @@ fn change(repo: &str, path: &str, text: &str) -> RepoDiff {
                     text: text.to_owned(),
                 },
             ],
+            ..FileDiff::default()
         }],
         comments: Vec::new(),
     }

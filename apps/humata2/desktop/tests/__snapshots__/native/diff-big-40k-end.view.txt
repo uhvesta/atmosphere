@@ -1,0 +1,253 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" selected expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" expanded
+    Button "Fold"
+  TreeItem "acme/api #482"
+  TreeItem "web"
+    Button "Fold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Changes"
+  Button "Against main"
+    text "main"
+  text "Diff"
+  text "against"
+  Button "Expand panel"
+  Button "Close panel"
+  #changes-files
+    text "3 files · 2 repos"
+    Button "Add repo…"
+    text "+20122"
+    text "−20003"
+    text "ledger"
+    text "ledger-schema"
+    text "+41"
+    text "−0"
+    Button "ledger: against main" description="ledger: against main · change"
+    Button "Push & PR: ledger"
+    ListBoxOption "ledger/migrations/0042_accounts.sql"
+      text "migrations/0042_accounts.sql"
+      text "+41"
+      text "−0"
+    text "api"
+    text "ledger-schema"
+    text "+20081"
+    text "−20003"
+    Button "api: against main" description="api: against main · change"
+    Button "Push & PR: api"
+    ListBoxOption "api/src/client.rs" selected
+      text "src/client.rs"
+      text "1"
+      text "+20000"
+      text "−20000"
+    ListBoxOption "api/src/entry.rs"
+      text "src/entry.rs"
+      text "+81"
+      text "−3"
+  text "api/src/client.rs"
+  text "Open in editor"
+  Code "api/src/client.rs"
+    #change-line-39976
+      Button "Comment on line 19976"
+        text "19976"
+      text "+"
+      #change-code-39976-0
+        text "let new_19976 = 19976;"
+    #change-line-39977
+      Button "Comment on line 19977"
+        text "19977"
+      text "+"
+      #change-code-39977-0
+        text "let new_19977 = 19977;"
+    #change-line-39978
+      Button "Comment on line 19978"
+        text "19978"
+      text "+"
+      #change-code-39978-0
+        text "let new_19978 = 19978;"
+    #change-line-39979
+      Button "Comment on line 19979"
+        text "19979"
+      text "+"
+      #change-code-39979-0
+        text "let new_19979 = 19979;"
+    #change-line-39980
+      Button "Comment on line 19980"
+        text "19980"
+      text "+"
+      #change-code-39980-0
+        text "let new_19980 = 19980;"
+    #change-line-39981
+      Button "Comment on line 19981"
+        text "19981"
+      text "+"
+      #change-code-39981-0
+        text "let new_19981 = 19981;"
+    #change-line-39982
+      Button "Comment on line 19982"
+        text "19982"
+      text "+"
+      #change-code-39982-0
+        text "let new_19982 = 19982;"
+    #change-line-39983
+      Button "Comment on line 19983"
+        text "19983"
+      text "+"
+      #change-code-39983-0
+        text "let new_19983 = 19983;"
+    #change-line-39984
+      Button "Comment on line 19984"
+        text "19984"
+      text "+"
+      #change-code-39984-0
+        text "let new_19984 = 19984;"
+    #change-line-39985
+      Button "Comment on line 19985"
+        text "19985"
+      text "+"
+      #change-code-39985-0
+        text "let new_19985 = 19985;"
+    #change-line-39986
+      Button "Comment on line 19986"
+        text "19986"
+      text "+"
+      #change-code-39986-0
+        text "let new_19986 = 19986;"
+    #change-line-39987
+      Button "Comment on line 19987"
+        text "19987"
+      text "+"
+      #change-code-39987-0
+        text "let new_19987 = 19987;"
+    #change-line-39988
+      Button "Comment on line 19988"
+        text "19988"
+      text "+"
+      #change-code-39988-0
+        text "let new_19988 = 19988;"
+    #change-line-39989
+      Button "Comment on line 19989"
+        text "19989"
+      text "+"
+      #change-code-39989-0
+        text "let new_19989 = 19989;"
+    #change-line-39990
+      Button "Comment on line 19990"
+        text "19990"
+      text "+"
+      #change-code-39990-0
+        text "let new_19990 = 19990;"
+    #change-line-39991
+      Button "Comment on line 19991"
+        text "19991"
+      text "+"
+      #change-code-39991-0
+        text "let new_19991 = 19991;"
+    #change-line-39992
+      Button "Comment on line 19992"
+        text "19992"
+      text "+"
+      #change-code-39992-0
+        text "let new_19992 = 19992;"
+    #change-line-39993
+      Button "Comment on line 19993"
+        text "19993"
+      text "+"
+      #change-code-39993-0
+        text "let new_19993 = 19993;"
+    #change-line-39994
+      Button "Comment on line 19994"
+        text "19994"
+      text "+"
+      #change-code-39994-0
+        text "let new_19994 = 19994;"
+    #change-line-39995
+      Button "Comment on line 19995"
+        text "19995"
+      text "+"
+      #change-code-39995-0
+        text "let new_19995 = 19995;"
+    #change-line-39996
+      Button "Comment on line 19996"
+        text "19996"
+      text "+"
+      #change-code-39996-0
+        text "let new_19996 = 19996;"
+    #change-line-39997
+      Button "Comment on line 19997"
+        text "19997"
+      text "+"
+      #change-code-39997-0
+        text "let new_19997 = 19997;"
+    #change-line-39998
+      Button "Comment on line 19998"
+        text "19998"
+      text "+"
+      #change-code-39998-0
+        text "let new_19998 = 19998;"
+    #change-line-39999
+      Button "Comment on line 19999"
+        text "19999"
+      text "+"
+      #change-code-39999-0
+        text "let new_19999 = 19999;"
+    #change-line-40000
+      Button "Comment on line 20000"
+        text "20000"
+      text "+"
+      #change-code-40000-0
+        text "let new_20000 = 20000;"
+  text "0 draft comments"
+Toolbar "Session panels"
+  Button "Inbox"
+    Status "Inbox: 2"
+  Button "Diff"
+    Status "Diff: 1"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Link "Open channel"
+Button "Fork"
+Button "Expand terminal"
+Button "Toggle side panel"
+Button "Session actions"
+Button "Open it"
+Button "Later"
+Button "Not now"
+Tab "claude" selected
+  Button "Close claude"
+Tab "zsh"
+  Button "Close zsh"
+Button "New terminal"
+Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n\n\n\n"
+  text "~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n\n\n\n\n\n"
+  #terminal-replica
+    #terminal-pane
+      #terminal focused

@@ -1103,8 +1103,22 @@ pub struct DiffLine {
     pub text: String,
 }
 
+/// What a changed file did to its path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FileChange {
+    /// It is new.
+    Added,
+    /// Its contents changed.
+    #[default]
+    Modified,
+    /// It is gone.
+    Deleted,
+    /// It moved, and may have changed too.
+    Renamed,
+}
+
 /// A changed file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileDiff {
     /// Its path in the repository.
     pub path: String,
@@ -1114,6 +1128,16 @@ pub struct FileDiff {
     pub removed: u32,
     /// Its lines.
     pub lines: Vec<DiffLine>,
+    /// What happened to the file.
+    pub change: FileChange,
+    /// Where the file was before, set only for a rename.
+    pub old_path: Option<String>,
+    /// git's rename score, 0 to 100, for a rename; 0 otherwise.
+    pub similarity: u32,
+    /// Whether git sees the file as binary, so it has no lines.
+    pub binary: bool,
+    /// Why this file's lines could not be read; `None` when they could.
+    pub error: Option<String>,
 }
 
 /// A review comment on a diff line (RV-4).

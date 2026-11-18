@@ -86,6 +86,7 @@ fn open_loads_the_choices_and_picks_the_first_host() {
                 default: "cx22".to_owned(),
                 required: true,
             }],
+            unset: Vec::new(),
         }],
     });
     store.send(A::Open, |_| {});
@@ -123,6 +124,7 @@ fn a_provider_add_sends_its_params_and_name() {
                 default: "cx22".to_owned(),
                 required: true,
             }],
+            unset: Vec::new(),
         }],
     });
     fake.script_add(added_events("build-box"));
@@ -139,6 +141,39 @@ fn a_provider_add_sends_its_params_and_name() {
     assert_eq!(request.name.as_deref(), Some("build-box"));
     assert!(matches!(&request.target, AddTarget::Provider { provider, params }
         if provider == "hcloud" && params.get("size").map(String::as_str) == Some("cx22")));
+}
+
+fn open_on_cloud(unset: &[&str]) -> AddMachineState {
+    AddMachineState {
+        open: true,
+        providers: vec![Provider {
+            id: "hcloud".to_owned(),
+            label: "Cloud VM".to_owned(),
+            interactive: false,
+            params: vec![],
+            unset: unset.iter().map(|name| (*name).to_owned()).collect(),
+        }],
+        choice: Some(Choice::Provider { id: "hcloud".to_owned(), params: std::collections::BTreeMap::new() }),
+        ..AddMachineState::default()
+    }
+}
+
+#[test]
+fn a_provider_with_unset_variables_names_them_and_does_not_start() {
+    let (mut store, fake) = store(open_on_cloud(&["HCLOUD_TOKEN", "SSH_KEY"]));
+    let needs = store.state().needs_variables().unwrap_or_default();
+    assert!(needs.contains("HCLOUD_TOKEN") && needs.contains("SSH_KEY"), "{needs}");
+    store.send(A::Start, |_| {});
+    assert!(!store.state().running);
+    assert!(!fake.calls().iter().any(|call| matches!(call, Call::Add(_))));
+    assert_eq!(open_on_cloud(&[]).needs_variables(), None);
+}
+
+#[test]
+fn manage_providers_closes_the_dialog_and_asks_for_settings() {
+    let (mut store, _fake) = store(open_on_cloud(&["HCLOUD_TOKEN"]));
+    store.send(A::ManageProviders, |state| *state = AddMachineState::default());
+    store.receive(A::Delegate(Delegate::ManageProviders), |_| {});
 }
 
 #[test]
@@ -543,6 +578,7 @@ fn provider_state() -> AddMachineState {
             label: "Corporate SSH".to_owned(),
             interactive: true,
             params: vec![],
+            unset: Vec::new(),
         }],
         choice: Some(Choice::Provider {
             id: "corp-ssh".to_owned(),

@@ -53,6 +53,7 @@ pub(crate) fn against(repo: &str, branch: &str) -> Option<Vec<FileDiff>> {
                     ],
                     0,
                 ),
+                ..FileDiff::default()
             };
             let client = FileDiff {
                 path: "src/client.rs".to_owned(),
@@ -68,6 +69,7 @@ pub(crate) fn against(repo: &str, branch: &str) -> Option<Vec<FileDiff>> {
                     ],
                     43,
                 ),
+                ..FileDiff::default()
             };
             let docs = FileDiff {
                 path: "docs/auth.md".to_owned(),
@@ -82,6 +84,7 @@ pub(crate) fn against(repo: &str, branch: &str) -> Option<Vec<FileDiff>> {
                     ],
                     0,
                 ),
+                ..FileDiff::default()
             };
             Some(vec![token, client, docs])
         }
@@ -139,6 +142,7 @@ pub(super) fn diffs() -> Vec<RepoDiff> {
             ],
             39,
         ),
+        ..FileDiff::default()
     };
     let retry = FileDiff {
         path: "src/retry.rs".to_owned(),
@@ -153,6 +157,7 @@ pub(super) fn diffs() -> Vec<RepoDiff> {
             ],
             0,
         ),
+        ..FileDiff::default()
     };
     let form = FileDiff {
         path: "src/auth/SignIn.tsx".to_owned(),
@@ -171,6 +176,7 @@ pub(super) fn diffs() -> Vec<RepoDiff> {
             ],
             9,
         ),
+        ..FileDiff::default()
     };
     let tokens = FileDiff {
         path: "tokens/color.json".to_owned(),
@@ -188,6 +194,7 @@ pub(super) fn diffs() -> Vec<RepoDiff> {
             ],
             2,
         ),
+        ..FileDiff::default()
     };
     vec![
         RepoDiff {

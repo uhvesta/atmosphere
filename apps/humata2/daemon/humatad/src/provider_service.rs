@@ -8,8 +8,10 @@
 //!
 //! The providers file is `providers.toml` beside `hosts.json`, replaced
 //! whole. Its revision is a hash of its text, so it survives restarts and
-//! a stale editor is refused. Agents see no providers and set none (MP-23);
-//! an agent may only ask the user to import a file, in the Inbox (D792).
+//! a stale editor is refused. Agents may read the providers and the file
+//! (which holds host variable names, never their values) but set none
+//! (MP-23); an agent may only ask the user to import a file, in the Inbox
+//! (D792).
 //!
 //! A machine's `create` that ran leaves what it made if a later step
 //! fails; the failed operation remembers which provider and params made
@@ -48,6 +50,13 @@ use crate::status;
 
 mod ask;
 mod import;
+mod remove;
+
+/// What an agent refused a providers change can do instead.
+const SETTINGS_FIX: &str = "ask the user to make the change in Settings › Machines › Providers; to have them add a provider file, use provider_import (humata provider import <file>), which asks them in the Inbox";
+
+/// What an agent refused an import can do instead.
+const IMPORT_FIX: &str = "use provider_import (humata provider import <file>), which asks the user in the Inbox, or ask the user to paste the file in Settings › Machines › Providers › Import provider…";
 
 /// What a failed create left, for DeleteWhatWasMade.
 struct Left {
@@ -333,10 +342,13 @@ impl ProviderSvc {
     }
 
     /// The user only (agents and scripts are refused), for the providers
-    /// file: it is a list of commands Humata will run.
-    fn require_settings(&self, caller: &Caller) -> Result<(), Status> {
-        if matches!(caller, Caller::Peer) {
-            return Err(status::refused(&Refusal::PeerCannotCall));
+    /// file: it is a list of commands Humata will run. An agent is told the
+    /// user does `what` in Settings › Machines › Providers, and `fix`.
+    fn require_settings(&self, caller: &Caller, what: &str, fix: &str) -> Result<(), Status> {
+        match caller {
+            Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
+            Caller::Agent(_) => return Err(status::user_only_call(Capability::SettingsChange, what, fix)),
+            Caller::User(_) | Caller::Script(_) => {}
         }
         self.guard.require(
             caller,
@@ -387,7 +399,7 @@ impl ProviderSvc {
                     pb::EntityKind::Provider,
                     id,
                     format!("there is no provider {id} in the providers file"),
-                    "add it in Settings › Machine providers, or pick one of the listed providers",
+                    "add it in Settings › Machines › Providers, or pick one of the listed providers",
                 )
             })
     }
@@ -417,7 +429,7 @@ fn file_status(error: ProvidersFileError) -> Status {
             Code::FailedPrecondition,
             status::error(
                 message,
-                "fix the providers in Settings › Machine providers; the file on disk was left as it is",
+                "fix the providers in Settings › Machines › Providers; the file on disk was left as it is",
                 pb::error::Kind::InvalidField(pb::InvalidField {
                     field: "toml".to_owned(),
                     problem: pb::invalid_field::Problem::BadFormat as i32,
@@ -530,7 +542,7 @@ fn problems_of(error: &ConfigError) -> Vec<pb::ProviderConfigProblem> {
                 error: Some(invalid(
                     &problem.field,
                     problem.to_string(),
-                    "change that field in Settings › Machine providers, then save again",
+                    "change that field in Settings › Machines › Providers, then save again",
                 )),
             })
             .collect(),
@@ -572,6 +584,8 @@ fn provider_of(provider: &Provider) -> pb::Provider {
         interactive: provider.interactive(),
         run_on: provider.run_on().map(machine_id),
         built_in: provider.built_in(),
+        // ListProviders fills these; other replies leave them empty.
+        ..Default::default()
     }
 }
 
@@ -583,7 +597,7 @@ fn no_command_to_run_by_hand(provider: &str, machine: &str) -> Status {
                 "the {provider} provider has no `delete` command, so Humata can't remove what its create made for {machine}"
             ),
             format!(
-                "remove {machine} with the provider's own tool; or add `delete` to the provider in Settings › Machine providers and try again"
+                "remove {machine} with the provider's own tool; or add `delete` to the provider in Settings › Machines › Providers and try again"
             ),
             pb::error::Kind::InvalidField(pb::InvalidField {
                 field: "operation".to_owned(),
@@ -595,26 +609,114 @@ fn no_command_to_run_by_hand(provider: &str, machine: &str) -> Status {
 
 #[tonic::async_trait]
 impl pb::provider_service_server::ProviderService for ProviderSvc {
-    /// The user sees every provider; an agent sees none (MP-23).
+    /// Every provider, for the user and agents alike: ids, labels, params,
+    /// actions, every command it runs (built-ins too), the host variables it
+    /// reads with whether each is set on this Mac, and the machines it made.
+    /// No variable's value is ever listed: an agent sees `‹NAME›` where one
+    /// was pasted into a command, as GetProvidersConfig shows it.
     async fn list_providers(
         &self,
         request: Request<pb::ListProvidersRequest>,
     ) -> Result<Response<pb::ListProvidersResponse>, Status> {
-        let providers = match identity::caller(&request)? {
-            Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
-            Caller::Agent(_) | Caller::Script(_) => Vec::new(),
-            Caller::User(_) => self.providers()?.iter().map(provider_of).collect(),
+        let caller = identity::caller(&request)?;
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        // No store means no variable is set and none can leak, so the list
+        // still answers; a store that fails to read is an error.
+        let variables = crate::host_vars::HostVars::installed().ok();
+        let set: std::collections::BTreeSet<String> = match &variables {
+            Some(variables) => variables.names().map_err(|error| error.status())?.into_iter().collect(),
+            None => std::collections::BTreeSet::new(),
         };
+        let scrubber = if matches!(caller, Caller::User(_)) {
+            None
+        } else if let Some(variables) = &variables {
+            let values = variables.values().map_err(|error| {
+                status::internal(
+                    format!(
+                        "couldn't read this Mac's host variables, so the providers' commands weren't shown to the agent (one could hold a value): {}",
+                        status::chain(&error)
+                    ),
+                    "",
+                )
+            })?;
+            Some(humata2_mirror::Scrubber::new(values))
+        } else {
+            None
+        };
+        let mut using = BTreeMap::<String, Vec<String>>::new();
+        for entry in self.work.machines.list().map_err(|error| status_of(&error))? {
+            if let Some(record) = entry.provider {
+                using.entry(record.id).or_default().push(entry.name);
+            }
+        }
+        let providers = self
+            .providers()?
+            .iter()
+            .map(|provider| {
+                let mut listed = provider_of(provider);
+                listed.commands = provider
+                    .commands()
+                    .into_iter()
+                    .map(|(action, command)| pb::ProviderCommand {
+                        action: action.to_owned(),
+                        command: scrubber
+                            .as_ref()
+                            .map_or_else(|| command.to_owned(), |scrubber| scrubber.scrub(command)),
+                    })
+                    .collect();
+                let mut seen = std::collections::BTreeSet::new();
+                listed.variables = provider
+                    .env()
+                    .iter()
+                    .filter(|name| seen.insert(name.as_str()))
+                    .map(|name| pb::ProviderVariable {
+                        name: name.clone(),
+                        set: set.contains(name),
+                    })
+                    .collect();
+                listed.machines = using
+                    .remove(provider.id())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|name| machine_id(&name))
+                    .collect();
+                listed
+            })
+            .collect();
         Ok(Response::new(pb::ListProvidersResponse { providers }))
     }
 
+    /// The providers file as saved, for anyone but a peer: a read, so
+    /// agents may make it too. The file names host variables but their
+    /// values live only in the host variable store; should a value have
+    /// been pasted into a command anyway, an agent sees `‹NAME›` in its
+    /// place. Changing the file stays the user's (SetProvidersConfig,
+    /// ImportProvider).
     async fn get_providers_config(
         &self,
         request: Request<pb::GetProvidersConfigRequest>,
     ) -> Result<Response<pb::ProvidersConfig>, Status> {
         let caller = identity::caller(&request)?;
-        self.require_settings(&caller)?;
-        let (toml, value) = current_revision(&self.work)?;
+        if matches!(caller, Caller::Peer) {
+            return Err(status::refused(&Refusal::PeerCannotCall));
+        }
+        let (mut toml, value) = current_revision(&self.work)?;
+        if !matches!(caller, Caller::User(_)) {
+            let values = crate::host_vars::HostVars::installed()
+                .and_then(|variables| variables.values())
+                .map_err(|error| {
+                    status::internal(
+                        format!(
+                            "couldn't read this Mac's host variables, so the providers file wasn't shown to the agent (it could hold one of their values): {}",
+                            status::chain(&error)
+                        ),
+                        "",
+                    )
+                })?;
+            toml = humata2_mirror::Scrubber::new(values).scrub(&toml);
+        }
         Ok(Response::new(pb::ProvidersConfig {
             toml,
             revision: Some(pb::Revision { value }),
@@ -629,7 +731,7 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
         request: Request<pb::SetProvidersConfigRequest>,
     ) -> Result<Response<pb::SetProvidersConfigResponse>, Status> {
         let caller = identity::caller(&request)?;
-        self.require_settings(&caller)?;
+        self.require_settings(&caller, "changing the machine providers", SETTINGS_FIX)?;
         self.require_present(&caller, Capability::SettingsChange)?;
         let request = request.into_inner();
         let (_, current) = current_revision(&self.work)?;
@@ -681,7 +783,7 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
         request: Request<pb::PreviewProviderImportRequest>,
     ) -> Result<Response<pb::ProviderImportPlan>, Status> {
         let caller = identity::caller(&request)?;
-        self.require_settings(&caller)?;
+        self.require_settings(&caller, "reviewing a provider file to import", IMPORT_FIX)?;
         let request = request.into_inner();
         let text = String::from_utf8(request.file).map_err(|_| {
             status::invalid_field(
@@ -740,7 +842,7 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
         request: Request<pb::ImportProviderRequest>,
     ) -> Result<Response<pb::SetProvidersConfigResponse>, Status> {
         let caller = identity::caller(&request)?;
-        self.require_settings(&caller)?;
+        self.require_settings(&caller, "importing a machine provider", IMPORT_FIX)?;
         self.require_present(&caller, Capability::SettingsChange)?;
         let token = request
             .into_inner()
@@ -823,6 +925,70 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
             move || async move { write_asked(&work, &merged, base).map(Gated::Done) },
         )
         .await
+    }
+
+    /// PROVIDERS: takes an imported provider out of the providers file, with
+    /// the user at the Mac. A built-in provider stays, and so does one that
+    /// machines still use: those machines are named, to delete first.
+    async fn remove_provider(
+        &self,
+        request: Request<pb::RemoveProviderRequest>,
+    ) -> Result<Response<pb::SetProvidersConfigResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        self.require_settings(
+            &caller,
+            "removing a machine provider",
+            "ask the user to remove it in Settings › Machines › Providers",
+        )?;
+        self.require_present(&caller, Capability::SettingsChange)?;
+        let id = request
+            .into_inner()
+            .provider
+            .map(|provider| provider.value)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| status::missing("provider"))?;
+        let (_, configured) = read_providers(self.work.machines.hosts_file()).map_err(file_status)?;
+        let Some(provider) = configured.iter().find(|provider| provider.id() == id) else {
+            // Not in the file: a built-in one, or none at all.
+            let provider = self.provider(&id)?;
+            return Err(remove::built_in(provider.label()));
+        };
+        let mut using: Vec<String> = self
+            .work
+            .machines
+            .list()
+            .map_err(|error| status_of(&error))?
+            .into_iter()
+            .filter(|entry| entry.provider.as_ref().is_some_and(|record| record.id == id))
+            .map(|entry| entry.name)
+            .collect();
+        using.sort();
+        if !using.is_empty() {
+            return Err(remove::in_use(provider.label(), &using));
+        }
+        let (text, _) = current_revision(&self.work)?;
+        let removed = remove::without(&text, &id).map_err(|error| {
+            status::internal(
+                format!("couldn't take {id} out of the providers file, so nothing was removed: {error}"),
+                "",
+            )
+        })?;
+        let path = providers_path(self.work.machines.hosts_file());
+        write_whole(&path, &removed).map_err(|source| {
+            status::internal(
+                format!(
+                    "couldn't save the providers file {}: {source}. Free some disk space or fix the folder's permissions, then remove the provider again",
+                    path.display()
+                ),
+                "",
+            )
+        })?;
+        Ok(Response::new(pb::SetProvidersConfigResponse {
+            problems: Vec::new(),
+            revision: Some(pb::Revision {
+                value: revision(&removed, true),
+            }),
+        }))
     }
 
     /// Checks the provider, the name and the params before anything runs,

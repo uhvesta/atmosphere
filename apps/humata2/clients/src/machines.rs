@@ -11,8 +11,10 @@ use crate::daemon::{DaemonError, Reply};
 use crate::model::{Agent, Capability, ChannelId, MachineId, MachineStop, RootPlan, RuleSetting, SessionId};
 
 pub mod fake;
+mod providers;
 
 pub use fake::{Call, FakeMachines};
+pub use providers::{ProviderCommand, ProviderEntry, ProviderImportPlan, ProviderProblem, ProviderVariable};
 
 /// An add in progress on a daemon. Asking again with it retries the same add.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -59,6 +61,9 @@ pub struct Provider {
     pub interactive: bool,
     /// What it asks for.
     pub params: Vec<ProviderParam>,
+    /// The host variables its commands read that aren't set on this Mac:
+    /// an add can't start until they are (Settings › Machines).
+    pub unset: Vec<String>,
 }
 
 /// What the add form offers.
@@ -693,6 +698,24 @@ pub trait Machines: Send + Sync + 'static {
     /// The host's run log for a machine, newest first, at most `limit` (0
     /// for the daemon's default); only `rule`'s when given.
     fn script_runs(&self, machine: &MachineId, rule: Option<&str>, limit: u32) -> Reply<Vec<ScriptRun>>;
+    /// Every provider, built in and imported, with its commands, the host
+    /// variables they read and whether each is set, and the machines it
+    /// made (PROVIDERS). Never a variable's value.
+    fn providers(&self) -> Reply<Vec<ProviderEntry>>;
+    /// What importing the provider file `text` would add, or what is wrong
+    /// with it (MP-23). Adds nothing.
+    fn preview_provider_import(&self, text: &str) -> Reply<ProviderImportPlan>;
+    /// Adds exactly what `plan` showed. Refused when the providers changed
+    /// since the preview, or the plan had problems.
+    fn import_provider(&self, plan: &ProviderImportPlan) -> Reply<()>;
+    /// Removes an imported provider. Refused for a built-in one and while
+    /// machines it made are still there.
+    fn remove_provider(&self, provider: &str) -> Reply<()>;
+    /// Keeps `value` for the host variable `name` on this Mac, where
+    /// provider commands run. The value goes in and never comes back.
+    fn set_provider_variable(&self, name: &str, value: &str) -> Reply<()>;
+    /// Removes the host variable `name` on this Mac.
+    fn clear_provider_variable(&self, name: &str) -> Reply<()>;
 }
 
 #[cfg(test)]

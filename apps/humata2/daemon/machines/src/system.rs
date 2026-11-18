@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, Signal};
 
-use crate::error::RunError;
+use crate::error::{HostVariablesError, RunError};
 use crate::name::BASELINE;
 use crate::runner::{EnvValue, Exit, Invocation, Output, Runner};
 
@@ -23,13 +23,15 @@ const MAX_OUTPUT: usize = 8 << 20;
 /// Where the runner looks up host variables. The values stay in memory: the
 /// runner sets them on the child and replaces them in what it printed.
 pub trait HostVariables {
-    fn value(&self, name: &str) -> Option<String>;
+    /// `name`'s value, or `None` when it isn't set. A store that can't be
+    /// read is an error, never "not set".
+    fn value(&self, name: &str) -> Result<Option<String>, HostVariablesError>;
 }
 
 /// No host variables at all.
 impl HostVariables for () {
-    fn value(&self, _name: &str) -> Option<String> {
-        None
+    fn value(&self, _name: &str) -> Result<Option<String>, HostVariablesError> {
+        Ok(None)
     }
 }
 
@@ -74,11 +76,16 @@ impl Runner for SystemRunner<'_> {
                     command.env(name, value);
                 }
                 EnvValue::HostVariable(variable) => {
-                    let value = self.variables.value(variable).ok_or_else(|| {
-                        RunError::MissingHostVariable {
+                    let value = self
+                        .variables
+                        .value(variable)
+                        .map_err(|source| RunError::UnreadableHostVariable {
                             name: variable.clone(),
-                        }
-                    })?;
+                            source,
+                        })?
+                        .ok_or_else(|| RunError::MissingHostVariable {
+                            name: variable.clone(),
+                        })?;
                     command.env(name, &value);
                     secrets.push((variable.clone(), value));
                 }

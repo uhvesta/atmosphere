@@ -110,6 +110,14 @@ pub(crate) struct AddMachineDialog {
     io: mpsc::UnboundedSender<Io>,
     /// What Enter does now; the view sets it as it draws.
     enter: Rc<RefCell<Option<AppAction>>>,
+    /// The dialog's own focus scope. The trap tracks it, not an input's
+    /// handle: an input's handle registered on the card too would make
+    /// every press on the card (and every focus restore inside it) land in
+    /// that input instead of the one clicked.
+    trap: FocusHandle,
+    /// The provider the pop-up picked when focus last moved into its
+    /// fields, so a pick moves focus once and typing stays where it is.
+    focused_pick: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -205,12 +213,15 @@ impl AddMachineDialog {
             terminal_error: None,
             io,
             enter,
+            trap: cx.focus_handle(),
+            focused_pick: None,
             _subscriptions: subscriptions,
         }
     }
 
     /// Puts the keyboard in the dialog's first input, as the dialog opens.
-    pub(crate) fn focus(&self, window: &mut Window, cx: &mut App) {
+    pub(crate) fn focus(&mut self, window: &mut Window, cx: &mut App) {
+        self.focused_pick = None;
         self.host
             .input
             .update(cx, |input, cx| input.focus(window, cx));
@@ -346,36 +357,41 @@ impl AddMachineDialog {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
             );
-        let (body, handle) = if let Some(unattended) = &state.unattended {
+        let body = if let Some(unattended) = &state.unattended {
             *self.enter.borrow_mut() = Some(wrap(AddMachineAction::MakeUnattended));
             let name = state.display_name().unwrap_or("this machine");
-            (
-                Self::unattended(body, state, unattended, name, look, &ui, wrap),
-                self.host.input.focus_handle(cx),
-            )
+            Self::unattended(body, state, unattended, name, look, &ui, wrap)
         } else if let Some(login) = &state.login {
             *self.enter.borrow_mut() = None;
-            let handle = match &self.terminal {
-                Some(terminal) => terminal.pane.read(cx).focus_handle(cx),
-                None => self.host.input.focus_handle(cx),
-            };
-            (
-                self.login(
-                    body,
-                    state,
-                    login.finishing,
-                    login.error.as_deref(),
-                    look,
-                    &ui,
-                ),
-                handle,
+            self.login(
+                body,
+                state,
+                login.finishing,
+                login.error.as_deref(),
+                look,
+                &ui,
             )
         } else {
-            let body = self.main(body, state, look, window, cx);
-            (body, self.host.input.focus_handle(cx))
+            self.main(body, state, look, window, cx)
         };
+        // With focus on the card (after a failed step, or the unattended offer)
+        // rather than in an input, Enter does what `self.enter` says, as the
+        // inputs' PressEnter does.
+        let (keys, enter, trap) = (ui.clone(), self.enter.clone(), self.trap.clone());
+        let body = body.on_key_down(move |event, window, cx| {
+            if event.keystroke.key == "enter"
+                && !event.keystroke.modifiers.modified()
+                && trap.is_focused(window)
+            {
+                let action = enter.borrow().clone();
+                if let Some(action) = action {
+                    cx.stop_propagation();
+                    keys.send(action, cx);
+                }
+            }
+        });
         body.test_support()
-            .focus_trap("add-machine-trap", &handle)
+            .focus_trap("add-machine-trap", &self.trap)
             .into_any_element()
     }
 
@@ -385,6 +401,9 @@ impl AddMachineDialog {
 
     /// Whether Add has enough to start with.
     fn can_start(state: &AddMachineState) -> bool {
+        if state.needs_variables().is_some() {
+            return false;
+        }
         match &state.effective_choice() {
             Some(Choice::Host(host)) => !host.trim().is_empty(),
             Some(Choice::Provider { id, params }) => state
@@ -468,13 +487,24 @@ impl AddMachineDialog {
                     ),
                 ),
         );
+        // A pick of a provider moves the keyboard into its first field.
+        let pick = match &state.choice {
+            Some(Choice::Provider { id, .. }) => Some(id.clone()),
+            _ => None,
+        };
+        let moved = pick != self.focused_pick;
+        self.focused_pick = pick;
         if let Some((provider, values)) = provider {
+            let mut first = None;
             for param in &provider.params {
                 let key = format!("{}/{}", provider.id, param.name);
                 let input = self.param(&key, &param.name, &param.label, window, cx);
                 if let Some(bound) = self.params.get(&key) {
                     let value = values.get(&param.name).map_or("", String::as_str);
                     bound.set(value, window, cx);
+                }
+                if first.is_none() {
+                    first = Some(input.clone());
                 }
                 body = body.child(
                     row()
@@ -513,6 +543,10 @@ impl AddMachineDialog {
                         ),
                     ),
             );
+            if moved && !locked {
+                let first = first.unwrap_or_else(|| self.name.input.clone());
+                first.update(cx, |input, cx| input.focus(window, cx));
+            }
         }
 
         if !state.steps.is_empty() {
@@ -682,6 +716,25 @@ impl AddMachineDialog {
                     .aria_label(error.clone())
                     .text_color(rgb(RED))
                     .child(error.clone())
+                    .test_support(),
+            );
+        }
+        // The picked provider reads a host variable this Mac doesn't have.
+        if let Some(needs) = state.needs_variables() {
+            body = body.child(
+                row()
+                    .id("add-machine-needs-variable")
+                    .role(Role::Alert)
+                    .aria_label(needs.clone())
+                    .gap(px(8.))
+                    .child(div().flex_1().min_w_0().text_color(rgb(RED)).child(needs))
+                    .child(widgets::push_quiet(
+                        &ui,
+                        "add-machine-open-settings",
+                        "Open Settings",
+                        wrap(AddMachineAction::ManageProviders),
+                        look,
+                    ))
                     .test_support(),
             );
         }
@@ -1041,7 +1094,8 @@ fn host_scrim(ui: &Rc<Ui>, wrap: Wrap) -> impl IntoElement {
         .on_click(move |_, _, cx| ui.send(wrap(AddMachineAction::HostMenu(false)), cx))
 }
 
-/// The pop-up's entries: each SSH host, then each provider by its label.
+/// The pop-up's entries: each SSH host, then each provider by its label, and
+/// last, under a divider, Manage providers….
 fn host_menu(ui: &Rc<Ui>, state: &AddMachineState, look: Look, wrap: Wrap) -> impl IntoElement {
     let entry = |id: String, label: String, selected: bool, action: AddMachineAction| {
         let ui = ui.clone();
@@ -1132,6 +1186,20 @@ fn host_menu(ui: &Rc<Ui>, state: &AddMachineState, look: Look, wrap: Wrap) -> im
                 AddMachineAction::SelectProvider(provider.id.clone()),
             )
         }))
+        .child(
+            div()
+                .h(px(1.))
+                .mx(px(4.))
+                .my(px(3.))
+                .flex_shrink_0()
+                .bg(rgb(look.line)),
+        )
+        .child(entry(
+            "add-machine-manage-providers".to_owned(),
+            "Manage providers…".to_owned(),
+            false,
+            AddMachineAction::ManageProviders,
+        ))
         .test_support()
 }
 

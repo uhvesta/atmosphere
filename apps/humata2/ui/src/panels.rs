@@ -133,8 +133,14 @@ pub(crate) fn header(
         .flex_shrink_0()
         .border_b_1()
         .border_color(rgb(look.line))
-        .child(text(title(panel)).font_weight(FontWeight::SEMIBOLD))
-        .children(extra)
+        .child(
+            text(title(panel))
+                .font_weight(FontWeight::SEMIBOLD)
+                .flex_shrink_0(),
+        )
+        // The extra shrinks before the buttons do; it is not clipped, because
+        // the base menu is a deferred child that must draw past it.
+        .children(extra.map(|e| e.min_w_0().flex_shrink(1.)))
         .child(div().flex_1())
         // The buttons are 16 pt for their 12 pt glyphs; the 6 pt gap and the
         // -2 pt margin put the glyphs 10 pt apart and 14 pt from the edge, as
@@ -143,6 +149,7 @@ pub(crate) fn header(
             row()
                 .gap(px(6.))
                 .mr(px(-2.))
+                .flex_shrink_0()
                 .child(icon_action(
                     ui,
                     "expand-panel",
@@ -304,8 +311,13 @@ pub(crate) fn panel(
                     .child(crate::chrome::lights())
                     .child(div().w(px(4.)))
                     .child(icon(IconName::PanelLeftOpen, look.secondary, 15.))
+                    // The names ellipsize; Show the terminal always stays.
                     .child(
                         col()
+                            .min_w_0()
+                            .flex_shrink(1.)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
                             .children(session.map(|session| {
                                 secondary(
                                     look,
@@ -315,6 +327,9 @@ pub(crate) fn panel(
                                         session.title
                                     ),
                                 )
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
                             }))
                             .child(
                                 text(title(panel))
@@ -333,7 +348,9 @@ pub(crate) fn panel(
                     )),
             )
         })
-        .child(body)
+        // Under the 52 pt title bar a full-height body would run that far
+        // past the window, so it takes what is left.
+        .child(body.flex_1().min_h_0())
 }
 
 /// The comments the Diff panel counts for the session (D173.2).

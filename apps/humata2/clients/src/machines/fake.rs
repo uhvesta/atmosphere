@@ -13,7 +13,8 @@ use tokio::sync::mpsc;
 use super::{
     AddEvent, AddOutcome, AddRequest, AddStream, AddTarget, Choices, ClashChoice, LoginEvent, LoginStream,
     LoginTarget, MachineDetail, Machines, OperationId, SkillsPreview, Started, StepKind, StepStatus,
-    MachineScripts, ScriptOutcome, ScriptRun, ScriptStepRun, StepUpdate, UnattendedMethod,
+    MachineScripts, ProviderEntry, ProviderImportPlan, ScriptOutcome, ScriptRun, ScriptStepRun, StepUpdate,
+    UnattendedMethod,
 };
 use crate::daemon::{Daemon, DaemonError, FakeDaemon, Reply};
 use crate::model::{MachineId, MachineStop, RootPlan, SessionId, StoppedBy};
@@ -73,6 +74,18 @@ pub enum Call {
     RunScript(MachineId, String, Option<SessionId>),
     /// `script_runs`: the machine, the rule and the limit.
     ScriptRuns(MachineId, Option<String>, u32),
+    /// `providers`.
+    Providers,
+    /// `preview_provider_import`, with the pasted text.
+    PreviewProviderImport(String),
+    /// `import_provider`, with the plan's token.
+    ImportProvider(Option<String>),
+    /// `remove_provider`.
+    RemoveProvider(String),
+    /// `set_provider_variable`, with the value sent.
+    SetProviderVariable(String, String),
+    /// `clear_provider_variable`.
+    ClearProviderVariable(String),
 }
 
 /// What the next login does: what it prints on opening, and what comes after
@@ -122,6 +135,10 @@ struct Inner {
     script_log: Vec<ScriptRun>,
     /// How many runs were made, for their ids.
     scripts_run: u32,
+    /// The providers `providers` lists; imports and removes change it.
+    providers: Vec<ProviderEntry>,
+    /// What `preview_provider_import` answers, whatever the text.
+    import_plan: Result<ProviderImportPlan, DaemonError>,
 }
 
 /// A machines client that does what a test scripts.
@@ -161,6 +178,8 @@ impl FakeMachines {
                 script_outcomes: HashMap::new(),
                 script_log: Vec::new(),
                 scripts_run: 0,
+                providers: Vec::new(),
+                import_plan: Ok(ProviderImportPlan::default()),
             })),
         }
     }
@@ -270,6 +289,17 @@ impl FakeMachines {
     /// `run_script` fail, as the daemon's operation does.
     pub fn set_script_outcome(&self, rule: &str, outcome: ScriptOutcome, tail: Vec<String>) {
         self.inner().script_outcomes.insert(rule.to_owned(), (outcome, tail));
+    }
+
+    /// The providers `providers` lists from now on.
+    pub fn set_providers(&self, providers: Vec<ProviderEntry>) {
+        self.inner().providers = providers;
+    }
+
+    /// What `preview_provider_import` answers from now on, whatever the
+    /// text. Importing the plan adds its providers to the list.
+    pub fn set_import_plan(&self, plan: Result<ProviderImportPlan, DaemonError>) {
+        self.inner().import_plan = plan;
     }
 
     /// Makes the named call fail with `error` until cleared. Names are the
@@ -554,6 +584,95 @@ impl Machines for FakeMachines {
         Box::pin(std::future::ready(result))
     }
 
+    fn providers(&self) -> Reply<Vec<ProviderEntry>> {
+        let providers = self.inner().providers.clone();
+        self.call("providers", Call::Providers, providers)
+    }
+
+    fn preview_provider_import(&self, text: &str) -> Reply<ProviderImportPlan> {
+        let mut inner = self.inner();
+        inner.calls.push(Call::PreviewProviderImport(text.to_owned()));
+        let result = match inner.failures.get("preview_provider_import").cloned() {
+            Some(error) => Err(error),
+            None => inner.import_plan.clone(),
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn import_provider(&self, plan: &ProviderImportPlan) -> Reply<()> {
+        let mut inner = self.inner();
+        inner.calls.push(Call::ImportProvider(plan.token.clone()));
+        let result = match (inner.failures.get("import_provider").cloned(), &plan.token) {
+            (Some(error), _) => Err(error),
+            (None, None) => Err(DaemonError::Refused {
+                what: "Importing the provider file".to_owned(),
+                reason: "the file has problems, so nothing was added. Fix them and review it again".to_owned(),
+            }),
+            (None, Some(_)) => {
+                for imported in &plan.providers {
+                    inner.providers.retain(|kept| kept.id != imported.id);
+                    inner.providers.push(imported.clone());
+                }
+                Ok(())
+            }
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn remove_provider(&self, provider: &str) -> Reply<()> {
+        let mut inner = self.inner();
+        inner.calls.push(Call::RemoveProvider(provider.to_owned()));
+        let what = format!("Removing the provider {provider}");
+        let result = match inner.failures.get("remove_provider").cloned() {
+            Some(error) => Err(error),
+            None => match inner.providers.iter().position(|kept| kept.id == provider) {
+                None => Err(DaemonError::NotFound { what: format!("The provider {provider}") }),
+                Some(at) if inner.providers[at].built_in => Err(DaemonError::Refused {
+                    what,
+                    reason: "it is built in to Humata, so it can't be removed".to_owned(),
+                }),
+                Some(at) if !inner.providers[at].machines.is_empty() => Err(DaemonError::Refused {
+                    what,
+                    reason: format!(
+                        "it still runs {}. Delete those machines first",
+                        inner.providers[at].machines.join(" and ")
+                    ),
+                }),
+                Some(at) => {
+                    inner.providers.remove(at);
+                    Ok(())
+                }
+            },
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn set_provider_variable(&self, name: &str, value: &str) -> Reply<()> {
+        let mut inner = self.inner();
+        inner.calls.push(Call::SetProviderVariable(name.to_owned(), value.to_owned()));
+        let result = match inner.failures.get("set_provider_variable").cloned() {
+            Some(error) => Err(error),
+            None => {
+                mark_variable(&mut inner.providers, name, true);
+                Ok(())
+            }
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn clear_provider_variable(&self, name: &str) -> Reply<()> {
+        let mut inner = self.inner();
+        inner.calls.push(Call::ClearProviderVariable(name.to_owned()));
+        let result = match inner.failures.get("clear_provider_variable").cloned() {
+            Some(error) => Err(error),
+            None => {
+                mark_variable(&mut inner.providers, name, false);
+                Ok(())
+            }
+        };
+        Box::pin(std::future::ready(result))
+    }
+
     fn stop_sessions(&self, machine: &MachineId) -> Reply<MachineStop> {
         let failed = {
             let mut inner = self.inner();
@@ -659,5 +778,14 @@ impl Machines for FakeMachines {
             },
         };
         Box::pin(std::future::ready(result))
+    }
+}
+
+/// Every provider that reads the host variable `name` now has it set, or not.
+fn mark_variable(providers: &mut [ProviderEntry], name: &str, set: bool) {
+    for variable in providers.iter_mut().flat_map(|provider| provider.variables.iter_mut()) {
+        if variable.name == name {
+            variable.set = set;
+        }
     }
 }

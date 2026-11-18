@@ -1438,11 +1438,7 @@ fn access_request(
         state: pb::RequestState::Pending as i32,
         requester: Some(agent.actor()),
         operation: agent.operation(),
-        action_title: format!(
-            "{} asks ahead to {}",
-            agent.title,
-            lowercase_first(asked.capability.label())
-        ),
+        action_title: asks_title(&agent.title, asked.capability, true),
         reason,
         preview: Some(pb::RequestPreview {
             preview: Some(pb::request_preview::Preview::AccessAhead(
@@ -1522,6 +1518,19 @@ fn board_name(board: &humata2_access::BoardRef) -> String {
         humata2_access::BoardRef::Global => "global".to_owned(),
         humata2_access::BoardRef::Channel(channel) => format!("channel {channel}'s"),
         humata2_access::BoardRef::Session(session) => format!("session {}'s", session.id),
+    }
+}
+
+/// A card's title: "<who> asks to <what the capability lets it do>". A
+/// capability that is itself asking the user ("ask you to import…") reads
+/// "<who> asks you to import…", never "asks to ask you to". `ahead` is an
+/// ask for access before the call that needs it.
+pub(crate) fn asks_title(who: &str, capability: Capability, ahead: bool) -> String {
+    let what = lowercase_first(capability.label());
+    let asks = if ahead { "asks ahead" } else { "asks" };
+    match what.strip_prefix("ask you ") {
+        Some(rest) => format!("{who} {asks} you {rest}"),
+        None => format!("{who} {asks} to {what}"),
     }
 }
 
@@ -1942,6 +1951,19 @@ mod tests {
     const SHORT: Duration = Duration::from_millis(200);
     /// The bound on something that must happen.
     const BOUND: Duration = Duration::from_secs(5);
+
+    /// The title names the asking session once and never doubles the
+    /// asking ("asks to ask you to …"), for every capability.
+    #[test]
+    fn no_card_title_asks_to_ask() {
+        for capability in Capability::ALL {
+            for ahead in [false, true] {
+                let title = asks_title("Build", capability, ahead);
+                assert!(title.starts_with("Build asks"), "{title}");
+                assert!(!title.contains("to ask you"), "{title}");
+            }
+        }
+    }
 
     fn card(id: &str, state: pb::RequestState) -> pb::InboxRequest {
         pb::InboxRequest {

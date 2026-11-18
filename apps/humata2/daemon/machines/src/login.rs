@@ -91,9 +91,15 @@ pub enum LoginError {
         source: io::Error,
     },
     #[error(
-        "the login command needs host variable {variable}, which Humata can't give a terminal yet. Log in without it, or put the value in the command's own configuration"
+        "the login command needs host variable {variable}, which isn't set; set it in Settings › This Mac › Variables, then log in again"
     )]
     HostVariable { variable: String },
+    #[error("couldn't read host variable {variable} for the login command, so the login didn't start")]
+    UnreadableHostVariable {
+        variable: String,
+        #[source]
+        source: crate::error::HostVariablesError,
+    },
     #[error("couldn't type into the login terminal: {source}. Close the login and open it again")]
     Write {
         #[source]
@@ -149,7 +155,7 @@ pub enum LoginError {
     #[error(transparent)]
     Values(#[from] ValuesError),
     #[error(
-        "the {provider} provider reaches machines through an `identity` command, not a `connect` command, so there is no login to open. Fix the identity command's SSH details in Settings › Machine providers, or give the provider a `connect` command"
+        "the {provider} provider reaches machines through an `identity` command, not a `connect` command, so there is no login to open. Fix the identity command's SSH details in Settings › Machines › Providers, or give the provider a `connect` command"
     )]
     IdentityProvider { provider: String },
     #[error("{machine} can't be changed right now: {source}")]
@@ -473,9 +479,15 @@ impl LoginTerminal {
                     command.env(name, value);
                 }
                 EnvValue::HostVariable(variable) => {
-                    let value = variables.value(variable).ok_or_else(|| LoginError::HostVariable {
-                        variable: variable.clone(),
-                    })?;
+                    let value = variables
+                        .value(variable)
+                        .map_err(|source| LoginError::UnreadableHostVariable {
+                            variable: variable.clone(),
+                            source,
+                        })?
+                        .ok_or_else(|| LoginError::HostVariable {
+                            variable: variable.clone(),
+                        })?;
                     command.env(name, value);
                 }
             }

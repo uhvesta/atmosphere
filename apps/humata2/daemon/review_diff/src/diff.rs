@@ -217,7 +217,7 @@ fn parse_listing(output: &[u8]) -> Option<Vec<FileSummary>> {
     while tokens.peek().is_some_and(|token| token.starts_with(':')) {
         let meta = tokens.next()?;
         let fields: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
-        let [_, _, old, new, status] = fields.as_slice() else {
+        let [old_mode, new_mode, old, new, status] = fields.as_slice() else {
             return None;
         };
         let blob = |oid: &str| (!oid.bytes().all(|byte| byte == b'0')).then(|| oid.to_owned());
@@ -245,6 +245,8 @@ fn parse_listing(output: &[u8]) -> Option<Vec<FileSummary>> {
             binary: false,
             old_blob: blob(old),
             new_blob: blob(new),
+            old_mode: old_mode.parse().unwrap_or(0),
+            new_mode: new_mode.parse().unwrap_or(0),
         });
     }
     for file in &mut files {
@@ -333,6 +335,8 @@ struct ChunkParser {
     new: u32,
     lines: usize,
     bytes: usize,
+    /// The previous diff line is the last one in the chunk.
+    kept_last: bool,
 }
 
 impl ChunkParser {
@@ -347,6 +351,7 @@ impl ChunkParser {
             new: 0,
             lines: 0,
             bytes: 0,
+            kept_last: false,
         }
     }
 
@@ -391,10 +396,18 @@ impl ChunkParser {
             Some(b'+') => (LineKind::Added, &raw[1..]),
             Some(b'-') => (LineKind::Removed, &raw[1..]),
             Some(b' ') => (LineKind::Context, &raw[1..]),
-            Some(b'\\') => return Feed::More,
+            Some(b'\\') => {
+                if self.kept_last
+                    && let Some(last) = self.chunk.hunks.last_mut().and_then(|hunk| hunk.lines.last_mut())
+                {
+                    last.no_newline = true;
+                }
+                return Feed::More;
+            }
             Some(_) => (LineKind::Context, raw),
             None => (LineKind::Context, raw),
         };
+        self.kept_last = false;
         let (old_line, new_line) = match kind {
             LineKind::Context => (Some(self.old), Some(self.new)),
             LineKind::Added => (None, Some(self.new)),
@@ -424,7 +437,9 @@ impl ChunkParser {
                 old_line,
                 new_line,
                 text: String::from_utf8_lossy(text).into_owned(),
+                no_newline: false,
             });
+            self.kept_last = true;
             self.lines += 1;
             self.bytes += text.len() + 1;
         }

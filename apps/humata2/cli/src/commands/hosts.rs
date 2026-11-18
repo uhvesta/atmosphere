@@ -309,6 +309,15 @@ fn read(path: &std::path::Path) -> Result<Vec<u8>, CliError> {
     })
 }
 
+/// Whether the daemon knows this connection as a session's agent.
+async fn is_agent<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result<bool, CliError> {
+    let me: pb::WhoAmIResponse = ctx.call(rpc::daemon::WHO_AM_I, &pb::WhoAmIRequest {}).await?;
+    Ok(matches!(
+        me.actor.and_then(|actor| actor.actor),
+        Some(pb::actor::Actor::Agent(_))
+    ))
+}
+
 pub(super) async fn provider<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     command: ProviderCommand,
@@ -350,13 +359,33 @@ pub(super) async fn provider<D: Daemon, C: Console>(
                 }
             }).await
         }
-        ProviderCommand::Import { file } => {
+        ProviderCommand::Import { file, reason } => {
+            let file_name = file
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            // An agent sets no providers: it files the same Inbox request
+            // as MCP's provider_import, which the user approves or declines.
+            if is_agent(ctx).await? {
+                let text = String::from_utf8(read(&file)?).map_err(|_| CliError::BadValue {
+                    field: "providers TOML",
+                    value: "<not UTF-8>".into(),
+                    expected: "UTF-8 TOML",
+                })?;
+                ctx.note(&format!(
+                    "Asking the user to import {file_name}: the request waits for them in the Inbox."
+                ));
+                let request = pb::RequestProviderImportRequest {
+                    idempotency_key: key,
+                    text,
+                    file_name,
+                    reason,
+                };
+                return ctx.change(rpc::provider::REQUEST_PROVIDER_IMPORT, &request).await;
+            }
             let preview = pb::PreviewProviderImportRequest {
                 file: read(&file)?,
-                file_name: file
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                file_name,
             };
             ctx.planned(
                 rpc::provider::PREVIEW_PROVIDER_IMPORT,
@@ -373,6 +402,16 @@ pub(super) async fn provider<D: Daemon, C: Console>(
                     .await
                 },
             )
+            .await
+        }
+        ProviderCommand::Rm { provider } => {
+            ctx.change_present(rpc::provider::REMOVE_PROVIDER, |presence| {
+                pb::RemoveProviderRequest {
+                    idempotency_key: key.clone(),
+                    provider: Some(pb::ProviderId { value: provider.clone() }),
+                    presence,
+                }
+            })
             .await
         }
         ProviderCommand::Create {

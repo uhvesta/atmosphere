@@ -10,7 +10,7 @@ use std::time::Duration;
 use humata2_clients::machines::{
     AddEvent, AddFailure, AddOutcome, AddRequest, AddStream, AddTarget, Choices, ClashChoice,
     ChannelFolder, GhLogin, LoginEvent, LoginReason, LoginStream, LoginTarget, MachineDetail, MachineHealth,
-    MachineScripts, Machines, OperationId, PromptKind, Provider, ProviderParam, Reach, ScriptOutcome, ScriptRuleView,
+    MachineScripts, Machines, OperationId, PromptKind, Provider, ProviderEntry, ProviderImportPlan, ProviderParam, Reach, ScriptOutcome, ScriptRuleView,
     ScriptRun, ScriptStepRun, ScriptStepView, SkillClash, SkillsPreview, Started, StepKind, StepStatus, StepUpdate,
     UnattendedMethod, short_version,
 };
@@ -27,6 +27,8 @@ use tonic::{Code, Status};
 
 use crate::connection::{LiveDaemon, Shared, Wire, fresh_key, not_in_this_release};
 use crate::local_time::LocalNow;
+
+mod providers;
 
 const PAGE_SIZE: u32 = 200;
 const POLL: Duration = Duration::from_millis(100);
@@ -832,6 +834,12 @@ impl Machines for LiveMachines {
                             required: param.default_value.is_empty(),
                         })
                         .collect(),
+                    unset: provider
+                        .variables
+                        .iter()
+                        .filter(|variable| !variable.set)
+                        .map(|variable| variable.name.clone())
+                        .collect(),
                 })
                 .collect();
             // The daemon has no call that lists `~/.ssh/config`: the form
@@ -1322,6 +1330,30 @@ impl Machines for LiveMachines {
             let now = LocalNow::read();
             Ok(reply.runs.iter().map(|run| script_run_of(run, &now)).collect())
         })
+    }
+
+    fn providers(&self) -> Reply<Vec<ProviderEntry>> {
+        Box::pin(providers::list(self.shared.clone()))
+    }
+
+    fn preview_provider_import(&self, text: &str) -> Reply<ProviderImportPlan> {
+        Box::pin(providers::preview(self.shared.clone(), text.to_owned()))
+    }
+
+    fn import_provider(&self, plan: &ProviderImportPlan) -> Reply<()> {
+        Box::pin(providers::import(self.shared.clone(), plan.token.clone()))
+    }
+
+    fn remove_provider(&self, provider: &str) -> Reply<()> {
+        Box::pin(providers::remove(self.shared.clone(), provider.to_owned()))
+    }
+
+    fn set_provider_variable(&self, name: &str, value: &str) -> Reply<()> {
+        Box::pin(providers::set_variable(self.shared.clone(), name.to_owned(), value.to_owned()))
+    }
+
+    fn clear_provider_variable(&self, name: &str) -> Reply<()> {
+        Box::pin(providers::clear_variable(self.shared.clone(), name.to_owned()))
     }
 
     fn plan_change_root(&self, machine: &MachineId, root: &str) -> Reply<RootPlan> {

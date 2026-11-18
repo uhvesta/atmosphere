@@ -377,6 +377,22 @@ impl SecretStore for FileStore {
     }
 }
 
+/// This machine's host variables as the commands Humata runs for it see
+/// them: a provider's commands, its login terminal and its link (MP-4). The
+/// installed store is read each time a command needs a variable, so a
+/// change applies to the next command; a store that can't be read stops
+/// the command rather than reading as "not set".
+pub(crate) struct Installed;
+
+impl humata2_machines::HostVariables for Installed {
+    fn value(&self, name: &str) -> Result<Option<String>, humata2_machines::HostVariablesError> {
+        HostVars::installed()
+            .and_then(|vars| vars.store.get_all())
+            .map(|mut all| all.remove(name))
+            .map_err(|error| humata2_machines::HostVariablesError(Box::new(error)))
+    }
+}
+
 /// Values in memory only, for tests of what sits above a store.
 #[cfg(test)]
 #[derive(Debug, Default)]

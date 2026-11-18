@@ -31,7 +31,8 @@ Each step and branch was tagged by reading the code and tests, not the spec.
 | Macro: whole working days | 16 | 378 | 2 | 287 | 36 | 19 | 33 | 1 |
 | Agents: CLI and MCP | 20 | 374 | 0 | 271 | 34 | 41 | 28 | 0 |
 | Real: app, SSH VM and agent CLIs | 14 | 249 | 16 | 101 | 20 | 45 | 37 | 23 |
-| **All** | **77** | **1,345** | **44** | **714** | **213** | **206** | **133** | **28** |
+| Diff and review | 16 | 279 | 0 | 23 | 73 | 60 | 111 | 12 |
+| **All** | **93** | **1,624** | **44** | **737** | **286** | **266** | **244** | **40** |
 
 The counts come from each case's status table. A row with mixed tags counts
 under its first tag. "Works (real daemon, fake box)" and the like count as real
@@ -51,6 +52,10 @@ What the counts say:
   fail live (B5, B7, B8, B9, B10), and every machine-script step is Not built.
 - Agent calls are proven on a real daemon, but 38 of the 81 MCP tools that are
   advertised fall through to "not built".
+- The diff and review layer (`diff/`) is mostly Not built (111 of 279 rows):
+  the planned file bar, full-screen keys, notes and the whole stacks UI. Its
+  real-daemon proof is the diff engine and the PR flow; the panel itself is
+  proven only on fakes.
 
 ## Index
 
@@ -200,6 +205,29 @@ What the counts say:
 | 18 | [Adding a machine through a provider, logging in by hand, and making it unattended leaves a machine that starts without me](verify/18-provider-add-with-login.md) |
 | 19 | [A merged pull request says so in its review session and offers Archive, while the other pull request in the review stays open](verify/19-merged-pr-offers-archive.md) |
 
+### Diff and review: the Diff panel, full screen, big diffs, PR review and stacks
+
+[`diff/README.md`](diff/README.md) holds this layer's rig and findings. The rules the cases check are in [`DIFFVIEW-spec.md`](../../workflow/milestones/DIFFVIEW-spec.md).
+
+| # | Case |
+|---|---|
+| 01 | [A changed file opens beside the terminal and the code gets the room](diff/01-open-a-file-beside-the-terminal.md) |
+| 02 | [Each repo is one row I can fold, and the footer only offers what I can do](diff/02-repo-rows-and-the-footer.md) |
+| 03 | [A file row reads its name first, and marks added, deleted, renamed, binary and mode-only files](diff/03-file-rows-read-name-first.md) |
+| 04 | [Full screen opens three ways and Show the terminal puts me back exactly where I was, with the terminal still running](diff/04-full-screen-and-back.md) |
+| 05 | [However long the names get, Full screen and Close stay on screen and the names shorten instead](diff/05-full-screen-never-disappears.md) |
+| 06 | [Changed code reads cleanly: numbers, a sign, the code, quiet tints and no @@ noise](diff/06-code-reads-like-the-page.md) |
+| 07 | [A 40,000-line file opens at once and scrolls smoothly, with its header pinned and a way to step between changes](diff/07-a-big-file-stays-smooth.md) |
+| 08 | [A pull request with hundreds of files and one huge file lists every file and opens the huge one in its own box](diff/08-many-files-and-a-big-pull-request.md) |
+| 09 | [When there is nothing, something loading, or something broken, the diff says so where it matters and offers the fix](diff/09-empty-loading-and-errors.md) |
+| 10 | [I switch long lines between Wrap and Scroll from the file I'm reading, and Scroll keeps the numbers still](diff/10-wrap-or-scroll.md) |
+| 11 | [A pull request review shows what is reviewed, steps across both PRs, and keeps the agent's drafts clearly mine to send](diff/11-pr-review-session.md) |
+| 12 | [I submit one review for every PR at once, see new commits as they land, and go back with one click](diff/12-submit-review-new-commits-and-back.md) |
+| 13 | [Each session keeps its own open file, scroll and full screen, and opening the panel doesn't read everything again](diff/13-the-diff-remembers-each-session.md) |
+| 14 | [I can drive the diff from the keyboard: full screen, next file, next change, wrap, back](diff/14-keys-for-the-diff.md) |
+| 15 | [A stack of changes over two repos shows as layers I can step through, each with only its own files](diff/15-a-stack-across-repos.md) |
+| 16 | [When a repo moves after a stack was sent, that layer says so and offers one fix; a stack with no notes shows no review controls](diff/16-a-stack-that-moved.md) |
+
 ## Gaps: what is not built
 
 Every **Not built** item from the cases, most user-visible first. "No
@@ -311,6 +339,8 @@ ones to decide on.
 | 69 | The board drawer cannot edit an item's title or description. | D177, waits on the owner | macro-11 |
 | 70 | A board item cannot be moved by keyboard or deleted by the user. | no milestone | macro-11 |
 | 71 | No graph view of dependencies. BD-14 is a list. | no milestone | macro-05 |
+
+The diff and review gaps (file bar, full-screen keys, notes, Submit review in the footer, the stacks UI) are listed by owner in [`diff/README.md`](diff/README.md): DIFFVIEW, REVIEWUI or STACKVIEW.
 
 ### Finding and upgrades
 
@@ -425,6 +455,18 @@ confirm it. Items marked **(coach-checked)** were re-read by the coach.
 65. **Making or revoking a script token never checks presence**, so the CLI's presence step is skipped (`daemon/humatad/src/cli_login.rs:489-493, 603-607`, `cli/src/call.rs:185-199`). Owner to confirm whether presence should gate these. — agents-18
 66. **A token's channel list does not limit a machine stop** (`daemon/access/src/policy.rs:1190`). SEC-14 says a token lists its channels. This may be meant; the owner should decide. — agents-18
 67. **The CLI drops the age header on a board read made from a box's copy**, so a copied read shows no age. `cli/src/live.rs:110-117` keeps only the body; MCP keeps it (`daemon/humatad/src/mcp/boards.rs:55-68`). (coach-checked) — agents-20
+
+### Diff and review
+
+All coach-checked. Details and the files to change are in [`diff/README.md`](diff/README.md).
+
+68. **Full screen draws the Diff header twice** (`ui/src/panel_changes.rs:622`, `:695`). — diff-04
+69. **The repo chevron looks like a fold but does nothing** (`panel_changes.rs:1446`, `:1066`). — diff-02
+70. **A local repo reads "/scratch"** (`clients/live/src/diff.rs:129`, `clients/live/src/map.rs:64`). — diff-03
+71. **A long repo name can push the totals out of the panel** (`panel_changes.rs:1448`, `:1072`). — diff-05
+72. **The base chip names the old base while a new one loads** (`panel_changes.rs:611-615`). — diff-07, diff-08, diff-09
+73. **A force-push that also adds commits shows only the commit count** (`ui/src/pages.rs:536-540`). — diff-12
+74. **Two sessions on the same file share one scroll position** (`ui/src/document_tab.rs:553`). — diff-13
 
 ## Docs that look stale
 

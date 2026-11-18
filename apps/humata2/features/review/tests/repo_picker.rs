@@ -28,6 +28,7 @@ fn changed(repo: &str) -> RepoDiff {
             added: 1,
             removed: 0,
             lines: Vec::new(),
+            ..FileDiff::default()
         }],
         comments: Vec::new(),
     }

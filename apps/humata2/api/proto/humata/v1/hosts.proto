@@ -129,6 +129,11 @@ service ProviderService {
   // it, or fails plan_stale when the providers file changed since. Agents
   // only; the user imports with PreviewProviderImport and ImportProvider.
   rpc RequestProviderImport(RequestProviderImportRequest) returns (SetProvidersConfigResponse);
+  // PROVIDERS: removes an imported provider from the providers file.
+  // User-only, with presence, like ImportProvider. A built-in provider is
+  // refused (invalid_field "provider", not_allowed_here), and so is one that
+  // machines still use: the error names them and says to delete them first.
+  rpc RemoveProvider(RemoveProviderRequest) returns (SetProvidersConfigResponse);
   // MP-4, MP-19: params must be the provider's declared ones. Steps: create,
   // identity, connect, check, install, service, register.
   rpc CreateMachine(CreateMachineRequest) returns (Operation);
@@ -540,6 +545,24 @@ message Provider {
   bool interactive = 8;
   MachineId run_on = 9;   // unset: the Mac (MP-5)
   bool built_in = 10;     // the Lima example (MP-22)
+  // PROVIDERS, ListProviders only: every command it runs, verbatim (an
+  // agent sees `‹NAME›` where a host variable's value was pasted in).
+  repeated ProviderCommand commands = 11;
+  // PROVIDERS, ListProviders only: each variable in `env`, set or not on
+  // this Mac. Never a value.
+  repeated ProviderVariable variables = 12;
+  // PROVIDERS, ListProviders only: the machines it made that Humata has.
+  repeated MachineId machines = 13;
+}
+
+message ProviderCommand {
+  string action = 1;   // "create", "connect", "start", …
+  string command = 2;
+}
+
+message ProviderVariable {
+  string name = 1;
+  bool set = 2;
 }
 
 message ListProvidersRequest {}
@@ -604,6 +627,12 @@ message RequestProviderImportRequest {
   string file_name = 3;
   // Why, in the agent's words, for the card.
   string reason = 4;
+}
+
+message RemoveProviderRequest {
+  IdempotencyKey idempotency_key = 1;
+  ProviderId provider = 2;
+  PresenceProof presence = 3;
 }
 
 message SetProvidersConfigResponse {

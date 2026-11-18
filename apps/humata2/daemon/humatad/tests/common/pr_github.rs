@@ -601,6 +601,163 @@ pub fn open_pr(
 }
 
 // ---------------------------------------------------------------------------
+// A pull request made from whole files (DV-9).
+
+/// One file of a tree [`open_pr_from_files`] commits: its bytes, and
+/// whether it is executable.
+#[derive(Clone, Debug)]
+pub struct FileContents {
+    pub bytes: Vec<u8>,
+    pub executable: bool,
+}
+
+impl FileContents {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self {
+            bytes: text.into().into_bytes(),
+            executable: false,
+        }
+    }
+
+    pub fn bytes(bytes: impl Into<Vec<u8>>) -> Self {
+        Self {
+            bytes: bytes.into(),
+            executable: false,
+        }
+    }
+
+    /// The same bytes, executable or not.
+    #[must_use]
+    pub fn with_executable(self, executable: bool) -> Self {
+        Self { executable, ..self }
+    }
+}
+
+/// Writes `contents` at `path` inside `work` with its mode, or deletes the
+/// file when there are none.
+fn put_file(work: &Path, path: &str, contents: Option<&FileContents>) {
+    use std::os::unix::fs::PermissionsExt;
+    let file = work.join(path);
+    let Some(contents) = contents else {
+        std::fs::remove_file(&file).unwrap();
+        return;
+    };
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&file, &contents.bytes).unwrap();
+    let mode = if contents.executable { 0o755 } else { 0o644 };
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Makes the bare remote `template.owner/template.name` with `base`
+/// committed on main, then opens `template` on it: one commit on its head
+/// branch writes each `(path, Some(contents))` of `head` and deletes each
+/// `(path, None)`, pushed where GitHub keeps it. A rename is a delete and a
+/// write of the same bytes; a mode change is a write of the same bytes with
+/// the other `executable`. Tell `gh` of it with [`FakeGh::visible`] and
+/// [`FakeGh::publish_with_binaries`].
+pub fn open_pr_from_files(
+    world: &World,
+    template: Pr,
+    base: &[(String, FileContents)],
+    head: &[(String, Option<FileContents>)],
+) -> Pr {
+    let bare = world.remote(template.owner, template.name);
+    let work = world
+        .root
+        .join(format!("pr-{}-{}-{}", template.owner, template.name, template.number));
+    let work_text = work.display().to_string();
+    git(&["clone", "-q", &bare.display().to_string(), &work_text]);
+    for (path, contents) in base {
+        put_file(&work, path, Some(contents));
+    }
+    git(&["-C", &work_text, "add", "-A"]);
+    git(&["-C", &work_text, "commit", "-q", "-m", "The base of the pull request"]);
+    git(&["-C", &work_text, "push", "-q", "origin", "main"]);
+    git(&["-C", &work_text, "checkout", "-q", "-b", template.head_branch]);
+    for (path, contents) in head {
+        put_file(&work, path, contents.as_ref());
+    }
+    git(&["-C", &work_text, "add", "-A"]);
+    git(&["-C", &work_text, "commit", "-q", "-m", template.title]);
+    let pr = Pr { work, ..template };
+    push_head(&pr, false);
+    pr
+}
+
+impl Pr {
+    /// As [`Self::view`], for a head that may hold binary files: their `-`
+    /// in `git diff --numstat` counts as no lines, as GitHub counts them.
+    pub fn view_with_binaries(&self) -> Value {
+        let work = self.work.display().to_string();
+        let (mut files, mut added, mut removed) = (0_u32, 0_u32, 0_u32);
+        for line in git(&["-C", &work, "diff", "--numstat", "origin/main...HEAD"]).lines() {
+            let mut parts = line.split('\t');
+            added += parts.next().and_then(|count| count.parse::<u32>().ok()).unwrap_or(0);
+            removed += parts.next().and_then(|count| count.parse::<u32>().ok()).unwrap_or(0);
+            files += 1;
+        }
+        let commits: Vec<Value> = self
+            .commits()
+            .into_iter()
+            .map(|(oid, subject)| json!({ "oid": oid, "messageHeadline": subject }))
+            .collect();
+        json!({
+            "number": self.number,
+            "url": self.url(),
+            "title": self.title,
+            "author": { "login": self.author },
+            "baseRefName": self.base,
+            "headRefName": self.head_branch,
+            "headRefOid": self.head(),
+            "headRepositoryOwner": { "login": if self.fork { "stranger" } else { self.owner } },
+            "isCrossRepository": self.fork,
+            "changedFiles": files,
+            "additions": added,
+            "deletions": removed,
+            "state": self.state,
+            "mergedAt": if self.state == "MERGED" { json!("2026-11-16T10:00:00Z") } else { Value::Null },
+            "commits": commits,
+            "statusCheckRollup": [],
+        })
+    }
+}
+
+impl FakeGh {
+    /// As [`Self::publish`], for pull requests whose heads may hold binary
+    /// files (see [`Pr::view_with_binaries`]).
+    pub fn publish_with_binaries(&self, prs: &[Pr]) {
+        let mut data = serde_json::Map::new();
+        for pr in prs {
+            let view = pr.view_with_binaries();
+            std::fs::write(
+                self.dir.join("prs").join(format!("{}.json", pr.key())),
+                view.to_string(),
+            )
+            .unwrap();
+            data.insert(
+                pr.alias(),
+                json!({ "pullRequest": {
+                    "number": pr.number,
+                    "url": pr.url(),
+                    "baseRefName": pr.base,
+                    "headRefName": pr.head_branch,
+                    "headRefOid": view["headRefOid"],
+                    "state": pr.state,
+                    "commits": { "totalCount": view["commits"].as_array().map_or(0, Vec::len) },
+                }}),
+            );
+        }
+        std::fs::write(
+            self.dir.join("graphql.json"),
+            json!({ "data": data }).to_string(),
+        )
+        .unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The fixture.
 
 /// Seeds `world`'s remotes with acme/api (PR #482, and #500 from a fork) and

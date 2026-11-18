@@ -1,0 +1,145 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>Review, wrap, back</title><style>
+:root{
+  --sidebar:#e9e7ea;--panel:#f6f5f7;--line:#dcdadd;--text:#1d1d1f;--sec:#6e6e73;--ter:#a1a1a6;
+  --accent:#0a6cff;--fill:#eceaee;--card:#fff;--term:#fff;--content:#fff;
+  --addrow:rgba(48,209,88,.12);--delrow:rgba(240,93,93,.12);--addword:rgba(48,209,88,.30);--delword:rgba(240,93,93,.30);
+  --green:#1f9d45;--red:#d93a3a;
+}
+.dark{
+  --sidebar:#2a2a2d;--panel:#252527;--line:#3a3a3d;--text:#e8e8ea;--sec:#98989e;--ter:#6a6a70;
+  --accent:#3b8cff;--fill:#323235;--card:#2a2a2c;--term:#1a1a1b;--content:#1e1e1f;
+  --addrow:rgba(48,209,88,.16);--delrow:rgba(240,93,93,.16);--addword:rgba(48,209,88,.34);--delword:rgba(240,93,93,.34);
+  --green:#30d158;--red:#f05d5d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:28px;background:#d9d7db;font:12.5px -apple-system,".SF NS",system-ui,sans-serif;color:#1d1d1f}
+h1{font-size:17px;margin:0 0 4px} .cap{color:#555;margin:0 0 14px;max-width:1100px;line-height:1.45}
+h2{font-size:14px;margin:30px 0 4px}
+.win{width:1280px;height:760px;border-radius:11px;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.25);display:flex;background:var(--content);color:var(--text)}
+.win.short{height:430px}
+.sb{width:230px;background:var(--sidebar);border-right:1px solid var(--line);padding:14px 10px;flex-shrink:0}
+.lights{display:flex;gap:8px;margin-bottom:22px}.lights i{width:12px;height:12px;border-radius:50%;display:block}
+.sbi{padding:6px 8px;border-radius:6px;color:var(--text);margin:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sbi.on{background:var(--fill)} .sbh{color:var(--sec);font-size:11px;margin:14px 8px 4px}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:52px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 16px;gap:12px;flex-shrink:0;background:var(--content)}
+.top .t{display:flex;flex-direction:column}.top .t small{color:var(--sec);font-size:11px}.top .t b{font-size:14px}
+.term{flex:1;background:var(--term);font:12px Menlo,monospace;color:var(--text);padding:14px 16px;line-height:1.55;white-space:pre;overflow:hidden}
+.term .d{color:var(--sec)}
+.split{flex:1;display:flex;min-height:0}
+.panel{width:530px;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;flex-shrink:0;min-height:0}
+.rail{width:64px;background:var(--sidebar);border-left:1px solid var(--line);display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:60px;flex-shrink:0}
+.rail div{width:52px;height:47px;border-radius:7px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;color:var(--sec);gap:2px}
+.rail div.on{background:var(--fill);color:var(--accent)} .rail div span{font-size:15px}
+.ph{height:36px;display:flex;align-items:center;padding:0 10px 0 14px;gap:8px;border-bottom:1px solid var(--line);flex-shrink:0}
+.ph b{font-size:13px}
+.chip{border:1px solid var(--line);border-radius:6px;padding:2px 8px;color:var(--sec);font-size:11.5px;background:var(--card);white-space:nowrap}
+.sp{flex:1}
+.ib{width:22px;height:22px;border-radius:5px;display:flex;align-items:center;justify-content:center;color:var(--sec);font-size:13px}
+.tip{position:relative}.tip em{display:none}
+.fbar{height:34px;display:flex;align-items:center;gap:8px;padding:0 10px 0 12px;border-bottom:1px solid var(--line);flex-shrink:0;background:var(--panel);cursor:pointer}
+.fbar .r{color:var(--sec)} .fbar .n{font-weight:600} .fbar .dir{color:var(--ter)}
+.fbar .cnt{color:var(--sec);font-size:11.5px}
+.step{color:var(--sec);font-size:14px;padding:0 3px}
+.code{flex:1;background:var(--content);font:12px/18.5px Menlo,monospace;overflow:hidden;min-height:0}
+.hk{height:24px;display:flex;align-items:center;padding-left:14px;background:var(--panel);color:var(--sec);font:11.5px Menlo,monospace;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.ln{display:flex;white-space:pre}
+.ln .g{width:38px;text-align:right;padding-right:6px;color:var(--ter);flex-shrink:0}
+.ln .g2{width:34px;text-align:right;padding-right:6px;color:var(--ter);flex-shrink:0}
+.ln .s{width:14px;flex-shrink:0;color:var(--sec)}
+.ln.a{background:var(--addrow)} .ln.d{background:var(--delrow)}
+.ln.a .s{color:var(--green)} .ln.d .s{color:var(--red)}
+.ln .wa{background:var(--addword);border-radius:2px} .ln .wd{background:var(--delword);border-radius:2px}
+.nonl{color:var(--ter);font-style:italic;padding-left:58px;font:11px Menlo,monospace;height:18px;display:flex;align-items:center}
+.cardc{margin:6px 14px 8px 58px;max-width:720px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:12.5px -apple-system,system-ui;color:var(--text)}
+.cardc .h{display:flex;gap:6px;color:var(--sec);font-size:11.5px;margin-bottom:4px}.cardc .h .sp{flex:1}
+.lnk{color:var(--sec)} .btn{background:var(--accent);color:#fff;border-radius:6px;padding:4px 10px;font-size:12px;white-space:nowrap}
+.foot{height:40px;border-top:1px solid var(--line);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0;background:var(--panel)}
+.qb{color:var(--text);border:1px solid var(--line);border-radius:6px;padding:3px 9px;background:var(--card);font-size:12px}
+.list{width:300px;border-right:1px solid var(--line);background:var(--panel);overflow:hidden;flex-shrink:0;display:flex;flex-direction:column}
+.filter{margin:8px 10px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;color:var(--ter);background:var(--card);font-size:12px}
+.repo{display:flex;align-items:center;gap:6px;padding:6px 12px 4px;font-weight:600}
+.repo .c{color:var(--sec);font-weight:400;width:10px}.repo .tot{margin-left:auto;font-weight:400;font-size:11.5px}
+.repo .vs{color:var(--ter);font-weight:400;font-size:11px}
+.fr{display:flex;align-items:center;gap:6px;padding:4px 12px 4px 18px;white-space:nowrap}
+.fr.on{background:var(--fill);border-radius:6px;margin:0 6px;padding-left:12px}
+.mk{width:14px;font-size:10.5px;font-weight:700;text-align:center;flex-shrink:0}
+.mk.A{color:var(--green)}.mk.D{color:var(--red)}.mk.R{color:var(--sec)}
+.fr .nm{flex-shrink:0}.fr .dir{color:var(--ter);overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.fr .num{font-size:11px;color:var(--sec);flex-shrink:0}.fr .num i{font-style:normal;color:var(--green)}.fr .num u{text-decoration:none;color:var(--red)}
+.badge{background:var(--fill);color:var(--sec);border-radius:8px;padding:0 6px;font-size:10.5px}
+.fh{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--line);background:var(--content);flex-shrink:0}
+.fh .r{color:var(--sec)} .fh .n{font-weight:600}
+.fnote{color:var(--sec);font-size:11.5px;padding:0 14px 6px;background:var(--content);border-bottom:1px solid var(--line)}
+.fhwrap{flex-shrink:0}
+.pane{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--content)}
+.ann{background:#fff8d6;border:1px solid #e6d58a;color:#5a4a00;border-radius:6px;padding:6px 10px;margin:8px 0 0;max-width:1280px;font-size:12px;line-height:1.45}
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--sec)}
+.row3{display:flex;gap:24px;align-items:flex-start}
+.mini{width:530px;height:330px;border-radius:9px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.2);background:var(--panel);color:var(--text);display:flex;flex-direction:column}
+</style><style>
+.back{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--sec);font-size:16px}
+.tog{display:flex;background:var(--fill);border-radius:6px;padding:2px;font-size:11px}.tog span{padding:1px 7px;border-radius:4px;color:var(--sec)}.tog span.on{background:var(--card);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.gut{display:flex;flex-direction:column;flex-shrink:0;background:var(--content);border-right:1px solid var(--line);z-index:1}
+.scrollx{overflow:hidden;flex:1;position:relative}
+.bar{height:8px;margin:2px 60px 4px 74px;background:var(--fill);border-radius:4px;position:relative}.bar i{position:absolute;left:30%;width:35%;height:8px;background:var(--ter);border-radius:4px}
+.draftb{border:1.5px solid var(--accent)}
+.tag{color:var(--accent);border:1px solid var(--line);border-radius:5px;font-size:11px;padding:0 6px}
+.sum{display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line);background:var(--content)}
+.sel{border:1px solid var(--line);border-radius:6px;padding:6px 10px;background:var(--card)}
+.radio{display:flex;gap:8px;align-items:flex-start;padding:6px 0}.radio b{display:block}.radio small{color:var(--sec)}
+.dot{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--line);margin-top:2px;flex-shrink:0}.dot.on{border:4.5px solid var(--accent)}
+.sheet{position:absolute;left:50%;top:70px;transform:translateX(-50%);width:520px;background:var(--card);border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.35);padding:18px 20px;color:var(--text)}
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.25)}
+</style><style>
+.ell{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0}
+.hdr{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+.fixed{flex-shrink:0}
+.flow{display:flex;gap:14px;align-items:center}.arrow{font-size:22px;color:var(--sec)}
+.mark{outline:2px dashed #ff9f0a;outline-offset:2px;border-radius:5px}
+</style></head><body>
+<h1>PR review, long lines and the way back (mockup)</h1>
+<p class="cap">The PR review session in the redesigned diff style, Submit review, and the Wrap/Scroll toggle. Mockups in the app's colours, not app renders.</p>
+<h2>1 · PR review session: a back button (‹, ⌘[) on every session, the diff as a page with a file bar, drafts on lines</h2><div class="win dark"><div class="sb"><div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+<div class="sbi">Home</div><div class="sbi">Inbox</div><div class="sbi">Board</div><div class="sbi">Desk</div>
+<div class="sbh">payments-rewrite</div><div class="sbi">Ledger schema migration</div><div class="sbh">pr-reviews</div><div class="sbi on">acme/api #482</div></div><div class="main"><div class="top"><span class="back" title="Back ⌘[">‹</span><div class="t"><small style="color:var(--accent)"># pr-reviews</small><b>acme/api #482</b></div><div class="sp"></div><span style="color:var(--sec);font-size:12px">Copilot · This Mac</span></div>
+<div class="split"><div style="flex:1;display:flex;flex-direction:column;min-width:0;background:var(--term)"><div class="term"><span class="d">~/src/api (fix-refund-rounding) $</span> copilot
+<span class="d">›</span> why round() and not floor()?
+<span class="d">● review_focus refund.rs:140</span>
+  It rounds half away from zero, so a split capture
+  can refund a cent more than was taken.
+<span class="d">›</span> note that on the line for me
+<span class="d">● review_note refund.rs:140</span>   <span class="qb">Undo</span>
+<span class="d">›</span></div><div style="margin:0 14px 12px;padding:8px 12px;border-radius:8px;background:var(--fill);display:flex;align-items:center;gap:8px;font-size:12.5px">ⓘ 2 new commits on the PR branch<span class="sp"></span><span class="qb">Update the clone</span></div></div><div class="panel" style="width:600px">
+<div class="ph"><b>PR #482</b><span class="chip">against main · 2 repos</span><div class="sp"></div><div class="ib">⤢</div><div class="ib">✕</div></div>
+<div class="fbar"><span class="step">⌄</span><span class="r">api #482 ·</span><span class="n">refund.rs</span><span class="dir">src/</span><div class="sp"></div><span class="cnt">1 of 6</span><span class="step">‹</span><span class="step">›</span></div>
+<div class="code"><div class="hk">fn refund_split</div><div class="ln "><span class="g2">138</span><span class="g2">138</span><span class="s"> </span>    let amount = capture.remaining();</div><div class="ln d"><span class="g2">139</span><span class="g2"></span><span class="s">−</span>    let cents = amount.<span class="wd">floor</span>();</div><div class="ln a"><span class="g2"></span><span class="g2">139</span><span class="s">+</span>    let cents = amount.<span class="wa">round</span>();</div><div class="cardc draftb" style="margin-left:88px"><div class="h"><b style="color:var(--text)">Copilot</b>· line 139<span class="tag">Draft for GitHub</span><span class="sp"></span><span class="lnk">Edit</span>&nbsp;<span class="lnk">Drop</span></div>round() is half-away-from-zero, so a split capture can refund a cent more than was taken. Use floor() on each part.</div><div class="ln "><span class="g2">140</span><span class="g2">140</span><span class="s"> </span>    refund.issue(cents)?;</div><div class="ln "><span class="g2">141</span><span class="g2">141</span><span class="s"> </span>    Ok(())</div></div>
+<div class="foot"><span style="color:var(--sec);font-size:12px">4 drafts · 3 by Copilot, 1 by you</span><div class="sp"></div><span class="btn">Submit review…</span></div></div><div class="rail"><div><span>✉︎</span>Inbox</div><div class="on"><span>±</span>Diff</div><div><span>▤</span>Files</div><div><span>▦</span>Board</div><div><span>ⓘ</span>Info</div></div></div></div></div>
+<p class="ann">‹ goes back to wherever you were; "# pr-reviews" opens the channel. The panel says what's reviewed ("PR #482 against main · 2 repos"). Agent drafts are outlined in blue and marked "Draft for GitHub" with Edit and Drop. The footer counts the drafts and holds the one blue action, Submit review. New commits on the PR show as a bar under the terminal with "Update the clone".</p>
+<h2>2 · Submit review: one sheet for both PRs</h2><div class="win short dark" style="position:relative;height:520px"><div class="sb"><div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+<div class="sbi">Home</div><div class="sbi">Inbox</div><div class="sbi">Board</div><div class="sbi">Desk</div>
+<div class="sbh">payments-rewrite</div><div class="sbi">Ledger schema migration</div><div class="sbh">pr-reviews</div><div class="sbi on">acme/api #482</div></div><div class="main"><div class="top"><span class="back" title="Back ⌘[">‹</span><div class="t"><small style="color:var(--accent)"># pr-reviews</small><b>acme/api #482</b></div><div class="sp"></div></div><div class="split"><div class="term" style="flex:1"></div></div></div>
+<div class="scrim"></div><div class="sheet"><b style="font-size:15px">Submit review of acme/api #482 and acme/ledger #91</b>
+<p style="color:var(--sec);margin:6px 0 12px">4 comments go with it: 3 by Copilot, 1 by you.</p>
+<div class="sel" style="color:var(--ter);height:60px">Summary (optional)</div>
+<div class="radio"><span class="dot on"></span><div><b>Comment</b><small>Feedback without a verdict</small></div></div>
+<div class="radio"><span class="dot"></span><div><b>Approve</b></div></div>
+<div class="radio"><span class="dot"></span><div><b>Request changes</b></div></div>
+<div style="display:flex;gap:8px;margin-top:10px"><span class="sp" style="flex:1"></span><span class="qb">Cancel</span><span class="btn">Submit to GitHub</span></div></div></div>
+<p class="ann">Lists what goes out and who wrote it, then Comment, Approve or Request changes. Nothing is sent before this.</p>
+<h2>3 · Long lines: Wrap (left) and Scroll (right), switched from the file header (⌥Z)</h2><div class="row3"><div class="mini" style="height:300px;width:640px;background:var(--content)"><div class="fh"><span class="r">api ·</span><span class="r">src/</span><span class="n">refund.rs</span><div class="sp"></div><span class="tog"><span class="on">Wrap</span><span class="">Scroll</span></span><span class="ib">↗</span></div><div class="code"><div class="hk">fn refund_split</div><div class="ln "><span class="g2">210</span><span class="g2">210</span><span class="s"> </span>    if amount &gt; capture.remaining() {</div>
+<div class="ln a" style="white-space:normal"><span class="g2"></span><span class="g2">211</span><span class="s">+</span><span style="flex:1;padding-right:12px">        let message = format!("refund {} for capture {} split across {} parts exceeds the remaining {} on the ledger", amount, capture.id, parts.len(), capture.remaining());</span></div>
+<div class="ln "><span class="g2">211</span><span class="g2">212</span><span class="s"> </span>        return Err(RefundError::TooLarge);</div><div class="ln "><span class="g2">212</span><span class="g2">213</span><span class="s"> </span>    }</div></div></div><div class="mini" style="height:300px;width:640px;background:var(--content)"><div class="fh"><span class="r">api ·</span><span class="r">src/</span><span class="n">refund.rs</span><div class="sp"></div><span class="tog"><span class="">Wrap</span><span class="on">Scroll</span></span><span class="ib">↗</span></div><div class="code"><div class="hk">fn refund_split</div><div style="display:flex"><div class="gut"><div class="ln " style="width:88px"><span class="g2">210</span><span class="g2">210</span><span class="s"> </span></div><div class="ln a" style="width:88px"><span class="g2"></span><span class="g2">211</span><span class="s">+</span></div><div class="ln " style="width:88px"><span class="g2">211</span><span class="g2">212</span><span class="s"> </span></div><div class="ln " style="width:88px"><span class="g2">212</span><span class="g2">213</span><span class="s"> </span></div></div><div class="scrollx"><div class="ln " style="margin-left:-260px">    if amount &gt; capture.remaining() {</div><div class="ln a" style="margin-left:-260px">        let message = format!("refund {} for capture {} split across {} parts exceeds the remaining {} on the ledger", amount, capture.id, parts.len(), capture.remaining());</div><div class="ln " style="margin-left:-260px">        return Err(RefundError::TooLarge);</div><div class="ln " style="margin-left:-260px">    }</div></div></div><div class="bar"><i></i></div></div></div></div>
+<p class="ann">Wrap: the line breaks under the code, numbered once. Scroll: the line numbers and +/− stay put while only the code slides sideways. The switch is the same preference as Settings › Long lines.</p>
+<h2>4 · Full screen (⤢) never disappears: everything else on the line truncates first</h2><div class="row3" style="align-items:flex-start"><div class="mini" style="width:560px;height:120px;background:var(--panel)"><div class="hdr"><b class="fixed">Diff</b><span class="chip ell" style="flex:0 1 auto">PR #482 against main · 2 repos</span><span style="flex:1"></span><span class="ib fixed mark">⤢</span><span class="ib fixed">✕</span></div>
+<div class="fbar"><span class="step fixed">⌄</span><span class="r ell" style="flex:0 1 auto">api #482 · uhvesta/fix-refund-rounding ·</span><span class="n fixed">refund.rs</span><div class="sp"></div><span class="cnt fixed">1 of 6</span><span class="step fixed">‹</span><span class="step fixed">›</span><span class="ib fixed mark">↗</span></div></div><div class="mini" style="width:380px;height:120px;background:var(--panel)"><div class="hdr"><b class="fixed">Diff</b><span class="chip ell" style="flex:0 1 auto">PR #482 against release/2026-11-hotfix-refunds · 2 repos</span><span style="flex:1"></span><span class="ib fixed mark">⤢</span><span class="ib fixed">✕</span></div>
+<div class="fbar"><span class="step fixed">⌄</span><span class="r ell" style="flex:0 1 auto">api-gateway-internal-payments #482 · uhvesta/fix-refund-rounding-for-split-captures ·</span><span class="n fixed">refund.rs</span><div class="sp"></div><span class="cnt fixed">1 of 6</span><span class="step fixed">‹</span><span class="step fixed">›</span><span class="ib fixed mark">↗</span></div></div><div class="mini" style="width:300px;height:120px;background:var(--panel)"><div class="hdr"><b class="fixed">Diff</b><span class="chip ell" style="flex:0 1 auto">PR #482 against release/2026-11-hotfix-refunds · 2 repos</span><span style="flex:1"></span><span class="ib fixed mark">⤢</span><span class="ib fixed">✕</span></div>
+<div class="fbar"><span class="step fixed">⌄</span><span class="r ell" style="flex:0 1 auto">api-gateway-internal-payments #482 ·</span><span class="n fixed">refund.rs</span><div class="sp"></div><span class="cnt fixed">1 of 6</span><span class="step fixed">‹</span><span class="step fixed">›</span><span class="ib fixed mark">↗</span></div></div></div>
+<p class="ann">Dashed: the controls that never shrink — Full screen and Close in the header, the counter, steppers and ↗ in the file bar. The base chip and the repo/branch text give way with an ellipsis (full text on hover), down to just the PR number. The app now does this: the review panel's header carries ⤢ and ✕ again (it had none before), and the full-screen title truncates before "Show the terminal".</p>
+<h2>5 · Full-screen review → Show the terminal</h2><div class="row3" style="align-items:center">
+<div class="mini dark" style="width:600px;height:330px;background:var(--content)"><div class="top"><span class="back" title="Back ⌘[">‹</span><div class="t ell" style="flex:0 1 auto"><small class="ell" style="color:var(--accent)"># pr-reviews › acme/api-gateway-internal-payments #482 · fix refund rounding for split captures</small><b class="ell">Diff · PR #482 against main · 2 repos</b></div><div class="sp"></div><span class="cnt fixed">Change 3 of 12 ‹ ›</span><span class="qb fixed mark">Show the terminal</span></div><div class="fbar"><span class="r">api #482 ·</span><span class="n">refund.rs</span><div class="sp"></div><span class="cnt">1 of 6</span></div><div class="code"><div class="ln "><span class="g2">138</span><span class="g2">138</span><span class="s"> </span>    let amount = capture.remaining();</div><div class="ln d"><span class="g2">139</span><span class="g2"></span><span class="s"> −</span>    let cents = amount.floor();</div><div class="ln a"><span class="g2"></span><span class="g2">139</span><span class="s">+</span>    let cents = amount.round();</div><div class="ln "><span class="g2">140</span><span class="g2">140</span><span class="s"> </span>    refund.issue(cents)?;</div></div></div>
+<span class="arrow">→</span>
+<div class="mini dark" style="width:600px;height:330px;background:var(--term)"><div style="display:flex;flex-direction:row;height:100%"><div style="flex:1;padding:10px;font:11.5px Menlo,monospace;color:#ccc;white-space:pre">› note that on the line for me
+● review_note refund.rs:140
+›</div><div style="width:300px;background:var(--panel);border-left:1px solid var(--line)"><div class="hdr"><b class="fixed">Diff</b><span class="chip ell">PR #482 against main · 2 repos</span><span style="flex:1"></span><span class="ib fixed mark">⤢</span><span class="ib fixed">✕</span></div><div class="fbar"><span class="r ell" style="flex:0 1 auto">api #482 ·</span><span class="n fixed">refund.rs</span><div class="sp"></div><span class="cnt fixed">1 of 6</span></div><div class="code"><div class="ln d"><span class="g2">139</span><span class="s">−</span>  cents = amount.floor();</div><div class="ln a"><span class="g2">139</span><span class="s">+</span>  cents = amount.round();</div><div class="ln "><span class="g2">140</span><span class="s"> </span>  refund.issue(cents)?;</div></div></div></div></div></div>
+<p class="ann">One click (or Esc / ⌥⌘↩) puts the review back beside the terminal: same file, same line, same scroll, drafts untouched, and the terminal keeps running — nothing is reloaded. The ⤢ in the panel header takes it back to full screen. Full screen gets one title bar (today the app draws the panel's header under it too; that duplicate goes in DV-18).</p></body></html>

@@ -12,7 +12,11 @@ use humata2_app::{AppAction, AppState};
 use humata2_clients::model::Agent;
 use humata2_settings::{AgentsAction, DeskRows, FONT_SIZES, Row, Section, SettingsAction as A, Theme};
 use std::rc::Rc;
-fn dim(look: Look, text: impl Into<SharedString>) -> Div {
+
+use crate::settings_providers as providers;
+pub(crate) use providers::ProvidersInputs;
+
+pub(crate) fn dim(look: Look, text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(11.5))
         .text_color(rgb(look.secondary))
@@ -130,7 +134,7 @@ fn open_card(look: Look) -> Div {
         .border_color(rgb(look.line))
         .bg(rgb(look.card))
 }
-fn card(look: Look) -> Div {
+pub(crate) fn card(look: Look) -> Div {
     // A clipped card in the scrolling page would otherwise shrink to fit
     // the window and hide its rows instead of letting the page scroll.
     open_card(look).overflow_hidden().flex_shrink_0()
@@ -359,7 +363,7 @@ fn desk_rows_menu(ui: &Rc<Ui>, current: DeskRows, look: Look) -> impl IntoElemen
                 .test_support()
         }))
 }
-fn button(
+pub(crate) fn button(
     ui: &Rc<Ui>,
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -411,7 +415,14 @@ fn setting(look: Look, title: &str, note: &str, control: AnyElement) -> Div {
         )
         .child(control)
 }
-pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+pub(crate) fn page(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    provider_inputs: &ProvidersInputs,
+    look: Look,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
     let prefs = &state.settings.preferences;
     let nav = col()
         .w(px(200.))
@@ -698,6 +709,10 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                             )))
                         })
                 }))
+                // PROVIDERS: what makes machines, above Scripts.
+                .when(state.settings.section == Section::Machines, |x| {
+                    x.child(providers::providers_block(ui, state, provider_inputs, look, window, cx))
+                })
                 // MACHINESCRIPTS (D680): rules and script names, with Edit rules and Reveal scripts.
                 .when(state.settings.section == Section::Machines, |x| {
                     x.child(machine_scripts_block(ui, state, look))

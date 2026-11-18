@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use humata2_machines::{
-    parse_status, Action, ConfigError, Exit, HostVariables, MachineName, MachineStatus,
+    parse_status, Action, ConfigError, Exit, HostVariables, HostVariablesError, MachineName, MachineStatus,
     ProblemKind, Provider, Reach, RunError, Runner, SystemRunner, ValuesError,
 };
 
@@ -26,8 +26,17 @@ fn name(value: &str) -> MachineName {
 struct Variables(BTreeMap<&'static str, &'static str>);
 
 impl HostVariables for Variables {
-    fn value(&self, name: &str) -> Option<String> {
-        self.0.get(name).map(|value| (*value).to_owned())
+    fn value(&self, name: &str) -> Result<Option<String>, HostVariablesError> {
+        Ok(self.0.get(name).map(|value| (*value).to_owned()))
+    }
+}
+
+/// A store that can't be read.
+struct Unreadable;
+
+impl HostVariables for Unreadable {
+    fn value(&self, _name: &str) -> Result<Option<String>, HostVariablesError> {
+        Err(HostVariablesError(Box::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied))))
     }
 }
 
@@ -211,6 +220,22 @@ fn a_missing_host_variable_stops_the_command_before_it_runs() {
     let result = SystemRunner::new(&()).run(&invocation);
 
     assert!(matches!(result, Err(RunError::MissingHostVariable { ref name }) if name == "CLOUD_TOKEN"));
+}
+
+#[test]
+fn an_unreadable_variable_store_stops_the_command_and_is_not_read_as_unset() {
+    let invocation = cloud()
+        .invocation(
+            Action::Create,
+            &name("box-1"),
+            &BTreeMap::from([("region".to_owned(), "fsn1".to_owned())]),
+        )
+        .unwrap()
+        .unwrap();
+
+    let result = SystemRunner::new(&Unreadable).run(&invocation);
+
+    assert!(matches!(result, Err(RunError::UnreadableHostVariable { ref name, .. }) if name == "CLOUD_TOKEN"));
 }
 
 #[test]

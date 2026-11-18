@@ -405,6 +405,7 @@ fn diff_pb(diff: &doc_repo::VersionDiff) -> pb::DocVersionDiff {
                         old_line: line.old_line,
                         new_line: line.new_line,
                         text: line.text.clone(),
+                        ..Default::default()
                     })
                     .collect(),
                 index: u32::try_from(index).unwrap_or(u32::MAX),

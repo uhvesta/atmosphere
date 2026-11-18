@@ -13,13 +13,14 @@ use humata2_app::{AppAction, Overlay, Route};
 use humata2_clients::machines::{
     AddEvent, AddFailure, AddOutcome, AddRequest, AddTarget, Call, Choices, Fix, GhLogin,
     LoginEvent, LoginReason, LoginTarget, MachineDetail, MachineHealth, OperationId, PromptKind, Reach, ReachRule,
-    ChannelFolder, Provider, SkillsPreview, SshHost, StepKind, StepStatus, StepUpdate, UnattendedMethod,
+    ChannelFolder, Provider, ProviderParam, SkillsPreview, SshHost, StepKind, StepStatus, StepUpdate, UnattendedMethod,
 };
 use humata2_clients::model::{
     Agent, Capability, ChannelId, MachineId, MachineStop, RuleSetting, SessionId, StoppedBy,
 };
 use humata2_clients::{Clients, DaemonError, fixture};
 use humata2_engine::Resources;
+use humata2_hosts::add::Choice;
 use humata2_hosts::page::MachinePageAction;
 use humata2_flow::{Action, Driver as _, FrameMode, GpuiDriver, Target};
 use humata2_ui::bridge::Ui;
@@ -297,6 +298,127 @@ fn the_popup_lists_the_hosts_then_the_providers_and_a_provider_adds_with_its_par
 }
 
 #[test]
+fn manage_providers_ends_the_popup_and_opens_settings_machines() {
+    let mut app = App::new();
+    app.fake.set_choices(Choices {
+        hosts: vec![SshHost { name: "devbox-2".to_owned(), address: "avesta@devbox-2".to_owned() }],
+        providers: vec![corp_ssh()],
+    });
+    app.open_add();
+    app.click(Role::Button, "Host");
+    assert!(app.shows(Role::ListBoxOption, "Manage providers\u{2026}"));
+    app.click(Role::ListBoxOption, "Manage providers\u{2026}");
+    assert!(!app.dialog_open(), "the dialog closes");
+    assert_eq!(app.ui.read(|s| s.route.clone()), Route::Settings);
+    assert_eq!(app.ui.read(|s| s.settings.section), humata2_settings::Section::Machines);
+    assert!(app.adds().is_empty());
+}
+
+#[test]
+fn a_provider_with_an_unset_variable_says_so_and_can_not_add() {
+    let mut app = App::new();
+    app.fake.set_choices(Choices {
+        hosts: Vec::new(),
+        providers: vec![Provider { unset: vec!["HCLOUD_TOKEN".to_owned()], ..corp_ssh() }],
+    });
+    app.open_add();
+    app.pick("Corporate SSH");
+    let needs = "Corporate SSH needs HCLOUD_TOKEN. Set it in Settings > Machines.";
+    assert!(app.shows(Role::Alert, needs));
+    app.click(Role::Button, "Add");
+    app.play(&Action::Key("enter".to_owned()));
+    assert!(app.adds().is_empty(), "Add stays off while the variable is unset");
+
+    app.click(Role::Button, "Open Settings");
+    assert!(!app.dialog_open());
+    assert_eq!(app.ui.read(|s| s.route.clone()), Route::Settings);
+    assert_eq!(app.ui.read(|s| s.settings.section), humata2_settings::Section::Machines);
+}
+
+/// Whether the pop-up's pick is still the provider `id`.
+fn picked_provider(app: &App, id: &str) -> bool {
+    app.ui.read(|s| {
+        s.add_machine.typed.is_empty()
+            && matches!(&s.add_machine.choice, Some(Choice::Provider { id: picked, .. }) if picked == id)
+    })
+}
+
+#[test]
+fn picking_a_provider_without_params_puts_the_keyboard_in_its_name() {
+    let mut app = App::new();
+    app.fake.set_choices(Choices {
+        hosts: vec![SshHost { name: "devbox-2".to_owned(), address: "avesta@devbox-2".to_owned() }],
+        providers: vec![Provider {
+            id: "orbstack".to_owned(),
+            label: "OrbStack".to_owned(),
+            interactive: false,
+            params: Vec::new(),
+            unset: Vec::new(),
+        }],
+    });
+    app.fake.script_add(vec![started("op-1"), added("box-1")]);
+    app.open_add();
+    app.pick("OrbStack");
+    app.type_text("box-1");
+    assert_eq!(app.ui.read(|s| s.add_machine.name.clone()), "box-1");
+    assert!(picked_provider(&app, "orbstack"), "typing the name keeps the provider");
+
+    app.play(&Action::Key("enter".to_owned()));
+    let adds = app.adds();
+    assert_eq!(adds.len(), 1, "Enter in the name starts the add");
+    assert!(matches!(&adds[0].target, AddTarget::Provider { provider, .. } if provider == "orbstack"));
+    assert_eq!(adds[0].name.as_deref(), Some("box-1"));
+}
+
+#[test]
+fn a_providers_params_and_name_each_take_the_keys_when_clicked() {
+    let mut app = App::new();
+    app.fake.set_choices(Choices {
+        hosts: Vec::new(),
+        providers: vec![Provider {
+            id: "cloud".to_owned(),
+            label: "Cloud".to_owned(),
+            interactive: false,
+            params: vec![ProviderParam {
+                name: "zone".to_owned(),
+                label: "Zone".to_owned(),
+                default: String::new(),
+                required: true,
+            }],
+            unset: Vec::new(),
+        }],
+    });
+    app.fake.script_add(vec![started("op-1"), added("box-2")]);
+    app.open_add();
+    app.pick("Cloud");
+    // The pick moves the keyboard into the first param.
+    app.type_text("eu-1");
+    app.click(Role::TextInput, "Machine name");
+    app.type_text("box-2");
+    app.click(Role::TextInput, "Zone");
+    app.type_text("a");
+    assert_eq!(app.ui.read(|s| s.add_machine.name.clone()), "box-2");
+    assert!(picked_provider(&app, "cloud"), "typing in the fields keeps the provider");
+    let zone = app.ui.read(|s| match &s.add_machine.choice {
+        Some(Choice::Provider { params, .. }) => params.get("zone").cloned(),
+        _ => None,
+    });
+    assert!(
+        zone.as_deref().is_some_and(|zone| zone.replacen('a', "", 1) == "eu-1"),
+        "both typings reached the zone: {zone:?}"
+    );
+
+    app.play(&Action::Key("enter".to_owned()));
+    let adds = app.adds();
+    assert_eq!(adds.len(), 1, "Enter in a param starts the add");
+    assert!(matches!(
+        &adds[0].target,
+        AddTarget::Provider { provider, params } if provider == "cloud" && params.get("zone") == zone.as_ref()
+    ));
+    assert_eq!(adds[0].name.as_deref(), Some("box-2"));
+}
+
+#[test]
 fn confirming_a_new_host_key_adds_trusting_it() {
     let mut app = App::new();
     app.fake.set_choices(one_host("devbox-2"));
@@ -342,6 +464,7 @@ fn corp_ssh() -> Provider {
         label: "Corporate SSH".to_owned(),
         interactive: true,
         params: Vec::new(),
+        unset: Vec::new(),
     }
 }
 

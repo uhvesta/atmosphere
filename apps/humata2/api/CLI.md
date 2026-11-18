@@ -247,6 +247,7 @@ are `host_unreachable` (exit 4), and nothing is kept for later (D768).
 | `humata machine script log <m> [--rule r] [--limit n]` | `machine.script_log` | ListMachineScriptRuns | as list; the host's run log for the machine, newest first, with each step's exit and output tail | stale |
 | `humata provider ls`, `humata provider config edit` | `providers.*` | ListProviders, Get/SetProvidersConfig | edit: user-only | host only |
 | `humata provider import <file> [--dry-run\|--plan t]` | `provider.import` | PreviewProviderImport, ImportProvider | user-only (MP-23); prints the file's full text and every command it will run, then asks for presence; the plan is good once, for ten minutes, and only while the providers file is unchanged (D771) | host only |
+| `humata provider rm <id>` | `provider.remove` | RemoveProvider | user-only, with presence (PROVIDERS); refuses a built-in provider, and one that machines still use (named, to delete first); an agent is pointed at Settings › Machines › Providers | host only |
 | `humata provider create <provider> <name> [--param k=v]…`, `start\|stop\|status <m>` | `provider.*` | CreateMachine, RunProviderAction | user; agent: MACHINE_PROVISION | host only |
 | `humata provider delete <m> [--dry-run\|--plan t]` | `provider.delete` | RunProviderAction(DELETE), DeleteWhatWasMade | user; agent: MACHINE_DESTROY | host only |
 | `humata provider login <provider>` | `provider.login` | InteractiveLogin | user-only (interactive) | host only |

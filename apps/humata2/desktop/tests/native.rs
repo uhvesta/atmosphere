@@ -202,6 +202,9 @@ mod agent_switches;
 mod inbox_terminal;
 #[path = "native/hosts_settings.rs"]
 mod hosts_settings;
+// PROVIDERS: Settings › Machines › Providers, frames A–E.
+#[path = "native/providers_settings.rs"]
+mod providers_settings;
 #[path = "native/lists.rs"]
 mod lists;
 #[path = "native/machines.rs"]
@@ -245,3 +248,7 @@ mod views;
 mod channel_desk_target;
 #[path = "native/desk_target.rs"]
 mod desk_target;
+#[path = "native/diff_view.rs"]
+mod diff_view;
+#[path = "native/diff_big.rs"]
+mod diff_big;

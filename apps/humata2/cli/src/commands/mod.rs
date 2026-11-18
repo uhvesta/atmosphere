@@ -385,6 +385,7 @@ pub fn operation(command: &Command) -> &'static str {
             ProviderCommand::Config(ProviderConfigCommand::Show) => "providers.config_get",
             ProviderCommand::Config(ProviderConfigCommand::Edit { .. }) => "providers.config_set",
             ProviderCommand::Import { .. } => "provider.import",
+            ProviderCommand::Rm { .. } => "provider.remove",
             ProviderCommand::Create { .. } => "provider.create",
             ProviderCommand::Start { .. } => "provider.start",
             ProviderCommand::Stop { .. } => "provider.stop",

@@ -68,6 +68,45 @@ fn another_tool_shows_all_of_its_input() {
 }
 
 #[test]
+fn an_mcp_call_shows_one_line_per_argument_and_nothing_for_none() {
+    let mcp = parse_permission(Agent::Claude, CLAUDE_MCP).expect("an ask");
+    let lines: Vec<&str> = mcp.command.lines().collect();
+    assert_eq!(lines.len(), 2, "{}", mcp.command);
+    assert!(lines.iter().any(|line| line.starts_with("title") && line.contains("Login fails")));
+    assert!(lines.iter().any(|line| line.starts_with("body") && line.contains("Steps…")));
+    assert!(!mcp.command.contains('{'), "{}", mcp.command);
+
+    let none = br#"{"hook_event_name":"PermissionRequest","tool_name":"mcp__humata2__whoami","tool_input":{}}"#;
+    let none = parse_permission(Agent::Claude, none).expect("an ask");
+    assert!(none.command.is_empty(), "{}", none.command);
+    assert!(none.tool.contains("whoami"));
+}
+
+#[test]
+fn a_file_edit_shows_its_path_then_its_change_as_lines() {
+    const COPILOT_EDIT: &[u8] = include_bytes!("../testdata/copilot/permission_edit.json");
+    for (agent, payload) in [(Agent::Claude, CLAUDE_EDIT), (Agent::Copilot, COPILOT_EDIT)] {
+        let ask = parse_permission(agent, payload).expect("an ask");
+        let lines: Vec<&str> = ask.command.lines().collect();
+        assert_eq!(lines, ["/work/api/src/login.rs", "-let a = 1;", "+let a = 2;"], "{agent:?}");
+    }
+}
+
+#[test]
+fn a_multi_line_edit_or_write_keeps_each_line_and_every_other_argument() {
+    let multi = br#"{"hook_event_name":"PermissionRequest","tool_name":"MultiEdit","tool_input":{"file_path":"/w/a.rs","edits":[{"old_string":"a\nb","new_string":"c","replace_all":true}]}}"#;
+    let multi = parse_permission(Agent::Claude, multi).expect("an ask");
+    let lines: Vec<&str> = multi.command.lines().collect();
+    assert_eq!(lines[..4], ["/w/a.rs", "-a", "-b", "+c"], "{}", multi.command);
+    assert!(lines[4..].iter().any(|line| line.contains("replace_all") && line.contains("true")));
+
+    let write = br##"{"hook_event_name":"PermissionRequest","tool_name":"Write","tool_input":{"file_path":"/w/new.md","content":"# Title\n\nBody"}}"##;
+    let write = parse_permission(Agent::Claude, write).expect("an ask");
+    let lines: Vec<&str> = write.command.lines().collect();
+    assert_eq!(lines, ["/w/new.md", "+# Title", "+", "+Body"]);
+}
+
+#[test]
 fn the_same_ask_again_has_the_same_key_and_another_ask_another() {
     let first = parse_permission(Agent::Claude, CLAUDE_BASH).expect("an ask");
     let again = parse_permission(Agent::Claude, CLAUDE_BASH).expect("an ask");

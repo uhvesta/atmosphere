@@ -94,8 +94,9 @@ fn git(args: &[&str]) -> Result<(), WorldError> {
 }
 
 /// Stands in for an agent: answers every line typed with `got: <line>`, and
-/// keeps each line in its conversation file.
-fn agent_script(conv: &Path) -> String {
+/// keeps each line in its conversation file. `up` runs once it is up,
+/// before it reads its first line.
+fn agent_script(conv: &Path, up: &str) -> String {
     format!(
         r#"CONV_DIR='{}'
 mode=$1; id=$2
@@ -106,10 +107,25 @@ case "$mode" in
 esac
 printf '%s' "$HUMATA_SESSION_TOKEN" > "$CONV_DIR/../agent.token.part" && mv "$CONV_DIR/../agent.token.part" "$CONV_DIR/../agent.token"
 echo "agent up $mode"
+{}
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; printf w > "$CONV_DIR/../wrote"; done
 "#,
-        conv.display()
+        conv.display(),
+        up,
     )
+}
+
+/// Like [`agent_script`], but once up it runs Claude's SessionStart hook
+/// (`humata hook claude conversation`, naming its conversation), as Claude
+/// does once its workspace trust is accepted. A `claude-jsonl` agent's
+/// first message waits for that signal (D797).
+fn claude_agent_script(conv: &Path, socket: &Path, humata: &Path) -> String {
+    let up = format!(
+        r#"printf '{{"session_id":"%s","hook_event_name":"SessionStart","source":"startup"}}' "$id" | HUMATA_SOCKET='{}' '{}' hook claude conversation > /dev/null 2>&1"#,
+        socket.display(),
+        humata.display()
+    );
+    agent_script(conv, &up)
 }
 
 /// Like [`agent_script`], but it reports its turn as a real agent's hooks
@@ -672,7 +688,7 @@ impl World {
         let text = if turn_hooks {
             hooked_agent_script(&conv, &root.join("d.sock"), &binary("HUMATA")?)
         } else {
-            agent_script(&conv)
+            agent_script(&conv, "")
         };
         std::fs::write(&script, text).map_err(io("write the agent"))?;
         let mut kind = serde_json::json!({
@@ -1043,6 +1059,16 @@ impl World {
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    /// The agent from now on runs Claude's SessionStart hook once it is up
+    /// ([`claude_agent_script`]): what an agent that declares Claude's
+    /// conversation format needs before it gets a first message. Takes
+    /// effect for agents launched after it.
+    pub fn agent_runs_claude_hooks(&self) -> Result<(), WorldError> {
+        let root = self.dir.path();
+        let text = claude_agent_script(&self.conversations(), &self.socket(), &binary("HUMATA")?);
+        std::fs::write(root.join("agent.sh"), text).map_err(io("write the agent"))
     }
 
     /// What a reboot does: the daemon and every holder and agent started in

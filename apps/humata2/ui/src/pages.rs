@@ -61,6 +61,7 @@ pub fn page(
     terminals: &crate::terminals::Terminals,
     documents: &crate::document_tab::Documents,
     machine_inputs: &crate::machine_page::MachinePageInputs,
+    providers_inputs: &crate::settings::ProvidersInputs,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -69,7 +70,9 @@ pub fn page(
         Route::Home => home(ui, state, Look::of(cx)).into_any_element(),
         Route::Desk => crate::desk::page(ui, state, Look::of(cx)).into_any_element(),
         Route::Files => crate::file_manager::page(ui, &state.files, &files_name, Look::of(cx)),
-        Route::Settings => crate::settings::page(ui, state, Look::of(cx)).into_any_element(),
+        Route::Settings => {
+            crate::settings::page(ui, state, providers_inputs, Look::of(cx), window, cx).into_any_element()
+        }
         Route::Machine(id) => {
             crate::machine_page::route(ui, state, id, machine_inputs, Look::of(cx), window, cx)
         }

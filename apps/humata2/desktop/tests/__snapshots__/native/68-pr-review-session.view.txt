@@ -33,9 +33,12 @@ Navigation "Sidebar"
 Splitter "Resize the sidebar"
 Splitter "Resize the side panel"
 Complementary "Changes"
+  text "Diff"
+  #review-pr-line
+    text "PR #482 against main · 2 repos"
+  Button "Expand panel"
+  Button "Close panel"
   #review-diff
-    #review-pr-line
-      text "PR #482 against main · 2 repos"
     #review-repo-acme/api
       text "api"
       text "#482"

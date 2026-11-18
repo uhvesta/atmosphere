@@ -131,6 +131,12 @@ fn fields(value: &str) -> Option<Vec<(&str, &str)>> {
     (lines.len() > 1).then_some(lines)
 }
 
+/// The request runs a tool with no arguments, so its preview would be an
+/// empty command.
+fn no_arguments(request: &Request) -> bool {
+    matches!(&request.preview, Preview::Command(command) if command.trim().is_empty())
+}
+
 /// The IN-10 preview as labelled rows.
 fn preview(request: &Request, look: Look) -> Div {
     let body = match &request.preview {
@@ -1165,9 +1171,13 @@ fn decision_card(
         .child(who)
         .children(meta)
         .child(text(request.reason.clone()))
-        .child(match copy {
-            Some(copy) => copy_lines(ui, state, request, copy, look),
-            None => preview(request, look),
+        // A tool called with no arguments (an MCP call such as `whoami`) has
+        // nothing to preview past its title.
+        .when(copy.is_some() || !no_arguments(request), |c| {
+            c.child(match copy {
+                Some(copy) => copy_lines(ui, state, request, copy, look),
+                None => preview(request, look),
+            })
         })
         .children(steps)
         .children(why_line)

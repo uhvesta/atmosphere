@@ -252,10 +252,20 @@ fn review_diff(look: Look) -> Div {
         .line_height(px(17.))
         .bg(c(look.term))
         .child(diff_line(look, "141", None, "    refund.issue(cents)?;"));
+    // The panel's own header: the PR line ellipsizes before ⤢ and ✕ give
+    // way (DS truncation rule, Fable 2026-11-18).
+    let pr_line = div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .min_w_0()
+        .child(small_icon(IconName::GitPullRequest, look.secondary))
+        .child(secondary(look, "PR #482 against main · 2 repos"));
     div()
         .flex()
         .flex_col()
         .size_full()
+        .child(session::panel_header(look, "Diff", false, Some(pr_line)))
         .child(
             div()
                 .flex()
@@ -265,15 +275,6 @@ fn review_diff(look: Look) -> Div {
                 .overflow_hidden()
                 .p(px(8.))
                 .gap(px(4.))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .px(px(4.))
-                        .child(small_icon(IconName::GitPullRequest, look.secondary))
-                        .child(secondary(look, "PR #482 against main · 2 repos")),
-                )
                 .child(repo_group(look, true, "api", "#482", "uhvesta/fix-refund-rounding"))
                 .child(file)
                 .child(lines)

@@ -1,5 +1,5 @@
 //! Providers: TOML entries of command templates the user writes in
-//! Settings › Machine providers (MP-2), and the invocations made from them.
+//! Settings › Machines › Providers (MP-2), and the invocations made from them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;

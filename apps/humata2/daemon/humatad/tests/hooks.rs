@@ -28,6 +28,11 @@ const COPILOT_SHELL: &str = r#"{"sessionId":"c0p1","timestamp":1763251200000,"cw
 const COPILOT_ASK: &str = r#"{"sessionId":"c0p1","timestamp":1794967800000,"cwd":"/work/api","toolName":"ask_user","toolArgs":{"message":"Which environment should I deploy to?","requestedSchema":{"type":"object","properties":{"target":{"type":"string","title":"Environment","enum":["staging","production"]}},"required":["target"]}}}"#;
 /// Copilot's preToolUse payload for another tool: not a question.
 const COPILOT_PRE_BASH: &str = r#"{"sessionId":"c0p1","timestamp":1794967810000,"cwd":"/work/api","toolName":"bash","toolArgs":{"command":"ls"}}"#;
+/// Claude's PermissionRequest for Humata's own provider_import tool, whose
+/// call only files an Inbox request.
+const CLAUDE_PROVIDER_IMPORT: &str = r#"{"session_id":"abc123","transcript_path":"/t.jsonl","cwd":"/work/api","permission_mode":"default","hook_event_name":"PermissionRequest","tool_name":"mcp__humata__provider_import","tool_input":{"text":"[providers.box]\nlabel = \"Box\"\n","reason":"to add a box"}}"#;
+/// Copilot's permissionRequest for the same tool.
+const COPILOT_PROVIDER_IMPORT: &str = r#"{"sessionId":"c0p1","timestamp":1763251200000,"cwd":"/work/api","hook_event_name":"permissionRequest","toolName":"humata/provider_import","toolInput":{"text":"[providers.box]\n"}}"#;
 /// Claude's Stop payload: not a permission ask.
 const CLAUDE_STOP: &str = r#"{"session_id":"abc123","hook_event_name":"Stop","stop_hook_active":false}"#;
 
@@ -460,6 +465,19 @@ async fn a_payload_that_isnt_an_ask_gets_no_decision_and_no_card() {
         let mut stream = fix.hold(&token, agent, payload).await;
         assert!(last_reply(&mut stream).await.is_empty(), "{agent}: {payload}");
     }
+    assert!(fix.pending().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn humatas_own_tool_that_files_an_inbox_request_is_allowed_with_no_card_of_its_own() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    let mut claude = fix.hold(&token, "claude", CLAUDE_PROVIDER_IMPORT).await;
+    let printed: Value = serde_json::from_slice(&last_reply(&mut claude).await).expect("JSON");
+    assert_eq!(printed["hookSpecificOutput"]["decision"]["behavior"], "allow");
+    let mut copilot = fix.hold(&token, "copilot", COPILOT_PROVIDER_IMPORT).await;
+    let printed: Value = serde_json::from_slice(&last_reply(&mut copilot).await).expect("JSON");
+    assert_eq!(printed["behavior"], "allow");
     assert!(fix.pending().await.is_empty());
 }
 

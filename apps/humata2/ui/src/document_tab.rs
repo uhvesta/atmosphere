@@ -6,7 +6,7 @@
 //! `MarkdownView`, the source pane's scroll handle, and one text field for
 //! the comment box. Everything else is read from the store on each draw.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -291,11 +291,54 @@ pub(crate) struct Documents {
 }
 
 /// What the Diff panel remembers about one file's code view so a rewrap can
-/// keep its top line in place.
+/// keep its top line in place: a short file's scroll offset and top row, a
+/// long file's virtual list (DV-5), how far Scroll mode has moved the code
+/// sideways, and the facts that take a pass over every line.
 #[derive(Clone)]
 pub(crate) struct DiffView {
     pub(crate) handle: ScrollHandle,
     anchor: Rc<RefCell<Option<TopAnchor>>>,
+    list: Rc<RefCell<Option<VirtualRows>>>,
+    shift: Rc<Cell<f32>>,
+    facts: Rc<RefCell<Option<(LinesKey, LineFacts)>>>,
+}
+
+/// How far past the view a long file's list lays out lines, so a short
+/// scroll never shows a gap.
+const OVERDRAW: f32 = 240.;
+
+/// Which read of a file a cached fact is about: where its lines are held and
+/// how many there are. A new read holds them somewhere else.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct LinesKey {
+    at: usize,
+    len: usize,
+}
+
+impl LinesKey {
+    fn of<T>(lines: &[T]) -> Self {
+        Self {
+            at: lines.as_ptr() as usize,
+            len: lines.len(),
+        }
+    }
+}
+
+/// A file's widest line number in digits and its widest line in cells.
+#[derive(Clone, Copy)]
+pub(crate) struct LineFacts {
+    pub(crate) digits: usize,
+    pub(crate) widest: usize,
+}
+
+/// A long file's list, one item per line, and what it was last measured for.
+struct VirtualRows {
+    state: ListState,
+    lines: LinesKey,
+    wrap: bool,
+    width: f32,
+    /// The list width the lines not drawn last got a height guess at.
+    guessed_at: Option<Pixels>,
 }
 
 /// The row at the top of the view: its child index, how far into it the view
@@ -308,6 +351,87 @@ struct TopAnchor {
 }
 
 impl DiffView {
+    /// The file's line facts, counted once per read of the file rather than
+    /// on every frame.
+    pub(crate) fn facts<T>(&self, lines: &[T], count: impl FnOnce(&[T]) -> LineFacts) -> LineFacts {
+        let key = LinesKey::of(lines);
+        let mut held = self.facts.borrow_mut();
+        match *held {
+            Some((at, facts)) if at == key => facts,
+            _ => {
+                let facts = count(lines);
+                *held = Some((key, facts));
+                facts
+            }
+        }
+    }
+
+    /// A long file's virtual list, one item per line. It is made once; a
+    /// new read of the file, a wrap switch or a new panel width measures the
+    /// lines again, and the line at the top stays there, as far into it as
+    /// before relative to its new height. A read with a different number of
+    /// lines keeps the top line's index.
+    pub(crate) fn rows<T>(&self, lines: &[T], wrap: bool, width: f32, line_height: f32) -> ListState {
+        let key = LinesKey::of(lines);
+        let guess = px(line_height);
+        let mut held = self.list.borrow_mut();
+        let Some(rows) = held.as_mut() else {
+            let state = ListState::new(key.len, ListAlignment::Top, px(OVERDRAW))
+                .with_uniform_item_height(guess);
+            *held = Some(VirtualRows {
+                state: state.clone(),
+                lines: key,
+                wrap,
+                width,
+                guessed_at: None,
+            });
+            return state;
+        };
+        if rows.lines.len != key.len {
+            let top = rows.state.logical_scroll_top();
+            rows.state.reset_with_uniform_height(key.len, guess);
+            rows.state.scroll_to(top);
+        } else if rows.lines != key || rows.wrap != wrap || (rows.width - width).abs() > 0.5 {
+            rows.state.remeasure();
+        }
+        rows.lines = key;
+        rows.wrap = wrap;
+        rows.width = width;
+        rows.state.clone()
+    }
+
+    /// Called once the list is laid out. A new list width drops the list's
+    /// height guesses, so the lines not drawn get one line's height again and
+    /// the list keeps its whole length to scroll through.
+    pub(crate) fn guess_heights(&self, line_height: f32) {
+        let mut held = self.list.borrow_mut();
+        let Some(rows) = held.as_mut() else {
+            return;
+        };
+        let width = rows.state.viewport_bounds().size.width;
+        if rows.guessed_at != Some(width) {
+            let _ = rows.state.clone().with_uniform_item_height(px(line_height));
+            rows.guessed_at = Some(width);
+        }
+    }
+
+    /// How far Scroll mode has moved the code left, in pixels, held within
+    /// `max` (the widest line less the code column).
+    pub(crate) fn shift(&self, max: f32) -> f32 {
+        let shift = self.shift.get().clamp(0., max.max(0.));
+        self.shift.set(shift);
+        shift
+    }
+
+    /// Moves the code sideways by a wheel's horizontal `delta`, within
+    /// `max`; true when it moved.
+    pub(crate) fn scroll_sideways(&self, delta: f32, max: f32) -> bool {
+        let before = self.shift.get();
+        let after = (before - delta).clamp(0., max.max(0.));
+        self.shift.set(after);
+        (after - before).abs() > f32::EPSILON
+    }
+
     /// Called with the bounds of the code body's children on every frame.
     /// While the width stays, notes which child is at the top; when it
     /// changes under wrap, moves the offset so that child is at the top
@@ -433,6 +557,9 @@ impl Documents {
             .or_insert_with(|| DiffView {
                 handle: ScrollHandle::new(),
                 anchor: Rc::new(RefCell::new(None)),
+                list: Rc::new(RefCell::new(None)),
+                shift: Rc::new(Cell::new(0.)),
+                facts: Rc::new(RefCell::new(None)),
             })
             .clone()
     }

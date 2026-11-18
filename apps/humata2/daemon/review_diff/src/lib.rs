@@ -103,6 +103,22 @@ impl Checkout {
         blocking(move || checkout.diff_blocking(&spec, &context)).await
     }
 
+    /// The files `spec` shows between `trees`, on the blocking pool: the
+    /// listing of a diff the client was shown, without taking a new
+    /// snapshot of the clone (DV-4).
+    ///
+    /// # Errors
+    ///
+    /// A bad tree, or git failing.
+    pub async fn files_between(
+        &self,
+        trees: Trees,
+        spec: RepoSpec,
+    ) -> Result<Vec<FileSummary>, DiffError> {
+        let checkout = self.clone();
+        blocking(move || checkout.files(&trees, &spec)).await
+    }
+
     /// [`Self::file_chunk_blocking`] on the blocking pool.
     ///
     /// # Errors

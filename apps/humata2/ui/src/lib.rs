@@ -48,6 +48,7 @@ mod session_tabs;
 mod repo_search_field;
 mod settings_repositories;
 mod settings;
+mod settings_providers;
 mod shell;
 mod sidebar_pinned;
 mod starting;

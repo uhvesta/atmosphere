@@ -40,6 +40,7 @@ fn file(path: &str, added: u32, removed: u32) -> FileDiff {
         added,
         removed,
         lines: Vec::new(),
+        ..FileDiff::default()
     }
 }
 

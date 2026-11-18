@@ -20,7 +20,7 @@ pub(super) const MOST_BYTES: usize = 64 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub(super) enum AskError {
     #[error(
-        "the provider file is {bytes} bytes, more than the {most} an agent may hand over, so nothing was asked. Hand over only the provider tables, or ask the user to import the file in Settings › Machine providers",
+        "the provider file is {bytes} bytes, more than the {most} an agent may hand over, so nothing was asked. Hand over only the provider tables, or ask the user to import the file in Settings › Machines › Providers",
         most = MOST_BYTES
     )]
     TooLarge { bytes: usize },

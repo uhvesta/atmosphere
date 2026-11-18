@@ -650,13 +650,25 @@ impl pb::diff_service_server::DiffService for Review {
             .ok_or_else(|| status::missing("file.repo"))?;
         let matching = Matching::from(&repo_spec);
         // The file list the hunks belong to: the trees the client was
-        // shown, or the spec as it is now.
-        let diff = checkout
-            .diff(repo_spec, context_of(&record))
-            .await
-            .map_err(|error| diff_failed(&error))?;
-        let trees = wire::trees_from_pb(request.trees.as_ref()).unwrap_or_else(|| diff.trees.clone());
-        let summary: FileSummary = diff.file(&file.path).cloned().ok_or_else(|| {
+        // shown, listed again without a new snapshot (DV-4), or the spec
+        // as it is now.
+        let (trees, listed) = match wire::trees_from_pb(request.trees.as_ref()) {
+            Some(trees) => {
+                let files = checkout
+                    .files_between(trees.clone(), repo_spec.clone())
+                    .await
+                    .map_err(|error| diff_failed(&error))?;
+                (trees, files.into_iter().find(|listed| listed.path == file.path))
+            }
+            None => {
+                let diff = checkout
+                    .diff(repo_spec, context_of(&record))
+                    .await
+                    .map_err(|error| diff_failed(&error))?;
+                (diff.trees.clone(), diff.file(&file.path).cloned())
+            }
+        };
+        let summary: FileSummary = listed.ok_or_else(|| {
             status::not_found(
                 pb::EntityKind::File,
                 &file.path,

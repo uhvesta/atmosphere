@@ -93,7 +93,7 @@ fn merge(text: &str, current: &str) -> Result<String, Vec<pb::ProviderConfigProb
         vec![problem(
             "toml",
             message,
-            "fix the providers file in Settings › Machine providers, then preview the import again",
+            "fix the providers file in Settings › Machines › Providers, then preview the import again",
         )]
     };
     let imported: toml::Table = toml::from_str(text).map_err(|error| unreadable(error.to_string()))?;

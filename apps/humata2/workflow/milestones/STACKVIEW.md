@@ -549,3 +549,9 @@ Rules to decide in the lane and record as a decision:
     layer move is needed (seam).
 - Ready to commit: T0-T2b yes (additive and unused outside `review_diff`).
   T3 only once its gate passes.
+
+## Spec and cases
+
+- The stacks UI rules are DS-60 to DS-68 in [DIFFVIEW-spec.md](DIFFVIEW-spec.md) §2.9. T4, T6, T7, T8 and T3c must meet them (see [REVIEWUI.md](REVIEWUI.md), "What STACKVIEW owns").
+- Key change: files keep ⌥⌘↓/↑ (DIFFVIEW). Layers move with ⌥⌘] / ⌥⌘[ (spec §8 item 1). T8's `alt-cmd-down` test and the `stacks` mockup's key hint change with it. Fable confirms before T8 binds keys.
+- Cases: [15](../../flows/cases/diff/15-a-stack-across-repos.md) and [16](../../flows/cases/diff/16-a-stack-that-moved.md) in `flows/cases/diff/`.
