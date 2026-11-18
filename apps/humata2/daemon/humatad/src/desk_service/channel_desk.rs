@@ -149,6 +149,11 @@ impl DeskSvc {
         {
             return self.answered_channel_desk(operation).await;
         }
+        // AGENTSET (bug 8): the agent's CLI is found, or installed when that
+        // is allowed, before anything is made; a missing one is refused as
+        // its own error naming the agent, never as UNAVAILABLE, which reads
+        // as this machine not answering.
+        crate::agent_gate::ready(&self.starter.agents, &agent).await?;
         let id = assigned.as_ref().map_or_else(
             || format!("se_{}", uuid::Uuid::new_v4().simple()),
             |assigned| assigned.id.clone(),

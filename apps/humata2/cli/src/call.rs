@@ -114,7 +114,12 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             }) => match &error.kind {
                 Some(pb::error::Kind::ApprovalPending(pending)) => {
                     let id = pending.request.clone().unwrap_or_default();
-                    self.approved_result(id).await
+                    match self.approved_result(id).await? {
+                        Approved::Result(bytes) => Ok(bytes),
+                        // D768: an approved read ran nothing; repeated now,
+                        // it goes through and this is its real result.
+                        Approved::Repeat => Ok(self.daemon.unary(rpc, request.encode_to_vec()).await?),
+                    }
                 }
                 _ => Err(DaemonError::Refused {
                     rpc: path,
@@ -130,7 +135,7 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
     /// The result of the call held as Inbox request `id`, once the user
     /// approves it: waits `--wait` seconds, until answered in a terminal,
     /// or not at all with `--json` (CLI.md §6).
-    async fn approved_result(&self, id: pb::RequestId) -> Result<Vec<u8>, CliError> {
+    async fn approved_result(&self, id: pb::RequestId) -> Result<Approved, CliError> {
         let request = id.value.clone();
         let seconds = match self.flags.wait {
             Some(seconds) => seconds,
@@ -400,7 +405,19 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
 
 /// What an answered request's held call returned: its result, or the
 /// error it failed with, or the user's no.
-fn answered_result(rpc: Rpc, answer: pb::WaitResponse) -> Result<Vec<u8>, CliError> {
+/// What an approved held call gives back.
+enum Approved {
+    /// The call ran: its reply.
+    Result(Vec<u8>),
+    /// An asked read: approving it ran nothing, so the call is repeated.
+    Repeat,
+}
+
+/// The daemon's result type for an approved asked read (D768), which comes
+/// with no bytes.
+const READ_APPROVED: &str = "humata2.ReadApproved";
+
+fn answered_result(rpc: Rpc, answer: pb::WaitResponse) -> Result<Approved, CliError> {
     let refused = |error: pb::Error| {
         CliError::Daemon(DaemonError::Refused {
             rpc: rpc.path,
@@ -412,8 +429,11 @@ fn answered_result(rpc: Rpc, answer: pb::WaitResponse) -> Result<Vec<u8>, CliErr
         return Err(refused(error));
     }
     let state = answer.state;
+    if state == pb::RequestState::Approved as i32 && answer.result_type == READ_APPROVED {
+        return Ok(Approved::Repeat);
+    }
     if state == pb::RequestState::Approved as i32 && !answer.result.is_empty() {
-        return Ok(answer.result);
+        return Ok(Approved::Result(answer.result));
     }
     let (message, fix, kind) = if state == pb::RequestState::Denied as i32 {
         (

@@ -239,6 +239,9 @@ impl Daemon for Held {
     fn asks_in_inbox(&self) -> Reply<bool> {
         self.inner.asks_in_inbox()
     }
+    fn set_default_agent(&self, agent: Agent) -> Reply<()> {
+        self.inner.set_default_agent(agent)
+    }
     fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool> {
         self.inner.set_asks_in_inbox(inbox)
     }

@@ -87,6 +87,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             repos: repos.into_iter().map(str::to_owned).collect(),
             machines: vec![MachineId::new("this-mac"), MachineId::new("devbox-1")],
             purpose: String::new(),
+            default_agent: None,
         });
     }
     for (id, channel, title, agent, machine, status, parent) in [

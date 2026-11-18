@@ -77,7 +77,7 @@ pub(crate) fn session_id(id: Option<&pb::SessionId>) -> SessionId {
     SessionId::new(id.map(|id| id.value.clone()).unwrap_or_default())
 }
 
-pub(crate) fn channel(channel: &pb::Channel) -> Channel {
+pub(crate) fn channel(channel: &pb::Channel, agents: &AgentNames) -> Channel {
     Channel {
         id: ChannelId::new(
             channel
@@ -94,14 +94,23 @@ pub(crate) fn channel(channel: &pb::Channel) -> Channel {
             .map(|machine| MachineId::new(machine.value.clone()))
             .collect(),
         purpose: String::new(),
+        default_agent: channel
+            .default_agent
+            .as_ref()
+            .filter(|agent| !agent.value.is_empty())
+            .map(|agent| agents.agent(&agent.value)),
     }
 }
 
-/// This Mac, as the app shows it.
+/// What the app calls the machine it runs on.
+pub(crate) const THIS_MAC: &str = "This Mac";
+
+/// This Mac, as the app shows it; its errors name it so from now on.
 pub(crate) fn this_machine(id: MachineId) -> Machine {
+    humata2_clients::machine_names::remember(&id, THIS_MAC);
     Machine {
         id,
-        name: "This Mac".to_owned(),
+        name: THIS_MAC.to_owned(),
         kind: MachineKind::ThisMac,
         online: true,
         detail: String::new(),
@@ -153,8 +162,10 @@ pub(crate) fn machine(machine: &pb::Machine, now: &LocalNow) -> Machine {
             address: machine.address.clone(),
         }
     };
+    let id = machine_id(machine.id.as_ref());
+    humata2_clients::machine_names::remember(&id, if machine.is_this_mac { THIS_MAC } else { &machine.name });
     Machine {
-        id: machine_id(machine.id.as_ref()),
+        id,
         name: machine.name.clone(),
         kind,
         online: machine.reachability == pb::Reachability::Online as i32,

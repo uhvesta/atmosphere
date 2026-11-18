@@ -265,6 +265,58 @@ async fn a_text_the_program_kept_while_it_asked_is_not_typed_twice() {
     assert!(seen.contains("submitted: hello there\r"), "the program printed {seen:?}");
 }
 
+/// D763 (BUG-C): a screen read while the program asks can look clear for a
+/// moment, as one taken while it redraws its question does. A text it kept
+/// behind the question is still not typed again: once the person answers,
+/// it is submitted exactly once.
+#[tokio::test]
+async fn a_text_kept_behind_a_question_that_looked_clear_for_a_moment_is_submitted_once() {
+    let agent = Agent::in_mode("asks");
+    let mut screen = Screen::watch(attach(&agent.socket, 0).await.unwrap());
+    let typed = tokio::time::timeout(
+        GUARD,
+        type_then_return(&agent.socket, b"hello there", Duration::from_millis(400)),
+    )
+    .await
+    .expect("typing hung")
+    .expect("typing failed");
+    let Typed::Held(held) = typed else {
+        let _ = shutdown(&agent.socket).await;
+        panic!("return was pressed though the program never showed the text; it printed {:?}", screen.seen);
+    };
+    // Clear on the first look only, then asking until the person answers.
+    let answered = Arc::new(AtomicBool::new(false));
+    let looked = Arc::new(AtomicBool::new(false));
+    let ready: Ready = {
+        let (answered, looked) = (answered.clone(), looked.clone());
+        Arc::new(move || {
+            let clear = !looked.swap(true, Ordering::SeqCst) || answered.load(Ordering::SeqCst);
+            Box::pin(async move { clear })
+        })
+    };
+    let socket = agent.socket.clone();
+    let delivering = tokio::spawn(async move {
+        deliver(&socket, b"hello there", Duration::from_millis(400), Some(held), Some(ready), GUARD * 2).await
+    });
+    // Longer than a program that kept the text takes to show it.
+    tokio::time::sleep(Duration::from_secs(17)).await;
+    agent.open_gate().await;
+    answered.store(true, Ordering::SeqCst);
+    let sent = tokio::time::timeout(GUARD * 3, delivering)
+        .await
+        .expect("delivering hung")
+        .unwrap()
+        .expect("delivering failed");
+    // Anything typed or pressed twice shows by now.
+    screen.shows("submitted: hello there", Duration::from_secs(2)).await;
+    let _ = screen.shows("never printed", Duration::from_secs(2)).await;
+    let _ = shutdown(&agent.socket).await;
+    let seen = screen.seen;
+    assert!(sent, "deliver says the text wasn't sent; the program printed {seen:?}");
+    assert_eq!(seen.matches("submitted: ").count(), 1, "the program printed {seen:?}");
+    assert!(seen.contains("submitted: hello there\r"), "the program printed {seen:?}");
+}
+
 /// While the input never clears, the text is never typed, and once the
 /// limit passes [`deliver`] says it wasn't sent.
 #[tokio::test]

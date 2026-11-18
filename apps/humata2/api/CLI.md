@@ -169,7 +169,7 @@ the person reads is left pending (IN-6).
 
 | Command | Operation | gRPC | Who | Host away |
 | --- | --- | --- | --- | --- |
-| `humata files ls\|cat\|find <location>` | `file.list`, `file.read`, `file.find` | FileService | user; agent per MCP.md | local for this machine |
+| `humata files ls\|cat\|find <location>` | `file.list`, `file.read`, `file.find` | FileService | user; agent per MCP.md; an agent's read the rules ask about exits 12 `pending` with one request per session and path; once approved it goes through when asked again, and `--wait` repeats it itself and prints the result (D768) | local for this machine |
 | `humata files put <local-path> <location>`, `mkdir`, `mv` | `file.write`, `file.folder_create`, `file.rename` | FileService | user; agent: own clone and `shared/` on its machine (D755) | local |
 | `humata files rm <location>…` | `file.trash` | MoveToTrash | user; agent: own clone | local |
 | `humata cp\|mv <location>… <location\|machine> [--on-existing fail\|replace\|keep-both]` | `transfer.start` | StartTransfer | user; agent: `files_copy_in` and `file_fetch` only | waits when it needs another machine |
@@ -181,7 +181,10 @@ A location is `<machine>:<session>/<repo>/<path>`, `<machine>:shared/<path>`,
 `<machine>:channel/<path>` or `<machine>:main/<repo>/<path>` (read-only).
 A Desk session has no repository: `<machine>:folder/<session>/<path>` names
 the session's own folder, with the same access as a clone of that session (D382).
-Inside a session, a bare relative path is the agent's own clone.
+Inside a session, a bare relative path is the agent's own clone, except
+`shared`, `shared/` and `shared/<path>`: that is the channel's shared folder on the
+machine the agent runs on (D777). The clone's own folder of that name is
+`./shared`.
 
 `humata cp|mv <location>… <machine>` names only the machine, and each source
 lands where PL-3 says (PL-12): a channel's shared folder in that channel's
@@ -196,12 +199,17 @@ no `/`. For the person that word is always a machine. Inside a session the
 agent's last word of `cp|mv` is read in three steps (D756, amending D655):
 1. A word that names a machine the agent can see (its own and its channel's,
    TP-1) is that machine.
-2. Otherwise a word with a `.` is a path in the agent's own clone.
+2. Otherwise the word `shared` is the channel's shared folder on the agent's
+   machine (D777), and a word with a `.` is a path in the agent's own clone.
 3. Any other word is refused as usage (exit 2, `invalid_field`) and nothing
    starts, the same whether or not a machine the agent can't see has that
    name.
 
-`./name` and `name/` always mean the agent's own clone (a file and a folder),
+`./name` always means the agent's own clone, and `name/` does too, except
+that `shared/` is the channel's shared folder (D777). A "not found" for a
+bare `shared…` location says it looked in the channel's shared folder and that a
+clone's folder of that name is written `./shared/…`.
+
 and `name:` is a machine that must exist.
 
 With one source, a destination that names a new file or an existing file

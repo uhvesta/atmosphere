@@ -3,7 +3,6 @@
 //! never reads or logs a token. A listing is reused for a minute, so
 //! typing in the search box doesn't ask GitHub again on every key.
 
-use std::ffi::OsString;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -186,15 +185,7 @@ fn cached() -> Option<Arc<Vec<Repo>>> {
         .map(|(_, repos)| Arc::clone(repos))
 }
 
-/// The `gh` to run: `HUMATA2_GH` in an admin build (the tests' fake), else
-/// `gh` on the PATH. The same choice the login check makes.
-pub(crate) fn gh_program() -> OsString {
-    #[cfg(feature = "admin")]
-    if let Some(program) = std::env::var_os("HUMATA2_GH") {
-        return program;
-    }
-    OsString::from("gh")
-}
+pub(crate) use crate::tool_path::gh_program;
 
 /// Lists the repos `gh` sees. Blocking: it runs `gh`, so it belongs on a
 /// thread of its own.

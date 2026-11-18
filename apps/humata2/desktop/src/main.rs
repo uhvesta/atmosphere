@@ -55,7 +55,9 @@ gpui_kit::actions!(
         /// ⌘M: minimize the window.
         Minimize,
         /// Zoom the window.
-        Zoom
+        Zoom,
+        /// ⌃⌘F: the window full screen, or back.
+        ToggleFullScreen
     ]
 );
 
@@ -249,7 +251,13 @@ fn menus(cx: &mut App) {
             let _ = window.update(cx, |_, window, _| window.zoom_window());
         }
     });
+    cx.on_action(|_: &ToggleFullScreen, cx| {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| window.toggle_fullscreen());
+        }
+    });
     cx.bind_keys([
+        KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
         KeyBinding::new("cmd-h", Hide, None),
         KeyBinding::new("alt-cmd-h", HideOthers, None),
         KeyBinding::new("cmd-m", Minimize, None),
@@ -286,6 +294,8 @@ fn menus(cx: &mut App) {
             MenuItem::action("Home", keys::GoHome),
             MenuItem::action("Inbox", keys::GoInbox),
             MenuItem::action("Board", keys::GoBoard),
+            MenuItem::separator(),
+            MenuItem::action("Enter Full Screen", ToggleFullScreen),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
@@ -407,11 +417,7 @@ fn open_main(
 ) {
     let ui = Ui::new(handle, clients, recorder);
     let bounds = Bounds::centered(None, size(px(humata2_ui::WINDOW.0), px(humata2_ui::WINDOW.1)), cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(bounds)),
-        titlebar: None,
-        ..WindowOptions::default()
-    };
+    let options = main_window_options(bounds);
     let window = match humata2_ui::open(cx, &ui, options) {
         Ok((window, _)) => window,
         Err(error) => {
@@ -430,6 +436,23 @@ fn open_main(
         ui.send(AppAction::Inbox(InboxAction::OldLocalDaemon(old)), cx);
     }
     cx.activate(true);
+}
+
+/// The main window at `bounds`. On macOS GPUI gives a window without
+/// titlebar options neither the Resizable nor the Miniaturizable style, so it
+/// couldn't be resized, zoomed or made full screen. A transparent titlebar
+/// with no title keeps the look a missing one had: content runs under it and
+/// the traffic lights sit where they always did.
+fn main_window_options(bounds: Bounds<gpui_kit::Pixels>) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(gpui_kit::TitlebarOptions {
+            title: None,
+            appears_transparent: true,
+            traffic_light_position: None,
+        }),
+        ..WindowOptions::default()
+    }
 }
 
 /// The live client's calls, into the bug-report recorder while it records
@@ -453,6 +476,26 @@ fn main() -> ExitCode {
             eprintln!("{error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use gpui_kit::{Bounds, point, px, size};
+
+    use super::main_window_options;
+
+    /// On macOS GPUI gives a window without titlebar options neither the
+    /// Resizable nor the Miniaturizable style, so it can't be resized, zoomed
+    /// or made full screen.
+    #[test]
+    fn the_main_window_can_be_resized_zoomed_and_made_full_screen() {
+        let options = main_window_options(Bounds { origin: point(px(0.), px(0.)), size: size(px(1200.), px(800.)) });
+        assert!(options.is_resizable && options.is_minimizable);
+        let titlebar = options.titlebar.expect("titlebar options, so macOS gets the Resizable style");
+        // Today's look: the content runs under a transparent titlebar, no title shown.
+        assert!(titlebar.appears_transparent);
+        assert!(titlebar.title.is_none());
     }
 }
 

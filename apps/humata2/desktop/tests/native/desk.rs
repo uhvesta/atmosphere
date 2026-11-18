@@ -288,3 +288,39 @@ fn close_in_the_question_closes_without_saving() {
     assert!(record.closed.is_some());
     assert!(record.doc_head.is_empty());
 }
+
+/// Bug 6: a long repo-search failure wraps inside New desk session, and the
+/// org field and the search field stay inside it too.
+#[test]
+fn a_long_repo_search_error_wraps_inside_the_new_desk_session_card() {
+    let mut app = desk_app();
+    app.click("sidebar-desk");
+    app.click("desk-new");
+    let long = "GitHub search needs the GitHub CLI on this host, and gh couldn't be run \
+        (No such file or directory). Install gh with Homebrew (brew install gh), \
+        sign in with gh auth login, then retry the search from here.";
+    app.fakes
+        .daemon
+        .fail_next(humata2_clients::Operation::SearchRepos, long);
+    app.send(AppAction::Desk(DeskAction::New(NewAction::AddingRepo(true))));
+    app.send(AppAction::RepoSearch(
+        humata2_app::RepoPicker::NewDeskSession,
+        humata2_app::RepoSearchAction::AddOwnerOpened,
+    ));
+    app.settle();
+    assert!(app.contains("new-desk-repos-problem"));
+    app.cx
+        .update_window(app.window, |_, window, _| {
+            let card = window.find("new-desk").bounds();
+            let right = card.origin.x + card.size.width;
+            for id in ["new-desk-repos-problem", "new-desk-repos-retry", "new-desk-owner-cancel"] {
+                let inner = window.find(id).bounds();
+                assert!(
+                    inner.origin.x + inner.size.width <= right,
+                    "{id} ends at {:?}, past the card's right edge {right:?}",
+                    inner.origin.x + inner.size.width
+                );
+            }
+        })
+        .unwrap();
+}

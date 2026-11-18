@@ -45,6 +45,7 @@ use crate::upgrade::items::Migrations;
 mod add_repo;
 mod archive;
 mod archive_remote;
+pub(crate) use archive_remote::{machine_failed as peer_failed, use_upgrade as use_peer_upgrade};
 mod continue_in;
 mod conversation_read;
 mod ended;

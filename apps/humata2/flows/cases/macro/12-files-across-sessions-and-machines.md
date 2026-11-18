@@ -230,6 +230,14 @@ or not built.
 - **Expected outcome:** the file in `shared/` on vm-a has the same bytes as `this-mac:shared/x`. The push writes nothing on the other machine, and no card is raised for it (D755, TP-4).
 - **Status:** Works (real daemon, fake boxes) for the pull and the push's refusal kind: `daemon/humatad/tests/agent_send_machine.rs::an_agent_names_its_channels_machine_by_name_and_sees_no_other` (the agent there runs on This Mac and pulls from box-1). The refusal and its fix are Fakes only: `daemon/access/tests/refusals.rs::an_agent_writes_shared_only_on_its_own_machine`, `daemon/access/tests/refusals.rs::a_copy_into_a_remote_shared_is_refused_before_its_source_is_judged` and `daemon/access/tests/refusals.rs::an_agent_pulls_another_machines_file_into_its_own_shared`.
 
+### An agent types a bare `shared/` for its channel's shared folder
+
+- **When:** an agent session runs on vm-a, a machine of the channel, and the file is in the channel's `shared/` on This Mac.
+- **I do:** the agent runs `humata cp this-mac:shared/x shared/` exactly as the hint says, then `cp ./note.txt shared/`, and once `cp ./shared/x out.txt` for a folder named `shared` in its own clone.
+- **I see:** both copies into `shared/` land in the channel's shared folder on vm-a, not in the clone. `./shared/x` reads the clone's own folder. A not-found for a bare `shared/…` says it looked in the channel's shared folder and that the clone's is `./shared/…`.
+- **Expected outcome:** a bare `shared`, `shared/` or `shared/<path>` is `Root::ChannelShared` of the agent's channel on its own machine, on This Mac and on a machine alike (D777, amending D756).
+- **Status:** Fakes: `cli/tests/files.rs` (the `an_agents_bare_shared…` and `a_bare_shared_not_found…` cases). Real daemon, fake boxes: `daemon/humatad/tests/agent_send_machine.rs::a_machine_agents_bare_shared_is_its_machines_shared_folder`, `this_macs_agents_bare_shared_is_this_macs_shared_folder` and `a_machine_agents_copy_of_a_clone_file_to_bare_shared_lands_in_its_shared_folder`.
+
 ### An agent's bare destination word that names no machine
 
 - **When:** an agent session in a channel with one clone, and a machine vm-b outside the channel (or no machine of that name at all).

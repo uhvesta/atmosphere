@@ -59,7 +59,9 @@ message Channel {
   repeated MachineId machines = 5;
   // ST-13 override; unset uses the default.
   optional string branch_prefix = 6;
-  // ST-15 override.
+  // ST-15, D770: the agent a start that names none runs here: the
+  // channel's own default, then Settings', then the one it was made with.
+  // Clients preselect it in the new session and PR review dialogs.
   AgentId default_agent = 7;
   string default_model = 8;
   // PR-2: the built-in PR reviews channel.

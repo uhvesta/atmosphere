@@ -809,6 +809,18 @@ never a bare `UNIMPLEMENTED`: agents read `UNIMPLEMENTED` with no kind as
 work (the Humata app on the host Mac) and that updating helps only once a
 newer release builds it.
 
+An agent's FileService read that the rules ask about (ListDirectory, Stat,
+ReadFile, FindFiles) is not refused: it raises one Inbox request per session,
+capability and path and fails at once `FAILED_PRECONDITION`
+`approval_pending` with its id. Repeating the read returns the same request
+while it waits, succeeds once it is approved, and is `PERMISSION_DENIED` `denied` with the request after a
+deny. A machine agent's read of another machine is asked on the host (D768).
+Approving it runs nothing: `WaitForAnswer` comes back approved with
+`result_type` `humata2.ReadApproved` and no bytes, which tells the client to
+repeat the read; the pending error's fix says so too. MCP's `inbox_wait` shows
+it as `repeat_call: true`, and `humata --wait` repeats the read and prints its
+result.
+
 `host_key_changed` is not retryable and its fix never says "accept the new
 key": it says the key differs from the one pinned, that this is what an
 interception looks like, and how to check the machine's real key before

@@ -44,7 +44,7 @@ impl App {
     /// New desk session, from Home, the Desk page or a command: the form
     /// starts on the agent Settings picked.
     pub(super) fn start_new_desk_session(&self, state: &mut AppState) -> Effect<AppAction> {
-        let agent = crate::new_session::default_agent(state);
+        let agent = crate::new_session::default_agent(state, None);
         self.child(state, AppAction::Desk(DeskAction::StartNew { agent }))
     }
 
@@ -66,7 +66,7 @@ impl App {
         else {
             return Effect::none();
         };
-        let agent = crate::new_session::default_agent(state);
+        let agent = crate::new_session::default_agent(state, Some(&channel));
         let menu = self.child(state, AppAction::Session(SessionAction::Menu(false)));
         let dialog = self.child(
             state,

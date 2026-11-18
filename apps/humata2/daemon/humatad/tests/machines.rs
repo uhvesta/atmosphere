@@ -1135,3 +1135,27 @@ async fn the_storage_page_reads_this_machines_own_storage_and_no_other() {
         .unwrap_err();
     assert_eq!(other.code(), Code::NotFound);
 }
+
+/// This Mac's page reads this machine's health: its disk is never "0 GB
+/// free of 0 GB" (owner, 0.2.1).
+#[tokio::test(flavor = "multi_thread")]
+async fn this_macs_page_reads_this_machines_own_health() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+
+    let detail = host
+        .machines()
+        .await
+        .get_machine(pb::GetMachineRequest {
+            id: Some(pb::MachineId {
+                value: "this-mac".to_owned(),
+            }),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let health = detail.health.expect("This Mac has health");
+    assert!(health.disk_total_bytes > 0, "{health:?}");
+    assert!(health.disk_free_bytes <= health.disk_total_bytes, "{health:?}");
+    assert!(health.read_at.is_some(), "{health:?}");
+}

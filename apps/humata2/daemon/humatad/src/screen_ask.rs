@@ -12,9 +12,16 @@
 //! - Deny types nothing: the question stays on the screen for the person.
 //! - A question the screen no longer shows (answered in the terminal) is
 //!   withdrawn, and so is one whose agent exited.
+//! - While a card is up, the agent's output also has the screen read again
+//!   ([`output`]), at most every [`RELOOK_EVERY`]: a box drawn in steps
+//!   gets its last choices, and one answered in the terminal is withdrawn,
+//!   though the output never goes quiet (Copilot's animated logo). A reply
+//!   is checked against the screen as it comes: one to a question the
+//!   screen no longer asks withdraws the card instead (D767 amendment).
 
-use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::{Arc, OnceLock, PoisonError};
 use std::time::Duration;
 
 use humata2_store::{AgentState, SessionRecord, Store, StoreError, TabKind, TabRecord};
@@ -24,7 +31,7 @@ use tokio::task::JoinHandle;
 use crate::holders::Holders;
 use crate::identity::{AgentCaller, Caller};
 use crate::inbox::Inbox;
-use crate::inbox::permission::{Decision, Question};
+use crate::inbox::permission::{Decision, Question, StillAsked};
 use crate::screen_question::{self, ScreenQuestion};
 use crate::status;
 
@@ -36,6 +43,12 @@ const UP: &[u8] = b"\x1b[A";
 const DOWN: &[u8] = b"\x1b[B";
 /// The marks a screen puts before its highlighted choice.
 const HIGHLIGHT: &[char] = &['❯', '›', '>', '●', '▶'];
+/// The most often an agent's output has its screen read again while its
+/// card is up. A throttle, not a wait for quiet: output that never stops
+/// still gets a read this often.
+const RELOOK_EVERY: Duration = Duration::from_millis(300);
+/// How long a reply waits to read the screen it is checked against.
+const CHECK_LIMIT: Duration = Duration::from_secs(3);
 
 static ASKS: OnceLock<Arc<Asks>> = OnceLock::new();
 
@@ -47,6 +60,17 @@ struct Asks {
     machine: String,
     /// The question each session's screen asks, by session.
     open: Mutex<HashMap<String, Open>>,
+    /// Which sessions' output reads their screen again. Never held across
+    /// an await.
+    watching: std::sync::Mutex<Watching>,
+}
+
+/// Sessions whose card is up, so their output reads the screen again, and
+/// those with a read already due.
+#[derive(Default)]
+struct Watching {
+    asking: HashSet<String>,
+    due: HashSet<String>,
 }
 
 /// A question a session's screen asks, and the card's wait for it.
@@ -75,7 +99,30 @@ pub(crate) fn start(holders: Arc<Holders>, inbox: Arc<Inbox>, store: Arc<Store>,
         store,
         machine,
         open: Mutex::new(HashMap::new()),
+        watching: std::sync::Mutex::new(Watching::default()),
     }));
+}
+
+/// `session`'s agent, under holder `holder_pid`, wrote output: while its
+/// screen's card is up, reads the screen again soon. Returns at once.
+pub(crate) fn output(session: &str, holder_pid: u32) {
+    let Some(asks) = ASKS.get() else {
+        return;
+    };
+    {
+        let mut watching = asks.watching();
+        if !watching.asking.contains(session) || !watching.due.insert(session.to_owned()) {
+            return;
+        }
+    }
+    let asks = Arc::clone(asks);
+    let session = session.to_owned();
+    tokio::spawn(async move {
+        tokio::time::sleep(RELOOK_EVERY).await;
+        // Due no more before the read, so output during it asks again.
+        asks.watching().due.remove(&session);
+        asks.look(&session, holder_pid).await;
+    });
 }
 
 /// `session`'s agent, under holder `holder_pid`, went quiet: looks at its
@@ -95,7 +142,8 @@ pub(crate) fn gone(session: &str) {
     };
     let session = session.to_owned();
     tokio::spawn(async move {
-        asks.open.lock().await.remove(&session);
+        let mut open = asks.open.lock().await;
+        asks.withdraw_gone(&mut open, &session);
     });
 }
 
@@ -110,6 +158,19 @@ struct Asked {
 }
 
 impl Asks {
+    fn watching(&self) -> std::sync::MutexGuard<'_, Watching> {
+        self.watching.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `session`'s screen no longer asks its card's question (answered in
+    /// the terminal, or the agent moved on): withdraws the card, ends its
+    /// hold on the session's Needs you and stops following the screen for
+    /// it. `open` is the locked map of open cards.
+    fn withdraw_gone(&self, open: &mut HashMap<String, Open>, session: &str) {
+        open.remove(session);
+        self.watching().asking.remove(session);
+    }
+
     async fn look(self: &Arc<Self>, session: &str, holder_pid: u32) {
         let Some((record, tab)) = self.agent_of(session, holder_pid).await else {
             return;
@@ -119,7 +180,7 @@ impl Asks {
         };
         let mut open = self.open.lock().await;
         let Some((question, asked)) = seen else {
-            open.remove(session);
+            self.withdraw_gone(&mut open, session);
             return;
         };
         let shown = open.get(session).is_some_and(|now| {
@@ -130,9 +191,11 @@ impl Asks {
         }
         // A card read off a screen still drawing is withdrawn first.
         open.remove(session);
+        self.watching().asking.remove(session);
         let Some(task) = self.raise(&record, tab, question, asked.clone()).await else {
             return;
         };
+        self.watching().asking.insert(session.to_owned());
         open.insert(
             session.to_owned(),
             Open {
@@ -147,11 +210,7 @@ impl Asks {
     /// The question `tab`'s screen asks now: `Some(None)` when it asks
     /// none, `None` when the screen can't be read.
     async fn screen(&self, tab: &TabRecord) -> Option<Option<(ScreenQuestion, Asked)>> {
-        let screen = crate::holders::screen_at(&tab.holder_socket).await.ok()?;
-        Some(screen_question::asked_on(&screen).and_then(|question| {
-            let asked = read_asked(&screen)?;
-            Some((question, asked))
-        }))
+        read_screen(&tab.holder_socket).await
     }
 
     /// Raises the card and holds it until the person answers.
@@ -176,7 +235,12 @@ impl Asks {
             key: format!("screen/{question:?}/{}", asked.choices.join("\u{1f}")),
             only_choices: true,
         };
-        let wait = match self.inbox.raise_question(&caller, &agent, card).await {
+        let still_asked = still_asks(tab.holder_socket.clone(), question);
+        let wait = match self
+            .inbox
+            .raise_screen_question(&caller, &agent, card, still_asked)
+            .await
+        {
             Ok(wait) => wait,
             Err(error) => {
                 crate::log::say!(
@@ -193,6 +257,10 @@ impl Asks {
             let mut wait = wait;
             let decision = wait.decided().await;
             drop(asking);
+            // Settled: the screen needn't be followed for this card.
+            if let Some(session) = tab.session.as_deref() {
+                this.watching().asking.remove(session);
+            }
             if let Decision::Reply { text } = decision {
                 this.pick(&tab, question, &text).await;
             }
@@ -275,6 +343,45 @@ impl Asked {
     fn same_card(&self, other: &Asked) -> bool {
         self.words == other.words && self.choices == other.choices
     }
+}
+
+/// The question the screen of the holder at `socket` asks now:
+/// `Some(None)` when it asks none, `None` when it can't be read.
+async fn read_screen(socket: &Path) -> Option<Option<(ScreenQuestion, Asked)>> {
+    let screen = crate::holders::screen_at(socket).await.ok()?;
+    Some(screen_question::asked_on(&screen).and_then(|question| {
+        let asked = read_asked(&screen)?;
+        Some((question, asked))
+    }))
+}
+
+/// Checks a reply to the card for `question` against the screen of the
+/// holder at `socket` as the reply comes: whether it still asks `question`
+/// and lists the reply's choice.
+fn still_asks(socket: std::path::PathBuf, question: ScreenQuestion) -> StillAsked {
+    Arc::new(move |choice: String| {
+        let socket = socket.clone();
+        Box::pin(async move {
+            let read = tokio::time::timeout(CHECK_LIMIT, read_screen(&socket)).await;
+            let Ok(Some(now)) = read else {
+                return Err(status::failure(
+                    tonic::Code::Unavailable,
+                    status::error(
+                        "couldn't read the agent's screen to check that it still asks this question, so the reply wasn't taken and nothing was typed",
+                        "reply again in a moment; if it keeps failing, answer the question in the session's terminal",
+                        humata2_grpc::humata::v1::error::Kind::StepFailed(Box::new(
+                            humata2_grpc::humata::v1::StepFailed {
+                                step: "read the agent's screen".to_owned(),
+                                left_as_is: "the card is still pending".to_owned(),
+                                ..Default::default()
+                            },
+                        )),
+                    ),
+                ));
+            };
+            Ok(keys_for(question, &choice, now.as_ref()).is_ok())
+        })
+    })
 }
 
 /// Why a reply picked nothing on the screen.

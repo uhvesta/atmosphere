@@ -319,3 +319,25 @@ fn open_in_inbox_with_no_item_hands_nothing_on() {
     store.send(A::OpenInInbox, |_| {});
     assert_eq!(delegate(&mut store), None);
 }
+
+// A host waiting on Migrate never claims it is gone (owner, 0.2.1): its old
+// daemon answering a call it doesn't know isn't the machine being deleted,
+// and the read-only banner already says why the page can't load.
+
+#[test]
+fn a_failed_load_while_a_migrate_waits_shows_no_error_of_its_own() {
+    let (mut store, fake) = page(DEVBOX, vec![devbox_daemon(MigratePhase::Waiting)]);
+    fake.set_detail(Err(DaemonError::NotFound { what: "The machine".to_owned() }));
+    store.send(A::Reload, |_| {});
+    store.receive_matching("load failed", |a| matches!(a, A::Loaded(_, Err(_))), |_| {});
+    assert_eq!(store.state().shown_load_error(), None);
+}
+
+#[test]
+fn a_failed_load_on_a_current_machine_still_shows_its_error() {
+    let (mut store, fake) = page(DEVBOX, Vec::new());
+    fake.set_detail(Err(DaemonError::NotFound { what: "The machine".to_owned() }));
+    store.send(A::Reload, |_| {});
+    store.receive_matching("load failed", |a| matches!(a, A::Loaded(_, Err(_))), |_| {});
+    assert!(store.state().shown_load_error().is_some());
+}

@@ -394,7 +394,7 @@ pub struct StorageReport {
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum FileManagerError {
     /// The machine doesn't answer.
-    #[error("{machine} is offline, so this can't be done there. Wait for it to come back or use another machine")]
+    #[error("{} is offline, so this can't be done there. Wait for it to come back or use another machine", crate::machine_names::name_of(.machine))]
     Offline {
         /// The machine.
         machine: MachineId,
@@ -413,7 +413,8 @@ pub enum FileManagerError {
     },
     /// It doesn't fit.
     #[error(
-        "{machine} doesn't have room: this needs {needs_bytes} bytes and only {free_bytes} are free. Free some space on {machine}, then try again"
+        "{name} doesn't have room: this needs {needs_bytes} bytes and only {free_bytes} are free. Free some space on {name}, then try again",
+        name = crate::machine_names::name_of(.machine)
     )]
     DiskFull {
         /// The machine that is short.

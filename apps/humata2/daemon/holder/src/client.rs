@@ -541,9 +541,12 @@ const READY_EVERY: Duration = Duration::from_millis(500);
 /// Sees `text` submitted into the holder at `socket` within `limit`, after
 /// [`type_then_return`] held its return (`held`) or never typed it (`None`,
 /// as when the input wasn't clear). With `ready`, it types only once the
-/// input is clear, and types the text again, once, when the input is clear
-/// but the text still isn't shown after a bounded wait: the program dropped
-/// what was typed while it asked. Without `ready` nothing tells a dropped
+/// input is clear, and types the text again, once, when the input stays
+/// clear for a bounded wait and the text still isn't shown: the program
+/// dropped what was typed while it asked. A look that finds the input clear
+/// while the program still asks, as one taken while it redraws its question
+/// can, doesn't count: typing again then would double a text it kept
+/// (D763 amendment). Without `ready` nothing tells a dropped
 /// text from one still held behind a question, so it only presses return
 /// once the text shows. Returns whether the text was submitted.
 pub async fn deliver(
@@ -590,11 +593,24 @@ pub async fn deliver(
             }
         }
         // The input is clear: the text shows soon if the program kept it.
-        if waiting.once_shown(SHOWN_LIMIT.min(left())).await? {
-            return Ok(true);
+        // Dropped only if the input stays clear all that time without it.
+        let clear_since = tokio::time::Instant::now();
+        let mut stayed_clear = true;
+        while clear_since.elapsed() < SHOWN_LIMIT {
+            if waiting.once_shown(READY_EVERY.min(left())).await? {
+                return Ok(true);
+            }
+            if waiting.done() || left().is_zero() {
+                return Ok(false);
+            }
+            if !ready().await {
+                stayed_clear = false;
+                break;
+            }
         }
-        if waiting.done() || left().is_zero() {
-            return Ok(false);
+        if !stayed_clear {
+            // It asks again: watch for the text while it does.
+            continue;
         }
         if typings >= 2 {
             return waiting.once_shown(left()).await;

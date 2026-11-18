@@ -418,3 +418,23 @@ fn missing_bundled_file_is_an_error() {
     let err = install(&fx.bundle(), &fx.layout(), &FakeLaunchd::default()).unwrap_err();
     assert!(matches!(err, InstallError::ReadBundle { .. }));
 }
+
+/// launchd's PATH is /usr/bin:/bin:/usr/sbin:/sbin, so the launch agent
+/// starts the daemon asking it to learn the login shell's (owner, 0.2.1:
+/// gh and the agent CLIs weren't found); an install over an older launch
+/// agent rewrites it and restarts the daemon.
+#[test]
+fn the_launch_agent_has_the_daemon_learn_the_login_shells_path() {
+    let fx = Fixture::new();
+    let ld = FakeLaunchd::default();
+    install(&fx.bundle(), &fx.layout(), &ld).unwrap();
+    let plist = fx.home().join("Library/LaunchAgents/app.humata2.humatad2.plist");
+    let text = fs::read_to_string(&plist).unwrap();
+    let asked = "<key>HUMATA2_LOGIN_PATH</key>\n        <string>1</string>";
+    assert!(text.contains(asked), "{text}");
+
+    fs::write(&plist, text.replace(asked, "")).unwrap();
+    let done = install(&fx.bundle(), &fx.layout(), &ld).unwrap();
+    assert_eq!(done.agent, AgentChange::Reloaded);
+    assert!(fs::read_to_string(&plist).unwrap().contains(asked));
+}

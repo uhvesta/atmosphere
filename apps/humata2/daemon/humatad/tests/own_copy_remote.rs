@@ -10,6 +10,11 @@ mod common;
 #[path = "common/remote_rig.rs"]
 mod remote_rig;
 
+#[path = "common/upgrade.rs"]
+mod upgrade;
+#[path = "common/upgrade_rig.rs"]
+mod upgrade_rig;
+
 use std::path::{Path, PathBuf};
 
 use common::git;
@@ -130,4 +135,72 @@ async fn own_copy_of_a_fork_on_an_offline_box_is_refused_and_changes_nothing() {
         .expect_err("an offline machine is refused at once");
     assert_eq!(refused.code(), Code::Unavailable, "{refused:?}");
     assert_eq!(paths_on_box(&rig, &fork), paths_on_box(&rig, &parent));
+}
+
+/// A machine on an older humatad2 refuses the relayed call as off its list
+/// (D773): the host answers peer_version_unsupported naming the machine and
+/// the Migrate fix, and the machine's Migrate item is in the Inbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_that_refuses_the_relayed_call_as_off_its_list_is_to_be_migrated() {
+    let (mut rig, _) = upgrade_rig::at_one_release().await;
+    rig.restart_box_env(upgrade_rig::BOX, &[("HUMATA2_PEER_WITHHOLD", "GiveOwnCopy")])
+        .await;
+    let one = upgrade_rig::box_id();
+    let channel = rig.create_channel("Payments", &[REPO], &[one.clone()]).await;
+    let parent = rig.start_on(&channel, &one, "Cache warmup").await;
+    rig.wait_session(&parent, "live", is_live).await;
+    let started = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .fork_session(fork_request(&parent, &one))
+        .await
+        .expect("the fork starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    let Some(pb::operation::Result::Session(fork)) = ended.result else {
+        panic!("the fork names its session: {ended:?}");
+    };
+    rig.wait_session(&fork, "live on gpu", |s| s.machine.as_ref() == Some(&one) && is_live(s))
+        .await;
+
+    let refused = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .give_own_copy(own_copy_request(&fork))
+        .await
+        .expect_err("the machine doesn't take the call");
+    assert_eq!(refused.code(), Code::FailedPrecondition, "{refused:?}");
+    let error = common::error_of(&refused);
+    assert!(
+        matches!(error.kind, Some(pb::error::Kind::PeerVersionUnsupported(_))),
+        "{error:?}"
+    );
+    assert!(error.fix.contains("Migrate gpu"), "{error:?}");
+    upgrade_rig::daemon_item(&rig).await;
+}
+
+/// The same for another relayed method: a fork onto a machine that refuses
+/// ForkSession as off its list fails as peer_version_unsupported, and the
+/// machine's Migrate item is in the Inbox.
+#[tokio::test(flavor = "multi_thread")]
+async fn another_relayed_method_refused_as_off_the_list_also_posts_the_migrate_item() {
+    let (mut rig, _) = upgrade_rig::at_one_release().await;
+    rig.restart_box_env(upgrade_rig::BOX, &[("HUMATA2_PEER_WITHHOLD", "ForkSession")])
+        .await;
+    let one = upgrade_rig::box_id();
+    let channel = rig.create_channel("Payments", &[REPO], &[one.clone()]).await;
+    let parent = rig.start_on(&channel, &one, "Cache warmup").await;
+    rig.wait_session(&parent, "live", is_live).await;
+    let outcome = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .fork_session(fork_request(&parent, &one))
+        .await;
+    let error = match outcome {
+        Err(refused) => common::error_of(&refused),
+        Ok(started) => {
+            let ended = rig.ended(&started.into_inner()).await;
+            assert_eq!(ended.state, pb::OperationState::Failed as i32, "{ended:?}");
+            ended.error.expect("the failed fork says why")
+        }
+    };
+    assert!(
+        matches!(error.kind, Some(pb::error::Kind::PeerVersionUnsupported(_))),
+        "{error:?}"
+    );
+    upgrade_rig::daemon_item(&rig).await;
 }

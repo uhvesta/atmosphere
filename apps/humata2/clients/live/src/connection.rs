@@ -255,6 +255,8 @@ impl LiveDaemon {
             .filter(|machine| !machine.value.is_empty())
             .ok_or(ConnectError::NoMachine { socket })?;
         let machine = MachineId::new(machine.value);
+        // Errors about this machine name it as the app does (D778).
+        humata2_clients::machine_names::remember(&machine, crate::map::THIS_MAC);
         let facts = DaemonFacts {
             machine: machine.clone(),
             version: info.daemon_version.clone(),
@@ -488,9 +490,22 @@ fn is_revision_conflict(status: &Status) -> bool {
         .is_some_and(|error| matches!(error.kind, Some(pb::error::Kind::RevisionConflict(_))))
 }
 
+/// Whether an UNAVAILABLE carries the daemon's own error that isn't about
+/// a machine being out of reach: the daemon answered, so it isn't offline.
+fn answered_unavailable(status: &Status) -> bool {
+    daemon_error(status).is_some_and(|error| {
+        !error.message.is_empty()
+            && !matches!(
+                error.kind,
+                Some(pb::error::Kind::MachineOffline(_) | pb::error::Kind::HostUnreachable(_))
+            )
+    })
+}
+
 /// How a gRPC status becomes a [`DaemonError`]: `migration_needed` is
-/// MigrationNeeded, NOT_FOUND is NotFound,
-/// UNAVAILABLE and transport failures are Offline, a revision conflict is
+/// MigrationNeeded, NOT_FOUND is NotFound, UNAVAILABLE and transport
+/// failures are Offline unless the daemon worded the UNAVAILABLE itself
+/// (then Refused, in its words), a revision conflict is
 /// Conflict, the rest is Refused with the daemon's words.
 pub(crate) fn status_error(status: &Status, what: &str, machine: &MachineId) -> DaemonError {
     if let Some(needed) = daemon_error(status).and_then(|error| migration_needed(&error, machine)) {
@@ -512,6 +527,14 @@ pub(crate) fn status_error(status: &Status, what: &str, machine: &MachineId) -> 
     match status.code() {
         Code::NotFound => DaemonError::NotFound {
             what: what.to_owned(),
+        },
+        // An UNAVAILABLE the daemon worded itself is its answer (an agent
+        // that couldn't start, a restart not done): the machine answered,
+        // so it is shown in the daemon's words. Only a bare UNAVAILABLE, the
+        // link breaking, or one marked offline is the machine not answering.
+        Code::Unavailable if answered_unavailable(status) => DaemonError::Refused {
+            what: what.to_owned(),
+            reason: daemon_words(status),
         },
         Code::Unavailable => DaemonError::Offline {
             machine: machine.clone(),
@@ -571,6 +594,79 @@ mod tests {
             status_error(&Status::invalid_argument("bad"), "the session", &machine),
             DaemonError::Refused { .. }
         ));
+    }
+
+    /// A status with `code` that carries `error` as its details, as the daemon sends.
+    fn worded(code: Code, error: pb::Error) -> Status {
+        let wrapper = RpcStatus {
+            code: code as i32,
+            message: error.message.clone(),
+            details: vec![Any {
+                type_url: "type.googleapis.com/humata.v1.Error".into(),
+                value: error.encode_to_vec(),
+            }],
+        };
+        Status::with_details(code, error.message.clone(), wrapper.encode_to_vec().into())
+    }
+
+    #[test]
+    fn an_unavailable_the_daemon_worded_is_its_answer_not_the_machine_offline() {
+        let machine = MachineId::new("ma_1");
+        let status = worded(
+            Code::Unavailable,
+            pb::Error {
+                message: "couldn't start copilot".into(),
+                fix: "install it".into(),
+                ..Default::default()
+            },
+        );
+        let error = status_error(&status, "Starting the session", &machine);
+        let DaemonError::Refused { reason, .. } = &error else {
+            panic!("expected the daemon's own words, got {error:?}");
+        };
+        assert!(reason.contains("couldn't start copilot") && reason.contains("install it"), "{reason}");
+    }
+
+    #[test]
+    fn an_unavailable_marked_offline_is_still_the_machine_offline() {
+        let machine = MachineId::new("ma_1");
+        let status = worded(
+            Code::Unavailable,
+            pb::Error {
+                message: "devbox doesn't answer".into(),
+                kind: Some(pb::error::Kind::MachineOffline(pb::MachineOffline::default())),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            status_error(&status, "Starting the session", &machine),
+            DaemonError::Offline { machine }
+        );
+    }
+
+    #[test]
+    fn an_offline_error_names_the_machine_never_its_id() {
+        let machine = MachineId::new("ma_e7c4d32c64da4587a5d6420ae2ab96a1");
+        let unknown = DaemonError::Offline { machine: machine.clone() }.to_string();
+        assert!(!unknown.contains("ma_e7c4"), "{unknown}");
+        humata2_clients::machine_names::remember(&machine, crate::map::THIS_MAC);
+        let named = DaemonError::Offline { machine }.to_string();
+        assert!(named.starts_with("This Mac "), "{named}");
+        assert!(!named.contains("ma_e7c4"), "{named}");
+    }
+
+    #[test]
+    fn this_mac_is_named_once_the_app_knows_its_id() {
+        let machine = MachineId::new("ma_this_mac_named");
+        let _ = crate::map::this_machine(machine.clone());
+        let needed = DaemonError::MigrationNeeded {
+            thing: MigrateThing::Daemon,
+            machine,
+            request: None,
+        }
+        .to_string();
+        assert!(needed.starts_with("This Mac's "), "{needed}");
+        assert!(!needed.contains("ma_this_mac_named"), "{needed}");
     }
 
     #[test]

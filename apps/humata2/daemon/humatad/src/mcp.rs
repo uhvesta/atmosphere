@@ -1710,6 +1710,13 @@ fn approved_result(result_type: &str, bytes: &[u8]) -> Value {
         "humata.v1.ExplainResponse" => pb::ExplainResponse::decode(bytes)
             .ok()
             .map(|r| explain_json(&r)),
+        // D768: approving an asked read runs nothing; the read itself must
+        // be repeated, so the agent isn't left with a bare approval.
+        status::READ_APPROVED => Some(json!({
+            "decision": "approved",
+            "repeat_call": true,
+            "note": "the user approved this read; make the same read again to get its result",
+        })),
         _ => None,
     };
     shown.unwrap_or_else(|| {
@@ -2331,6 +2338,24 @@ mod review {
             }).collect::<Vec<_>>(),
             "agent_may": { "focus": switches.focus, "notes": switches.notes, "order": switches.order },
         })
+    }
+}
+
+#[cfg(test)]
+mod approved_read_tests {
+    use super::*;
+
+    #[test]
+    fn an_approved_read_tells_the_agent_to_repeat_it() {
+        let shown = approved_result(status::READ_APPROVED, &[]);
+        assert_eq!(shown["decision"], "approved");
+        assert_eq!(shown["repeat_call"], true);
+    }
+
+    #[test]
+    fn another_bare_approval_is_not_told_to_repeat() {
+        let shown = approved_result("", &[]);
+        assert_ne!(shown["repeat_call"], true);
     }
 }
 

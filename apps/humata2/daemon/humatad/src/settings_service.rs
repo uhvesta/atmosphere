@@ -297,6 +297,16 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
             pb::event::Payload::Settings(shown.clone()),
             Some(identity::actor(&caller)),
         );
+        if saves_sections {
+            // D770: every channel's shown default agent may have changed.
+            let (feed, store, by) = (self.feed.clone(), self.store.clone(), identity::actor(&caller));
+            let _ = blocking(move || {
+                for channel in store.channels().unwrap_or_default() {
+                    crate::channel_service::tell_channel(&feed, &store, &channel.id, pb::Change::Updated, Some(by.clone()));
+                }
+            })
+            .await;
+        }
         Ok(Response::new(shown))
     }
 
@@ -390,6 +400,12 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         .map_err(|error| status::store(error, &self.machine, "save the channel's settings"))?;
         // AW-8: machines get the channel's Contain agents with the next copy.
         self.guard.policy_changed();
+        // D770: the channel's shown default agent may have changed.
+        let (feed, store, key, by) = (self.feed.clone(), self.store.clone(), id.clone(), identity::actor(&caller));
+        let _ = blocking(move || {
+            crate::channel_service::tell_channel(&feed, &store, &key, pb::Change::Updated, Some(by));
+        })
+        .await;
         self.channel_settings(&id).await.map(Response::new)
     }
 }

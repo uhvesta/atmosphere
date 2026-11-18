@@ -79,6 +79,7 @@ mod sync;
 mod terminal;
 mod terminal_session;
 mod terminal_uuid;
+mod tool_path;
 mod transfer_end_service;
 mod transfer_service;
 mod trash_service;
@@ -115,6 +116,10 @@ enum Command {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Before the runtime starts any thread: this sets PATH.
+    if matches!(cli.command, Command::Serve(_)) && tool_path::asked() {
+        tool_path::widen_from_login_shell();
+    }
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

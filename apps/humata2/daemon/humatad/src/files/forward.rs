@@ -174,6 +174,7 @@ fn unqualified(id: &str) -> Option<(&str, &str)> {
 pub(crate) struct Forward {
     roots: Arc<Roots>,
     guard: Arc<Guard>,
+    reads: super::Reads,
     reach: Reach,
     /// The host's Migrate items, given late (the host only). A change to a
     /// machine at another release is refused while they say it is (UP-1).
@@ -184,10 +185,11 @@ pub(crate) struct Forward {
 }
 
 impl Forward {
-    pub(crate) fn new(roots: Arc<Roots>, guard: Arc<Guard>) -> Self {
+    pub(crate) fn new(roots: Arc<Roots>, guard: Arc<Guard>, reads: super::Reads) -> Self {
         Self {
             roots,
             guard,
+            reads,
             reach: Reach::default(),
             migrations: OnceLock::new(),
             host: OnceLock::new(),
@@ -286,6 +288,20 @@ impl Forward {
         Ok(placed)
     }
 
+    /// `location` placed and judged for reading: a read the rule asks
+    /// about raises an Inbox card here, on the host (D768).
+    async fn judged_read(
+        &self,
+        caller: &Caller,
+        location: Option<pb::FileLocation>,
+        field: &str,
+        entry: Entry,
+    ) -> Result<Placed, Status> {
+        let placed = self.roots.place(location, field, entry)?;
+        self.reads.require(caller, placed.place.clone()).await?;
+        Ok(placed)
+    }
+
     pub(crate) async fn list_directory(
         &self,
         request: Request<pb::ListDirectoryRequest>,
@@ -296,7 +312,7 @@ impl Forward {
         }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let placed = self.judged(&caller, request.location, "location", Entry::Folder, false)?;
+        let placed = self.judged_read(&caller, request.location, "location", Entry::Folder).await?;
         let machine = placed.machine().to_owned();
         let mut client = self.reach.relayed(&machine)?.file();
         let sent = pb::ListDirectoryRequest {
@@ -324,7 +340,7 @@ impl Forward {
         }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let placed = self.judged(&caller, request.location, "location", Entry::Folder, false)?;
+        let placed = self.judged_read(&caller, request.location, "location", Entry::Folder).await?;
         let machine = placed.machine().to_owned();
         let mut client = self.reach.relayed(&machine)?.file();
         let sent = pb::StatRequest {
@@ -491,7 +507,7 @@ impl Forward {
                 })),
                 path: String::new(),
             };
-            self.judged(&caller, Some(location), "session", Entry::Folder, false)?;
+            self.judged_read(&caller, Some(location), "session", Entry::Folder).await?;
         }
         let mut client = self.reach.relayed(&machine)?.file();
         let mut reply = client
@@ -515,8 +531,7 @@ impl Forward {
         }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        // The reply is a stream that can't be held and replayed after an approval, so Ask stays refused.
-        let placed = self.judged(&caller, request.location, "location", Entry::File, false)?;
+        let placed = self.judged_read(&caller, request.location, "location", Entry::File).await?;
         let machine = placed.machine().to_owned();
         let mut client = self.reach.relayed(&machine)?.file();
         let sent = pb::ReadFileRequest {

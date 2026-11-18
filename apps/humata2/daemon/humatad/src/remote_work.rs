@@ -521,6 +521,8 @@ struct Inner {
     views: Mutex<Views>,
     /// The stops kept for other machines (D262); set once by `serve`.
     stops: std::sync::OnceLock<crate::stop::remote::HostStops>,
+    /// Posts a machine's Migrate item when it refuses a relayed call (D773); set once by `serve`.
+    upgrade: std::sync::OnceLock<crate::upgrade::items::Watch>,
     /// How long a machine's restart is waited on ([`RESTART_WAIT`]).
     restart_wait: Duration,
 }
@@ -621,6 +623,7 @@ impl RemoteWork {
                 sink,
                 views: Mutex::new(Views::default()),
                 stops: std::sync::OnceLock::new(),
+                upgrade: std::sync::OnceLock::new(),
                 restart_wait,
             }),
         }
@@ -629,6 +632,11 @@ impl RemoteWork {
 
     /// Shows the sessions of a machine whose stop reached it as stopped
     /// with it (D264). Set once, before any link starts.
+    pub(crate) fn use_upgrade(&self, watch: crate::upgrade::items::Watch) {
+        crate::session_service::use_peer_upgrade(watch.clone());
+        let _ = self.inner.upgrade.set(watch);
+    }
+
     pub(crate) fn use_stops(&self, stops: crate::stop::remote::HostStops) {
         let _ = self.inner.stops.set(stops);
     }
@@ -780,6 +788,20 @@ impl RemoteWork {
     /// host's.
     pub(crate) fn knows(&self, machine: &str) -> bool {
         self.inner.links.states().iter().any(|(known, _)| known == machine)
+    }
+
+    /// `refused` is what `machine` answered a relayed call with. When it
+    /// is the machine's off-list refusal (an older humatad2, D773) this makes
+    /// sure the machine's Migrate item exists and returns the
+    /// `peer_version_unsupported` refusal; any other status comes back as is.
+    pub(crate) async fn peer_refused(&self, machine: &str, refused: Status) -> Status {
+        let refused = crate::session_service::peer_failed(machine, refused);
+        if matches!(status::error_of(&refused).and_then(|error| error.kind), Some(pb::error::Kind::PeerVersionUnsupported(_)))
+            && let Some(watch) = self.inner.upgrade.get()
+        {
+            watch.unsupported(machine).await;
+        }
+        refused
     }
 
     /// The typed clients on `machine`'s live link, for the host's own calls

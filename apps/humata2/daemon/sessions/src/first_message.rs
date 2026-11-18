@@ -113,6 +113,7 @@ impl FirstMessage {
             held,
             ready,
             first: self.clone(),
+            resend: false,
         };
         tokio::spawn(follow.run());
         Ok(())
@@ -130,6 +131,8 @@ struct Follow {
     held: Option<HeldReturn>,
     ready: Option<Ready>,
     first: FirstMessage,
+    /// Tried again from the Inbox, after the first try ran out (D763).
+    resend: bool,
 }
 
 impl Follow {
@@ -141,6 +144,28 @@ impl Follow {
 
     async fn follow(self) {
         let _waiting = self.first.held.as_ref().map(|held| held.waiting(&self.session));
+        if self.resend {
+            if let Some(gate) = &self.first.gate {
+                let press = || async {
+                    let humata2_holder::Attachment { mut control, .. } =
+                        humata2_holder::attach(&self.socket, u64::MAX).await?;
+                    control.input(1, b"\r").await
+                };
+                match kept_once_clear(&**gate, &self.socket, &self.message, self.first.wait, SUBMIT_WAIT, press).await {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        confirm_logged(&**gate, &self.socket, &self.message).await;
+                        return;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "humatad2: a session's first message already shows in its agent's input, but return couldn't be pressed for it; press Enter in the session: {error}"
+                        );
+                        return;
+                    }
+                }
+            }
+        }
         let sent = humata2_holder::deliver(
             &self.socket,
             self.message.as_bytes(),
@@ -166,6 +191,7 @@ impl Follow {
                     held: None,
                     ready: self.first.ready(&self.socket),
                     first: self.first.clone(),
+                    resend: true,
                 };
                 held.unsent(&self.session, &self.message, Box::new(move || again.run()));
             }
@@ -176,6 +202,44 @@ impl Follow {
 /// How long after its return a first message's agent gets to take it before
 /// its input is looked at (D763 amendment).
 const SUBMIT_WAIT: Duration = Duration::from_secs(3); // D763 (Provisional)
+
+/// How often a resend looks whether the agent still asks its question.
+const CLEAR_EVERY: Duration = Duration::from_millis(500);
+
+/// A first message tried again from the Inbox may already sit in the
+/// agent's input: the agent kept the first typing behind its own question
+/// and shows it once that is answered. Typing it again would send it twice
+/// in one submission (D763 amendment, VERIFY wave 3). So once the gate says
+/// no question is up, within `limit`, and `settle` has let the agent show
+/// what it kept, a text the input already shows gets only a return
+/// (`press`). Returns whether it did; `false` means it must be typed.
+async fn kept_once_clear<P, F>(
+    gate: &dyn WriteGate,
+    socket: &Path,
+    text: &str,
+    limit: Duration,
+    settle: Duration,
+    press: P,
+) -> Result<bool, HolderError>
+where
+    P: FnOnce() -> F,
+    F: Future<Output = Result<(), HolderError>>,
+{
+    let deadline = tokio::time::Instant::now() + limit;
+    while gate.guard(socket).await.is_err() {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Ok(false);
+        }
+        tokio::time::sleep(CLEAR_EVERY.min(left)).await;
+    }
+    tokio::time::sleep(settle).await;
+    if !gate.unsent(socket, text).await || gate.guard(socket).await.is_err() {
+        return Ok(false);
+    }
+    press().await?;
+    Ok(true)
+}
 
 /// What became of the return pressed after a first message the agent showed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -285,5 +349,40 @@ mod tests {
     #[tokio::test]
     async fn a_message_still_in_the_input_behind_a_question_gets_no_return() {
         assert_eq!(presses(true, false).await, (Confirmed::LeftShown, 0));
+    }
+
+    /// A resend's look before typing: whether it pressed return for a text
+    /// the input already shows, and how many returns it pressed.
+    async fn resend_presses(unsent: bool, clear: bool) -> (bool, usize) {
+        let pressed = Mutex::new(0);
+        let kept = kept_once_clear(
+            &Scripted { unsent, clear },
+            Path::new("/nowhere"),
+            "hello",
+            Duration::from_millis(10),
+            Duration::ZERO,
+            || async {
+                *pressed.lock().unwrap() += 1;
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+        (kept, pressed.into_inner().unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_resent_message_the_agent_kept_behind_its_question_gets_a_return_not_a_second_typing() {
+        assert_eq!(resend_presses(true, true).await, (true, 1));
+    }
+
+    #[tokio::test]
+    async fn a_resent_message_the_input_doesnt_show_is_typed() {
+        assert_eq!(resend_presses(false, true).await, (false, 0));
+    }
+
+    #[tokio::test]
+    async fn a_resent_message_behind_a_question_still_up_presses_nothing() {
+        assert_eq!(resend_presses(true, false).await, (false, 0));
     }
 }

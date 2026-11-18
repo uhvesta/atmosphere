@@ -94,6 +94,7 @@ What happened:
 - Every shell command was its own inbox request ("wants to run bash"). 13 requests in total, all approved, for one copy attempt.
 - Attempt 1: `humata cp --channel files-flows --dry-run shared/agent-note.txt vm-b` failed: "the request has no destination.session_clone.session". The agent read the bare path as its own clone. It then said "vm-b isn't a registered machine" and "the only machine is This Mac" (`humata host show vm-b` returned no machine). From my shell the same machine is online.
   - Expected now (D756): `vm-b` names no machine the agent can see and has no `.`, so the CLI refuses it as usage (exit 2, `invalid_field`), starts nothing, and points to `humata host ls`, `./vm-b` or `vm-b/`. It no longer becomes a clone path or the session_clone error. A machine of the channel named by name (vm-a) resolves, and the send is then refused by D755 as a write on another machine; rerun flow 5 in the pull direction.
+  - Rerun note (D777): a bare `shared/agent-note.txt` typed by an agent is now the channel's shared folder on its machine; a clone's folder of that name is `./shared/…`. Rerun this flow with the typed `shared/` form.
 - Attempt 2 (after I sent the explicit form `cp this-mac:shared/agent-note.txt vm-b`, with a stray trailing dot from my typing): failed with `"." leaves its folder...`; the CLI message is clear.
 - Attempt 3 (explicit form, no dot): failed with `no destination.session_clone.session`.
 - Attempt 4 (to vm-a, which is in the channel): same failure.
@@ -256,3 +257,36 @@ Pass 5 of 6.
 3. GAP: `humata files ls this-mac:shared` from a remote agent is refused with "can't wait for it in the Inbox" and raises no Inbox card, so the person is never asked.
 4. GAP: `session type` returns `agent_busy:true, queued:null` even on an idle fresh session (see copilot-t1.md).
 5. Not seen: dropped link / channel_attempt retry (D758) not exercised.
+
+## Wave 3 2026-11-17 (0.2, fe9eea4f)
+
+Evidence: V/evidence/files/wave3/. Lane `files` fresh (LANE_FRESH=1). Machines: This Mac and vm-a (new VM user vfiles on humata2-linux, `url.insteadOf` for verify/demo in its gitconfig; removed at the end). Channel `ff`, session `pull` on vm-a (copilot 1.0.113). Source files in This Mac's channel shared: w3a.txt (md5 5ef396bb...), w3b.txt (md5 3b63627c...) (src-md5.txt). Model seen: claude-haiku-5.5 (1 selectedModel, 8 currentModel, 168 `model` lines; gpt-5.4-nano and gpt-5.6-luna are Copilot's helper models), model-pull.txt. Trust card for the VM folder came up as an Inbox question again and `session type ""` accepted it.
+
+### Case 1 (D768): pull from This Mac into a remote agent's folders
+- `humata host ls` from vm-a lists This Mac first, then vm-a, exit 0 (screen1.txt). PASS.
+- `humata cp this-mac:shared/w3a.txt ./` and `humata cp this-mac:shared/w3b.txt ./w3b-copy.txt`: each raised an Inbox approval of kind `files` (the agent's own call exits 12 when it gives up, or waits with `--wait 60`); after approval both files landed in the clone (`~/Humata/ff/sessions/pull/demo/`) with md5 identical to the source (b-result.txt). PASS.
+- Destination `shared/` (as in the case text): exit 2 `there is no folder "shared" on vm-a`. `shared/` means `<clone>/shared`; `--dry-run` shows `session_clone ... path: shared` (screen5.txt). `./demo/` fails the same (the clone root is `./`, so `demo/` is a folder inside it). `shared:` is read as a machine name (exit 3). I found no destination an agent can write to channel shared with from vm-a. FAIL against the case as worded; if the intended landing is the clone, PASS (above).
+- `humata cp note.txt this-mac` from the clone: D755 pull hint, exit 4: "an agent writes only on the machine it runs on (vm-a), so nothing was written on ma_1a24a9f7..., put the file in shared/ here; a session on ma_1a24... can copy it in from there". It names This Mac by its id, not by "This Mac"/this-mac (c-result.txt). PASS, wording gap.
+- `humata files ls this-mac:shared`: exit 4 `"read files on another machine" needs the user's approval here, and this call can't wait for it in the Inbox ... don't retry the call`, and the Inbox held no card (inbox-filesls.json). The ruling (asked reads raise an Inbox approval) is in for `cp` reads but not for `files ls` in these bins. Recorded as asked.
+Result: PARTIAL
+
+### Case 2b (N1): resumed fork on vm-a, read from the host
+Steps: `session fork pull --kind code-and-context --title fkr`; `session stop`; `session resume`; the trust card came up again (Inbox question; typing was refused with a clear message), `type ""`; `session type fkr "reply with exactly the word MANGO"`; polled `session read` every 2 s.
+What happened: agent reply MANGO at 05:14:15Z; `session read` showed it (seq 35, role agent) 4 s after typing, same time the screen showed it (c2-read.txt, c2-screen.txt, c2-poll.txt).
+Result: PASS
+
+### Summary
+| case | result |
+|---|---|
+| 1. host ls from vm-a lists This Mac first | PASS |
+| 1. cp this-mac:shared/x into the clone, md5 equal (2 files) | PASS |
+| 1. cp into `shared/` from vm-a | FAIL (no way found; `shared/` is clone/shared) |
+| 1. cp note.txt this-mac gives pull hint | PASS (names the machine by id) |
+| 1. files ls this-mac:shared | recorded: refused, no Inbox card |
+| 2. resumed fork read on vm-a | PASS |
+
+### Findings (new)
+1. GAP: from a remote agent, `humata cp this-mac:shared/x shared/` fails "no folder shared" because `shared/` is clone-relative; nothing the agent can type lands a file in the channel's shared folder (`shared:` is a machine name). Repro: session on vm-a, `humata cp this-mac:shared/w3a.txt shared/ --wait 60`. Expected: lands in shared/ per the case, or an error that says where the clone's root is (`./`). Evidence: screen3.txt, screen5.txt.
+2. GAP: `humata files ls this-mac:shared` from vm-a is still a dead end with no Inbox card (the D768 ruling not in these bins for ls/stat).
+3. GAP: D755 hint names `ma_1a24...`, not This Mac.
+4. UX: an agent's `cp` raised its Inbox card only on the first call; the agent exited 12 and told the user to approve, which worked. The agent's own call has to be rerun after approval.

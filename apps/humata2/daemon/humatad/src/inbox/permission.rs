@@ -8,6 +8,8 @@
 //! Inbox shows it and its answer comes back down the link; the machine's
 //! next start withdraws it, and the journal tells the host.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use humata2_grpc::humata::v1 as pb;
@@ -17,7 +19,7 @@ use tonic::Status;
 
 use humata2_store::{Store, StoreError};
 
-use super::{Decided, Entry, Held, Inbox, inbox_ask, new_id, withdraw};
+use super::{Decided, Entry, Held, Inbox, inbox_ask, new_id, withdraw, withdrawn};
 use crate::attach;
 use crate::channel_service::blocking;
 use crate::identity::{AgentCaller, Caller};
@@ -93,6 +95,12 @@ pub(crate) struct Question {
     /// taken, and it is kept as that choice's words (D767).
     pub(crate) only_choices: bool,
 }
+
+/// Whether the agent still asks a question on its screen with the chosen
+/// reply (D767 amendment): `Ok(false)` when the screen no longer asks it or
+/// no longer lists that choice; an error when the screen can't be read.
+pub(crate) type StillAsked =
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<bool, Status>> + Send>> + Send + Sync>;
 
 /// How a card was settled, as the hook tells its agent.
 #[derive(Debug, PartialEq, Eq)]
@@ -209,6 +217,29 @@ impl Inbox {
         .await
     }
 
+    /// Raises a question the agent asks on its own screen (D767), as
+    /// [`Self::raise_question`] does; a reply is taken only while
+    /// `still_asked` says the screen still asks it with that choice, and
+    /// withdraws the card otherwise.
+    pub(crate) async fn raise_screen_question(
+        self: &Arc<Self>,
+        caller: &Caller,
+        agent: &AgentCaller,
+        asked: Question,
+        still_asked: StillAsked,
+    ) -> Result<PermissionWait, Status> {
+        let Question {
+            question,
+            choices,
+            key,
+            only_choices,
+        } = asked;
+        self.raise_held_asked(caller, agent, &key, only_choices, Some(still_asked), |id| {
+            super::question(id, agent, question, choices)
+        })
+        .await
+    }
+
     /// Raises the card `make` builds, or holds the pending one of the same
     /// `ask_key` in the agent's session.
     async fn raise_held(
@@ -217,6 +248,21 @@ impl Inbox {
         agent: &AgentCaller,
         ask_key: &str,
         only_choices: bool,
+        make: impl FnOnce(&str) -> pb::InboxRequest,
+    ) -> Result<PermissionWait, Status> {
+        self.raise_held_asked(caller, agent, ask_key, only_choices, None, make)
+            .await
+    }
+
+    /// [`Self::raise_held`], for a card whose reply is checked against
+    /// what the agent still asks.
+    async fn raise_held_asked(
+        self: &Arc<Self>,
+        caller: &Caller,
+        agent: &AgentCaller,
+        ask_key: &str,
+        only_choices: bool,
+        still_asked: Option<StillAsked>,
         make: impl FnOnce(&str) -> pb::InboxRequest,
     ) -> Result<PermissionWait, Status> {
         // An Ask verdict is fine: the card is the ask.
@@ -244,6 +290,7 @@ impl Inbox {
         let mut entry = Entry::new(id.clone(), session, None, None, Some(key), held.clone());
         entry.permission = true;
         entry.only_choices = only_choices;
+        entry.still_asked = still_asked;
         if !self.guard.host_link().on_host() {
             // The host's Inbox is where the person answers (D744).
             self.commit(&entry, held, None, "save the permission ask").await?;
@@ -269,6 +316,24 @@ impl Inbox {
             return Ok(());
         };
         self.withdraw_unheld(entry).await
+    }
+
+    /// Withdraws pending `entry`, whose question its agent no longer asks,
+    /// and returns the refusal of the answer that found it so. Call it with
+    /// the state locked.
+    pub(super) async fn withdraw_unasked(&self, entry: &Entry) -> Status {
+        let mut next = entry.request.borrow().clone();
+        withdraw(&mut next.request, pb::WithdrawReason::CallEnded);
+        let current = next.request.clone();
+        let saved = self
+            .commit(entry, next.clone(), None, "save the withdrawal")
+            .await;
+        if saved.is_err() {
+            // Withdrawn even so: the question is gone from the screen.
+            entry.request.send_replace(next);
+        }
+        self.tell(pb::Change::Updated, &entry.session, &current);
+        withdrawn(&current)
     }
 
     /// Withdraws `entry` when it's a pending permission card that no hook

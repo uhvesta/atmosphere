@@ -944,6 +944,28 @@ impl Watch {
         Self { migrations, release }
     }
 
+    /// `machine` refused a call the host relays as off its peer list: its
+    /// humatad2 is older than this host's (D773). Makes sure its Migrate
+    /// daemon item is pending, as a link-up would have; nothing is done for
+    /// a host with no release (D290 l).
+    pub(crate) async fn unsupported(&self, machine: &str) {
+        if self.release.bundle().is_empty() {
+            return;
+        }
+        let id = pb::MachineId { value: machine.to_owned() };
+        if matches!(self.migrations.mismatched(&id), Some((pb::MigrateThing::Daemon, ..))) {
+            return;
+        }
+        let ours = tools::release_only(&self.release.info());
+        if let Err(error) = self
+            .migrations
+            .observe(pb::MigrateThing::Daemon, &id, pb::BuildInfo::default(), ours)
+            .await
+        {
+            crate::log::say!("humatad2: warning: {}", status::chain(&error));
+        }
+    }
+
     /// The link to `machine` is up and its Hello said `build` (`None` for a
     /// daemon too old to say). A host with no release of its own compares
     /// nothing (D290 l).

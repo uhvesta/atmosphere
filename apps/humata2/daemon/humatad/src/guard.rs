@@ -34,6 +34,8 @@ const AGENT_HOLD: Duration = Duration::from_secs(40);
 pub(crate) struct Guard {
     policy: Mutex<Policy>,
     here: MachineId,
+    /// What a refusal calls machines: the host's own is "This Mac" (D755).
+    names: crate::upgrade::items::Names,
     link: Arc<HostLink>,
     /// The revision of what a machine's policy copy holds (AW-8): bumped
     /// when the policy changes, and by [`Guard::policy_changed`] for the
@@ -89,6 +91,10 @@ impl Guard {
         Self {
             policy: Mutex::new(Policy::new()),
             here: MachineId::new(machine),
+            names: match role {
+                pb::DaemonRole::Host => crate::upgrade::items::Names::of_host(machine),
+                _ => crate::upgrade::items::Names::default(),
+            },
             link: Arc::new(HostLink::new(!matches!(role, pb::DaemonRole::Machine))),
             revision: watch::Sender::new(next_revision(0)),
             rules: watch::Sender::new(!matches!(role, pb::DaemonRole::Machine)),
@@ -245,7 +251,7 @@ impl Guard {
             } => Ok(Judged::LastCopy),
             Verdict::Ask(request) => Ok(Judged::Done(Checked::Ask(request))),
             Verdict::WaitForHost => Ok(Judged::WaitForHost),
-            Verdict::Refused(refusal) => Err(status::refused(&refusal)),
+            Verdict::Refused(refusal) => Err(status::refused_named(&refusal, &self.names)),
         }
     }
 

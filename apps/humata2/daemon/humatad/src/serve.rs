@@ -759,6 +759,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         bin.clone(),
         compression.clone(),
         Link::Local,
+        inbox.clone(),
     ));
     let trash = TrashSvc::new(bin.clone(), guard.clone(), machine.clone());
     // D194: a restored channel's records come back into the state.
@@ -1009,6 +1010,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             let _ = work
                 .upgrade
                 .set(crate::upgrade::items::Watch::new(migrations.clone(), release.clone()));
+            if let Some(remote) = remote_slot.get() {
+                remote.use_upgrade(crate::upgrade::items::Watch::new(migrations.clone(), release.clone()));
+            }
             // D227: each link runs its machine's forwarded board calls and replays its board journal.
             let _ = work.boards.set(board_svc.clone());
             // VW-12: each link keeps the views its machine's agents offered.

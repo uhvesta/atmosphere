@@ -15,6 +15,7 @@ use humata2_transfers::NewItem;
 use pb::invalid_field::Problem;
 use tonic::{Code, Request, Response, Status};
 
+use super::Reads;
 use super::roots::{Roots, Target, io_failure};
 use crate::grant_target;
 use crate::guard::Guard;
@@ -31,6 +32,7 @@ const PAGE_MAX: usize = 5000;
 pub(in crate::files) struct Ops {
     roots: Arc<Roots>,
     guard: Arc<Guard>,
+    reads: Reads,
     bin: Arc<Bin>,
     made: Answers<pb::FileEntry>,
     renamed: Answers<pb::FileEntry>,
@@ -38,10 +40,11 @@ pub(in crate::files) struct Ops {
 }
 
 impl Ops {
-    pub(in crate::files) fn new(roots: Arc<Roots>, guard: Arc<Guard>, bin: Arc<Bin>) -> Self {
+    pub(in crate::files) fn new(roots: Arc<Roots>, guard: Arc<Guard>, bin: Arc<Bin>, reads: Reads) -> Self {
         Self {
             roots,
             guard,
+            reads,
             bin,
             made: Answers::new(),
             renamed: Answers::new(),
@@ -62,8 +65,7 @@ impl Ops {
         let target = self
             .roots
             .target(request.location, "location", Entry::Folder)?;
-        self.guard
-            .require(&caller, &Call::ReadFiles(target.place.clone()))?;
+        self.reads.require(&caller, target.place.clone()).await?;
         let (size, token) = match request.page {
             Some(page) => (page.page_size as usize, page.page_token),
             None => (0, String::new()),
@@ -86,8 +88,7 @@ impl Ops {
         let target = self
             .roots
             .target(request.location, "location", Entry::Folder)?;
-        self.guard
-            .require(&caller, &Call::ReadFiles(target.place.clone()))?;
+        self.reads.require(&caller, target.place.clone()).await?;
         let entry = blocking(move || {
             let path = target.existing()?;
             let meta = fs::metadata(&path).map_err(|error| found(&error, &target, &path))?;

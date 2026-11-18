@@ -202,6 +202,7 @@ pub fn large(extra: usize) -> Workspace {
             repos: vec![format!("acme/bulk-{index:02}")],
             machines: vec![MachineId::new("this-mac")],
             purpose: "Many sessions at once".to_owned(),
+            default_agent: None,
         });
     }
     let bulk: Vec<_> = (0..channels)
@@ -265,6 +266,7 @@ pub fn fresh_channel() -> Workspace {
         repos: Vec::new(),
         machines: vec![MachineId::new("this-mac")],
         purpose: String::new(),
+        default_agent: None,
     });
     workspace
 }

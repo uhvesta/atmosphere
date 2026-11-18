@@ -213,7 +213,7 @@ impl Shared {
                 .await
                 .map_err(|status| self.error(&status, "The channels"))?
                 .into_inner();
-            channels.extend(reply.channels.iter().map(map::channel));
+            channels.extend(reply.channels.iter().map(|channel| map::channel(channel, &self.agents)));
             token = reply
                 .page
                 .map(|page| page.next_page_token)
@@ -1223,6 +1223,11 @@ impl Daemon for LiveDaemon {
     fn codex_needs_trust(&self) -> Reply<bool> {
         let shared = self.shared.clone();
         Box::pin(async move { shared.codex_needs_trust().await })
+    }
+
+    fn set_default_agent(&self, agent: Agent) -> Reply<()> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.change_default_agent(agent).await })
     }
 
     fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool> {

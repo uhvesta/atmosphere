@@ -17,7 +17,7 @@ use gpui_kit::base::ObservedElement;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
-use humata2_clients::machines::{ClashChoice, MachineDetail, Reach, ScriptOutcome, SkillsPreview, tool_label};
+use humata2_clients::machines::{ClashChoice, GitHubState, MachineDetail, Reach, ScriptOutcome, SkillsPreview, tool_label};
 use humata2_clients::model::{Channel, MachineId, MachineStop, RuleSetting, Session, Status};
 use humata2_hosts::page::{
     MachinePageAction, MachinePageState, MenuPick, Refused, SessionsChange, SkillsDialog,
@@ -582,15 +582,15 @@ fn overview(
                 .test_support(),
         );
     }
-    if let Some(error) = &state.load_error {
+    if let Some(error) = state.shown_load_error() {
         page = page.child(
             row()
                 .id("machine-load-error")
                 .role(Role::Alert)
-                .aria_label(error.clone())
+                .aria_label(error.to_owned())
                 .gap(px(10.))
                 .text_color(rgb(RED))
-                .child(div().child(error.clone()))
+                .child(div().child(error.to_owned()))
                 .child(widgets::push_quiet(
                     ui,
                     "machine-reload",
@@ -940,14 +940,14 @@ fn scripts_section(
                 .test_support(),
         );
     }
-    if let Some(error) = &scripts.error {
+    if let Some(error) = state.shown_scripts_error() {
         section = section.child(
             div()
                 .id("machine-scripts-error")
                 .role(Role::Alert)
-                .aria_label(error.clone())
+                .aria_label(error.to_owned())
                 .text_color(rgb(RED))
-                .child(error.clone())
+                .child(error.to_owned())
                 .test_support(),
         );
     }
@@ -978,17 +978,33 @@ fn right(
             )
             .child(value.flex_1().min_w_0())
     };
-    let github = match &health.gh {
-        Some(login) => row()
+    // Not found and signed out each say their own fix (owner, 0.2.1).
+    let github_problem = |what: &'static str, fix: &'static str| {
+        col()
+            .gap(px(2.))
+            .child(div().text_color(rgb(ORANGE)).child(what))
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(rgb(look.secondary))
+                    .child(fix),
+            )
+    };
+    let github = match health.github() {
+        GitHubState::SignedIn(login) => row()
             .flex_wrap()
             .gap(px(6.))
             .child(chrome::icon(IconName::Check, GREEN, 12.))
             .child(format!("signed in as {}", login.user))
             .children(login.scopes.iter().map(|scope| chip(look, scope.clone()))),
-        None => row()
-            .gap(px(6.))
-            .text_color(rgb(ORANGE))
-            .child("not signed in"),
+        GitHubState::SignedOut => github_problem(
+            "not signed in",
+            "Run `gh auth login` in a terminal on this machine, then reopen this page.",
+        ),
+        GitHubState::NotFound => github_problem(
+            "GitHub CLI not found",
+            "Install gh on this machine (on a Mac: brew install gh), then reopen this page. If gh already runs in your terminal, put its folder on PATH in your login profile (~/.zprofile): Humata's daemon reads your login shell's PATH when it starts.",
+        ),
     };
     let used = health.disk_total.saturating_sub(health.disk_free);
     let used_percent = if health.disk_total == 0 {

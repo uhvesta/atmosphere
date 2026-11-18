@@ -25,6 +25,7 @@ pub mod model;
 // REPOS (RL-1): the repo library and the one repo search.
 pub mod repos;
 pub mod machines;
+pub mod machine_names;
 mod reveal;
 pub mod views;
 pub mod pull_requests;

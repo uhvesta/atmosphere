@@ -351,6 +351,31 @@ pub struct MachineHealth {
     pub gh_version: String,
 }
 
+/// What a machine's health says of GitHub: three cases the page words
+/// apart, since each has its own fix (owner, 0.2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitHubState<'a> {
+    /// `gh` is signed in.
+    SignedIn(&'a GhLogin),
+    /// `gh` runs but no account is signed in: `gh auth login` fixes it.
+    SignedOut,
+    /// `gh` didn't run: it isn't installed, or the daemon can't find it.
+    NotFound,
+}
+
+impl MachineHealth {
+    /// GitHub as this health says it: `gh`'s version tells "found but not
+    /// signed in" from "not found".
+    #[must_use]
+    pub fn github(&self) -> GitHubState<'_> {
+        match &self.gh {
+            Some(login) => GitHubState::SignedIn(login),
+            None if self.gh_version.trim().is_empty() => GitHubState::NotFound,
+            None => GitHubState::SignedOut,
+        }
+    }
+}
+
 /// A version as a chip shows it: major and minor, so `2.4.1` is `2.4` and `0.98.0` is
 /// `0.98` (frames 28 and 59, HO-4). A version without a dot stays as it is.
 #[must_use]

@@ -77,10 +77,16 @@ pub enum NewSessionAction {
     Create,
 }
 
-/// The agent a new session starts with: the default agent, or the first
-/// agent that is on when the default has been turned off (AGENTSET).
-pub(crate) fn default_agent(state: &AppState) -> Agent {
-    let preferred = state.settings.preferences.default_agent;
+/// The agent a new session starts with. In a channel, the one the daemon
+/// says a start takes there (D770, ST-15: the channel's own default, then
+/// Settings', then the one it was made with); with no channel, or before the
+/// daemon has said, the default agent picked in Settings. Either way, the
+/// first agent that is on when that one has been turned off (AGENTSET).
+pub(crate) fn default_agent(state: &AppState, channel: Option<&ChannelId>) -> Agent {
+    let preferred = channel
+        .and_then(|id| state.workspace.channels.iter().find(|channel| &channel.id == id))
+        .and_then(|channel| channel.default_agent)
+        .unwrap_or(state.settings.preferences.default_agent);
     let offered = state.settings.offered_agents();
     if preferred == Agent::Shell || offered.contains(&preferred) {
         return preferred;
@@ -105,9 +111,10 @@ impl App {
                 .find(|machine| machine.online)
                 .map(|machine| machine.id.clone())
         });
+        let agent = default_agent(state, channel.as_ref());
         state.overlays.push(Overlay::NewSession(NewSession {
             channel,
-            agent: default_agent(state),
+            agent,
             machine,
             title: String::new(),
             first_message: String::new(),

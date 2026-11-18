@@ -271,6 +271,30 @@ impl Work {
             }
             Err(_) => None,
         };
+        self.health_from(machine, probed)
+    }
+
+    /// This Mac's health, read by this process itself: This Mac has no
+    /// link to probe, so without this its page read "0 GB free of 0 GB",
+    /// GitHub signed out and no agents (owner, 0.2.1). Its folders are the
+    /// Storage page's, so none are measured here. Never waits past
+    /// `PROBE_DEADLINE`.
+    async fn own_health(&self, machine: &str) -> Option<pb::MachineHealth> {
+        let read = tokio::task::spawn_blocking(|| crate::peer::host_probe::read(false));
+        let probed = match tokio::time::timeout(PROBE_DEADLINE, read).await {
+            Ok(Ok(probe)) => Some(probe),
+            _ => None,
+        };
+        self.health_from(machine, probed).0
+    }
+
+    /// The health `probed` says, or the last one kept for `machine` when
+    /// there is no new one, with skills sync's part.
+    fn health_from(
+        &self,
+        machine: &str,
+        probed: Option<pb::ProbeResponse>,
+    ) -> (Option<pb::MachineHealth>, Vec<pb::MachineFolder>) {
         let measured = probed.as_ref().map(|probe| folders_of(&probe.folder_bytes));
         let fresh = probed.map(|probe| pb::MachineHealth {
             read_at: Some(timestamp((self.clock)())),
@@ -1521,6 +1545,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             let (root, _) = self.root_facts(&name).await?;
             // D261: This Mac's own stop is in force once it is recorded.
             let sessions_stopped = self.work.stops.get().and_then(|stops| stops.this_machine());
+            let health = self.work.own_health(&name).await;
             return Ok(Response::new(pb::MachineDetail {
                 machine: Some(pb::Machine {
                     id: Some(machine_id(&name)),
@@ -1532,6 +1557,7 @@ impl pb::machine_service_server::MachineService for MachineSvc {
                     sessions_stopped,
                     ..pb::Machine::default()
                 }),
+                health,
                 ..pb::MachineDetail::default()
             }));
         }

@@ -68,11 +68,13 @@ async fn readable_channels(
         if !matches!(guard.check(caller, &read), Ok(Checked::Allowed)) {
             continue;
         }
-        let (counting, id) = (store.clone(), channel.id.clone());
-        let live = blocking(move || live_sessions(&counting, &id))
-            .await?
-            .map_err(|error| status::store(error, machine, "count the channel's sessions"))?;
-        channels.push(channel_pb(&channel, live));
+        let (counting, record) = (store.clone(), channel.clone());
+        let (live, agent) = blocking(move || -> Result<_, StoreError> {
+            Ok((live_sessions(&counting, &record.id)?, effective_agent(&counting, &record)))
+        })
+        .await?
+        .map_err(|error| status::store(error, machine, "count the channel's sessions"))?;
+        channels.push(channel_pb(&channel, live, &agent));
     }
     Ok(pb::ListChannelsResponse {
         channels,
@@ -96,9 +98,10 @@ pub(crate) fn tell_channel(
     let Ok(live) = live_sessions(store, channel) else {
         return;
     };
+    let agent = effective_agent(store, &record);
     feed.publish_in(
         change,
-        pb::event::Payload::Channel(channel_pb(&record, live)),
+        pb::event::Payload::Channel(channel_pb(&record, live, &agent)),
         Scope {
             channel: channel.to_owned(),
             session: String::new(),
@@ -322,11 +325,13 @@ impl ChannelSvc {
     /// `channel` as the API shows it.
     async fn show(&self, channel: ChannelRecord) -> Result<pb::Channel, Status> {
         let store = self.starter.store.clone();
-        let id = channel.id.clone();
-        let live = blocking(move || live_sessions(&store, &id))
-            .await?
-            .map_err(|error| status::store(error, &self.machine, "count the channel's sessions"))?;
-        Ok(channel_pb(&channel, live))
+        let record = channel.clone();
+        let (live, agent) = blocking(move || -> Result<_, StoreError> {
+            Ok((live_sessions(&store, &record.id)?, effective_agent(&store, &record)))
+        })
+        .await?
+        .map_err(|error| status::store(error, &self.machine, "count the channel's sessions"))?;
+        Ok(channel_pb(&channel, live, &agent))
     }
 
     /// What a repeated call with the same key answers: the channel the
@@ -708,7 +713,10 @@ pub(crate) fn timestamp_ms(ms: i64) -> humata2_grpc::Timestamp {
     }
 }
 
-fn channel_pb(channel: &ChannelRecord, live_sessions: u32) -> pb::Channel {
+///
+/// `agent` is the one a start that names none runs here (D770, ST-15), not
+/// the one the channel was made with: the app preselects it in its dialogs.
+fn channel_pb(channel: &ChannelRecord, live_sessions: u32, agent: &str) -> pb::Channel {
     pb::Channel {
         id: Some(pb::ChannelId {
             value: channel.id.clone(),
@@ -732,7 +740,7 @@ fn channel_pb(channel: &ChannelRecord, live_sessions: u32) -> pb::Channel {
             .collect(),
         branch_prefix: channel.branch_prefix.clone(),
         default_agent: Some(pb::AgentId {
-            value: channel.default_agent.clone(),
+            value: agent.to_owned(),
         }),
         live_sessions,
         revision: Some(pb::Revision {
@@ -742,6 +750,16 @@ fn channel_pb(channel: &ChannelRecord, live_sessions: u32) -> pb::Channel {
         is_pr_reviews: channel.folder == crate::review::PR_REVIEWS_FOLDER,
         ..pb::Channel::default()
     }
+}
+
+/// The agent a start that names none runs in `channel`, as `agent_for` picks
+/// it: the channel's own default, then Settings', then the one it was made
+/// with. A store that can't answer leaves the one it was made with.
+pub(crate) fn effective_agent(store: &Store, channel: &ChannelRecord) -> String {
+    crate::settings_service::default_agent_for(store, &channel.id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| channel.default_agent.clone())
 }
 
 /// A channel name: not empty, not absurdly long.
@@ -1338,7 +1356,7 @@ mod tests {
             revision: 3,
             created_unix_ms: 1_000,
         };
-        let shown = channel_pb(&record, 2);
+        let shown = channel_pb(&record, 2, "claude");
         assert_eq!(shown.branch_prefix, None);
         assert_eq!(shown.live_sessions, 2);
         assert_eq!(shown.revision.map(|r| r.value), Some(3));
@@ -1348,6 +1366,7 @@ mod tests {
                 ..record
             },
             0,
+            "claude",
         );
         assert_eq!(with.branch_prefix.as_deref(), Some("me/"));
     }

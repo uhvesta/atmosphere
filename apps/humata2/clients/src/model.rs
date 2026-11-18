@@ -665,6 +665,10 @@ pub struct Channel {
     pub machines: Vec<MachineId>,
     /// One line about it.
     pub purpose: String,
+    /// The agent a start that names none takes here, as the daemon says
+    /// (D770): the channel's own default, Settings', or the one it was made
+    /// with. `None` before a daemon has said.
+    pub default_agent: Option<Agent>,
 }
 
 /// What an Inbox request asks for (IN-6).

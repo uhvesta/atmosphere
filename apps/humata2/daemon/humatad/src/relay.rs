@@ -230,6 +230,9 @@ const ROUTED: [&str; 31] = [
 /// by the link process, which relays, and the socket daemon, which honours
 /// the relay header only for these.
 pub(crate) fn allows(path: &str) -> bool {
+    if withheld(path) {
+        return false;
+    }
     let Some((service, method)) = path.strip_prefix('/').and_then(|path| path.split_once('/'))
     else {
         return false;
@@ -239,6 +242,19 @@ pub(crate) fn allows(path: &str) -> bool {
             .iter()
             .chain([&MACHINE_METHODS])
             .any(|(listed, methods)| *listed == service && methods.contains(&method))
+}
+
+/// Test daemons only: `HUMATA2_PEER_WITHHOLD=GiveOwnCopy` makes this daemon
+/// refuse that method as an older humatad2 would, which doesn't list it.
+#[cfg(any(feature = "admin", feature = "faults"))]
+fn withheld(path: &str) -> bool {
+    std::env::var("HUMATA2_PEER_WITHHOLD")
+        .is_ok_and(|method| path.rsplit('/').next() == Some(method.as_str()))
+}
+
+#[cfg(not(any(feature = "admin", feature = "faults")))]
+fn withheld(_path: &str) -> bool {
+    false
 }
 
 /// Calls the link process makes itself on its proven socket connection,

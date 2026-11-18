@@ -21,16 +21,16 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
 
-use humata2_access::{Call, Entry};
+use humata2_access::Entry;
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::DESK_CHANNEL;
 use humata2_store::Store;
 use pb::invalid_field::Problem;
 use tonic::{Request, Response, Status};
 
+use super::Reads;
 use super::roots::{Roots, Target, io_failure};
 use crate::grant_target;
-use crate::guard::Guard;
 use crate::identity;
 use crate::status;
 use crate::trash_service::blocking;
@@ -61,15 +61,15 @@ const SCRUBBED: [&str; 7] = [
 
 pub(in crate::files) struct Find {
     roots: Arc<Roots>,
-    guard: Arc<Guard>,
+    reads: Reads,
     store: Arc<Store>,
 }
 
 impl Find {
-    pub(in crate::files) fn new(roots: Arc<Roots>, guard: Arc<Guard>, store: Arc<Store>) -> Self {
+    pub(in crate::files) fn new(roots: Arc<Roots>, reads: Reads, store: Arc<Store>) -> Self {
         Self {
             roots,
-            guard,
+            reads,
             store,
         }
     }
@@ -143,8 +143,7 @@ impl Find {
                 path: String::new(),
             };
             let target = self.roots.target(Some(location), "session", Entry::Folder)?;
-            self.guard
-                .require(&caller, &Call::ReadFiles(target.place.clone()))?;
+            self.reads.require(&caller, target.place.clone()).await?;
             targets.push((target, Scope::OwnFolder));
         }
         for repo in repos {
@@ -162,8 +161,7 @@ impl Find {
                 path: String::new(),
             };
             let target = self.roots.target(Some(location), "session", Entry::Folder)?;
-            self.guard
-                .require(&caller, &Call::ReadFiles(target.place.clone()))?;
+            self.reads.require(&caller, target.place.clone()).await?;
             targets.push((target, Scope::Clone));
         }
 

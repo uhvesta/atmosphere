@@ -231,3 +231,12 @@ Coach: VERIFY (Opus 5.5), opened 2026-11-16.
 - D767/D763 trust card: all rows are offered, the reply presses the row, and Enter is pressed again at most once. Red in 110, green in 111 and 112.
 - Every lane confirmed in writing that its files hold no temporary edits. A tree grep finds no REDPROOF and no dbg!.
 - Owed live in wave 3: D760, N1, the trust reply, the remote pull, agent_busy, the remote unsent-message Inbox, and the 0.2 Migrate.
+
+## 2026-11-17 20:55 — wave 3 started (0.2, fe9eea4f)
+- The bins in verify/bin and verify/bin-linux were recut from fe9eea4f, the 0.2 release code. The 20:15 set moved to *.old-2015.
+- Live lanes, on Copilot claude-haiku-5.5, finishing by 23:15:
+  - remote: the trust card (all rows, Yes, No, NotPicked), the held start message, the remote unsent start message reaching the host Inbox, and D760 remove and re-add. It also runs the identity probe: a different machine under the old name vm-a.
+  - files+t1: the remote pull from This Mac, the D755 hint, N1's resumed fork read (local and remote), agent_busy on idle, and a D761 regression check.
+  - migrate: the installed 0.2 bundle against an older daemon and holder (bin-linux.old-1817) on a throwaway humata2-linux user.
+- Fix lanes, test first: D768 (an asked read raises an Inbox approval), D773 (an older machine's refusal maps to peer_version_unsupported, and a Migrate item is made sure to exist), and the D770 check that the dialogs preselect through agent_for.
+- Fable is deciding the owner's machine-identity design: a random machine id, with the name only a label.

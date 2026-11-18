@@ -380,8 +380,10 @@ mod tests {
 
     #[test]
     fn bundled_tools_found_inside_an_app() {
-        let bundle = bundled_tools(Path::new(APP_EXE));
-        let helpers = "/Applications/Humata 2.app/Contents/Helpers";
+        // A folder that never exists: the real /Applications copy may ship a
+        // manifest, which this case must not read.
+        let bundle = bundled_tools(Path::new("/humata2-test-absent/Humata 2.app/Contents/MacOS/humata2"));
+        let helpers = "/humata2-test-absent/Humata 2.app/Contents/Helpers";
         let want = Bundle::new(
             PathBuf::from(format!("{helpers}/humatad2")),
             PathBuf::from(format!("{helpers}/humata2_holder")),

@@ -1,7 +1,7 @@
 use crate::model::{Machine, MachineId, MachineKind};
 
 pub(super) fn machines() -> Vec<Machine> {
-    vec![
+    let machines = vec![
         Machine {
             id: MachineId::new("this-mac"),
             name: "This Mac".to_owned(),
@@ -39,5 +39,10 @@ pub(super) fn machines() -> Vec<Machine> {
             stop: None,
             root: crate::desk::DEFAULT_ROOT.to_owned(),
         },
-    ]
+    ];
+    // Errors about these machines name them as the list does.
+    for machine in &machines {
+        crate::machine_names::remember(&machine.id, &machine.name);
+    }
+    machines
 }

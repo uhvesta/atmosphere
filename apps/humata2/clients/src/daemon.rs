@@ -191,7 +191,8 @@ pub enum Operation {
 pub enum DaemonError {
     /// The host doesn't answer.
     #[error(
-        "{machine} doesn't answer, so this can't be done there now. Reconnect it from Hosts; its sessions keep running and nothing is lost"
+        "{} doesn't answer, so this can't be done there now. Reconnect it from Hosts; its sessions keep running and nothing is lost",
+        crate::machine_names::name_of(.machine)
     )]
     Offline {
         /// The host.
@@ -237,7 +238,8 @@ pub enum DaemonError {
     /// `thing` is behind this Humata, and its Migrate item in the Inbox brings
     /// it up to date. Nothing was changed.
     #[error(
-        "{machine}'s {} is at another release of Humata than this one, so this wasn't done. Open the Migrate item in the Inbox and click Migrate; nothing was changed",
+        "{}'s {} is at another release of Humata than this one, so this wasn't done. Open the Migrate item in the Inbox and click Migrate; nothing was changed",
+        crate::machine_names::name_of(.machine),
         .thing.label()
     )]
     MigrationNeeded {
@@ -590,6 +592,10 @@ pub trait Daemon: Send + Sync + 'static {
     fn asks_in_inbox(&self) -> Reply<bool>;
     /// Sets it; gives what the daemon holds after.
     fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool>;
+    /// Makes `agent` Settings' default agent, the one a start takes when
+    /// neither it nor the channel names one (ST-15, D770). The daemon then
+    /// tells each channel's default again.
+    fn set_default_agent(&self, agent: Agent) -> Reply<()>;
     /// Whether Codex's hooks still need trusting in Codex's /hooks (D202).
     fn codex_needs_trust(&self) -> Reply<bool>;
     /// Every built-in agent except the shell with its switches, enabled or

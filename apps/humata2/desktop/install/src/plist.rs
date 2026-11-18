@@ -23,6 +23,11 @@ pub(crate) fn render(label: &str, daemon: &Path, log: &Path) -> String {
         <string>{daemon}</string>
         <string>serve</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HUMATA2_LOGIN_PATH</key>
+        <string>1</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>

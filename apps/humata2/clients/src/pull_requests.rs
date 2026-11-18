@@ -376,7 +376,8 @@ pub struct PullRequestCommits {
 pub enum PullRequestError {
     /// gh on the machine isn't signed in to GitHub.
     #[error(
-        "gh on {machine} isn't signed in to GitHub, so this pull request can't be read there. Run `gh auth login` on {machine}, then try again; Humata uses gh's own login and never asks for a token"
+        "gh on {name} isn't signed in to GitHub, so this pull request can't be read there. Run `gh auth login` on {name}, then try again; Humata uses gh's own login and never asks for a token",
+        name = crate::machine_names::name_of(.machine)
     )]
     SignedOut {
         /// The machine whose gh is signed out.
@@ -398,7 +399,8 @@ pub enum PullRequestError {
     },
     /// GitHub is limiting requests for the account.
     #[error(
-        "GitHub is limiting requests from {machine}'s gh right now. Wait {}, then try again; a different login doesn't help, since the limit belongs to the account",
+        "GitHub is limiting requests from {}'s gh right now. Wait {}, then try again; a different login doesn't help, since the limit belongs to the account",
+        crate::machine_names::name_of(.machine),
         wait_phrase(.retry_after.as_ref())
     )]
     RateLimited {

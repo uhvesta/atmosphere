@@ -254,7 +254,10 @@ impl Overlays {
             .child(form_row(look, "Runs", row().child(agents)))
             .child(form_row(look, "Machine", machine_value))
             .child(form_row_wrapping(look, "Folder", folder))
-            .child(form_row(look, "Repos", repos))
+            // Bug 6: the repo search's problem line and fields wrap or shrink
+            // inside the card, so the value column may be narrower than its
+            // content; the key column keeps its width.
+            .child(form_row_wrapping(look, "Repos", repos))
             // Frame 40: both switch labels stay on one line, so the key
             // column gives way 2 px (110 to 108) and "Agent access" still
             // lines up right with the other keys.

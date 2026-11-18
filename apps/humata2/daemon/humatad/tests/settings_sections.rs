@@ -367,3 +367,43 @@ async fn a_start_that_names_no_agent_takes_the_default_agent() {
     let (from_channel, _) = common::start_session(&daemon, &channel, "From the channel").await;
     assert_eq!(agent_of(get_session(&daemon, &from_channel).await).as_deref(), Some(common::AGENT_NAME));
 }
+
+/// D770: the agent a channel shows as its default is the one a start that
+/// names none takes, from the channel's own, else Settings', else the one it
+/// was made with, so the app's dialogs preselect what will start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_channel_shows_the_agent_a_start_would_take() {
+    let (daemon, world) = with_two_agents().await;
+    world.remote("acme", "api");
+    let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    async fn shown(daemon: &Daemon, id: Option<pb::ChannelId>) -> Option<String> {
+        daemon
+            .channel_service()
+            .await
+            .get_channel(pb::GetChannelRequest { id })
+            .await
+            .unwrap()
+            .into_inner()
+            .default_agent
+            .map(|agent| agent.value)
+    }
+    let made_with = shown(&daemon, channel.id.clone()).await;
+    assert_eq!(made_with.as_deref(), Some(common::AGENT_NAME));
+
+    update(&daemon, pb::UpdateSettingsRequest { default_agent: agent(SECOND), ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!(shown(&daemon, channel.id.clone()).await.as_deref(), Some(SECOND));
+
+    update_channel(
+        &daemon,
+        pb::UpdateChannelSettingsRequest {
+            channel: channel.id.clone(),
+            default_agent: agent(common::AGENT_NAME),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(shown(&daemon, channel.id.clone()).await.as_deref(), Some(common::AGENT_NAME));
+}

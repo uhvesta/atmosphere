@@ -209,6 +209,9 @@ async fn follow(
                     // CH-16 (D392): output no client views marks the session
                     // unread; the feed hears of it from `read_marks`. A
                     // repaint after our own resize is not output (D393).
+                    // D767 amendment: a screen question's card follows
+                    // the screen while the agent goes on writing.
+                    crate::screen_ask::output(session, holder_pid);
                     let shows_new_text = printed.hear(&data);
                     if crate::read_marks::would_mark(session, shows_new_text) {
                         let id = session.to_owned();

@@ -194,6 +194,28 @@ impl MachinePageState {
         self.detail.as_ref().and_then(|detail| detail.stop.as_ref())
     }
 
+    /// Why the last load failed, as the page shows it: nothing while a
+    /// Migrate item holds this machine. The read-only banner already says
+    /// why, and an older daemon's answer to a call it doesn't know isn't
+    /// the machine being gone (owner, 0.2.1).
+    #[must_use]
+    pub fn shown_load_error(&self) -> Option<&str> {
+        if self.upgrade().read_only() {
+            return None;
+        }
+        self.load_error.as_deref()
+    }
+
+    /// Why the Scripts section failed to load, as the page shows it:
+    /// nothing while a Migrate item holds this machine, as for a load.
+    #[must_use]
+    pub fn shown_scripts_error(&self) -> Option<&str> {
+        if self.upgrade().read_only() {
+            return None;
+        }
+        self.scripts.error.as_deref()
+    }
+
     /// This machine's Migrate items that hold the page: its daemon's and
     /// its store's. CLI, holders and host tools don't.
     fn items(&self) -> impl Iterator<Item = &Request> {

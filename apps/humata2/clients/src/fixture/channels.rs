@@ -7,6 +7,7 @@ pub(super) fn channels() -> Vec<Channel> {
         repos: repos.iter().map(|repo| (*repo).to_owned()).collect(),
         machines: machines.iter().map(|id| MachineId::new(*id)).collect(),
         purpose: purpose.to_owned(),
+        default_agent: None,
     };
     vec![
         channel(

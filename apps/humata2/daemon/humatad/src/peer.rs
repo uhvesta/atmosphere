@@ -610,7 +610,7 @@ pub(crate) mod host_probe {
 
     /// Reads this machine. `measure_storage` also sizes the folders under
     /// `~/Humata` (LD-14: only when asked).
-    pub(super) fn read(measure_storage: bool) -> pb::ProbeResponse {
+    pub(crate) fn read(measure_storage: bool) -> pb::ProbeResponse {
         let home = std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from);
         let installed: Vec<(&str, PathBuf)> = AGENTS
             .iter()

@@ -20,7 +20,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use humata2_access::{Call, Entry};
+use humata2_access::{Call, Entry, Place};
 use humata2_chunk::{CHUNK_MAX, ChunkError, Codec, Decoder, Encoder, Link, Sample};
 use humata2_grpc::humata::v1 as pb;
 use pb::invalid_field::Problem;
@@ -32,9 +32,10 @@ use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::compression::{self, Compression};
 use crate::grant_target;
-use crate::guard::Guard;
+use crate::guard::{Checked, Guard};
 use crate::host_relay::Links;
 use crate::identity;
+use crate::inbox::Inbox;
 use crate::status;
 use crate::trash_service::Bin;
 
@@ -54,6 +55,24 @@ pub(crate) use roots::{Placed, Roots, Target};
 use roots::io_failure;
 
 pub(crate) type ReadFileStream = Pin<Box<dyn Stream<Item = Result<pb::FileChunk, Status>> + Send>>;
+
+/// Judges an agent's file read. One the channel's rule asks about raises an
+/// Inbox card and answers `approval_pending` at once; the agent repeats the
+/// read once the user approves (D768).
+#[derive(Clone)]
+pub(in crate::files) struct Reads {
+    guard: Arc<Guard>,
+    inbox: Arc<Inbox>,
+}
+
+impl Reads {
+    pub(in crate::files) async fn require(&self, caller: &identity::Caller, place: Place) -> Result<(), Status> {
+        match self.guard.check(caller, &Call::ReadFiles(place))? {
+            Checked::Allowed => Ok(()),
+            Checked::Ask(asked) => self.inbox.ask_read(caller, asked).await,
+        }
+    }
+}
 
 /// Chunks read ahead of a slow reader.
 const READ_AHEAD: usize = 2;
@@ -76,6 +95,7 @@ pub(crate) struct Files {
     changes: std::sync::OnceLock<Arc<FileChanges>>,
     /// Calls that name another machine (FM-9, FM-12).
     forward: Forward,
+    reads: Reads,
 }
 
 /// Uploads by idempotency key: running, or finished with this result.
@@ -143,11 +163,17 @@ impl Files {
         bin: Arc<Bin>,
         compression: Arc<Compression>,
         link: Link,
+        inbox: Arc<Inbox>,
     ) -> Self {
+        let reads = Reads {
+            guard: guard.clone(),
+            inbox,
+        };
         Self {
-            ops: Ops::new(roots.clone(), guard.clone(), bin),
-            forward: Forward::new(roots.clone(), guard.clone()),
-            find: Find::new(roots.clone(), guard.clone(), roots.store().clone()),
+            ops: Ops::new(roots.clone(), guard.clone(), bin, reads.clone()),
+            forward: Forward::new(roots.clone(), guard.clone(), reads.clone()),
+            find: Find::new(roots.clone(), reads.clone(), roots.store().clone()),
+            reads,
             roots,
             guard,
             compression,
@@ -319,9 +345,9 @@ impl pb::file_service_server::FileService for Files {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let target = self.roots.target(request.location, "location", Entry::File)?;
-        // The reply is a stream that can't be held and replayed after an approval, so Ask stays refused.
-        self.guard
-            .require(&caller, &Call::ReadFiles(target.place.clone()))?;
+        // An asked read answers approval_pending at once; the agent reads
+        // again once it is approved (D768).
+        self.reads.require(&caller, target.place.clone()).await?;
         let codec = self.compression.pick(self.link, &request.accept_codecs);
         let (send, chunks) = mpsc::channel(READ_AHEAD);
         let offset = request.offset;

@@ -520,7 +520,7 @@ impl ChannelSvc {
                 let _ = blocking(move || {
                     feed.publish_in(
                         pb::Change::Deleted,
-                        pb::event::Payload::Channel(super::channel_pb(&record, 0)),
+                        pb::event::Payload::Channel(super::channel_pb(&record, 0, &record.default_agent)),
                         crate::events::Scope {
                             channel: machine_scope,
                             session: String::new(),

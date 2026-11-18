@@ -271,6 +271,8 @@ pub enum SettingsAction {
     CodexTrustShown(Result<bool, DaemonError>),
     /// Pick the default agent.
     SetAgent(Agent),
+    /// The daemon answered for the default agent.
+    DefaultAgentSaved(Result<(), DaemonError>),
     /// The key box changed.
     Key(String),
     /// Save the key in the keychain.
@@ -435,7 +437,20 @@ impl Reducer for Settings {
             SettingsAction::ToggleOptionAsAlt => {
                 preferences.option_as_alt = !preferences.option_as_alt;
             }
-            SettingsAction::SetAgent(agent) => preferences.default_agent = agent,
+            SettingsAction::SetAgent(agent) => {
+                preferences.default_agent = agent;
+                // The daemon keeps Settings' default agent too (ST-15, D770),
+                // so each channel can say which agent a start takes there.
+                let daemon = self.clients.daemon.clone();
+                return Effect::future(async move {
+                    SettingsAction::DefaultAgentSaved(daemon.set_default_agent(agent).await)
+                });
+            }
+            SettingsAction::DefaultAgentSaved(result) => {
+                if let Err(error) = result {
+                    state.error = Some(error.to_string());
+                }
+            }
             SettingsAction::Access(_) => {}
             SettingsAction::Repos(_) => {}
             SettingsAction::Agents(_) => {}

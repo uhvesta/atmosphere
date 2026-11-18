@@ -291,6 +291,7 @@ fn with_one_machine_channel() -> Workspace {
         repos: Vec::new(),
         machines: vec![MachineId::new("this-mac")],
         purpose: String::new(),
+        default_agent: None,
     });
     workspace
 }

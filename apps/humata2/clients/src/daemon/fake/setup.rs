@@ -142,6 +142,7 @@ pub(super) fn retry_setup(daemon: &FakeDaemon, setup: &SetupId) -> Reply<Channel
                     repos,
                     machines,
                     purpose: String::new(),
+                    default_agent: None,
                 });
             }
             inner.workspace.setups.remove(at);

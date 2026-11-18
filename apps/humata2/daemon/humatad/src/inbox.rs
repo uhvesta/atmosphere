@@ -110,6 +110,9 @@ struct Entry {
     /// Its reply must be one of the card's choices (D767): a question the
     /// agent asks on its screen takes only the answers the screen offers.
     only_choices: bool,
+    /// For a question asked on the agent's screen (D767 amendment): whether
+    /// the screen still asks it, with the chosen reply, when a reply comes.
+    still_asked: Option<permission::StillAsked>,
 }
 
 impl Entry {
@@ -131,6 +134,7 @@ impl Entry {
             run: std::sync::Mutex::new(None),
             permission: false,
             only_choices: false,
+            still_asked: None,
         }
     }
 }
@@ -666,6 +670,16 @@ impl Inbox {
             return Err(refused);
         }
         let decided = self.decide(user, entry, &current, answer, at)?;
+        // D767 amendment: a question asked on the agent's screen that the
+        // screen no longer asks (answered in the terminal) takes no reply:
+        // it is withdrawn, and the reply says so, not that it was answered.
+        if let (Some(still_asked), pb::request_answer::Answer::Reply(reply)) =
+            (&entry.still_asked, &decided.answer)
+        {
+            if !still_asked(reply.text.clone()).await? {
+                return Err(self.withdraw_unasked(entry).await);
+            }
+        }
         let by = answered_by(caller, user);
         let mut next = entry.request.borrow().clone();
         settle(&mut next, decided, by, at);
@@ -1692,22 +1706,29 @@ fn fits_card(request: &pb::InboxRequest, answer: &pb::request_answer::Answer) ->
     }
 }
 
+/// The refusal of an answer to `request`, which was withdrawn.
+fn withdrawn(request: &pb::InboxRequest) -> Status {
+    let id = request.id.clone();
+    let value = id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+    status::failure(
+        Code::FailedPrecondition,
+        status::error(
+            format!(
+                "request {value} was withdrawn: the agent stopped waiting for it before you answered"
+            ),
+            "nothing to answer; if the agent still needs it, it will ask again",
+            pb::error::Kind::RequestWithdrawn(pb::RequestWithdrawn { request: id }),
+        ),
+    )
+}
+
 /// Fails when `request` can no longer be answered (IN-15).
 fn still_open(request: &pb::InboxRequest) -> Result<(), Status> {
     let id = request.id.clone();
     let value = id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
     match pb::RequestState::try_from(request.state) {
         Ok(pb::RequestState::Pending) => Ok(()),
-        Ok(pb::RequestState::Withdrawn) => Err(status::failure(
-            Code::FailedPrecondition,
-            status::error(
-                format!(
-                    "request {value} was withdrawn: the agent stopped waiting for it before you answered"
-                ),
-                "nothing to answer; if the agent still needs it, it will ask again",
-                pb::error::Kind::RequestWithdrawn(pb::RequestWithdrawn { request: id }),
-            ),
-        )),
+        Ok(pb::RequestState::Withdrawn) => Err(withdrawn(request)),
         _ => {
             let approved = request.state == pb::RequestState::Approved as i32;
             Err(status::failure(

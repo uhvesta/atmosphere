@@ -90,3 +90,31 @@ Pass 2 of 4.
 ### Coach note on rerun 2 (19:40)
 - `queued: null` on a mid-turn `session type` is by design: the daemon never holds text, and Copilot queues on its own (D-type contract). This is not a bug. `agent_busy: true` on an idle session is still a bug, and a lane is on it.
 - The resumed-fork read miss (N1) is not a verdict on the fix. The 19:05 bins were cut while a temporary red-proof cut (an early return in the history watcher) was in the tree. Recheck on bins from the frozen 0.2 tree.
+
+## Wave 3 2026-11-17 (0.2, fe9eea4f)
+
+Evidence: V/evidence/t1/wave3/. Lane `t1` fresh, This Mac only, channel `tt`. Copilot 1.0.113. Model seen: claude-haiku-5.5 (17 selectedModel, 46 currentModel, 528 `model` lines; gpt-5.4-nano is Copilot's helper), model-t1.txt.
+
+### Case 2a (N1): resumed fork, local
+Steps: `session fork base --kind code-and-context --title fk`, `session stop`, `session resume`, `session type fk "reply with exactly the word PINEAPPLE"`, polled `session read` every 2 s.
+What happened: the screen and `session read` both showed the agent turn PINEAPPLE (seq 24) at +2 s (c2-read.txt, c2-poll.txt).
+Result: PASS
+
+### Case 3 (D775): agent_busy
+Steps: typed into the session at an idle prompt three times, then started a `sleep 45` turn and typed 10 s into it.
+What happened: idle: `agent_busy:false` (c3-idle2.json, c3-idle3.json, and the second prompt of the first try). Mid-turn: `agent_busy:true`, screen "Working" (c3-mid.json, c3-mid-screen.txt). `queued:null` not reported by design. Exception: on a brand-new session whose screen already showed the idle prompt, the first `type` (c3-idle-type.json) and the `type ""` before it returned `agent_busy:true`.
+Result: PASS (first-turn exception noted)
+
+### Case 4 (D761): ask_user to Inbox
+One question card with choices a.txt / b.txt (c4-inbox.json), `inbox reply <id> b.txt`, the agent created b.txt containing hi (c4-reply.json, c4-screen.txt).
+Result: PASS
+
+### Summary (wave 3)
+| case | result |
+|---|---|
+| 2a. resumed fork read, local | PASS |
+| 3. agent_busy idle false / mid-turn true | PASS |
+| 4. ask_user to Inbox, one reply | PASS |
+
+### Findings (new)
+1. GAP: the first `session type` on a brand-new session at its idle prompt returns `agent_busy:true` (c3-idle-type.json). Repro: `session start`, wait 40 s, `session type <s> "reply with exactly the word ALPHA"`. Expected false. Later idle types are false.

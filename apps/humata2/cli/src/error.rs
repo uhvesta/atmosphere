@@ -39,6 +39,14 @@ pub enum CliError {
     /// no `.`, so it is neither a machine nor clearly a file (D756).
     #[error("\"{word}\" is not a machine of this channel, so nothing was copied")]
     NotAMachineHere { word: String },
+    /// An agent's bare `shared…` location was read as the channel's shared
+    /// folder on its machine (D777) and the daemon didn't find it.
+    #[error("\"{typed}\" was looked up in the channel's shared folder on your machine and not found")]
+    SharedNotFound {
+        typed: String,
+        #[source]
+        source: DaemonError,
+    },
     /// `session fork --channel` named a channel the parent isn't in: a fork
     /// always stays in its parent's channel (CV-8).
     #[error("a fork stays in its parent's channel, so session {session} can't be forked into channel \"{channel}\"")]
@@ -206,6 +214,14 @@ impl CliError {
                 format!(
                     "To send to a machine, use one that `humata host ls` lists. If you meant a file in \
                      your own clone, write ./{word}; for a folder, write {word}/."
+                ),
+            ),
+            Self::SharedNotFound { typed, .. } => plain(
+                "not_found",
+                exit::NOT_FOUND,
+                format!(
+                    "A bare shared/ is the channel's shared folder on your machine. If you meant a folder \
+                     named shared in your own clone, write ./{typed}."
                 ),
             ),
             Self::ForkElsewhere { session, channel } => plain(

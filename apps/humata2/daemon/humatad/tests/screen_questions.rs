@@ -21,23 +21,101 @@ const CHOICES: [&str; 3] = [
     "No",
 ];
 
-/// The test agent asks Copilot 1.0.113's folder trust on its screen, then
-/// keeps the bytes of the line it is answered with, as hex, in
-/// `trust-answer`, and answers each line after as the other test agents do.
-/// With `first`, it first draws only the start of the box, its first
-/// choice alone, and stays quiet with it for longer than a quiet spell, as
-/// Copilot was seen to before the rest of its box showed.
-fn agent_script(world: &World, first: bool) -> String {
-    let first = if first {
-        r"printf '%s\n' \
+/// How the test agent draws its folder trust box.
+#[derive(Clone, Copy)]
+enum Draw {
+    /// All of it at once.
+    Whole,
+    /// First only the start of the box, its first choice alone, quiet with
+    /// it for longer than a quiet spell, then the screen cleared and the
+    /// whole box drawn, as Copilot was seen to before the rest showed.
+    FirstRowFirst,
+    /// As VERIFY saw Copilot 1.0.113 do it on a remote machine (wave 3):
+    /// the box down to its second choice, quiet for longer than a quiet
+    /// spell, then the No row and the rest of the box, while Copilot's
+    /// logo above it goes on animating (redrawn every half second), so the
+    /// agent's output never goes quiet again. The box is the captured one,
+    /// narrowed to fit the test's screen, with a made-up folder.
+    InStepsWhileAnimating,
+    /// All of it at once; once it is answered, the logo goes on animating
+    /// above the agent's prompt, so its output doesn't go quiet.
+    WholeThenAnimating,
+}
+
+/// The rows of Copilot 1.0.113's folder trust box, as VERIFY captured it,
+/// narrowed: down to the second choice, and from the third to the end.
+const BOX_TOP: &str = r"  '╭──────────────────────────────────────────────────────────╮' \
+  '│ Confirm folder trust                                     │' \
+  '│ ╭──────────────────────────────────────────────────────╮ │' \
+  '│ │ /work/api                                            │ │' \
+  '│ ╰──────────────────────────────────────────────────────╯ │' \
+  '│ Do you trust the files in this folder?                   │' \
+  '│                                                          │' \
+  '│ ❯ 1. Yes                                                 │' \
+  '│   2. Yes, and remember this folder for future sessions   │'";
+const BOX_REST: &str = r"  '│   3. No (Esc)                                            │' \
+  '│                                                          │' \
+  '│ ↑/↓ to navigate · enter to select · esc to cancel        │' \
+  '╰──────────────────────────────────────────────────────────╯'";
+
+/// The test agent asks Copilot 1.0.113's folder trust on its screen, drawn
+/// as `draw` says, then keeps the bytes of the line it is answered with,
+/// as hex, in `trust-answer`, and answers each line after as the other
+/// test agents do.
+fn agent_script(world: &World, draw: Draw) -> String {
+    let (before, ask, after) = match draw {
+        Draw::Whole => (String::new(), format!("printf '%s\\n' \\\n{BOX_TOP} \\\n{BOX_REST}\n"), ""),
+        Draw::FirstRowFirst => (
+            r"printf '%s\n' \
   '│ Do you trust the files in this folder?                   │' \
   '│                                                          │' \
   '│ ❯ 1. Yes                                                 │'
 sleep 6
 printf '\033[H\033[2J'
 "
-    } else {
-        ""
+            .to_owned(),
+            format!("printf '%s\\n' \\\n{BOX_TOP} \\\n{BOX_REST}\n"),
+            "",
+        ),
+        // The logo is row 1, the box rows 2 to 14; each frame is drawn on
+        // row 1 and the cursor put back below the box.
+        Draw::InStepsWhileAnimating => (
+            String::new(),
+            format!(
+                r#"printf '\033[H\033[2J%s\n' '  ╭─╮╭─╮  Copilot uses AI.'
+printf '%s\n' \
+{BOX_TOP}
+sleep 6
+printf '%s\n' \
+{BOX_REST}
+( while :; do
+    for frame in '╭─╮╭─╮' '╭──╮╭╮'; do
+      printf '\033[1;3H%s\033[15;1H' "$frame"; sleep 0.5
+    done
+  done ) &
+logo=$!
+"#
+            ),
+            "kill $logo 2>/dev/null\n",
+        ),
+        Draw::WholeThenAnimating => (
+            String::new(),
+            format!("printf '%s\\n' \\\n{BOX_TOP} \\\n{BOX_REST}\n"),
+            "",
+        ),
+    };
+    // Drawn on row 3 with the cursor saved and put back, so it leaves the
+    // lines the agent prints alone.
+    let animate = match draw {
+        Draw::WholeThenAnimating => {
+            r#"( while :; do
+    for frame in '╭─╮╭─╮' '╭──╮╭╮'; do
+      printf '\033%s\033[3;3H%s\033%s' 7 "$frame" 8 || exit; sleep 0.5
+    done
+  done ) &
+"#
+        }
+        _ => "",
     };
     format!(
         r#"CONV_DIR='{}'
@@ -46,24 +124,17 @@ case "$mode" in
   --session-id) f="$CONV_DIR/$id.jsonl"; : > "$f" ;;
   --resume) f="$CONV_DIR/$id.jsonl" ;;
 esac
-{first}printf '%s\n' \
-  '╭──────────────────────────────────────────────────────────╮' \
-  '│ Confirm folder trust                                     │' \
-  '│ ╭──────────────────────────────────────────────────────╮ │' \
-  '│ │ /work/api                                            │ │' \
-  '│ ╰──────────────────────────────────────────────────────╯ │' \
-  '│ Do you trust the files in this folder?                   │' \
-  '│                                                          │' \
-  '│ ❯ 1. Yes                                                 │' \
-  '│   2. Yes, and remember this folder for future sessions   │' \
-  '│   3. No (Esc)                                            │' \
-  '╰──────────────────────────────────────────────────────────╯'
-IFS= read -r answer
-printf '%s' "$answer" | od -An -tx1 | tr -d ' \n' > "$CONV_DIR/trust-answer.part"
+{before}{ask}IFS= read -r answer
+{after}printf '%s' "$answer" | od -An -tx1 | tr -d ' \n' > "$CONV_DIR/trust-answer.part"
 mv "$CONV_DIR/trust-answer.part" "$CONV_DIR/trust-answer"
 printf '\033[H\033[2J'
 echo "agent up $mode"
-while IFS= read -r line; do echo "got: $line"; done
+{animate}while IFS= read -r line; do
+  case "$line" in
+    run:*) eval "${{line#run:}}" ;;
+    *) echo "got: $line" ;;
+  esac
+done
 "#,
         world.conv.display(),
     )
@@ -77,14 +148,14 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        Self::drawing(false).await
+        Self::drawing(Draw::Whole).await
     }
 
-    async fn drawing(first: bool) -> Self {
+    async fn drawing(draw: Draw) -> Self {
         let dir = folder();
         let world = World::new(dir.path());
         let script = dir.path().join("trust-agent.sh");
-        std::fs::write(&script, agent_script(&world, first)).expect("write a test file");
+        std::fs::write(&script, agent_script(&world, draw)).expect("write a test file");
         let agents = serde_json::json!([{
             "name": common::AGENT_NAME,
             "program": "/bin/sh",
@@ -95,7 +166,9 @@ impl Fixture {
         }]);
         std::fs::write(&world.agents, agents.to_string()).expect("write a test file");
         world.remote("acme", "api");
-        let args = world.args();
+        let mut args = world.args();
+        // Its turn hooks run the CLI.
+        args.extend(["--humata".to_owned(), common::binary("HUMATA").display().to_string()]);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let answer = world.conv.join("trust-answer");
         let daemon = Daemon::start_with(Build::Admin, dir, &refs).await;
@@ -181,6 +254,33 @@ impl Fixture {
             assert!(Instant::now() < deadline, "the session still needs you");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// The command the agent's turn hook for `event` runs, as the daemon
+    /// wrote it.
+    fn hook_command(&self, event: &str) -> String {
+        let file = self.daemon.state.join("claude-hooks.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file).expect("read the hooks file"))
+                .expect("the hooks file is JSON");
+        json["hooks"][event][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no hook for {event}"))
+            .to_owned()
+    }
+
+    async fn type_now(&self, text: &str) -> pb::TypeResponse {
+        self.daemon
+            .terminals()
+            .await
+            .r#type(pb::TypeRequest {
+                session: Some(self.session.clone()),
+                text: text.to_owned(),
+                ..Default::default()
+            })
+            .await
+            .expect("type into the session")
+            .into_inner()
     }
 
     async fn attach(&self) -> Attach {
@@ -300,7 +400,7 @@ fn approve() -> pb::request_answer::Answer {
 /// card kept the first read's list, and a reply never reached the screen.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_trust_box_drawn_in_steps_offers_every_choice_and_no_picks_the_no_row() {
-    let fix = Fixture::drawing(true).await;
+    let fix = Fixture::drawing(Draw::FirstRowFirst).await;
     let card = fix
         .wait_pending_where(|card| question_of(card).choices == CHOICES)
         .await;
@@ -320,4 +420,75 @@ async fn a_trust_box_drawn_in_steps_offers_every_choice_and_no_picks_the_no_row(
         assert!(Instant::now() < deadline, "a card is still pending");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// D767 amendment (wave 3): a box that finishes drawing after its card was
+/// raised, while its agent's output never goes quiet again (Copilot's
+/// animated logo), ends as a card with every choice, with no one attaching
+/// to the session. Before, the card kept the first read's two choices until
+/// something else, such as an attach, read the screen again, so No was
+/// never offered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_trust_box_that_finishes_drawing_while_its_agent_keeps_writing_ends_with_every_choice() {
+    let fix = Fixture::drawing(Draw::InStepsWhileAnimating).await;
+    // The card read off the box before its No row showed.
+    fix.wait_pending_where(|card| question_of(card).choices == CHOICES[..2])
+        .await;
+    let card = fix
+        .wait_pending_where(|card| question_of(card).choices == CHOICES)
+        .await;
+    let id = card.id.clone().expect("card has an id");
+    fix.answer(&id, reply("No")).await.expect("pick No");
+    // ESC [ B twice (two rows down), then the line's end.
+    assert_eq!(wait_answer(&fix.answer).await, "1b5b421b5b42");
+}
+
+/// D767 amendment (wave 3): a trust box the person answers on the screen
+/// while its card is pending leaves a card that takes no reply: a reply
+/// right after is refused as withdrawn and the card ends withdrawn. Before, a reply that came before the next quiet
+/// spell was taken as answered though nothing was pressed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_after_the_box_was_answered_on_the_screen_is_withdrawn() {
+    let fix = Fixture::new().await;
+    let card = fix.wait_pending().await;
+    let id = card.id.clone().expect("card has an id");
+
+    let mut attach = fix.attach().await;
+    attach.type_text("\r").await;
+    attach.wait_for("agent up").await;
+    assert_eq!(wait_answer(&fix.answer).await, "");
+
+    let replied = fix.answer(&id, reply("Yes")).await;
+    assert!(
+        !matches!(&replied, Ok(request) if request.state == pb::RequestState::Answered as i32),
+        "a reply to a box no longer on the screen was taken: {replied:?}"
+    );
+    let deadline = Instant::now() + WAIT;
+    while fix.request(&id).await.state != pb::RequestState::Withdrawn as i32 {
+        assert!(Instant::now() < deadline, "the card was never withdrawn");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    fix.wait_not_needing_you().await;
+}
+
+/// D775 amendment (wave 3): once the trust box is answered on the screen
+/// and the agent sits at its prompt, typing to it is not typing mid-turn,
+/// though its output goes on (Copilot's animated logo). Before, the box's
+/// card stayed open until the output next went quiet, so the session read
+/// NEEDS_INPUT and the type said the agent was busy.
+#[tokio::test(flavor = "multi_thread")]
+async fn typing_at_the_prompt_after_the_trust_box_was_answered_on_the_screen_is_not_busy() {
+    let fix = Fixture::drawing(Draw::WholeThenAnimating).await;
+    fix.wait_pending().await;
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::NeedsInput).await;
+
+    let mut attach = fix.attach().await;
+    attach.type_text("\r").await;
+    attach.wait_for("agent up").await;
+    // Its hook says its turn is over, as Copilot's does at its prompt.
+    attach.type_text(&format!("run:{}\r", fix.hook_command("Stop"))).await;
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::Idle).await;
+    let typed = fix.type_now("hello\n").await;
+    assert!(typed.typed);
+    assert!(!typed.agent_busy, "{typed:?}");
 }

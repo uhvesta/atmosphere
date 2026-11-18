@@ -6,7 +6,6 @@
 
 mod resume;
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -391,15 +390,7 @@ fn signed_out(stderr: &str) -> bool {
     stderr.contains("gh auth login") || stderr.contains("not logged in")
 }
 
-/// The `gh` to run: `HUMATA2_GH` in an admin build (the tests' fake), else
-/// `gh` on the PATH.
-pub(crate) fn gh_program() -> OsString {
-    #[cfg(feature = "admin")]
-    if let Some(program) = std::env::var_os("HUMATA2_GH") {
-        return program;
-    }
-    OsString::from("gh")
-}
+pub(crate) use crate::tool_path::gh_program;
 
 /// Runs `gh` with `args` in `clone`, for the GitHub repository `repo`
 /// (`owner/name`), and returns what it printed.

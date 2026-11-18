@@ -10,6 +10,7 @@ use crate::call::{Ctx, Done};
 use crate::console::Console;
 use crate::daemon::{Daemon, DaemonError, rpc};
 use crate::error::CliError;
+use crate::location::is_bare_shared;
 use crate::principal::Principal;
 
 pub(super) async fn files<D: Daemon, C: Console>(
@@ -90,6 +91,29 @@ pub(super) async fn files<D: Daemon, C: Console>(
 /// A last word that is only a machine places each source by PL-3 (PL-12),
 /// one transfer per place they land in.
 pub(super) async fn transfer_start<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    args: TransferArgs,
+    is_move: bool,
+) -> Result<Done, CliError> {
+    let bare_shared = match ctx.principal {
+        Principal::Agent { .. } => args.locations.iter().find(|text| is_bare_shared(text)).cloned(),
+        _ => None,
+    };
+    match transfer_start_inner(ctx, args, is_move).await {
+        // D777: a wrong guess about a bare `shared…` must be fixable from the error.
+        Err(CliError::Daemon(source))
+            if bare_shared.is_some() && matches!(&source, DaemonError::Refused { error, .. } if matches!(error.kind, Some(pb::error::Kind::NotFound(_)))) =>
+        {
+            Err(CliError::SharedNotFound {
+                typed: bare_shared.unwrap_or_default(),
+                source,
+            })
+        }
+        other => other,
+    }
+}
+
+async fn transfer_start_inner<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     args: TransferArgs,
     is_move: bool,
@@ -220,9 +244,10 @@ async fn landing_name<D: Daemon, C: Console>(
 /// The machine when `text` names only a machine: no `:` and no `/`. For the
 /// person such a word is always a machine. For an agent (D756) it is a
 /// machine it can see when one has that name; else a word with a `.` is a
-/// file of its own clone, and any other word is refused, since a typo or a
+/// file of its own clone, the word `shared` is the channel's shared folder on
+/// its machine (D777), and any other word is refused, since a typo or a
 /// machine outside the channel must not quietly become a file. `./name` and
-/// `name/` always mean the clone.
+/// `name/` mean the clone, except `shared/`.
 async fn machine_only<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     text: &str,
@@ -233,7 +258,7 @@ async fn machine_only<D: Daemon, C: Console>(
     match ctx.machine(text).await {
         Ok(machine) => Ok(Some(machine)),
         Err(CliError::NoMatch { .. }) if matches!(ctx.principal, Principal::Agent { .. }) => {
-            if text.contains('.') {
+            if text.contains('.') || text == "shared" {
                 Ok(None)
             } else {
                 Err(CliError::NotAMachineHere { word: text.into() })

@@ -1196,3 +1196,166 @@ async fn an_agent_listing_another_sessions_turns_waits_in_the_inbox_when_the_rul
     assert_eq!(waited.result_type, "humata.v1.ListTurnsResponse");
     pb::ListTurnsResponse::decode(waited.result.as_slice()).unwrap();
 }
+
+// ----- D768: an agent's file read the rule asks about waits in the Inbox.
+// Reading another session's clone is Ask by default
+// (FilesReadOtherSession). One card per session, capability and path; once
+// approved, the agent's read again succeeds. -----
+
+/// The root of `OTHER`'s clone of acme/ledger, or `path` in it.
+fn ledger(path: &str) -> pb::FileLocation {
+    pb::FileLocation {
+        machine: None,
+        root: Some(pb::file_location::Root::SessionClone(pb::SessionClone {
+            session: Some(session(OTHER)),
+            repo: Some(pb::RepoRef {
+                owner: "acme".to_owned(),
+                name: "ledger".to_owned(),
+            }),
+        })),
+        path: path.to_owned(),
+    }
+}
+
+/// The request an approval-pending refusal names.
+fn pending_of(refused: &tonic::Status) -> pb::RequestId {
+    assert_eq!(refused.code(), Code::FailedPrecondition, "{refused:?}");
+    match error_of(refused).kind {
+        Some(pb::error::Kind::ApprovalPending(pending)) => pending.request.unwrap(),
+        other => panic!("expected approval_pending, got {other:?}"),
+    }
+}
+
+impl Fixture {
+    /// `OTHER`'s clone of acme/ledger on disk, holding `a.txt`.
+    fn ledger_on_disk(&self) {
+        let folder = self.daemon.dir.path().join("ledger");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("a.txt"), b"ledger\n").unwrap();
+    }
+
+    async fn files(&self) -> pb::file_service_client::FileServiceClient<Channel> {
+        pb::file_service_client::FileServiceClient::new(self.daemon.channel().await)
+    }
+
+    /// The agent lists `OTHER`'s clone.
+    async fn list_ledger(&self) -> Result<pb::ListDirectoryResponse, tonic::Status> {
+        self.files()
+            .await
+            .list_directory(self.as_agent(pb::ListDirectoryRequest {
+                location: Some(ledger("")),
+                page: None,
+            }))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    /// The agent stats `path` in `OTHER`'s clone.
+    async fn stat_ledger(&self, path: &str) -> Result<pb::FileEntry, tonic::Status> {
+        self.files()
+            .await
+            .stat(self.as_agent(pb::StatRequest {
+                location: Some(ledger(path)),
+            }))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_asked_read_raises_one_card_and_runs_once_approved() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+
+    let first = pending_of(&fixture.list_ledger().await.unwrap_err());
+    let again = pending_of(&fixture.list_ledger().await.unwrap_err());
+
+    assert_eq!(first, again, "a repeated read reuses its card");
+    assert_eq!(common::pending_requests(&fixture.daemon).await, [first.clone()]);
+    assert_eq!(fixture.request(&first).await.state(), pb::RequestState::Pending);
+
+    fixture.answer(&first, approve()).await.unwrap();
+    fixture.wait(&first).await;
+    let listed = fixture.list_ledger().await.unwrap();
+
+    let names: Vec<String> = listed
+        .entries
+        .iter()
+        .filter_map(|entry| entry.location.as_ref())
+        .map(|location| location.path.clone())
+        .collect();
+    assert!(names.iter().any(|name| name.ends_with("a.txt")), "{names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_path_gets_its_own_card_and_a_stat_and_a_stream_read_of_one_file_share_one() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+
+    let listing = pending_of(&fixture.list_ledger().await.unwrap_err());
+    let stat = pending_of(&fixture.stat_ledger("a.txt").await.unwrap_err());
+    let read = fixture
+        .files()
+        .await
+        .read_file(fixture.as_agent(pb::ReadFileRequest {
+            location: Some(ledger("a.txt")),
+            ..Default::default()
+        }))
+        .await;
+    let read = match read {
+        Ok(_) => panic!("an asked read streamed the file"),
+        Err(refused) => pending_of(&refused),
+    };
+
+    assert_ne!(listing, stat);
+    assert_eq!(stat, read, "one card per session, capability and path");
+    assert_eq!(common::pending_requests(&fixture.daemon).await.len(), 2);
+
+    fixture.answer(&stat, approve()).await.unwrap();
+    fixture.wait(&stat).await;
+    assert!(fixture.stat_ledger("a.txt").await.is_ok());
+    let mut chunks = fixture
+        .files()
+        .await
+        .read_file(fixture.as_agent(pb::ReadFileRequest {
+            location: Some(ledger("a.txt")),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(chunks.message().await.unwrap().is_some(), "the approved read streams the file");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_read_is_reported_as_denied() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+    let id = pending_of(&fixture.list_ledger().await.unwrap_err());
+
+    fixture.answer(&id, deny()).await.unwrap();
+    let refused = fixture.list_ledger().await.unwrap_err();
+
+    assert_eq!(refused.code(), Code::PermissionDenied, "{refused:?}");
+    assert!(
+        matches!(error_of(&refused).kind, Some(pb::error::Kind::Denied(denied)) if denied.request == Some(id.clone())),
+        "{refused:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_on_an_approved_read_says_what_was_approved_not_a_bare_approval() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+    let id = pending_of(&fixture.list_ledger().await.unwrap_err());
+
+    fixture.answer(&id, approve()).await.unwrap();
+    let waited = fixture.wait(&id).await;
+
+    assert_eq!(waited.state(), pb::RequestState::Approved);
+    assert!(waited.error.is_none(), "{waited:?}");
+    assert!(
+        !waited.result_type.is_empty(),
+        "an approved read's wait names what it holds, so a client can tell it to repeat the read: {waited:?}"
+    );
+}

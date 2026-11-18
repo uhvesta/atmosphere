@@ -4,7 +4,9 @@
 //! where a Desk session's documents sit: `<machine>:folder/<session>/<path>`
 //! (D382), and the place files from another machine land,
 //! `<machine>:received/<source machine>/<path>` (PL-4). Inside a session a bare path is
-//! the agent's own clone, filled in from who the caller is.
+//! the agent's own clone, filled in from who the caller is, except `shared`,
+//! `shared/` and `shared/<path>`, the channel's shared folder on the agent's
+//! machine (D777). The clone's own folder of that name is `./shared`.
 
 use humata2_proto::humata::v1 as pb;
 use pb::file_location::Root;
@@ -30,6 +32,7 @@ impl<D: Daemon, C: Console> Ctx<'_, D, C> {
         };
         let Some((machine, rest)) = text.split_once(':') else {
             return match self.principal {
+                Principal::Agent { .. } if is_bare_shared(text) => self.own_shared(text).await,
                 Principal::Agent { .. } => self.own_clone(text).await,
                 _ => Err(bad()),
             };
@@ -110,8 +113,9 @@ impl<D: Daemon, C: Console> Ctx<'_, D, C> {
     /// has one repository, its own folder when it has none (a Desk
     /// session, D382). The daemon serves only a location that names the
     /// session and the repo, so both are filled in here from who the
-    /// caller is (D655). `./name` and `name/` say "a file or folder of the
-    /// clone" (D756); the daemon takes the path without either.
+    /// caller is (D655). `./name` says "a file or folder of the clone, whatever
+    /// its name" and `name/` does too, except `shared/` (D756, D777); the
+    /// daemon takes the path without either.
     async fn own_clone(&self, path: &str) -> Result<pb::FileLocation, CliError> {
         let path = path.strip_prefix("./").unwrap_or(path).trim_end_matches('/');
         let me: pb::WhoAmIResponse = self.call(rpc::daemon::WHO_AM_I, &pb::WhoAmIRequest {}).await?;
@@ -148,6 +152,29 @@ impl<D: Daemon, C: Console> Ctx<'_, D, C> {
         Ok(pb::FileLocation {
             machine: None,
             root: Some(root),
+            path: path.into(),
+        })
+    }
+}
+
+/// Whether an agent's location with no `:` starts with the part `shared`
+/// (`shared`, `shared/`, `shared/a/b`), the channel's shared folder on its
+/// own machine (D777). `./shared` and `sharedstuff/` are not.
+pub(crate) fn is_bare_shared(text: &str) -> bool {
+    !text.contains(':') && text.split('/').next() == Some("shared")
+}
+
+impl<D: Daemon, C: Console> Ctx<'_, D, C> {
+    /// An agent's bare `shared/<path>`: the channel's shared folder, with no
+    /// machine named, as a bare clone path names none, so the daemon the
+    /// agent talks to fills in its own machine (D777).
+    async fn own_shared(&self, text: &str) -> Result<pb::FileLocation, CliError> {
+        let path = text.strip_prefix("shared").unwrap_or(text).trim_matches('/');
+        Ok(pb::FileLocation {
+            machine: None,
+            root: Some(Root::ChannelShared(pb::ChannelShared {
+                channel: Some(self.this_channel().await?),
+            })),
             path: path.into(),
         })
     }

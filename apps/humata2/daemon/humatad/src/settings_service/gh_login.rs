@@ -2,7 +2,6 @@
 //! asked in the background so a start never waits on it, and again now and
 //! then so a sign-in or a change shows up without a restart.
 
-use std::ffi::OsString;
 use std::process::{Command, Stdio};
 
 #[derive(Debug, thiserror::Error)]
@@ -21,15 +20,7 @@ pub(super) enum LoginError {
     },
 }
 
-/// The `gh` to run: `HUMATA2_GH` in an admin build (the tests' fake), else
-/// `gh` on the PATH.
-fn gh_program() -> OsString {
-    #[cfg(feature = "admin")]
-    if let Some(program) = std::env::var_os("HUMATA2_GH") {
-        return program;
-    }
-    OsString::from("gh")
-}
+use crate::tool_path::gh_program;
 
 /// The login `gh` is signed in as; empty when it prints none. Blocking: it
 /// runs `gh`, so it belongs on a thread of its own.

@@ -18,6 +18,9 @@ use tca::Effect;
 
 use crate::{App, AppAction, AppState, Route};
 
+/// The name the daemon makes the PR reviews channel with.
+const PR_REVIEWS_CHANNEL: &str = "PR reviews";
+
 impl App {
     /// Handles what a pull request review part asked for.
     pub(super) fn pr_review_delegate(&self, state: &mut AppState, action: &AppAction) -> Effect<AppAction> {
@@ -74,7 +77,15 @@ impl App {
             return self.navigate(state, Route::Session(session));
         }
         let link = format!("https://github.com/{}/{}/pull/{}", pull.owner, pull.repo, pull.number);
-        let agent = crate::new_session::default_agent(state);
+        // The reviews' own channel says which agent a start takes there
+        // (D770); before the first review makes it, Settings' pick does.
+        let reviews = state
+            .workspace
+            .channels
+            .iter()
+            .find(|channel| channel.name == PR_REVIEWS_CHANNEL)
+            .map(|channel| channel.id.clone());
+        let agent = crate::new_session::default_agent(state, reviews.as_ref());
         // This Mac when it answers, else the first machine that does, as New
         // channel picks; none leaves Start waiting for a pick.
         let machine = state

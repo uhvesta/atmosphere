@@ -494,6 +494,18 @@ pub(crate) fn peer_unproven(
 }
 
 /// A call the policy refused, with the proto kind and fix it names.
+/// `refused`, with the machines a refusal names read as people read them:
+/// the host as "This Mac" and a machine by its name, not its id (D755).
+pub(crate) fn refused_named(refusal: &Refusal, names: &crate::upgrade::items::Names) -> Status {
+    match refusal {
+        Refusal::SharedOnOtherMachine { machine, here } => refused(&Refusal::SharedOnOtherMachine {
+            machine: humata2_access::MachineId::new(names.of(machine.as_str())),
+            here: humata2_access::MachineId::new(names.of(here.as_str())),
+        }),
+        other => refused(other),
+    }
+}
+
 pub(crate) fn refused(refusal: &Refusal) -> Status {
     use pb::denied::Source as Denied;
     let denied = |source: Denied, capability: Option<Capability>| {
@@ -699,6 +711,30 @@ pub(crate) fn approval_pending(request: &pb::RequestId) -> Status {
     )
 }
 
+/// What an approved asked read keeps as its result type (D768): approving
+/// it runs nothing, so the waiter is told to repeat the read, which then goes
+/// through. Not a proto message: no bytes come with it.
+pub(crate) const READ_APPROVED: &str = "humata2.ReadApproved";
+
+/// An agent's file read the channel's rule sent to the Inbox (D768). Unlike
+/// [`approval_pending`], approving it runs nothing: the agent repeats the
+/// read once the user approves, and a repeat before then meets this request.
+pub(crate) fn read_approval_pending(request: &pb::RequestId) -> Status {
+    failure(
+        Code::FailedPrecondition,
+        error(
+            format!(
+                "this read needs the user's approval and is waiting for their answer in the Inbox as request {}",
+                request.value
+            ),
+            "call inbox_wait (WaitForAnswer) with this request id; once the user approves, repeat the same read to get its result. Repeating it before then shows this request again and doesn't add another",
+            pb::error::Kind::ApprovalPending(pb::ApprovalPending {
+                request: Some(request.clone()),
+            }),
+        ),
+    )
+}
+
 /// A call only the user can make, at the app: an agent or script that makes
 /// it is told what was refused and the fix it can act on (MP-14, MP-17).
 /// `what` names the call ("logging in to a machine by hand").
@@ -792,6 +828,24 @@ mod tests {
             .first()
             .unwrap_or_else(|| panic!("the status carries no details"));
         pb::Error::decode(any.value.as_slice()).unwrap_or_else(|e| panic!("error: {e}"))
+    }
+
+    /// D755's pull hint names the host as "This Mac", never by its id.
+    #[test]
+    fn the_pull_hint_names_the_host_as_this_mac_and_not_by_id() {
+        let refusal = Refusal::SharedOnOtherMachine {
+            machine: humata2_access::MachineId::new("ma_host"),
+            here: humata2_access::MachineId::new("vm-a"),
+        };
+        let names = crate::upgrade::items::Names::of_host("ma_host");
+
+        let error = error_of(&refused_named(&refusal, &names));
+
+        assert!(error.message.contains("This Mac"), "{}", error.message);
+        assert!(error.fix.contains("This Mac"), "{}", error.fix);
+        assert!(!error.message.contains("ma_host"), "{}", error.message);
+        assert!(!error.fix.contains("ma_host"), "{}", error.fix);
+        assert!(error.message.contains("vm-a"), "{}", error.message);
     }
 
     /// The lock names how long is left and when it ends, not seconds since

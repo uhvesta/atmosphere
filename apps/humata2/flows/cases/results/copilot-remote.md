@@ -259,3 +259,56 @@ Pass count: 4/6.
 ### Coach note on rerun 2 (19:40)
 - Case 5 (D760) is not a verdict on the fix. The 19:05 bins were cut while temporary red-proof mutations were in the tree: name_free always returned NameTaken, and the skills delete and channel removal were skipped. Those are exactly the name_taken and the kept channel/grid entry seen live. Recheck on bins from the frozen 0.2 tree.
 - Case 1 (the trust card reply) stands. The card's choices were parsed as only "Yes", and the reply didn't press the row. A lane is on it.
+
+---
+
+## Wave 3 2026-11-17 (0.2, fe9eea4f)
+
+Agent: copilot 1.0.113 on a Lima VM user (humata2-linux), claude-haiku-5.5. Fresh lane (`LANE_FRESH=1`), fresh VM users, github url.insteadOf shim, remote folder NOT pre-trusted. Channel w3. Evidence: `<scratchpad>/verify/evidence/remote/wave3/` (numbers below). **Model seen:** every conversation turn ran on claude-haiku-5.5 (events.jsonl of every session, `model-vremote.txt`). Some sessions (loc, m4) also have Copilot's own background "utility" calls on `gpt-5.6-luna-utility` at turn 0 (`model-luna-lines.txt`); not the conversation model.
+
+### Case 1: trust card lists every row, Yes presses, No presses (D767 as amended)
+- Fresh remote session t1: first card had choices Yes / "Yes, and remember..." (2 rows) while the dialog showed 3; it became the full 3 (adds "No") only after my screen attach (`11`, `13`). Same on t2, t3, m1-m4: the card stays at 2 rows for over 60 s until something re-reads the screen (`22`, `52`, `54`). Moved local session `loc`: first card offered only "Yes" (`74`), full list after a screen read (`76`).
+- `inbox reply Yes` (on 3-row cards and on stale 2-row cards): dialog gone, Copilot input shows (`15`, `58-m1/m2`). PASS.
+- Reply `No` on t2 (3-row card): the No row was pressed; Copilot exited, the session went `exited`, screen empty (`25`, `26`, `29`). Humata recorded the card answered.
+- NotPicked try: t3: `session type "" ` answered the dialog on screen; the card was withdrawn within ~10 s and a later reply returned `request_withdrawn` (correct, `31`-`35`). t4: `type ""` then reply Yes immediately (`43`, `44`): reply returned state **answered** though the dialog was already answered by the Enter, so the reply pressed nothing (`45`). Card says answered without Humata having pressed anything: matches the BUG condition in the brief.
+- Result: **PARTIAL** (Yes and No press; stale card rows; NotPicked shows "answered").
+
+### Case 2: held start message typed once, submitted without manual Enter (D763)
+Four sessions started with `--message` while the dialog was up (m1-m4), answered Yes through the Inbox. The message was submitted without a manual Enter in all four. m2, m3: typed once. **m1, m4: typed twice back to back into one user message** ("...then stop.Create a file named m1.txt containing the word m1, then stop."), seen in the agent's events (`59-events.txt`, `67-events.txt`) and screens (`58-m1-after.txt`, `66-m4.txt`). Result: **FAIL** (2 of 4 doubled).
+
+### Case 3: unsent start message reaches the host Inbox (D763)
+D763: still unsent after 30 min raises "Send it now / Leave it unsent" with the whole text. Session u1 started 21:05 with the trust dialog left unanswered; by ~21:35 the host's `humata --json inbox` showed the card with the full text and both choices (`101-inbox-unsent.json`). "Send it now" with the dialog still up typed nothing into the dialog (`104`). After I answered the trust card Yes, the message arrived **twice** in one user message (`107`, `108-u1-events.txt`). Result: **PARTIAL** (card and text pass; "send it now" did not send it once).
+
+### Case 4: remove and re-add a machine (D760), on a second VM user (vm-b)
+`host remove` took vm-b out of `host ls`, the channel's machines and the grid (`90`-`92`). `host add` 0.1 s after the remove: exit 6, kind aborted, "is still being removed" (`88`). Re-add stopped at the host key again (`93`), then succeeded (`97`). With a user skill alpha in the lane home: `skills sync --dry-run` said first_sync false before the removal (`86`), first_sync true after the re-add (`98`). No Inbox ask card appeared for the first sync. Result: **PASS**.
+
+### Case 5: Identity probe: what of the old vm-a attaches
+Removed vm-a, pointed the alias `v-remote-humata2-linux` at a second fresh VM user (other home, no `~/.humata2`), added it (it asked for the host key again, same key as the VM is the same; `123`, `124`). Snapshots `120-pre`, `122-postremove`, `125-postadd`.
+- Machine id: remote machines in `host ls` are keyed by name only (`v-remote-humata2-linux` before and after). Inbox items show the internal `ma_` id: old ma_d6b777fd..., new machine's session shows ma_fc52d1a6...: not reused.
+- Sessions: the 10 old sessions stay listed under the machine name; offline after removal, then **idle on the new machine though it has none** (`131`); `session type` on one says not_found. Ghost sessions.
+- Channels: removed from channel w3 at removal; not back on re-add (I added it by hand).
+- Grid: cell gone after removal; back only after channel add.
+- History: `session read` of old sessions still works (host mirror), incl. the moved one with both turns.
+- Pinned host key: cleared by the removal, asked again on re-add.
+- Skills sync record: cleared (first_sync true).
+- Inbox items: old requests from the removed machine (m1-m4, u1 files/session cards) stay pending with the old ma_ id.
+- Transfer records: old transfer to vm-a (done) stays in `transfers`, destination shown by name.
+- Not carried: nothing of the old daemon, folders or sessions on the new user.
+Result: report only.
+
+| case | result |
+|---|---|
+| 1 trust card rows, Yes, No, NotPicked | PARTIAL |
+| 2 held start message typed once | FAIL (2 of 4 doubled) |
+| 3 unsent message in host Inbox, Send it now once | PARTIAL |
+| 4 remove / re-add (D760) | PASS |
+| 5 identity probe | report |
+
+### Findings (new)
+1. **BUG: the trust card shows fewer rows than the dialog and doesn't catch up.** Steps: start a remote Copilot session in an untrusted folder; `inbox` shows choices Yes, "Yes, and remember..." only; the screen has "3. No (Esc)". It updated only after I attached to the session (`11`, `22`, `52`, `54`; moved session `74`). Expected: all three rows from the start (D767 amendment).
+2. **BUG: `inbox reply` on the card says answered after the dialog was answered on screen** (t4, `43`-`45`); nothing was pressed.
+3. **BUG: held start message typed twice.** Steps: `session start --machine <remote> --message "..."` in an untrusted folder, reply Yes to the card. Expected one copy. Actual: m1, m4, u1 doubled (`59`, `67`, `108`). u1: after "Send it now" and then the trust Yes.
+4. **UX: "Send it now" while the dialog is up marks the card answered at once**; the message is typed later when the dialog clears, and a second delivery may follow (finding 3).
+5. **GAP: re-added name picks up the old machine's sessions as idle ghosts and its stale Inbox cards** (Case 5).
+6. **UX: no Inbox ask for the first skills sync after the re-add** (dry-run only shows first_sync true).
+7. **Note: Copilot's own utility model is gpt-5.6-luna-utility** (loc, m4 events); turns ran on haiku.

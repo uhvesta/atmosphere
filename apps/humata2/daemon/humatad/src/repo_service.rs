@@ -614,7 +614,7 @@ fn problem_of(error: &GhError) -> pb::RepoSearchProblem {
         GhError::Spawn { program, source } => problem(
             ProblemKind::GhMissing,
             format!(
-                "GitHub search needs the GitHub CLI on this host, and {program} couldn't be run ({source}). Install it on the host (brew install gh), then search again. Your library still shows."
+                "GitHub search needs the GitHub CLI on this host, and Humata couldn't run {program} ({source}). Install it on the host (brew install gh), then search again. If gh already runs in your terminal, put its folder on PATH in your login profile (~/.zprofile): Humata's daemon reads your login shell's PATH when it starts. Your library still shows."
             ),
         ),
         GhError::Exit { stderr, .. } => {

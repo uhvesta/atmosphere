@@ -570,6 +570,10 @@ impl Daemon for FakeDaemon {
         agent_asks::asks_in_inbox(self)
     }
 
+    fn set_default_agent(&self, agent: Agent) -> Reply<()> {
+        agent_asks::set_default_agent(self, agent)
+    }
+
     fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool> {
         agent_asks::set_asks_in_inbox(self, inbox)
     }

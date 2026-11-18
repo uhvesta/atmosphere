@@ -804,3 +804,120 @@ async fn cat_of_a_damaged_chunk_fails_rather_than_printing_it() {
     assert_ne!(exit, exit::OK);
     assert!(console.written().is_empty());
 }
+
+/// D777: runs `humata --json --channel ch_1 cp <from> <to>` as the agent.
+async fn agent_cp(daemon: &FakeDaemon, from: &str, to: &str) -> (i32, String) {
+    let console = FakeConsole::pipe();
+    let environment = Environment {
+        session_token: Some("session-secret".into()),
+        ..Environment::default()
+    };
+    let words = ["--json", "--channel", "ch_1", "cp", from, to];
+    let exit = run_as(&environment, daemon, &console, &words).await;
+    (exit, format!("{}{}", console.stdout(), console.stderr()))
+}
+
+/// The channel's shared folder on the agent's own machine: no machine named.
+fn own_shared(path: &str) -> Option<pb::FileLocation> {
+    Some(pb::FileLocation {
+        machine: None,
+        root: Some(Root::ChannelShared(pb::ChannelShared {
+            channel: support::channel("ch_1"),
+        })),
+        path: path.into(),
+    })
+}
+
+#[tokio::test]
+async fn an_agents_bare_shared_folder_is_its_channels_shared_folder() {
+    let daemon = agent_on_ch_1();
+    assert_eq!(agent_cp(&daemon, "ma_1:shared/a.txt", "shared/").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_shared(""));
+}
+
+#[tokio::test]
+async fn an_agents_shared_path_is_a_path_in_its_channels_shared_folder() {
+    let daemon = agent_on_ch_1();
+    assert_eq!(agent_cp(&daemon, "ma_1:shared/a.txt", "shared/notes").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_shared("notes"));
+}
+
+#[tokio::test]
+async fn an_agents_bare_shared_source_is_in_its_channels_shared_folder() {
+    let daemon = agent_on_ch_1();
+    assert_eq!(agent_cp(&daemon, "shared/x.txt", "ma_1:shared/").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.sources, vec![own_shared("x.txt").unwrap()]);
+}
+
+#[tokio::test]
+async fn an_agents_dot_slash_shared_is_its_clone() {
+    let daemon = agent_on_ch_1_for_clone_copies();
+    assert_eq!(agent_cp(&daemon, "./shared/x.txt", "./shared/").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.sources, vec![own_clone("shared/x.txt").unwrap()]);
+    assert_eq!(sent.destination, own_clone("shared"));
+}
+
+#[tokio::test]
+async fn an_agents_last_word_shared_is_the_shared_folder_when_no_machine_has_that_name() {
+    let daemon = agent_on_ch_1();
+    let (code, _) = agent_sends_to(&daemon, "shared").await;
+    assert_eq!(code, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_shared(""));
+}
+
+#[tokio::test]
+async fn an_agents_last_word_shared_is_that_machine_when_one_it_sees_has_the_name() {
+    let daemon = agent_on_ch_1();
+    daemon.reply(
+        rpc::machine::LIST_MACHINES,
+        &pb::ListMachinesResponse {
+            machines: vec![pb::Machine {
+                id: support::machine("ma_2"),
+                name: "shared".into(),
+                ..Default::default()
+            }],
+            page: None,
+        },
+    );
+    daemon.reply(rpc::channel::GET_CHANNEL, &channel_on(&["ma_1", "ma_2"]));
+    assert_eq!(agent_sends_to(&daemon, "shared").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, shared_on("ma_2", ""));
+}
+
+#[tokio::test]
+async fn names_that_only_contain_shared_stay_in_the_clone() {
+    for (typed, path) in [("sharedstuff/", "sharedstuff"), ("my/shared/", "my/shared")] {
+        let daemon = agent_on_ch_1();
+        assert_eq!(agent_sends_to(&daemon, typed).await.0, exit::OK);
+        let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+        assert_eq!(sent.destination, own_clone(path), "{typed}");
+    }
+}
+
+#[tokio::test]
+async fn a_persons_bare_shared_is_still_refused() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let words = ["--json", "--channel", "ch_1", "cp", "ma_1:shared/a.txt", "shared/"];
+    assert_eq!(run(&daemon, &console, &words).await, exit::USAGE);
+    assert!(!daemon.called(rpc::transfer::START_TRANSFER));
+}
+
+#[tokio::test]
+async fn a_bare_shared_not_found_says_where_it_looked_and_differs_from_the_clones() {
+    let bare = agent_on_ch_1();
+    bare.refuse(rpc::transfer::START_TRANSFER, pb::error::Kind::NotFound(Default::default()));
+    let (bare_exit, bare_out) = agent_cp(&bare, "shared/x", "ma_1:shared/").await;
+    let clone = agent_on_ch_1();
+    clone.refuse(rpc::transfer::START_TRANSFER, pb::error::Kind::NotFound(Default::default()));
+    let (clone_exit, clone_out) = agent_cp(&clone, "./shared/x", "ma_1:shared/").await;
+    assert_eq!(bare_exit, exit::NOT_FOUND);
+    assert_eq!(clone_exit, exit::NOT_FOUND);
+    assert_ne!(bare_out, clone_out);
+}

@@ -11,12 +11,13 @@ use std::pin::Pin;
 use std::sync::PoisonError;
 use std::time::{Duration, SystemTime};
 
-use humata2_access::{AccessRequest, AnswerError, Capability, Decision};
+use humata2_access::{AccessRequest, AnswerError, Call, Capability, Decision};
 use humata2_grpc::humata::v1 as pb;
-use tonic::Status;
+use tonic::{Code, Status};
 
 use super::{
-    Decided, Entry, Held, Inbox, answered_by, id_of, kind_of, lowercase_first, new_id, settle,
+    Decided, Entry, Held, Inbox, State, answered_by, id_of, kind_of, lowercase_first, new_id,
+    settle, settled,
 };
 use crate::attach;
 use crate::grant_target;
@@ -104,6 +105,47 @@ pub(super) fn lost_error(request: &str) -> pb::Error {
             }),
         }),
     )
+}
+
+/// Names an asked read for its card: one card per session (added by the
+/// caller), capability and path, whatever entry kind the call expects, so a
+/// stat and a read of one file share it (D768).
+fn read_key(asked: &AccessRequest) -> String {
+    match &asked.call {
+        Call::ReadFiles(place) => format!(
+            "read/{:?}/{:?}/{:?}/{:?}",
+            asked.capability, place.machine, place.root, place.path
+        ),
+        call => format!("read/{:?}/{call:?}", asked.capability),
+    }
+}
+
+/// What a repeat of an asked read meets in its card (D768).
+enum Standing {
+    /// The user hasn't answered: the read waits on this request.
+    Waiting(pb::RequestId),
+    /// Approved: the read goes through.
+    Through,
+    /// The user denied it: the read is told so.
+    Denied(pb::Error),
+    /// Withdrawn, failed, lost to a restart or past its keep time: the read
+    /// asks again.
+    Gone,
+}
+
+fn standing(held: &Held) -> Standing {
+    match pb::RequestState::try_from(held.request.state) {
+        Ok(pb::RequestState::Pending) => Standing::Waiting(held.request.id.clone().unwrap_or_default()),
+        Ok(pb::RequestState::Approved) if held.running => Standing::Through,
+        Ok(pb::RequestState::Approved) => match &held.outcome {
+            Some(outcome) if outcome.error.is_none() && SystemTime::now() <= outcome.kept_until => {
+                Standing::Through
+            }
+            _ => Standing::Gone,
+        },
+        Ok(pb::RequestState::Denied) => settled(held).error.map_or(Standing::Gone, Standing::Denied),
+        _ => Standing::Gone,
+    }
 }
 
 /// The card for a deferred call (IN-9, IN-10). It offers "Always allow" of
@@ -194,6 +236,51 @@ impl Inbox {
         }
     }
 
+    /// An agent's file read the channel's rule asks about (D768): the read
+    /// isn't held open. The first one raises an Inbox card and answers
+    /// `approval_pending` at once; a repeat of it (same session, capability
+    /// and path) answers with that card while it waits, goes through once it
+    /// is approved (for as long as an approved call's result is kept), and
+    /// is told the user's deny. Past that, the next read asks again.
+    /// Approving runs nothing: the agent repeats the read.
+    pub(crate) async fn ask_read(&self, caller: &Caller, asked: AccessRequest) -> Result<(), Status> {
+        let Caller::Agent(agent) = caller else {
+            return Err(status::needs_approval(asked.capability));
+        };
+        let key = read_key(&asked);
+        let full = format!("{}/{key}", agent.session.id);
+        let mut state = self.state.lock().await;
+        let held = state
+            .id_with(Some(&full))
+            .and_then(|id| state.requests.iter().find(|entry| entry.id == id))
+            .map(|entry| entry.request.borrow().clone());
+        if let Some(held) = held {
+            match standing(&held) {
+                Standing::Waiting(id) => return Err(status::read_approval_pending(&id)),
+                Standing::Through => return Ok(()),
+                Standing::Denied(error) => {
+                    state.keys.remove(&full);
+                    return Err(status::failure(Code::PermissionDenied, error));
+                }
+                Standing::Gone => {
+                    state.keys.remove(&full);
+                }
+            }
+        }
+        let run: Run = Box::new(|_| {
+            Box::pin(async {
+                Ok(Deferred {
+                    result: Vec::new(),
+                    result_type: status::READ_APPROVED.to_owned(),
+                })
+            })
+        });
+        let id = self
+            .deferred_in(&mut state, caller, asked, Some(key), None, run)
+            .await?;
+        Err(status::read_approval_pending(&id))
+    }
+
     /// The pending requests whose card shows a board change or a new item,
     /// as they stand, for the board to answer in place (BD-15).
     pub(crate) async fn pending_board_asks(&self) -> Vec<pb::InboxRequest> {
@@ -248,6 +335,20 @@ impl Inbox {
         board: Option<BoardAsk>,
         run: Run,
     ) -> Result<pb::RequestId, Status> {
+        let mut state = self.state.lock().await;
+        self.deferred_in(&mut state, caller, asked, key, board, run).await
+    }
+
+    /// [`Inbox::deferred`] with the Inbox's state already held.
+    async fn deferred_in(
+        &self,
+        state: &mut State,
+        caller: &Caller,
+        asked: AccessRequest,
+        key: Option<String>,
+        board: Option<BoardAsk>,
+        run: Run,
+    ) -> Result<pb::RequestId, Status> {
         let Caller::Agent(agent) = caller else {
             return Err(status::internal(
                 "a call was deferred for someone who isn't a session's agent",
@@ -256,7 +357,6 @@ impl Inbox {
         };
         let session = agent.session.id.to_string();
         let key = id_of(key).map(|key| format!("{session}/{key}"));
-        let mut state = self.state.lock().await;
         if let Some(id) = state.id_with(key.as_deref()) {
             if let Some(entry) = state.requests.iter().find(|entry| entry.id == id) {
                 self.rerun(entry, &asked, run);

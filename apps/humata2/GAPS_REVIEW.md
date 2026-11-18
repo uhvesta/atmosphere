@@ -921,3 +921,109 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: red in run 108 (the test was written and run before the fix; both cases got Unimplemented "not built"). Green in run 111: `own_copy_remote_test`, `context_fork_test` and `humatad2_unit_test`. In run 109 only the success case failed, refused off the peer list, which led to the `relay.rs` change.
 - Known gaps: if the link is lost mid-copy, the host fails its operation while the machine may still finish. The host's record then keeps the old branch, and asking again is refused because the fork has its own copy. A machine on an older humatad2 refuses with a bare PermissionDenied, not a Migrate error (D773 follow-ups).
 - Look at: `own_copy.rs` `take_up_own_copy` (folder from the first repo's path on the machine), `run_own_copy_remote`.
+
+## D773 follow-up: an older machine's off-list refusal is peer_version_unsupported (2026-11-17)
+- The host's relay (`session_service/archive_remote.rs` `machine_failed`) maps a machine's off-list refusal (PermissionDenied, no kind, "humatad2 refused ...") to FailedPrecondition `peer_version_unsupported` with the fix "Migrate <machine> from the Inbox, then try again". `RemoteWork::peer_refused` (used by GiveOwnCopy) also makes `Watch::unsupported` post the machine's Migrate daemon item when the host has a release. Test knob: `HUMATA2_PEER_WITHHOLD=<Method>` on admin/faults daemons (`relay.rs`).
+- Test: `own_copy_remote_test` `a_machine_that_refuses_the_relayed_call_as_off_its_list_is_to_be_migrated`. Red: not seen red (fix was written in the shared tree before the first run).
+- Green: run 115 (`own_copy_remote_test`, `humatad2_unit_test`). The mapping also accepts the daemon-side refusal text ("isn't a call the peer link relays"), which the knob and a real older daemon both give.
+- Follow-up (run 117 green): the Migrate item is now made inside `machine_failed` itself (a spawned `Watch::unsupported`, set once through `use_peer_upgrade`), so every caller gets it. Second test: `another_relayed_method_refused_as_off_the_list_also_posts_the_migrate_item` (ForkSession withheld).
+- (superseded) Open: only GiveOwnCopy also ensures the Migrate item; the status mapping applies to every `machine_failed` caller. The peer's version is not in the error (Hello's build isn't kept per link). Whether the knob reaches the link process's relay is unverified until the run.
+
+## D770 follow-up: the new session, desk and PR review dialogs preselect the agent the daemon says a start takes (2026-11-17)
+- Found: the dialogs did not follow `agent_for`. They took the Settings screen's local pick (`new_session.rs` `default_agent`, called from `desk.rs` and `pr_review.rs`), which the daemon never saw, and the app's `Channel` had no default agent. The fork dialog already agrees: it runs the parent's agent unless another is named (`fork.rs`), a rule of its own.
+- Fix: the daemon fills `pb::Channel.default_agent` with the agent a start would take (`channel_service.rs` `effective_agent`: the channel's own default, then Settings', then the creation agent) and republishes the channel(s) when either setting changes (`settings_service.rs`). The app maps it to `Channel.default_agent`; the dialogs use it, then the local pick only before the daemon has said. Settings' agent pick now goes to the daemon (`Daemon::set_default_agent`, `SettingsAction::DefaultAgentSaved`). No wire change; the proto comment says what the field means now.
+- Tests: `daemon/humatad:settings_sections_test` `a_channel_shows_the_agent_a_start_would_take`; `features/app:default_agent_test`; `features/settings:default_agent_test`. Red: not seen red (written with the fix in the shared tree).
+- Open: before the PR reviews channel exists, its dialog uses the local pick; the channel is found by its name "PR reviews". Picking another channel inside the New session dialog doesn't re-preselect. The Settings screen's agent row still shows the local pick, not the daemon's.
+
+## D755 follow-up: the pull hint names machines by label, the host as "This Mac" (2026-11-17)
+- Found: VERIFY wave 3, an agent on vm-a copying to `this-mac`: the refusal said "nothing was written on ma_..." and the fix "a session on ma_... can copy it in". `status::refused` printed the `MachineId` as it is.
+- Fix: `status.rs` `refused_named` rewrites the two machines of `SharedOnOtherMachine` through `Names` (D500) before the message and fix are built; the guard keeps a `Names` (the host's own machine is "This Mac") and judges through it (`guard.rs`). Other refusals are unchanged.
+- Test: `daemon/humatad` `humatad2_unit_test`, `status::tests::the_pull_hint_names_the_host_as_this_mac_and_not_by_id`. Red: not seen red (the fix was written before the queued run started). Other machines read by name only where the id is already their name (D776 moves ids to `ma_` for all, then a name lookup is needed in `Names`).
+- Open: `shared/` as a bare destination for an agent on a machine (`humata cp this-mac:shared/x shared/`) resolves to a folder of its clone by D756, so it fails "no folder shared on vm-a". No code changed; the question is handed to Fable.
+
+## Bug 6: a long repo-search error and the org field ran past New desk session's right edge (2026-11-17)
+- Found: `overlay_desk_new.rs` put Repos in `form_row`, whose value column has no `min_w_0`. A flex child never shrinks below its content, so the problem line ("GitHub search needs the GitHub CLI on this host…") and the + Org field widened the column past the 560 pt card.
+- Fix: Repos uses `form_row_wrapping`: the key keeps its 110 pt and the value column may shrink, so the problem line, which is already `flex_1().min_w_0()`, wraps. The search and org fields shrink with it.
+- Test: `desktop:native_test` `desk::a_long_repo_search_error_wraps_inside_the_new_desk_session_card` (the problem line, Retry and the org field's Cancel all end inside the card). `desktop:design_test` must stay unchanged. Red: not seen red (the fix was in before the first run).
+
+## Bug 8a: an agent that can't start on a Desk start showed as "ma_… doesn't answer" (D778, 2026-11-17)
+- Found:
+  - The client: `status_error` mapped every UNAVAILABLE to `DaemonError::Offline`, even one the daemon worded. A revive that couldn't spawn the agent (StartError::Revive) is such an UNAVAILABLE.
+  - The daemon: Desk starts (`desk_service/start.rs`, `channel_desk.rs`) only checked the agent's switch, never that its CLI is there. Session starts run `agent_gate::ready`.
+- Fix:
+  - A worded UNAVAILABLE that isn't marked MachineOffline or HostUnreachable is `Refused` with the daemon's words.
+  - Both Desk start paths run `agent_gate::ready` before anything is made, so a missing CLI is FailedPrecondition naming the agent and program, with the fix.
+  - The Missing text adds "or Humata can't find it".
+- Tests:
+  - `daemon/humatad:desk_agent_missing_test`: a bare name not on PATH and a gone absolute path are both FailedPrecondition, named, with a fix.
+  - `clients/live:live_unit_test` `connection::tests::an_unavailable_the_daemon_worded_is_its_answer_not_the_machine_offline` and `…marked_offline_is_still_the_machine_offline`.
+- Open: StartError::Revive itself still maps to UNAVAILABLE in `session_service.rs`. The client reads it correctly now; it was left alone because it's outside this lane.
+
+## Bug 8b: errors named machines by their raw `ma_` id (D778, 2026-11-17)
+- Found: `MachineId`'s Display is the id, and every error that names a machine printed it.
+- Fix: `clients/src/machine_names.rs` maps id to shown name. The live map fills it ("This Mac" for the daemon's own machine, listed names for the rest), and so do the fixtures. `DaemonError`, `FileError` and `PrError` format machines through `name_of`; an unknown machine is "That machine".
+- Tests: `clients/live:live_unit_test` `connection::tests::an_offline_error_names_the_machine_never_its_id` and `this_mac_is_named_once_the_app_knows_its_id`.
+
+## 0.2.1: the daemon finds gh and the agent CLIs (D780) (2026-11-17)
+- Found: the owner's Host Health said GitHub "not signed in" and showed an empty Agents row, though gh was signed in. launchd gives the daemon `/usr/bin:/bin:/usr/sbin:/sbin`, and gh, copilot and codex are in `/opt/homebrew/bin`, claude in `~/.local/bin`. The log said "couldn't run gh ... No such file or directory".
+- Fix: `daemon/humatad/src/tool_path.rs` widens PATH from the login shell and the usual folders at start, when `HUMATA2_LOGIN_PATH=1` is set, which `desktop/install/src/plist.rs` now sets. `main.rs` calls it before the runtime. One `gh_program` (`tool_path.rs`) replaces the copies in `push.rs`, `gh_repos.rs` and `gh_login.rs`. Health now tells the cases apart: `clients/src/machines.rs` `MachineHealth::github()` gives SignedIn, SignedOut (gh runs, no account: run `gh auth login`) or NotFound (no gh version: install gh, or put it on the login PATH), and `ui/src/machine_page.rs` words each with its fix. The repo search's gh-missing text (`repo_service.rs`) says the same.
+- Tests: `daemon/humatad:humatad2_unit_test` (`tool_path::tests`: the order, the fallback, a banner before the mark, a failing shell); `desktop/install:install_test` `the_launch_agent_has_the_daemon_learn_the_login_shells_path`; `clients:github_health_test`. Red: not seen red (written with the fix in the shared tree).
+- Open: remote machines' daemons keep their inherited PATH.
+
+## 0.2.1: This Mac's Disk read "0 GB free of 0 GB" (2026-11-17)
+- Found: `machine_service.rs` `get_machine` answered This Mac with no health, only its machine record, because This Mac has no link to probe. The app's `unwrap_or_default` turned that into a disk of zeros, gh signed out and no agents.
+- Fix: `get_machine` for This Mac adds `own_health`, which runs `peer::host_probe::read(false)` on a blocking thread, capped at `PROBE_DEADLINE`, and shares `health_from` (the kept last answer and the skills part) with remote machines.
+- Test: `daemon/humatad:machines_test` `this_macs_page_reads_this_machines_own_health`. Red: not seen red (written with the fix in the shared tree).
+
+## 0.2.1: a host waiting on Migrate said "The machine no longer exists" (2026-11-17)
+- Found: under the read-only banner, This Mac's page showed `DaemonError::NotFound`, which the old daemon gave for a call it doesn't know.
+- Fix: `features/hosts/src/page.rs` `shown_load_error`/`shown_scripts_error` hide the page's own load errors while a Migrate item holds the machine (read-only, migrating or failed). `ui/src/machine_page.rs` shows those. The banner already says what to do.
+- Tests: `features/hosts:upgrade_test` `a_failed_load_while_a_migrate_waits_shows_no_error_of_its_own`, `a_failed_load_on_a_current_machine_still_shows_its_error`. Red: not seen red (written with the fix in the shared tree).
+
+## Owner 0.2.1 bug 3: the main window can't be resized or go full screen (2026-11-17)
+- Found: the owner couldn't resize the main window to fill the screen, the green button didn't work and ⌃⌘F did nothing. `open_main` opened the window with `titlebar: None`. On macOS, GPUI makes such a window with only `Titled | FullSizeContentView` (`gpui-pre-macos` 0.3.12 `window.rs` `MacWindow::open`), without Resizable or Miniaturizable.
+- Fix: `desktop/src/main.rs` `main_window_options` gives the window `TitlebarOptions { title: None, appears_transparent: true, traffic_light_position: None }`, so it keeps the same look and gets the resizable styles. A `ToggleFullScreen` action, bound to ⌃⌘F, sits in View as "Enter Full Screen" (D779). The starting window already had titlebar options and is unchanged.
+- Test: `desktop:unit_test` `window_tests::the_main_window_can_be_resized_zoomed_and_made_full_screen`. Goldens: `desktop:design_test` doesn't render `main.rs`'s options; it is queued to confirm they still match.
+- Open: resizing and full screen can't be seen headless, so check them on the installed build, and check that View doesn't show Enter Full Screen twice. Text zoom (bug 4) moves to 0.2.3 (D779 has the estimate and the ⌘0 clash).
+
+## Trust card follows the screen; a held message is sent once; no stale busy (D767, D763, D775 amendments, 2026-11-17)
+- Found (VERIFY wave 3):
+  - A: a card raised off a trust box Copilot draws in steps kept 2 choices while the screen showed 3, until an attach.
+  - B: a reply to a box already answered on the screen returned answered.
+  - C: 2 of 4 remote `--message` starts submitted the held message twice after the box was answered.
+  - D: after the box was answered and the screen sat at the prompt, `session type` returned agent_busy (NEEDS_INPUT).
+- Cause: A, B, D: the screen was re-read only on a quiet spell, and Copilot's animated logo keeps writing, so the card and its hold on Needs you outlived the box. C: `deliver` retyped after one "clear" look taken mid-redraw, then a 15 s wait for the text to show.
+- Fix:
+  - `screen_ask::output` (called from `session_service/watch.rs` on output) re-reads the screen at most every 300 ms while a card is up: it re-raises with every choice, or withdraws through `Asks::withdraw_gone`, which also ends the Needs-you hold.
+  - Screen cards use `Inbox::raise_screen_question` with a `StillAsked` check; `answer_as` runs it on a reply, and a screen that no longer asks withdraws the card (`request_withdrawn`); an unreadable screen is Unavailable `step_failed` with the card left pending. No new card state or kind.
+  - `holder/src/client.rs` `deliver`: retype only when the input stayed clear for the whole `SHOWN_LIMIT`; a look that finds the question again goes back to watching.
+  - `sessions/src/first_message.rs` `kept_once_clear`: an Inbox "Send it now" resend waits for the question to go, and a text the agent kept in its input gets only a return, not a second typing (`sessions_unit_test`, three `a_resent_message_*` tests).
+- Tests (red in run 116, green in the run named in the hand-back):
+  - `daemon/humatad:screen_questions_test` `a_trust_box_that_finishes_drawing_while_its_agent_keeps_writing_ends_with_every_choice`, `a_reply_after_the_box_was_answered_on_the_screen_is_withdrawn`, `typing_at_the_prompt_after_the_trust_box_was_answered_on_the_screen_is_not_busy`.
+  - `daemon/holder:return_after_text_test` `a_text_kept_behind_a_question_that_looked_clear_for_a_moment_is_submitted_once`.
+- Look at: the 300 ms throttle runs only while a card is up; the check on reply reads the screen where the session runs (relayed answers use the same `answer_as`).
+
+## An agent's bare `shared/` is its channel's shared folder (D777, 2026-11-17)
+- Found: `humata cp this-mac:shared/x shared/` on vm-a failed as a missing clone folder, though every hint says "shared/ here".
+- Fix: for an agent, `shared`, `shared/` and `shared/<path>` is `ChannelShared` of its channel with no machine; `./shared` is the clone; a bare last word `shared` is that folder unless a visible machine has the name; a not-found for it says where it looked (`SharedNotFound`). Files: `cli/src/location.rs`, `cli/src/commands/files.rs`, `cli/src/error.rs`.
+- Tests: `cli:files_test` (`an_agents_bare_shared…`, `a_bare_shared_not_found…`), `daemon/humatad:agent_send_machine_test` (three D777 cases). Red run 116.
+
+## D768 ruling: an agent's asked file read waits in the Inbox, one card per session, capability and path (2026-11-17)
+- Cause: FileService's reads (`files/ops.rs` ListDirectory and Stat, `files.rs` ReadFile, `files/find.rs` FindFiles, and the host's relayed reads in `files/forward.rs`) used `guard.require`, which turns the rule's Ask into PermissionDenied `denied` ("can't wait for it in the Inbox") with no card, so an agent's read of another session's clone or of another machine was a dead end.
+- Changed: `files.rs` `Reads::require` (guard.check, then `Inbox::ask_read` on Ask), passed to Ops, Forward (`judged_read`) and Find; `serve.rs` hands the Inbox to `Files::new`. `inbox/deferred.rs` `ask_read`: under the Inbox lock it finds the card keyed `session/read/<capability>/<machine>/<root>/<path>` (not the entry kind) and answers pending (same id), through (approved, while its result is kept), or denied (with the request); otherwise it raises the ordinary deferred card with a run that returns nothing and answers `approval_pending`. `deferred` is split into the locking wrapper and `deferred_in`, so a check and a new card happen under one lock. D768 amendment, `api/GRPC.md` and `api/CLI.md` say so.
+- Verified: red in run 116 (tests written and run before the fix; every case got PermissionDenied `denied` / CLI kind `denied` where `approval_pending` / `pending` was expected). Green in run 118: `daemon/humatad:inbox_test` (`an_agents_asked_read_raises_one_card_and_runs_once_approved`, `another_path_gets_its_own_card_and_a_stat_and_a_stream_read_of_one_file_share_one`, `a_denied_read_is_reported_as_denied`), `daemon/humatad:agent_send_machine_test` (`a_machine_agents_asked_read_of_this_mac_waits_on_the_hosts_inbox`), `daemon/humatad:humatad2_unit_test`.
+- Open: approving runs nothing, so `--wait` and MCP see an approval with no listing and the agent repeats the read. `desk_service/versions.rs` and the transfer-end reads still use `guard.require`. Approval lasts as long as an approved result is kept (24 h, in memory; a restart asks again).
+- Look at: `inbox/deferred.rs` `ask_read`, `standing`, `read_key`; `files.rs` `Reads`.
+
+## desktop:unit_test read the installed app in /Applications (2026-11-17)
+- Cause: `live::tests::bundled_tools_found_inside_an_app` passed `/Applications/Humata 2.app/...` to `bundled_tools`, which checks the disk for `Resources/manifest.json` and `machine-tools`. On a machine with a release installed (since 300fb8c5 ships both), the test found them and failed.
+- Changed: the case uses a folder that never exists. `bundled_tools_name_the_release_the_app_ships` and `bundled_tools_carry_the_linux_tools_an_app_ships` already cover the manifest and Linux tools inside a temp app. No production code changed.
+- Verified: red in run 117 on this Mac; green in run 118 (`desktop:unit_test`, all 17 cases).
+- Look at: `desktop/src/live.rs` tests.
+- Open (next release): `SharedNotFound` names the first bare `shared…` location in the command, so `cp ./missing.txt shared/` with a missing source is reported as a missing `shared/`. It should name the location that was not found. Green runs: 118 (cli) and 120 (agent_send_machine_test).
+
+## D768 follow-up: an approved asked read tells the agent to repeat it, not a bare approval (2026-11-17)
+- Cause: `ask_read` kept `Deferred { result: [], result_type: "" }`, so MCP's `inbox_wait` showed `{"decision":"approved","grant_id":null}` (an agent could take it as an empty result), `humata --wait` said the request ended without a result, and the pending fix said not to repeat the call.
+- Changed: `daemon/humatad/src/status.rs` `READ_APPROVED` ("humata2.ReadApproved") and `read_approval_pending` (fix: repeat the read once approved; the generic `approval_pending` is unchanged); `inbox/deferred.rs` `ask_read` uses both; `mcp.rs` `approved_result` shows `repeat_call: true` with a note for it; `cli/src/call.rs` `answered_result` returns `Approved::Repeat` and `raw` repeats the call, so `--wait` prints the real result.
+- Verified: red in run 120 (`daemon/humatad:inbox_test` `waiting_on_an_approved_read_says_what_was_approved_not_a_bare_approval`, empty `result_type`). Green in run 121: `inbox_test`, `humatad2_unit_test` (new `mcp::approved_read_tests`). The CLI repeat is compiled there but not run by a test; the fix text has no test (wording).
+- Open: ReadFile is a stream, so `humata files cat` doesn't use `--wait` and exits 12; running the read on approval and keeping its result is the next item.

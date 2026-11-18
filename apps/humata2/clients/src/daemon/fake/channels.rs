@@ -58,6 +58,7 @@ pub(super) fn create_channel(
                 repos,
                 machines,
                 purpose: String::new(),
+                default_agent: None,
             });
             super::setup::finish(inner, &name);
             inner.emit(Event::Resync);

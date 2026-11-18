@@ -36,7 +36,7 @@ const TAIL_LINES: usize = 20;
 pub(crate) enum GateError {
     #[error("{display} is turned off in Settings › Agents, so Humata won't start it")]
     Disabled { display: String },
-    #[error("{display} isn't installed on this machine: `{cli}` was not found")]
+    #[error("{display} isn't installed on this machine, or Humata can't find it: `{cli}` was not found")]
     Missing {
         display: String,
         cli: String,

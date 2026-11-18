@@ -2,6 +2,7 @@
 //! SettingsService.
 
 use humata2_clients::DaemonError;
+use humata2_clients::model::Agent;
 use humata2_grpc::humata::v1 as pb;
 
 use crate::connection::{Shared, fresh_key};
@@ -35,6 +36,23 @@ impl Shared {
         Ok(shown
             .agents
             .is_some_and(|agents| agents.codex_hooks_need_trust))
+    }
+
+    /// Makes `agent` Settings' default agent (ST-15).
+    pub(crate) async fn change_default_agent(&self, agent: Agent) -> Result<(), DaemonError> {
+        const WHAT: &str = "Changing the default agent";
+        self.settings()
+            .update_settings(pb::UpdateSettingsRequest {
+                idempotency_key: fresh_key(),
+                default_agent: Some(pb::DefaultAgent {
+                    agent: Some(pb::AgentId { value: self.agents.name(agent) }),
+                    model: String::new(),
+                }),
+                ..Default::default()
+            })
+            .await
+            .map_err(|status| self.error(&status, WHAT))?;
+        Ok(())
     }
 
     /// Sets where permission asks go, and gives where the daemon keeps them.

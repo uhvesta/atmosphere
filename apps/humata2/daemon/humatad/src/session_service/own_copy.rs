@@ -176,9 +176,11 @@ impl SessionSvc {
         let first = relayed
             .session()
             .give_own_copy(assigned(asked, None).map_err(Status::from)?)
-            .await
-            .map_err(|source| machine_failed(&machine, source))?
-            .into_inner();
+            .await;
+        let first = match first {
+            Ok(first) => first.into_inner(),
+            Err(source) => return Err(remote.peer_refused(&machine, source).await),
+        };
         let progress = match self.operations.start_steps(
             caller,
             pb::OperationKind::GiveOwnCopy,
