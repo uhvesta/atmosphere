@@ -3,14 +3,16 @@
 //! and the closed ones; New desk session, Close, Reopen, Keep, Clean up…
 //! and Copy to a channel… are changes it asks a daemon for.
 
+mod channel;
 mod clean_up;
+mod close;
 mod copy;
 mod new;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use humata2_clients::desk::{Access, DeskClient, DeskSession, Document};
+use humata2_clients::desk::{Access, DeskClient, DeskSession, Document, Switch};
 use humata2_clients::model::{
     Agent, ChannelId, Item, ItemStatus, Machine, MachineId, Session, SessionId,
 };
@@ -18,10 +20,12 @@ use humata2_clients::{DaemonError, Workspace};
 use serde::{Deserialize, Serialize};
 use tca::{Effect, Reducer};
 
+pub use channel::{ChannelCloseSheet, ChannelForm, ChannelNewAction, ChannelRow};
 pub use clean_up::CleanUpDialog;
+pub use close::CloseDialog;
 pub use copy::CopyDialog;
 pub use humata2_clients::desk::{CleanUp, CleanUpRow};
-pub use new::{FolderPick, NewAction, NewForm};
+pub use new::{NewAction, NewForm};
 
 /// How the Open list is ordered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +46,9 @@ pub enum Menu {
     Machine(SessionId),
     /// The Add repo field in this session's folder bar (DK-3).
     AddRepo(SessionId),
+    /// The new-target picker in this channel Desk session's folder bar
+    /// (CD-5).
+    Target(SessionId),
 }
 
 /// A Desk session with what the Desk knows about it.
@@ -86,6 +93,12 @@ pub struct DeskState {
     pub clean_up: Option<CleanUpDialog>,
     /// The Copy to a channel… dialog.
     pub copy: Option<CopyDialog>,
+    /// The New desk session dialog on a channel's Desk (CD-6).
+    pub channel_new: Option<ChannelForm>,
+    /// The Close session confirmation of a channel Desk session (CD-4).
+    pub channel_close: Option<ChannelCloseSheet>,
+    /// The Close session question (DV-4).
+    pub close: Option<CloseDialog>,
     /// The pop-up that is open, if one is.
     pub menu: Option<Menu>,
     /// Sessions with a change in flight.
@@ -203,7 +216,13 @@ impl DeskState {
     /// Whether the New desk session form, Clean up… or Copy is open.
     #[must_use]
     pub const fn sheet_open(&self) -> bool {
-        self.new.is_some() || self.clean_up.is_some() || self.copy.is_some()
+        if self.channel_new.is_some() || self.channel_close.is_some() {
+            return true;
+        }
+        self.new.is_some()
+            || self.clean_up.is_some()
+            || self.copy.is_some()
+            || self.close.is_some()
     }
 
     /// Whether anything Escape closes is open: one of the three dialogs or
@@ -235,6 +254,8 @@ impl DeskState {
 pub enum Delegate {
     /// Open a session.
     OpenSession(SessionId),
+    /// Open a session's own folder in the file manager (D382).
+    OpenFolder(SessionId),
     /// Say this in a toast.
     Toast(String),
 }
@@ -256,6 +277,10 @@ pub enum Change {
     Move,
     /// Agent access.
     Access,
+    /// A channel Desk session's switches (CD-3).
+    Switches,
+    /// What a channel Desk session looks after (CD-5).
+    Target,
 }
 
 /// What happens on the Desk page.
@@ -267,6 +292,8 @@ pub enum DeskAction {
     SetSort(Sort),
     /// A row was clicked.
     Open(SessionId),
+    /// Open folder was clicked on a session's folder bar.
+    OpenFolder(SessionId),
     /// New desk session was clicked, with the agent to start from.
     StartNew {
         /// The agent the form starts with.
@@ -276,8 +303,20 @@ pub enum DeskAction {
     New(NewAction),
     /// The daemon started the session, or didn't.
     Started(Result<SessionId, DaemonError>),
-    /// Close session was clicked.
+    /// Close session was asked for, from the menu, the palette or a
+    /// shortcut: closes at once, or asks first (DV-4).
+    AskClose(SessionId),
+    /// Close session, without asking; also Close in the question.
     Close(SessionId),
+    /// Save version and close was clicked in the question.
+    SaveAndClose(SessionId),
+    /// The version saved before closing was saved, or wasn't.
+    SavedBeforeClose {
+        /// The session.
+        session: SessionId,
+        /// How it went.
+        result: Result<(), DaemonError>,
+    },
     /// Reopen was clicked.
     Reopen(SessionId),
     /// Keep was clicked.
@@ -319,6 +358,34 @@ pub enum DeskAction {
     ConfirmCopy,
     /// The copy finished.
     Copied(Result<(), DaemonError>),
+    /// New desk session on a channel's Desk tab (CD-6), or for one of its
+    /// sessions, with the agent to start from.
+    StartChannelNew {
+        /// The channel.
+        channel: ChannelId,
+        /// The session to look after; `None` for the whole channel.
+        target: Option<SessionId>,
+        /// The agent the form starts with.
+        agent: Agent,
+    },
+    /// A change to the channel's New desk session dialog.
+    ChannelNew(ChannelNewAction),
+    /// Close session was confirmed on a channel Desk session (CD-4).
+    ConfirmCloseChannel,
+    /// Copy to shared/ was clicked on a Markdown file in the close sheet.
+    CopyToShared(String),
+    /// The copy to shared/ finished.
+    SharedCopied {
+        /// The file.
+        path: String,
+        /// How it went.
+        result: Result<(), DaemonError>,
+    },
+    /// A channel Desk session's switch was turned on or off (CD-3).
+    SetSwitch(SessionId, Switch, bool),
+    /// A channel Desk session was pointed at a session of its channel, or
+    /// with `None` at the whole channel (CD-5).
+    SetTarget(SessionId, Option<SessionId>),
     /// Cancel or Escape: closes the innermost thing that is open: a
     /// pop-up first, then the dialog.
     CancelDialog,
@@ -374,6 +441,9 @@ impl Desk {
         result: Result<(), DaemonError>,
     ) -> Effect<DeskAction> {
         state.pending.remove(&session);
+        if change == Change::Close {
+            Self::close_sheet_answered(state, &session, &result);
+        }
         if let Err(error) = result {
             state.error = Some(error.to_string());
             return Effect::none();
@@ -381,6 +451,17 @@ impl Desk {
         let toast = |text: String| Effect::send(DeskAction::Delegate(Delegate::Toast(text)));
         match change {
             Change::Reopen => Effect::send(DeskAction::Delegate(Delegate::OpenSession(session))),
+            Change::Close if state.workspace.desk.channel_sessions.contains_key(&session) => {
+                let title = state
+                    .workspace
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == session)
+                    .map_or_else(|| session.to_string(), |s| s.title.clone());
+                toast(format!(
+                    "Closed {title}. Its folder is in the trash; restore it from there within 30 days."
+                ))
+            }
             Change::Close => {
                 let title = state
                     .workspace
@@ -398,7 +479,12 @@ impl Desk {
                 })
             }
             Change::Keep => toast("The folder stays after the session closes.".to_owned()),
-            Change::AddRepo | Change::RemoveRepo | Change::Move | Change::Access => Effect::none(),
+            Change::AddRepo
+            | Change::RemoveRepo
+            | Change::Move
+            | Change::Access
+            | Change::Switches
+            | Change::Target => Effect::none(),
         }
     }
 }
@@ -434,6 +520,9 @@ impl Reducer for Desk {
             DeskAction::Open(session) => {
                 Effect::send(DeskAction::Delegate(Delegate::OpenSession(session)))
             }
+            DeskAction::OpenFolder(session) => {
+                Effect::send(DeskAction::Delegate(Delegate::OpenFolder(session)))
+            }
             DeskAction::StartNew { agent } => {
                 Self::start_new(state, agent);
                 Effect::none()
@@ -442,6 +531,7 @@ impl Reducer for Desk {
             DeskAction::Started(result) => match result {
                 Ok(id) => {
                     state.new = None;
+                    state.channel_new = None;
                     Effect::send(DeskAction::Delegate(Delegate::OpenSession(id)))
                 }
                 Err(error) => {
@@ -449,10 +539,19 @@ impl Reducer for Desk {
                         form.starting = false;
                         form.error = Some(error.to_string());
                     }
+                    if let Some(form) = state.channel_new.as_mut() {
+                        form.starting = false;
+                        form.error = Some(error.to_string());
+                    }
                     Effect::none()
                 }
             },
-            DeskAction::Close(id) => self.change(state, id, Change::Close, |c, s| c.close(s)),
+            DeskAction::AskClose(id) => self.ask_close(state, id),
+            DeskAction::Close(id) => self.close_now(state, id),
+            DeskAction::SaveAndClose(id) => self.save_and_close(state, id),
+            DeskAction::SavedBeforeClose { session, result } => {
+                self.saved_before_close(state, session, result)
+            }
             DeskAction::Reopen(id) => self.change(state, id, Change::Reopen, |c, s| c.reopen(s)),
             DeskAction::Keep(id) => self.change(state, id, Change::Keep, |c, s| c.keep(s)),
             DeskAction::AddRepo(id, repo) => {
@@ -510,11 +609,39 @@ impl Reducer for Desk {
                     form.adding_repo = false;
                     return Effect::none();
                 }
+                if let Some(form) = state.channel_new.as_mut()
+                    && (form.machines_open || form.sessions_open)
+                {
+                    form.machines_open = false;
+                    form.sessions_open = false;
+                    return Effect::none();
+                }
                 state.new = None;
                 state.clean_up = None;
                 state.copy = None;
+                state.channel_new = None;
+                // A close in flight can't be taken back; the sheet stays until it answers.
+                if state.channel_close.as_ref().is_some_and(|sheet| !sheet.closing) {
+                    state.channel_close = None;
+                }
+                // A version being saved stays saved; the session stays open.
+                state.close = None;
                 Effect::none()
             }
+            DeskAction::StartChannelNew {
+                channel,
+                target,
+                agent,
+            } => {
+                Self::start_channel_new(state, channel, target, agent);
+                Effect::none()
+            }
+            DeskAction::ChannelNew(action) => self.reduce_channel_new(state, action),
+            DeskAction::ConfirmCloseChannel => self.confirm_close_channel(state),
+            DeskAction::CopyToShared(path) => self.copy_to_shared(state, path),
+            DeskAction::SharedCopied { path, result } => Self::shared_copied(state, path, result),
+            DeskAction::SetSwitch(id, switch, on) => self.set_switch(state, id, switch, on),
+            DeskAction::SetTarget(id, target) => self.set_target(state, id, target),
             DeskAction::DismissError => {
                 state.error = None;
                 Effect::none()

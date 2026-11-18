@@ -102,6 +102,7 @@ impl Fixture {
             .await
             .plan_push(pb::PlanPushRequest {
                 id: Some(id.clone()),
+                spec: None,
             })
             .await
             .unwrap()
@@ -179,6 +180,7 @@ fn choice(name: &str, commit_message: &str, open_pull_request: bool) -> pb::Push
         } else {
             String::new()
         },
+        base_branch: String::new(),
     }
 }
 
@@ -251,8 +253,8 @@ async fn pushing_one_repo_commits_pushes_and_opens_its_pull_request() {
         "",
         "the commit took the uncommitted file"
     );
-    match &operation.result {
-        Some(pb::operation::Result::PullRequest(pr)) => {
+    match operation.pull_requests.as_slice() {
+        [pr] => {
             assert_eq!(pr.number, 7);
             assert_eq!(pr.repo, Some(repo_ref("acme", "api")));
         }

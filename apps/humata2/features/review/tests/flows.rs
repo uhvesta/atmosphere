@@ -26,6 +26,7 @@ fn anchor(repo: &str, path: &str, line: u32) -> Anchor {
         quoted: vec![format!("old line {line}")],
         base: None,
         detached: false,
+        outdated: false,
     }
 }
 

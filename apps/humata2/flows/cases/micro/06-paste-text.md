@@ -35,7 +35,7 @@ Layer: micro. Platforms: macOS (⌘V), Linux (Ctrl+Shift+V or Shift+Insert), web
 5. **I do:** With a shell tab focused, choose Edit > Paste from the menu bar.
    **I see:** The same result as ⌘V.
    **State and events:** The menu sends `input::Paste` (`desktop/src/main.rs:245`). I found no terminal code that handles that action. The terminal only pastes from its key handler (`terminal/view/src/view.rs:870`).
-   **Status:** Code, no test. The gpui_kit source that would route the action is not in this repository, so I could not confirm the menu path. See Gaps and likely bugs.
+   **Status:** Fakes only. The terminal handles Edit > Paste as it does ⌘V: `terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all`. No test chooses the menu item in the app.
 
 ## Branches
 
@@ -61,7 +61,7 @@ Layer: micro. Platforms: macOS (⌘V), Linux (Ctrl+Shift+V or Shift+Insert), web
 - **I do:** Press ⌘V in the shell tab.
 - **I see:** The same "Lost the connection … The program keeps running there … typing is off until then" banner. Nothing is typed. No exit note appears for a shell tab.
 - **Expected outcome:** Nothing is sent. The tab says the shell exited, and does not claim the connection was lost.
-- **Status:** Likely bug. The daemon does refuse typing into an exited shell: `daemon/humatad/tests/terminal.rs::typing_into_a_shell_that_exited_is_refused`. The text shown to the user is wrong. See Likely bugs.
+- **Status:** Fakes only. Nothing is sent, the disconnected banner stays hidden for an exited program (`terminal/pane/src/pane.rs` draws it only while `!exited`), and the paste raises a toast: "This tab's shell has exited, so what you typed was not sent. Open a new terminal to run more commands." The daemon refuses the input (`daemon/humatad/tests/terminal.rs::typing_into_a_shell_that_exited_is_refused`); the app tells once (`desktop/tests/native/terminal.rs::typing_into_an_exited_shell_says_why_once`, `terminal/pane/tests/pane.rs::dropped_input_is_told_once_each_time_input_stops`).
 
 ### Paste over SSH
 
@@ -99,16 +99,16 @@ Paths are relative to `apps/humata2`.
 | 2. Five lines into zsh | Works (real shell) over SSH | `terminal/lab/tests/clipboard_ssh.rs::ssh_unicode_multiline_color_copy_pasteback_and_focus_are_exact` |
 | 3. Five lines into Neovim | Code, no test | `terminal/pane/src/pane.rs:742-782` |
 | 4. End marker in pasted text | Fakes only | `terminal/vt/tests/paste.rs::pasted_text_cannot_end_a_bracketed_paste_early` |
-| 5. Edit > Paste | Code, no test | `desktop/src/main.rs:245`; no handler found |
+| 5. Edit > Paste | Fakes only | `terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all` |
 | Branch: cancel the confirmation | Fakes only | `terminal/pane/tests/pane.rs::a_multi_line_paste_waits_for_the_user` |
 | Branch: link down | Fakes only | `terminal/pane/tests/pane.rs::while_disconnected_input_is_dropped_and_the_pane_says_so` |
-| Branch: exited shell | Likely bug | Refusal: `daemon/humatad/tests/terminal.rs::typing_into_a_shell_that_exited_is_refused`; text: `terminal/pane/src/pane.rs:903` |
+| Branch: exited shell | Fakes only | `daemon/humatad/tests/terminal.rs::typing_into_a_shell_that_exited_is_refused`, `desktop/tests/native/terminal.rs::typing_into_an_exited_shell_says_why_once` |
 | Branch: over SSH | Works (real shell) | `terminal/lab/tests/clipboard_ssh.rs::ssh_unicode_multiline_color_copy_pasteback_and_focus_are_exact` |
 | Branch: agent mid-turn | Code, no test | `terminal/pane/src/host.rs:371-383` |
 
 ## Gaps and likely bugs
 
-- Likely bug: the exited-shell banner says "Lost the connection … the program keeps running there". After `exit` or ⌃D, the shell is gone, so the text is wrong. The cause: the replica marks an exited terminal as not authorized (`terminal/client/src/replica.rs:530-536`), which turns the pane's disconnected state on, and the session view turns the banner on for any session that is not offline (`ui/src/session_tabs.rs:705-709`). The banner text is at `terminal/pane/src/pane.rs:903`. Confirm: ⌃D in a shell tab, then read the tab.
-- Likely bug (unconfirmed): Edit > Paste (`desktop/src/main.rs:245`) sends `input::Paste`, and I found no terminal handler for it. If that is right, the menu item does nothing with a shell focused. Confirm: focus a shell tab, choose Edit > Paste, and check whether the clipboard text appears.
+- Fixed: an exited shell shows no disconnected banner, and a paste into it raises a toast that says the shell exited (`desktop/tests/native/terminal.rs::typing_into_an_exited_shell_says_why_once`, Fakes only).
+- Fixed: Edit > Paste reaches the focused terminal (`terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all`, Fakes only).
 - Not built: none for paste text itself.
 - Coverage gap: no test pastes several lines into Neovim or presses Enter after a multi-line paste into zsh.

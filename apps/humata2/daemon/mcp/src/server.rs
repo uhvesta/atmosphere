@@ -254,7 +254,9 @@ impl<D: Daemon> Shared<D> {
                     );
                 }
                 Incoming::Request { id, method, params } => {
-                    let reply = match answer(&method, &params) {
+                    let reply = match answer(&method, &params, |operation| {
+                        self.daemon.serves(operation)
+                    }) {
                         Ok(result) => jsonrpc::result(&id, result),
                         Err(error) => jsonrpc::error(&id, &error),
                     };
@@ -519,11 +521,15 @@ fn no_token(missing: &TokenError) -> ToolError {
 }
 
 /// Requests answered without the daemon.
-fn answer(method: &str, params: &Value) -> Result<Value, RpcError> {
+fn answer(
+    method: &str,
+    params: &Value,
+    serves: impl Fn(Operation) -> bool,
+) -> Result<Value, RpcError> {
     match method {
         "initialize" => Ok(initialize(params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(tools::list()),
+        "tools/list" => Ok(tools::list(serves)),
         _ => Err(RpcError::new(
             METHOD_NOT_FOUND,
             format!("{method} isn't offered; this server has tools only"),
@@ -543,6 +549,17 @@ fn initialize(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": SERVER_NAME, "version": SERVER_VERSION },
-        "instructions": "Humata's tools for this session. You are always this session: no tool takes a caller. A call that needs the user's approval returns pending with a request_id; then call inbox_wait with it, and never repeat the call itself. Branch on error.kind, never on the text.",
+        "instructions": INSTRUCTIONS,
     })
 }
+
+/// What every agent is told of these tools when it connects (D748): what
+/// they do, and never where the session's repos or folder are (D743). An
+/// agent that wants those asks: `whoami` and `humata whoami` answer.
+const INSTRUCTIONS: &str = "Humata's tools for this session. You are always this session: no tool takes a caller. \
+The Board tools (board_*) list, read, create, update and move the channel's work items. \
+The review tools (review_*) draft comments and a summary on the pull request under review, and view_* prepare views of it for the user. \
+inbox_ask asks the user a question and inbox_request asks for their approval; whoami says which session, channel and machine you are, and session_info the session's repos. \
+The same calls are on the `humata` command in your terminal: run `humata --help`. \
+A call that needs the user's approval returns pending with a request_id; then call inbox_wait with it, and never repeat the call itself. \
+Act on error.kind, never on the text.";

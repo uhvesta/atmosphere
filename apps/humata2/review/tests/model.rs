@@ -165,7 +165,7 @@ fn a_comment_follows_its_code_when_the_review_changes() {
 #[test]
 fn a_sent_comment_whose_lines_changed_is_addressed() {
     let mut review = SessionReview::new(session("s1"));
-    review.set_review(Review::new(vec![text_file("a.rs", "1", &["one", "two"])]));
+    review.set_review(Review::new(vec![text_file("a.rs", "1", &["one", "let total = 2;"])]));
     let at = ComposerAt {
         file: key("a.rs"),
         side: Side::New,
@@ -179,10 +179,43 @@ fn a_sent_comment_whose_lines_changed_is_addressed() {
         let dispatch = book.next_dispatch().expect("idle agent takes it");
         book.finish(delivery, dispatch.attempt, Ok(Typed::Typed));
     });
-    review.set_review(Review::new(vec![text_file("a.rs", "2", &["one", "deux"])]));
+    review.set_review(Review::new(vec![text_file("a.rs", "2", &["one", "let total = 3;"])]));
     let comment = review.book().comment(id).expect("still there");
     assert_eq!(comment.status, Status::Addressed);
     assert!(!comment.outdated);
+}
+
+#[test]
+fn a_sent_comment_whose_passage_is_gone_is_a_detached_draft_again() {
+    let mut review = SessionReview::new(session("s1"));
+    review.set_review(Review::new(vec![text_file("a.rs", "1", &["one", "let total = 2;"])]));
+    let second = ComposerAt {
+        file: key("a.rs"),
+        side: Side::New,
+        lines: LineRange::line(2),
+    };
+    let anchor = review.anchor(&second, None).expect("anchored");
+    let id = review.change(|book| book.add(anchor, "fix")).expect("added");
+    review.change(|book| {
+        book.set_agent(AgentState::Idle);
+        let delivery = book.queue(&[id]).expect("queued");
+        let dispatch = book.next_dispatch().expect("idle agent takes it");
+        book.finish(delivery, dispatch.attempt, Ok(Typed::Typed));
+    });
+    assert_eq!(status(review.book(), id), Status::Sent);
+
+    review.set_review(Review::new(vec![text_file("a.rs", "2", &["one", "fn other() {}"])]));
+    let comment = review.book().comment(id).expect("still there");
+    assert_eq!(comment.status, Status::Draft, "the passage is gone, so nothing addressed it");
+    assert!(comment.outdated, "it is detached until re-attached");
+
+    let first = ComposerAt {
+        lines: LineRange::line(1),
+        ..second
+    };
+    let anchor = review.anchor(&first, None).expect("anchored");
+    review.change(|book| book.reattach(id, anchor)).expect("a detached draft re-attaches");
+    review.change(|book| book.queue(&[id])).expect("and is sent again");
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Desk sessions' helpers (DK-4, DK-10, D182.3): the channel id every Desk
 //! agent is filed under, and which calls its switches allow.
 
+use crate::call::Call;
 use crate::capability::Capability;
 use crate::ids::ChannelId;
 use crate::principal::SessionKind;
@@ -16,7 +17,7 @@ pub(crate) fn is_desk_channel(channel: &ChannelId) -> bool {
 
 /// True when a Desk switch that is on allows `capability`. The policy
 /// checks Never first, so a Never rule still wins over a switch.
-pub(crate) fn switch_allows(kind: &SessionKind, capability: Capability) -> bool {
+pub(crate) fn switch_allows(kind: &SessionKind, capability: Capability, call: &Call) -> bool {
     match kind {
         SessionKind::Desk(access) => match capability {
             Capability::GlobalRead | Capability::GlobalBoardWrite => access.boards,
@@ -25,6 +26,7 @@ pub(crate) fn switch_allows(kind: &SessionKind, capability: Capability) -> bool 
             }
             _ => false,
         },
+        SessionKind::ChannelDesk(access) => crate::channel_desk::switch_allows(access, capability, call),
         SessionKind::Ordinary
         | SessionKind::ContextOnlyFork { .. }
         | SessionKind::Review { .. } => false,

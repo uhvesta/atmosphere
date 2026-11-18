@@ -4,6 +4,7 @@ syntax = "proto3";
 package humata.v1;
 
 import "google/protobuf/timestamp.proto";
+import "humata/v1/build.proto";
 import "humata/v1/common.proto";
 import "humata/v1/operations.proto";
 import "humata/v1/peer.proto";
@@ -43,6 +44,16 @@ service DaemonService {
   // D265: brings back what a stop ended, exactly as after a shutdown. The
   // reply comes once the start is recorded; the daemon then restarts itself.
   rpc StartSessions(StartSessionsRequest) returns (StartSessionsResponse);
+  // UP-1, D281: moves this machine's daemon to another release in place.
+  // The release's files must already be staged in `~/.humata2/bin` as
+  // `.<name>.next` and `.bundle.json.next` (the bundle id is the sha256 of
+  // that bundle.json). The daemon checks them, records the upgrade, swaps
+  // the files in, answers with the build it was, and then starts itself
+  // again from the new file: same process id, holders and sessions kept.
+  // Refused with FAILED_PRECONDITION when the staged files are missing or
+  // aren't that release. The user (or the host's link) only; an agent or
+  // script is refused. Open to a machine at another release (D281 e).
+  rpc Upgrade(UpgradeRequest) returns (UpgradeResponse);
 }
 
 enum DaemonRole {
@@ -86,6 +97,8 @@ message ServerInfo {
   // While it isn't, the machine judges its own clients' calls as AW-7
   // says for the host away. The host's daemon always says true.
   bool host_reachable = 9;
+  // UP-1, D281: which release this daemon is.
+  BuildInfo build = 10;
 }
 
 message LastStart {
@@ -139,6 +152,9 @@ message BeginRelayResponse {
   // 32 random bytes, good for one CompleteRelay on this connection within
   // 30 seconds.
   bytes nonce = 1;
+  // UP-1, D281: the socket daemon's build. The link reads it before
+  // ProveHost, for Hello; the call is open to anyone already.
+  BuildInfo build = 2;
 }
 
 message CompleteRelayRequest {
@@ -174,43 +190,30 @@ message StopSessionsRequest {
   string stop_id = 1;
   string reason = 2;
   StopVia via = 3;
+  // The machine that asked, when it isn't this one: the host stopping a
+  // box. Empty: this machine itself.
+  string by_machine = 4;
 }
 message StopSessionsResponse { SessionsStopped stopped = 1; }
 message StartSessionsRequest {}
 message StartSessionsResponse {}
 
-enum StopVia {
-  STOP_VIA_UNSPECIFIED = 0;
-  STOP_VIA_APP = 1;
-  STOP_VIA_CLI = 2;
-  STOP_VIA_SSH = 3;
-  STOP_VIA_DIRECT = 4;
+message UpgradeRequest {
+  // The bundle id (sha256 of bundle.json) of the staged release.
+  string to_bundle = 1;
+  // Names this upgrade in the machine's upgrade record.
+  string upgrade_id = 2;
+  // D378: what to upgrade. Unspecified (and DAEMON) is the daemon and its
+  // staged release. HOLDERS starts this machine's own restart of the agent
+  // sessions on old holders onto the current one, and swaps nothing; asking
+  // again while it runs changes nothing.
+  MigrateThing thing = 3;
 }
-enum StoppedByKind {
-  STOPPED_BY_KIND_UNSPECIFIED = 0;
-  STOPPED_BY_KIND_USER = 1;
-  STOPPED_BY_KIND_AGENT = 2;
-  STOPPED_BY_KIND_TERMINAL = 3;
+message UpgradeResponse {
+  // The build the daemon was before it swapped.
+  BuildInfo from = 1;
 }
-message StoppedBy {
-  StoppedByKind kind = 1;
-  StopVia via = 2;
-  string machine = 3;
-  string session = 4;   // the agent's session, when an agent stopped it
-}
-message StopEnded {
-  uint32 agents = 1;
-  uint32 shells = 2;
-  uint32 killed = 3;    // ended only by SIGKILL after the grace period
-  uint32 left = 4;      // processes still alive after the sweep (should be 0)
-}
-message SessionsStopped {
-  string stop_id = 1;
-  int64 stopped_at_unix_ms = 2;
-  StoppedBy by = 3;
-  string reason = 4;
-  StopEnded ended = 5;  // unset until the sweep has run
-}
+
 message AfterStop {
   SessionsStopped stop = 1;
   StoppedBy started_by = 2;

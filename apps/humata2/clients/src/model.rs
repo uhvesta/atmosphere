@@ -7,6 +7,7 @@
 //! nothing above the clients.
 
 pub use crate::workspace::Workspace;
+use crate::machines::OperationId;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,10 @@ id!(
     /// A scoped "Always allow" grant under an access rule (IN-19).
     GrantId
 );
+id!(
+    /// A view an agent prepared (VW-1).
+    ViewId
+);
 
 /// How the app reaches a host.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,6 +113,87 @@ pub struct Machine {
     /// While the app's link to it is lost: the clock time it was lost,
     /// such as "14:02". `None` while connected or when nobody knows.
     pub lost_at: Option<String>,
+    /// Its sessions are stopped (D260–D262): the host's copy of the stop,
+    /// so it shows while the link is down. `None` while they run. Not the
+    /// provider VM's power, which is [`MachineHealth::stopped`].
+    pub stop: Option<MachineStop>,
+    /// The machine's Humata folder (PL-1): `~/Humata` unless changed.
+    pub root: String,
+}
+
+/// What changing a machine's Humata folder would do (FC-10, PL-1, ST-5): what
+/// the daemon found under the old root. Applying it needs this plan's token,
+/// and nothing has moved when it is read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootPlan {
+    /// The machine.
+    pub machine: MachineId,
+    /// What a change with this plan is allowed by, as the daemon made it.
+    pub token: String,
+    /// The folder now.
+    pub old_root: String,
+    /// The folder asked for.
+    pub new_root: String,
+    /// The channels with a folder under the old root.
+    pub channels: Vec<ChannelId>,
+    /// The sessions running in those folders; moving the channels is refused
+    /// while any is listed, using the new root for new channels only is not.
+    pub running: Vec<SessionId>,
+}
+
+/// Who stopped a machine's sessions (D261, D263, D264).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoppedBy {
+    /// The person: from the app, or a logged-in `humata stop`.
+    You,
+    /// Someone typing `humata stop` in a terminal on a machine, outside
+    /// every Humata session.
+    Terminal {
+        /// The machine the terminal is on.
+        machine: MachineId,
+    },
+    /// A session's agent, its rule allowing it.
+    Agent {
+        /// The agent's session.
+        session: SessionId,
+    },
+    /// A script, its token listing the capability.
+    Script,
+}
+
+impl StoppedBy {
+    /// Who, as the banner and the Inbox card say it after "Stopped by"
+    /// (D264): "you", "a terminal on devbox-1", "Login v2's agent". A
+    /// machine or session `workspace` doesn't know is named by its id.
+    #[must_use]
+    pub fn phrase(&self, workspace: &Workspace) -> String {
+        match self {
+            Self::You => "you".to_owned(),
+            Self::Script => "a script".to_owned(),
+            Self::Terminal { machine } => format!(
+                "a terminal on {}",
+                workspace.machine(machine).map_or_else(|| machine.to_string(), |found| found.name.clone())
+            ),
+            Self::Agent { session } => format!(
+                "{}'s agent",
+                workspace.session(session).map_or_else(|| session.to_string(), |found| found.title.clone())
+            ),
+        }
+    }
+}
+
+/// A stop of one machine's sessions, as the host keeps it (D261, D262).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MachineStop {
+    /// The stop's id; a repeat of it acts once.
+    pub stop_id: String,
+    /// When it was made, as clock text such as "14:02".
+    pub at: String,
+    /// Who made it.
+    pub by: StoppedBy,
+    /// The machine took it. False: the host keeps it and sends it when
+    /// the machine links, and Start only cancels it (frame 76).
+    pub delivered: bool,
 }
 
 /// Health information reported by a host, never inferred from the UI.
@@ -293,6 +379,11 @@ pub enum Status {
     },
     /// Its host doesn't answer.
     Offline,
+    /// Its machine's sessions are stopped; Start sessions brings it back
+    /// (D264, `SESSION_STATUS_MACHINE_STOPPED`).
+    Stopped,
+    /// Moving to another machine (MV-4); see `Session::moving`.
+    Moving,
 }
 
 impl Status {
@@ -306,13 +397,15 @@ impl Status {
             Self::ProbablyIdle => "Probably idle".to_owned(),
             Self::Exited { code } => format!("Exited ({code})"),
             Self::Offline => "Offline".to_owned(),
+            Self::Stopped => "Stopped".to_owned(),
+            Self::Moving => "Moving".to_owned(),
         }
     }
 
     /// Whether a person can type into it.
     #[must_use]
     pub const fn accepts_input(self) -> bool {
-        !matches!(self, Self::Exited { .. } | Self::Offline)
+        !matches!(self, Self::Exited { .. } | Self::Offline | Self::Stopped | Self::Moving)
     }
 }
 
@@ -378,6 +471,48 @@ pub struct Archive {
     /// The disk its clones and folder free once the undo window closes, as
     /// people read it ("1.4 GB"). `None` when the machine hasn't said.
     pub frees: Option<String>,
+}
+
+/// A move to another machine in progress (MV-4, MV-17).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveProgress {
+    /// The target; the UI shows its name.
+    pub to: MachineId,
+    /// The move's operation; the step card watches it.
+    pub operation: OperationId,
+    /// The running step's title; empty until the operation is read.
+    pub step: String,
+    /// That step's progress: bytes on `copy`; only rises.
+    pub done_units: u64,
+    /// That step's total; 0 when unknown.
+    pub total_units: u64,
+    /// Every step of the move in order, each with its state (frame 64).
+    pub steps: Vec<MoveStep>,
+}
+
+/// One step of a move, as the daemon's operation reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveStep {
+    /// As shown: "Copying the session".
+    pub title: String,
+    pub state: MoveStepState,
+    /// Bytes on `copy`; only rises.
+    pub done_units: u64,
+    /// 0 when unknown.
+    pub total_units: u64,
+}
+
+/// Where a move's step stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MoveStepState {
+    /// Not started (also a state the daemon left unspecified).
+    Pending,
+    Running,
+    Done,
+    Failed,
+    Skipped,
+    /// Rolled back after the move failed.
+    Undone,
 }
 
 /// A session and where it sits.
@@ -449,6 +584,31 @@ pub struct Session {
     /// What its agent may do, one paragraph each, as the daemon's access
     /// rules give it; empty when not reported.
     pub permissions: Vec<String>,
+    /// Whether it reviews pull requests (PR-10): its Diff starts against
+    /// each pull request's base.
+    pub pull_request_review: bool,
+    /// Whether the person lets the agent push to the pull requests'
+    /// branches (PR-8); false for any other session.
+    pub push_allowed: bool,
+    /// Set only while `status` is Moving (MV-4).
+    pub moving: Option<MoveProgress>,
+    /// The session's own folder on its machine, absolute; empty when not
+    /// known (PL-10). Files sent from the session land in a folder of this
+    /// name, so a renamed session keeps one.
+    pub folder: String,
+    /// The repositories cloned inside it, with their absolute paths.
+    pub clones: Vec<SessionClone>,
+}
+
+/// One repository cloned for a session (PL-10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionClone {
+    /// The repository, as `owner/name`.
+    pub repo: String,
+    /// The branch checked out in it.
+    pub branch: String,
+    /// Where it is on the session's machine, absolute.
+    pub path: String,
 }
 
 /// Board writes a session's agent made while its host was away that the
@@ -522,6 +682,9 @@ pub enum RequestKind {
     Merge,
     /// Move or delete something that can't be undone.
     Destroy,
+    /// Bring a machine's daemon, tools or holders to the host's release
+    /// (UP-1). It comes from Humata, not a session.
+    Migrate,
 }
 
 impl RequestKind {
@@ -535,6 +698,7 @@ impl RequestKind {
             Self::Question => "Question",
             Self::Merge => "Merge",
             Self::Destroy => "Delete",
+            Self::Migrate => "Migrate",
         }
     }
 }
@@ -548,6 +712,205 @@ pub enum Preview {
     Diff(Vec<DiffLine>),
     /// Words.
     Text(String),
+    /// What a Migrate item brings to the host's release.
+    Migrate(MigrateCard),
+    /// An agent's copy of files from one machine to another (IN-10, D467).
+    CrossMachineCopy(CopyCard),
+}
+
+/// What an agent's cross-machine copy would do, measured at its source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyCard {
+    /// The machine the files are on.
+    pub from: MachineId,
+    /// The machine they would land on.
+    pub to: MachineId,
+    /// Each source path as the agent named it, one per line. The card says
+    /// what it is copying in words and keeps these behind Details.
+    pub source_path: String,
+    /// The folder they would land in, as the agent named it.
+    pub destination_path: String,
+    /// Where they land in words after the machine's name, such as `shared`;
+    /// empty when the place has no short name.
+    pub place: String,
+    /// How many bytes the sources hold, measured when it was asked.
+    pub bytes: u64,
+    /// How many files the sources hold.
+    pub files: u32,
+}
+
+impl CopyCard {
+    /// What is copied, in words: the name of the one source, or how many
+    /// there are.
+    #[must_use]
+    pub fn what(&self) -> String {
+        let sources: Vec<&str> = self.source_path.lines().filter(|line| !line.is_empty()).collect();
+        match sources.as_slice() {
+            [one] => one
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .filter(|name| !name.is_empty())
+                .map_or_else(|| (*one).to_owned(), str::to_owned),
+            many => format!("{} items", many.len()),
+        }
+    }
+}
+
+/// What a Migrate item brings to the host's release (UP-1, D281).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MigrateThing {
+    /// The machine's daemon.
+    Daemon,
+    /// The `humata` command line.
+    Cli,
+    /// The store's schema.
+    Store,
+    /// The processes that hold sessions' terminals.
+    Holders,
+    /// The tools new sessions start from.
+    HostTools,
+    /// The Desk folders made before documents had versions.
+    DeskFolders,
+}
+
+impl MigrateThing {
+    /// What people call it in a sentence.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Daemon => "daemon",
+            Self::Cli => "command line",
+            Self::Store => "store",
+            Self::Holders => "session holders",
+            Self::HostTools => "host tools",
+            Self::DeskFolders => "Desk folders",
+        }
+    }
+}
+
+/// One build of Humata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Release {
+    /// Its version, as the build reports it; empty when unknown.
+    pub version: String,
+    /// The full bundle id. The view shortens it.
+    pub bundle: String,
+}
+
+/// Where a Migrate item is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MigratePhase {
+    /// Waiting for the person to click Migrate.
+    Waiting,
+    /// The machine is migrating.
+    Migrating,
+    /// The last try failed.
+    Failed(MigrateFailure),
+}
+
+/// Why a Migrate failed, in the daemon's words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrateFailure {
+    /// What failed.
+    pub message: String,
+    /// What the person can do.
+    pub fix: String,
+}
+
+/// A Migrate item's card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrateCard {
+    /// What it brings.
+    pub thing: MigrateThing,
+    /// The machine it is on.
+    pub machine: MachineId,
+    /// What the machine runs now.
+    pub from: Release,
+    /// The host's release it would run.
+    pub to: Release,
+    /// What changes, one line each.
+    pub changes: Vec<String>,
+    /// What keeps running through it, one line each.
+    pub keeps_running: Vec<String>,
+    /// Where it is.
+    pub phase: MigratePhase,
+    /// Agent sessions that wait for it to restart.
+    pub waiting_sessions: Vec<SessionId>,
+    /// When it was migrated, as people read it ("2 min ago"). Set only once
+    /// the item is answered Approved.
+    pub migrated: Option<String>,
+    /// Where each step of the migrate is, in order. Empty when the thing has
+    /// no steps (Holders) or it has not started.
+    pub steps: Vec<MigrateStep>,
+    /// The sessions and shells whose holders a Holders item restarts.
+    pub holders: Vec<HolderSession>,
+}
+
+/// One step of a running migrate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MigrateStep {
+    /// What the step does, as people read it.
+    pub label: String,
+    /// Where it is.
+    pub state: MigrateStepState,
+}
+
+/// Where a migrate step is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MigrateStepState {
+    /// Not reached yet.
+    Pending,
+    /// Running now.
+    Doing,
+    /// Finished.
+    Done,
+    /// It failed here.
+    Failed,
+}
+
+/// A session or shell tab whose holder a Holders item restarts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HolderSession {
+    /// The session; `None` for a shell tab.
+    pub session: Option<SessionId>,
+    /// Its title.
+    pub title: String,
+    /// What happens to it.
+    pub note: HolderNote,
+}
+
+/// What a holder's restart does to its session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolderNote {
+    /// Restarts at the next idle moment.
+    RestartsWhenIdle,
+    /// Restarting now.
+    Restarting,
+    /// Stays on the old holder until it is closed.
+    StaysUntilClosed,
+    /// The agent has no turn tracking, so there is no idle moment.
+    NoIdleMoment,
+}
+
+impl Request {
+    /// The Migrate card, when this is a Migrate item.
+    #[must_use]
+    pub const fn migrate(&self) -> Option<&MigrateCard> {
+        match &self.preview {
+            Preview::Migrate(card) => Some(card),
+            _ => None,
+        }
+    }
+
+    /// The copy card, when this is an agent's cross-machine copy.
+    #[must_use]
+    pub const fn copy(&self) -> Option<&CopyCard> {
+        match &self.preview {
+            Preview::CrossMachineCopy(card) => Some(card),
+            _ => None,
+        }
+    }
 }
 
 /// How a request was answered.
@@ -757,7 +1120,7 @@ impl Comment {
 }
 
 /// What a session's changes are compared with (RV-1).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DiffBase {
     /// The repository's main branch on its remote.
     #[default]
@@ -770,6 +1133,134 @@ pub enum DiffBase {
     SinceFork,
     /// Another session's branch.
     OtherSession(SessionId),
+    /// Each repository against its pull request's base, as GitHub shows the
+    /// pull request; for pull request reviews only (PR-10).
+    PullRequestBase,
+    /// Each repository against its own base (RV-31). A repository left out
+    /// gets the daemon's default base.
+    Spec(Vec<RepoDiffSpec>),
+}
+
+/// Which base one repository's changes are compared with.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RepoBase {
+    /// The remote's default branch, as `origin/HEAD` names it.
+    DefaultBranch,
+    /// Another branch on the remote, compared as a pull request shows it: the
+    /// merge base with HEAD. A name that already starts with `origin/` is
+    /// used as it is.
+    Branch(String),
+    /// A branch, tag or commit as it is.
+    Rev(String),
+    /// What changed after the last Mark reviewed (RV-6).
+    LastReviewed,
+    /// What changed after the session was forked (forks only).
+    ForkPoint,
+    /// Only what isn't committed yet.
+    Uncommitted,
+    /// This repository's pull request's base (PR-10); pull request reviews only.
+    PullRequestBase,
+}
+
+/// One repository's base in a [`DiffBase::Spec`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RepoDiffSpec {
+    /// The repository, as `owner/name`.
+    pub repo: String,
+    /// What its changes are compared with.
+    pub base: RepoBase,
+}
+
+/// The branches one repository can be compared with, as its clone knew them
+/// at the last fetch (VIEWS C3). The default branch comes first when the clone
+/// knows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoBases {
+    /// The branch names without `origin/`.
+    pub branches: Vec<String>,
+    /// origin/HEAD's branch; empty when the clone doesn't know it.
+    pub default_branch: String,
+}
+
+/// The base each of a session's repositories is compared with, as the Diff
+/// panel picks it: one preset for every repository, plus overrides for the
+/// repositories picked on their own.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiffTargets {
+    /// The base every repository uses unless it has an override.
+    pub preset: DiffBase,
+    /// Per-repository overrides, by `owner/name`.
+    pub repos: std::collections::BTreeMap<String, RepoBase>,
+}
+
+impl DiffTargets {
+    /// The base to ask for. With no overrides it is the preset as it is.
+    /// Otherwise it is a [`DiffBase::Spec`] with one entry for each name in
+    /// `repos`, in that order, each one as [`DiffTargets::of`] gives it.
+    #[must_use]
+    pub fn base(&self, repos: &[String]) -> DiffBase {
+        if self.repos.is_empty() {
+            return self.preset.clone();
+        }
+        DiffBase::Spec(
+            repos
+                .iter()
+                .map(|repo| RepoDiffSpec {
+                    repo: repo.clone(),
+                    base: self.of(repo),
+                })
+                .collect(),
+        )
+    }
+
+    /// The base one repository is compared with: its override, or else the
+    /// preset as that repository's base.
+    #[must_use]
+    pub fn of(&self, repo: &str) -> RepoBase {
+        self.repos
+            .get(repo)
+            .cloned()
+            .unwrap_or_else(|| preset_for_repo(&self.preset))
+    }
+
+    /// Whether any repository has a base of its own.
+    #[must_use]
+    pub fn per_repo(&self) -> bool {
+        !self.repos.is_empty()
+    }
+
+    /// Sets the preset and drops every override: the header picker resets
+    /// every repository.
+    pub fn pick_all(&mut self, preset: DiffBase) {
+        self.preset = preset;
+        self.repos.clear();
+    }
+
+    /// Gives one repository its own base. Another session's branch has no
+    /// per-repository form, so while it is the preset this resets the preset
+    /// to `origin/main`, and the other repositories keep that. The pull
+    /// requests' bases do have one, so the other repositories keep theirs.
+    pub fn pick(&mut self, repo: &str, own: RepoBase) {
+        if matches!(self.preset, DiffBase::OtherSession(_)) {
+            self.preset = DiffBase::OriginMain;
+        }
+        self.repos.insert(repo.to_owned(), own);
+    }
+}
+
+/// A session-wide preset as one repository's base.
+fn preset_for_repo(preset: &DiffBase) -> RepoBase {
+    match preset {
+        DiffBase::OriginMain => RepoBase::DefaultBranch,
+        DiffBase::UncommittedOnly => RepoBase::Uncommitted,
+        DiffBase::SinceLastReviewed => RepoBase::LastReviewed,
+        DiffBase::SinceFork => RepoBase::ForkPoint,
+        DiffBase::PullRequestBase => RepoBase::PullRequestBase,
+        // `pick` never leaves another session as the preset with overrides,
+        // and a spec is never a preset, so these read as the default branch.
+        DiffBase::OtherSession(_) | DiffBase::Spec(_) => RepoBase::DefaultBranch,
+    }
 }
 
 /// A session's changes in one repository.
@@ -815,6 +1306,18 @@ pub struct PushRepo {
     pub open_pull_request: Option<u32>,
 }
 
+/// A pull request a push opened or found for one repository.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushedPullRequest {
+    /// The repository, as `owner/name`.
+    pub repo: String,
+    /// The pull request's number.
+    pub number: u32,
+    /// What the push found about an open pull request it left as it was,
+    /// such as "PR #3 targets main"; empty otherwise.
+    pub note: String,
+}
+
 /// What to do with one repository of a push.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PushChoice {
@@ -829,6 +1332,9 @@ pub struct PushChoice {
     pub title: String,
     /// The pull request's body.
     pub body: String,
+    /// The branch the pull request targets, such as `release/2.4`. Empty
+    /// means the repository's default branch.
+    pub base_branch: String,
 }
 
 /// Where a board item lives.
@@ -945,6 +1451,10 @@ pub struct Item {
     pub session: Option<SessionId>,
     /// Its parent milestone or task.
     pub parent: Option<ItemId>,
+    /// The daemon's revision of the item when it was read. A move names it,
+    /// so a change made since by an agent or another window is refused
+    /// instead of silently overwritten; 0 for an item no daemon has numbered.
+    pub revision: u64,
 }
 
 /// Extra board details loaded alongside the compact card rows.
@@ -1118,6 +1628,27 @@ pub struct PreparedView {
     pub note: String,
     /// When it was prepared, as people read it.
     pub prepared: String,
+}
+
+/// Where a prepared view stands with the person (VW-2 to VW-9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewState {
+    /// Prepared by the agent, not offered yet.
+    Draft,
+    /// Offered, waiting for the person.
+    Waiting,
+    /// Put off until later.
+    Later,
+    /// Turned down for now.
+    NotNow,
+    /// Accepted and open on screen.
+    Opened,
+    /// Opened, then put back as it was.
+    Reverted,
+    /// Opened, then closed.
+    OpenedAndClosed,
+    /// Opened and kept as it is.
+    Kept,
 }
 
 /// A skill the `/` menu offers in the composer (SE-24).

@@ -432,3 +432,48 @@ fn choices_are_saved_and_survive_syncs() {
     let choices = Managed::open(machine.path()).unwrap().choices().unwrap();
     assert_eq!(choices, BTreeMap::from([(name("a"), Choice::Synced), (name("b"), Choice::Synced)]));
 }
+
+/// The machine home's Claude folder, as the agent's own skills folder.
+fn agent_folder(home: &Path) -> Vec<SkillsSource> {
+    vec![SkillsSource { agent: "claude".into(), root: home.join(".claude/skills") }]
+}
+
+#[test]
+fn a_clash_picked_local_loses_its_link_and_one_picked_synced_keeps_it() {
+    let host = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let managed = Managed::open(&home.path().join("Humata")).unwrap();
+    put(host.path(), "a/SKILL.md", "a");
+    put(host.path(), "b/SKILL.md", "b");
+    apply(&managed, &scan(host.path())).unwrap();
+    let agents = agent_folder(home.path());
+    managed.link_agents(&agents).unwrap();
+    let folder = home.path().join(".claude/skills");
+    assert!(fs::symlink_metadata(folder.join("a")).unwrap().file_type().is_symlink());
+
+    managed.set_choice(&name("a"), Choice::Local).unwrap();
+    managed.set_choice(&name("b"), Choice::Synced).unwrap();
+    managed.link_agents(&agents).unwrap();
+
+    assert!(fs::symlink_metadata(folder.join("a")).is_err(), "picked local: Humata's link goes");
+    assert_eq!(fs::read_to_string(folder.join("b/SKILL.md")).unwrap(), "b");
+}
+
+#[test]
+fn linking_leaves_files_and_folders_it_did_not_make() {
+    let host = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let managed = Managed::open(&home.path().join("Humata")).unwrap();
+    put(host.path(), "a/SKILL.md", "synced");
+    apply(&managed, &scan(host.path())).unwrap();
+    let folder = home.path().join(".claude/skills");
+    put(&folder, "a", "a plain file the user made");
+    put(&folder, "notes.txt", "notes");
+    symlink(host.path(), folder.join("gone")).unwrap();
+
+    managed.link_agents(&agent_folder(home.path())).unwrap();
+
+    assert_eq!(fs::read_to_string(folder.join("a")).unwrap(), "a plain file the user made");
+    assert_eq!(fs::read_to_string(folder.join("notes.txt")).unwrap(), "notes");
+    assert_eq!(fs::read_link(folder.join("gone")).unwrap(), host.path());
+}

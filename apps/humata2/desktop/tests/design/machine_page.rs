@@ -10,8 +10,89 @@ use crate::kit::*;
 use crate::pages::page;
 use crate::sidebar::Side;
 
+/// The Disk bar's width: the right column less the card's padding, the key
+/// and the gap after it.
+const DISK_BAR: f32 = 400. - 24. - 84. - 8.;
+
+/// One row of a machine's Health card.
+#[allow(dead_code)] // Note is drawn by design/upgrade.rs.
+#[derive(Clone, Copy)]
+pub(crate) enum Health {
+    /// GitHub signed in, with its scopes.
+    GitHub,
+    /// Agent chips.
+    Agents(&'static [&'static str]),
+    /// Disk: the bar's filled share, its colour, the words, an orange note.
+    Disk { used: f32, hex: u32, text: &'static str, note: Option<&'static str> },
+    /// Variable names (values stay on the host).
+    Variables(&'static [&'static str]),
+    /// A free line: key, words in `hex` (None: the text colour), an optional
+    /// green check before it and an optional secondary detail under it.
+    Note { key: &'static str, text: &'static str, hex: Option<u32>, check: bool, detail: Option<&'static str> },
+}
+
+/// What a machine's page shows: everything that differs between machines.
+#[derive(Clone, Copy)]
+pub(crate) struct Machine {
+    pub(crate) name: &'static str,
+    /// The header's primary button.
+    pub(crate) new_label: &'static str,
+    pub(crate) subtitle: &'static str,
+    /// "Open a shell" drawn at half strength.
+    pub(crate) dim_shell: bool,
+    /// The primary new-session button drawn at half strength.
+    pub(crate) dim_new: bool,
+    /// Migrating, read-only or failed: the variable links are dimmed.
+    pub(crate) read_only: bool,
+    /// The sessions card's heading.
+    pub(crate) sessions_heading: &'static str,
+    /// Dot, title, channel, agent.
+    pub(crate) sessions: &'static [(St, &'static str, &'static str, &'static str)],
+    /// Channel ("# name", D466) and what its folder holds.
+    pub(crate) folders: &'static [(&'static str, &'static str)],
+    pub(crate) health: &'static [Health],
+    /// A notice above the columns, with an Open in Inbox button.
+    pub(crate) banner: Option<&'static str>,
+}
+
+impl Machine {
+    /// The machine every Overview and Storage frame has drawn so far.
+    pub(crate) const fn devbox_1() -> Self {
+        Self {
+            name: "devbox-1",
+            new_label: "New session on devbox-1",
+            subtitle: "Ubuntu 24.04 · x86_64 · devbox-1.lan (ssh) · humatad 2.0.3",
+            dim_shell: false,
+            dim_new: false,
+            read_only: false,
+            sessions_heading: "Sessions on it · 6",
+            sessions: &[
+                (St::NeedsYou, "Ledger schema migration", "# payments-rewrite", "Claude Code"),
+                (St::NeedsYou, "Try BRIN index", "# payments-rewrite", "Claude Code"),
+                (St::Idle, "API rate limiter", "# payments-rewrite", "Codex"),
+                (St::Working, "Partial BRIN on posted_at", "# payments-rewrite", "Claude Code"),
+                (St::Working, "Benchmark BRIN", "# infra", "Codex"),
+                (St::Exited, "Upgrade Postgres 17", "# infra", "Claude Code"),
+            ],
+            folders: &[
+                ("# payments-rewrite", "4 sessions · 3.1 GB"),
+                ("# infra", "2 sessions · 0.8 GB"),
+                ("# pr-reviews", "no sessions · 0.2 GB"),
+            ],
+            health: &[
+                Health::GitHub,
+                Health::Agents(&["claude 2.4", "codex 0.98"]),
+                Health::Disk { used: 0.97, hex: RED, text: "11 GB free of 500 GB", note: Some("New clones stop at 5 GB.") },
+                Health::Variables(&["DATABASE_URL", "STRIPE_KEY"]),
+                Health::Note { key: "Humata", text: "2.0.3", hex: None, check: false, detail: None },
+            ],
+            banner: None,
+        }
+    }
+}
+
 /// The machine's header and its sub-tabs; `storage` lights Storage, else Overview.
-fn header(look: Look, storage: bool) -> Div {
+fn header(look: Look, machine: &Machine, storage: bool) -> Div {
     let tab = |text: &'static str, lit: bool| {
         div()
             .flex()
@@ -40,24 +121,24 @@ fn header(look: Look, storage: bool) -> Div {
                 .child(div().text_size(px(15.)).text_color(c(look.secondary)).child("Hosts"))
                 .child(small_icon(IconName::ChevronRight, look.tertiary))
                 .child(status(St::Working))
-                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(15.)).child("devbox-1"))
+                .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(15.)).child(machine.name))
                 .child(div().flex_1())
-                .child(button(look, Kind::Secondary, "Open a shell"))
-                .child(button(look, Kind::Primary, "New session on devbox-1"))
+                .child(button(look, Kind::Secondary, "Open a shell").when(machine.dim_shell, |button| button.opacity(0.5)))
+                .child(button(look, Kind::Primary, machine.new_label).when(machine.dim_new, |button| button.opacity(0.5)))
                 .child(icon(IconName::Ellipsis, look.secondary)),
         )
         .child(
             div()
                 .px(px(20.))
                 .pb(px(8.))
-                .child(secondary(look, "Ubuntu 24.04 · x86_64 · devbox-1.lan (ssh) · humatad 2.0.3")),
+                .child(secondary(look, machine.subtitle)),
         )
         .child(
             div()
                 .flex()
                 .items_end()
                 .gap(px(20.))
-                .h(px(32.))
+                .h(px(31.))
                 .px(px(20.))
                 .text_size(px(12.5))
                 .child(tab("Overview", !storage))
@@ -72,7 +153,7 @@ fn title(text: &'static str) -> Div {
 
 /// The Overview body's left column: sessions on the machine, then its
 /// Humata folders by channel (FM-11).
-fn left(look: Look) -> Div {
+fn left(look: Look, machine: &Machine) -> Div {
     let session = |state: St, name: &'static str, channel: &'static str, agent: &'static str| {
         div()
             .flex()
@@ -87,7 +168,7 @@ fn left(look: Look) -> Div {
             .child(div().w(px(130.)).whitespace_nowrap().text_size(px(11.5)).text_color(c(look.secondary)).child(channel))
             .child(div().flex_1().whitespace_nowrap().text_color(c(look.secondary)).child(agent))
     };
-    let folder = |path: &'static str, what: &'static str| {
+    let folder = |channel: &'static str, what: &'static str| {
         div()
             .flex()
             .items_center()
@@ -97,7 +178,7 @@ fn left(look: Look) -> Div {
             .border_b_1()
             .border_color(c(look.line))
             .child(small_icon(IconName::FolderOpen, look.secondary))
-            .child(div().w(px(220.)).whitespace_nowrap().font_family(MONO).text_size(px(11.5)).child(path))
+            .child(div().w(px(220.)).whitespace_nowrap().child(channel))
             .child(div().flex_1().whitespace_nowrap().child(secondary(look, what)))
             .child(div().flex_shrink_0().whitespace_nowrap().text_color(c(look.accent)).child("Open in Files"))
     };
@@ -112,16 +193,11 @@ fn left(look: Look) -> Div {
                 .flex()
                 .flex_col()
                 .gap(px(6.))
-                .child(label(look, "Sessions on it · 6"))
+                .child(label(look, machine.sessions_heading))
                 .child(
                     card(look)
                         .overflow_hidden()
-                        .child(session(St::NeedsYou, "Ledger schema migration", "# payments-rewrite", "Claude Code"))
-                        .child(session(St::NeedsYou, "Try BRIN index", "# payments-rewrite", "Claude Code"))
-                        .child(session(St::Idle, "API rate limiter", "# payments-rewrite", "Codex"))
-                        .child(session(St::Working, "Partial BRIN on posted_at", "# payments-rewrite", "Claude Code"))
-                        .child(session(St::Working, "Benchmark BRIN", "# infra", "Codex"))
-                        .child(session(St::Exited, "Upgrade Postgres 17", "# infra", "Claude Code")),
+                        .children(machine.sessions.iter().map(|&(state, name, channel, agent)| session(state, name, channel, agent))),
                 ),
         )
         .child(
@@ -133,16 +209,14 @@ fn left(look: Look) -> Div {
                 .child(
                     card(look)
                         .overflow_hidden()
-                        .child(folder("~/Humata/payments-rewrite/", "4 sessions · 3.1 GB"))
-                        .child(folder("~/Humata/infra/", "2 sessions · 0.8 GB"))
-                        .child(folder("~/Humata/pr-reviews/", "no sessions · 0.2 GB")),
+                        .children(machine.folders.iter().map(|&(channel, what)| folder(channel, what))),
                 ),
         )
 }
 
 /// The Overview body's right column: the health card, then the host rules
-/// its agents run under.
-fn right(look: Look) -> Div {
+/// its agents run under. Frames 73, 75 and 76 (design/stop.rs) draw it too.
+pub(crate) fn right(look: Look, machine: &Machine) -> Div {
     let kv = |key: &'static str, value: Div| {
         div()
             .flex()
@@ -164,6 +238,64 @@ fn right(look: Look) -> Div {
             .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().child(text))
             .child(div().w(px(46.)).flex_shrink_0().whitespace_nowrap().font_weight(FontWeight::MEDIUM).text_color(c(hex)).child(value))
     };
+    // A variable's name with its two actions, in a bordered box.
+    let variable_color = if machine.read_only { look.tertiary } else { look.accent };
+    let variable = |name: &'static str| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.))
+            .px(px(4.))
+            .py(px(3.))
+            .rounded(px(5.))
+            .border_1()
+            .border_color(c(look.line))
+            .child(div().whitespace_nowrap().font_family(MONO).text_size(px(11.5)).child(name))
+            .child(div().flex().gap(px(8.)).whitespace_nowrap().text_color(c(variable_color)).child("Set value…").child("Remove"))
+    };
+    let health = |row: &Health| match *row {
+        Health::GitHub => kv(
+            "GitHub",
+            div().flex().items_center().gap(px(6.)).child(small_icon(IconName::Check, GREEN)).child("signed in as uhvesta").child(chip(look, "repo", look.secondary)).child(chip(look, "read:org", look.secondary)),
+        ),
+        Health::Agents(names) => kv("Agents", div().flex().gap(px(6.)).children(names.iter().map(|&name| chip(look, name, look.secondary)))),
+        Health::Disk { used, hex, text, note } => kv(
+            "Disk",
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(div().h(px(5.)).w_full().rounded_full().bg(c(look.fill)).child(div().w(px(DISK_BAR * used)).h_full().rounded_full().bg(c(hex))))
+                .child(div().whitespace_nowrap().child(text))
+                .children(note.map(|note| div().whitespace_nowrap().text_size(px(11.5)).text_color(c(ORANGE)).child(note))),
+        ),
+        Health::Variables(names) => kv(
+            "Variables",
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(div().flex().gap(px(6.)).children(names.iter().map(|&name| variable(name))))
+                .child(secondary(look, "Names only; values stay on the host."))
+                .child(div().text_color(c(variable_color)).child("New variable…")),
+        ),
+        Health::Note { key, text, hex, check, detail } => kv(
+            key,
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .when(check, |line| line.child(small_icon(IconName::Check, GREEN)))
+                        .child(div().text_color(c(hex.unwrap_or(look.text))).child(text)),
+                )
+                .children(detail.map(|detail| secondary(look, detail))),
+        ),
+    };
     div()
         .w(px(400.))
         .flex_shrink_0()
@@ -175,30 +307,7 @@ fn right(look: Look) -> Div {
                 .p(px(12.))
                 .gap(px(8.))
                 .child(title("Health"))
-                .child(kv(
-                    "GitHub",
-                    div().flex().items_center().gap(px(6.)).child(small_icon(IconName::Check, GREEN)).child("signed in as uhvesta").child(chip(look, "repo", look.secondary)).child(chip(look, "read:org", look.secondary)),
-                ))
-                .child(kv("Agents", div().flex().gap(px(6.)).child(chip(look, "claude 2.4", look.secondary)).child(chip(look, "codex 0.98", look.secondary))))
-                .child(kv(
-                    "Disk",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(div().h(px(5.)).w_full().rounded_full().bg(c(look.fill)).child(div().w(px(250. * 0.88)).h_full().rounded_full().bg(c(RED))))
-                        .child(div().whitespace_nowrap().child("11 GB free of 500 GB"))
-                        .child(div().whitespace_nowrap().text_size(px(11.5)).text_color(c(ORANGE)).child("New clones stop at 5 GB.")),
-                ))
-                .child(kv(
-                    "Variables",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(div().flex().gap(px(6.)).child(chip(look, "DATABASE_URL", look.secondary)).child(chip(look, "STRIPE_KEY", look.secondary)))
-                        .child(secondary(look, "Names only; values stay on the host.")),
-                )),
+                .children(machine.health.iter().map(health)),
         )
         .child(
             div()
@@ -221,12 +330,21 @@ fn right(look: Look) -> Div {
 /// The machine page for devbox-1, Overview tab: sessions on it, its Humata
 /// folders, health, and what its agents can reach (HO-4, FM-11).
 pub fn machine(look: Look) -> Div {
-    page(
-        look,
-        Side::at("devbox-1"),
-        header(look, false),
-        div().flex().gap(px(16.)).p(px(20.)).text_size(px(12.5)).child(left(look)).child(right(look)),
-    )
+    overview(look, Side::at("devbox-1"), &Machine::devbox_1())
+}
+
+/// Any machine's Overview tab, drawn beside the given sidebar.
+pub(crate) fn overview(look: Look, side: Side, machine: &Machine) -> Div {
+    let columns = div().flex().gap(px(16.)).p(px(20.)).text_size(px(12.5)).child(left(look, machine)).child(right(look, machine));
+    let body = match machine.banner {
+        None => columns,
+        Some(text) => div()
+            .flex()
+            .flex_col()
+            .child(div().px(px(20.)).child(crate::session::notice(look, IconName::Info, ORANGE, text, Some("Open in Inbox"))))
+            .child(columns),
+    };
+    page(look, side, header(look, machine, false), body)
 }
 
 /// One row of the Storage table: the kind (blank under a group), what it
@@ -270,7 +388,7 @@ pub fn storage(look: Look) -> Div {
     page(
         look,
         Side::at("devbox-1"),
-        header(look, true),
+        header(look, &Machine::devbox_1(), true),
         div()
             .p(px(20.))
             .text_size(px(12.5))

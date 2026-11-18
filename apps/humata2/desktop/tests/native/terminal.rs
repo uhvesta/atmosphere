@@ -1,10 +1,27 @@
 //! The embedded terminal: keys, focus and scrollback.
 use super::*;
 
+/// Whether the fake program of a tab has printed text ending in `tail`: what
+/// the typed keys reached, and what the terminal then drew.
+fn printed_ends_with(app: &App, key: &(SessionId, usize), tail: &[u8]) -> bool {
+    app.fakes
+        .daemon
+        .workspace()
+        .terminal_bytes
+        .get(key)
+        .is_some_and(|bytes| bytes.ends_with(tail))
+}
+
 /// SE-10/13/16: actual terminal keystrokes, find and resize survive tab switches.
 #[test]
 fn the_embedded_terminal_accepts_keys_and_keeps_its_scrollback() {
     let mut app = App::new(fixture::design());
+    // A terminal sizes its program while it has focus, and headless windows
+    // start inactive, which keeps focus callbacks quiet.
+    app.cx
+        .update_window(app.window, |_, window, _| window.activate_window())
+        .unwrap();
+    app.settle();
     app.open("ledger", Panel::Info);
     app.click("terminal-tab 1");
     app.click("terminal");
@@ -17,10 +34,7 @@ fn the_embedded_terminal_accepts_keys_and_keeps_its_scrollback() {
         .unwrap();
     app.settle();
     let key = (SessionId::new("ledger"), 1);
-    assert!(
-        app.ui
-            .read(|s| s.session.terminal_bytes[&key].ends_with(b"~/humata\r\n$ "))
-    );
+    assert!(printed_ends_with(&app, &key, b"~/humata\r\n$ "));
     let wide = app
         .runtime
         .block_on(app.ui.clients().daemon.load())
@@ -38,6 +52,7 @@ fn the_embedded_terminal_accepts_keys_and_keeps_its_scrollback() {
         .update_window(app.window, |_, window, cx| window.press("escape", cx))
         .unwrap();
     app.settle();
+    assert!(!app.contains("find-bar"), "Escape closes the find bar");
     app.cx
         .update_window(app.window, |_, window, cx| {
             window.resize(size(px(720.), px(760.)));
@@ -52,7 +67,10 @@ fn the_embedded_terminal_accepts_keys_and_keeps_its_scrollback() {
         .block_on(app.ui.clients().daemon.load())
         .unwrap()
         .terminal_sizes[&key];
-    assert!(narrow.0 < wide.0);
+    assert!(
+        narrow.0 < wide.0,
+        "the focused tab fits a narrower window: {narrow:?}, was {wide:?}"
+    );
     app.cx
         .update_window(app.window, |_, window, cx| {
             window.resize(size(px(1280.), px(760.)));
@@ -69,9 +87,54 @@ fn the_embedded_terminal_accepts_keys_and_keeps_its_scrollback() {
         .terminal_sizes[&key];
     assert_eq!(restored, wide);
     assert!(app.contains("terminal"));
-    assert!(
-        app.ui
-            .read(|s| s.session.terminal_bytes[&key].ends_with(b"~/humata\r\n$ "))
+    assert!(printed_ends_with(&app, &key, b"~/humata\r\n$ "));
+}
+
+fn terminal_size(app: &App, key: &(SessionId, usize)) -> (u16, u16) {
+    app.runtime
+        .block_on(app.ui.clients().daemon.load())
+        .unwrap()
+        .terminal_sizes[key]
+}
+
+/// D750 (reads D271 point 3): a shown terminal sizes its program to its own
+/// bounds, in focus or not. A window that narrows while the palette has focus
+/// narrows the shell at once, and focus coming back changes nothing. Never
+/// taking back another view's size is covered in
+/// terminal/client/tests/component.rs.
+#[test]
+fn a_terminal_fits_its_own_bounds_even_out_of_focus() {
+    let mut app = App::new(fixture::design());
+    app.cx
+        .update_window(app.window, |_, window, _| window.activate_window())
+        .unwrap();
+    app.settle();
+    app.open("ledger", Panel::Info);
+    app.click("terminal-tab 1");
+    app.click("terminal");
+    let key = (SessionId::new("ledger"), 1);
+    let wide = terminal_size(&app, &key);
+
+    app.send(AppAction::OpenPalette);
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.resize(size(px(720.), px(760.)));
+            window.bounds_changed(cx);
+        })
+        .unwrap();
+    app.settle();
+    app.draw();
+    app.settle();
+    let narrow = terminal_size(&app, &key);
+    assert!(narrow.0 < wide.0, "a terminal out of focus fits its own new bounds");
+
+    press(&mut app, &["escape"]);
+    app.draw();
+    app.settle();
+    assert_eq!(
+        terminal_size(&app, &key),
+        narrow,
+        "focus coming back asks for no other size"
     );
 }
 
@@ -97,9 +160,11 @@ fn new_sessions_and_selected_tabs_receive_input_without_an_extra_click() {
         })
         .unwrap();
     app.settle();
-    assert!(app.ui.read(|s| {
-        s.session.terminal_bytes[&(SessionId::new("ledger"), 1)].ends_with(b"~/humata\r\n$ ")
-    }));
+    assert!(printed_ends_with(
+        &app,
+        &(SessionId::new("ledger"), 1),
+        b"~/humata\r\n$ "
+    ));
     app.send(AppAction::Session(SessionAction::OpenTerminal {
         agent: Agent::Shell,
         split: false,
@@ -113,9 +178,11 @@ fn new_sessions_and_selected_tabs_receive_input_without_an_extra_click() {
         })
         .unwrap();
     app.settle();
-    assert!(app.ui.read(|s| {
-        s.session.terminal_bytes[&(SessionId::new("ledger"), tab)].ends_with(b"~/humata\r\n$ ")
-    }));
+    assert!(printed_ends_with(
+        &app,
+        &(SessionId::new("ledger"), tab),
+        b"~/humata\r\n$ "
+    ));
     app.send(AppAction::StartNewSession);
     app.send(AppAction::NewSession(N::Agent(Agent::Shell)));
     app.send(AppAction::NewSession(N::Title("Fresh terminal".into())));
@@ -129,10 +196,7 @@ fn new_sessions_and_selected_tabs_receive_input_without_an_extra_click() {
         })
         .unwrap();
     app.settle();
-    assert!(
-        app.ui
-            .read(|s| s.session.terminal_bytes[&(id, 0)].ends_with(b"~/humata\r\n$ "))
-    );
+    assert!(printed_ends_with(&app, &(id, 0), b"~/humata\r\n$ "));
     app.click("session-fork");
     app.click("fork-kind-2");
     app.click("fork-create");
@@ -145,10 +209,7 @@ fn new_sessions_and_selected_tabs_receive_input_without_an_extra_click() {
         })
         .unwrap();
     app.settle();
-    assert!(
-        app.ui
-            .read(|s| s.session.terminal_bytes[&(fork.clone(), 0)].ends_with(b"~/humata\r\n$ "))
-    );
+    assert!(printed_ends_with(&app, &(fork.clone(), 0), b"~/humata\r\n$ "));
     app.send(AppAction::OpenPalette);
     app.cx
         .update_window(app.window, |_, window, cx| window.press("escape", cx))
@@ -162,13 +223,64 @@ fn new_sessions_and_selected_tabs_receive_input_without_an_extra_click() {
         })
         .unwrap();
     app.settle();
-    assert!(
-        app.ui
-            .read(|s| s.session.terminal_bytes[&(fork, 0)].ends_with(b"notes.md  todo.txt\r\n$ "))
-    );
+    assert!(printed_ends_with(
+        &app,
+        &(fork, 0),
+        b"notes.md  todo.txt\r\n$ "
+    ));
 }
 
 /// SE-13: focus inside either grid determines the group that receives new tabs.
+fn press(app: &mut App, keys: &[&str]) {
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            for key in keys {
+                window.press(key, cx);
+            }
+        })
+        .unwrap();
+    app.settle();
+}
+
+/// SE-16: a shell tab whose shell exits says so under its output, never
+/// that the machine is out of reach, and what is typed after it reaches
+/// nothing.
+#[test]
+fn a_shell_tab_whose_shell_exits_says_so_and_not_that_the_connection_was_lost() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.click("terminal-tab 1");
+    app.click("terminal");
+    press(&mut app, &["e", "x", "i", "t", "enter"]);
+    assert!(app.contains("terminal-exited"));
+    assert!(!app.contains("disconnected-banner"));
+    press(&mut app, &["l", "s", "enter"]);
+    let key = (SessionId::new("ledger"), 1);
+    assert!(!printed_ends_with(&app, &key, b"todo.txt\r\n$ "));
+}
+
+/// SE-16: when a tab's machine comes back, a line under its output says so
+/// and how much it caught up, until the person types again.
+#[test]
+fn a_reconnected_tab_says_so_until_it_is_typed_into() {
+    use humata2_clients::TerminalNotice;
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.click("terminal-tab 1");
+    app.click("terminal");
+    app.fakes.daemon.terminal_notice(
+        &SessionId::new("ledger"),
+        1,
+        TerminalNotice::Reconnected {
+            caught_up_lines: 12,
+        },
+    );
+    app.settle();
+    assert!(app.contains("terminal-reconnected"));
+    press(&mut app, &["a"]);
+    assert!(!app.contains("terminal-reconnected"));
+}
+
 #[test]
 fn clicking_a_split_terminal_focuses_that_group() {
     use humata2_clients::model::Agent;
@@ -206,6 +318,94 @@ fn clicking_a_split_terminal_focuses_that_group() {
 }
 
 /// SE-10: keyboard input follows focus; palette editing cannot type into the terminal.
+const PASTE: &str = if cfg!(target_os = "macos") {
+    "cmd-v"
+} else {
+    "ctrl-shift-v"
+};
+
+fn copy(app: &mut App, entry: gpui_kit::ClipboardEntry) {
+    app.cx.update(|cx| {
+        cx.write_to_clipboard(gpui_kit::ClipboardItem {
+            entries: vec![entry],
+        })
+    });
+}
+
+fn toasts(app: &App) -> usize {
+    app.ui.read(|state| state.toasts.len())
+}
+
+/// SE-16: an image pasted into a tab is saved on the session's machine and
+/// the tab gets its path, as typed.
+#[test]
+fn a_pasted_image_types_the_path_the_machine_saved_it_at() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.click("terminal-tab 1");
+    app.click("terminal");
+    copy(
+        &mut app,
+        gpui_kit::ClipboardEntry::Image(gpui_kit::Image::from_bytes(
+            gpui_kit::ImageFormat::Png,
+            b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec(),
+        )),
+    );
+    press(&mut app, &[PASTE]);
+    app.settle();
+    let key = (SessionId::new("ledger"), 1);
+    assert!(printed_ends_with(&app, &key, b".png"));
+}
+
+/// SE-16, D335: files pasted from Finder type their paths into a terminal
+/// on this Mac. On another machine those paths don't exist, so the files
+/// are uploaded into the session's pastes there and the paths typed are
+/// the machine's.
+#[test]
+fn pasted_files_type_local_paths_here_and_uploaded_paths_on_another_machine() {
+    let mut app = App::new(fixture::design());
+    let files = || {
+        gpui_kit::ClipboardEntry::ExternalPaths(gpui_kit::ExternalPaths(
+            vec![
+                std::path::PathBuf::from("/tmp/a b.png"),
+                std::path::PathBuf::from("/tmp/notes.txt"),
+            ]
+            .into(),
+        ))
+    };
+    // `refund` runs on this Mac in the design fixture.
+    app.open("refund", Panel::Info);
+    app.click("terminal-tab 0");
+    app.click("terminal");
+    copy(&mut app, files());
+    press(&mut app, &[PASTE]);
+    let here = (SessionId::new("refund"), 0);
+    assert!(printed_ends_with(&app, &here, b"'/tmp/a b.png' /tmp/notes.txt"));
+
+    app.open("ledger", Panel::Info);
+    app.click("terminal-tab 1");
+    app.click("terminal");
+    copy(&mut app, files());
+    press(&mut app, &[PASTE]);
+    let there = (SessionId::new("ledger"), 1);
+    assert!(printed_ends_with(&app, &there, b"notes.txt"));
+    assert!(!printed_ends_with(&app, &there, b"/tmp/notes.txt"));
+}
+
+/// SE-16: typing into a tab that takes none says why, once, rather than
+/// vanishing.
+#[test]
+fn typing_into_an_exited_shell_says_why_once() {
+    let mut app = App::new(fixture::design());
+    app.open("ledger", Panel::Info);
+    app.click("terminal-tab 1");
+    app.click("terminal");
+    press(&mut app, &["e", "x", "i", "t", "enter"]);
+    let before = toasts(&app);
+    press(&mut app, &["l", "s", "enter"]);
+    assert_eq!(toasts(&app), before + 1);
+}
+
 #[test]
 fn an_unfocused_terminal_does_not_receive_palette_keystrokes() {
     let mut app = App::new(fixture::design());

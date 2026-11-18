@@ -7,8 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    AccessRule, Answer, AskedBy, Capability, ChannelId, Grant, GrantId, Preview, Request,
-    RequestId, RequestKind, RuleSetting,
+    AccessRule, Answer, AskedBy, Capability, ChannelId, CopyCard, Grant, GrantId, HolderNote, HolderSession,
+    MigrateCard, MigrateFailure, MigrateStep, MigrateStepState,
+    MigratePhase, MigrateThing, Preview, Release, Request, RequestId, RequestKind, RuleSetting,
 };
 use humata2_grpc::humata::v1 as pb;
 
@@ -185,12 +186,14 @@ fn kind(request: &pb::InboxRequest) -> RequestKind {
         Some(P::Question(_)) => return RequestKind::Question,
         Some(P::Push(_)) => return RequestKind::Merge,
         Some(P::BoardChange(change)) if change.deletes_item => return RequestKind::Destroy,
+        Some(P::Migrate(_)) => return RequestKind::Migrate,
         _ => {}
     }
     match pb::RequestKind::try_from(request.kind).unwrap_or(pb::RequestKind::Unspecified) {
         pb::RequestKind::Question => RequestKind::Question,
         pb::RequestKind::Bridge => RequestKind::Network,
         pb::RequestKind::Machine => RequestKind::Destroy,
+        pb::RequestKind::Migrate => RequestKind::Migrate,
         pb::RequestKind::Files | pb::RequestKind::Board => RequestKind::FileEdit,
         pb::RequestKind::Session | pb::RequestKind::Channel | pb::RequestKind::Unspecified => {
             RequestKind::Command
@@ -261,10 +264,15 @@ fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
-        P::CrossMachineCopy(copy) => Preview::Text(format!(
-            "{} -> {}",
-            copy.source_path, copy.destination_path
-        )),
+        P::CrossMachineCopy(copy) => Preview::CrossMachineCopy(CopyCard {
+            from: map::machine_id(copy.source_machine.as_ref()),
+            to: map::machine_id(copy.destination_machine.as_ref()),
+            source_path: copy.source_path.clone(),
+            destination_path: copy.destination_path.clone(),
+            place: copy.destination_place.clone(),
+            bytes: copy.bytes,
+            files: copy.files,
+        }),
         P::Move(each) => Preview::Text(format!(
             "{} -> {}",
             each.from.as_ref().map_or("", |machine| machine.value.as_str()),
@@ -286,7 +294,106 @@ fn preview(preview: Option<&pb::RequestPreview>) -> Preview {
                 .join("\n"),
         ),
         P::AccessAhead(ahead) => Preview::Text(ahead.target_label.clone()),
+        P::Migrate(migrate) => Preview::Migrate(migrate_card(migrate)),
     }
+}
+
+fn migrate_thing(value: i32) -> MigrateThing {
+    match pb::MigrateThing::try_from(value).unwrap_or(pb::MigrateThing::Unspecified) {
+        pb::MigrateThing::Cli => MigrateThing::Cli,
+        pb::MigrateThing::Store => MigrateThing::Store,
+        pb::MigrateThing::Holders => MigrateThing::Holders,
+        pb::MigrateThing::HostTools => MigrateThing::HostTools,
+        pb::MigrateThing::DeskFolders => MigrateThing::DeskFolders,
+        pb::MigrateThing::Daemon | pb::MigrateThing::Unspecified => MigrateThing::Daemon,
+    }
+}
+
+fn release(build: Option<&pb::BuildInfo>) -> Release {
+    Release {
+        version: build.map(|build| build.version.clone()).unwrap_or_default(),
+        bundle: build.map(|build| build.bundle.clone()).unwrap_or_default(),
+    }
+}
+
+fn migrate_phase(migrate: &pb::MigratePreview) -> MigratePhase {
+    match pb::MigratePhase::try_from(migrate.phase).unwrap_or(pb::MigratePhase::Unspecified) {
+        pb::MigratePhase::Migrating => MigratePhase::Migrating,
+        pb::MigratePhase::Failed => {
+            let error = migrate.last_error.clone().unwrap_or_default();
+            MigratePhase::Failed(MigrateFailure { message: error.message, fix: error.fix })
+        }
+        pb::MigratePhase::Waiting | pb::MigratePhase::Unspecified => MigratePhase::Waiting,
+    }
+}
+
+/// A Migrate item's card; `migrated` is filled in by the request's answer.
+fn migrate_card(migrate: &pb::MigratePreview) -> MigrateCard {
+    MigrateCard {
+        thing: migrate_thing(migrate.thing),
+        machine: map::machine_id(migrate.machine.as_ref()),
+        from: release(migrate.from.as_ref()),
+        to: release(migrate.to.as_ref()),
+        changes: migrate.changes.clone(),
+        keeps_running: migrate.keeps_running.clone(),
+        phase: migrate_phase(migrate),
+        waiting_sessions: migrate
+            .waiting_sessions
+            .iter()
+            .map(|session| map::session_id(Some(session)))
+            .collect(),
+        migrated: None,
+        steps: migrate
+            .steps
+            .iter()
+            .map(|step| MigrateStep {
+                label: step.label.clone(),
+                state: step_state(step.state),
+            })
+            .collect(),
+        holders: migrate.holders.iter().map(holder_session).collect(),
+    }
+}
+
+/// A step's state; unset or unknown reads as a step still to come.
+fn step_state(state: i32) -> MigrateStepState {
+    match pb::MigrateStepState::try_from(state).unwrap_or(pb::MigrateStepState::Unspecified) {
+        pb::MigrateStepState::Doing => MigrateStepState::Doing,
+        pb::MigrateStepState::Done => MigrateStepState::Done,
+        pb::MigrateStepState::Failed => MigrateStepState::Failed,
+        pb::MigrateStepState::Pending | pb::MigrateStepState::Unspecified => {
+            MigrateStepState::Pending
+        }
+    }
+}
+
+/// A holder's session and its note; a shell tab has no session. An unset or
+/// unknown note reads as staying until closed, which promises nothing.
+fn holder_session(holder: &pb::HolderSession) -> HolderSession {
+    let session = holder
+        .session
+        .as_ref()
+        .filter(|session| !session.value.is_empty())
+        .map(|session| map::session_id(Some(session)));
+    let note = match pb::HolderNote::try_from(holder.note).unwrap_or(pb::HolderNote::Unspecified) {
+        pb::HolderNote::RestartsWhenIdle => HolderNote::RestartsWhenIdle,
+        pb::HolderNote::Restarting => HolderNote::Restarting,
+        pb::HolderNote::NoIdleMoment => HolderNote::NoIdleMoment,
+        pb::HolderNote::StaysUntilClosed | pb::HolderNote::Unspecified => {
+            HolderNote::StaysUntilClosed
+        }
+    };
+    HolderSession { session, title: holder.title.clone(), note }
+}
+
+/// When an answered request was answered, as people read it: "just now",
+/// "2m ago".
+fn answered_ago(request: &pb::InboxRequest, now: i64) -> Option<String> {
+    let at = request.answered.as_ref()?.at.as_ref()?;
+    Some(match ago(now, at.seconds).as_str() {
+        "now" => "just now".to_owned(),
+        span => format!("{span} ago"),
+    })
 }
 
 /// How an answered request was answered.
@@ -349,7 +456,13 @@ fn request(request: &pb::InboxRequest, titles: &BTreeMap<i32, String>, now: i64)
         kind: kind(request),
         title: request.action_title.clone(),
         reason: request.reason.clone(),
-        preview: preview(request.preview.as_ref()),
+        preview: {
+            let mut shown = preview(request.preview.as_ref());
+            if let (Preview::Migrate(card), Some(Answer::Approved)) = (&mut shown, answer(request)) {
+                card.migrated = answered_ago(request, now);
+            }
+            shown
+        },
         doing: steps.last().cloned().unwrap_or_default(),
         rule: request
             .always
@@ -738,10 +851,194 @@ mod tests {
     }
 
     #[test]
+    fn a_cross_machine_copy_maps_to_its_card_with_machines_and_measured_size() {
+        let wire = pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::CrossMachineCopy(pb::CrossMachineCopyPreview {
+                source_machine: Some(pb::MachineId { value: "mac".into() }),
+                source_path: "datasets".into(),
+                destination_machine: Some(pb::MachineId { value: "gpu-box".into() }),
+                destination_path: "shared".into(),
+                bytes: 2_100_000_000,
+                files: 42,
+                destination_place: "ml shared".into(),
+            })),
+        };
+        let Preview::CrossMachineCopy(card) = preview(Some(&wire)) else {
+            panic!("a cross-machine copy has its own card");
+        };
+        assert_eq!((card.from.to_string(), card.to.to_string()), ("mac".to_owned(), "gpu-box".to_owned()));
+        assert_eq!((card.bytes, card.files), (2_100_000_000, 42));
+        assert_eq!(card.what(), "datasets");
+        assert_eq!(card.place, "ml shared");
+    }
+
+    #[test]
     fn ages_read_as_short_spans() {
         assert_eq!(ago(100, 100), "now");
         assert_eq!(ago(1_000, 460), "9m");
         assert_eq!(ago(20_000, 0), "5h");
         assert_eq!(ago(200_000, 0), "2d");
+    }
+    #[test]
+    fn a_failed_migrate_item_maps_its_card_and_an_approved_one_when_it_ended() {
+        let preview = pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::Migrate(pb::MigratePreview {
+                thing: pb::MigrateThing::Cli as i32,
+                machine: Some(pb::MachineId { value: "ma_2".into() }),
+                from: Some(pb::BuildInfo { version: "2.0.4".into(), bundle: "aa".into(), ..Default::default() }),
+                to: Some(pb::BuildInfo { version: "2.0.5".into(), bundle: "bb".into(), ..Default::default() }),
+                changes: vec!["humata".into()],
+                phase: pb::MigratePhase::Failed as i32,
+                last_error: Some(pb::Error { message: "broke".into(), fix: "again".into(), ..Default::default() }),
+                ..Default::default()
+            })),
+        };
+        let mut wire = pending();
+        wire.kind = pb::RequestKind::Migrate as i32;
+        wire.preview = Some(preview);
+        let mapped = request(&wire, &BTreeMap::new(), 120);
+        assert_eq!(mapped.kind, RequestKind::Migrate);
+        let Some(card) = mapped.migrate() else { panic!("a Migrate card") };
+        assert_eq!(card.thing, MigrateThing::Cli);
+        assert_eq!(card.machine.as_str(), "ma_2");
+        assert_eq!(card.to.version, "2.0.5");
+        assert_eq!(
+            card.phase,
+            MigratePhase::Failed(MigrateFailure { message: "broke".into(), fix: "again".into() })
+        );
+        assert_eq!(card.migrated, None);
+
+        wire.answer = Some(pb::RequestAnswer { answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})) });
+        wire.answered = Some(pb::Timestamped { at: Some(Default::default()), ..Default::default() });
+        let done = request(&wire, &BTreeMap::new(), 120);
+        assert_eq!(done.migrate().and_then(|card| card.migrated.clone()), Some("2m ago".to_owned()));
+    }
+
+    // D379: a Migrate card's steps and the sessions that hold the old
+    // release, each with its note; a shell tab has no session.
+    #[test]
+    fn a_migrate_card_maps_its_steps_and_holders_with_their_notes() {
+        use humata2_clients::model::{HolderNote, HolderSession, MigrateStep, MigrateStepState};
+        let steps = [
+            ("Check files", pb::MigrateStepState::Done),
+            ("Copy the store", pb::MigrateStepState::Doing),
+            ("Swap files", pb::MigrateStepState::Pending),
+            ("Restart", pb::MigrateStepState::Failed),
+        ];
+        let preview = pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::Migrate(pb::MigratePreview {
+                thing: pb::MigrateThing::Holders as i32,
+                machine: Some(pb::MachineId { value: "ma_2".into() }),
+                steps: steps
+                    .iter()
+                    .map(|(label, state)| pb::MigrateStep {
+                        label: (*label).into(),
+                        state: *state as i32,
+                    })
+                    .collect(),
+                holders: vec![
+                    pb::HolderSession {
+                        session: Some(pb::SessionId { value: "se_1".into() }),
+                        title: "ledger".into(),
+                        note: pb::HolderNote::RestartsWhenIdle as i32,
+                    },
+                    pb::HolderSession {
+                        session: Some(pb::SessionId { value: "se_2".into() }),
+                        title: "brin".into(),
+                        note: pb::HolderNote::Restarting as i32,
+                    },
+                    pb::HolderSession {
+                        session: Some(pb::SessionId { value: "se_3".into() }),
+                        title: "copilot".into(),
+                        note: pb::HolderNote::NoIdleMoment as i32,
+                    },
+                    // A shell tab: no session, set or not.
+                    pb::HolderSession {
+                        session: None,
+                        title: "zsh".into(),
+                        note: pb::HolderNote::StaysUntilClosed as i32,
+                    },
+                    pb::HolderSession {
+                        session: Some(pb::SessionId { value: String::new() }),
+                        title: "bash".into(),
+                        note: pb::HolderNote::StaysUntilClosed as i32,
+                    },
+                ],
+                waiting_sessions: vec![
+                    pb::SessionId { value: "se_1".into() },
+                    pb::SessionId { value: "se_2".into() },
+                    pb::SessionId { value: "se_3".into() },
+                ],
+                ..Default::default()
+            })),
+        };
+        let mut wire = pending();
+        wire.kind = pb::RequestKind::Migrate as i32;
+        wire.preview = Some(preview);
+        let mapped = request(&wire, &BTreeMap::new(), 120);
+        let Some(card) = mapped.migrate() else { panic!("a Migrate card") };
+
+        assert_eq!(
+            card.steps,
+            vec![
+                MigrateStep { label: "Check files".into(), state: MigrateStepState::Done },
+                MigrateStep { label: "Copy the store".into(), state: MigrateStepState::Doing },
+                MigrateStep { label: "Swap files".into(), state: MigrateStepState::Pending },
+                MigrateStep { label: "Restart".into(), state: MigrateStepState::Failed },
+            ]
+        );
+        assert_eq!(
+            card.holders,
+            vec![
+                HolderSession {
+                    session: Some(SessionId::new("se_1")),
+                    title: "ledger".into(),
+                    note: HolderNote::RestartsWhenIdle,
+                },
+                HolderSession {
+                    session: Some(SessionId::new("se_2")),
+                    title: "brin".into(),
+                    note: HolderNote::Restarting,
+                },
+                HolderSession {
+                    session: Some(SessionId::new("se_3")),
+                    title: "copilot".into(),
+                    note: HolderNote::NoIdleMoment,
+                },
+                HolderSession { session: None, title: "zsh".into(), note: HolderNote::StaysUntilClosed },
+                HolderSession { session: None, title: "bash".into(), note: HolderNote::StaysUntilClosed },
+            ]
+        );
+        // waiting_sessions (field 9) still maps as before.
+        assert_eq!(
+            card.waiting_sessions,
+            vec![SessionId::new("se_1"), SessionId::new("se_2"), SessionId::new("se_3")]
+        );
+    }
+
+    #[test]
+    fn an_unset_or_unknown_step_state_reads_pending_and_no_holders_map_empty() {
+        let preview = pb::RequestPreview {
+            preview: Some(pb::request_preview::Preview::Migrate(pb::MigratePreview {
+                thing: pb::MigrateThing::Cli as i32,
+                machine: Some(pb::MachineId { value: "ma_2".into() }),
+                // An unset or unknown state is a step still to come.
+                steps: vec![
+                    pb::MigrateStep { label: "Swap files".into(), state: 99 },
+                    pb::MigrateStep { label: "Restart".into(), state: 0 },
+                ],
+                ..Default::default()
+            })),
+        };
+        let mut wire = pending();
+        wire.kind = pb::RequestKind::Migrate as i32;
+        wire.preview = Some(preview);
+        let card = request(&wire, &BTreeMap::new(), 120).migrate().cloned();
+        let Some(card) = card else { panic!("a Migrate card") };
+        assert!(card.holders.is_empty());
+        assert_eq!(
+            card.steps.iter().map(|step| step.state).collect::<Vec<_>>(),
+            vec![humata2_clients::model::MigrateStepState::Pending; 2]
+        );
     }
 }

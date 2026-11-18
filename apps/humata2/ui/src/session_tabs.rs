@@ -3,18 +3,20 @@
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::base::{Disableable as _, TestTextExt as _};
+use gpui_kit::base::{Disableable as _, ObservedElement, TestTextExt as _};
 use gpui_kit::{prelude::*, *};
-use humata2_app::{AppAction, AppState};
-use humata2_clients::model::{Agent, Session, Status, Turn};
-use humata2_session::{GroupWidth, SessionAction, Tab, TabGroup, group_widths, is_markdown};
-use humata2_views::ViewsAction;
+use humata2_app::{AppAction, AppState, Route};
+use humata2_clients::model::{Agent, MoveProgress, MoveStepState, Session, Status, Turn};
+use humata2_inbox::InboxAction;
+use humata2_session::{
+    GroupWidth, SessionAction, SessionRefused, Tab, TabGroup, group_widths, is_markdown,
+};
 
 use crate::{
     bridge::Ui,
     chrome,
     code_editor,
-    theme::Look,
+    theme::{GREEN, Look, ORANGE, RED_STATUS},
     widgets::{self, col, row},
 };
 
@@ -60,6 +62,7 @@ fn tab_row(
     group: usize,
     tabs: &TabGroup,
     look: Look,
+    terminals: &crate::terminals::Terminals,
 ) -> Stateful<Div> {
     let split = state.session.view().is_some_and(|v| v.groups.len() == 2);
     // In a split, only the focused group's tab reads lit.
@@ -115,8 +118,8 @@ fn tab_row(
                     .into_any_element(),
                     format!("file-tab-{group}-{index}"),
                 ),
-                Tab::View(title) => (
-                    title.clone(),
+                Tab::View(id) => (
+                    crate::view_tab::tab_label(state, id),
                     chrome::icon(IconName::Sparkles, 0xbf5af2, 12.).into_any_element(),
                     format!("view-tab-{group}-{index}"),
                 ),
@@ -200,13 +203,20 @@ fn tab_row(
                 .tabs
                 .get(tabs.selected)
                 .and_then(|tab| match tab {
-                    Tab::Terminal(tab) => state
-                        .workspace
-                        .terminal_peers
-                        .get(&(session.id.clone(), *tab)),
+                    // The link's count once it has told one; the
+                    // workspace's (a fixture's) before.
+                    Tab::Terminal(tab) => terminals
+                        .other_writers(&session.id, *tab)
+                        .map(|others| usize::try_from(others).unwrap_or(usize::MAX))
+                        .or_else(|| {
+                            state
+                                .workspace
+                                .terminal_peers
+                                .get(&(session.id.clone(), *tab))
+                                .copied()
+                        }),
                     _ => None,
                 })
-                .copied()
                 .unwrap_or(0);
             bar.when(
                 session.status == Status::Working && peers > 0 && !split,
@@ -257,6 +267,115 @@ fn tab_row(
         })
 }
 
+/// One row of a moving session's step card.
+#[derive(Debug, PartialEq)]
+struct StepRow {
+    mark: &'static str,
+    state: MoveStepState,
+    title: String,
+    /// The running step's copy progress; none until its total is known.
+    progress: Option<CopyProgress>,
+}
+
+/// A thin bar's fill and its text under the running step.
+#[derive(Debug, PartialEq)]
+struct CopyProgress {
+    /// 0..=1 of the card's width.
+    fraction: f32,
+    label: String,
+}
+
+/// `done` of `total` bytes; none when the total is unknown (0).
+fn copy_progress(done: u64, total: u64) -> Option<CopyProgress> {
+    const MB: u64 = 1_000_000;
+    if total == 0 {
+        return None;
+    }
+    let done = done.min(total);
+    Some(CopyProgress {
+        fraction: (done as f64 / total as f64) as f32,
+        label: format!("{} of {} MB", done / MB, total / MB),
+    })
+}
+
+/// The card's rows, one per step in order (frame 64: done ✓, running ●,
+/// waiting ○).
+fn step_rows(moving: &MoveProgress) -> Vec<StepRow> {
+    moving
+        .steps
+        .iter()
+        .map(|step| StepRow {
+            mark: match step.state {
+                MoveStepState::Done => "✓",
+                MoveStepState::Running => "●",
+                MoveStepState::Failed => "✕",
+                MoveStepState::Pending | MoveStepState::Skipped | MoveStepState::Undone => "○",
+            },
+            state: step.state,
+            title: step.title.clone(),
+            progress: if step.state == MoveStepState::Running {
+                copy_progress(moving.done_units, moving.total_units)
+            } else {
+                None
+            },
+        })
+        .collect()
+}
+
+/// Frame 64's card: "Moving to <machine>" and every step with its state.
+fn steps_card(look: Look, to: &str, moving: &MoveProgress) -> AnyElement {
+    col()
+        .w_full()
+        .gap(px(8.))
+        .p(px(12.))
+        .rounded(px(7.))
+        .bg(rgb(look.fill))
+        .text_color(rgb(look.text))
+        .text_size(px(12.))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Moving to {to}")))
+        .children(step_rows(moving).into_iter().map(|row| {
+            let (color, dim) = match row.state {
+                MoveStepState::Done => (GREEN, false),
+                MoveStepState::Running => (ORANGE, false),
+                MoveStepState::Failed => (RED_STATUS, false),
+                MoveStepState::Pending | MoveStepState::Skipped | MoveStepState::Undone => (look.tertiary, true),
+            };
+            widgets::row()
+                .gap(px(8.))
+                .whitespace_nowrap()
+                .child(div().w(px(14.)).flex().justify_center().text_color(rgb(color)).child(row.mark))
+                .child(
+                    col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_color(rgb(if dim { look.secondary } else { look.text }))
+                                .child(row.title),
+                        )
+                        .children(row.progress.map(|progress| {
+                            col()
+                                .gap(px(3.))
+                                .child(
+                                    div()
+                                        .w(px(180.))
+                                        .h(px(3.))
+                                        .rounded(px(2.))
+                                        .bg(rgb(look.line))
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .rounded(px(2.))
+                                                .bg(rgb(look.accent))
+                                                .w(relative(progress.fraction)),
+                                        ),
+                                )
+                                .child(div().text_color(rgb(look.secondary)).child(progress.label))
+                        })),
+                )
+        }))
+        .into_any_element()
+}
+
 fn notice(
     look: Look,
     glyph: IconName,
@@ -265,7 +384,12 @@ fn notice(
     action: Option<AnyElement>,
 ) -> AnyElement {
     // Terminals::body places it under the terminal's content.
+    // A status line a screen reader (and the view) reads, as the pane banner
+    // it stands in for is.
     row()
+        .id(SharedString::from(format!("tab-notice {text}")))
+        .role(Role::Status)
+        .aria_label(text.clone())
         .w_full()
         .px(px(10.))
         .py(px(7.))
@@ -278,14 +402,21 @@ fn notice(
         .child(chrome::icon(glyph, color, 12.))
         .child(div().flex_1().min_w_0().child(text))
         .children(action)
+        .test_support()
         .into_any_element()
 }
 
 fn menu(ui: &Rc<Ui>, group: usize, look: Look) -> Stateful<Div> {
+    // AGENTSET (D725): the enabled agents, then the plain shell.
+    let offered: Vec<Agent> = ui
+        .read(|state| state.settings.offered_agents())
+        .into_iter()
+        .chain([Agent::Shell])
+        .collect();
     crate::action_menu::card("new-terminal-menu", 280., look)
         .top(px(32.))
         .left(px(8.))
-        .children(Agent::ALL.into_iter().map(|agent| {
+        .children(offered.into_iter().map(|agent| {
             let name = if agent == Agent::Shell {
                 "New terminal"
             } else {
@@ -426,6 +557,55 @@ fn file_body(
         .into_any_element()
 }
 
+/// When the daemon refused the session's last action until something is
+/// migrated, say so inline (NV-10, frame 82), with the way to the item. It
+/// draws from the refusal the session recorded (D377), nothing else.
+fn migrate_first(ui: &Rc<Ui>, state: &AppState, look: Look) -> Option<ObservedElement<Stateful<Div>>> {
+    let SessionRefused::MigrationNeeded { thing, machine, request } =
+        state.session.refused.as_ref()?;
+    let machine = state
+        .workspace
+        .machine(machine)
+        .map_or_else(|| machine.to_string(), |machine| machine.name.clone());
+    let text = format!(
+        "Migrate the {} on {machine} first. What you type isn't sent until then; the agent keeps running.",
+        thing.label()
+    );
+    let (ui, id) = (ui.clone(), request.clone());
+    Some(
+        row()
+            .id("session-migrate-first")
+            .role(Role::Alert)
+            .aria_label(text.clone())
+            .flex_shrink_0()
+            .gap_3()
+            .px_3()
+            .py_2()
+            .rounded(px(6.))
+            .bg(rgb(look.attention_bg))
+            .child(div().flex_shrink_0().child(chrome::icon(IconName::Inbox, ORANGE, 12.)))
+            .child(div().flex_1().min_w_0().text_color(rgb(look.text)).child(text))
+            .child(
+                div()
+                    .id("session-open-in-inbox")
+                    .role(Role::Button)
+                    .aria_label("Open in Inbox")
+                    .flex_shrink_0()
+                    .cursor_pointer()
+                    .text_color(rgb(look.accent))
+                    .child("Open in Inbox")
+                    .on_click(move |_, _, cx| {
+                        ui.send(AppAction::Navigate(Route::Inbox), cx);
+                        if let Some(id) = &id {
+                            ui.send(AppAction::Inbox(InboxAction::Select(id.clone())), cx);
+                        }
+                    })
+                    .test_support(),
+            )
+            .test_support(),
+    )
+}
+
 pub(crate) fn body(
     ui: &Rc<Ui>,
     state: &AppState,
@@ -462,79 +642,7 @@ pub(crate) fn body(
     );
     col()
         .size_full()
-        .children(
-            state
-                .views
-                .offers()
-                .into_iter()
-                .filter(|v| v.session == session.id)
-                .take(1)
-                .map(|offer| {
-                    row()
-                        .h(px(40.))
-                        .items_center()
-                        .px(px(14.))
-                        .gap(px(10.))
-                        .flex_shrink_0()
-                        .bg(rgb(if look.term == 0xffffff {
-                            0xfff8e7
-                        } else {
-                            0x352d1d
-                        }))
-                        .border_b_1()
-                        .border_color(rgb(look.line))
-                        .text_size(px(12.5))
-                        .child(chrome::icon(IconName::Sparkles, 0xbf5af2, 12.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_color(rgb(look.text))
-                                .child(format!(
-                                    "{} prepared a view: {}",
-                                    if session.agent == Agent::Claude {
-                                        "Claude Code"
-                                    } else {
-                                        session.agent.name()
-                                    },
-                                    offer.title
-                                )),
-                        )
-                        .child(widgets::push_quiet(
-                            ui,
-                            "offer-open",
-                            "Open it",
-                            AppAction::Views(ViewsAction::Accept(offer.title.clone())),
-                            look,
-                        ))
-                        .child(
-                            widgets::ghost_in(
-                                look,
-                                ui,
-                                "offer-later",
-                                "Later",
-                                AppAction::Views(ViewsAction::Later(offer.title.clone())),
-                            )
-                            .px(px(0.))
-                            .bg(transparent_black())
-                            .border_color(transparent_black())
-                            .text_color(rgb(look.secondary)),
-                        )
-                        .child(
-                            widgets::ghost_in(
-                                look,
-                                ui,
-                                "offer-dismiss",
-                                "Not now",
-                                AppAction::Views(ViewsAction::Dismiss(offer.title.clone())),
-                            )
-                            .px(px(0.))
-                            .bg(transparent_black())
-                            .border_color(transparent_black())
-                            .text_color(rgb(look.secondary)),
-                        )
-                }),
-        )
+        .children(crate::view_tab::bars(ui, state, session, look))
         .children(state.session.error.clone().map(|error| {
             widgets::error_banner_in(look,
                 ui,
@@ -543,7 +651,11 @@ pub(crate) fn body(
                 AppAction::Session(SessionAction::DismissError),
             )
         }))
-        .children(crate::desk_bar::bar(ui, state, session, look))
+        .children(migrate_first(ui, state, look))
+        .children(
+            crate::desk_bar::bar(ui, state, session, look)
+                .or_else(|| crate::desk_bar::channel_bar(ui, state, session, look)),
+        )
         .child(
             row().flex_1().min_h_0().items_stretch().children(
                 groups
@@ -564,7 +676,7 @@ pub(crate) fn body(
                             .h_full()
                             .overflow_hidden()
                             .when(group > 0, |g| g.border_l_1().border_color(rgb(look.line)))
-                            .child(tab_row(ui, state, session, group, tabs, look))
+                            .child(tab_row(ui, state, session, group, tabs, look, terminals))
                             // One group: while a tab is dragged, dropping it on the
                             // right edge opens the second group beside it. The zone
                             // exists only during a drag, so it never takes the
@@ -574,6 +686,8 @@ pub(crate) fn body(
                                 g.child(
                                     div()
                                         .id("tab-drop-right")
+                                        .role(Role::Region)
+                                        .aria_label("Drop the tab beside the terminal")
                                         .absolute()
                                         .top(px(32.))
                                         .right(px(0.))
@@ -601,31 +715,8 @@ pub(crate) fn body(
                                     .unwrap_or_else(|| {
                                         file_body(ui, state, session, repo, path, documents, look)
                                     }),
-                                Some(Tab::View(title)) => {
-                                    let view = state
-                                        .workspace
-                                        .views
-                                        .iter()
-                                        .find(|v| v.session == session.id && v.title == *title);
-                                    col()
-                                        .id("prepared-view-content")
-                                        .flex_1()
-                                        .min_h_0()
-                                        .overflow_y_scroll()
-                                        .p(px(18.))
-                                        .gap(px(12.))
-                                        .bg(rgb(look.content))
-                                        .text_color(rgb(look.text))
-                                        .child(
-                                            div()
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(title.clone()),
-                                        )
-                                        .children(view.map(|v| {
-                                            div().child(v.body.clone()).test_text(v.body.clone())
-                                        }))
-                                        .test_support()
-                                        .into_any_element()
+                                Some(Tab::View(id)) => {
+                                    crate::view_tab::body(ui, state, session, id, look)
                                 }
                                 Some(Tab::Terminal(tab)) => {
                                     let notice = match (*tab, session.status) {
@@ -650,6 +741,32 @@ pub(crate) fn body(
                                                 .into_any_element(),
                                             ),
                                         )),
+                                        // Frame 64: read-only until the agent resumes.
+                                        (0, Status::Moving) => {
+                                            let to = session
+                                                .moving
+                                                .as_ref()
+                                                .and_then(|moving| {
+                                                    state.workspace.machines.iter().find(|x| x.id == moving.to)
+                                                })
+                                                .map_or("the new machine", |x| x.name.as_str());
+                                            let read_only = notice(
+                                                look,
+                                                IconName::ArrowRight,
+                                                0xff9f0a,
+                                                format!("Read-only until the agent resumes on {to}."),
+                                                None,
+                                            );
+                                            Some(match session.moving.as_ref() {
+                                                Some(moving) => col()
+                                                    .w_full()
+                                                    .gap(px(8.))
+                                                    .child(steps_card(look, to, moving))
+                                                    .child(read_only)
+                                                    .into_any_element(),
+                                                None => read_only,
+                                            })
+                                        }
                                         (_, Status::Offline) => {
                                             let found = state
                                                 .workspace
@@ -735,7 +852,7 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
     }
     let failed = state.session.failed_queues.contains(&session.id);
     let certain = !failed
-        && matches!(session.agent, Agent::Claude | Agent::Copilot)
+        && matches!(session.agent, Agent::Claude | Agent::Copilot | Agent::OpenCode)
         && session.turn != Turn::Uncertain;
     let sending = state.session.sending;
     let waits = certain;
@@ -867,4 +984,83 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
             .test_support()
             .into_any_element(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    // Named, not `super::*`: the module's gpui glob brings in gpui's own
+    // `test` attribute, which would shadow the built-in one.
+    use super::{copy_progress, step_rows};
+    use humata2_clients::machines::OperationId;
+    use humata2_clients::model::{MachineId, MoveProgress, MoveStep, MoveStepState};
+
+    fn moving(states: &[MoveStepState]) -> MoveProgress {
+        MoveProgress {
+            to: MachineId::new("gpu-box"),
+            operation: OperationId::new("op"),
+            step: String::new(),
+            done_units: 0,
+            total_units: 0,
+            steps: states
+                .iter()
+                .enumerate()
+                .map(|(at, state)| MoveStep {
+                    title: format!("step {at}"),
+                    state: *state,
+                    done_units: 0,
+                    total_units: 0,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_card_has_one_row_per_step_in_order() {
+        use MoveStepState::{Done, Failed, Pending, Running};
+        let rows = step_rows(&moving(&[Done, Done, Running, Pending, Pending]));
+        assert_eq!(rows.len(), 5);
+        let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
+        assert_eq!(titles, ["step 0", "step 1", "step 2", "step 3", "step 4"]);
+        let marks: Vec<&str> = rows.iter().map(|row| row.mark).collect();
+        assert_eq!(marks[0], marks[1], "done steps read alike");
+        assert_eq!(marks[3], marks[4], "waiting steps read alike");
+        assert_ne!(marks[0], marks[2], "done reads unlike running");
+        assert_ne!(marks[2], marks[3], "running reads unlike waiting");
+        let failed = step_rows(&moving(&[Done, Failed]));
+        assert_ne!(failed[1].mark, failed[0].mark, "failed reads unlike done");
+    }
+
+    #[test]
+    fn the_bar_fills_the_share_copied() {
+        let half = copy_progress(50, 100).map(|p| p.fraction);
+        assert_eq!(half, Some(0.5));
+        let over = copy_progress(150, 100).map(|p| p.fraction);
+        assert_eq!(over, Some(1.0), "never past the card's width");
+        assert_eq!(copy_progress(0, 100).map(|p| p.fraction), Some(0.0));
+    }
+
+    #[test]
+    fn nothing_is_drawn_when_the_total_is_unknown() {
+        assert_eq!(copy_progress(10, 0), None);
+        use MoveStepState::{Done, Running};
+        let mut unknown = moving(&[Done, Running]);
+        unknown.done_units = 10;
+        assert!(step_rows(&unknown).iter().all(|row| row.progress.is_none()));
+    }
+
+    #[test]
+    fn only_the_running_step_carries_the_bar() {
+        use MoveStepState::{Done, Pending, Running};
+        let mut copying = moving(&[Done, Running, Pending]);
+        copying.done_units = 25;
+        copying.total_units = 100;
+        let bars: Vec<bool> = step_rows(&copying).iter().map(|row| row.progress.is_some()).collect();
+        assert_eq!(bars, [false, true, false]);
+        assert_eq!(step_rows(&copying)[1].progress.as_ref().map(|p| p.fraction), Some(0.25));
+    }
+
+    #[test]
+    fn a_move_with_no_steps_read_yet_has_no_rows() {
+        assert!(step_rows(&moving(&[])).is_empty());
+    }
 }

@@ -78,12 +78,16 @@ enum Reach {
     After(Command),
     /// Opened over this channel's page, with no session beneath it.
     OnChannelPage(ChannelId),
+    /// Pasting this text over this channel's page offers it (KP-4, D561).
+    PastingOnChannelPage(ChannelId, String),
 }
 
 /// Whether `command` is reached as `reach` says; why not, if it isn't.
 fn reached(workspace: &Arc<Workspace>, command: &Command, reach: &Reach) -> Result<(), String> {
     let mut state = match reach {
-        Reach::OnChannelPage(channel) => channel_page(workspace, channel),
+        Reach::OnChannelPage(channel) | Reach::PastingOnChannelPage(channel, _) => {
+            channel_page(workspace, channel)
+        }
         Reach::Typing | Reach::Pasting(_) | Reach::After(_) => opened(workspace),
     };
     match reach {
@@ -96,7 +100,7 @@ fn reached(workspace: &Arc<Workspace>, command: &Command, reach: &Reach) -> Resu
                 return Err(format!("typing “{title}” doesn't find {command:?}"));
             }
         }
-        Reach::Pasting(text) => {
+        Reach::Pasting(text) | Reach::PastingOnChannelPage(_, text) => {
             query(&mut state, text);
             if offers(&state, command).is_none() {
                 return Err(format!("pasting “{text}” doesn't offer {command:?}"));
@@ -188,7 +192,10 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
         Some(Command::CollapseAll) => Command::ToggleSidebar,
         Some(Command::ToggleSidebar) => Command::Fork,
         Some(Command::Fork) => Command::Archive,
-        Some(Command::Archive) => Command::Channel(s.channel.clone()),
+        Some(Command::Archive) => Command::RenameSession,
+        Some(Command::RenameSession) => Command::ContinueInChannel,
+        Some(Command::ContinueInChannel) => Command::StopAgent,
+        Some(Command::StopAgent) => Command::Channel(s.channel.clone()),
         Some(Command::Channel(_)) => Command::Session(s.session.clone()),
         Some(Command::Session(_)) => Command::Pull(482),
         Some(Command::Pull(_)) => Command::File {
@@ -214,7 +221,11 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
             machine: s.machine.clone(),
         },
         Some(Command::MoveTo { .. }) => Command::ReviewPull(pull()),
-        Some(Command::ReviewPull(_)) => Command::Pin {
+        Some(Command::ReviewPull(_)) => Command::AddRepoToChannel {
+            channel: s.channel.clone(),
+            repo: "acme/api".to_owned(),
+        },
+        Some(Command::AddRepoToChannel { .. }) => Command::Pin {
             thing: Marked::Session(here()),
             on: true,
         },
@@ -267,6 +278,9 @@ fn reach(command: &Command) -> Reach {
             pull.owner, pull.repo, pull.number
         )),
         Command::MoveTo { .. } => Reach::After(Command::MoveSession),
+        Command::AddRepoToChannel { channel, repo } => {
+            Reach::PastingOnChannelPage(channel.clone(), repo.clone())
+        }
         Command::Pin {
             thing: Marked::Channel(channel),
             ..
@@ -298,6 +312,9 @@ fn reach(command: &Command) -> Reach {
         | Command::ToggleSidebar
         | Command::Fork
         | Command::Archive
+        | Command::RenameSession
+        | Command::ContinueInChannel
+        | Command::StopAgent
         | Command::Channel(_)
         | Command::Session(_)
         | Command::File { .. }
@@ -450,6 +467,9 @@ fn key(name: &str) -> Option<Key> {
         // focused sidebar.
         "OpenPalette" | "Dismiss" | "FocusSidebar" | "Up" | "Down" | "Out" | "In" | "First"
         | "Last" | "Open" => Key::Not,
+        // A key unbound in one context, such as Escape in a terminal,
+        // which goes to the program there: it runs nothing of the app's.
+        "gpui_kit::NoAction" => Key::Not,
         "NewSession" => Key::Runs(Command::NewSession),
         "NewChannel" => Key::Runs(Command::NewChannel),
         "Back" => Key::Runs(Command::Back),
@@ -465,6 +485,10 @@ fn key(name: &str) -> Option<Key> {
         "ToggleRecording" => Key::Runs(Command::Record),
         "TakeSnapshot" => Key::Runs(Command::Snapshot),
         "MoveSession" => Key::Runs(Command::MoveSession),
+        "GoHosts" => Key::Runs(Command::Hosts),
+        "GoFiles" => Key::Runs(Command::Files),
+        "TerminalFullScreen" => Key::Runs(Command::TerminalFullScreen),
+        "ForkSession" => Key::Runs(Command::Fork),
         _ => return None,
     })
 }
@@ -501,6 +525,28 @@ fn glyphs(keys: &str) -> String {
             other => other.to_uppercase(),
         })
         .collect()
+}
+
+/// Every shortcut the palette shows is one keys.rs binds (KP-2): a hint
+/// that no key runs teaches a key that does nothing.
+#[test]
+fn every_shortcut_the_palette_shows_is_bound() {
+    let workspace = Arc::new(workspace());
+    let bound: Vec<String> = bindings().iter().map(|(keys, _)| glyphs(keys)).collect();
+    let state = opened(&workspace);
+    let failures: Vec<String> = state
+        .entries
+        .iter()
+        .filter(|entry| entry.hint.starts_with(['⌘', '⇧', '⌥', '⌃']))
+        .filter(|entry| !bound.contains(&entry.hint))
+        .map(|entry| {
+            format!(
+                "{:?} shows {}, which no key runs: bind it in keys.rs",
+                entry.command, entry.hint
+            )
+        })
+        .collect();
+    report(&failures);
 }
 
 #[test]

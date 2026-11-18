@@ -1,5 +1,5 @@
 //! LOOK2's, DESK's and REVIEW's exit check: each native capture of frames
-//! 18–44 and 55 matches its design golden within tolerance, on the page
+//! 18–44, 55, 67–69 and 72–76 matches its design golden within tolerance, on the page
 //! (right of the sidebar). The sidebar (left of 237 pt) is checked the same
 //! way for the frames that show it, in `SIDEBARS`.
 //!
@@ -69,13 +69,19 @@ const CARD_INSIDE: Rect = Rect(590, 80, 554, 430);
 const CARD_INSIDE_WHY: &str =
     "D147 L2: the card's inside follows the request kind's preview, not the frame";
 
+/// Frame 69 checks Submit review; the session around it is frame 68's, which
+/// the review-session milestone (D2) draws and its own flow checks.
+const BEHIND_SUBMIT_WHY: &str = "the session behind Submit review is frame 68's";
+
+/// Frame 68's agent terminal, between its tabs row and the notice under it.
+const REVIEW_TERMINAL: Rect = Rect(237, 84, 638, 620);
+
 /// Frame 30 checks the palette; the dimmed session behind it is frame 01's,
 /// which `native_test` checks, and its review draft comes from another flow.
 const BEHIND_PALETTE_WHY: &str = "the session behind the palette is frame 01's";
 /// The dashboard's figures are computed from the items (D147.9).
 const FIGURES_WHY: &str = "D147.9: the dashboard's figures come from the items";
 /// Controls with no action yet are drawn disabled; the frames draw them live.
-const ADD_REPO_WHY: &str = "D147 L4: Add a GitHub repo… is disabled until it acts";
 const HEADER_ACTIONS_WHY: &str = "D147 L4: the channel's Pin and … are disabled until they act";
 /// A Desk session's terminal body, between the tabs row and the window's
 /// bottom, left of the side panel's border.
@@ -99,7 +105,6 @@ const FRAMES: &[Frame] = &[
     Frame {
         name: "20-channel-repos-machines",
         masks: &[
-            (Rect(257, 243, 138, 24), ADD_REPO_WHY),
             (Rect(1116, 17, 40, 18), HEADER_ACTIONS_WHY),
         ],
         budget: BUDGET,
@@ -173,7 +178,6 @@ const FRAMES: &[Frame] = &[
     Frame {
         name: "35-empty-channel",
         masks: &[
-            (Rect(925, 210, 141, 28), ADD_REPO_WHY),
             (Rect(1140, 22, 16, 8), HEADER_ACTIONS_WHY),
         ],
         budget: BUDGET,
@@ -209,7 +213,29 @@ const FRAMES: &[Frame] = &[
         budget: BUDGET,
     },
     frame("44-new-channel"),
+    // PR: Review a pull request over Home, and Submit review over the review session.
+    frame("67-pr-review-dialog"),
+    Frame {
+        name: "68-pr-review-session",
+        masks: &[(REVIEW_TERMINAL, TERMINAL_GRID_WHY)],
+        budget: BUDGET,
+    },
+    Frame {
+        name: "69-pr-submit-review",
+        masks: &[
+            (Rect(237, 0, 60, 760), BEHIND_SUBMIT_WHY),
+            (Rect(983, 0, 297, 760), BEHIND_SUBMIT_WHY),
+            (Rect(297, 0, 686, 22), BEHIND_SUBMIT_WHY),
+            (Rect(297, 620, 686, 140), BEHIND_SUBMIT_WHY),
+        ],
+        budget: BUDGET,
+    },
     frame("55-desk-clean-up"),
+    frame("72-stop-confirm"),
+    frame("73-machine-sessions-stopped"),
+    frame("74-hosts-sessions-stopped"),
+    frame("75-start-confirm"),
+    frame("76-stop-not-delivered"),
 ];
 
 #[derive(Debug, thiserror::Error)]

@@ -1,5 +1,5 @@
 {
-  "checksum": "33c4e6ef894d58c1a5cb7f24622839b03ebf18336df7bbd069a898cc7a103d09",
+  "checksum": "e66a60648325b57be69cf9f023ca2f580a2d0d68f9809ce6dc9cb879620697bb",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -16369,6 +16369,12 @@
       "package_url": "https://github.com/zed-industries/zed",
       "repository": {
         "Http": {
+          "patch_args": [
+            "-p1"
+          ],
+          "patches": [
+            "@@//apps/humata2/engine/patches:gpui-scheduler-lock-order.patch"
+          ],
           "sha256": "b1d3fa97eeb4ea233635b756684affe96db9e29fc2af8cdc269268bd7ff649fc",
           "url": "https://static.crates.io/crates/gpui-pre-scheduler/0.3.12/download"
         }
@@ -18827,6 +18833,47 @@
       ],
       "version": "0.0.0"
     },
+    "humata2-conversation 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "rusqlite 0.42.0",
+            "target": "rusqlite"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_conversation",
+      "name": "humata2-conversation",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_conversation",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "humata2-desk 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -18856,6 +18903,10 @@
           {
             "id": "gpui-kit 0.9.1",
             "target": "gpui_kit"
+          },
+          {
+            "id": "notify 8.2.2",
+            "target": "notify"
           },
           {
             "id": "thiserror 2.0.21",
@@ -19169,6 +19220,10 @@
           }
         ],
         "deps_dev": [
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
           {
             "id": "tempfile 3.27.0",
             "target": "tempfile"
@@ -19495,6 +19550,72 @@
         {
           "Library": {
             "crate_name": "humata2_passphrase",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-pr-review 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_pr_review",
+      "name": "humata2-pr-review",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_pr_review",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata2-repo-library 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "rusqlite 0.42.0",
+            "target": "rusqlite"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "toml 1.2.1+spec-1.1.0",
+            "target": "toml"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata2_repo_library",
+      "name": "humata2-repo-library",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata2_repo_library",
             "crate_root": "src/lib.rs"
           }
         }
@@ -20111,6 +20232,10 @@
             "target": "tokio_stream"
           },
           {
+            "id": "toml 1.2.1+spec-1.1.0",
+            "target": "toml"
+          },
+          {
             "id": "tonic 0.14.9",
             "target": "tonic"
           },
@@ -20128,6 +20253,10 @@
           }
         ],
         "deps_dev": [
+          {
+            "id": "rusqlite 0.42.0",
+            "target": "rusqlite"
+          },
           {
             "id": "tempfile 3.27.0",
             "target": "tempfile"
@@ -38065,7 +38194,10 @@
             ]
           }
         },
-        "edition": "2018"
+        "edition": "2018",
+        "rustc_flags": [
+          "-Copt-level=3"
+        ]
       },
       "library_target_name": "sha2",
       "license": "MIT OR Apache-2.0",
@@ -38119,7 +38251,10 @@
             ]
           }
         },
-        "edition": "2024"
+        "edition": "2024",
+        "rustc_flags": [
+          "-Copt-level=3"
+        ]
       },
       "library_target_name": "sha2",
       "license": "MIT OR Apache-2.0",
@@ -39532,6 +39667,76 @@
         }
       ],
       "version": "1.2.1"
+    },
+    "stack 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "clap 4.6.7",
+            "target": "clap"
+          },
+          {
+            "id": "regex 1.13.1",
+            "target": "regex"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "sha2 0.11.1",
+            "target": "sha2"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "toml 1.2.1+spec-1.1.0",
+            "target": "toml"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "stack_cli",
+      "name": "stack",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "stack_cli",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "stack-graph 0.0.0": {
+      "common_attrs": {
+        "edition": "2024"
+      },
+      "library_target_name": "stack_graph",
+      "name": "stack-graph",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "stack_graph",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
     },
     "static_assertions 1.1.0": {
       "common_attrs": {
@@ -44515,20 +44720,14 @@
             "default",
             "rng",
             "serde",
+            "sha1",
             "std",
-            "v4"
+            "v4",
+            "v5"
           ],
           "selects": {
-            "aarch64-unknown-linux-gnu": [
-              "sha1",
-              "v5"
-            ],
             "wasm32-unknown-unknown": [
               "js"
-            ],
-            "x86_64-unknown-linux-gnu": [
-              "sha1",
-              "v5"
             ]
           }
         },
@@ -44537,6 +44736,10 @@
             {
               "id": "serde_core 1.0.229",
               "target": "serde_core"
+            },
+            {
+              "id": "sha1_smol 1.0.1",
+              "target": "sha1_smol"
             }
           ],
           "selects": {
@@ -44550,10 +44753,6 @@
               {
                 "id": "getrandom 0.4.3",
                 "target": "getrandom"
-              },
-              {
-                "id": "sha1_smol 1.0.1",
-                "target": "sha1_smol"
               }
             ],
             "wasm32-unknown-unknown": [
@@ -44572,10 +44771,6 @@
               {
                 "id": "getrandom 0.4.3",
                 "target": "getrandom"
-              },
-              {
-                "id": "sha1_smol 1.0.1",
-                "target": "sha1_smol"
               }
             ]
           }
@@ -53199,6 +53394,7 @@
     "humata2-clients 0.0.0": "apps/humata2/clients",
     "humata2-clients-live 0.0.0": "apps/humata2/clients/live",
     "humata2-contain 0.0.0": "apps/humata2/daemon/contain",
+    "humata2-conversation 0.0.0": "apps/humata2/daemon/conversation",
     "humata2-desk 0.0.0": "apps/humata2/features/desk",
     "humata2-desktop 0.0.0": "apps/humata2/desktop",
     "humata2-diff-view 0.0.0": "apps/humata2/diff",
@@ -53219,6 +53415,8 @@
     "humata2-opencode 0.0.0": "apps/humata2/daemon/opencode",
     "humata2-palette 0.0.0": "apps/humata2/features/palette",
     "humata2-passphrase 0.0.0": "apps/humata2/daemon/passphrase",
+    "humata2-pr-review 0.0.0": "apps/humata2/features/pr_review",
+    "humata2-repo-library 0.0.0": "apps/humata2/daemon/repo_library",
     "humata2-report 0.0.0": "apps/humata2/report",
     "humata2-review 0.0.0": "apps/humata2/features/review",
     "humata2-review-diff 0.0.0": "apps/humata2/daemon/review_diff",
@@ -53234,6 +53432,8 @@
     "humata2-views 0.0.0": "apps/humata2/features/views",
     "humatad 0.0.0": "apps/humata/daemon/humatad",
     "humatad2 0.0.0": "apps/humata2/daemon/humatad",
+    "stack 0.0.0": "tools/stack",
+    "stack-graph 0.0.0": "tools/stack/graph",
     "swift-catalog 0.0.0": "tools/swift_catalog",
     "tca-rust 0.1.0": "libs/tca-rust",
     "terminal_grid 0.0.0": "apps/humata2/terminal/grid",

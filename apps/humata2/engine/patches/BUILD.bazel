@@ -1,0 +1,16 @@
+# gpui's test scheduler, patched (D759): its block with a timeout took the rng
+# and then the state, and a wake from another thread takes them the other way
+# round, so a headless app shutting down while a client thread woke one of
+# its tasks hung for good. Applied to gpui-pre-scheduler in every crate
+# repository by a crate annotation in MODULE.bazel. Keep it in `git diff`
+# form, with a `diff --git` line per file.
+exports_files(
+    ["gpui-scheduler-lock-order.patch"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

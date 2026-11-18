@@ -249,6 +249,107 @@ async fn a_diagnosis_from_stdin_leads_diagnosis_md() {
     assert!(said < written.find("se_1").unwrap());
 }
 
+/// Every kind the daemon writes to operations.jsonl, and one it doesn't know.
+const KINDS: &[&str] = &[
+    "start", "relaunch", "start_session", "move", "fork", "remote_start", "remote_continue",
+    "archive", "archive_remote", "restore", "mirror_restore", "rebuild", "forget", "remove_machine",
+    "delete_channel", "restore_channel", "desk_move", "desk_start", "comment_send", "push",
+    "a_kind_from_a_newer_daemon",
+];
+
+/// One entry of each state for `kind`, written as the daemon writes them
+/// (the state a string, with `reason` or `waits_for` beside it), plus a
+/// pending entry that never got an end line and a state this CLI doesn't know.
+fn lines_for(kind: &str) -> String {
+    let mut out = String::new();
+    let mut put = |value: Json| {
+        out.push_str(&value.to_string());
+        out.push('\n');
+    };
+    let id = |state: &str| format!("{kind}:{state}");
+    put(serde_json::json!({"id": id("settled"), "kind": kind, "step": "s", "state": "pending", "waits_for": "w-settled"}));
+    put(serde_json::json!({"id": id("settled"), "kind": kind, "step": "s", "state": "finished"}));
+    put(serde_json::json!({"id": id("undone"), "kind": kind, "step": "s", "state": "undone", "reason": "r-undone"}));
+    put(serde_json::json!({"id": id("stuck"), "kind": kind, "step": "s", "state": "stuck", "reason": "r-stuck"}));
+    put(serde_json::json!({"id": id("owed"), "kind": kind, "step": "s", "state": "pending", "waits_for": "w-owed"}));
+    put(serde_json::json!({"id": id("doubtful"), "kind": kind, "step": "s", "state": "doubtful", "reason": "r-doubtful"}));
+    out
+}
+
+#[tokio::test]
+async fn every_kind_and_state_is_shown_with_its_fix_and_owed_work_is_listed() {
+    let state = state(false);
+    let operations: String = KINDS.iter().map(|kind| lines_for(kind)).collect();
+    std::fs::write(newest(state.path()).join("operations.jsonl"), operations).unwrap();
+    let daemon = FakeDaemon::new();
+
+    let (code, console) = doctor(&daemon, state.path(), &["--explain"]).await;
+
+    assert_eq!(code, exit::OK, "{}", console.stdout());
+    let result = &console.json()["result"];
+    let listed = result["operations"].as_array().unwrap();
+    assert_eq!(listed.len(), KINDS.len() * 5);
+    let find = |id: &str| listed.iter().find(|op| op["id"] == id).unwrap_or_else(|| panic!("{id} is missing"));
+    for kind in KINDS {
+        let settled = find(&format!("{kind}:settled"));
+        assert_eq!((settled["kind"].as_str(), settled["state"].as_str()), (Some(*kind), Some("finished")));
+        let undone = find(&format!("{kind}:undone"));
+        assert_eq!((undone["state"].as_str(), undone["detail"].as_str()), (Some("undone"), Some("r-undone")));
+        let stuck = find(&format!("{kind}:stuck"));
+        assert_eq!((stuck["state"].as_str(), stuck["detail"].as_str()), (Some("stuck"), Some("r-stuck")));
+        let owed = find(&format!("{kind}:owed"));
+        assert_eq!((owed["state"].as_str(), owed["detail"].as_str()), (Some("pending"), Some("w-owed")));
+        let doubtful = find(&format!("{kind}:doubtful"));
+        assert_eq!((doubtful["state"].as_str(), doubtful["detail"].as_str()), (Some("doubtful"), Some("r-doubtful")));
+    }
+    let stuck: Vec<&str> = ids(&result["stuck"]);
+    assert_eq!(stuck.len(), KINDS.len());
+    assert!(stuck.iter().all(|id| id.ends_with(":stuck")));
+    // Owed: the pending entry with no end line and the unknown state, never
+    // the settled, undone or stuck ones.
+    let owed: Vec<&str> = ids(&result["owed"]);
+    assert_eq!(owed.len(), KINDS.len() * 2);
+    assert!(owed.iter().all(|id| id.ends_with(":owed") || id.ends_with(":doubtful")));
+}
+
+#[tokio::test]
+async fn an_operation_line_without_an_id_is_kept() {
+    let state = state(false);
+    std::fs::write(
+        newest(state.path()).join("operations.jsonl"),
+        "{\"kind\":\"move\",\"step\":\"s\",\"state\":\"stuck\",\"reason\":\"r\"}\n",
+    )
+    .unwrap();
+    let daemon = FakeDaemon::new();
+
+    let (_, console) = doctor(&daemon, state.path(), &["--explain"]).await;
+
+    let result = &console.json()["result"];
+    assert_eq!(result["operations"].as_array().unwrap().len(), 1);
+    assert_eq!(result["stuck"][0]["kind"], "move");
+}
+
+#[tokio::test]
+async fn the_plain_output_names_every_owed_and_stuck_operation() {
+    let state = state(false);
+    let operations: String = KINDS.iter().map(|kind| lines_for(kind)).collect();
+    std::fs::write(newest(state.path()).join("operations.jsonl"), operations).unwrap();
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let folder = state.path().display().to_string();
+
+    let code = run(&daemon, &console, &["doctor", "restarts", "--explain", "--state", &folder]).await;
+
+    assert_eq!(code, exit::OK, "{}", console.stderr());
+    let shown = console.stdout();
+    for kind in KINDS {
+        for state in ["stuck", "owed", "doubtful"] {
+            let id = format!("{kind}:{state}");
+            assert!(shown.contains(&id), "{id} is missing from the plain output");
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_state_folder_with_no_reports_is_not_found() {
     let state = tempfile::tempdir().unwrap();

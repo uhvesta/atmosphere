@@ -1,6 +1,31 @@
 //! Messages waiting to send.
 use super::*;
 
+/// SE-24: the tab bar says how many others can type into a tab as its link
+/// tells it, and stops saying so when they leave.
+#[test]
+fn the_tab_bar_follows_who_else_can_type_as_the_link_says() {
+    use humata2_clients::TerminalNotice;
+    let mut app = App::new(fixture::design_session(Status::Working));
+    app.open("ledger", Panel::Inbox);
+    app.send(AppAction::Session(SessionAction::SelectTab(1)));
+    app.settle();
+    assert!(!app.contains("terminal-peers-0"));
+
+    let ledger = SessionId::new("ledger");
+    app.fakes
+        .daemon
+        .terminal_notice(&ledger, 1, TerminalNotice::Writers { others: 2 });
+    app.settle();
+    assert!(app.contains("terminal-peers-0"));
+
+    app.fakes
+        .daemon
+        .terminal_notice(&ledger, 1, TerminalNotice::Writers { others: 0 });
+    app.settle();
+    assert!(!app.contains("terminal-peers-0"));
+}
+
 /// SE-23/24: pending messages are inspectable; writers belong to one terminal.
 #[test]
 fn queued_messages_can_be_shown_removed_and_sent_and_presence_follows_the_tab() {

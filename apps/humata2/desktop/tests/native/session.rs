@@ -289,18 +289,12 @@ fn clicking_the_open_panel_choice_closes_and_reopens_it() {
 fn terminal_tabs_show_only_the_selected_terminals_live_output() {
     let mut app = App::new(fixture::design());
     app.open("ledger", Panel::Info);
-    let offset = app.ui.read(|s| {
-        s.session
-            .terminal_bytes
-            .get(&(SessionId::new("ledger"), 1))
-            .map_or(0, |b| b.len())
-    });
-    app.send(AppAction::Session(SessionAction::TerminalData {
-        session: SessionId::new("ledger"),
-        tab: 1,
-        offset,
-        bytes: b"\r\nshell-result: 42\r\n".to_vec(),
-    }));
+    // The shell program prints into tab 1 only; the view of tab 1 draws it.
+    let clients = app.ui.clients();
+    app.runtime
+        .block_on(clients.terminals.write(&SessionId::new("ledger"), 1, "shell-result: 42"))
+        .expect("tab 1 takes a line");
+    app.settle();
     let capture = |app: &mut App| {
         app.draw();
         app.cx

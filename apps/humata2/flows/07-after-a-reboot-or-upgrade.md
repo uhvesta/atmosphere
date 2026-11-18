@@ -91,7 +91,7 @@ How to read this file, and what the tags mean: [README](README.md).
 
 ### Upgrade
 
-8. **Do:** install the new Humata into `/Applications` and open it.
+8. **Do:** open the new Humata; it installs itself.
    **See:** This Mac's daemon restarts once, and every tab is still attached.
    **Expect:**
    - The new daemon and holder are staged beside the old ones, then swapped in.

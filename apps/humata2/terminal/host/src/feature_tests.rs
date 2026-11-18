@@ -642,7 +642,9 @@ async fn durable_handle_names_attributes_and_automatic_title_survive_reopen() {
     assert_eq!(manual.title, "Manual title");
     let first = handle
         .inject_text(
-            "printf '\\033]2;Runtime title\\007'; printf 'TITLE_EVENT_DONE\\n'".into(),
+            // Printed as `%s` so the echoed command line never holds the marker
+            // the snapshot waits for: only the output after the title does.
+            "printf '\\033]2;Runtime title\\007'; printf 'TITLE_EVENT_%s\\n' DONE".into(),
             InjectionOptions {
                 submit: true,
                 ..InjectionOptions::raw()

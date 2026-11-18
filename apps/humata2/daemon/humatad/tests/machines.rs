@@ -24,7 +24,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Code, Request};
 
-const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
 /// A tools bundle with the three files for linux-x86_64, the fake
 /// machine's default platform. Its humatad2 runs the real one, so the
@@ -222,11 +222,12 @@ async fn a_machine_is_added_once_its_host_key_is_confirmed_then_removed_by_plan(
     let last = seen.last().unwrap();
     assert_eq!(state_of(last), pb::OperationState::Failed);
     assert_eq!(step_state(last, "connect"), pb::StepState::Failed);
-    let Some(pb::error::Kind::HostKeyChanged(key)) = last.error.as_ref().and_then(|error| error.kind.clone()) else {
-        panic!("expected host_key_changed, got {:?}", last.error);
+    // A key Humata has never seen is a new key to confirm, not a changed one.
+    let Some(pb::error::Kind::HostKeyUnknown(key)) = last.error.as_ref().and_then(|error| error.kind.clone()) else {
+        panic!("expected host_key_unknown, got {:?}", last.error);
     };
-    assert!(key.expected_fingerprint.is_empty());
-    assert!(!key.presented_fingerprint.is_empty());
+    assert_eq!(key.algorithm, "ssh-ed25519");
+    assert!(key.presented_fingerprint.starts_with("SHA256:"), "{key:?}");
     assert!(machine.installed("humatad2").is_none());
     assert!(host.list().await.is_empty());
 
@@ -354,11 +355,57 @@ async fn an_added_machine_holds_the_hosts_key_and_its_link_comes_up_again_after_
     assert_eq!(host.peer_key(), Some(key));
 }
 
+fn trust(fingerprint: &str) -> pb::TrustNewHostKeyRequest {
+    pb::TrustNewHostKeyRequest {
+        idempotency_key: None,
+        id: machine_id(),
+        new_fingerprint: fingerprint.to_owned(),
+        presence: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_changed_host_key_is_trusted_again_only_when_its_fingerprint_is_the_one_presented() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let fingerprint = presented_fingerprint(&host).await;
+    let added = host.machines().await.add_ssh_machine(add(&fingerprint, "k")).await.unwrap().into_inner();
+    let last = host.watch(&added).await.pop().unwrap();
+    assert_eq!(state_of(&last), pb::OperationState::Succeeded, "{:?}", last.error);
+    let known = host._dir.path().join("state/known_hosts");
+    let pinned = std::fs::read_to_string(&known).unwrap();
+
+    // The machine now shows another key than the one Humata pinned.
+    let other = "humata2.box-1 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=\n";
+    std::fs::write(&known, other).unwrap();
+
+    // A fingerprint that isn't the one it presents pins nothing.
+    let wrong = host
+        .machines()
+        .await
+        .trust_new_host_key(trust("SHA256:not-the-key-the-machine-presents"))
+        .await
+        .expect_err("a different fingerprint is refused");
+    assert_eq!(wrong.code(), Code::FailedPrecondition);
+    // A key that differs from the one the person confirmed names both.
+    let Some(pb::error::Kind::HostKeyChanged(key)) = error_of(&wrong).kind else {
+        panic!("expected host_key_changed, got {wrong:?}");
+    };
+    assert_eq!(key.expected_fingerprint, "SHA256:not-the-key-the-machine-presents");
+    assert_eq!(key.presented_fingerprint, fingerprint);
+    assert_eq!(std::fs::read_to_string(&known).unwrap(), other, "nothing was pinned");
+
+    // The one it presents, once the user has checked it, replaces the pin.
+    let trusted = host.machines().await.trust_new_host_key(trust(&fingerprint)).await.unwrap().into_inner();
+    assert_eq!(trusted.name, "box-1");
+    assert_eq!(std::fs::read_to_string(&known).unwrap(), pinned);
+}
+
 /// The fingerprint a first, unconfirmed add reports.
 async fn presented_fingerprint(host: &Host) -> String {
     let first = host.machines().await.add_ssh_machine(add("", "first")).await.unwrap().into_inner();
     let last = host.watch(&first).await.pop().unwrap();
-    let Some(pb::error::Kind::HostKeyChanged(key)) = last.error.and_then(|error| error.kind) else {
+    let Some(pb::error::Kind::HostKeyUnknown(key)) = last.error.and_then(|error| error.kind) else {
         panic!("expected the host key to need confirming");
     };
     key.presented_fingerprint
@@ -388,13 +435,20 @@ async fn machine_feed(host: &Host, after: Option<u64>) -> tonic::Streaming<pb::E
 
 /// The next event on `feed`. A machine's next change can be a whole add
 /// away (install over the fake ssh, then the link's dial), so this waits as
-/// long as `Host::watch` waits for an operation, not the short `WAIT`.
+/// long as `Host::watch` waits for an operation, not the short `WAIT`. The
+/// one `Resync` a start sends every feed once it has brought things back
+/// (D341) is passed over, since it can land after the subscribe.
 async fn next_event(feed: &mut tonic::Streaming<pb::Event>) -> pb::Event {
-    tokio::time::timeout(Duration::from_secs(60), feed.message())
-        .await
-        .expect("an event came")
-        .unwrap()
-        .expect("the feed stays open")
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let event = feed.message().await.unwrap().expect("the feed stays open");
+            if !matches!(event.payload, Some(pb::event::Payload::Resync(_))) {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("an event came")
 }
 
 fn seq_of(event: &pb::Event) -> u64 {
@@ -417,12 +471,12 @@ async fn the_feed_tells_each_machine_change_and_a_resume_starts_after_the_last_s
 
     let adding = host.machines().await.add_ssh_machine(add(&fingerprint, "k2")).await.unwrap().into_inner();
     let created = next_event(&mut feed).await;
-    assert_eq!(created.change(), pb::Change::Created);
+    assert_eq!(created.change(), pb::Change::Created, "{created:?}");
     assert_eq!(machine_in(&created).name, "box-1");
     let mut seen = vec![created.clone()];
     while machine_in(seen.last().unwrap()).reachability() != pb::Reachability::Online {
         let event = next_event(&mut feed).await;
-        assert_eq!(event.change(), pb::Change::Updated);
+        assert_eq!(event.change(), pb::Change::Updated, "{event:?}");
         seen.push(event);
     }
     assert!(seen.windows(2).all(|pair| seq_of(&pair[0]) < seq_of(&pair[1])));
@@ -462,7 +516,11 @@ async fn the_feed_tells_each_machine_change_and_a_resume_starts_after_the_last_s
 
     // A point older than anything kept (a past run's) is told to resync.
     let mut stale = machine_feed(&host, Some(1)).await;
-    let first = next_event(&mut stale).await;
+    let first = tokio::time::timeout(Duration::from_secs(60), stale.message())
+        .await
+        .expect("an event came")
+        .unwrap()
+        .expect("the feed stays open");
     assert!(matches!(first.payload, Some(pb::event::Payload::Resync(_))), "{first:?}");
 }
 
@@ -516,10 +574,17 @@ async fn the_feed_tells_an_operation_from_its_start_to_how_it_ended() {
     assert!(told.windows(2).all(|pair| pair[0].1.version < pair[1].1.version));
     assert_eq!(told.last().map(|(_, operation)| operation), watched.last());
     // The user's operation belongs to no channel.
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), narrowed.message()).await.is_err(),
-        "a feed narrowed to a channel heard of the user's operation"
-    );
+    let heard = tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            let event = narrowed.message().await.unwrap().expect("the feed stays open");
+            // The start's one Resync (D341) is not the operation.
+            if !matches!(event.payload, Some(pb::event::Payload::Resync(_))) {
+                return event;
+            }
+        }
+    })
+    .await;
+    assert!(heard.is_err(), "a feed narrowed to a channel heard of the user's operation: {heard:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -643,6 +708,54 @@ async fn a_failed_add_tried_again_runs_under_the_same_id_and_a_removal_cannot_be
     assert!(host.list().await.is_empty());
 }
 
+/// AddSshMachine, the call `humata host add` makes, for a name whose
+/// removal is still running is refused as being removed (ABORTED, no
+/// `name_taken`), and the same add goes through once the removal is done
+/// (D760).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_add_while_the_machine_is_being_removed_is_refused_until_the_removal_ends() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let fingerprint = presented_fingerprint(&host).await;
+    let added = host.machines().await.add_ssh_machine(add(&fingerprint, "k1")).await.unwrap().into_inner();
+    let added = host.watch(&added).await.pop().unwrap();
+    assert_eq!(state_of(&added), pb::OperationState::Succeeded, "{:?}", added.error);
+
+    let plan = host
+        .machines()
+        .await
+        .plan_remove_machine(pb::PlanRemoveMachineRequest { id: machine_id() })
+        .await
+        .unwrap()
+        .into_inner();
+    machine.set("hang");
+    let calls = machine.ssh_calls();
+    let removing = host
+        .machines()
+        .await
+        .remove_machine(pb::RemoveMachineRequest {
+            id: machine_id(),
+            plan: plan.token,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    ssh_ran(&machine, calls).await;
+
+    let refused = host.machines().await.add_ssh_machine(add(&fingerprint, "k2")).await.unwrap_err();
+    assert_eq!(refused.code(), Code::Aborted, "{refused:?}");
+    assert!(
+        !matches!(error_of(&refused).kind, Some(pb::error::Kind::NameTaken(_))),
+        "an add during a removal isn't told the name is taken: {refused:?}"
+    );
+
+    machine.clear("hang");
+    let removed = host.watch(&removing).await.pop().unwrap();
+    assert_eq!(state_of(&removed), pb::OperationState::Succeeded, "{:?}", removed.error);
+    host.machines().await.add_ssh_machine(add(&fingerprint, "k3")).await.expect("the name is free once the removal is done");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bad_ssh_host_or_unknown_machine_is_the_calls_own_error() {
     let machine = FakeMachine::new();
@@ -727,6 +840,7 @@ async fn daemon_with_agent_on(env: &[(&str, &str)]) -> (Daemon, String) {
                 value: SESSION.to_owned(),
             }),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()
@@ -775,7 +889,8 @@ async fn an_agent_cannot_add_or_remove_a_machine_on_its_own() {
     assert_eq!(refused.code(), Code::PermissionDenied, "{refused:?}");
     assert!(matches!(error_of(&refused).kind, Some(pb::error::Kind::Denied(_))));
 
-    // An agent sees no machines, and its refused calls started nothing.
+    // An agent sees only its channel's machines (TP-1), none here, and its
+    // refused calls started nothing.
     let listed = machines
         .list_machines(as_agent(pb::ListMachinesRequest::default(), &token))
         .await
@@ -1018,5 +1133,5 @@ async fn the_storage_page_reads_this_machines_own_storage_and_no_other() {
         })
         .await
         .unwrap_err();
-    assert_eq!(other.code(), Code::Unimplemented);
+    assert_eq!(other.code(), Code::NotFound);
 }

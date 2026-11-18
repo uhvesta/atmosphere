@@ -10,13 +10,15 @@
 use std::sync::Arc;
 
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::{CarryError, ForkCopy, ForkPack, ForkPackError, Starter};
+use humata2_sessions::{CHANNELS_ROOT, CarryError, DESK_CHANNEL, ForkCopy, ForkPack, ForkPackError, Starter};
 use humata2_store::Take;
 use tonic::{Code, Request, Response, Status};
 
 use crate::identity::{self, Caller, UserVia};
 use crate::status;
 use crate::trash_service::{Bin, blocking, now_ms};
+
+mod review_git;
 
 pub(crate) struct SessionCarrySvc {
     starter: Starter,
@@ -35,11 +37,32 @@ impl SessionCarrySvc {
         })
     }
 
-    /// Stages `session` for a move (see [`Starter::pack`]).
-    pub(crate) async fn pack(&self, operation: &str, session: &str) -> Result<humata2_sessions::Packed, Status> {
-        let (starter, operation, session) = (self.starter.clone(), operation.to_owned(), session.to_owned());
-        blocking(move || starter.pack(&operation, &session))
+    /// Stages `session` for a move (see [`Starter::pack_for`]). `target` is
+    /// the folder the session will have on the new machine, empty when the
+    /// conversation is to travel as it is.
+    pub(crate) async fn pack(
+        &self,
+        operation: &str,
+        session: &str,
+        target: &str,
+    ) -> Result<humata2_sessions::Packed, Status> {
+        let (starter, operation, session, target) =
+            (self.starter.clone(), operation.to_owned(), session.to_owned(), target.to_owned());
+        blocking(move || {
+            let target = (!target.is_empty()).then(|| std::path::PathBuf::from(&target));
+            starter.pack_for(&operation, &session, target.as_deref())
+        })
+        .await?
+        .map_err(failed)
+    }
+
+    /// Where the session folder `folder` of `channel` will be here (see
+    /// [`Starter::carry_target`]).
+    pub(crate) async fn target(&self, channel: &str, folder: &str) -> Result<String, Status> {
+        let (starter, channel, folder) = (self.starter.clone(), channel.to_owned(), folder.to_owned());
+        blocking(move || starter.carry_target(&channel, &folder))
             .await?
+            .map(|path| path.to_string_lossy().into_owned())
             .map_err(failed)
     }
 
@@ -156,12 +179,13 @@ impl SessionCarrySvc {
     /// records. What went to the trash is named in the answer.
     pub(crate) async fn release(&self, operation: &str, session: &str, channel: &str) -> Result<Vec<String>, Status> {
         // The session's shells run on its new machine now (MV-13); here they stop before their tabs are forgotten.
-        let sockets = {
+        let holders = {
             let (starter, session) = (self.starter.clone(), session.to_owned());
-            blocking(move || starter.shell_sockets(&session)).await?.map_err(failed)?
+            blocking(move || starter.shell_holders(&session)).await?.map_err(failed)?
         };
-        for socket in sockets.into_iter().filter(|socket| socket.exists()) {
-            if let Err(error) = humata2_holder::shutdown(&socket).await {
+        for (socket, pid) in holders {
+            let owner = format!("a shell of session {session} it left");
+            if let Err(error) = crate::holder_end::shut_or_end(&socket, pid, &owner).await {
                 crate::log::say!(
                     "humatad2: stopping a shell of session {session} it left: {}; that shell may still be running here, and nothing in Humata shows it any more",
                     status::chain(&error)
@@ -252,9 +276,27 @@ fn failure(code: Code, message: String, fix: &str) -> Status {
 
 /// A carry core failure as the status the host's driver reads. Every message
 /// already says what to do; none of them means anything was deleted.
-fn failed(error: CarryError) -> Status {
+pub(crate) fn failed(error: CarryError) -> Status {
+    // CV-3, CV-7: the agent's conversation can't be carried: no adapter
+    // reads it, or its adapter doesn't know its records or version.
+    if let CarryError::Conversation { agent, .. } = &error {
+        return status::failure(
+            Code::FailedPrecondition,
+            status::error(
+                status::chain(&error),
+                "move a session whose agent keeps its conversation in files Humata can carry; nothing was changed",
+                pb::error::Kind::AgentLacksFeature(pb::AgentLacksFeature {
+                    agent: Some(pb::AgentId { value: agent.clone() }),
+                    feature: pb::agent_lacks_feature::Feature::ConversationMove as i32,
+                }),
+            ),
+        );
+    }
     let code = match error {
         CarryError::Io { .. } | CarryError::Store { .. } => Code::Internal,
+        // The copy is this machine's live session now: a fork's driver
+        // takes that as the fork made, not as a failure.
+        CarryError::Running { .. } => Code::AlreadyExists,
         _ => Code::FailedPrecondition,
     };
     failure(
@@ -355,7 +397,7 @@ impl pb::session_carry_service_server::SessionCarryService for SessionCarrySvc {
         if let Some(fork) = request.fork {
             return Ok(Response::new(self.pack_fork(&operation, &session, &fork).await?));
         }
-        let packed = self.pack(&operation, &session).await?;
+        let packed = self.pack(&operation, &session, &request.target_folder).await?;
         Ok(Response::new(pb::CarryPackResponse {
             folder: packed.folder,
             stage: packed.stage,
@@ -365,6 +407,28 @@ impl pb::session_carry_service_server::SessionCarryService for SessionCarrySvc {
             agent_running: packed.agent_running,
             ..pb::CarryPackResponse::default()
         }))
+    }
+
+    async fn run_review_git(
+        &self,
+        request: Request<pb::RunReviewGitRequest>,
+    ) -> Result<Response<pb::RunReviewGitResponse>, Status> {
+        require_host(&identity::caller(&request)?)?;
+        let request = request.into_inner();
+        let session = session_of(request.session)?;
+        Ok(Response::new(
+            self.run_review_git(session, request.repo, request.args, request.stdin).await?,
+        ))
+    }
+
+    async fn target(
+        &self,
+        request: Request<pb::CarryTargetRequest>,
+    ) -> Result<Response<pb::CarryTargetResponse>, Status> {
+        require_host(&identity::caller(&request)?)?;
+        let request = request.into_inner();
+        let folder = self.target(&channel_of(request.channel)?, &request.folder).await?;
+        Ok(Response::new(pb::CarryTargetResponse { folder }))
     }
 
     async fn unpack(
@@ -425,7 +489,15 @@ impl SessionCarrySvc {
     async fn channel_if_any(&self, session: &str) -> Result<Option<String>, Status> {
         let (store, id) = (self.starter.store.clone(), session.to_owned());
         match blocking(move || store.session(&id)).await? {
-            Ok(record) => Ok(record.map(|record| record.channel)),
+            // A Desk session, a channel's own too, is carried through the
+            // channels folder itself (MV-17).
+            Ok(record) => Ok(record.map(|record| {
+                if record.channel == DESK_CHANNEL {
+                    CHANNELS_ROOT.to_owned()
+                } else {
+                    record.channel
+                }
+            })),
             Err(source) => Err(failed(CarryError::Store {
                 doing: "read the session",
                 source,
@@ -458,5 +530,17 @@ mod tests {
             assert_eq!(denied.code(), Code::PermissionDenied, "{who}");
         }
         assert!(require_host(&Caller::User(UserVia::Host)).is_ok());
+    }
+
+    #[test]
+    fn a_copy_whose_agent_runs_here_reads_as_already_there() {
+        let refused = failed(CarryError::Running {
+            session: "se_1".to_owned(),
+        });
+        assert_eq!(refused.code(), Code::AlreadyExists);
+        let other = failed(CarryError::NoSession {
+            session: "se_1".to_owned(),
+        });
+        assert_eq!(other.code(), Code::FailedPrecondition);
     }
 }

@@ -4,7 +4,7 @@ use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 
 use crate::StoreError;
 
@@ -450,6 +450,198 @@ const MIGRATIONS: &[&str] = &[
         at_unix_ms INTEGER NOT NULL
     ) STRICT;
 ",
+    "
+    -- Step 21. Which holder process a tab has had (D271): bumped each time
+    -- a tab gets a new one. A tab saved before this reads as generation 0.
+    ALTER TABLE tabs ADD COLUMN holder_generation INTEGER NOT NULL DEFAULT 0;
+",
+    "
+    -- Step 22. What a tab's screen has answered of the program's queries
+    -- (D271): reply_generation is null until a record is first saved, and
+    -- names the holder generation the record is for. Pending answers are
+    -- comma-joined sequence numbers.
+    ALTER TABLE tabs ADD COLUMN reply_generation INTEGER;
+    ALTER TABLE tabs ADD COLUMN reply_answered INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE tabs ADD COLUMN reply_pending TEXT NOT NULL DEFAULT '';
+    ALTER TABLE tabs ADD COLUMN reply_uncertain INTEGER NOT NULL DEFAULT 0;
+",
+    "
+    -- Step 23 (PR, D283). A pull request review session (PR-4..PR-8): which
+    -- pull requests it reviews, in the order asked for, the head each clone
+    -- was made at, the newest head a check saw, and whether its agent may
+    -- push. submit_started_unix_ms is kept before a review is posted, so a
+    -- restart can look for it on GitHub (D287). Must land after TERM's 21, 22.
+    CREATE TABLE review_sessions (
+        session TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+        push_allowed INTEGER NOT NULL
+    ) STRICT;
+    CREATE TABLE review_session_prs (
+        session TEXT NOT NULL REFERENCES review_sessions (session) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        base_branch TEXT NOT NULL,
+        head_branch TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        checked_sha TEXT NOT NULL,
+        state INTEGER NOT NULL,
+        submit_started_unix_ms INTEGER,
+        PRIMARY KEY (session, ordinal)
+    ) STRICT;
+",
+    "
+    -- Step 24. A Migrate item (UP-1, D281) belongs to no
+    -- session, so its row's session is NULL, and the table is rebuilt to
+    -- allow it, every row and index kept. migrate_thing and migrate_machine
+    -- are set on a Migrate item only, and migrate_pending while it is still
+    -- pending, so the partial index holds at most one pending item for each
+    -- thing and machine. A withdrawn item keeps its row and blocks nothing.
+    CREATE TABLE inbox_requests_new (
+        id TEXT PRIMARY KEY,
+        session TEXT REFERENCES sessions (id) ON DELETE CASCADE,
+        created_unix_ms INTEGER NOT NULL,
+        updated_unix_ms INTEGER NOT NULL,
+        entry BLOB,
+        entry_file TEXT,
+        migrate_thing INTEGER,
+        migrate_machine TEXT,
+        migrate_pending INTEGER NOT NULL DEFAULT 0 CHECK (migrate_pending IN (0, 1)),
+        CHECK ((entry IS NULL) <> (entry_file IS NULL)),
+        CHECK ((migrate_thing IS NULL) = (migrate_machine IS NULL)),
+        CHECK (session IS NOT NULL OR migrate_thing IS NOT NULL),
+        CHECK (migrate_pending = 0 OR migrate_thing IS NOT NULL)
+    ) STRICT;
+    INSERT INTO inbox_requests_new (id, session, created_unix_ms, updated_unix_ms, entry, entry_file)
+        SELECT id, session, created_unix_ms, updated_unix_ms, entry, entry_file FROM inbox_requests;
+    DROP TABLE inbox_requests;
+    ALTER TABLE inbox_requests_new RENAME TO inbox_requests;
+    CREATE INDEX inbox_requests_by_session ON inbox_requests (session);
+    CREATE UNIQUE INDEX inbox_requests_migrate_pending
+        ON inbox_requests (migrate_thing, migrate_machine) WHERE migrate_pending = 1;
+",
+    "
+    -- Step 25. A channel's own Desk sessions (CD-1..CD-5, D306): the
+    -- channel each belongs to, the session it looks after, its six
+    -- management switches, and where its closed folder went. The session
+    -- itself is filed under the Desk's channel id.
+    CREATE TABLE channel_desk_sessions (
+        session_id TEXT PRIMARY KEY REFERENCES sessions (id) ON DELETE CASCADE,
+        channel TEXT NOT NULL,
+        target_session TEXT,
+        read_files INTEGER NOT NULL,
+        send_notes INTEGER NOT NULL,
+        type_into_terminal INTEGER NOT NULL,
+        start_and_fork INTEGER NOT NULL,
+        stop_and_archive INTEGER NOT NULL,
+        change_board_items INTEGER NOT NULL,
+        last_used_unix_ms INTEGER NOT NULL,
+        closed_unix_ms INTEGER,
+        target_gone INTEGER NOT NULL,
+        trash_item TEXT
+    ) STRICT;
+",
+    "
+    -- Step 26 (PR, D299). Which commits of a pull request the user
+    -- reviewed, keyed by the pull request, so every review of it shares
+    -- them: a mark per commit sha (reviewed 0 once unmarked, kept so the
+    -- commit is never carried to), and the history of marks, unmarks,
+    -- carries and whole-PR reviews, numbered per pull request and only
+    -- ever added to. actor is the encoded humata.v1.Actor, NULL for what
+    -- nobody did; commits are shas, one per line.
+    CREATE TABLE pr_commit_marks (
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        sha TEXT NOT NULL,
+        patch_id TEXT NOT NULL,
+        reviewed INTEGER NOT NULL CHECK (reviewed IN (0, 1)),
+        reviewed_as_sha TEXT NOT NULL,
+        reviewed_unix_ms INTEGER NOT NULL,
+        reviewed_head_sha TEXT NOT NULL,
+        actor BLOB,
+        gh_login TEXT NOT NULL,
+        PRIMARY KEY (owner, name, number, sha)
+    ) STRICT;
+    CREATE TABLE pr_review_history (
+        owner TEXT NOT NULL,
+        name TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        at_unix_ms INTEGER NOT NULL,
+        kind INTEGER NOT NULL,
+        commits TEXT NOT NULL,
+        head_sha TEXT NOT NULL,
+        snapshot_n INTEGER,
+        actor BLOB,
+        gh_login TEXT NOT NULL,
+        PRIMARY KEY (owner, name, number, seq)
+    ) STRICT;
+",
+    "
+    -- Step 27 (PR, D299). The idempotency key of the MarkCommitsReviewed
+    -- call that made an entry, and its encoded answer, so a repeat answers
+    -- the same and marks nothing. Only the latest answers per pull request
+    -- are kept; an older entry keeps its key and loses its answer.
+    ALTER TABLE pr_review_history ADD COLUMN idempotency_key TEXT;
+    ALTER TABLE pr_review_history ADD COLUMN answer BLOB;
+    CREATE UNIQUE INDEX pr_review_history_keys
+        ON pr_review_history (owner, name, number, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+",
+    "
+    -- Step 28 (TERM, D337). What became of each keyed Type call: pending
+    -- from before its text goes to the shell, typed once all of it is
+    -- there, so a retry after a restart neither types twice nor says typed
+    -- when it may not have been. key is the call's method and idempotency
+    -- key; at_unix_ms is when it was first seen. Rows older than the
+    -- idempotency window are dropped when the daemon starts.
+    CREATE TABLE typed_keys (
+        key TEXT PRIMARY KEY,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'typed')),
+        at_unix_ms INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX typed_keys_by_age ON typed_keys (at_unix_ms);
+",
+    "
+    -- Step 29 (TERM, D426). The holder process a pending Type call's text
+    -- went to, so a retry asks that holder whether it typed the text; 0
+    -- when no holder could say.
+    ALTER TABLE typed_keys ADD COLUMN holder INTEGER NOT NULL DEFAULT 0;
+",
+    "
+    -- Step 30 (CH-16, D396). The machine's read mark for a remote session as
+    -- last reported, so a host restart shows it before the machine links
+    -- again. A report kept before this step reads as not unread.
+    ALTER TABLE remote_session_reports ADD COLUMN unread INTEGER NOT NULL DEFAULT 0;
+",
+    "
+    -- Step 31 (DOCV, DV-12). The comments a Desk file had when a version of
+    -- it was made: one row per session, commit and file, written once and
+    -- kept with the session. comments is the session's comments on the file
+    -- as the daemon encodes them (length-delimited humata.v1.Comment, in
+    -- order), empty when it had none.
+    CREATE TABLE doc_comment_records (
+        session TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+        commit_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        recorded_unix_ms INTEGER NOT NULL,
+        comments BLOB NOT NULL,
+        PRIMARY KEY (session, commit_id, path)
+    ) STRICT;
+    CREATE INDEX doc_comment_records_by_path ON doc_comment_records (session, path);
+",
+    "
+    -- Step 32 (TERM, D480). What the program in a terminal tab reports about
+    -- itself: the title it sets (OSC 0/2) and its folder (OSC 7, kept as a
+    -- path). Apart from tabs.title, the user's own name for the tab. Empty
+    -- means the program never said.
+    CREATE TABLE tab_program (
+        tab TEXT PRIMARY KEY REFERENCES tabs (id) ON DELETE CASCADE,
+        program_title TEXT NOT NULL DEFAULT '',
+        pwd TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+",
 ];
 
 /// The schema this build writes and reads.
@@ -488,12 +680,12 @@ pub(crate) fn open(path: &Path) -> Result<Connection, StoreError> {
     // on macOS too, where fsync alone leaves it in the drive's cache.
     connection
         .execute_batch(
-            "PRAGMA foreign_keys = ON;
+            "PRAGMA busy_timeout = 5000;
+             PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;
              PRAGMA synchronous = FULL;
              PRAGMA fullfsync = ON;
-             PRAGMA checkpoint_fullfsync = ON;
-             PRAGMA busy_timeout = 5000;",
+             PRAGMA checkpoint_fullfsync = ON;",
         )
         .map_err(opened)?;
     migrate(&mut connection, path)?;
@@ -501,12 +693,21 @@ pub(crate) fn open(path: &Path) -> Result<Connection, StoreError> {
 }
 
 fn migrate(connection: &mut Connection, path: &Path) -> Result<(), StoreError> {
-    let found: i64 = connection
+    let opened = |source| StoreError::Open {
+        path: path.to_owned(),
+        source,
+    };
+    // All steps in one transaction: a crash part way leaves the schema
+    // as it was. It takes the write lock before reading the version, so a
+    // second process opening the same new database (the daemon binds its
+    // socket before it opens the store) waits for the first one's steps
+    // and then finds them done, instead of running them again.
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(opened)?;
+    let found: i64 = transaction
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|source| StoreError::Open {
-            path: path.to_owned(),
-            source,
-        })?;
+        .map_err(opened)?;
     let supported = SCHEMA_VERSION;
     if found > supported {
         return Err(StoreError::SchemaTooNew {
@@ -521,9 +722,6 @@ fn migrate(connection: &mut Connection, path: &Path) -> Result<(), StoreError> {
         to: supported,
         source,
     };
-    // All steps in one transaction: a crash part way leaves the schema
-    // as it was.
-    let transaction = connection.transaction().map_err(failed)?;
     for (step, sql) in MIGRATIONS.iter().enumerate() {
         if (step as i64) < found {
             continue;
@@ -536,4 +734,96 @@ fn migrate(connection: &mut Connection, path: &Path) -> Result<(), StoreError> {
             .map_err(failed)?;
     }
     transaction.commit().map_err(failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::InboxRecord;
+    use crate::blob;
+    use crate::store::DATABASE;
+
+    /// A database last written just before the step that lets an Inbox
+    /// request have no session keeps its requests when the step rebuilds
+    /// the table.
+    #[test]
+    fn rebuilding_the_inbox_table_keeps_its_requests() {
+        let root = tempfile::tempdir().unwrap();
+        let step = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("inbox_requests_new"))
+            .unwrap();
+        let connection = Connection::open(root.path().join(DATABASE)).unwrap();
+        connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .unwrap();
+        for sql in &MIGRATIONS[..step] {
+            connection.execute_batch(sql).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO sessions (id, channel, machine, title, agent, folder, created_unix_ms)
+                 VALUES ('se_a', 'ch_a', 'ma_a', 'asker', 'claude', x'', 1)",
+                [],
+            )
+            .unwrap();
+        let entry = blob::encode(blob::Type::InboxEntry, 1, b"request").unwrap();
+        connection
+            .execute(
+                "INSERT INTO inbox_requests (id, session, created_unix_ms, updated_unix_ms, entry)
+                 VALUES ('rq_1', 'se_a', 5, 6, ?1)",
+                [entry],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", i64::try_from(step).unwrap())
+            .unwrap();
+        drop(connection);
+
+        let store = crate::Store::open(root.path()).unwrap();
+        assert_eq!(
+            store.inbox_requests().unwrap(),
+            vec![InboxRecord {
+                id: "rq_1".to_owned(),
+                session: "se_a".to_owned(),
+                entry: b"request".to_vec(),
+                created_unix_ms: 5,
+                updated_unix_ms: 6,
+            }]
+        );
+    }
+
+    /// A report kept before the read mark was saved reads as not unread, and
+    /// the rest of it is as it was.
+    #[test]
+    fn a_report_kept_before_the_read_mark_reads_as_read() {
+        let root = tempfile::tempdir().unwrap();
+        let step = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("ADD COLUMN unread"))
+            .unwrap();
+        let connection = Connection::open(root.path().join(DATABASE)).unwrap();
+        for sql in &MIGRATIONS[..step] {
+            connection.execute_batch(sql).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO remote_session_reports
+                     (machine, session, reported, exit_code, pointers, reported_unix_ms)
+                 VALUES ('box-1', 'se_1', 2, 0, x'', 20)",
+                [],
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", i64::try_from(step).unwrap())
+            .unwrap();
+        drop(connection);
+
+        let store = crate::Store::open(root.path()).unwrap();
+        let reports = store.remote_reports().unwrap();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].session, "se_1");
+        assert_eq!(reports[0].reported, 2);
+        assert!(!reports[0].unread);
+    }
 }

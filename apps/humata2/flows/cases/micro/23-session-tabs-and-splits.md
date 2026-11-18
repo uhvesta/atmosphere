@@ -58,7 +58,7 @@ Micro. Platforms: macOS. Linux and web are not checked for this case.
    **I see:** the side panel hides. Press ⌥⌘0 again and it comes back on Changes.
    **State and events:** `PaneAction::Toggle(Panel)` flips `layout.panel.collapsed` (`features/app/src/lib.rs:842-851`).
    **Status:** Code, no test
-   Evidence: `ui/src/shell.rs:538-540` binds the action. `features/app/tests/every_action.rs` maps the key to a palette command, but no test presses the key or checks the panel state. The per-session problem is a Likely bug (see the branches).
+   Evidence: `ui/src/shell.rs` binds the action. `features/app/tests/every_action.rs` maps the key to a palette command. The panel's state is kept per session: `features/app/tests/nav_bugs.rs::collapsing_the_panel_in_one_session_leaves_another_session_open`.
 
 9. **I do:** press ⌘T.
    **I see:** nothing new opens. The terminal gets no bytes for ⌘T.
@@ -78,7 +78,7 @@ Micro. Platforms: macOS. Linux and web are not checked for this case.
 12. **I do:** press ⇧⌘↩ (Return).
     **I see:** nothing happens. The palette, though, lists "Terminal full screen" with the hint `⇧⌘↩`.
     **State and events:** none. The full screen is not reached by this key.
-    **Status:** Not built (NV-37). The key is not bound. The palette hint is a Likely bug, see the gaps. The button "Expand terminal" (`ui/src/pages.rs:289-296`) and the palette command (`features/app/src/commands.rs:66-67`) do reach full screen.
+    **Status:** Fakes only for the key: `ui/src/keys.rs` binds `shift-cmd-enter` to Terminal full screen, the hint the palette shows; no test presses it. The button "Expand terminal" (`ui/src/pages.rs`) and the palette command (`features/app/src/commands.rs`) do reach full screen.
 
 ## Branches
 
@@ -157,10 +157,10 @@ Micro. Platforms: macOS. Linux and web are not checked for this case.
 
 - **When:** the panel is hidden in session A, and the person opens session B that has a panel open.
 - **I do:** press ⌥⌘0 in A to hide the panel, then open B.
-- **I see:** B's panel is hidden too.
+- **I see:** B's panel stays open.
 - **Expected outcome:** each session keeps its own panel state (NV-37 says "Both states are kept per session (SE-13)").
-- **Status:** Likely bug
-  `features/app/src/layout.rs:72-77` keeps `Layout.panel.collapsed` as one value for the whole app. `features/app/src/lib.rs:842-851` flips that value. Confirm: hide the panel in one session, then open another session that has a panel open. Its panel should stay open, and the code says it will be hidden.
+- **Status:** Fakes only (fixed): `features/app/tests/nav_bugs.rs::collapsing_the_panel_in_one_session_leaves_another_session_open`
+  Fixed by BUGS: the panel's collapsed state is kept per session (`features/app/tests/nav_bugs.rs::collapsing_the_panel_in_one_session_leaves_another_session_open`). Hiding it in one session leaves another session's panel open.
 
 ## Expected outcomes
 
@@ -199,10 +199,10 @@ Micro. Platforms: macOS. Linux and web are not checked for this case.
 | Branch: file opened, closed, reopened | Fakes only | `features/session/tests/tabs.rs::a_file_opens_once_and_closing_it_returns_to_the_terminal` |
 | Branch: full screen with ⇧⌘↩ and Escape | Code, no test | `desktop/tests/native/shell.rs::terminal_and_panel_full_screen_return_to_the_same_columns` (button only) |
 | Branch: ⌥⌘0 with no panel open | Code, no test | `features/app/src/lib.rs:831-837` |
-| Branch: ⌥⌘0 hides the panel in every session | Likely bug | `features/app/src/layout.rs:72-77`; `features/app/src/lib.rs:842-851` |
+| Branch: ⌥⌘0 hides the panel in every session | Fakes only (fixed) | `features/app/tests/nav_bugs.rs::collapsing_the_panel_in_one_session_leaves_another_session_open` |
 
 Steps: 0 Works, 7 Fakes only (steps 1 to 7), 1 Code no test (step 8), 4 Not built (steps 9 to 12), 0 Likely bug. Total 12.
-Branches: 4 Fakes only, 3 Code no test, 1 Not built, 1 Likely bug. Total 9.
+Branches: 5 Fakes only, 3 Code no test, 1 Not built, 0 Likely bug. Total 9.
 
 ## Gaps and likely bugs
 
@@ -212,8 +212,8 @@ Branches: 4 Fakes only, 3 Code no test, 1 Not built, 1 Likely bug. Total 9.
 - Not built (SE-27): the group ✕. `ui/src/session_tabs.rs` has no `close-group` button, so the only way to join is the palette command. The native test asserts that no `close-group` button exists.
 - Not built (SE-27): moving a tab "from its menu". Dragging works (`ui/src/session_tabs.rs:243` and `:585`), but the tab menu has no move entry.
 - Not built (no milestone): closing a shell tab. No ✕ is shown, and the spec does not name another way.
-- Likely bug: `features/palette/src/lib.rs:699-701` shows the hint `⇧⌘↩` for Terminal full screen, but nothing binds that key. Confirm by pressing ⇧⌘↩ with the palette showing the hint.
-- Likely bug: `features/app/src/layout.rs:72-77` and `features/app/src/lib.rs:842-851`. The panel's collapsed state is global, not per session as NV-37 and SE-13 say. Confirm with the two-session check above.
+- Fixed (was a likely bug): `ui/src/keys.rs` binds `shift-cmd-enter` to Terminal full screen, the hint the palette shows. No test presses it yet.
+- Fixed (was a likely bug): the panel's collapsed state is per session (`features/app/tests/nav_bugs.rs::collapsing_the_panel_in_one_session_leaves_another_session_open`).
 - Question for the owner: the "Open in second group" menu item is offered even when two groups exist (`ui/src/session_tabs.rs:318-321`). NV-36 says more than two is a fork. The code reuses group 1. Should the menu hide the split when two groups exist?
 - Gap: full screen is set by `AppAction::ToggleFullScreen` in `features/app/src/lib.rs` (the `FullScreen` type is in `features/app/src/layout.rs`). It is reached by the button in `ui/src/pages.rs:289-296` and by the palette command, not by a key.
 - Gap: no live test covers a session's tab row. All of the tab tests use fakes.

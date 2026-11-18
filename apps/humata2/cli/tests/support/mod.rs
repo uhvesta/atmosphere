@@ -29,6 +29,7 @@ pub struct FakeDaemon {
     hangs: RefCell<Vec<&'static str>>,
     reports: RefCell<Vec<ReportRequest>>,
     report_reply: RefCell<Option<Result<ReportReply, DaemonError>>>,
+    stale_as_of: RefCell<Option<String>>,
 }
 
 impl FakeDaemon {
@@ -97,6 +98,13 @@ impl FakeDaemon {
     /// Calls to `rpc` never answer, as a daemon that is waiting.
     pub fn hang(&self, rpc: Rpc) -> &Self {
         self.hangs.borrow_mut().push(rpc.path);
+        self
+    }
+
+    /// Every reply so far was the machine's copy, which the host answered
+    /// at `at` (the `humata-stale-as-of` header).
+    pub fn copy_made_at(&self, at: &str) -> &Self {
+        *self.stale_as_of.borrow_mut() = Some(at.to_owned());
         self
     }
 
@@ -205,6 +213,10 @@ impl Daemon for FakeDaemon {
     ) -> Result<Replies, DaemonError> {
         self.answer(rpc, Vec::new()).await?;
         Ok(self.replies_for(rpc))
+    }
+
+    fn stale_as_of(&self) -> Option<String> {
+        self.stale_as_of.borrow().clone()
     }
 
     async fn report(&self, request: ReportRequest) -> Result<ReportReply, DaemonError> {

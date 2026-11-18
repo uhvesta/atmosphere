@@ -85,6 +85,9 @@ sh_test(
         "GHOSTTY_WASM": "$(rootpath @libghostty_vt_wasm//:wasm_module)",
         "NATIVE_FIXTURE": "$(rootpath :checkpoint_fixture)",
     },
-    tags = ["manual"],
+    tags = [
+        "external",
+        "manual",
+    ],
     target_compatible_with = ["@platforms//os:macos"],
 )

@@ -62,11 +62,11 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 7. **I do:** Make a second token that lists the machine capability, with no channels: `humata --json token create --name ci-stop --capability machine_sessions_stop --days 1`. Run the script with it: `humata --json stop --reason "cron"`.
 
-   **I see:** This machine's sessions stop. The stop record names the stopper as an agent, with no session.
+   **I see:** This machine's sessions stop. The stop record names the stopper as a script, with its token.
 
-   **State and events:** `ByKind::Agent` with no session is recorded for a script (`daemon/humatad/src/stop/service.rs:184-189`). The proto has no script kind (`api/proto/humata/v1/common.proto:282-287`). The policy skips the channel check for a machine target (`daemon/access/src/policy.rs:1190`).
+   **State and events:** `ByKind::Script` is recorded for a script (`daemon/humatad/src/stop/service.rs`), the proto's `ScriptActor` (`api/proto/humata/v1/common.proto`). The policy skips the channel check for a machine target (`daemon/access/src/policy.rs`; D523).
 
-   **Status:** Likely bug. See the gaps list. No real-daemon test runs an allowed script stop. The only test of a script's stop capability, `daemon/access/tests/machine_sessions.rs::a_script_token_stops_sessions_only_when_it_lists_the_capability`, checks the refusal.
+   **Status:** Works (real daemon): `daemon/humatad/tests/stop_access.rs::a_script_whose_token_lists_stopping_sessions_stops_the_machine_and_is_named_a_script`. (Was a likely bug: the stopper was an agent; fixed by BUGS.)
 
 8. **I do:** Start a Humata session tab, so that the tab has `HUMATA_SESSION_TOKEN`. Run the same script there, with `HUMATA_TOKEN` also set.
 
@@ -154,7 +154,7 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Expected outcome:** If presence is meant to gate tokens, as the `presence` field and the CLI's `present_json` suggest, the command asks for confirmation before it makes or revokes a token.
 
-**Status:** Likely bug. Confirm by running `humata token create` from a logged-in terminal with the app closed. If a token is made with no prompt, the presence step is not enforced. The spec and CLI.md do not say whether presence is required, so the owner must decide.
+**Status:** Code, no test. Owner decision, Provisional D522: making or revoking a token needs the user (the app, or a terminal whose login the user confirmed), with no second presence step. No test runs an agent's or a script's refused create.
 
 ### Token listed for machine stop but no channels
 
@@ -168,7 +168,7 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Expected outcome:** SEC-14 says a token lists "which channels". The owner should say whether a machine stop should also be limited by the channels, or whether the list only limits channel actions.
 
-**Status:** Likely bug (spec tension). The code is consistent with its own comment, so this is a question for the owner before it is a bug.
+**Status:** Works (real daemon): `daemon/humatad/tests/stop_access.rs::a_script_whose_token_lists_stopping_sessions_stops_the_machine_and_is_named_a_script` stops the machine with a token that lists no channels. Owner decision, Provisional D523: a token's channels limit channel actions; a machine stop is limited by its capability alone.
 
 ## Expected outcomes
 
@@ -177,12 +177,12 @@ Layer: agents. Platforms: macOS, Linux, web.
 - [ ] A script lists and reads only the sessions in its own channels.
 - [ ] A script cannot pin, read the token list, make a token, or revoke one.
 - [ ] A script without the machine capability is refused a stop, and nothing stops.
-- [ ] A script with the machine capability stops the machine, and the stop names a script (Likely bug: today it names an agent).
+- [x] A script with the machine capability stops the machine, and the stop names a script (`daemon/humatad/tests/stop_access.rs::a_script_whose_token_lists_stopping_sessions_stops_the_machine_and_is_named_a_script`).
 - [ ] A session tab's agent identity wins over the script token, in the daemon as well as in the CLI.
 - [ ] A revoked token stops at once. A kept token survives a restart.
 - [ ] An expired token is refused and says a new one is needed.
 - [ ] A token made on one daemon is refused by another.
-- [ ] Making or revoking a token asks the user to confirm (Likely bug: today it does not).
+- [ ] Making or revoking a token needs the user, with no second confirmation (Provisional D522; no test).
 
 ## Status summary
 
@@ -194,15 +194,15 @@ Layer: agents. Platforms: macOS, Linux, web.
 | 4. Read a channel not listed | Works (real daemon) | `matrix.rs::the_matrix_holds_for_a_script_token` (other channel row) |
 | 5. Pin as a script | Code, no test | `daemon/humatad/src/mark_service.rs:6`; `capability.rs` UserOnly group |
 | 6. Stop without the capability | Works (real daemon) | `daemon/humatad/tests/stop_access.rs::a_script_whose_token_lacks_the_capability_is_refused_a_stop_and_nothing_stops` |
-| 7. Stop with the capability | Likely bug | `daemon/humatad/src/stop/service.rs:184-189`; `api/proto/humata/v1/common.proto:282-287` |
+| 7. Stop with the capability | Works (real daemon) | `daemon/humatad/tests/stop_access.rs::a_script_whose_token_lists_stopping_sessions_stops_the_machine_and_is_named_a_script` |
 | 8. Session tab wins over script token | Fakes only | `cli/tests/actor.rs::the_agent_stays_the_agent_with_a_script_token_too`; daemon `identity.rs:910-912` has no test |
 | 9. `token ls` as a script | Works (real daemon) | `matrix.rs::the_matrix_holds_for_a_script_token` (user-only token ls row) |
 | Branch: revoked | Works (real daemon) | `matrix.rs::a_revoked_token_stops_at_once_and_a_kept_one_survives_a_restart` |
 | Branch: expired | Works (real daemon) | `matrix.rs::an_expired_token_is_refused` |
 | Branch: another machine | Code, no test | `script_tokens.rs::a_made_up_token_is_unknown` (in-process only) |
 | Branch: user-only capability in a token | Works (real daemon) | `matrix.rs::a_token_cannot_be_made_for_a_user_only_action` |
-| Branch: presence on create or revoke | Likely bug | `cli/src/call.rs:185-199`; `daemon/humatad/src/cli_login.rs:489-493`, `:603-607` |
-| Branch: channels and machine stop | Likely bug (spec tension) | `daemon/access/src/policy.rs:1190` |
+| Branch: presence on create or revoke | Code, no test (owner decision, Provisional D522) | `daemon/humatad/src/cli_login.rs` (`create_script_token`, `revoke_script_token`: `user_only`) |
+| Branch: channels and machine stop | Works (real daemon) (as Provisional D523 picks) | `daemon/humatad/tests/stop_access.rs::a_script_whose_token_lists_stopping_sessions_stops_the_machine_and_is_named_a_script`; `daemon/access/src/policy.rs` |
 
 ## Gaps and likely bugs
 
@@ -213,8 +213,8 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Likely bugs**
 
-- A script's machine stop is recorded as an agent's stop with no session (`daemon/humatad/src/stop/service.rs:184-189`). The proto has no script kind (`api/proto/humata/v1/common.proto:282-287`). Confirm by running an allowed script stop and reading the stopper.
-- The daemon never checks presence for `CreateScriptToken` or `RevokeScriptToken` (`daemon/humatad/src/cli_login.rs:489-493`, `:603-607`). The CLI's presence step is skipped, because the first request has no proof and succeeds (`cli/src/call.rs:185-199`).
-- A token's channel list does not limit a machine stop (`daemon/access/src/policy.rs:1190`). This may be intended, but SEC-14 says a token lists its channels. The owner should decide.
-- No real-daemon test runs an allowed script stop, so the positive path of step 7 is unproven.
+- Fixed (was a likely bug): a script's machine stop names a script (`daemon/humatad/tests/stop_access.rs::a_script_whose_token_lists_stopping_sessions_stops_the_machine_and_is_named_a_script`).
+- Owner decision (Provisional D522): making or revoking a token needs the user and no second presence step. Reverse it to have the daemon answer `PresenceRequired`, which the CLI already handles.
+- Owner decision (Provisional D523): a token's channel list limits channel actions, not a machine stop.
+- Fixed: a real-daemon test runs an allowed script stop (`daemon/humatad/tests/stop_access.rs::a_script_whose_token_lists_stopping_sessions_stops_the_machine_and_is_named_a_script`).
 - The refusal for an unusable token says "made by another daemon" (`status.rs:256`). That is accurate for another machine, but a revoked token gets the same words, so the fix does not say which case it is.

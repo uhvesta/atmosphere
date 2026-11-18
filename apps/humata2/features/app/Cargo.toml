@@ -19,6 +19,7 @@ humata2-find = { path = "../find" }
 humata2-hosts = { path = "../hosts" }
 humata2-inbox = { path = "../inbox" }
 humata2-palette = { path = "../palette" }
+humata2-pr-review = { path = "../pr_review" }
 humata2-review = { path = "../review" }
 humata2-session = { path = "../session" }
 humata2-settings = { path = "../settings" }

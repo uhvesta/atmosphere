@@ -18,29 +18,36 @@ use std::sync::Arc;
 
 use humata2_access::{AgentId, Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_revive::{Revived, resume_agent};
-use humata2_sessions::{Agents, StartError, StartRequest, Starter, branch_slug};
+use humata2_revive::{Revived, resume_agent, resume_agent_asked, resume_moved_agent};
+use humata2_sessions::{Agents, ReviewStart, StartError, StartRequest, Starter, branch_slug};
 use humata2_store::{
     AgentRecord, AgentState, ChannelRecord, MainClone, ResumeFailure, SessionDetail, SessionRecord,
     StartStep, StoreError, TabRecord,
 };
 use pb::invalid_field::Problem;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tonic::{Code, Request, Response, Status};
 
 use crate::desk_service;
 use crate::events::{Feed, Scope};
-use crate::channel_service::{Gated, answer_gated, answer_gated_showing, blocking, error_of, failed, gate, timestamp_ms};
+use crate::channel_service::{Gated, answer_gated, answer_gated_showing, answer_plan, blocking, error_of, failed, gate, timestamp_ms};
 use crate::guard::{self, Checked, Guard};
+use crate::holder_end;
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
 use crate::operations::{Operations, Progress, Started};
 use crate::remote_work::RemoteWork;
 use crate::restart::Tokens;
 use crate::status;
+use crate::upgrade::items::Migrations;
 
+// REPOS (CH-21)
+mod add_repo;
 mod archive;
 mod archive_remote;
+mod continue_in;
+mod conversation_read;
+mod ended;
 mod forget;
 mod fork;
 mod fork_card;
@@ -49,26 +56,38 @@ mod hooks;
 mod lineage;
 mod move_recover;
 mod move_session;
+mod notes;
 mod own_copy;
 mod pointers;
 mod push;
 mod rebuild;
 mod rename_branch;
 mod remote;
+mod remote_review;
+mod remote_start;
+mod script_steps;
 mod start_fresh;
-mod turns;
+mod stop_launching;
+mod stop_running;
+pub(crate) mod turns;
 mod turns_list;
-mod watch;
+pub(crate) mod watch;
+
+pub(crate) use push::gh_program;
 
 pub(crate) use archive_remote::Removal;
+pub(crate) use archive::undo_window_ms as archive_undo_window_ms;
 
-pub(crate) use remote::TellSink;
+pub(crate) use remote::{TellSink, stuck_start};
 pub(crate) use turns::{
-    HooksError, changes as turn_changes, install_hooks, running as running_turn, set_sources,
+    Asking, HooksError, changes as turn_changes, install_hooks, running as running_turn,
+    set_sources, tell_asks,
 };
-pub(crate) use hooks::install_agent_hooks;
+#[cfg(test)]
+pub(crate) use turns::asking as turns_asking;
+pub(crate) use hooks::{install_agent_hooks, install_mcp_configs};
 pub(crate) use pointers_start::after_restart;
-pub(crate) use move_session::{is_moving, moving_changes};
+pub(crate) use move_session::{Moving, is_moving, moving_changes, refuse_input_while_moving};
 pub(crate) use rebuild::{CutRebuild, cut_rebuilds, undo_cut_rebuilds};
 
 mod pointers_start {
@@ -108,8 +127,19 @@ pub(crate) struct SessionSvc {
     lifecycle: Arc<archive::Lifecycle>,
     /// The host's way to move a session between machines (D195); set once.
     carry: Arc<std::sync::OnceLock<crate::carry::Carry>>,
+    /// This run's restart, set once the daemon serves: a start the host
+    /// asks again waits for it, so it is answered from what recovery kept.
+    restart: Arc<std::sync::OnceLock<Arc<crate::restart::Started>>>,
     /// The host's mirror's scrubbed lines, for rebuilding a lost session (SL-4).
     raw_lines: rebuild::Lines,
+    /// UP-1, D281 e: what would run across releases is refused, by the Inbox's Migrate items.
+    migrations: Migrations,
+    /// REPOS (CH-21): the channel service, for the channel add of a repo it lacks; set once.
+    channels: add_repo::Channels,
+    /// PR-17: the review service, which knows a review's drafts; set once.
+    review: Arc<std::sync::OnceLock<crate::review::Review>>,
+    /// MACHINESCRIPTS (D681): the engine a move fires session triggers on; set once.
+    scripts: Arc<std::sync::OnceLock<Arc<crate::machine_scripts::MachineScripts>>>,
 }
 
 /// Puts a session as the store holds it now on the event feed.
@@ -123,17 +153,40 @@ pub(crate) struct Tell {
     remote: Arc<std::sync::OnceLock<RemoteWork>>,
     /// The last pointers of this machine's sessions (SL-3).
     pointers: Arc<pointers::Cache>,
+    /// Who drops what they keep for a session once it ends.
+    endings: ended::Ended,
+    /// The files of this machine's session clones, told on the feed (bug 23).
+    file_changes: Arc<crate::files::FileChanges>,
 }
 
 impl Tell {
     pub(crate) fn new(feed: Arc<Feed>, store: Arc<humata2_store::Store>, machine: String) -> Self {
+        let file_changes = Arc::new(crate::files::FileChanges::new(feed.clone(), store.clone()));
         Self {
             feed,
             store,
             machine,
             remote: Arc::default(),
             pointers: pointers::shared(),
+            endings: ended::Ended::default(),
+            file_changes,
         }
+    }
+
+    /// What tells the files of session clones; the file service shares it.
+    pub(crate) fn file_changes(&self) -> Arc<crate::files::FileChanges> {
+        self.file_changes.clone()
+    }
+
+    /// Calls `forget` with each session archived or freed from now on, so
+    /// what it keeps for sessions stays bounded.
+    pub(crate) fn on_ended(&self, forget: impl Fn(&str) + Send + Sync + 'static) {
+        self.endings.listen(forget);
+    }
+
+    /// Says `session` was archived or its folder freed.
+    fn ended(&self, session: &str) {
+        self.endings.tell(session);
     }
 
     /// The same, merging remote sessions with `remote` once it is set.
@@ -162,12 +215,38 @@ impl Tell {
     /// A session that can't be read is not told; publishing never fails
     /// the call that changed it.
     pub(crate) async fn session(&self, session: &str, change: pb::Change, by: Option<pb::Actor>) {
+        self.session_when(session, change, by, |_| true).await;
+    }
+
+    /// Publishes `session` as [`Self::session`] does, only while its agent
+    /// runs: an ask starting or ending changes no other session's status
+    /// (D158.7), so no other is told of it.
+    pub(crate) async fn running_session(&self, session: &str) {
+        self.session_when(session, pb::Change::Updated, None, |loaded| {
+            matches!(
+                loaded.agent.as_ref().map(|agent| &agent.state),
+                Some(AgentState::Running { .. })
+            )
+        })
+        .await;
+    }
+
+    async fn session_when(
+        &self,
+        session: &str,
+        change: pb::Change,
+        by: Option<pb::Actor>,
+        tell: impl FnOnce(&Loaded) -> bool,
+    ) {
         let (store, key) = (self.store.clone(), session.to_owned());
         let read = blocking(move || Loaded::read(&store, &key))
         .await;
         let Ok(Ok(Some(loaded))) = read else {
             return;
         };
+        if !tell(&loaded) {
+            return;
+        }
         let mut shown = session_pb(
             &loaded.record,
             loaded.detail.as_ref(),
@@ -176,6 +255,7 @@ impl Tell {
             &self.machine,
         );
         shown.away_left_out.clone_from(&loaded.away_left_out);
+        shown.pull_request = loaded.review.as_ref().map(crate::review::binding);
         if let Some(remote) = self.remote.get()
             && remote::elsewhere(&loaded.record, &self.machine)
         {
@@ -208,6 +288,12 @@ pub(crate) struct Loaded {
     summary_source: pb::session::SummarySource,
     /// What the host left out of its agent's replayed writes (AW-9, D267).
     away_left_out: Option<pb::AwayWritesLeftOut>,
+    /// The pull requests a review session is bound to (PR-4).
+    review: Option<humata2_store::ReviewSessionRecord>,
+    /// For an agent a move just landed here, the line its terminal shows
+    /// first: it is started again in its conversation, not resumed as an
+    /// interrupted one, so nothing is recorded and it isn't told.
+    moved: Option<&'static str>,
 }
 
 impl Loaded {
@@ -222,8 +308,10 @@ impl Loaded {
             detail: store.session_detail(key)?,
             summary_source: start_fresh::summary_source(agent.as_ref()),
             away_left_out: store.away_left_out(key)?.map(away_pb),
+            review: store.review_session(key)?,
             agent,
             record,
+            moved: None,
         }))
     }
 }
@@ -239,8 +327,12 @@ impl SessionSvc {
         remote: Option<RemoteWork>,
         tell: Tell,
         socket: PathBuf,
+        migrations: Migrations,
     ) -> Self {
         let tokens = Arc::new(Tokens::new(starter.store.clone(), identities, socket));
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(tell_read_marks(tell.clone(), crate::read_marks::changes()));
+        }
         Self {
             tell,
             guard,
@@ -252,7 +344,12 @@ impl SessionSvc {
             remote,
             lifecycle: Arc::default(),
             carry: Arc::default(),
+            restart: Arc::default(),
             raw_lines: rebuild::Lines::default(),
+            channels: Arc::default(),
+            review: Arc::default(),
+            scripts: Arc::default(),
+            migrations,
         }
     }
 
@@ -324,6 +421,113 @@ impl SessionSvc {
         )
     }
 
+    /// PR-6: starts a pull request review's session; its pinned clones are
+    /// `Starter::start_review`'s. The caller was vetted by the review service.
+    pub(crate) async fn begin_review(
+        &self,
+        caller: &Caller,
+        channel: ChannelRecord,
+        request: &pb::StartReviewRequest,
+        review: ReviewStart,
+        title: String,
+        first_message: String,
+        // The id the host chose, on the machine a review starts on for it.
+        assigned: Option<String>,
+    ) -> Result<pb::Operation, Status> {
+        Self::refuse_peer(caller)?;
+        crate::stop::gate::require_running(caller)?;
+        // SEAM: PR-4, PR-21: a review on another machine runs there.
+        if let Some((machine, remote)) = self.remote_machine(request.machine.as_ref())? {
+            return self
+                .begin_review_remote(caller, channel, request, review, title, first_message, machine, remote)
+                .await;
+        }
+        let agent = self.agent_for(request.agent.as_ref(), &channel)?;
+        // SEAM: AGENTSET: a review runs the agent here, so it must be on and found.
+        crate::agent_gate::enabled(&self.starter.agents, &agent)?;
+        if let Some(operation) = self
+            .operations
+            .existing(caller, request.idempotency_key.as_ref())?
+        {
+            return Ok(operation);
+        }
+        crate::agent_gate::ready(&self.starter.agents, &agent).await?;
+        turns::refresh_hooks().await;
+        let mut keys = vec!["write_record".to_owned()];
+        let mut steps = vec![("write_record".to_owned(), "Saving the session".to_owned())];
+        for pr in &review.prs {
+            keys.push(format!("clone:{}", pr.name));
+            steps.push((format!("clone:{}", pr.name), format!("Cloning {}", pr.name)));
+        }
+        keys.push("launch".to_owned());
+        keys.push("verify".to_owned());
+        steps.push(("launch".to_owned(), "Starting the agent".to_owned()));
+        steps.push(("verify".to_owned(), "Checking it started".to_owned()));
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
+                value: channel.id.clone(),
+            })),
+        };
+        let progress = match self.operations.start_steps(
+            caller,
+            pb::OperationKind::StartSession,
+            target,
+            &steps,
+            false,
+            request.idempotency_key.clone(),
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(operation) => return Ok(operation),
+        };
+        let operation = progress.operation();
+        let start = StartRequest {
+            id: assigned,
+            channel: channel.id,
+            machine: self.machine.clone(),
+            title,
+            agent: Some(agent),
+            model: Some(request.model.clone()).filter(|model| !model.is_empty()),
+            repos: None,
+            first_message: Some(first_message),
+            branch: None,
+            operation: operation.id.as_ref().map(|id| id.value.clone()),
+            cols: COLS,
+            rows: ROWS,
+        };
+        let (ready, recorded) = oneshot::channel();
+        tokio::spawn(run_start(
+            self.starter.clone(),
+            self.tell.clone(),
+            self.tokens.clone(),
+            start,
+            progress,
+            keys,
+            ready,
+            identity::actor(caller),
+            Some(review),
+        ));
+        match recorded.await {
+            Ok(Ok(())) => {
+                let started = self.started_by(operation.clone()).await?;
+                if let Some(session) = &started.session {
+                    self.tell
+                        .session(
+                            &session.value,
+                            pb::Change::Created,
+                            Some(identity::actor(caller)),
+                        )
+                        .await;
+                }
+                Ok(operation)
+            }
+            Ok(Err(refused)) => Err(refused),
+            Err(_) => Err(status::internal(
+                "the review's start stopped before it was recorded",
+                "",
+            )),
+        }
+    }
+
     async fn begin_session(
         &self,
         caller: &Caller,
@@ -354,10 +558,16 @@ impl SessionSvc {
                 channel: ChannelId::new(channel.id.as_str()),
                 machine: humata2_access::MachineId::new(starts_on),
                 agent: AgentId::new(agent.as_str()),
+                fork_of: None,
             },
             approved,
         )? {
             return Ok(Gated::Ask(asked));
+        }
+        // SEAM: AGENTSET: a new start of a kind that is off is refused before it is
+        // relayed; a rebuild placing an existing session is not a new start.
+        if request.rebuild.is_none() {
+            crate::agent_gate::enabled(&self.starter.agents, &agent)?;
         }
         if let Some((machine, remote)) = remote_machine {
             return self
@@ -376,6 +586,10 @@ impl SessionSvc {
                 .begin_rebuild_here(caller, request, rebuild, assigned)
                 .await;
         }
+        // SEAM: PR-4, PR-21: the host starting a pull request review here.
+        if let Some(review) = request.review.clone() {
+            return self.begin_review_here(caller, request, review, assigned, channel).await;
+        }
         // A start naming a session this machine already has (the host asking again,
         // D150) answers with it and starts nothing.
         if let Some(id) = &assigned
@@ -385,10 +599,22 @@ impl SessionSvc {
         }
         let title = clean_title(&request.title)?;
         let repos = choose_repos(&channel, &request.repos)?;
+        // SEAM: AGENTSET: on the machine that runs the agent, its CLI must be found.
+        // When it is missing and Humata may install it, the start shows an
+        // "Installing" step and waits for it.
+        let installing = crate::agent_gate::check(&self.starter.agents, &agent)?;
+        let agent_name = agent.clone();
         turns::refresh_hooks().await;
 
         let mut keys = vec!["write_record".to_owned()];
-        let mut steps = vec![("write_record".to_owned(), "Saving the session".to_owned())];
+        let mut steps = Vec::new();
+        if installing {
+            steps.push((
+                "install".to_owned(),
+                format!("Installing {}", self.starter.agents.person_name(&agent)),
+            ));
+        }
+        steps.push(("write_record".to_owned(), "Saving the session".to_owned()));
         for (_, name) in &repos {
             keys.push(format!("clone:{name}"));
             steps.push((format!("clone:{name}"), format!("Cloning {name}")));
@@ -435,16 +661,29 @@ impl SessionSvc {
             rows: ROWS,
         };
         let (ready, recorded) = oneshot::channel();
-        tokio::spawn(run_start(
+        let install = installing.then(|| (self.starter.agents.clone(), agent_name));
+        let (starter, tell, tokens, by) = (
             self.starter.clone(),
             self.tell.clone(),
             self.tokens.clone(),
-            start,
-            progress,
-            keys,
-            ready,
             identity::actor(caller),
-        ));
+        );
+        tokio::spawn(async move {
+            if let Some((agents, kind)) = install {
+                progress.set_step("install", pb::StepState::Running, None);
+                match crate::agent_gate::install_now(&agents, &kind).await {
+                    Ok(()) => progress.set_step("install", pb::StepState::Done, None),
+                    Err(error) => {
+                        let shown = error.to_error();
+                        progress.set_step("install", pb::StepState::Failed, Some(shown.message.clone()));
+                        let _ = ready.send(Err(status::failure(Code::FailedPrecondition, shown.clone())));
+                        progress.fail(shown);
+                        return;
+                    }
+                }
+            }
+            run_start(starter, tell, tokens, start, progress, keys, ready, by, None).await;
+        });
         match recorded.await {
             Ok(Ok(())) => {
                 let started = self.started_by(operation).await?;
@@ -534,7 +773,7 @@ impl SessionSvc {
             .map(|id| id.value)
             .filter(|id| !id.is_empty())
             .ok_or_else(|| status::missing("id"))?;
-        let loaded = self.load(&id).await?;
+        let loaded = self.load_after_recovery(&id).await?;
         if let Some(asked) = gate(
             &self.guard,
             caller,
@@ -544,6 +783,58 @@ impl SessionSvc {
             return Ok(Gated::Ask(asked));
         }
         Ok(Gated::Done(self.show(&loaded)))
+    }
+
+    async fn read_conversation_of(
+        &self,
+        caller: &Caller,
+        request: pb::ReadConversationRequest,
+        approved: bool,
+    ) -> Result<Gated<pb::ReadConversationResponse>, Status> {
+        Self::refuse_peer(caller)?;
+        let id = request
+            .id
+            .map(|id| id.value)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| status::missing("id"))?;
+        let loaded = self.load_after_recovery(&id).await?;
+        if let Some(asked) = gate(
+            &self.guard,
+            caller,
+            &Call::ReadSession(self.session_ref(&loaded.record)),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        if !loaded.record.machine.is_empty() && loaded.record.machine != self.machine {
+            return Err(failed(
+                Code::FailedPrecondition,
+                &ReadElsewhere { session: id },
+                "read it from the host's copy with `humata session read`",
+                None,
+            ));
+        }
+        let scrubber = crate::history_service::scrubber()?;
+        let (store, agents, home) = (
+            self.starter.store.clone(),
+            self.starter.agents.clone(),
+            self.starter.home.clone(),
+        );
+        let (session, page) = (id.clone(), request.page);
+        let read = blocking(move || {
+            conversation_read::read(&store, &agents, &home, &session, page.as_ref(), &scrubber)
+        })
+        .await?
+        .map_err(|error| {
+            let code = match &error {
+                conversation_read::ReadError::BadToken { .. } => Code::InvalidArgument,
+                conversation_read::ReadError::Store { .. }
+                | conversation_read::ReadError::Unreadable { .. } => Code::Internal,
+                _ => Code::FailedPrecondition,
+            };
+            failed(code, &error, "", None)
+        })?;
+        Ok(Gated::Done(read))
     }
 
     async fn retitle(
@@ -664,19 +955,37 @@ impl SessionSvc {
             return Ok(Gated::Done(self.show(&loaded)));
         };
         match agent.state {
-            AgentState::Launching => return Err(busy(&id, "still starting")),
+            // Saved as launching with no start of this daemon live for it:
+            // its old holder may still run the agent. It is ended first, and
+            // the agent is saved stopped only once that holder is gone; if
+            // it can't be ended the record stays launching and the error
+            // says how to go on.
+            AgentState::Launching => {
+                let socket = agent.launch.holder_socket.clone();
+                let what = format!("session {id}'s terminal");
+                stop_launching::end_old_holder(&id, humata2_revive::launch_in_flight(&id), || {
+                    holder_end::end_holder_at(&socket, &what)
+                })
+                .await
+                .map_err(|error| stop_launching::status_of(&id, &error))?;
+            }
             AgentState::Resuming => return Err(busy(&id, "being resumed")),
             AgentState::Exited { .. } | AgentState::Stopped | AgentState::ResumeFailed { .. } => {
                 return Ok(Gated::Done(self.show(&loaded)));
             }
-            AgentState::Running { .. } => {}
-        }
-        // A holder already gone is as stopped as one that was asked to.
-        if let Err(error) = humata2_holder::shutdown(&agent.launch.holder_socket).await {
-            crate::log::say!(
-                "humatad2: stopping session {id}'s terminal: {}",
-                status::chain(&error)
-            );
+            // A running agent is saved stopped only once its holder is gone
+            // (a holder already gone counts). If it can't be ended the agent
+            // may still run, so the record stays running and the error says
+            // how to go on.
+            AgentState::Running { holder_pid } => {
+                let socket = agent.launch.holder_socket.clone();
+                let owner = format!("session {id}'s terminal");
+                stop_running::end_running_holder(&id, || {
+                    holder_end::shut_or_end(&socket, holder_pid, &owner)
+                })
+                .await
+                .map_err(|error| stop_running::status_of(&id, &error))?;
+            }
         }
         agent.state = AgentState::Stopped;
         agent.updated_unix_ms = now_ms();
@@ -706,6 +1015,14 @@ impl SessionSvc {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| status::missing("id"))?;
         let loaded = self.load(&id).await?;
+        // D757: the after-move resume, which starts an agent whose
+        // conversation is missing fresh, is the move's own: the host's call
+        // to the machine it moved the session to. Asked by anyone else, it
+        // is the strict resume.
+        let moved = request.mode == pb::resume_session_request::Mode::AfterMove as i32
+            && matches!(caller, Caller::User(identity::UserVia::Host))
+            && !self.guard.host_link().on_host();
+        let loaded = Loaded { moved: moved.then_some(MOVED), ..loaded };
         desk_service::refuse_if_closed(&self.starter.store, &self.machine, &id).await?;
         let own = matches!(caller, Caller::Agent(agent) if agent.session.id.as_str() == id);
         if let Some(asked) = self.gate(
@@ -740,6 +1057,14 @@ impl SessionSvc {
         if fork_remote::unlaunched(&loaded) {
             return self.launch_unlaunched(caller, request.idempotency_key, loaded).await;
         }
+        // A session the restart is still bringing back reads as resuming; the
+        // resume waits for the restart, but not for ever.
+        if loaded.agent.as_ref().is_some_and(|agent| agent.state == AgentState::Resuming)
+            && let Some(started) = self.restart.get()
+        {
+            started.wait_for(crate::restart::Awaited::Resume).await?;
+        }
+        let loaded = self.after_restart(&id, loaded).await?;
         let running = match loaded.agent.as_ref().map(|agent| agent.state) {
             None => {
                 return Err(failed(
@@ -750,6 +1075,7 @@ impl SessionSvc {
                 ));
             }
             Some(AgentState::Launching) => return Err(busy(&id, "still starting")),
+            Some(AgentState::Resuming) if self.left_resuming(&id) => false,
             Some(AgentState::Resuming) => return Err(busy(&id, "already being resumed")),
             Some(AgentState::Running { .. }) => {
                 let socket = loaded
@@ -799,16 +1125,47 @@ impl SessionSvc {
                 value: id,
             })));
         } else {
-            tokio::spawn(run_resume(
+            let live = ResumingNow::enter(&id);
+            let (starter, tell, by, tokens) = (
                 self.starter.clone(),
                 self.tell.clone(),
                 identity::actor(caller),
                 self.tokens.clone(),
-                loaded,
-                progress,
-            ));
+            );
+            tokio::spawn(async move {
+                let _live = live;
+                run_resume(starter, tell, by, tokens, loaded, progress).await;
+            });
         }
         Ok(Gated::Done(operation))
+    }
+
+    /// The session as it stands once this run's restart is done with it. A
+    /// session the restart is bringing back reads as resuming until then,
+    /// and a resume asked for in the meantime would start a second agent.
+    async fn after_restart(&self, id: &str, loaded: Loaded) -> Result<Loaded, Status> {
+        let resuming = loaded.agent.as_ref().is_some_and(|agent| agent.state == AgentState::Resuming);
+        match self.restart.get() {
+            Some(started) if resuming => {
+                started.wait().await;
+                self.load(id).await
+            }
+            _ => Ok(loaded),
+        }
+    }
+
+    /// Whether `id`'s agent is a resuming record that its restart couldn't
+    /// bring back: the restart names it, and no resume asked of this daemon
+    /// since is running for it. Nothing runs for such a record (a failed
+    /// resume stops its holder), so a resume may take it again, where it would
+    /// otherwise be refused as busy for good.
+    fn left_resuming(&self, id: &str) -> bool {
+        let named = self
+            .restart
+            .get()
+            .and_then(|started| started.get())
+            .is_some_and(|last| stuck_start(last, id).is_some());
+        named && !resuming_now(id)
     }
 
     /// The restart doctor's repair of a session (PER-30, D242): ResumeSession's
@@ -953,6 +1310,7 @@ impl SessionSvc {
             &self.machine,
         );
         shown.away_left_out.clone_from(&loaded.away_left_out);
+        shown.pull_request = loaded.review.as_ref().map(crate::review::binding);
         self.merge_remote(&loaded.record, &mut shown);
         if !remote::elsewhere(&loaded.record, &self.machine) {
             self.tell.pointers.fill(&loaded.record.id, &mut shown);
@@ -1018,16 +1376,21 @@ impl SessionSvc {
         }
     }
 
-    /// The agent a start would run: the one asked for, else the channel's.
+    /// The agent a start would run: the one asked for, else the channel's
+    /// own default agent, else the one in Settings (ST-15), else the one the
+    /// channel was made with.
     fn agent_for(
         &self,
         wanted: Option<&pb::AgentId>,
         channel: &ChannelRecord,
     ) -> Result<String, Status> {
-        let name = wanted
-            .map(|agent| agent.value.clone())
-            .filter(|agent| !agent.is_empty())
-            .unwrap_or_else(|| channel.default_agent.clone());
+        let asked = wanted.map(|agent| agent.value.clone()).filter(|agent| !agent.is_empty());
+        let name = match asked {
+            Some(name) => name,
+            None => crate::settings_service::default_agent_for(&self.starter.store, &channel.id)
+                .map_err(|error| status::store(error, "", "read the default agent"))?
+                .unwrap_or_else(|| channel.default_agent.clone()),
+        };
         agent_known(&self.starter.agents, &name)?;
         Ok(name)
     }
@@ -1066,6 +1429,12 @@ fn no_channel(id: &str) -> Status {
 }
 
 fn busy(session: &str, what: &str) -> Status {
+    busy_running(session, what, None)
+}
+
+/// `busy`, naming the operation the session is busy with (MV-4): the person
+/// waits for that operation to finish.
+fn busy_running(session: &str, what: &str, running: Option<&str>) -> Status {
     status::failure(
         Code::Aborted,
         pb::Error {
@@ -1076,7 +1445,7 @@ fn busy(session: &str, what: &str) -> Status {
                 session: Some(pb::SessionId {
                     value: session.to_owned(),
                 }),
-                running: None,
+                running: running.map(|value| pb::OperationId { value: value.to_owned() }),
                 running_title: what.to_owned(),
             })),
         },
@@ -1091,9 +1460,11 @@ fn session_status(agent: Option<&AgentState>, start: Option<StartStep>) -> pb::S
     match agent {
         Some(AgentState::Launching | AgentState::Resuming) => pb::SessionStatus::Starting,
         Some(AgentState::Running { .. }) => pb::SessionStatus::Working,
-        Some(AgentState::Exited { .. }) => pb::SessionStatus::Exited,
+        // A stopped agent has no holder, so it is as gone as one that exited;
+        // only a running agent between turns is idle.
+        Some(AgentState::Exited { .. } | AgentState::Stopped) => pb::SessionStatus::Exited,
         Some(AgentState::ResumeFailed { .. }) => pb::SessionStatus::ResumeFailed,
-        Some(AgentState::Stopped) | None => pb::SessionStatus::Idle,
+        None => pb::SessionStatus::Idle,
     }
 }
 
@@ -1117,8 +1488,11 @@ fn shown_status(
     }
     match (session_status(agent, start), agent) {
         (pb::SessionStatus::Working, Some(AgentState::Running { holder_pid })) => {
-            // An agent with no turns shows none (SE-21).
-            if turns::source_of(kind) == pb::TurnEndSource::None {
+            // An agent waiting on its own request needs you, turns or not
+            // (D158.7); one with no turns otherwise shows none (SE-21).
+            if turns::asking(session) {
+                pb::SessionStatus::NeedsInput
+            } else if turns::source_of(kind) == pb::TurnEndSource::None {
                 pb::SessionStatus::RunningUnknownTurn
             } else {
                 running_turn(session, *holder_pid)
@@ -1180,6 +1554,7 @@ fn session_pb(
                 record.machine.clone()
             },
         }),
+        folder: record.folder.display().to_string(),
         status: shown_status(&record.id, &record.agent, state, detail.map(|detail| detail.start)) as i32,
         repos: detail
             .map(|detail| {
@@ -1222,7 +1597,24 @@ fn session_pb(
             .and_then(|agent| agent.interruptions.last())
             .map(|interruption| timestamp_ms(interruption.at_unix_ms)),
         summary_source: summary_source as i32,
+        unread: crate::read_marks::is_unread(&record.id),
+        pinned: crate::read_marks::is_pinned(&record.id),
+        vip: crate::read_marks::is_vip(&record.id),
         ..pb::Session::default()
+    }
+}
+
+/// CH-16, CH-17 (D392): tells the feed each session whose read mark
+/// changed, so every client shows it bold or not without asking. When some
+/// changes are lost, every client reloads now (D395).
+async fn tell_read_marks(tell: Tell, mut changes: broadcast::Receiver<String>) {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match changes.recv().await {
+            Ok(session) => tell.session(&session, pb::Change::Updated, None).await,
+            Err(RecvError::Lagged(_)) => tell.feed.resync_all(),
+            Err(RecvError::Closed) => return,
+        }
     }
 }
 
@@ -1470,7 +1862,10 @@ pub(crate) fn start_error(error: &StartError) -> (Code, pb::Error) {
             Code::FailedPrecondition,
             error_of(error, "fork with the code only, or start the session's agent first", None),
         ),
-        StartError::NoConversation { .. } | StartError::Copy { .. } => (
+        StartError::NoConversation { .. }
+        | StartError::Conversation { .. }
+        | StartError::NoConversationFormat
+        | StartError::Copy { .. } => (
             Code::Unavailable,
             error_of(error, "nothing was kept; fix the cause the message names, then fork again", None),
         ),
@@ -1521,6 +1916,7 @@ async fn run_start(
     keys: Vec<String>,
     ready: oneshot::Sender<Result<(), Status>>,
     by: pb::Actor,
+    review: Option<ReviewStart>,
 ) {
     let mut ready = Some(ready);
     let operation = request.operation.clone();
@@ -1536,7 +1932,10 @@ async fn run_start(
                 let _ = ready.send(Ok(()));
             }
         };
-        starter.start(request, &env, &mut note).await
+        match review {
+            Some(review) => starter.start_review(request, review, &env, &mut note).await,
+            None => starter.start(request, &env, &mut note).await,
+        }
     };
     match started {
         Ok(started) => {
@@ -1615,6 +2014,9 @@ fn resume_failed(session: &str, reason: ResumeFailure, exit_code: Option<i32>) -
     }
 }
 
+/// What the terminal of an agent a move landed here shows first.
+const MOVED: &str = "Moved to this machine; the conversation continues.";
+
 /// Brings `loaded`'s agent back for `progress`, in the background. Revive
 /// resumes an agent whose record says it should run (it stops a holder
 /// still answering), so the record is saved as resuming first and revive
@@ -1627,19 +2029,34 @@ pub(crate) async fn run_resume(
     loaded: Loaded,
     progress: Progress,
 ) {
-    let Loaded { record, agent, .. } = loaded;
+    let Loaded { record, agent, moved, .. } = loaded;
     let session = record.id.clone();
     progress.set_step("launch", pb::StepState::Running, None);
     let Some(mut agent) = agent else {
         progress.fail(error_of(&NoAgent { session }, "start a new session", None));
         return;
     };
+    // D671 (Provisional): an agent the person stopped, or that exited, and
+    // is resumed on their ask was not interrupted: it isn't told so.
+    let asked = matches!(agent.state, AgentState::Stopped | AgentState::Exited { .. });
     agent.state = AgentState::Resuming;
     agent.updated_unix_ms = now_ms();
-    let (store, saving) = (starter.store.clone(), agent.clone());
-    let saved = tokio::task::spawn_blocking(move || store.put_agent(&saving)).await;
+    let (store, mut saving) = (starter.store.clone(), agent.clone());
+    let (agents, home) = (starter.agents.clone(), starter.home.clone());
+    let saved = tokio::task::spawn_blocking(move || -> Result<AgentRecord, StoreError> {
+        // D670: resume the conversation the CLI wrote, once it is known,
+        // not the placeholder it was started with.
+        if agents.learn_conversation(&store, &home, &saving.session)?
+            && let Some(found) = store.agent(&saving.session)?
+        {
+            saving.launch = found.launch;
+        }
+        store.put_agent(&saving)?;
+        Ok(saving)
+    })
+    .await;
     match saved {
-        Ok(Ok(())) => {}
+        Ok(Ok(saved)) => agent = saved,
         Ok(Err(error)) => {
             progress.set_step("launch", pb::StepState::Failed, Some(status::chain(&error)));
             progress.fail(error_of(
@@ -1657,7 +2074,11 @@ pub(crate) async fn run_resume(
     tell.session(&session, pb::Change::Updated, Some(by.clone()))
         .await;
     let env = |tab: &TabRecord| tokens.env(tab);
-    let outcome = resume_agent(&starter.store, &starter.revive, agent, &env).await;
+    let outcome = match moved {
+        Some(line) => resume_moved_agent(&starter.store, &starter.revive, agent, &env, line).await,
+        None if asked => resume_agent_asked(&starter.store, &starter.revive, agent, &env).await,
+        None => resume_agent(&starter.store, &starter.revive, agent, &env).await,
+    };
     match outcome {
         Ok(Revived::ResumeFailed { reason, exit_code }) => {
             let failure = resume_failed(&session, reason, exit_code);
@@ -1699,9 +2120,48 @@ pub(crate) async fn run_resume(
     tell.session(&session, pb::Change::Updated, Some(by)).await;
 }
 
+/// The sessions a resume asked of this daemon is bringing back right now.
+static RESUMING_NOW: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+fn resuming_now(session: &str) -> bool {
+    RESUMING_NOW
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(session)
+}
+
+/// Marks a session as being resumed by this daemon until dropped.
+struct ResumingNow(String);
+
+impl ResumingNow {
+    fn enter(session: &str) -> Self {
+        RESUMING_NOW
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session.to_owned());
+        Self(session.to_owned())
+    }
+}
+
+impl Drop for ResumingNow {
+    fn drop(&mut self) {
+        RESUMING_NOW
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("session {session} has no agent to resume")]
 struct NoAgent {
+    session: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("session {session} runs on another machine, so this machine has no conversation file for it")]
+struct ReadElsewhere {
     session: String,
 }
 
@@ -1730,6 +2190,10 @@ impl pb::session_service_server::SessionService for SessionSvc {
         let caller = identity::caller(&request)?;
         crate::stop::gate::require_running(&caller)?;
         let assigned = identity::host_assigned_id(&request, &caller)?;
+        // UP-1, D281 e: nothing starts on a machine at another release.
+        if let Some(machine) = &request.get_ref().machine {
+            crate::upgrade::gate::machine_ready(&self.migrations, machine)?;
+        }
         let bound = guard::hold_bound(&caller, request.metadata());
         let request = request.into_inner();
         let key = request
@@ -1823,11 +2287,16 @@ impl pb::session_service_server::SessionService for SessionSvc {
         }
         let store = self.starter.store.clone();
         let include_archived = request.include_archived;
-        let (sessions, details, agents, sources, lineage, left_out) = blocking(move || {
+        let (sessions, details, agents, sources, lineage, left_out, reviews) = blocking(move || {
             let left_out: HashMap<String, pb::AwayWritesLeftOut> = store
                 .away_left_outs()?
                 .into_iter()
                 .map(|(session, left)| (session, away_pb(left)))
+                .collect();
+            let reviews: HashMap<String, pb::PullRequestBinding> = store
+                .review_sessions()?
+                .iter()
+                .map(|review| (review.session.clone(), crate::review::binding(review)))
                 .collect();
             let agents = store.agents()?;
             // Read from the disk, so here and not in the handler.
@@ -1854,6 +2323,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
                 sources,
                 lineage,
                 left_out,
+                reviews,
             ))
         })
         .await?
@@ -1901,6 +2371,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
                     &self.machine,
                 );
                 shown.away_left_out = left_out.get(&session.id).cloned();
+                shown.pull_request = reviews.get(&session.id).cloned();
                 self.merge_remote(session, &mut shown);
                 lineage.apply(&mut shown);
                 move_session::show_moving(&mut shown);
@@ -2072,6 +2543,36 @@ impl pb::session_service_server::SessionService for SessionSvc {
         .await
     }
 
+    async fn continue_in_channel(
+        &self,
+        request: Request<pb::ContinueInChannelRequest>,
+    ) -> Result<Response<pb::StartSessionResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
+        self.refuse_desk(request.get_ref().session.as_ref(), "Continue in another channel")
+            .await?;
+        let bound = guard::hold_bound(&caller, request.metadata());
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self
+            .guard
+            .held(bound, || self.continue_in_channel_of(&caller, request.clone(), false))
+            .await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.StartSessionResponse",
+            first,
+            move || async move { me.continue_in_channel_of(&who, request, true).await },
+        )
+        .await
+    }
+
     async fn give_own_copy(
         &self,
         request: Request<pb::GiveOwnCopyRequest>,
@@ -2102,7 +2603,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
         crate::stop::gate::require_running(&caller)?;
-        self.refuse_desk(request.get_ref().id.as_ref(), "Move").await?;
+        // MV-17: a Desk session, a channel's own too, moves like any other.
         let bound = guard::hold_bound(&caller, request.metadata());
         let request = request.into_inner();
         let key = request
@@ -2132,18 +2633,8 @@ impl pb::session_service_server::SessionService for SessionSvc {
         let caller = identity::caller(&request)?;
         self.refuse_desk(request.get_ref().id.as_ref(), "Archive").await?;
         let request = request.into_inner();
-        let key = None;
         let first = self.plan_archive_of(&caller, request.clone(), false).await;
-        let (me, who) = (self.clone(), caller.clone());
-        answer_gated(
-            &self.inbox,
-            &caller,
-            key,
-            "humata.v1.ArchivePlan",
-            first,
-            move || async move { me.plan_archive_of(&who, request, true).await },
-        )
-        .await
+        answer_plan(first, || self.plan_archive_of(&caller, request, true)).await
     }
 
     async fn archive_session(
@@ -2196,16 +2687,46 @@ impl pb::session_service_server::SessionService for SessionSvc {
 
     async fn plan_delete(
         &self,
-        _request: Request<pb::PlanDeleteRequest>,
+        request: Request<pb::PlanDeleteRequest>,
     ) -> Result<Response<pb::DeletePlan>, Status> {
-        Err(status::not_built("humata.v1.SessionService.PlanDelete"))
+        let caller = identity::caller(&request)?;
+        let id = request.into_inner().id;
+        let first = self
+            .delete_of(&caller, id.clone(), false, "humata.v1.SessionService.PlanDelete")
+            .await;
+        answer_plan(first, || {
+            self.delete_of(&caller, id, true, "humata.v1.SessionService.PlanDelete")
+        })
+        .await
     }
 
     async fn delete_session(
         &self,
-        _request: Request<pb::DeleteSessionRequest>,
+        request: Request<pb::DeleteSessionRequest>,
     ) -> Result<Response<pb::DeleteSessionResponse>, Status> {
-        Err(status::not_built("humata.v1.SessionService.DeleteSession"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let id = request.id;
+        let first = self
+            .delete_of(&caller, id.clone(), false, "humata.v1.SessionService.DeleteSession")
+            .await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.DeleteSessionResponse",
+            first,
+            move || async move {
+                me.delete_of(&who, id, true, "humata.v1.SessionService.DeleteSession")
+                    .await
+            },
+        )
+        .await
     }
 
     /// A session lost with its machine, rebuilt on another (SL-4).
@@ -2233,13 +2754,31 @@ impl pb::session_service_server::SessionService for SessionSvc {
         .await
     }
 
+    /// CH-21: a repo cloned into a running session (REPOS).
     async fn add_repo_to_session(
         &self,
-        _request: Request<pb::AddRepoToSessionRequest>,
+        request: Request<pb::AddRepoToSessionRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built(
-            "humata.v1.SessionService.AddRepoToSession",
-        ))
+        let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
+        let request = request.into_inner();
+        let key = request
+            .idempotency_key
+            .as_ref()
+            .map(|key| key.value.clone());
+        let first = self
+            .add_repo_to_session_of(&caller, request.clone(), false)
+            .await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.Operation",
+            first,
+            move || async move { me.add_repo_to_session_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn plan_drop_repo(
@@ -2268,16 +2807,7 @@ impl pb::session_service_server::SessionService for SessionSvc {
             .guard
             .held(bound, || self.plan_push_of(&caller, request.clone(), false))
             .await;
-        let (me, who) = (self.clone(), caller.clone());
-        answer_gated(
-            &self.inbox,
-            &caller,
-            None,
-            "humata.v1.PushPlan",
-            first,
-            move || async move { me.plan_push_of(&who, request, true).await },
-        )
-        .await
+        answer_plan(first, || self.plan_push_of(&caller, request, true)).await
     }
 
     async fn push_and_open_pull_requests(
@@ -2313,34 +2843,78 @@ impl pb::session_service_server::SessionService for SessionSvc {
         .await
     }
 
+    /// A session's conversation on this machine, paged (SE-3, LD-8). It is
+    /// a read of the session, so the rule for `ReadSession` decides.
     async fn read_conversation(
         &self,
-        _request: Request<pb::ReadConversationRequest>,
+        request: Request<pb::ReadConversationRequest>,
     ) -> Result<Response<pb::ReadConversationResponse>, Status> {
-        Err(status::not_built(
-            "humata.v1.SessionService.ReadConversation",
-        ))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let first = self.read_conversation_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            None,
+            "humata.v1.ReadConversationResponse",
+            first,
+            move || async move { me.read_conversation_of(&who, request, true).await },
+        )
+        .await
     }
 
+    /// TP-5: a note typed into another session once its turn is over.
     async fn send_note(
         &self,
-        _request: Request<pb::SendNoteRequest>,
+        request: Request<pb::SendNoteRequest>,
     ) -> Result<Response<pb::SendNoteResponse>, Status> {
-        Err(status::not_built("humata.v1.SessionService.SendNote"))
+        let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
+        let request = request.into_inner();
+        let key = request.idempotency_key.as_ref().map(|key| key.value.clone());
+        let first = self.send_note_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.SendNoteResponse",
+            first,
+            move || async move { me.send_note_of(&who, request, true).await },
+        )
+        .await
     }
 
+    /// TP-5: a question typed into another session; the call returns its
+    /// answer.
     async fn ask_session(
         &self,
-        _request: Request<pb::AskSessionRequest>,
+        request: Request<pb::AskSessionRequest>,
     ) -> Result<Response<pb::AskSessionResponse>, Status> {
-        Err(status::not_built("humata.v1.SessionService.AskSession"))
+        let caller = identity::caller(&request)?;
+        crate::stop::gate::require_running(&caller)?;
+        let request = request.into_inner();
+        let key = request.idempotency_key.as_ref().map(|key| key.value.clone());
+        let first = self.ask_session_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            key,
+            "humata.v1.AskSessionResponse",
+            first,
+            move || async move { me.ask_session_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn answer_question(
         &self,
-        _request: Request<pb::AnswerQuestionRequest>,
+        request: Request<pb::AnswerQuestionRequest>,
     ) -> Result<Response<pb::AnswerQuestionResponse>, Status> {
-        Err(status::not_built("humata.v1.SessionService.AnswerQuestion"))
+        let caller = identity::caller(&request)?;
+        Self::answer_question_of(&caller, request.get_ref()).map(Response::new)
     }
 
     /// The session's own agent says what turn it is in (SE-21, D169).
@@ -2409,7 +2983,8 @@ mod tests {
             session_status(Some(&AgentState::Exited { code: 2 }), None),
             S::Exited
         );
-        assert_eq!(session_status(Some(&AgentState::Stopped), None), S::Idle);
+        assert_eq!(session_status(Some(&AgentState::Stopped), None), S::Exited);
+        assert_eq!(session_status(None, None), S::Idle);
         let failed = AgentState::ResumeFailed {
             reason: ResumeFailure::AgentExited,
             exit_code: Some(1),
@@ -2512,5 +3087,36 @@ mod tests {
         assert_eq!(clean_title("  fix flaky test ").unwrap(), "fix flaky test");
         assert_eq!(clean_title("").unwrap(), "");
         assert!(clean_title(&"x".repeat(TITLE_MAX + 1)).is_err());
+    }
+
+    /// D395: read marks that outran the listener make every subscriber
+    /// reload, rather than leaving clients with stale marks.
+    #[tokio::test]
+    async fn lost_read_marks_make_every_subscriber_resync() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("a temp folder: {e}"));
+        let store = humata2_store::Store::open(dir.path())
+            .unwrap_or_else(|e| panic!("a store: {e}"));
+        let feed = Arc::new(Feed::default());
+        let (_, mut live) = feed.subscribe(None);
+        // Capacity 1 with three sends: the listener lags before it runs.
+        let (changes_tx, changes) = broadcast::channel(1);
+        for session in ["s1", "s2", "s3"] {
+            let _ = changes_tx.send(session.to_owned());
+        }
+        let tell = Tell::new(feed, Arc::new(store), "this-mac".to_owned());
+        tokio::spawn(tell_read_marks(tell, changes));
+        let resynced = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let event = live
+                    .recv()
+                    .await
+                    .unwrap_or_else(|error| panic!("the feed closed: {error}"));
+                if matches!(event.payload, Some(pb::event::Payload::Resync(_))) {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(resynced.is_ok(), "no subscriber was told to resync");
     }
 }

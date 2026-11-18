@@ -40,7 +40,8 @@ impl CommentDeliveryState {
 /// One saved comment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommentRecord {
-    /// `c-<n>`.
+    /// `c-<n>`, or `note-<n>` for a review chat note made a draft in place
+    /// (D284).
     pub id: String,
     pub archived: bool,
     pub delivery_state: CommentDeliveryState,
@@ -84,17 +85,20 @@ pub struct CommentChange {
 /// A session's comments as saved.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionComments {
-    /// By their number.
+    /// Notes made drafts first, then the user's comments, each by number,
+    /// as ListComments orders them.
     pub comments: Vec<CommentRecord>,
     /// By their number.
     pub deliveries: Vec<CommentDeliveryRecord>,
     pub numbers: CommentNumbers,
 }
 
-/// The number in `c-<n>` or `d-<n>`.
-fn number(id: &str, prefix: &str) -> Result<i64, StoreError> {
+/// The number in `id`, one of `prefixes` followed by digits.
+fn number(id: &str, prefixes: &[&str]) -> Result<i64, StoreError> {
     check_id(id)?;
-    id.strip_prefix(prefix)
+    prefixes
+        .iter()
+        .find_map(|prefix| id.strip_prefix(prefix))
         .and_then(|digits| digits.parse::<u64>().ok())
         .map(to_sql)
         .ok_or_else(|| StoreError::InvalidId { id: id.to_owned() })
@@ -108,12 +112,12 @@ impl Store {
         let put = change
             .put
             .iter()
-            .map(|comment| number(&comment.id, "c-"))
+            .map(|comment| number(&comment.id, &["c-", "note-"]))
             .collect::<Result<Vec<_>, _>>()?;
         let put_deliveries = change
             .put_deliveries
             .iter()
-            .map(|delivery| number(&delivery.key, "d-"))
+            .map(|delivery| number(&delivery.key, &["d-"]))
             .collect::<Result<Vec<_>, _>>()?;
         for id in &change.removed {
             check_id(id)?;
@@ -202,7 +206,8 @@ impl Store {
             let comments = connection
                 .prepare(
                     "SELECT id, archived, delivery_state, comment, updated_unix_ms
-                     FROM comments WHERE session = ?1 ORDER BY n",
+                     FROM comments WHERE session = ?1
+                     ORDER BY id GLOB 'c-*', n",
                 )?
                 .query_map([session], |row| {
                     Ok(CommentRecord {

@@ -3,10 +3,15 @@
 use std::collections::BTreeMap;
 
 use humata2_clients::model::{
-    Agent, AwayLeftOut, Channel, ChannelId, ForkKind, Machine, MachineId, MachineKind, NotBroughtBack,
-    Recovery, Restart, ResumeFailure, Session, SessionId, Status, SummarySource, Turn,
+    Agent, AwayLeftOut, Channel, ChannelId, ForkKind, Machine, MachineId, MachineKind, MachineStop,
+    MoveProgress, NotBroughtBack, Recovery, Restart, ResumeFailure, Session, SessionClone, SessionId, Status, StoppedBy,
+    SummarySource, Turn,
 };
+use humata2_clients::machines::OperationId;
+use humata2_clients::model::{MoveStep, MoveStepState};
 use humata2_grpc::humata::v1 as pb;
+
+use crate::local_time::LocalNow;
 
 /// Which daemon agent name each app agent runs under. By default the
 /// agent's command name ("claude", "zsh", ...).
@@ -102,10 +107,41 @@ pub(crate) fn this_machine(id: MachineId) -> Machine {
         detail: String::new(),
         last_seen: String::new(),
         lost_at: None,
+        stop: None,
+        root: humata2_clients::desk::DEFAULT_ROOT.to_owned(),
     }
 }
 
-pub(crate) fn machine(machine: &pb::Machine) -> Machine {
+/// A stop of a machine's sessions as the host keeps it (D261, D262);
+/// `delivered` is whether the machine took it. A stop whose maker the
+/// daemon doesn't name was the person's: only users stop without a rule
+/// saying who (D263). Its time reads in this Mac's local time as of `now`
+/// (D503).
+pub(crate) fn machine_stop(
+    stopped: &pb::SessionsStopped,
+    delivered: bool,
+    now: &LocalNow,
+) -> MachineStop {
+    use pb::StoppedByKind as K;
+    let by = match stopped.by.as_ref() {
+        Some(maker) => match K::try_from(maker.kind).unwrap_or(K::Unspecified) {
+            K::Terminal => StoppedBy::Terminal { machine: MachineId::new(maker.machine.clone()) },
+            K::Agent => StoppedBy::Agent { session: SessionId::new(maker.session.clone()) },
+            K::Script => StoppedBy::Script,
+            K::User | K::Unspecified => StoppedBy::You,
+        },
+        None => StoppedBy::You,
+    };
+    MachineStop {
+        stop_id: stopped.stop_id.clone(),
+        at: now.clock(stopped.stopped_at_unix_ms),
+        by,
+        delivered,
+    }
+}
+
+/// `machine` as the app shows it; a stop's time reads as of `now`.
+pub(crate) fn machine(machine: &pb::Machine, now: &LocalNow) -> Machine {
     let kind = if machine.is_this_mac {
         MachineKind::ThisMac
     } else if let Some(provider) = &machine.provider {
@@ -130,6 +166,15 @@ pub(crate) fn machine(machine: &pb::Machine) -> Machine {
             .join(" "),
         last_seen: String::new(),
         lost_at: None,
+        stop: machine
+            .sessions_stopped
+            .as_ref()
+            .map(|stopped| machine_stop(stopped, machine.stop_delivered, now)),
+        root: if machine.root.is_empty() {
+            humata2_clients::desk::DEFAULT_ROOT.to_owned()
+        } else {
+            machine.root.clone()
+        },
     }
 }
 
@@ -154,6 +199,8 @@ fn status(session: &pb::Session) -> (Status, Option<Recovery>) {
         S::ProbablyIdle => (Status::ProbablyIdle, None),
         S::Exited => (exited, None),
         S::Offline => (Status::Offline, None),
+        S::MachineStopped => (Status::Stopped, None),
+        S::Moving => (Status::Moving, None),
         S::ResumeFailed => (
             exited,
             Some(Recovery::Recoverable {
@@ -224,6 +271,19 @@ pub(crate) fn restart(machine: &MachineId, last: Option<&pb::LastStart>) -> Opti
 /// A session; `tabs` are the session's tabs in [`order_tabs`] order.
 pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNames) -> Session {
     let (status, recovery) = status(session);
+    let agent = agents.agent(
+        session
+            .agent
+            .as_ref()
+            .map(|agent| agent.value.as_str())
+            .unwrap_or_default(),
+    );
+    // A plain shell has no turns: while it starts, or runs a command, it is
+    // not an agent at work, so it never reads Working.
+    let status = match status {
+        Status::Working if agent == Agent::Shell => Status::Idle,
+        status => status,
+    };
     let first = session.repos.first();
     let fork = session.fork_origin.as_ref();
     Session {
@@ -243,16 +303,15 @@ pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNam
             _ => None,
         }),
         title: session.title.clone(),
-        agent: agents.agent(
-            session
-                .agent
-                .as_ref()
-                .map(|agent| agent.value.as_str())
-                .unwrap_or_default(),
-        ),
+        agent,
         machine: machine_id(session.machine.as_ref()),
+        // Needs you is still inside the turn: the agent waits on an answer, and a
+        // queued message typed now would land in its permission prompt. Probably
+        // idle comes from the output fallback, which is never a sure turn end
+        // (SE-21, SE-23).
         turn: match status {
-            Status::Working => Turn::Running,
+            Status::Working | Status::NeedsYou => Turn::Running,
+            Status::ProbablyIdle => Turn::Uncertain,
             _ => Turn::Ended,
         },
         status,
@@ -287,7 +346,86 @@ pub(crate) fn session(session: &pb::Session, tabs: &[pb::Tab], agents: &AgentNam
         model: (!session.model.is_empty()).then(|| session.model.clone()),
         restart_detail: None,
         permissions: Vec::new(),
+        pull_request_review: session
+            .pull_request
+            .as_ref()
+            .is_some_and(|binding| !binding.pull_requests.is_empty()),
+        push_allowed: session
+            .pull_request
+            .as_ref()
+            .is_some_and(|binding| binding.push_allowed),
+        folder: session.folder.clone(),
+        clones: session
+            .repos
+            .iter()
+            .map(|each| SessionClone {
+                repo: each.repo.as_ref().map(repo_text).unwrap_or_default(),
+                branch: each.branch.clone(),
+                path: each.path.clone(),
+            })
+            .collect(),
+        // The step and progress come from the move's operation
+        // ([`with_operation`]); until it is read they are empty.
+        moving: (status == Status::Moving).then(|| MoveProgress {
+            to: machine_id(session.moving_to.as_ref()),
+            operation: OperationId::new(
+                session
+                    .running_operation
+                    .as_ref()
+                    .map(|id| id.value.clone())
+                    .unwrap_or_default(),
+            ),
+            step: String::new(),
+            done_units: 0,
+            total_units: 0,
+            steps: Vec::new(),
+        }),
     }
+}
+
+/// Fills a moving session's step and progress from its move's operation
+/// (MV-4, MV-17): the running step, else the first not yet done, else the
+/// last. A session that isn't moving is left as it is.
+pub(crate) fn with_operation(session: &mut Session, operation: &pb::Operation) {
+    let Some(moving) = session.moving.as_mut() else {
+        return;
+    };
+    let state = |step: &pb::OperationStep| {
+        pb::StepState::try_from(step.state).unwrap_or(pb::StepState::Unspecified)
+    };
+    let at = operation
+        .steps
+        .iter()
+        .find(|step| state(step) == pb::StepState::Running)
+        .or_else(|| {
+            operation
+                .steps
+                .iter()
+                .find(|step| !matches!(state(step), pb::StepState::Done | pb::StepState::Skipped))
+        })
+        .or_else(|| operation.steps.last());
+    if let Some(step) = at {
+        moving.step.clone_from(&step.title);
+        moving.done_units = step.done_units;
+        moving.total_units = step.total_units;
+    }
+    moving.steps = operation
+        .steps
+        .iter()
+        .map(|step| MoveStep {
+            title: step.title.clone(),
+            state: match state(step) {
+                pb::StepState::Running => MoveStepState::Running,
+                pb::StepState::Done => MoveStepState::Done,
+                pb::StepState::Failed => MoveStepState::Failed,
+                pb::StepState::Skipped => MoveStepState::Skipped,
+                pb::StepState::Undone => MoveStepState::Undone,
+                pb::StepState::Waiting | pb::StepState::Unspecified => MoveStepState::Pending,
+            },
+            done_units: step.done_units,
+            total_units: step.total_units,
+        })
+        .collect();
 }
 
 /// What the host left out of a session's agent's writes (AW-9, D267).
@@ -346,11 +484,124 @@ mod tests {
         assert_eq!(status_of(pb::SessionStatus::NeedsInput), Status::NeedsYou);
         assert_eq!(status_of(pb::SessionStatus::Idle), Status::Idle);
         assert_eq!(status_of(pb::SessionStatus::Offline), Status::Offline);
-        assert_eq!(status_of(pb::SessionStatus::Moving), Status::Idle);
+        // MV-4: a moving session reads Moving (to its target, with the
+        // move's step and progress), never Idle, and takes no input.
+        assert_ne!(status_of(pb::SessionStatus::Moving), Status::Idle);
+        assert!(!status_of(pb::SessionStatus::Moving).accepts_input());
         assert_eq!(
             status_of(pb::SessionStatus::Exited),
             Status::Exited { code: 3 }
         );
+    }
+
+    #[test]
+    fn only_a_reported_idle_ends_the_turn() {
+        let agents = AgentNames::default();
+        let turn_of = |status| session(&pb_session(status), &[], &agents).turn;
+        assert_eq!(turn_of(pb::SessionStatus::Working), Turn::Running);
+        assert_eq!(turn_of(pb::SessionStatus::NeedsInput), Turn::Running);
+        assert_eq!(turn_of(pb::SessionStatus::ProbablyIdle), Turn::Uncertain);
+        assert_eq!(turn_of(pb::SessionStatus::Idle), Turn::Ended);
+    }
+
+    #[test]
+    fn a_moving_session_reads_moving_to_its_target_with_the_running_step() {
+        let step = |key: &str, title: &str, state: pb::StepState, done: u64, total: u64| pb::OperationStep {
+            key: key.to_owned(),
+            title: title.to_owned(),
+            state: state as i32,
+            done_units: done,
+            total_units: total,
+            ..Default::default()
+        };
+        use pb::StepState::{Done, Running, Waiting};
+        let operation = pb::Operation {
+            id: Some(pb::OperationId {
+                value: "op_move".to_owned(),
+            }),
+            state: pb::OperationState::Running as i32,
+            steps: vec![
+                step("check", "Checking the target", Done, 0, 0),
+                step("pause", "Pausing the agent", Done, 0, 0),
+                step("pack", "Packing the session", Done, 0, 0),
+                step("copy", "Copying the session", Running, 300, 1000),
+                step("verify", "Verifying", Waiting, 0, 0),
+                step("resume", "Resuming", Waiting, 0, 0),
+            ],
+            ..Default::default()
+        };
+        let mut wire = pb_session(pb::SessionStatus::Moving);
+        wire.moving_to = Some(pb::MachineId {
+            value: "gpu-box".to_owned(),
+        });
+        wire.running_operation = operation.id.clone();
+        let mut mapped = session(&wire, &[], &AgentNames::default());
+        assert_eq!(mapped.status, Status::Moving);
+        // Before the operation is read: Moving, empty step, nothing done.
+        assert_eq!(mapped.moving.as_ref().map(|m| m.step.as_str()), Some(""));
+        with_operation(&mut mapped, &operation);
+        let moving = mapped.moving.as_ref().expect("a moving session carries its move");
+        assert_eq!(moving.to, MachineId::new("gpu-box"));
+        assert_eq!(moving.operation, OperationId::new("op_move"));
+        assert_eq!(moving.step, "Copying the session");
+        assert_eq!((moving.done_units, moving.total_units), (300, 1000));
+        assert_eq!(moving.steps.len(), 6, "every step of the operation is carried");
+        assert_eq!(mapped.turn, Turn::Ended);
+        let idle = session(&pb_session(pb::SessionStatus::Idle), &[], &AgentNames::default());
+        assert_eq!(idle.moving, None);
+    }
+
+    #[test]
+    fn an_operations_steps_map_in_order_with_their_states_and_progress() {
+        use pb::StepState::{Done, Failed, Running, Skipped, Undone, Unspecified, Waiting};
+        let wire = [
+            ("a", Done, 5, 5),
+            ("b", Skipped, 0, 0),
+            ("c", Running, 40, 100),
+            ("d", Waiting, 0, 0),
+            ("e", Unspecified, 0, 0),
+            ("f", Failed, 1, 2),
+            ("g", Undone, 0, 0),
+        ];
+        let operation = pb::Operation {
+            id: Some(pb::OperationId {
+                value: "op_move".to_owned(),
+            }),
+            steps: wire
+                .iter()
+                .map(|(key, state, done, total)| pb::OperationStep {
+                    key: (*key).to_owned(),
+                    title: format!("step {key}"),
+                    state: *state as i32,
+                    done_units: *done,
+                    total_units: *total,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut wire_session = pb_session(pb::SessionStatus::Moving);
+        wire_session.running_operation = operation.id.clone();
+        let mut mapped = session(&wire_session, &[], &AgentNames::default());
+        assert_eq!(mapped.moving.as_ref().map(|m| m.steps.len()), Some(0), "none until the operation is read");
+        with_operation(&mut mapped, &operation);
+        let steps = mapped.moving.map(|m| m.steps).unwrap_or_default();
+        let states: Vec<_> = steps.iter().map(|step| step.state).collect();
+        assert_eq!(
+            states,
+            [
+                MoveStepState::Done,
+                MoveStepState::Skipped,
+                MoveStepState::Running,
+                MoveStepState::Pending,
+                MoveStepState::Pending,
+                MoveStepState::Failed,
+                MoveStepState::Undone,
+            ]
+        );
+        let titles: Vec<_> = steps.iter().map(|step| step.title.as_str()).collect();
+        assert_eq!(titles, ["step a", "step b", "step c", "step d", "step e", "step f", "step g"]);
+        assert_eq!((steps[2].done_units, steps[2].total_units), (40, 100));
     }
 
     #[test]
@@ -517,6 +768,111 @@ mod tests {
     }
 
     #[test]
+    fn a_session_on_a_stopped_machine_reads_stopped_and_not_in_a_turn() {
+        let mapped = session(
+            &pb_session(pb::SessionStatus::MachineStopped),
+            &[],
+            &AgentNames::default(),
+        );
+        assert_eq!(mapped.status, Status::Stopped);
+        assert_eq!(mapped.turn, Turn::Ended);
+        assert_eq!(mapped.recovery, None);
+    }
+
+    /// An hour after the stop below, on a Mac whose clock is UTC.
+    const NOW: LocalNow = LocalNow {
+        unix_ms: 1_699_974_125_000,
+        utc_offset_s: 0,
+    };
+
+    fn pb_stop(kind: pb::StoppedByKind) -> pb::SessionsStopped {
+        pb::SessionsStopped {
+            stop_id: "st_1".to_owned(),
+            // 2023-11-14 14:02:05 UTC.
+            stopped_at_unix_ms: 1_699_970_525_000,
+            by: Some(pb::StoppedBy {
+                kind: kind as i32,
+                via: pb::StopVia::App as i32,
+                machine: "ma_1".to_owned(),
+                session: "se_9".to_owned(),
+            }),
+            reason: String::new(),
+            ended: None,
+        }
+    }
+
+    fn pb_machine(stopped: Option<pb::SessionsStopped>, delivered: bool) -> pb::Machine {
+        pb::Machine {
+            id: Some(pb::MachineId {
+                value: "ma_1".to_owned(),
+            }),
+            name: "devbox-1".to_owned(),
+            reachability: pb::Reachability::Online as i32,
+            sessions_stopped: stopped,
+            stop_delivered: delivered,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_running_machine_has_no_stop() {
+        assert_eq!(machine(&pb_machine(None, false), &NOW).stop, None);
+        // Even when the daemon sets delivered without a stop.
+        assert_eq!(machine(&pb_machine(None, true), &NOW).stop, None);
+    }
+
+    #[test]
+    fn a_machine_shows_its_root_or_the_default_when_the_daemon_names_none() {
+        let mut named = pb_machine(None, false);
+        named.root = "~/Work".to_owned();
+        assert_eq!(machine(&named, &NOW).root, "~/Work");
+        assert_eq!(machine(&pb_machine(None, false), &NOW).root, humata2_clients::desk::DEFAULT_ROOT);
+    }
+
+    #[test]
+    fn a_stopped_machine_carries_its_stop_and_whether_it_was_delivered() {
+        let delivered = machine(&pb_machine(Some(pb_stop(pb::StoppedByKind::User)), true), &NOW);
+        assert_eq!(
+            delivered.stop,
+            Some(MachineStop {
+                stop_id: "st_1".to_owned(),
+                at: "14:02".to_owned(),
+                by: StoppedBy::You,
+                delivered: true,
+            })
+        );
+        // Its sessions being stopped is not the link: it still answers.
+        assert!(delivered.online);
+
+        let kept = machine(&pb_machine(Some(pb_stop(pb::StoppedByKind::User)), false), &NOW);
+        assert_eq!(kept.stop.map(|stop| stop.delivered), Some(false));
+    }
+
+    #[test]
+    fn who_stopped_comes_across_as_the_person_a_terminal_or_an_agent() {
+        let by = |kind| machine_stop(&pb_stop(kind), true, &NOW).by;
+        assert_eq!(by(pb::StoppedByKind::User), StoppedBy::You);
+        assert_eq!(
+            by(pb::StoppedByKind::Terminal),
+            StoppedBy::Terminal {
+                machine: MachineId::new("ma_1")
+            }
+        );
+        assert_eq!(
+            by(pb::StoppedByKind::Agent),
+            StoppedBy::Agent {
+                session: SessionId::new("se_9")
+            }
+        );
+        assert_eq!(by(pb::StoppedByKind::Script), StoppedBy::Script);
+        // Unnamed is the person's.
+        assert_eq!(by(pb::StoppedByKind::Unspecified), StoppedBy::You);
+        let mut nobody = pb_stop(pb::StoppedByKind::User);
+        nobody.by = None;
+        assert_eq!(machine_stop(&nobody, true, &NOW).by, StoppedBy::You);
+    }
+
+    #[test]
     fn repos_parse_as_owner_and_name() {
         assert_eq!(
             parse_repo("acme/app"),
@@ -529,5 +885,26 @@ mod tests {
         assert_eq!(parse_repo("a/b/c"), None);
         assert_eq!(parse_repo("/app"), None);
         assert_eq!(parse_repo("acme/"), None);
+    }
+
+    #[test]
+    fn a_session_bound_to_pull_requests_is_a_pull_request_review() {
+        let agents = AgentNames::default();
+        let plain = session(&pb_session(pb::SessionStatus::Idle), &[], &agents);
+        assert!(!plain.pull_request_review);
+
+        let mut bound = pb_session(pb::SessionStatus::Idle);
+        bound.pull_request = Some(pb::PullRequestBinding {
+            pull_requests: vec![pb::PullRequestRef {
+                repo: Some(pb::RepoRef {
+                    owner: "acme".to_owned(),
+                    name: "app".to_owned(),
+                }),
+                number: 91,
+                ..Default::default()
+            }],
+            push_allowed: false,
+        });
+        assert!(session(&bound, &[], &agents).pull_request_review);
     }
 }

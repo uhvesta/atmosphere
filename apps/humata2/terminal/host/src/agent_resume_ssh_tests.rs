@@ -202,7 +202,7 @@ exit 84
     }
     fn kill_tunnel(&self) {
         let out = ProcessCommand::new("ps")
-            .args(["-axo", "pid=,ppid="])
+            .args(["-A", "-o", "pid=,ppid="])
             .output()
             .unwrap();
         let pairs = String::from_utf8(out.stdout)

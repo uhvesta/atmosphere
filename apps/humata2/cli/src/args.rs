@@ -55,6 +55,15 @@ pub enum Command {
     Status,
     /// Who the daemon takes you for.
     Whoami,
+    /// Stop every session on this machine, and keep them stopped until
+    /// `humata start`. A session is stopped with `humata session stop`.
+    Stop {
+        /// Why, shown wherever the stop is.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Start this machine's sessions again after a stop.
+    Start,
     /// Sessions.
     Ls {
         /// Archived sessions too.
@@ -187,7 +196,7 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<TrashCommand>,
     },
-    #[command(subcommand)]
+    #[command(subcommand, alias = "machine")]
     Host(HostCommand),
     #[command(subcommand)]
     Provider(ProviderCommand),
@@ -221,6 +230,10 @@ pub enum Command {
     /// Desk sessions: the ones that belong to no channel.
     #[command(subcommand)]
     Desk(DeskCommand),
+    // REPOS
+    /// The repo library and the one repo search.
+    #[command(subcommand)]
+    Repos(ReposCommand),
     #[command(subcommand)]
     Report(ReportCommand),
     /// Find out why a restart didn't bring everything back.
@@ -253,6 +266,10 @@ pub enum Command {
         /// The OpenCode to run.
         #[arg(long, default_value = "opencode")]
         program: std::path::PathBuf,
+        /// The model the session was started on (`provider/model`); none
+        /// runs OpenCode's own default.
+        #[arg(long)]
+        model: Option<String>,
     },
 }
 
@@ -264,7 +281,14 @@ pub enum ChannelCommand {
         #[arg(long)]
         repo: Vec<String>,
     },
-    Rename { channel: String, name: String },
+    Rename {
+        channel: String,
+        name: String,
+        /// Rename even while a session of the channel is in a turn: its
+        /// agent is stopped and resumed in the channel's new folder.
+        #[arg(long)]
+        confirm_running: bool,
+    },
     #[command(subcommand)]
     Repo(ChannelRepoCommand),
     #[command(subcommand)]
@@ -319,6 +343,63 @@ pub enum DeskCommand {
     },
 }
 
+// REPOS
+#[derive(Debug, Subcommand)]
+pub enum ReposCommand {
+    /// Search the repo library, then GitHub. With no flag it uses the saved
+    /// scope; a flag changes the scope for this one search and is never
+    /// saved.
+    Search {
+        /// The words to look for.
+        query: Vec<String>,
+        /// Search this GitHub owner (an organization or a user); repeat it
+        /// for more.
+        #[arg(
+            long = "owner",
+            value_name = "OWNER",
+            conflicts_with_all = ["all_of_github", "your_repos"]
+        )]
+        owners: Vec<String>,
+        /// Search all of GitHub.
+        #[arg(long, conflicts_with = "your_repos")]
+        all_of_github: bool,
+        /// Search the repos your own gh login can see.
+        #[arg(long)]
+        your_repos: bool,
+    },
+    /// The library, most recently used first, with where each was last used.
+    List,
+    /// Take one repo out of the library. Channels, sessions and clones that
+    /// use it are untouched. For the user only.
+    Remove {
+        /// The repo as owner/name.
+        repo: String,
+    },
+    /// Forget the whole library. Asks first (or pass --yes); channels,
+    /// sessions, clones and GitHub are untouched. For the user only.
+    ForgetAll,
+    /// The saved scope every search uses unless one search widens it.
+    #[command(subcommand)]
+    Scope(RepoScopeCommand),
+}
+
+// REPOS
+#[derive(Debug, Subcommand)]
+pub enum RepoScopeCommand {
+    /// Print the saved scope.
+    Show,
+    /// Save the scope: these owners plus your own repos, or with no --owner
+    /// just your own repos. For the user only.
+    Set {
+        /// A GitHub user or organization to search; repeat it for more.
+        #[arg(long = "owner", value_name = "OWNER")]
+        owners: Vec<String>,
+        /// Leave out the repos your own gh login can see.
+        #[arg(long)]
+        no_include_me: bool,
+    },
+}
+
 #[derive(Debug, Subcommand)]
 pub enum SessionsCommand {
     /// Search every session you may see for words.
@@ -341,9 +422,12 @@ pub enum SessionsCommand {
 pub enum SessionCommand {
     /// Typing waiting for the turn to end.
     Queue { session: String },
+    /// A session's terminal tabs: its agent's and any shells, with their ids
+    /// for `attach --tab`.
+    Tabs { session: String },
     /// Type queued text now.
     SendNow { session: String, ids: Vec<String> },
-    /// Start a session on --machine.
+    /// Start a session on --machine (default: this machine, D672 (Provisional)).
     Start {
         #[arg(long)]
         agent: Option<String>,
@@ -358,8 +442,17 @@ pub enum SessionCommand {
     },
     Fork {
         session: String,
-        #[arg(long, value_enum)]
+        /// What the fork copies: code-and-context, code (only), or
+        /// context (only).
+        #[arg(long, alias = "copy", value_enum)]
         kind: ForkKind,
+        /// The fork's agent (default: the parent's).
+        #[arg(long)]
+        agent: Option<String>,
+        /// Fork from just before this turn (1 is the first prompt, so
+        /// nothing comes before it). Default: from now.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(2..))]
+        before_turn: Option<u32>,
         #[arg(long)]
         title: Option<String>,
         /// The branch the fork's clones are made on (default: one named
@@ -405,6 +498,16 @@ pub enum SessionCommand {
     Repo(SessionRepoCommand),
     /// Give a context-only fork its own copy of its parent's clones (D185).
     OwnCopy { session: String },
+    /// Start a new session in the channel given by --channel, whose agent
+    /// goes on from a copy of this session's conversation (CV-8). The
+    /// session itself is untouched.
+    Continue {
+        session: String,
+        /// Go on from just before this turn (1 is the first prompt, so
+        /// nothing comes before it). Default: the whole conversation.
+        #[arg(long, value_parser = clap::value_parser!(u32).range(2..))]
+        before_turn: Option<u32>,
+    },
     Push {
         session: String,
         #[arg(long)]
@@ -419,9 +522,22 @@ pub enum SessionCommand {
     },
     Note { session: String, text: String },
     Ask { session: String, text: String },
+    /// Answer a question another session typed into yours (its `qu_` id);
+    /// the answer is what its ask returns. --decline says no instead.
+    Answer {
+        question: String,
+        #[arg(required_unless_present = "decline")]
+        answer: Option<String>,
+        #[arg(long, conflicts_with = "answer")]
+        decline: bool,
+    },
+    /// Type text into a session and press Enter. Use --no-submit to leave it unsent.
     Type {
         session: String,
         text: String,
+        /// Type the text but do not press Enter; the agent does not receive it until Enter is pressed.
+        #[arg(long)]
+        no_submit: bool,
         #[arg(long)]
         at_turn_end: bool,
         #[arg(long)]
@@ -479,6 +595,10 @@ pub enum BoardCommand {
         /// Remove an item it depends on; repeat for more.
         #[arg(long, value_name = "ITEM")]
         drop_depends_on: Vec<String>,
+        /// The item's revision as you read it (`humata board`); the edit is
+        /// refused if a field it sets changed since.
+        #[arg(long, value_name = "N")]
+        revision: Option<u64>,
     },
     Move {
         item: String,
@@ -486,8 +606,18 @@ pub enum BoardCommand {
         column: Column,
         #[arg(long, value_name = "ITEM")]
         after: Option<String>,
+        /// The item's revision as you read it (`humata board`); the move is
+        /// refused if the item's column changed since.
+        #[arg(long, value_name = "N")]
+        revision: Option<u64>,
     },
-    Rm { item: String },
+    Rm {
+        item: String,
+        /// The item's revision as you read it (`humata board`); the delete
+        /// is refused if a field it would remove changed since.
+        #[arg(long, value_name = "N")]
+        revision: Option<u64>,
+    },
     History { item: String },
 }
 
@@ -637,11 +767,13 @@ pub enum FilesCommand {
 
 #[derive(Debug, Args)]
 pub struct TransferArgs {
-    /// Sources, then the destination.
+    /// Sources, then the destination: a location, or only a machine, where
+    /// the files land by rule (PL-3, PL-12).
     #[arg(required = true, num_args = 2..)]
     pub locations: Vec<String>,
-    #[arg(long, value_enum, default_value = "fail")]
-    pub on_existing: OnExisting,
+    /// Unset: fail for a location, keep both for a machine only (PL-13).
+    #[arg(long, value_enum)]
+    pub on_existing: Option<OnExisting>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -675,10 +807,15 @@ pub enum HostCommand {
     Reconnect { machine: String },
     Remove { machine: String },
     Forget { machine: String },
-    /// Change where a machine keeps Humata's folders.
+    /// Print where a machine keeps Humata's folders; with a path (or
+    /// `--default`) change it.
     Root {
         machine: String,
-        path: String,
+        /// The new root. Leave it out to print the current one.
+        path: Option<String>,
+        /// Reset the root to ~/Humata.
+        #[arg(long = "default", conflicts_with_all = ["path", "move_channels"])]
+        default_root: bool,
         #[arg(long)]
         move_channels: bool,
     },
@@ -697,6 +834,17 @@ pub enum HostCommand {
         confirm_running: bool,
     },
     TrimLogs { machine: String },
+    /// Stop every session on a machine, as a last resort: agents and shells
+    /// end gracefully and everything a restart needs is saved. They stay
+    /// stopped, across reboots, until `humata host start`.
+    Stop {
+        machine: String,
+        /// Why, shown on the machine's page.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Start a machine's sessions again, or cancel a stop it never got.
+    Start { machine: String },
     /// The names of a machine's variables (never their values).
     Vars { machine: String },
     #[command(subcommand)]
@@ -705,6 +853,40 @@ pub enum HostCommand {
         machine: String,
         #[arg(long)]
         fingerprint: String,
+    },
+    /// Scripts that run on machines when they link up or a session moves
+    /// (the rules are in ~/.humata2/config/machine-scripts.toml).
+    #[command(subcommand)]
+    Script(ScriptCommand),
+}
+
+/// SEAM (MACHINESCRIPTS, D687): nothing here writes rules or scripts; they
+/// change only in the owner's files.
+#[derive(Debug, Subcommand)]
+pub enum ScriptCommand {
+    /// The rules, their triggers, and each machine's last outcome.
+    List {
+        /// Only this machine's last runs.
+        machine: Option<String>,
+    },
+    /// Check the rules file and the script names; exits 2 when invalid.
+    Check,
+    /// Run a rule on a machine now. `--wait` follows it to the end.
+    Run {
+        rule: String,
+        machine: String,
+        /// Run as this session's trigger (a session-arrived or
+        /// session-leaving rule).
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// The host's run log for a machine, newest first.
+    Log {
+        machine: String,
+        #[arg(long)]
+        rule: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
     },
 }
 
@@ -879,7 +1061,9 @@ pub enum Column {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ForkKind {
     CodeAndContext,
+    #[value(alias = "code")]
     CodeOnly,
+    #[value(alias = "context")]
     ContextOnly,
 }
 
@@ -908,6 +1092,8 @@ pub enum TurnArg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum HookEventArg {
     Permission,
+    /// The agent's own ask-user form (D761).
+    Question,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

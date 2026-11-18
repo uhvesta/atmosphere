@@ -1,8 +1,8 @@
 //! SE-2/3: launch choices stay in the selected channel; a pending launch is stable.
 use humata2_app::{App, AppAction as A, AppState, NewSessionAction as N, Overlay, Route};
 use humata2_clients::{
-    Clients, fixture,
-    model::{ChannelId, MachineId},
+    AgentSwitch, Clients, fixture,
+    model::{Agent, ChannelId, MachineId},
 };
 use std::sync::Arc;
 use tca::{TestClock, TestStore};
@@ -67,4 +67,41 @@ fn a_pending_launch_ignores_repeated_start_and_field_changes() {
     store.send(A::NewSession(N::Channel(ChannelId::new("infra"))), |_| {});
     store.finish();
     assert_eq!(fakes.daemon.workspace().sessions.len(), count);
+}
+
+#[test]
+fn a_default_agent_that_is_turned_off_falls_back_to_the_first_that_is_on() {
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let mut state = AppState::launch(&clients);
+    state.settings.preferences.default_agent = Agent::Claude;
+    state.settings.agents.switches = Some(
+        [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
+            .map(|agent| AgentSwitch {
+                agent,
+                enabled: agent != Agent::Claude && agent != Agent::Codex,
+                install_when_missing: false,
+                can_install: true,
+                install_command: None,
+            })
+            .to_vec(),
+    );
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    store.send(A::StartNewSession, |_| {});
+    let Some(Overlay::NewSession(sheet)) = store.state().overlay() else {
+        panic!("launch dialog")
+    };
+    assert_eq!(sheet.agent, Agent::Copilot);
+}
+
+#[test]
+fn a_default_agent_that_is_on_stays_the_choice() {
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let mut state = AppState::launch(&clients);
+    state.settings.preferences.default_agent = Agent::Codex;
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    store.send(A::StartNewSession, |_| {});
+    let Some(Overlay::NewSession(sheet)) = store.state().overlay() else {
+        panic!("launch dialog")
+    };
+    assert_eq!(sheet.agent, Agent::Codex);
 }

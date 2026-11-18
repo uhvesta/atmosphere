@@ -14,7 +14,7 @@ use humata2_transfers::NewItem;
 use sha2::{Digest, Sha256};
 use tonic::Status;
 
-use super::{DeskSvc, desk_status, failed_precondition, now_ms, session_id, view};
+use super::{DeskSvc, desk_status, failed_precondition, now_ms, remote_close, session_id, view};
 use crate::channel_service::blocking;
 use crate::identity::{self, Caller};
 use crate::status;
@@ -65,15 +65,30 @@ impl DeskSvc {
             .collect();
         let mut rows = Vec::with_capacity(closed.len());
         let mut digest = Sha256::new();
+        let mut theirs: HashMap<String, Option<HashMap<String, (Option<u64>, String)>>> = HashMap::new();
         for (session, row) in closed {
-            let (size_bytes, unpushed) = match row.kind {
-                DeskFolderKind::Scratch { .. } => {
-                    let folder = session.folder.clone();
-                    let (bytes, work) =
-                        blocking(move || (folder_bytes(&folder), held_work(&folder))).await?;
-                    (Some(bytes), work)
+            let (size_bytes, unpushed) = if let Some(machine) = self.elsewhere(&session) {
+                // Its folder is the machine's: the machine says what is in it.
+                if !theirs.contains_key(&machine) {
+                    let asked = self.plan_there(&machine).await;
+                    theirs.insert(machine.clone(), asked);
                 }
-                DeskFolderKind::Picked => (None, String::new()),
+                theirs
+                    .get(&machine)
+                    .and_then(Option::as_ref)
+                    .and_then(|rows| rows.get(&session.id))
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                match row.kind {
+                    DeskFolderKind::Scratch { .. } => {
+                        let folder = session.folder.clone();
+                        let (bytes, work) =
+                            blocking(move || (folder_bytes(&folder), held_work(&folder))).await?;
+                        (Some(bytes), work)
+                    }
+                    DeskFolderKind::Picked => (None, String::new()),
+                }
             };
             digest.update(session.id.as_bytes());
             digest.update([0u8]);
@@ -159,8 +174,17 @@ impl DeskSvc {
         if request.plan.map(|token| token.value) != current {
             return Ok(answer(pb::clean_up_desk_response::Result::Changed(plan)));
         }
+        // A session on another machine is deleted by that machine, into its
+        // own Bin; a machine that can't be reached refuses all of it first.
+        let remote = self.remote_ids(&ids).await?;
         let (mut sessions, mut freed_bytes, mut trash_items) = (0u32, 0u64, Vec::new());
-        for id in &ids {
+        for (machine, theirs) in &remote {
+            let gone = self.clean_up_there(machine, theirs).await?;
+            sessions += gone.sessions;
+            freed_bytes += gone.freed_bytes;
+            trash_items.extend(gone.trash_items);
+        }
+        for id in ids.iter().filter(|id| !remote_close::is_remote(&remote, id)) {
             let _held = self.locks.hold(id).await;
             let (session, row) = self.load(id).await?;
             // Reopened since the check: that session is no longer closed.
@@ -213,6 +237,34 @@ impl DeskSvc {
                 next = Some(next.map_or(due, |soonest| soonest.min(due)));
                 continue;
             }
+            if let Some(machine) = self.elsewhere(&session) {
+                // The machine runs this sweep on its own folders; the host
+                // only notes which of its rows the machine has deleted.
+                if let Err(error) = self.settle_remote(&machine).await {
+                    crate::log::say!(
+                        "humatad2: the Desk sweep couldn't check {machine}'s Desk sessions: {}",
+                        error.message()
+                    );
+                }
+                let again = now_ms() + HOUR_MS;
+                next = Some(next.map_or(again, |soonest| soonest.min(again)));
+                continue;
+            }
+            // A version keeps the folder for good, even one saved after Close
+            // (DV-4, D451); a folder that can't be checked is kept too.
+            if self.holds_version(&session.folder).await {
+                let mut row = row;
+                row.kind = DeskFolderKind::Scratch { kept: true };
+                if let Err(error) = self.save_row(&row).await {
+                    crate::log::say!(
+                        "humatad2: the Desk sweep couldn't keep session {id}'s folder: {}",
+                        error.message()
+                    );
+                    let again = now_ms() + HOUR_MS;
+                    next = Some(next.map_or(again, |soonest| soonest.min(again)));
+                }
+                continue;
+            }
             let folder = session.folder.clone();
             let work = match blocking(move || held_work(&folder)).await {
                 Ok(work) => work,
@@ -254,6 +306,10 @@ impl DeskSvc {
     /// D182.4). A scratch folder still there goes to this machine's Bin, after
     /// checking it is a direct child of the Desk folder and not a symlink; a
     /// picked folder stays where it is. The caller holds the session's lock.
+    ///
+    /// The folder goes before the row is marked deleted, and the Desk event
+    /// that drops the row is published after that commit: whoever hears the
+    /// row go finds the folder gone (D440). Keep that order.
     async fn delete_closed(
         &self,
         session: &SessionRecord,
@@ -266,7 +322,7 @@ impl DeskSvc {
         };
         let scratch = matches!(row.kind, DeskFolderKind::Scratch { .. });
         if scratch && std::fs::symlink_metadata(&session.folder).is_ok() {
-            let desk = self.starter.layout.root.join(DESK_CHANNEL);
+            let desk = self.starter.layout.root().join(DESK_CHANNEL);
             let folder = session.folder.clone();
             let was = pb::EntityRef {
                 entity: Some(pb::entity_ref::Entity::Session(pb::SessionId {
@@ -304,11 +360,13 @@ impl DeskSvc {
         row.deleted_unix_ms = Some(now_ms());
         row.held_work = String::new();
         self.save_row(&row).await?;
+        // After the commit, so whoever hears the row go finds the folder gone.
+        super::follow::tell_gone(self, &session.id);
         Ok(removed)
     }
 
     /// Every Desk session that isn't deleted, with its row.
-    async fn desk_rows(&self) -> Result<Vec<(SessionRecord, DeskRow)>, Status> {
+    pub(super) async fn desk_rows(&self) -> Result<Vec<(SessionRecord, DeskRow)>, Status> {
         let store = self.starter.store.clone();
         let (sessions, rows) = blocking(move || -> Result<_, StoreError> {
             Ok((store.sessions()?, store.desks()?))

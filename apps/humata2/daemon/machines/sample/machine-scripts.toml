@@ -1,0 +1,48 @@
+# Machine scripts: what Humata runs on a machine when something happens to it.
+#
+# Rules run in file order, steps in step order; the first step that fails
+# stops its rule, and the next rule still runs. Scripts live in
+# ~/.humata2/scripts and are named here by file name only, never by a path.
+#
+# Scripts should be idempotent: `connected` fires on every link-up, so the
+# same script runs again and again. Use `once = true` for work that must
+# happen a single time per machine.
+#
+# Neither this file nor a script may hold a secret: this file is copied to
+# every machine, and scripts are streamed to them. A script reads the
+# machine's own login environment for what it needs.
+#
+# on = "added" | "connected" | "session-arrived" | "session-leaving" | "upgraded"
+#      (one name, or a list such as ["added", "connected"]; `upgraded`
+#      runs once after a Migrate of the machine finishes)
+# machines = ["*"] (the default: every machine) or a list of machine names
+# timeout = seconds the whole rule may spend on a step, 1 to 3600
+#
+# [[rule]]
+# name = "set-up-tools"
+# on = "added"
+# once = true
+# timeout = 900
+#
+# [[rule.step]]
+# run = "setup.sh"
+# args = ["--quiet"]
+#
+# [[rule.step]]
+# start = { agent = "copilot", channel = "tools", title = "Tools" }
+#
+# [[rule.step]]
+# send = "/restart"
+# keys = "enter"
+# wait = "idle"
+#
+# [[rule]]
+# name = "after-a-move"
+# on = "session-arrived"
+# machines = ["devbox"]
+#
+# [[rule.step]]
+# run = "after-move.sh"
+#
+# [[rule.step]]
+# humata = ["session", "list"]

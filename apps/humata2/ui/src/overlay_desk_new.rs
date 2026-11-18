@@ -1,11 +1,11 @@
 //! New desk session (DK-14, frame 40).
 
 use super::{
-    Overlays, button, check, form_row, form_row_wrapping, header, popup, primary, radio, runs,
-    secondary,
+    Overlays, button, check, form_row, form_row_wrapping, header, popup, primary, runs, secondary,
 };
 use crate::bridge::Ui;
 use crate::chrome;
+use crate::repo_search_field::{RepoField, repo_search_field};
 use super::super::sync;
 use crate::theme::Look;
 use crate::widgets::{self, col, row};
@@ -18,12 +18,8 @@ use humata2_app::AppAction;
 use humata2_clients::Workspace;
 use humata2_clients::desk::Access;
 use humata2_clients::model::Agent;
-use humata2_desk::{DeskAction, FolderPick, NewAction, NewForm};
+use humata2_desk::{DeskAction, NewAction, NewForm};
 use std::rc::Rc;
-
-/// The longest folder caption, in characters, that fits on one line of the
-/// dialog once the key column has given way (frame 40's has 75).
-const CAPTION_FITS: usize = 78;
 
 fn new_action(action: NewAction) -> AppAction {
     AppAction::Desk(DeskAction::New(action))
@@ -34,7 +30,6 @@ impl Overlays {
     pub(super) fn desk_new(
         &self,
         form: &NewForm,
-        preview: &str,
         workspace: &Workspace,
         look: Look,
         ui: &Rc<Ui>,
@@ -42,10 +37,22 @@ impl Overlays {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         sync(&self.desk.title, &form.title, window, cx);
-        sync(&self.desk.path, &form.path, window, cx);
         if !form.adding_repo {
             sync(&self.desk.repo, "", window, cx);
         }
+        // REPOS (RL-8): the + Org field shows what is typed and takes focus as it opens.
+        let adding_owner = ui.read(|state| state.new_desk_repos.adding_owner.clone());
+        // AGENTSET (D725): the enabled agents, then the plain shell.
+        let offered: Vec<Agent> = ui
+            .read(|state| state.settings.offered_agents())
+            .into_iter()
+            .chain([Agent::Shell])
+            .collect();
+        self.sync_owner(
+            adding_owner.as_deref().filter(|_| form.adding_repo),
+            window,
+            cx,
+        );
         let busy = form.starting;
         let machine = form
             .machine
@@ -58,6 +65,7 @@ impl Overlays {
             Input::new(&self.desk.title)
                 .small()
                 .min_h(px(26.))
+                .text_size(px(12.5))
                 .focus_bordered(false)
                 .aria_label("Title"),
         );
@@ -67,7 +75,7 @@ impl Overlays {
             .p(px(2.))
             .rounded(px(7.))
             .bg(rgb(look.fill))
-            .children(Agent::ALL.into_iter().map(|agent| {
+            .children(offered.into_iter().map(|agent| {
                 let ui = ui.clone();
                 let name = runs(agent);
                 let selected = form.agent == agent;
@@ -117,42 +125,14 @@ impl Overlays {
             ));
         }
 
-        let caption = format!("{preview} · deleted 7 days after you close it unless kept");
-        // Frame 40 keeps the caption on one line by narrowing the key
-        // column. A longer folder name doesn't fit even then, so its caption
-        // wraps instead of running out of the dialog; the path is never cut.
-        let caption_fits = caption.chars().count() <= CAPTION_FITS;
-        let mut folder = col()
-            .gap(px(8.))
-            .child(radio(
-                ui,
-                look,
-                "new-desk-folder-scratch",
-                form.folder == FolderPick::Scratch,
-                "A new scratch folder",
-                caption,
-                new_action(NewAction::Folder(FolderPick::Scratch)),
-            ))
-            .child(radio(
-                ui,
-                look,
-                "new-desk-folder-picked",
-                form.folder == FolderPick::Picked,
-                "A folder on the machine",
-                "Pick one. Humata never deletes it.".to_owned(),
-                new_action(NewAction::Folder(FolderPick::Picked)),
-            ));
-        if form.folder == FolderPick::Picked {
-            folder = folder.child(
-                div().pl(px(22.)).h(px(26.)).child(
-                    Input::new(&self.desk.path)
-                        .small()
-                        .min_h(px(26.))
-                        .focus_bordered(false)
-                        .aria_label("Folder path"),
-                ),
-            );
-        }
+        // DK-14: no folder choice and no path; Humata makes the folder, and
+        // the session is deleted on Close unless it holds a saved version
+        // or the user keeps it (DK-2, DV-4).
+        // Frame 40 sets the caption 3 pt down, level with the key.
+        let folder = div().pt(px(3.)).child(secondary(
+            look,
+            "Humata makes a folder for it \u{b7} deleted 7 days after you close it unless it holds a saved version or you keep it",
+        ));
 
         let chips = row()
             .flex_wrap()
@@ -183,24 +163,45 @@ impl Overlays {
                     )
             }));
         let adder = if form.adding_repo {
-            row()
-                .gap(px(8.))
-                .child(
-                    div().w(px(220.)).h(px(26.)).child(
-                        Input::new(&self.desk.repo)
+            // REPOS (RL-5, DK-14): the one repo search; ticking adds or removes.
+            let search = ui.read(|state| state.new_desk_repos.clone());
+            let (rows, more) = search.rows(&form.repos, 50);
+            let pick = |repo: &str| new_action(NewAction::ToggleRepo(repo.to_owned()));
+            col()
+                .gap(px(6.))
+                .child(repo_search_field(
+                    ui,
+                    look,
+                    RepoField {
+                        id: "new-desk",
+                        picker: humata2_app::RepoPicker::NewDeskSession,
+                        hint: Some("Your library first, then GitHub. Zero or more."),
+                        search: &search,
+                        query: Input::new(&self.desk.repo)
                             .small()
                             .min_h(px(26.))
                             .focus_bordered(false)
-                            .aria_label("Repo to add"),
-                    ),
-                )
-                .child(button(
+                            .aria_label("Repo to add")
+                            .into_any_element(),
+                        owner: Input::new(&self.owner)
+                            .small()
+                            .min_h(px(26.))
+                            .aria_label("Org or user")
+                            .into_any_element(),
+                        rows: &rows,
+                        more,
+                        checkable: true,
+                        pick: &pick,
+                        workspace,
+                    },
+                ))
+                .child(row().child(button(
                     ui,
                     look,
                     "new-desk-repo-cancel",
-                    "Cancel",
+                    "Done",
                     new_action(NewAction::AddingRepo(false)),
-                ))
+                )))
         } else {
             row()
                 .gap(px(8.))
@@ -232,7 +233,7 @@ impl Overlays {
                     boards: !access.boards,
                     ..access
                 })),
-            ))
+            ).whitespace_nowrap())
             .child(check(
                 ui,
                 look,
@@ -244,7 +245,7 @@ impl Overlays {
                     channels_and_machines: !access.channels_and_machines,
                     ..access
                 })),
-            ));
+            ).whitespace_nowrap());
 
         super::card("new-desk", "New desk session", 560., look)
             .gap(px(12.))
@@ -252,13 +253,28 @@ impl Overlays {
             .child(form_row(look, "Title", title))
             .child(form_row(look, "Runs", row().child(agents)))
             .child(form_row(look, "Machine", machine_value))
-            .child(if caption_fits {
-                form_row(look, "Folder", folder)
-            } else {
-                form_row_wrapping(look, "Folder", folder)
-            })
+            .child(form_row_wrapping(look, "Folder", folder))
             .child(form_row(look, "Repos", repos))
-            .child(form_row(look, "Agent access", switches))
+            // Frame 40: both switch labels stay on one line, so the key
+            // column gives way 2 px (110 to 108) and "Agent access" still
+            // lines up right with the other keys.
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .w(px(108.))
+                            .flex_shrink_0()
+                            .pt(px(3.))
+                            .flex()
+                            .justify_end()
+                            .text_color(rgb(look.secondary))
+                            .child("Agent access"),
+                    )
+                    .child(div().flex_1().min_w_0().child(switches)),
+            )
             .children(
                 form.error
                     .clone()

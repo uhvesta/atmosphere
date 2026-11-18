@@ -6,7 +6,8 @@
 //! PATH. Flags in the state folder change what the machine does:
 //!
 //! - `down`: every ssh fails as an unreachable host would (exit 255);
-//! - `hang`: every ssh waits, once logged, until the flag is cleared;
+//! - `hang`: every ssh waits, once logged, until the flag is cleared or
+//!   the test process that made the machine is gone;
 //! - `holder`: a `humata2_holder` of the user runs;
 //! - `uname`: what `uname -sm` prints (default `Linux x86_64`).
 //!
@@ -20,15 +21,84 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use humata2_machines::{EnvValue, Invocation, Output, Purpose, RunError, Runner, SystemRunner};
+
+/// Puts an executable file holding `text` at `path`, in place of any file
+/// there: a hard link to the one file of this process with that text,
+/// written and run once the first time it is asked for.
+///
+/// macOS checks a new executable file the first time it runs, one file at
+/// a time across the whole machine, at about a tenth of a second each, and
+/// links to it that run before the first check ends are each checked too.
+/// A copy per machine queues each test behind every other test's checks; a
+/// link to a file that already ran skips the check. So the file runs once
+/// as it is written, with no arguments, nothing on stdin and `HOME` and
+/// `STATE` in a folder of its own. Every script given here does nothing
+/// harmful run that way: the ssh scripts refuse to run outside their
+/// machine's folder, and a fake tool reads or writes only `STATE`. The
+/// shared file is read-only, so a write through a link fails instead of
+/// changing every machine's copy.
+pub fn shared_executable(path: &Path, text: &str) {
+    static FOLDER: OnceLock<tempfile::TempDir> = OnceLock::new();
+    static FILES: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    let folder = FOLDER.get_or_init(|| {
+        // Bazel's own temporary folder when there is one: it is emptied
+        // after the test.
+        let parent = std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
+        tempfile::Builder::new().prefix("h2x").tempdir_in(parent).unwrap()
+    });
+    let mut files = FILES.get_or_init(Mutex::default).lock().unwrap();
+    let count = files.len();
+    let shared = files
+        .entry(text.to_owned())
+        .or_insert_with(|| {
+            let shared = folder.path().join(count.to_string());
+            fs::write(&shared, text).unwrap();
+            fs::set_permissions(&shared, fs::Permissions::from_mode(0o555)).unwrap();
+            let scratch = folder.path().join(format!("{count}.run"));
+            fs::create_dir_all(&scratch).unwrap();
+            // Its exit says nothing here; only that it ran matters.
+            let _ = std::process::Command::new(&shared)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &scratch)
+                .env("STATE", &scratch)
+                .current_dir(&scratch)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            shared
+        })
+        .clone();
+    drop(files);
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("couldn't replace {}: {error}", path.display()),
+    }
+    // Another volume can't take a link: a copy of its own then.
+    if fs::hard_link(&shared, path).is_err() {
+        fs::copy(&shared, path).unwrap();
+    }
+}
 
 /// The host key the fake machine presents.
 pub const HOST_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
 
 const SSH: &str = r#"#!/bin/sh
 # The fake machine's ssh. Options are read; nothing reaches the network.
+# The machine's folders are beside the `ssh` folder this file is in, so
+# every machine of a test runs this same file.
+root=${0%/ssh/ssh}
+if [ "$root" = "$0" ]; then
+  echo "fake ssh: run as $0, not as <machine>/ssh/ssh, so its machine is unknown" >&2
+  exit 255
+fi
+state=$root/state; home=$root/home; bin=$root/bin
 khf=""; alias=""; strict=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -43,13 +113,15 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 host=$1; shift
-printf '%s\n' "$*" >> "__STATE__/ssh.log"
-while [ -e "__STATE__/hang" ]; do /bin/sleep 0.05; done
-if [ -e "__STATE__/down" ]; then
+printf '%s\n' "$*" >> "$state/ssh.log"
+# A test killed with the flag set leaves its folder behind: the wait ends
+# with the test, not only with the flag.
+while [ -e "$state/hang" ] && kill -0 __OWNER__ 2>/dev/null; do /bin/sleep 0.05; done
+if [ -e "$state/down" ]; then
   echo "ssh: connect to host $host port 22: Connection refused" >&2
   exit 255
 fi
-key=$(cat "__STATE__/hostkey")
+key=$(cat "$state/hostkey")
 if [ "$strict" = accept-new ]; then
   printf '%s %s\n' "$alias" "$key" >> "$khf"
   exit 0
@@ -59,11 +131,12 @@ if ! grep -qxF "$alias $key" "$khf" 2>/dev/null; then
   echo "Host key verification failed." >&2
   exit 255
 fi
-cd "__HOME__" || exit 255
-exec env -i HOME="__HOME__" PATH="__BIN__:/usr/bin:/bin" STATE="__STATE__" XDG_RUNTIME_DIR="__STATE__" USER=fake LOGNAME=fake /bin/sh -c "$1"
+cd "$home" || exit 255
+exec env -i HOME="$home" PATH="$bin:/usr/bin:/bin" STATE="$state" XDG_RUNTIME_DIR="$state" USER=fake LOGNAME=fake /bin/sh -c "$1"
 "#;
 
-const FAKES: [(&str, &str); 10] = [
+/// The machine's own tools, each a `/bin/sh` script in its `bin` folder.
+const FAKES: [(&str, &str); 12] = [
     (
         "uname",
         r#"u=$(cat "$STATE/uname" 2>/dev/null || echo "Linux x86_64")
@@ -106,6 +179,18 @@ esac"#,
     ("setsid", "exit 0"),
     ("sleep", "exit 0"),
     ("git", "echo 'git version 2.50.0'"),
+    // Linux's `sync FILE` flushes that file; macOS's ignores the file and
+    // flushes the whole computer, one caller at a time, so every install
+    // waited behind every other test's writes. A power cut in these tests
+    // is a killed process, which loses no write the OS took, so nothing
+    // here depends on a flush.
+    ("sync", "exit 0"),
+    // Linux's own sha256sum, not macOS's `shasum`, a Perl script.
+    (
+        "sha256sum",
+        r#"if [ -x /sbin/sha256sum ]; then exec /sbin/sha256sum "$@"; fi
+exec shasum -a 256 "$@""#,
+    ),
 ];
 
 /// One fake machine and the host-side folder holding its `ssh`.
@@ -128,18 +213,10 @@ impl FakeMachine {
         for dir in [&home, &state, &bin, &ssh_dir] {
             fs::create_dir_all(dir).unwrap();
         }
-        let write = |path: PathBuf, text: String| {
-            fs::write(&path, text).unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        };
         for (name, body) in FAKES {
-            write(bin.join(name), format!("#!/bin/sh\n{body}\n"));
+            shared_executable(&bin.join(name), &format!("#!/bin/sh\n{body}\n"));
         }
-        let ssh = SSH
-            .replace("__STATE__", &state.display().to_string())
-            .replace("__HOME__", &home.display().to_string())
-            .replace("__BIN__", &bin.display().to_string());
-        write(ssh_dir.join("ssh"), ssh);
+        shared_executable(&ssh_dir.join("ssh"), &SSH.replace("__OWNER__", &std::process::id().to_string()));
         fs::write(state.join("hostkey"), HOST_KEY).unwrap();
         Self {
             _folder: folder,
@@ -186,9 +263,7 @@ impl FakeMachine {
     /// Puts a tool first on the machine's PATH: `name` runs `body` with
     /// `/bin/sh`, in place of the default fake or the system's own.
     pub fn set_tool(&self, name: &str, body: &str) {
-        let path = self.home.with_file_name("bin").join(name);
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        shared_executable(&self.home.with_file_name("bin").join(name), &format!("#!/bin/sh\n{body}\n"));
     }
 
     /// Every remote command line ssh was asked to run, one per line.

@@ -35,6 +35,7 @@ Button "New session"
 Button "Pin this channel"
 Button "More channel actions" disabled
 Tab "Sessions"
+Tab "Desk"
 Tab "Inbox"
 Tab "Board"
 Tab "Repos and machines"

@@ -8,6 +8,19 @@ use crate::kit::*;
 
 pub const WIDTH: f32 = 236.;
 
+/// How the sidebar shows gpu-box (UPGRADE frames 77-83).
+#[allow(dead_code)] // Linked and LinkedWaiting are drawn by design/upgrade.rs.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum Link {
+    /// Not linked: the offline dot and the "offline" note.
+    #[default]
+    Offline,
+    /// Linked: a Working dot, no note.
+    Linked,
+    /// Linked, with its Migrate request waiting: the Inbox count is 8, not 7.
+    LinkedWaiting,
+}
+
 /// What the sidebar shows.
 #[derive(Clone, Copy)]
 pub struct Side {
@@ -29,11 +42,23 @@ pub struct Side {
     /// Ledger schema migration's agent has exited: its dot is the exited
     /// mark, as in its header. Its request still counts (CH-16).
     pub exited: bool,
+    /// How gpu-box shows in Hosts.
+    pub gpu_box: Link,
+    /// Show the payments-rewrite channel's own Desk row, with its two open
+    /// sessions, above the channel's sessions (CD-2).
+    pub channel_desk: bool,
+    /// devbox-1's sessions are stopped (STOP, draft): its row and its
+    /// sessions show the stopped square, the sessions dimmed, their
+    /// requests gone from the Inbox.
+    pub stopped: bool,
+    /// devbox-1 can't be reached: its row shows the offline dot and note,
+    /// as gpu-box's does (STOP, draft).
+    pub unreachable: bool,
 }
 
 impl Side {
     pub const fn at(selected: &'static str) -> Self {
-        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None, asking: true, exited: false }
+        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None, asking: true, exited: false, channel_desk: false, gpu_box: Link::Offline, stopped: false, unreachable: false }
     }
 }
 
@@ -85,6 +110,32 @@ struct Node {
     inbox: Option<&'static str>,
 }
 
+/// The sessions that run on devbox-1, which `Side::stopped` dims.
+const ON_DEVBOX: &[&str] = &["Ledger schema migration", "Try BRIN index", "Partial BRIN on posted_at", "API rate limiter", "Benchmark BRIN", "Upgrade Postgres 17"];
+
+/// The mark of a session or machine whose sessions you stopped: a small
+/// grey square, unlike the round state dots (STOP, draft).
+pub fn stopped() -> Div {
+    div()
+        .size(px(10.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .child(div().size(px(7.)).rounded(px(1.5)).bg(c(GREY)))
+}
+
+/// devbox-1's mark in the Hosts section.
+fn devbox(side: Side) -> Div {
+    if side.stopped {
+        stopped()
+    } else if side.unreachable {
+        status(St::Offline)
+    } else {
+        status(St::Working)
+    }
+}
+
 /// The one session whose own request comes and goes with `Side::asking`.
 const ASKING: &str = "Ledger schema migration";
 
@@ -111,6 +162,8 @@ const INFRA: &[Node] = &[
 fn node(look: Look, side: Side, node: &Node) -> Div {
     let on = side.selected == node.title;
     let (state, inbox) = if node.title == ASKING { let (state, count) = ledger(side); (state, Some(count)) } else { (node.state, node.inbox) };
+    let halted = side.stopped && ON_DEVBOX.contains(&node.title);
+    let inbox = inbox.filter(|_| !halted);
     let faint = if on { look.selection_text } else { look.tertiary };
     // Forks sit under their parent, indented, with a fork glyph.
     let lead = div()
@@ -118,7 +171,7 @@ fn node(look: Look, side: Side, node: &Node) -> Div {
         .items_center()
         .gap(px(5.))
         .when(node.fork, |lead| lead.child(small_icon(IconName::GitFork, faint)))
-        .child(status(state));
+        .child(if halted { stopped() } else { status(state) });
     let indent = 10. + 16. * f32::from(node.depth) - if node.fork { 17. } else { 0. };
     let trail = inbox.map(|count| {
         div()
@@ -133,6 +186,7 @@ fn node(look: Look, side: Side, node: &Node) -> Div {
     });
     row(look, Some(lead.into_any_element()), node.title, trail, indent.max(0.), on)
         .when(node.unread, |row| row.font_weight(FontWeight::SEMIBOLD))
+        .when(halted, |row| row.opacity(0.5))
 }
 
 fn channel(look: Look, side: Side, text: &'static str, open: bool, rollup: Option<(St, &'static str)>, unread: bool) -> Div {
@@ -164,6 +218,19 @@ fn channels(look: Look, side: Side) -> Div {
     let mut list = div().flex().flex_col();
     list = list.child(channel(look, side, "payments-rewrite", open, Some((St::NeedsYou, "6")), true));
     if open {
+        if side.channel_desk {
+            list = list
+                .child(row(
+                    look,
+                    Some(small_icon(IconName::SquareTerminal, look.tertiary).into_any_element()),
+                    "Desk",
+                    Some(div().text_size(px(11.)).text_color(c(look.secondary)).child("2").into_any_element()),
+                    10.,
+                    false,
+                ))
+                .child(session(look, side, St::Working, "Triage flaky tests", 26., None))
+                .child(session(look, side, St::Idle, "Watch the backfill", 26., None));
+        }
         list = list.children(PAYMENTS.iter().map(|n| node(look, side, n)));
     }
     list = list.child(channel(look, side, "infra", open, Some((St::Exited, "2")), true));
@@ -281,7 +348,7 @@ pub fn sidebar(look: Look, side: Side) -> Div {
         })
         .child(div().h(px(4.)))
         .child(nav(look, side, IconName::House, "Home", None))
-        .child(nav(look, side, IconName::Inbox, "Inbox", if side.empty { None } else if side.desk { Some("8") } else { Some("7") }))
+        .child(nav(look, side, IconName::Inbox, "Inbox", if side.empty { None } else if side.desk || side.gpu_box == Link::LinkedWaiting { Some("8") } else if side.stopped { Some("3") } else { Some("7") }))
         .child(nav(look, side, IconName::SquareKanban, "Board", None))
         .child(desk(look, side))
         .child(section(look, "Channels").child(small_icon(IconName::Plus, look.secondary)))
@@ -295,15 +362,24 @@ pub fn sidebar(look: Look, side: Side) -> Div {
         .child(section(look, "Hosts"))
         .child(row(look, Some(status(St::Working).into_any_element()), "This Mac", None, 0., side.selected == "This Mac"))
         .when(side.empty, |bar| bar.child(hint(look, Some(IconName::Plus), "Add a machine…")))
-        .when(!side.empty, |bar| bar.child(row(look, Some(status(St::Working).into_any_element()), "devbox-1", None, 0., side.selected == "devbox-1")))
-        .when(!side.empty, |bar| bar.child(row(
-            look,
-            Some(status(St::Offline).into_any_element()),
-            "gpu-box",
-            Some(secondary(look, "offline").into_any_element()),
-            0.,
-            false,
-        )))
+        .when(!side.empty, |bar| {
+            let on = side.selected == "devbox-1";
+            let note = (side.unreachable && !side.stopped).then(|| {
+                secondary(look, "offline").when(on, |note| note.text_color(c(look.selection_text))).into_any_element()
+            });
+            bar.child(row(look, Some(devbox(side).into_any_element()), "devbox-1", note, 0., side.selected == "devbox-1"))
+        })
+        .when(!side.empty, |bar| {
+            let linked = side.gpu_box != Link::Offline;
+            bar.child(row(
+                look,
+                Some(status(if linked { St::Working } else { St::Offline }).into_any_element()),
+                "gpu-box",
+                if linked { None } else { Some(secondary(look, "offline").into_any_element()) },
+                0.,
+                false,
+            ))
+        })
         .child(div().flex_1())
         .child(div().pb(px(10.)).child(nav(look, side, IconName::Settings, "Settings", None)))
 }

@@ -157,6 +157,10 @@ fn empty_home_and_sidebar_actions_open_their_forms() {
     assert!(app.contains("add-machine-start"));
     app.click("add-machine-cancel");
     assert!(!app.contains("add-machine-start"));
+    // The Hosts page has its own "Add a machine…"; the sidebar offers it
+    // from the other pages.
+    assert!(!app.contains("sidebar-add-machine"));
+    app.click("rail-home");
     app.click("sidebar-add-machine");
     assert!(app.contains("add-machine-start"));
     app.send(AppAction::AddMachine(humata2_hosts::AddMachineAction::SelectHost(

@@ -192,7 +192,9 @@ async fn an_agent_works_its_session_board_from_making_an_item_to_deleting_it() {
     assert_eq!(made["column"], "to_do");
     assert_eq!(made["title"], "Refund path");
     assert_eq!(made["sessions"], json!([]));
-    let second = id_of(ok(&mcp.call("board_item_create", json!({ "board": "session", "title": "Webhooks" })).await));
+    let second = id_of(ok(
+        &mcp.call("board_item_create", json!({ "board": "session", "title": "Webhooks", "column": "backlog" })).await,
+    ));
     assert_ne!(first, second);
 
     let listed = mcp.call("board_items_list", json!({ "board": "session" })).await;
@@ -247,6 +249,21 @@ async fn an_agent_works_its_session_board_from_making_an_item_to_deleting_it() {
         .user_sees(pb::board_ref::Board::Session(pb::SessionId { value: SESSION.to_owned() }))
         .await;
     assert_eq!(left.len(), 1);
+}
+
+/// VF-21: an item made with no board and no column is on the session
+/// board, in To do: the same place `humata board add` puts it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_item_made_with_no_board_or_column_lands_on_the_session_board_in_to_do() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp().await;
+    let made = ok(&mcp.call("board_item_create", json!({ "title": "Plain" })).await).clone();
+    assert_eq!(made["board"], json!({ "session": SESSION }));
+    assert_eq!(made["column"], "to_do");
+    let on_board = fixture
+        .user_sees(pb::board_ref::Board::Session(pb::SessionId { value: SESSION.to_owned() }))
+        .await;
+    assert_eq!(on_board.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

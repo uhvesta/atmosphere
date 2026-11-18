@@ -49,6 +49,12 @@ pub enum Root {
     /// The user's home folder on the place's machine (FM-10). The user
     /// only: no agent reaches it and no grant covers it.
     Home,
+    /// What was pasted into a session's terminals (D335). The user only,
+    /// like the home folder.
+    Pastes(SessionRef),
+    /// Where files sent from another machine land, `received/<machine>/`
+    /// (PL-4). The user only, like the home folder.
+    Received,
     /// The path left Humata's folders, by `..` or a symlink. Never allowed.
     Outside,
 }
@@ -104,6 +110,10 @@ pub enum Target {
         channel: ChannelId,
         machine: MachineId,
         agent: AgentId,
+        /// The session being forked; `None` for a fresh start. A channel
+        /// Desk session's "Start and fork sessions" switch covers a fork of
+        /// its target only (CD-3).
+        fork_of: Option<SessionId>,
     },
     /// A port forward from `machine` to `host:port` (HO-11).
     Network(NetworkTarget),
@@ -145,6 +155,10 @@ pub enum MachineActionKind {
     Remove,
     Forget,
     Delete,
+    /// Stop every session on the machine (STOP, D263).
+    StopSessions,
+    /// Start them again after a stop.
+    StartSessions,
 }
 
 impl MachineActionKind {
@@ -158,6 +172,7 @@ impl MachineActionKind {
             | Self::Reconnect
             | Self::SyncSkills => Capability::MachineProvision,
             Self::Remove | Self::Forget | Self::Delete => Capability::MachineDestroy,
+            Self::StopSessions | Self::StartSessions => Capability::MachineSessionsStop,
         }
     }
 }
@@ -216,7 +231,7 @@ impl GrantTarget {
                     Capability::FilesReadOtherSession
                         | Capability::FilesReadOtherMachine
                         | Capability::FilesCopyIn
-                ) && !matches!(scope.root, Root::Outside | Root::Home)
+                ) && !matches!(scope.root, Root::Outside | Root::Home | Root::Pastes(_) | Root::Received)
             }
             GrantTarget::Session(_) => {
                 matches!(capability, Capability::SessionNote | Capability::SessionType)

@@ -24,6 +24,10 @@ impl World for FakeWorld {
     fn answer_to_ping(&self) -> &'static str {
         "Message received by the fake"
     }
+
+    fn paths_exist(&self) -> bool {
+        false
+    }
 }
 
 pub fn start() -> (FakeWorld, Arc<dyn Daemon>, Arc<dyn Terminals>) {
@@ -36,6 +40,8 @@ pub fn start() -> (FakeWorld, Arc<dyn Daemon>, Arc<dyn Terminals>) {
             detail: String::new(),
             last_seen: "now".to_owned(),
             lost_at: None,
+            stop: None,
+            root: "~/Humata".to_owned(),
         }],
         ..Workspace::default()
     };
@@ -62,6 +68,8 @@ pub fn start_desk() -> (FakeWorld, Arc<dyn Daemon>, Arc<dyn DeskClient>) {
             detail: String::new(),
             last_seen: "now".to_owned(),
             lost_at: None,
+            stop: None,
+            root: "~/Humata".to_owned(),
         }],
         ..Workspace::default()
     };

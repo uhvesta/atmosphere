@@ -6,29 +6,42 @@ use tca::{BoxFuture, Clock};
 use tokio::sync::mpsc;
 
 use crate::daemon::{
-    ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, Operation, PastTurn, Reply,
-    Terminals,
+    AgentSwitch, ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, Operation, PastTurn, Reply,
+    SwitchChange, TerminalNotice, Terminals,
 };
 use crate::fixture;
 use crate::model::{
-    Agent, Answer, Archive, Capability, ChannelId, DiffBase, ForkKind, GrantId, ItemId, ItemStatus,
-    Line, MachineId, PushChoice, Recovery, RepoDiff, RequestId, RuleSetting, Scope, Session,
+    Agent, Answer, Archive, Capability, ChannelId, DiffBase, GrantId, ItemId, ItemStatus, Line,
+    MachineId, PushChoice, Recovery, RepoBases, RepoDiff, RequestId, RuleSetting, Scope, Session,
     SessionId, SetupId, Speaker, Status, TransferId,
 };
 use crate::workspace::Workspace;
 
 mod access;
 mod agent_asks;
+mod agent_switches;
 mod boards;
 mod channels;
+// REPOS (CH-6): Add a GitHub repo to a channel.
+mod channel_repos;
 mod desk;
+mod docs;
 mod inbox;
 mod machines;
+// REPOS (RL-1): the repo library and search.
+mod repos;
 mod review;
+// REPOS (CH-21)
+mod session_repos;
 mod sessions;
 mod setup;
+mod stop;
+mod terminal_link;
 mod terminals;
 mod transfers;
+mod views;
+
+pub use views::FakeViews;
 
 /// A daemon in memory, starting from [`fixture::standard`] or any
 /// workspace. Every reply waits `latency` on the clock first, and the
@@ -44,18 +57,34 @@ pub struct FakeDaemon {
 
 struct Inner {
     workspace: Workspace,
+    /// The Desk as subscribers last heard it, to tell what changed (DESKWATCH).
+    desk_told: crate::desk::DeskData,
     subscribers: Vec<Subscriber>,
-    failures: HashMap<Operation, String>,
+    failures: HashMap<Operation, DaemonError>,
     recoveries: HashMap<SessionId, Recovery>,
     calls: Vec<String>,
+    /// Every answer sent, in order, whether or not it worked.
+    answers: Vec<(RequestId, Answer)>,
     next: u32,
     archived: HashMap<SessionId, (Session, Vec<SessionId>)>,
     archive_frees: HashMap<SessionId, String>,
     unpushed: HashMap<SessionId, Vec<(String, String)>>,
+    unsubmitted_drafts: HashMap<SessionId, u32>,
+    /// Repositories whose clone has no default branch, until found.
+    no_default: Vec<(SessionId, String)>,
     last_fork: Option<ForkOptions>,
     last_move: Option<(SessionId, MachineId)>,
+    last_continue: Option<(SessionId, ChannelId, Option<u32>)>,
     last_archive: Option<(SessionId, bool)>,
     terminal_input: HashMap<(SessionId, usize), Vec<u8>>,
+    sent_keys: std::collections::HashSet<String>,
+    /// Shell tabs whose shell has exited, with its code.
+    exited_tabs: HashMap<(SessionId, usize), i32>,
+    /// How many images have been pasted, for their names.
+    pasted_images: usize,
+    /// The session the user views, whose output marks nothing (D392).
+    viewing: Option<SessionId>,
+    links: Vec<terminal_link::LinkTap>,
     diffs: HashMap<SessionId, Vec<RepoDiff>>,
     reviewed: HashMap<SessionId, Vec<RepoDiff>>,
     pushes: Vec<(SessionId, PushChoice)>,
@@ -63,7 +92,13 @@ struct Inner {
     next_pull_request: u32,
     asks_in_inbox: bool,
     codex_needs_trust: bool,
+    /// AGENTSET: the built-in agents' switches.
+    switches: Vec<AgentSwitch>,
     github_repos: Vec<String>,
+    /// Document versions (DV-2 to DV-8).
+    docs: docs::Store,
+    // REPOS (RL-1): the repo library, saved scope and search state.
+    repos: repos::State,
 }
 
 struct Subscriber {
@@ -85,19 +120,29 @@ impl FakeDaemon {
         }
         Self {
             shared: Arc::new(Mutex::new(Inner {
+                desk_told: workspace.desk.clone(),
                 workspace,
                 subscribers: Vec::new(),
                 failures: HashMap::new(),
                 recoveries: fixture::recoveries(),
                 calls: Vec::new(),
+                answers: Vec::new(),
                 next: 1,
                 archived: HashMap::new(),
                 archive_frees: HashMap::new(),
                 unpushed: HashMap::new(),
+                unsubmitted_drafts: HashMap::new(),
+                no_default: Vec::new(),
                 last_fork: None,
                 last_move: None,
+                last_continue: None,
                 last_archive: None,
                 terminal_input: HashMap::new(),
+                sent_keys: std::collections::HashSet::new(),
+                exited_tabs: HashMap::new(),
+                pasted_images: 0,
+                viewing: None,
+                links: Vec::new(),
                 diffs: HashMap::new(),
                 reviewed: HashMap::new(),
                 pushes: Vec::new(),
@@ -105,6 +150,8 @@ impl FakeDaemon {
                 next_pull_request: 1,
                 asks_in_inbox: true,
                 codex_needs_trust: false,
+                switches: agent_switches::defaults(),
+                docs: docs::Store::default(),
                 github_repos: [
                     "acme/ledger",
                     "acme/api",
@@ -115,6 +162,8 @@ impl FakeDaemon {
                 ]
                 .map(str::to_owned)
                 .to_vec(),
+                // REPOS (RL-1)
+                repos: repos::State::default(),
             })),
             clock,
             latency: Duration::ZERO,
@@ -138,13 +187,24 @@ impl FakeDaemon {
 
     /// Makes the next call of `operation` fail with `message`.
     pub fn fail_next(&self, operation: Operation, message: impl Into<String>) {
-        self.inner().failures.insert(operation, message.into());
+        let error = DaemonError::Scripted { operation, message: message.into() };
+        self.inner().failures.insert(operation, error);
+    }
+
+    /// Makes the next call of `operation` fail with exactly `error`.
+    pub fn fail_next_with(&self, operation: Operation, error: DaemonError) {
+        self.inner().failures.insert(operation, error);
     }
 
     /// Says how much disk archiving `session` will free, as people read it ("1.4 GB").
     /// Makes the daemon say Codex's hooks still need trusting, or not (D202).
     pub fn set_codex_needs_trust(&self, on: bool) {
         self.inner().codex_needs_trust = on;
+    }
+
+    /// Presets the agents' switches (AGENTSET); the next `agent_switches` gives these.
+    pub fn set_agent_switches(&self, switches: Vec<AgentSwitch>) {
+        self.inner().switches = switches;
     }
 
     /// Says which GitHub repositories `gh` sees on the host, as `owner/name`,
@@ -165,6 +225,22 @@ impl FakeDaemon {
         self.inner().unpushed.insert(session.clone(), work);
     }
 
+    /// Says how many pull request drafts of the review `session` were never
+    /// submitted; archiving keeps them with the review (D513).
+    pub fn set_unsubmitted_drafts(&self, session: &SessionId, count: u32) {
+        self.inner().unsubmitted_drafts.insert(session.clone(), count);
+    }
+
+    /// Says `repo`'s clone in `session` has no default branch: reads that
+    /// need it fail until [`Daemon::find_default_branch`] finds it.
+    pub fn set_no_default_branch(&self, session: &SessionId, repo: &str) {
+        let mut inner = self.inner();
+        let held = (session.clone(), repo.to_owned());
+        if !inner.no_default.contains(&held) {
+            inner.no_default.push(held);
+        }
+    }
+
     /// What the last fork asked for.
     #[must_use]
     pub fn last_fork(&self) -> Option<ForkOptions> {
@@ -175,6 +251,13 @@ impl FakeDaemon {
     #[must_use]
     pub fn last_move(&self) -> Option<(SessionId, MachineId)> {
         self.inner().last_move.clone()
+    }
+
+    /// The session, channel and "before turn" of the last continue in
+    /// another channel (CV-8).
+    #[must_use]
+    pub fn last_continue(&self) -> Option<(SessionId, ChannelId, Option<u32>)> {
+        self.inner().last_continue.clone()
     }
 
     /// The session of the last archive, and whether it asked to commit,
@@ -218,6 +301,12 @@ impl FakeDaemon {
     #[must_use]
     pub fn calls(&self) -> Vec<String> {
         self.inner().calls.clone()
+    }
+
+    /// Tells the views following a tab one of Humata's lines about it, as
+    /// the daemon does when the tab's machine comes back.
+    pub fn terminal_notice(&self, session: &SessionId, tab: usize, notice: TerminalNotice) {
+        terminal_link::notice(&self.inner().links, session, tab, notice);
     }
 
     /// What it holds now.
@@ -284,9 +373,9 @@ impl FakeDaemon {
             };
             inner.calls.push(call);
             if let Some(operation) = operation
-                && let Some(message) = inner.failures.remove(&operation)
+                && let Some(error) = inner.failures.remove(&operation)
             {
-                return Err(DaemonError::Scripted { operation, message });
+                return Err(error);
             }
             work(&mut inner)
         })
@@ -302,7 +391,26 @@ impl FakeDaemon {
 }
 
 impl Inner {
+    /// Tells every subscriber what changed on the Desk since it last did
+    /// (DESKWATCH), whichever path changed it: every event goes through
+    /// [`Self::emit`], which calls this first.
+    fn tell_desk(&mut self) {
+        if self.workspace.desk == self.desk_told {
+            return;
+        }
+        let changes = self.workspace.desk.changes_since(&self.desk_told);
+        self.desk_told = self.workspace.desk.clone();
+        for change in changes {
+            self.send(Event::Desk(change));
+        }
+    }
+
     fn emit(&mut self, event: Event) {
+        self.tell_desk();
+        self.send(event);
+    }
+
+    fn send(&mut self, event: Event) {
         self.subscribers.retain_mut(|subscriber| {
             if subscriber.behind {
                 match subscriber.events.try_send(Ok(Event::Resync)) {
@@ -366,14 +474,8 @@ impl Inner {
             .terminal_bytes
             .entry((session.clone(), tab))
             .or_default();
-        let offset = output.len();
         output.extend_from_slice(&bytes);
-        self.emit(Event::TerminalData {
-            session: session.clone(),
-            tab,
-            offset,
-            bytes,
-        });
+        terminal_link::feed(&mut self.links, session, tab, &bytes);
     }
 
     fn output(&mut self, session: &SessionId, tab: usize, from: Speaker, text: &str) {
@@ -396,6 +498,28 @@ impl Inner {
             tab,
             line,
         });
+        self.heard(session, tab);
+    }
+
+    /// CH-16 (D392): output on a session's agent tab that the user doesn't
+    /// view marks the session unread, as the daemon does.
+    fn heard(&mut self, session: &SessionId, tab: usize) {
+        if tab != 0 || self.viewing.as_ref() == Some(session) {
+            return;
+        }
+        let Some(found) = self
+            .workspace
+            .sessions
+            .iter_mut()
+            .find(|found| &found.id == session)
+        else {
+            return;
+        };
+        if found.unread > 0 {
+            return;
+        }
+        found.unread = 1;
+        self.changed(session);
     }
 }
 
@@ -410,6 +534,19 @@ impl Daemon for FakeDaemon {
 
     fn send(&self, session: &SessionId, text: &str) -> Reply<()> {
         sessions::send(self, session, text)
+    }
+
+    fn send_keyed(&self, session: &SessionId, text: &str, key: &str) -> Reply<()> {
+        if self.inner().sent_keys.contains(key) {
+            return Box::pin(async { Ok(()) });
+        }
+        let (this, key) = (self.clone(), key.to_owned());
+        let sent = sessions::send(self, session, text);
+        Box::pin(async move {
+            sent.await?;
+            this.inner().sent_keys.insert(key);
+            Ok(())
+        })
     }
 
     fn answer(&self, request: &RequestId, answer: Answer) -> Reply<()> {
@@ -441,6 +578,14 @@ impl Daemon for FakeDaemon {
         agent_asks::codex_needs_trust(self)
     }
 
+    fn agent_switches(&self) -> Reply<Vec<AgentSwitch>> {
+        agent_switches::agent_switches(self)
+    }
+
+    fn set_agent_switch(&self, agent: Agent, change: SwitchChange) -> Reply<AgentSwitch> {
+        agent_switches::set_agent_switch(self, agent, change)
+    }
+
     fn reconnect(&self, machine: &MachineId) -> Reply<Vec<(SessionId, Recovery)>> {
         machines::reconnect(self, machine)
     }
@@ -463,6 +608,27 @@ impl Daemon for FakeDaemon {
 
     fn move_session(&self, session: &SessionId, to: &MachineId) -> Reply<()> {
         sessions::move_session(self, session, to)
+    }
+
+    fn continue_in_channel(
+        &self,
+        session: &SessionId,
+        channel: &ChannelId,
+        before_turn: Option<u32>,
+    ) -> Reply<SessionId> {
+        sessions::continue_in_channel(self, session, channel, before_turn)
+    }
+
+    fn rename_session(&self, session: &SessionId, title: &str, rename_branch: bool) -> Reply<()> {
+        sessions::rename_session(self, session, title, rename_branch)
+    }
+
+    fn add_repo_to_session(&self, session: &SessionId, repo: &str) -> Reply<()> {
+        session_repos::add_repo_to_session(self, session, repo)
+    }
+
+    fn stop_agent(&self, session: &SessionId) -> Reply<()> {
+        sessions::stop_agent(self, session)
     }
 
     fn plan_archive(&self, session: &SessionId) -> Reply<ArchivePlan> {
@@ -493,6 +659,10 @@ impl Daemon for FakeDaemon {
         sessions::mark_read(self, session)
     }
 
+    fn view(&self, session: Option<&SessionId>) -> Reply<()> {
+        sessions::view(self, session)
+    }
+
     fn create_session(
         &self,
         channel: &ChannelId,
@@ -517,6 +687,47 @@ impl Daemon for FakeDaemon {
         channels::github_repos(self, query)
     }
 
+    fn add_repo_to_channel(&self, channel: &ChannelId, repo: &str) -> Reply<()> {
+        channel_repos::add_repo_to_channel(self, channel, repo)
+    }
+
+    // REPOS (RL-5): the repo library and the one repo search.
+    fn search_repos(
+        &self,
+        query: &str,
+        scope: Option<crate::repos::RepoScope>,
+    ) -> Reply<crate::repos::RepoSearch> {
+        repos::search_repos(self, query, scope)
+    }
+
+    fn repo_library(&self) -> Reply<Vec<crate::repos::LibraryRepo>> {
+        repos::repo_library(self)
+    }
+
+    fn remove_from_repo_library(&self, repo: &str) -> Reply<Vec<crate::repos::LibraryRepo>> {
+        repos::remove_from_repo_library(self, repo)
+    }
+
+    fn forget_repo_library(&self) -> Reply<u32> {
+        repos::forget_repo_library(self)
+    }
+
+    fn repo_scope(&self) -> Reply<crate::repos::RepoScope> {
+        repos::repo_scope(self)
+    }
+
+    fn save_repo_scope(&self, scope: crate::repos::RepoScope) -> Reply<crate::repos::RepoScope> {
+        repos::save_repo_scope(self, scope)
+    }
+
+    fn repo_owners(&self) -> Reply<Vec<String>> {
+        repos::repo_owners(self)
+    }
+
+    fn now_ms(&self) -> i64 {
+        repos::now_ms(self)
+    }
+
     fn cancel_setup(&self, setup: &SetupId) -> Reply<()> {
         setup::cancel_setup(self, setup)
     }
@@ -525,12 +736,12 @@ impl Daemon for FakeDaemon {
         setup::retry_setup(self, setup)
     }
 
-    fn move_item(&self, item: &ItemId, status: ItemStatus) -> Reply<()> {
-        boards::move_item(self, item, status)
+    fn move_item(&self, item: &ItemId, status: ItemStatus, seen: Option<u64>) -> Reply<()> {
+        boards::move_item(self, item, status, seen)
     }
 
-    fn create_item(&self, scope: Scope, title: &str) -> Reply<ItemId> {
-        boards::create_item(self, scope, title)
+    fn create_item_in(&self, scope: Scope, title: &str, status: ItemStatus) -> Reply<ItemId> {
+        boards::create_item(self, scope, title, status)
     }
 
     fn add_dependency(&self, item: &ItemId, on: &ItemId) -> Reply<()> {
@@ -553,8 +764,26 @@ impl Daemon for FakeDaemon {
         review::read_file(self, session, repo, path)
     }
 
+    fn find_files(&self, session: &SessionId) -> Reply<Vec<crate::model::SessionFile>> {
+        let id = session.clone();
+        self.reply(None, format!("find_files {session}"), move |inner| {
+            inner.session_mut(&id)?;
+            let mut files = inner.workspace.session_files.get(&id).cloned().unwrap_or_default();
+            files.truncate(crate::daemon::SESSION_FILES_CAP);
+            Ok(files)
+        })
+    }
+
     fn diffs(&self, session: &SessionId, base: &DiffBase) -> Reply<Vec<RepoDiff>> {
         review::diffs(self, session, base)
+    }
+
+    fn bases(&self, session: &SessionId, repo: &str) -> Reply<RepoBases> {
+        review::bases(self, session, repo)
+    }
+
+    fn find_default_branch(&self, session: &SessionId, repo: &str) -> Reply<String> {
+        review::find_default_branch(self, session, repo)
     }
 
     fn mark_reviewed(&self, session: &SessionId) -> Reply<()> {
@@ -570,7 +799,7 @@ impl Daemon for FakeDaemon {
         session: &SessionId,
         _token: &str,
         choices: Vec<PushChoice>,
-    ) -> Reply<Option<u32>> {
+    ) -> Reply<Vec<crate::model::PushedPullRequest>> {
         review::push(self, session, choices)
     }
 
@@ -584,15 +813,24 @@ impl Terminals for FakeDaemon {
         terminals::open(self, session, agent)
     }
 
+    fn open_in(&self, session: &SessionId, agent: Agent, folder: &str) -> Reply<(usize, Session)> {
+        terminals::open_in(self, session, agent, folder)
+    }
+
     fn write(&self, session: &SessionId, tab: usize, text: &str) -> Reply<()> {
         terminals::write(self, session, tab, text)
     }
 
-    fn input(&self, session: &SessionId, tab: usize, bytes: Vec<u8>) -> Reply<()> {
-        terminals::input(self, session, tab, bytes)
+    fn link(&self, session: &SessionId, tab: usize) -> Reply<crate::daemon::TerminalLink> {
+        terminal_link::link(self, session, tab)
     }
 
-    fn resize(&self, session: &SessionId, tab: usize, columns: u16, rows: u16) -> Reply<()> {
-        terminals::resize(self, session, tab, columns, rows)
+    fn paste_image(
+        &self,
+        session: &SessionId,
+        kind: crate::daemon::ImageKind,
+        bytes: Vec<u8>,
+    ) -> Reply<String> {
+        terminals::paste_image(self, session, kind, bytes)
     }
 }

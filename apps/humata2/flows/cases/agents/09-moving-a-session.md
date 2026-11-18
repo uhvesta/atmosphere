@@ -201,7 +201,7 @@ Layer: agents (with the user's palette steps at the start). Platforms: macOS and
 **I do:** look at the session's header and its pane.
 **I see:** the session shows Idle. No "Moving to box-2…" line, and no step in progress.
 **Expected (per SPEC MV-4):** the session shows "Moving to <machine>…" with the step in progress, and the terminal says it is read-only.
-**Status:** Likely bug at `clients/live/src/map.rs:198`. The live client maps `SessionStatus::Moving` to `Idle`, and its test pins that at `clients/live/src/map.rs:384`. The app's move overlay (`ui/src/overlay_move.rs`) closes after the confirm and shows no steps. The MV-4 text is Not built (SPEC MV-4, no milestone).
+**Status:** Works (real daemon): `daemon/humatad/tests/move_typing.rs::typing_into_a_moving_session_is_refused_and_works_once_it_resumes_on_the_new_machine` reads the session as moving to its target with the running step, and `clients/live/src/map.rs::a_moving_session_reads_moving_to_its_target_with_the_running_step` maps that to Moving, which the tab and page draw as "Moving to …" (`ui/src/pages.rs`, `ui/src/session_tabs.rs`). The step-by-step MV-4 text is still Not built (SPEC MV-4, no milestone). (Was a likely bug: Moving mapped to Idle; fixed by BUGS.)
 
 ### B14. A Desk session is asked to move
 
@@ -260,7 +260,7 @@ Layer: agents (with the user's palette steps at the start). Platforms: macOS and
 | B10. Copy left on offline target taken back | Works (real daemon) | `move_session.rs::a_copy_left_on_an_offline_target_is_taken_back_when_its_link_is_up` |
 | B11. Second move while one runs | Code, no test | `daemon/humatad/src/session_service/move_session.rs:231` |
 | B12. Agent's move denied | Code, no test | Generic Inbox answer; no move test |
-| B13. "Moving to box-2…" line (MV-4) | Likely bug | `clients/live/src/map.rs:198` (Moving maps to Idle); test pin at `map.rs:384` |
+| B13. "Moving to box-2…" line (MV-4) | Works (real daemon) | `daemon/humatad/tests/move_typing.rs::typing_into_a_moving_session_is_refused_and_works_once_it_resumes_on_the_new_machine`; `clients/live/src/map.rs::a_moving_session_reads_moving_to_its_target_with_the_running_step` |
 | B14. Desk session move | Not built | SPEC DK-3, MV-17 (ROAM); D182.2; `clients/live/src/desk.rs:453`; `cli/src/args.rs:321` |
 
 ## Gaps and likely bugs
@@ -268,7 +268,7 @@ Layer: agents (with the user's palette steps at the start). Platforms: macOS and
 - Not built: MCP `session_move` (SPEC MV-1, agent path, no milestone). The tool is advertised in `daemon/mcp/src/tools.rs:1153` and answers not_built at `daemon/humatad/src/mcp.rs:1064`.
 - Not built: Desk session move, with `humata desk move` and the picker (SPEC DK-3; ROAM MV-17; D182.2). `clients/live/src/desk.rs:453` answers "not in this release".
 - Not built: the MV-4 line "Moving to <machine>…" and the step progress in the app (SPEC MV-4, no milestone). `ui/src/overlay_move.rs` shows no steps.
-- Likely bug: `clients/live/src/map.rs:198` maps `SessionStatus::Moving` to `Idle`, so a moving session looks idle. The test at `map.rs:384` pins that behaviour, so it must change with the fix.
+- Fixed (was a likely bug): a moving session reads Moving with its target (`clients/live/src/map.rs::a_moving_session_reads_moving_to_its_target_with_the_running_step`).
 - Test gap: `desktop/tests/live_flows/find.rs` does not finish the move. It stops at the machine question and steps back, so the real app's move call is unproven.
 - Test gap: no test runs a move as an agent, so the Ask, Allow and Deny paths for `humata session move` are Code, no test.
 - Test gap: the ordering "old folder freed only after the new agent runs" is not asserted while the move is held.

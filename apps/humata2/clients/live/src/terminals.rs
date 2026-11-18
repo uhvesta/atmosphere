@@ -1,14 +1,14 @@
-//! Terminal tabs: which tab is which index, and one attach per open tab.
+//! Terminal tabs: which tab is which index, and the links a tab's view
+//! and `write` go through.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use humata2_clients::model::{Agent, Session, SessionId};
-use humata2_clients::{DaemonError, Event, Reply, Terminals};
+use humata2_clients::{
+    DaemonError, Event, Events, ImageKind, Reply, TerminalLink, TerminalNotice, Terminals,
+};
 use humata2_grpc::humata::v1 as pb;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::Streaming;
+use terminal_wire::{ClientFrame, ServerFrame};
 
 use crate::connection::{LiveDaemon, Shared, fresh_key};
 use crate::map;
@@ -18,27 +18,28 @@ use crate::map;
 const TAB_TRIES: u32 = 20;
 const TAB_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Bytes the daemon may send before we acknowledge them.
-const WINDOW_BYTES: u32 = 4 << 20;
+/// The longest a session still starting is waited for to list its first
+/// tab: that tab is made once its program launches, after the worktree and
+/// the holder.
+const START_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// An open attach: where input goes.
-pub(crate) struct Attach {
-    to: mpsc::Sender<pb::AttachClientMessage>,
-    input_seq: AtomicU64,
-    generation: u64,
+fn no_tab(index: usize) -> DaemonError {
+    DaemonError::Refused {
+        what: "The terminal".to_owned(),
+        reason: format!(
+            "the session has no terminal tab {index}. Open the tab again from the session"
+        ),
+    }
 }
 
-impl Attach {
-    async fn send(&self, message: pb::attach_client_message::Message) -> Result<(), DaemonError> {
-        self.to
-            .send(pb::AttachClientMessage {
-                message: Some(message),
-            })
-            .await
-            .map_err(|_| DaemonError::Refused {
-                what: "The terminal".to_owned(),
-                reason: "its connection closed. Open the tab again".to_owned(),
-            })
+fn image_format(kind: ImageKind) -> pb::ImageFormat {
+    match kind {
+        ImageKind::Png => pb::ImageFormat::Png,
+        ImageKind::Jpeg => pb::ImageFormat::Jpeg,
+        ImageKind::Gif => pb::ImageFormat::Gif,
+        ImageKind::Webp => pb::ImageFormat::Webp,
+        ImageKind::Tiff => pb::ImageFormat::Tiff,
+        ImageKind::Heic => pb::ImageFormat::Heic,
     }
 }
 
@@ -68,8 +69,18 @@ impl Shared {
         Ok(tabs)
     }
 
+    /// The session's tabs listed now, or, when the daemon can't list them,
+    /// the last list it gave: a session shown with no tabs would close the
+    /// ones open.
+    pub(crate) async fn listed_tabs(&self, session: &pb::SessionId) -> Vec<pb::Tab> {
+        match self.refresh_tabs(session).await {
+            Ok(tabs) => tabs,
+            Err(_) => self.state().tabs.get(&session.value).cloned().unwrap_or_default(),
+        }
+    }
+
     /// The session as the app shows it.
-    pub(crate) async fn fetch_session(&self, id: &pb::SessionId) -> Result<Session, DaemonError> {
+    pub(crate) async fn fetch_session(self: &Arc<Self>, id: &pb::SessionId) -> Result<Session, DaemonError> {
         let session = self
             .sessions()
             .get_session(pb::GetSessionRequest {
@@ -78,21 +89,49 @@ impl Shared {
             .await
             .map_err(|status| self.error(&status, "The session"))?
             .into_inner();
-        let tabs = self.refresh_tabs(id).await.unwrap_or_default();
-        Ok(map::session(&session, &tabs, &self.agents))
+        let tabs = self.listed_tabs(id).await;
+        Ok(self.map_session(&session, &tabs).await)
     }
 
     /// Tab `index` of the session: 0 is the agent's.
-    pub(crate) async fn tab(&self, session: &SessionId, index: usize) -> Result<pb::Tab, DaemonError> {
-        let cached = self
-            .state()
-            .tabs
-            .get(session.as_str())
-            .and_then(|tabs| tabs.get(index).cloned());
-        if let Some(tab) = cached {
+    pub(crate) async fn tab(
+        self: &Arc<Self>,
+        session: &SessionId,
+        index: usize,
+    ) -> Result<pb::Tab, DaemonError> {
+        if let Some(tab) = self.cached_tab(session, index) {
             return Ok(tab);
         }
-        // A session just started lists its tabs a moment after the app
+        // A session still starting gets its first tab when its program
+        // launches. Listening before looking means the push that brings it
+        // can't fall between the look and the wait.
+        let events = if index == 0 { self.subscribe().await.ok() } else { None };
+        if let Some(events) = events {
+            if let Some(tab) = self.refresh_tabs(&pb_session(session)).await?.into_iter().next() {
+                return Ok(tab);
+            }
+            let shared = self.clone();
+            let id = session.clone();
+            // On the client's runtime: the caller may be polled elsewhere,
+            // and a tokio timer needs the runtime it is made on.
+            let waited = self
+                .spawn(async move {
+                    tokio::time::timeout(START_WAIT, shared.first_tab(&id, events)).await
+                })
+                .await;
+            return match waited {
+                Ok(Ok(found)) => found,
+                Ok(Err(_)) => Err(DaemonError::Refused {
+                    what: "The terminal".to_owned(),
+                    reason: format!(
+                        "the session was still starting after {} seconds, so it has no terminal yet. Check its machine in the session's Info, then open the tab again",
+                        START_WAIT.as_secs()
+                    ),
+                }),
+                Err(_) => Err(no_tab(index)),
+            };
+        }
+        // With no event stream: a session just started lists its tabs a moment after the app
         // hears of it, so a tab not listed yet gets a few short tries
         // before it is refused.
         for _ in 0..TAB_TRIES {
@@ -109,165 +148,145 @@ impl Shared {
             // it is made inside the spawned task.
             let _ = self.spawn(async { tokio::time::sleep(TAB_RETRY).await }).await;
         }
-        Err(DaemonError::Refused {
-            what: "The terminal".to_owned(),
-            reason: format!(
-                "the session has no terminal tab {index}. Open the tab again from the session"
-            ),
-        })
+        Err(no_tab(index))
     }
 
-    /// The attach on tab `index`, starting it if there is none.
-    async fn attach(self: &Arc<Self>, session: &SessionId, index: usize) -> Result<Arc<Attach>, DaemonError> {
-        let size = *self
-            .state()
-            .wanted
-            .entry((session.as_str().to_owned(), index))
-            .or_default();
-        let tab = self.tab(session, index).await?;
-        let tab_id = tab.id.clone().unwrap_or_default();
-        let key = (session.as_str().to_owned(), tab_id.value.clone());
-        if let Some(open) = self.state().attaches.get(&key) {
-            return Ok(open.clone());
+    /// Tab `index` as the client last listed it.
+    fn cached_tab(&self, session: &SessionId, index: usize) -> Option<pb::Tab> {
+        self.state()
+            .tabs
+            .get(session.as_str())
+            .and_then(|tabs| tabs.get(index).cloned())
+    }
+
+    /// The session's first tab, once its start ends. Each push about the
+    /// session (its tabs are listed again before it is published) is a
+    /// chance to find it; a start that ended with no tab is refused.
+    async fn first_tab(&self, session: &SessionId, mut events: Events) -> Result<pb::Tab, DaemonError> {
+        loop {
+            if !self.starting(session).await? {
+                return self
+                    .refresh_tabs(&pb_session(session))
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| no_tab(0));
+            }
+            loop {
+                match events.recv().await {
+                    Some(Ok(Event::Session(changed))) if &changed.id == session => break,
+                    Some(Ok(Event::Resync)) => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => return Err(error),
+                    None => {
+                        return Err(DaemonError::Offline {
+                            machine: self.machine.clone(),
+                        });
+                    }
+                }
+            }
+            if let Some(tab) = self.cached_tab(session, 0) {
+                return Ok(tab);
+            }
         }
-        let (columns, rows) = size.unwrap_or((80, 24));
-        let (to, outgoing) = mpsc::channel(64);
-        let open = pb::AttachOpen {
-            session: Some(pb_session(session)),
-            tab: Some(tab_id),
-            from_offset: 0,
-            read_only: false,
-            cols: u32::from(columns),
-            rows: u32::from(rows),
-            window_bytes: WINDOW_BYTES,
-            accept_codecs: Vec::new(),
-            checkpoint_engine: String::new(),
-        };
-        to.send(pb::AttachClientMessage {
-            message: Some(pb::attach_client_message::Message::Open(open)),
-        })
-        .await
-        .map_err(|_| DaemonError::Refused {
-            what: "The terminal".to_owned(),
-            reason: "its connection closed before it opened. Open the tab again".to_owned(),
-        })?;
-        let stream = self
-            .terminal()
-            .attach(ReceiverStream::new(outgoing))
+    }
+
+    /// Whether the daemon is still starting the session.
+    async fn starting(&self, session: &SessionId) -> Result<bool, DaemonError> {
+        let session = self
+            .sessions()
+            .get_session(pb::GetSessionRequest {
+                id: Some(pb_session(session)),
+            })
             .await
-            .map_err(|status| self.error(&status, "The terminal"))?
+            .map_err(|status| self.error(&status, "The session"))?
             .into_inner();
-        let attach = Arc::new(Attach {
-            to,
-            input_seq: AtomicU64::new(0),
-            generation: self.generation.fetch_add(1, Ordering::Relaxed),
-        });
-        {
-            let mut state = self.state();
-            if let Some(existing) = state.attaches.get(&key) {
-                return Ok(existing.clone());
-            }
-            state.attaches.insert(key.clone(), attach.clone());
-        }
-        self.spawn(read_attach(
-            self.clone(),
-            stream,
-            attach.clone(),
-            key,
-            session.clone(),
-            index,
-        ));
-        Ok(attach)
+        Ok(session.status == pb::SessionStatus::Starting as i32)
     }
 }
 
-impl Shared {
-    /// Pushes `bytes` a holder numbered from `at` as the app's next bytes
-    /// of the tab (`Placed`).
-    fn place(&self, session: &SessionId, tab: usize, at: u64, mut bytes: Vec<u8>) {
-        let (offset, skip) = self
-            .state()
-            .placed
-            .entry((session.as_str().to_owned(), tab))
-            .or_default()
-            .place(at, bytes.len() as u64);
-        bytes.drain(..usize::try_from(skip).unwrap_or(bytes.len()));
-        if bytes.is_empty() {
-            return;
-        }
-        self.publish(Event::TerminalData {
-            session: session.clone(),
-            tab,
-            offset: usize::try_from(offset).unwrap_or(usize::MAX),
-            bytes,
-        });
-    }
+/// The grid a link asks for until its view reports its own size.
+const LINK_SIZE: (u16, u16) = (80, 24);
 
-    /// Attaches again each tab of `session` the app opened whose attach
-    /// ended, as when its holder died in a reboot and the daemon resumed
-    /// the agent in a new one. A tab still attached is left as it is; one
-    /// that can't be attached yet is tried again at the session's next
-    /// change.
-    pub(crate) fn reattach(self: &Arc<Self>, session: &SessionId) {
-        let indexes: Vec<usize> = self
-            .state()
-            .wanted
-            .keys()
-            .filter(|(id, _)| id == session.as_str())
-            .map(|(_, index)| *index)
-            .collect();
-        for index in indexes {
-            let shared = self.clone();
-            let session = session.clone();
-            self.spawn(async move {
-                // Not attached now is not an error to show: the next
-                // change of the session tries again, and typing into the
-                // tab reports why it can't attach.
-                let _ = shared.attach(&session, index).await;
-            });
+/// Sends one line over a link of its own and waits until the daemon has
+/// written it. The first frame shows the attach is up.
+async fn type_line(mut link: TerminalLink, route: u64, bytes: Vec<u8>) -> Result<(), DaemonError> {
+    let refused = |reason: String| DaemonError::Refused {
+        what: "Typing into the terminal".to_owned(),
+        reason,
+    };
+    let ended = || {
+        refused("its connection ended before the line was written. Open the tab again".to_owned())
+    };
+    // A refusal that says what to migrate first comes as a notice just
+    // before the error frame, and is what the caller gets (D377).
+    fn why(
+        notices: &mut tokio::sync::mpsc::Receiver<TerminalNotice>,
+        otherwise: DaemonError,
+    ) -> DaemonError {
+        while let Ok(notice) = notices.try_recv() {
+            if let TerminalNotice::Refused(error) = notice {
+                return error;
+            }
+        }
+        otherwise
+    }
+    // Typing waits for the screen (the link refuses it before then).
+    loop {
+        match link.frames.recv().await {
+            Some(ServerFrame::Error { message, .. }) => {
+                return Err(why(&mut link.notices, refused(message)));
+            }
+            Some(ServerFrame::Snapshot { .. }) => break,
+            Some(_) => {}
+            None => return Err(why(&mut link.notices, ended())),
         }
     }
-}
-
-/// Pushes what an attach delivers to every subscriber, until it ends.
-async fn read_attach(
-    shared: Arc<Shared>,
-    mut stream: Streaming<pb::AttachServerMessage>,
-    attach: Arc<Attach>,
-    key: (String, String),
-    session: SessionId,
-    tab: usize,
-) {
-    use pb::attach_server_message::Message;
-    while let Ok(Some(message)) = stream.message().await {
-        match message.message {
-            Some(Message::Snapshot(snapshot)) => {
-                // The snapshot is the screen up to its offset: place it so
-                // the output that follows continues from there.
-                let offset = snapshot.offset.saturating_sub(snapshot.vt.len() as u64);
-                shared.place(&session, tab, offset, snapshot.vt);
+    let frame = ClientFrame::Input {
+        id: route,
+        seq: 1,
+        bytes,
+    };
+    link.sink
+        .send(frame)
+        .map_err(|error| refused(error.to_string()))?;
+    while let Some(frame) = link.frames.recv().await {
+        match frame {
+            ServerFrame::InputWritten { seq: 1, .. } => return Ok(()),
+            ServerFrame::Error { message, .. } => {
+                return Err(why(&mut link.notices, refused(message)));
             }
-            Some(Message::Output(output)) => {
-                let end = output.offset + output.data.len() as u64;
-                shared.place(&session, tab, output.offset, output.data);
-                let _ = attach
-                    .send(pb::attach_client_message::Message::Ack(pb::OutputAck {
-                        offset: end,
-                    }))
-                    .await;
-            }
-            // Status changes come from the daemon's session events (D136).
             _ => {}
         }
     }
-    let mut state = shared.state();
-    if state
-        .attaches
-        .get(&key)
-        .is_some_and(|current| current.generation == attach.generation)
-    {
-        state.attaches.remove(&key);
-    }
+    Err(why(&mut link.notices, ended()))
+}
+
+/// Opens a new shell tab of the session, in `folder` when it is not empty,
+/// and returns its index among the session's tabs.
+async fn new_shell_tab(
+    shared: &Arc<Shared>,
+    id: &pb::SessionId,
+    folder: String,
+) -> Result<usize, DaemonError> {
+    let tab = shared
+        .terminal()
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: fresh_key(),
+            session: Some(id.clone()),
+            repo: None,
+            folder,
+        })
+        .await
+        .map_err(|status| shared.error(&status, "The new shell"))?
+        .into_inner();
+    let tabs = shared.refresh_tabs(id).await?;
+    tabs.iter()
+        .position(|candidate| candidate.id == tab.id)
+        .ok_or_else(|| DaemonError::Refused {
+            what: "The new shell".to_owned(),
+            reason: "the daemon opened it but doesn't list it. Reload and try again".to_owned(),
+        })
 }
 
 impl Terminals for LiveDaemon {
@@ -277,24 +296,7 @@ impl Terminals for LiveDaemon {
         Box::pin(async move {
             let id = pb_session(&session);
             let index = if agent == Agent::Shell {
-                let tab = shared
-                    .terminal()
-                    .open_shell_tab(pb::OpenShellTabRequest {
-                        idempotency_key: fresh_key(),
-                        session: Some(id.clone()),
-                        repo: None,
-                    })
-                    .await
-                    .map_err(|status| shared.error(&status, "The new shell"))?
-                    .into_inner();
-                let tabs = shared.refresh_tabs(&id).await?;
-                tabs.iter()
-                    .position(|candidate| candidate.id == tab.id)
-                    .ok_or_else(|| DaemonError::Refused {
-                        what: "The new shell".to_owned(),
-                        reason: "the daemon opened it but doesn't list it. Reload and try again"
-                            .to_owned(),
-                    })?
+                new_shell_tab(&shared, &id, String::new()).await?
             } else {
                 let current = shared.fetch_session(&id).await?;
                 if current.agent != agent {
@@ -307,50 +309,73 @@ impl Terminals for LiveDaemon {
                         ),
                     });
                 }
-                shared.refresh_tabs(&id).await?;
+                // The agent's terminal is tab 0, and it is there only once
+                // the start has launched the agent: until then the session
+                // has nothing to attach, so this waits for it (or refuses).
+                shared.tab(&session, 0).await?;
                 0
             };
-            shared.attach(&session, index).await?;
+            let current = shared.fetch_session(&id).await?;
+            Ok((index, current))
+        })
+    }
+
+    fn open_in(&self, session: &SessionId, agent: Agent, folder: &str) -> Reply<(usize, Session)> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        let folder = folder.to_owned();
+        Box::pin(async move {
+            if agent != Agent::Shell {
+                return Err(DaemonError::Refused {
+                    what: format!("Starting {} in {folder}", agent.name()),
+                    reason: "only a shell can start in a folder of its own for now. Open a terminal here and start the agent in it".to_owned(),
+                });
+            }
+            let id = pb_session(&session);
+            let index = new_shell_tab(&shared, &id, folder).await?;
             let current = shared.fetch_session(&id).await?;
             Ok((index, current))
         })
     }
 
     fn write(&self, session: &SessionId, tab: usize, text: &str) -> Reply<()> {
-        self.input(session, tab, format!("{text}\r").into_bytes())
+        let link = self.link(session, tab);
+        let route = u64::try_from(tab).unwrap_or_default();
+        let bytes = format!("{text}\r").into_bytes();
+        Box::pin(async move { type_line(link.await?, route, bytes).await })
     }
 
-    fn input(&self, session: &SessionId, tab: usize, bytes: Vec<u8>) -> Reply<()> {
+    fn link(&self, session: &SessionId, tab: usize) -> Reply<TerminalLink> {
         let shared = self.shared.clone();
         let session = session.clone();
         Box::pin(async move {
-            let attach = shared.attach(&session, tab).await?;
-            let input_seq = attach.input_seq.fetch_add(1, Ordering::Relaxed) + 1;
-            attach
-                .send(pb::attach_client_message::Message::Input(pb::TerminalInput {
-                    data: bytes,
-                    input_seq,
-                }))
-                .await
+            let tab_id = shared.tab(&session, tab).await?.id.unwrap_or_default();
+            Ok(crate::link::start(
+                &shared,
+                pb_session(&session),
+                tab_id,
+                tab as u64,
+                LINK_SIZE,
+            ))
         })
     }
 
-    fn resize(&self, session: &SessionId, tab: usize, columns: u16, rows: u16) -> Reply<()> {
+    fn paste_image(&self, session: &SessionId, kind: ImageKind, bytes: Vec<u8>) -> Reply<String> {
         let shared = self.shared.clone();
-        let session = session.clone();
+        let session = pb_session(session);
         Box::pin(async move {
-            shared
-                .state()
-                .wanted
-                .insert((session.as_str().to_owned(), tab), Some((columns, rows)));
-            let attach = shared.attach(&session, tab).await?;
-            attach
-                .send(pb::attach_client_message::Message::Resize(pb::TerminalResize {
-                    cols: u32::from(columns),
-                    rows: u32::from(rows),
-                    ..Default::default()
-                }))
+            let pasted = shared
+                .terminal()
+                .paste_image(pb::PasteImageRequest {
+                    idempotency_key: fresh_key(),
+                    session: Some(session),
+                    data: bytes,
+                    format: image_format(kind).into(),
+                })
                 .await
+                .map_err(|status| shared.error(&status, "The pasted image"))?
+                .into_inner();
+            Ok(pasted.path)
         })
     }
 }

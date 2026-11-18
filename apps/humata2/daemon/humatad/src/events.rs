@@ -139,6 +139,18 @@ impl Feed {
         let _ = self.live.send(event);
     }
 
+    /// Tells every subscriber to reload now. For a source of changes, such
+    /// as read marks, that lost some: the feed can't say which, so every
+    /// client must reload. The `Resync` has no number and is not kept, so a
+    /// later subscriber doesn't get it.
+    pub(crate) fn resync_all(&self) {
+        let kept = lock(&self.kept);
+        let earliest = kept.events.front().map_or(kept.next, |event| seq(event));
+        // Sent under the lock, as publish sends, so it lands at the same
+        // place in every subscriber's stream. No subscriber is not an error.
+        let _ = self.live.send(resync(earliest));
+    }
+
     /// What a subscriber resuming after `after` gets first, and the live
     /// events from there on.
     pub(crate) fn subscribe(
@@ -323,7 +335,8 @@ impl Filter {
         let scope = published.scope.as_ref();
         match &published.event.payload {
             Some(pb::event::Payload::Resync(_)) => true,
-            // An agent sees no machines yet (ListMachines lists none).
+            // Machine changes go to the user only. An agent lists its
+            // channel's machines (TP-1) but isn't told when they change yet.
             Some(pb::event::Payload::Machine(_)) => self.user && self.machines,
             // The user sees offered views; an agent sees its own
             // session's, drafts included (VW-14), as ListViews lists them.
@@ -376,6 +389,21 @@ impl Filter {
             Some(pb::event::Payload::HostLink(_)) => self.user && self.machines,
             // AWAY: a policy copy the machine kept, to the user as HostLink is.
             Some(pb::event::Payload::PolicyCopy(_)) => self.user && self.machines,
+            // MACHINESCRIPTS (D686): a machine's script run changed, to the user as Machine is.
+            Some(pb::event::Payload::MachineScriptRun(_)) => self.user && self.machines,
+            // D286: a review's pull request heads moved, to whoever may read
+            // the session, like its Session events.
+            // Bug 23: a clone's files changed, to whoever may read the session.
+            // D438: the history index caught the session up, the same way.
+            Some(
+                pb::event::Payload::PullRequestHeads(_)
+                | pb::event::Payload::FileChanged(_)
+                | pb::event::Payload::HistoryIndexed(_)
+                // DESKWATCH: a Desk session changed, to whoever may read it.
+                | pb::event::Payload::Desk(_),
+            ) => {
+                self.session_topic && self.asked(scope) && self.reads_session(scope)
+            }
             _ => false,
         }
     }
@@ -434,7 +462,8 @@ impl pb::event_service_server::EventService for EventSvc {
                     _ = end.wait_for(|stopping| *stopping) => return,
                 };
                 let event = match event {
-                    Ok(event) if seq(&event) <= last => continue,
+                    // A Resync has no number, so it always goes on.
+                    Ok(event) if event.seq.is_some() && seq(&event) <= last => continue,
                     Ok(event) => event,
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         live = live.resubscribe();
@@ -448,6 +477,54 @@ impl pb::event_service_server::EventService for EventSvc {
                 }
             }
         });
-        Ok(Response::new(ReceiverStream::new(receiver)))
+        // The task above ends this stream once the daemon is leaving, so
+        // the stream isn't cut while it gets there (D270).
+        let mut response = Response::new(ReceiverStream::new(receiver));
+        response.extensions_mut().insert(crate::stop::streams::EndsByItself);
+        Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D395: when a source of changes loses some, every subscriber is told
+    /// to reload, and the subscriber's own stream carries that Resync.
+    #[test]
+    fn a_resync_for_everyone_reaches_a_subscriber() {
+        let feed = Feed::default();
+        let (backlog, mut live) = feed.subscribe(None);
+        assert!(backlog.is_empty());
+        feed.resync_all();
+        let event = live
+            .try_recv()
+            .unwrap_or_else(|error| panic!("a subscriber heard nothing: {error}"));
+        assert!(matches!(event.payload, Some(pb::event::Payload::Resync(_))));
+    }
+
+    /// D341: a restart's Resync is for those subscribed then; a client
+    /// resuming from a point after it hears only the numbered changes.
+    #[test]
+    fn a_resuming_subscriber_does_not_replay_an_earlier_resync() {
+        let feed = Feed::default();
+        let (_, mut live) = feed.subscribe(None);
+        feed.publish(pb::Change::Created, machine("box-1"), None);
+        let first = live.try_recv().unwrap();
+        feed.resync_all();
+        feed.publish(pb::Change::Updated, machine("box-1"), None);
+
+        let (backlog, _) = feed.subscribe(Some(seq(&first)));
+
+        assert_eq!(backlog.len(), 1);
+        assert!(backlog.iter().all(|event| event.event.seq.is_some()));
+        assert!(!backlog.iter().any(|event| matches!(event.event.payload, Some(pb::event::Payload::Resync(_)))));
+    }
+
+    fn machine(name: &str) -> pb::event::Payload {
+        pb::event::Payload::Machine(pb::Machine {
+            name: name.to_owned(),
+            ..Default::default()
+        })
     }
 }

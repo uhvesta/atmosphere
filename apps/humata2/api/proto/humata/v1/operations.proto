@@ -56,6 +56,12 @@ enum OperationKind {
   // CH-24. Steps: stop_agents, withdraw_requests, trash:<machine> per
   // machine, remove_record.
   OPERATION_KIND_DELETE_CHANNEL = 19;
+  // CV-8. Steps: write_record, clone:<repo> per repository,
+  // copy_conversation, launch, verify.
+  OPERATION_KIND_CONTINUE_IN_CHANNEL = 20;
+  // SEAM (MACHINESCRIPTS, D687). One step per script step, keyed
+  // `step:<n>`; GRPC.md §7.
+  OPERATION_KIND_MACHINE_SCRIPT = 21;
 }
 
 enum OperationState {
@@ -113,8 +119,13 @@ message Operation {
   oneof result {
     SessionId session = 20;
     MachineId machine = 21;
-    PullRequestRef pull_request = 22;
   }
+  // 22 was a push's one pull request; a push now reports one per repository.
+  reserved 22;
+  // A push's pull requests, one for each repository it opened or found one
+  // for, in the order it pushed them. A note says what the push found out
+  // about an open one it left as it was.
+  repeated PullRequestRef pull_requests = 23;
 }
 
 message GetOperationRequest { OperationId id = 1; }

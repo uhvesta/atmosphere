@@ -27,6 +27,21 @@ impl Builds for AnyPlatform {
     }
 }
 
+/// [`AnyPlatform`] that also names its release, as a tools bundle does.
+struct Released(Vec<Payload>);
+
+const BUNDLE: &[u8] = b"{\"platforms\":{}}";
+
+impl Builds for Released {
+    fn payloads(&self, _platform: Platform) -> Result<Vec<Payload>, BuildsError> {
+        Ok(self.0.clone())
+    }
+
+    fn bundle_json(&self, _platform: Platform) -> Result<Option<Arc<[u8]>>, BuildsError> {
+        Ok(Some(Arc::from(BUNDLE)))
+    }
+}
+
 /// Short, so the tests that reach it don't wait long, but long enough for
 /// the shell to install and start the fake humatad2 (over 300 ms under
 /// Bazel).
@@ -50,6 +65,7 @@ fn files_with_bridge(body: &str) -> Vec<Payload> {
         Payload::new(InstalledFile::Humatad, Arc::from(humatad.as_bytes())),
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
+        Payload::new(InstalledFile::Stack, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
     ]
 }
 
@@ -175,6 +191,7 @@ fn run_takeover(
                     sent.push(payload.file());
                     shell.write(&mangle(payload.bytes()));
                 }
+                TakeoverAction::SendBundle(bytes) => shell.write(&mangle(&bytes)),
                 TakeoverAction::Ready { leftover, .. } => {
                     return (End::Ready(leftover), sent);
                 }
@@ -216,6 +233,46 @@ fn the_files_are_installed_and_the_shell_becomes_the_bridge() {
 }
 
 #[test]
+fn a_first_install_writes_the_releases_bundle_json_after_the_files() {
+    let home = tempfile::tempdir().unwrap();
+    let mut shell = Shell::start(home.path());
+
+    let (end, sent) = run(&mut shell, &Released(fake_files()), <[u8]>::to_vec);
+
+    assert!(matches!(end, End::Ready(..)));
+    assert_eq!(sent, InstalledFile::ALL);
+    assert_eq!(std::fs::read(home.path().join(".humata2/bin/bundle.json")).unwrap(), BUNDLE);
+}
+
+#[test]
+fn a_machine_that_already_runs_humatad2_keeps_its_files_and_gets_no_bundle() {
+    let home = tempfile::tempdir().unwrap();
+    let files = fake_files();
+    let bin = home.path().join(".humata2/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    for payload in &files {
+        let path = bin.join(payload.file().file_name());
+        std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    // humatad2 here is another build than the release's: it only has to
+    // sync, and it must not be replaced.
+    std::fs::write(
+        bin.join("humatad2"),
+        b"#!/bin/sh\nwhile [ \"$#\" -gt 0 ] && [ \"$1\" != --sync ]; do shift; done\nprintf 'HUMATA_SYNC_%s\\n' \"$2\"\nexec cat\n",
+    )
+    .unwrap();
+    let mut shell = Shell::start(home.path());
+
+    let (end, sent) = run(&mut shell, &Released(files), <[u8]>::to_vec);
+
+    assert!(matches!(end, End::Ready(..)));
+    assert!(sent.is_empty());
+    assert!(!bin.join("bundle.json").exists());
+}
+
+#[test]
 fn files_already_there_are_not_sent_again() {
     let home = tempfile::tempdir().unwrap();
     let files = fake_files();
@@ -249,12 +306,16 @@ fn a_file_changed_on_the_way_is_not_installed() {
     let End::Failed(error) = end else {
         panic!("the takeover went ahead");
     };
-    assert_eq!(
-        error,
-        TakeoverError::Install {
-            file: InstalledFile::Humatad,
-            problem: InstallProblem::ChecksumMismatch,
-        }
+    assert!(
+        matches!(
+            error,
+            TakeoverError::Install {
+                file: InstalledFile::Humatad,
+                problem: InstallProblem::ChecksumMismatch,
+                ..
+            }
+        ),
+        "{error}"
     );
     assert!(!home.path().join(".humata2/bin/humatad2").exists());
 }

@@ -184,6 +184,13 @@ impl PathFilter {
     }
 }
 
+/// The default preset's part for one repo (RV-1 "origin/main", B5): everything
+/// since the repo's default branch, `default_base`, as a pull request would
+/// show it. Every spec that means "the default" for a repo is built here.
+pub(crate) fn default_repo_spec(repo: &str, default_base: &str) -> RepoSpec {
+    RepoSpec::since_branch(repo, default_base)
+}
+
 /// Whether `session` is safe as one component of a ref name.
 pub(crate) fn valid_session(session: &str) -> bool {
     !session.is_empty()

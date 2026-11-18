@@ -8,12 +8,15 @@ use crate::call::Ctx;
 use crate::console::Console;
 use crate::daemon::{Daemon, rpc};
 use crate::error::CliError;
+use crate::principal::Principal;
 
 /// Prefixes that mark an id rather than a name (provisional: the API
 /// doesn't fix id formats).
 const CHANNEL_ID: &str = "ch_";
 const SESSION_ID: &str = "se_";
 const MACHINE_ID: &str = "ma_";
+/// What the daemon calls this machine beside its id (D672 (Provisional)).
+const THIS_MACHINE: &str = "this-mac";
 
 impl<D: Daemon, C: Console> Ctx<'_, D, C> {
     pub async fn channel(&self, name: &str) -> Result<pb::ChannelId, CliError> {
@@ -82,6 +85,19 @@ impl<D: Daemon, C: Console> Ctx<'_, D, C> {
         if name.starts_with(MACHINE_ID) {
             return Ok(pb::MachineId { value: name.into() });
         }
+        if name.eq_ignore_ascii_case(THIS_MACHINE) {
+            return self.this_mac().await;
+        }
+        let mut found = Vec::new();
+        for machine in self.machines().await? {
+            let id = machine.id.map(|id| id.value).unwrap_or_default();
+            found.push((id, machine.name));
+        }
+        pick("machine", name, found).map(|value| pb::MachineId { value })
+    }
+
+    /// The machines the daemon lists, every page.
+    async fn machines(&self) -> Result<Vec<pb::Machine>, CliError> {
         let mut found = Vec::new();
         let mut page = String::new();
         loop {
@@ -96,16 +112,60 @@ impl<D: Daemon, C: Console> Ctx<'_, D, C> {
                     },
                 )
                 .await?;
-            for machine in reply.machines {
-                let id = machine.id.map(|id| id.value).unwrap_or_default();
-                found.push((id, machine.name));
-            }
+            found.extend(reply.machines);
             page = reply.page.map(|page| page.next_page_token).unwrap_or_default();
             if page.is_empty() {
                 break;
             }
         }
-        pick("machine", name, found).map(|value| pb::MachineId { value })
+        Ok(found)
+    }
+
+    /// What `this-mac` names. For an agent on a machine's daemon it is the
+    /// host Mac, as the host lists itself to it (D768): the Mac is "This
+    /// Mac" in every view, and the agent's own machine has its own name.
+    /// Anywhere else it is the machine the daemon runs on (D672).
+    async fn this_mac(&self) -> Result<pb::MachineId, CliError> {
+        let info = self.server_info().await?;
+        if matches!(self.principal, Principal::Agent { .. }) && info.role == pb::DaemonRole::Machine as i32 {
+            return self
+                .machines()
+                .await?
+                .into_iter()
+                .find(|machine| machine.is_this_mac)
+                .and_then(|machine| machine.id)
+                .ok_or_else(|| CliError::NoMatch {
+                    what: "machine",
+                    name: THIS_MACHINE.to_owned(),
+                });
+        }
+        Self::own_machine(info)
+    }
+
+    async fn server_info(&self) -> Result<pb::ServerInfo, CliError> {
+        self.call(rpc::daemon::GET_SERVER_INFO, &pb::GetServerInfoRequest {}).await
+    }
+
+    fn own_machine(info: pb::ServerInfo) -> Result<pb::MachineId, CliError> {
+        info.machine
+            .filter(|machine| !machine.value.is_empty())
+            .ok_or(CliError::Missing {
+                flag: "--machine <name|id>",
+            })
+    }
+
+    /// The machine this daemon runs on, as its server info names it
+    /// (D672 (Provisional): the daemon's machine list holds only the others).
+    pub async fn this_machine(&self) -> Result<pb::MachineId, CliError> {
+        Self::own_machine(self.server_info().await?)
+    }
+
+    /// The first `--machine`, else this machine (D672 (Provisional)).
+    pub async fn machine_or_this(&self) -> Result<pb::MachineId, CliError> {
+        match self.machine_flag().await? {
+            Some(machine) => Ok(machine),
+            None => self.this_machine().await,
+        }
     }
 
     /// `--channel`, when given.

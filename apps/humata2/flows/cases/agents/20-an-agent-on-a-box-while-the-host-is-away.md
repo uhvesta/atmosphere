@@ -92,7 +92,7 @@ Layer: agents. Platforms: macOS, Linux, web.
 
     **State and events:** The read is answered from `box-1`'s copy of the host's last answer. The mark is the host's response time, and it stays the same after a restart.
 
-    **Status:** Works (real daemon) for the copy and its mark, over gRPC: `daemon/humatad/tests/away_board_journal.rs::row_2_a_read_made_while_the_host_was_linked_is_answered_while_it_is_away_marked_with_its_age`. No test checks the MCP output itself, and the CLI path is Likely bug (see the branch on CLI reads).
+    **Status:** Works (real daemon) for the copy and its mark, over gRPC: `daemon/humatad/tests/away_board_journal.rs::row_2_a_read_made_while_the_host_was_linked_is_answered_while_it_is_away_marked_with_its_age`. The CLI prints the age (`cli/tests/boards.rs::a_read_from_a_machines_copy_keeps_its_age`, fakes). No test checks the MCP output itself.
 
 11. **I do:** The agent reads `Payments` for a second channel it never read while the host was linked.
 
@@ -208,7 +208,7 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Expected outcome:** AW-7 says a read from the copy is marked with the time it was made. The CLI should show that mark, as the MCP tool does.
 
-**Status:** Likely bug. No test runs the CLI against an away machine. The gRPC test proves the header is sent; the MCP tool keeps it; the CLI does not.
+**Status:** Fakes only (fixed): `cli/tests/boards.rs::a_read_from_a_machines_copy_keeps_its_age` and `cli/tests/boards.rs::a_live_read_carries_no_age`. The CLI keeps the `humata-stale-as-of` header and prints `stale_as_of` (`cli/src/live.rs`, `cli/src/output.rs`). The daemon's header is proven by `daemon/humatad/tests/away_board_journal.rs::row_2_a_read_made_while_the_host_was_linked_is_answered_while_it_is_away_marked_with_its_age`. No test runs the real CLI against an away machine. (Was a likely bug; fixed by BUGS.)
 
 ## Expected outcomes
 
@@ -226,7 +226,7 @@ Layer: agents. Platforms: macOS, Linux, web.
 - [ ] When the link drops during a call, the call ends with a retry the agent can use.
 - [ ] The first answer to a request wins, wherever it came from.
 - [ ] An edit the host refuses on replay is kept as lost, and the session says so.
-- [ ] The CLI shows the age of a copied read (Likely bug: it does not).
+- [x] The CLI shows the age of a copied read (`cli/tests/boards.rs::a_read_from_a_machines_copy_keeps_its_age`).
 
 ## Status summary
 
@@ -241,7 +241,7 @@ Layer: agents. Platforms: macOS, Linux, web.
 | 7. Push under Wait waits, then asked | Works (real daemon) | `away_boundary.rs::row_6_under_wait_a_push_waits_for_the_host_and_is_then_asked` |
 | 8. Held call past its deadline | Works (real daemon) | `away_boundary.rs::row_6_a_held_call_whose_deadline_passes_while_away_is_host_unreachable_and_keeps_nothing` |
 | 9. Board writes journaled | Works (real daemon) | `away_board_journal.rs::row_3_a_channel_board_add_while_away_is_journaled`; `a_move_of_its_own_item_while_away_is_journaled_against_the_revision_it_saw` |
-| 10. Read answered from the copy, with age | Works (real daemon) over gRPC; MCP output untested; Likely bug for CLI | `away_board_journal.rs::row_2_a_read_made_while_the_host_was_linked_is_answered_while_it_is_away_marked_with_its_age`; `cli/src/live.rs:110-117` |
+| 10. Read answered from the copy, with age | Works (real daemon) over gRPC; MCP output untested; CLI Fakes only | `daemon/humatad/tests/away_board_journal.rs::row_2_a_read_made_while_the_host_was_linked_is_answered_while_it_is_away_marked_with_its_age`; `cli/tests/boards.rs::a_read_from_a_machines_copy_keeps_its_age` |
 | 11. Read never made while linked | Works (real daemon) | `away_board_journal.rs::a_read_never_made_while_the_host_was_linked_is_host_unreachable` |
 | 12. Start before the rules arrive refused (linked, no copy yet) | Works (real daemon) | `away_contain_copy.rs::a_start_before_the_hosts_rules_arrive_is_refused_and_nothing_is_started` |
 | Branch: link drops while waiting | Works (real daemon) | `away_forward.rs::a_link_that_drops_while_the_call_waits_is_host_unreachable_and_retryable` |
@@ -250,7 +250,7 @@ Layer: agents. Platforms: macOS, Linux, web.
 | Branch: edit the host refuses | Works (real daemon) for data; summary line is UI, not tested | `away_left_out.rs::an_edit_the_host_now_refuses_is_kept_as_lost_and_the_session_says_so` |
 | Branch: approved board edit | Works (real daemon) | `away_approved_board.rs::an_edit_approved_on_the_box_while_the_host_is_away_is_made_when_the_link_is_back` |
 | Branch: comment or view draft | Works (real daemon) | `away_board_journal.rs::a_view_draft_while_away_is_host_unreachable_and_nothing_is_kept` |
-| Branch: CLI read with age | Likely bug | `cli/src/live.rs:110-117`; `daemon/humatad/src/mcp/boards.rs:55-68` (MCP keeps the header; no test checks its output) |
+| Branch: CLI read with age | Fakes only (fixed) | `cli/tests/boards.rs::a_read_from_a_machines_copy_keeps_its_age`; `cli/tests/boards.rs::a_live_read_carries_no_age` |
 
 ## Gaps and likely bugs
 
@@ -260,5 +260,5 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Likely bugs**
 
-- The CLI drops the response header that carries the age of a copied read (`cli/src/live.rs:110-117` returns only the body). AW-7 says reads from the copy are marked with their age. The MCP tools keep the header (`daemon/humatad/src/mcp/boards.rs:55-68`). Confirm by running `humata` in an agent tab against an away machine and checking whether any age appears.
+- Fixed (was a likely bug): the CLI prints the age of a copied read (`cli/tests/boards.rs::a_read_from_a_machines_copy_keeps_its_age`).
 - Under Skip, a push is refused with the host-unreachable kind, and an ask is refused with the user-away kind. AW-4 and AW-7 say the refusal should say the user or host is away. The tests check the kinds, not the words, so the words are untested.

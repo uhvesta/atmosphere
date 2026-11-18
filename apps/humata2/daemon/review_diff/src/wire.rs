@@ -6,6 +6,8 @@
 //! owner is empty ([`repo_key`], [`repo_ref`]); key the session's
 //! [`crate::Clones`] the same way.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use humata2_proto::humata::v1 as pb;
 use humata2_proto::timestamp_proto::google::protobuf::Timestamp;
 
@@ -19,7 +21,7 @@ use crate::model::{
 };
 use crate::plan::{Anchor, FileRef, Group, Note, NoteTarget, ReviewPlan};
 use crate::spec::{
-    Base, Compare, DiffSpec, PathFilter, RepoSpec, Untracked, Upto, Whitespace,
+    Base, Compare, DiffSpec, PathFilter, RepoSpec, Untracked, Upto, Whitespace, default_repo_spec,
 };
 
 /// A message that can't be turned into a diff, plan or view: what is
@@ -35,6 +37,16 @@ pub enum WireError {
         value: String,
         expected: &'static str,
     },
+
+    #[error(
+        "the diff spec names {repo:?}, which isn't a repo of this session (its repos are {known:?}); remove it from the spec, or name one of the session's repos"
+    )]
+    UnknownRepo { repo: String, known: Vec<String> },
+
+    #[error(
+        "the diff spec names {repo:?} more than once; give each repo one entry, with the base you want for it"
+    )]
+    RepeatedRepo { repo: String },
 }
 
 fn missing(field: &'static str) -> WireError {
@@ -150,6 +162,15 @@ fn repo_spec_from_pb(spec: &pb::RepoDiffSpec) -> Result<RepoSpec, WireError> {
         },
         Some(B::ForkPoint(_)) => Base::ForkPoint,
         Some(B::Index(_)) => Base::Index,
+        // Only a review's base can resolve it (PR-10): a plan, a push or a
+        // saved spec has no pull request to ask.
+        Some(B::PullRequestBase(_)) => {
+            return Err(WireError::Invalid {
+                field: "repos.base.pull_request_base",
+                value: repo_key(repo),
+                expected: "a base of a pull request review's Diff; use merge_base_with with the pull request's base branch here",
+            });
+        }
     };
     let compare = spec.compare.clone().unwrap_or_default();
     let upto = match compare.upto() {
@@ -234,17 +255,44 @@ fn repo_spec_to_pb(spec: &RepoSpec) -> pb::RepoDiffSpec {
     }
 }
 
-/// The spec for one of RV-1's bases on `repos` (keys). `pull_request_base`
-/// gives a repo's PR base branch (PR-10), such as `origin/main`.
+/// The repos among `repos` whose default base [`spec_for_base`] needs: every
+/// one for `OriginMain`, and those a `Spec` leaves out. Looked up before the
+/// diff, so a repo with a spec of its own needs no default branch.
+#[must_use]
+pub fn repos_needing_default(base: &pb::DiffBase, repos: &[String]) -> Vec<String> {
+    use pb::diff_base::Base as B;
+    match base.base.as_ref() {
+        Some(B::OriginMain(_)) => repos.to_vec(),
+        Some(B::Spec(spec)) => repos
+            .iter()
+            .filter(|repo| {
+                !spec
+                    .repos
+                    .iter()
+                    .any(|own| own.repo.as_ref().map(repo_key).as_deref() == Some(repo.as_str()))
+            })
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The spec for one of RV-1's bases on `repos` (keys) of a session whose repos
+/// are `session`. `defaults` holds the default base of each repo that
+/// [`repos_needing_default`] names (B5). `pull_request_base` gives a repo's PR
+/// base branch (PR-10), such as `origin/main`.
 ///
 /// # Errors
 ///
-/// [`WireError`] for an unset base, a `spec` that doesn't parse, a PR base
-/// on a repo without a PR, or `other_session`, which the caller resolves
-/// to that session's snapshot itself.
+/// [`WireError`] for an unset base, a `spec` that doesn't parse, a repo of a
+/// `spec` that the session doesn't have or names twice, a PR base on a repo
+/// without a PR, a repo with no entry in `defaults`, or `other_session`, which
+/// the caller resolves to that session's snapshot itself.
 pub fn spec_for_base(
     base: &pb::DiffBase,
     repos: &[String],
+    session: &[String],
+    defaults: &BTreeMap<String, String>,
     pull_request_base: impl Fn(&str) -> Option<String>,
 ) -> Result<DiffSpec, WireError> {
     use pb::diff_base::Base as B;
@@ -252,7 +300,11 @@ pub fn spec_for_base(
         repos: repos.iter().map(|repo| make(repo)).collect(),
     };
     match base.base.as_ref().ok_or_else(|| missing("base"))? {
-        B::OriginMain(_) => Ok(each(&|repo| RepoSpec::since_branch(repo, "origin/main"))),
+        B::OriginMain(_) => repos
+            .iter()
+            .map(|repo| default_of(defaults, repo).map(|base| default_repo_spec(repo, base)))
+            .collect::<Result<Vec<RepoSpec>, WireError>>()
+            .map(|repos| DiffSpec { repos }),
         B::UncommittedOnly(_) => Ok(each(&|repo| RepoSpec::uncommitted(repo))),
         B::SinceLastReviewed(_) => Ok(each(&|repo| RepoSpec::since_last_review(repo))),
         B::SinceFork(_) => Ok(each(&|repo| RepoSpec::since_fork(repo))),
@@ -274,8 +326,120 @@ pub fn spec_for_base(
             value: String::new(),
             expected: "resolved by the daemon to the other session's snapshot, not here",
         }),
-        B::Spec(spec) => spec_from_pb(spec),
+        B::Spec(spec) => {
+            let resolved = resolve_pull_request_bases(spec, &pull_request_base)?;
+            spec_for_repos(&resolved, session, repos, defaults)
+        }
     }
+}
+
+/// `spec` for `repos`: each repo's own spec where `spec` names it, else its
+/// default base (B5). A repo `session` doesn't have, or one `spec` names twice,
+/// is refused, so a spec can't quietly drop or double a repo.
+fn spec_for_repos(
+    spec: &pb::DiffSpec,
+    session: &[String],
+    repos: &[String],
+    defaults: &BTreeMap<String, String>,
+) -> Result<DiffSpec, WireError> {
+    let named = spec_from_pb(spec)?;
+    let mut seen = BTreeSet::new();
+    for own in &named.repos {
+        if !session.contains(&own.repo) {
+            return Err(WireError::UnknownRepo {
+                repo: own.repo.clone(),
+                known: session.to_vec(),
+            });
+        }
+        if !seen.insert(own.repo.as_str()) {
+            return Err(WireError::RepeatedRepo {
+                repo: own.repo.clone(),
+            });
+        }
+    }
+    let repos = repos
+        .iter()
+        .map(|repo| match named.repos.iter().find(|own| &own.repo == repo) {
+            Some(own) => Ok(own.clone()),
+            None => default_of(defaults, repo).map(|base| default_repo_spec(repo, base)),
+        })
+        .collect::<Result<Vec<RepoSpec>, WireError>>()?;
+    Ok(DiffSpec { repos })
+}
+
+/// `base` with every pull request base (PR-10) written out as that base's
+/// merge-base form, so a machine that keeps no pull request records can
+/// compute it: `PullRequestBase` becomes a spec with each of `repos` (keys)
+/// on its base, and a spec's repos on theirs. Any other base is `base` as it
+/// is.
+///
+/// # Errors
+///
+/// [`WireError`] for a repo with no pull request, as [`spec_for_base`].
+pub fn with_pull_request_bases(
+    base: &pb::DiffBase,
+    repos: &[String],
+    pull_request_base: impl Fn(&str) -> Option<String>,
+) -> Result<pb::DiffBase, WireError> {
+    use pb::diff_base::Base as B;
+    let spec = match base.base.as_ref() {
+        Some(B::PullRequestBase(_)) => pb::DiffSpec {
+            repos: repos
+                .iter()
+                .map(|repo| {
+                    let branch = pull_request_base(repo).ok_or_else(|| WireError::Invalid {
+                        field: "base.pull_request_base",
+                        value: repo.clone(),
+                        expected: "a repo of a PR review session; pick another base for this repo",
+                    })?;
+                    Ok(repo_spec_to_pb(&RepoSpec::since_branch(repo.clone(), branch)))
+                })
+                .collect::<Result<_, WireError>>()?,
+        },
+        Some(B::Spec(spec)) => resolve_pull_request_bases(spec, &pull_request_base)?,
+        _ => return Ok(base.clone()),
+    };
+    Ok(pb::DiffBase {
+        base: Some(B::Spec(spec)),
+    })
+}
+
+/// `spec` with each repo on its pull request's base (PR-10) as that base's
+/// merge-base form.
+fn resolve_pull_request_bases(
+    spec: &pb::DiffSpec,
+    pull_request_base: &impl Fn(&str) -> Option<String>,
+) -> Result<pb::DiffSpec, WireError> {
+    use pb::diff_spec_base::Base as B;
+    let mut resolved = spec.clone();
+    for own in &mut resolved.repos {
+        let on_pull_request = matches!(
+            own.base.as_ref().and_then(|base| base.base.as_ref()),
+            Some(B::PullRequestBase(_))
+        );
+        if !on_pull_request {
+            continue;
+        }
+        let key = own.repo.as_ref().map(repo_key).ok_or_else(|| missing("repos.repo"))?;
+        let branch = pull_request_base(&key).ok_or_else(|| WireError::Invalid {
+            field: "base.spec.repos.base.pull_request_base",
+            value: key,
+            expected: "a repo of a PR review session; pick another base for this repo",
+        })?;
+        own.base = Some(pb::DiffSpecBase {
+            base: Some(B::MergeBaseWith(branch)),
+        });
+    }
+    Ok(resolved)
+}
+
+/// The default base of `repo`, which the caller looked up before the diff.
+fn default_of<'a>(defaults: &'a BTreeMap<String, String>, repo: &str) -> Result<&'a str, WireError> {
+    defaults.get(repo).map(String::as_str).ok_or_else(|| WireError::Invalid {
+        field: "repos",
+        value: repo.to_owned(),
+        expected: "a repo the session has, with its default branch looked up before the diff; this is a bug in Humata, please report it",
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,9 +1165,65 @@ mod tests {
         };
         let repos = vec!["api".to_owned(), "ledger".to_owned()];
         let only_api = |repo: &str| (repo == "api").then(|| "origin/main".to_owned());
-        assert!(spec_for_base(&base, &repos, only_api).is_err());
+        let none = BTreeMap::new();
+        assert!(spec_for_base(&base, &repos, &repos, &none, only_api).is_err());
         let both = |_: &str| Some("origin/main".to_owned());
-        assert_eq!(spec_for_base(&base, &repos, both).map(|spec| spec.repos.len()), Ok(2));
+        assert_eq!(
+            spec_for_base(&base, &repos, &repos, &none, both).map(|spec| spec.repos.len()),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn a_spec_repo_on_its_pr_base_is_compared_with_that_base() {
+        let on = |repo: &str, base: pb::diff_spec_base::Base| pb::RepoDiffSpec {
+            repo: Some(repo_ref(repo)),
+            base: Some(pb::DiffSpecBase { base: Some(base) }),
+            ..pb::RepoDiffSpec::default()
+        };
+        let base = pb::DiffBase {
+            base: Some(pb::diff_base::Base::Spec(pb::DiffSpec {
+                repos: vec![
+                    on("api", pb::diff_spec_base::Base::PullRequestBase(pb::PullRequestBaseRef {})),
+                    on("ledger", pb::diff_spec_base::Base::Rev("v1".to_owned())),
+                ],
+            })),
+        };
+        let repos = vec!["api".to_owned(), "ledger".to_owned()];
+        let none = BTreeMap::new();
+        let release = |repo: &str| (repo == "api").then(|| "origin/release".to_owned());
+        let spec = spec_for_base(&base, &repos, &repos, &none, release);
+        assert_eq!(
+            spec.map(|spec| spec.repos.into_iter().map(|each| each.base).collect::<Vec<_>>()),
+            Ok(vec![
+                Base::MergeBase { with: "origin/release".to_owned() },
+                Base::Rev { rev: "v1".to_owned() },
+            ])
+        );
+        let nobody = |_: &str| None;
+        assert!(spec_for_base(&base, &repos, &repos, &none, nobody).is_err());
+    }
+
+    #[test]
+    fn a_pr_base_written_out_needs_no_pull_requests_where_it_is_computed() {
+        let pr = pb::DiffBase {
+            base: Some(pb::diff_base::Base::PullRequestBase(pb::PullRequestBase {})),
+        };
+        let repos = vec!["acme/api".to_owned(), "acme/ledger".to_owned()];
+        let none = BTreeMap::new();
+        let bases = |repo: &str| Some(if repo == "acme/api" { "origin/main" } else { "origin/release" }.to_owned());
+        let here = spec_for_base(&pr, &repos, &repos, &none, bases);
+        let written = with_pull_request_bases(&pr, &repos, bases).unwrap();
+        let nobody = |_: &str| None;
+        assert_eq!(spec_for_base(&written, &repos, &repos, &none, nobody), here);
+
+        let only_api = |repo: &str| (repo == "acme/api").then(|| "origin/main".to_owned());
+        assert!(with_pull_request_bases(&pr, &repos, only_api).is_err());
+
+        let uncommitted = pb::DiffBase {
+            base: Some(pb::diff_base::Base::UncommittedOnly(pb::UncommittedOnly {})),
+        };
+        assert_eq!(with_pull_request_bases(&uncommitted, &repos, nobody), Ok(uncommitted.clone()));
     }
 
     #[test]

@@ -15,16 +15,20 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use humata2_holder::{Event, HolderSpec, holder_pid, read_saved, saved_scrollback_path};
 use humata2_revive::{
-    RestartReports, ReviveConfig, Revived, ShellRevived, launch_agent, reconcile,
+    GateRefusal, RestartReports, ReviveConfig, Revived, ShellRevived, WriteGate, launch_agent, reconcile,
+    restart_agent, resume_agent_asked, resume_moved_agent,
 };
 use humata2_store::{
     AgentLaunch, AgentRecord, AgentState, Change, Restored, ResumeFailure, RowChange,
-    SessionRecord, Store, TabKind, TabRecord,
+    SessionRecord, Store, TabKind, TabRecord, TabReplies,
 };
 use rustix::process::{Pid, Signal};
 
@@ -86,6 +90,9 @@ impl World {
     fn config(&self) -> ReviveConfig {
         ReviveConfig {
             contain: None,
+            builds: None,
+            versions: None,
+            gate: None,
             holder: holder_binary(),
             logs: self.root.join("logs"),
             scrollback_bytes: 1 << 20,
@@ -151,6 +158,7 @@ impl World {
             holder_socket: self.socket(),
             cols: 80,
             rows: 24,
+            cli_version: None,
         }
     }
 
@@ -572,6 +580,71 @@ async fn a_live_agent_is_reattached_and_one_that_ended_is_saved_as_exited() {
     assert!(matches!(again.agents[0].1, Ok(Revived::Left)));
 }
 
+/// SIGKILLs a process when the test ends, so a holder no pid file names
+/// isn't left running whatever the test found.
+struct KilledAtEnd(u32, PathBuf);
+
+impl Drop for KilledAtEnd {
+    fn drop(&mut self) {
+        if still_holder(self.0, &self.1) {
+            let _ = rustix::process::kill_process(pid_of(self.0), Signal::KILL);
+        }
+    }
+}
+
+/// A daemon stopped before it saved the launch running, whose holder still
+/// answers but won't take its shutdown and has lost its pid file: the
+/// holder is found by its socket and ended, and the agent comes back in
+/// one new holder there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_whose_wedged_holder_lost_its_pid_file_comes_back_in_one_new_holder() {
+    let world = World::new();
+    let store = world.store();
+    let mut launched = world.launch_with(&store, world.launch()).await;
+    let AgentState::Running { holder_pid: wedged } = launched.state else {
+        panic!("the agent didn't start: {:?}", launched.state);
+    };
+    let _killed = KilledAtEnd(wedged, world.socket());
+    launched.state = AgentState::Launching;
+    store.put_agent(&launched).unwrap();
+    fs::write(world.socket().with_extension("ignore-shutdown"), "").unwrap();
+    fs::remove_file(world.socket().with_extension("pid")).unwrap();
+
+    let reconciled = reconcile(&store, &world.config(), &world.env(), None).await.unwrap();
+
+    let outcome = &reconciled.agents[0].1;
+    assert!(
+        matches!(outcome, Ok(Revived::Relaunched | Revived::Resumed { .. })),
+        "{outcome:?}"
+    );
+    until("the wedged holder is gone", async || {
+        rustix::process::test_kill_process(pid_of(wedged)).is_err()
+    })
+    .await;
+    let pid = one_running(&world, &store).await;
+    assert_ne!(pid, wedged);
+    type_and_see(&world.socket(), "ping", "got: ping").await;
+}
+
+/// The reply record of a holder that has answered nothing yet.
+fn nothing_answered(generation: u64) -> TabReplies {
+    TabReplies {
+        generation,
+        answered_through: 0,
+        pending: Vec::new(),
+        uncertain: false,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launched_agent_starts_with_an_empty_reply_record_for_its_holder() {
+    let world = World::new();
+    let store = world.store();
+    world.launch_with(&store, world.launch()).await;
+    let launched = store.tab("tb_a").unwrap().unwrap().holder_generation;
+    assert_eq!(store.tab_replies("tb_a").unwrap(), Some(nothing_answered(launched)));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_shell_whose_holder_was_killed_comes_back_fresh_in_its_folder() {
     let world = World::new();
@@ -631,6 +704,7 @@ fn shell_tab(world: &World, store: &Store) -> (PathBuf, u32) {
             holder_socket: socket.clone(),
             holder_pid: spawned.pid,
             created_unix_ms: 1,
+            holder_generation: 0,
         })
         .unwrap();
     (socket, spawned.pid)
@@ -661,6 +735,97 @@ async fn a_daemon_killed_as_a_resume_fails_fails_it_again_and_runs_nothing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_revived_shell_has_a_new_holder_generation_and_a_reattached_one_keeps_it() {
+    let world = World::new();
+    let store = world.store();
+    let (socket, _) = shell_tab(&world, &store);
+    let first = store.tab("tb_s").unwrap().unwrap().holder_generation;
+    kill_holder(&socket).await;
+
+    reconcile(&store, &world.config(), &world.env(), None).await.unwrap();
+
+    let revived = store.tab("tb_s").unwrap().unwrap().holder_generation;
+    assert!(revived > first, "{revived} after {first}");
+    assert_eq!(store.tab_replies("tb_s").unwrap(), Some(nothing_answered(revived)));
+    // What a link saves once it has answered something: a reattach leaves it be.
+    let answered = TabReplies {
+        answered_through: 7,
+        ..nothing_answered(revived)
+    };
+    store.put_tab_replies("tb_s", &answered).unwrap();
+    let again = reconcile(&store, &world.config(), &world.env(), None).await.unwrap();
+    assert!(matches!(again.shells[0].1, Ok(ShellRevived::Reattached)));
+    assert_eq!(store.tab("tb_s").unwrap().unwrap().holder_generation, revived);
+    assert_eq!(store.tab_replies("tb_s").unwrap(), Some(answered));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_or_restarted_agent_has_a_new_holder_generation_and_a_reattached_one_keeps_it() {
+    let world = World::new();
+    let store = world.store();
+    world.launch_with(&store, world.launch()).await;
+    let launched = store.tab("tb_a").unwrap().unwrap().holder_generation;
+    kill_holder(&world.socket()).await;
+
+    reconcile(&store, &world.config(), &world.env(), None).await.unwrap();
+
+    let resumed = store.tab("tb_a").unwrap().unwrap().holder_generation;
+    assert!(resumed > launched, "{resumed} after {launched}");
+    assert_eq!(store.tab_replies("tb_a").unwrap(), Some(nothing_answered(resumed)));
+    // What a link saves once it has answered something. The same live holder,
+    // found again by a later start, is the same terminal and keeps that record.
+    let answered = TabReplies {
+        answered_through: 7,
+        ..nothing_answered(resumed)
+    };
+    store.put_tab_replies("tb_a", &answered).unwrap();
+    reconcile(&store, &world.config(), &world.env(), None).await.unwrap();
+    assert_eq!(store.tab("tb_a").unwrap().unwrap().holder_generation, resumed);
+    assert_eq!(store.tab_replies("tb_a").unwrap(), Some(answered));
+
+    // A restart the person asked for, as a move does, starts a new holder too.
+    kill_holder(&world.socket()).await;
+    let record = store.agent("se_a").unwrap().unwrap();
+    restart_agent(&store, &world.config(), record, &world.env(), "Moved.").await.unwrap();
+    let moved = store.tab("tb_a").unwrap().unwrap().holder_generation;
+    assert!(moved > resumed, "{moved} after {resumed}");
+    assert_eq!(store.tab_replies("tb_a").unwrap(), Some(nothing_answered(moved)));
+}
+
+/// A restart whose conversation file is gone can't resume it and says so;
+/// only a move, which carried every file the agent wrote, takes a missing
+/// file as one never written and starts the agent fresh (D757).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restart_whose_conversation_is_gone_fails_and_only_a_move_starts_it_fresh() {
+    let world = World::new();
+    let store = world.store();
+    world.launch_with(&store, world.launch()).await;
+    kill_holder(&world.socket()).await;
+    let _ = fs::remove_file(world.conv().join("c1.jsonl"));
+
+    let record = store.agent("se_a").unwrap().unwrap();
+    let restarted = restart_agent(&store, &world.config(), record.clone(), &world.env(), "Restarted.").await;
+    assert!(
+        matches!(restarted, Ok(Revived::ResumeFailed { reason: ResumeFailure::ConversationFileMissing, .. })),
+        "{restarted:?}"
+    );
+    assert!(matches!(
+        store.agent("se_a").unwrap().unwrap().state,
+        AgentState::ResumeFailed { .. }
+    ));
+    assert!(!answers(&world.socket()).await, "a failed restart left a holder running");
+
+    // The same running record, as a move hands it over.
+    store.put_agent(&record).unwrap();
+    let moved = resume_moved_agent(&store, &world.config(), record, &world.env(), "Moved.").await;
+    assert!(matches!(moved, Ok(Revived::Relaunched)), "{moved:?}");
+    assert!(matches!(
+        store.agent("se_a").unwrap().unwrap().state,
+        AgentState::Running { .. }
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_daemon_killed_before_it_saved_a_restarted_shell_finds_it_and_saves_it() {
     let world = World::new();
     let store = world.store();
@@ -676,6 +841,7 @@ async fn a_daemon_killed_before_it_saved_a_restarted_shell_finds_it_and_saves_it
     let tab = store.tab("tb_s").unwrap().unwrap();
     assert_eq!(holder_pid(&socket), Some(tab.holder_pid));
     assert_ne!(tab.holder_pid, killed);
+    assert_eq!(store.tab_replies("tb_s").unwrap(), Some(nothing_answered(tab.holder_generation)));
     type_and_see(&socket, "echo mark-$((2+2))", "mark-4").await;
 }
 
@@ -828,4 +994,151 @@ async fn a_failed_resume_is_reported_with_what_it_takes_to_diagnose_it() {
     let again = reconcile(&store, &world.config(), &world.env(), None).await.unwrap();
     let second = again.report.as_ref().expect("no second report");
     assert_ne!(second, folder);
+}
+
+/// D671 (Provisional): the fake agent writes nothing on `--resume` until it
+/// is typed to, as Copilot may not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_the_person_asked_for_after_a_stop_is_no_interruption_and_tells_nothing() {
+    let world = World::new();
+    let store = world.store();
+    world.launch_with(&store, world.launch()).await;
+    kill_holder(&world.socket()).await;
+    let mut record = store.agent("se_a").unwrap().unwrap();
+    record.state = AgentState::Stopped;
+    store.put_agent(&record).unwrap();
+    // As humatad2 saves it just before it asks for the resume.
+    record.state = AgentState::Resuming;
+    store.put_agent(&record).unwrap();
+
+    let revived = resume_agent_asked(&store, &world.config(), record, &world.env()).await.unwrap();
+
+    assert!(matches!(revived, Revived::Resumed { .. }), "{revived:?}");
+    one_running(&world, &store).await;
+    let saved = store.agent("se_a").unwrap().unwrap();
+    assert!(saved.interruptions.is_empty(), "{:?}", saved.interruptions);
+    assert_eq!(times_told(&world), 0);
+    assert!(!world.conv().join("other.jsonl").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_session_writing_its_conversation_beside_it_does_not_fail_a_resume() {
+    let world = World::new();
+    let store = world.store();
+    let first = world.launch_with(&store, world.launch()).await;
+    // A second session of the same agent keeps its conversation in the
+    // same folder, as one CLI's sessions do; it is resumed at the same
+    // time, so its conversation is written while this one resumes.
+    let other = world.conv().join("c2.jsonl");
+    fs::write(&other, "").unwrap();
+    store
+        .put_session(&SessionRecord {
+            id: "se_b".to_owned(),
+            ..world.session()
+        })
+        .unwrap();
+    store
+        .put_agent(&AgentRecord {
+            session: "se_b".to_owned(),
+            tab: "tb_b".to_owned(),
+            state: AgentState::Stopped,
+            launch: AgentLaunch {
+                conversation_id: "c2".to_owned(),
+                conversation_file: other.clone(),
+                holder_socket: world.root.join("h/tb_b.sock"),
+                ..first.launch.clone()
+            },
+            ..first
+        })
+        .unwrap();
+    kill_holder(&world.socket()).await;
+    let writing = std::thread::spawn({
+        let other = other.clone();
+        move || {
+            for turn in 0..200 {
+                let mut file = fs::OpenOptions::new().append(true).open(&other).unwrap();
+                std::io::Write::write_all(&mut file, format!("turn {turn}\n").as_bytes()).unwrap();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    });
+
+    let reconciled = reconcile(&store, &world.config(), &world.env(), None).await.unwrap();
+    writing.join().unwrap();
+
+    let resumed = reconciled.agents.iter().find(|(session, _)| session == "se_a");
+    assert!(
+        matches!(resumed, Some((_, Ok(Revived::Resumed { .. })))),
+        "{reconciled:?}"
+    );
+    one_running(&world, &store).await;
+    assert_eq!(times_told(&world), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_resume_still_tells_the_agent_and_records_it() {
+    let world = World::new();
+    let store = world.store();
+    world.launch_with(&store, world.launch()).await;
+    kill_holder(&world.socket()).await;
+
+    reconcile(&store, &world.config(), &world.env(), None).await.unwrap();
+
+    let saved = store.agent("se_a").unwrap().unwrap();
+    assert_eq!(saved.interruptions.len(), 1);
+    assert!(saved.interruptions[0].told.is_some());
+    assert_eq!(times_told(&world), 1);
+}
+
+/// A gate that says the agent asks a question of its own while `asking`.
+#[derive(Debug)]
+struct Asks(Arc<AtomicBool>);
+
+impl WriteGate for Asks {
+    fn guard(&self, _socket: &Path) -> Pin<Box<dyn Future<Output = Result<(), GateRefusal>> + Send + 'static>> {
+        let asking = self.0.load(Ordering::SeqCst);
+        Box::pin(async move { if asking { Err(GateRefusal::Question) } else { Ok(()) } })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resumed_agent_asking_a_question_is_told_once_it_is_answered_however_long_that_takes() {
+    let world = World::new();
+    let store = world.store();
+    world.launch_with(&store, world.launch()).await;
+    kill_holder(&world.socket()).await;
+    let asking = Arc::new(AtomicBool::new(true));
+    let mut config = world.config();
+    config.resume_timeout = Duration::from_secs(1);
+    config.gate = Some(Arc::new(Asks(asking.clone())));
+
+    let env = world.env();
+    let answer = async {
+        // Well past the resume's timeout: nothing is typed into the
+        // question, and the resume hasn't given up on the agent.
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        let told_while_asking = times_told(&world);
+        asking.store(false, Ordering::SeqCst);
+        told_while_asking
+    };
+    let (reconciled, told_while_asking) = tokio::join!(reconcile(&store, &config, &env, None), answer);
+
+    assert_eq!(told_while_asking, 0);
+    let reconciled = reconciled.unwrap();
+    assert!(
+        matches!(reconciled.agents.first(), Some((_, Ok(Revived::Resumed { .. })))),
+        "not resumed: {reconciled:?}"
+    );
+    assert_eq!(times_told(&world), 1);
+    one_running(&world, &store).await;
+}
+
+/// Whether `pid` is still the holder on `socket`. A holder runs in a
+/// session of its own, so once it ends its pid is free for any process on
+/// the machine: a signal sent to it then could end another test's daemon.
+fn still_holder(pid: u32, socket: &std::path::Path) -> bool {
+    std::process::Command::new("/bin/ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(&*socket.to_string_lossy()))
 }

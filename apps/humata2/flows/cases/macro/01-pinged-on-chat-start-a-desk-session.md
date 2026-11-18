@@ -16,12 +16,12 @@ Layer: macro. Platforms: macOS first; Linux where the host runs; the web build s
 1. **I do:** click **Desk** in the sidebar.
    **I see:** the Desk page lists open sessions (status, title) and closed ones in two groups. Each row has Open or Reopen.
    **State and events:** the page reads the Desk list from the host. Nothing changes.
-   **Status:** Fakes only. `desktop/tests/native/desk.rs::the_desk_page_lists_open_documents_and_closed` runs the page against the fake daemon. The host's list of open and closed Desk sessions is covered by the real-daemon tests that close and reopen sessions (`daemon/humatad/tests/desk.rs::closing_stops_the_agent_and_keeps_the_folder_for_seven_days`).
+   **Status:** Works (real daemon). `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel` opens the page in the headless app against a real `humatad2`. Fake-client version: `desktop/tests/native/desk.rs::the_desk_page_lists_open_documents_and_closed`. The host's list of open and closed Desk sessions is covered by the real-daemon tests that close and reopen sessions (`daemon/humatad/tests/desk.rs::closing_stops_the_agent_and_keeps_the_folder_for_seven_days`).
 
-2. **I do:** click **New desk session**. Type the title "batch export idea", pick this-mac as the machine, pick Agent, and leave the folder as **A new scratch folder**. Turn the two access switches as I want them. Click Start.
-   **I see:** the dialog shows the path the folder will get (under the Desk root, from the title). After Start, the session opens on its agent tab, and the folder bar shows the folder and a "scratch" chip.
+2. **I do:** click **New desk session**. Type the title "batch export idea", pick this-mac as the machine, pick Agent. The form has no folder to pick. Turn the two access switches as I want them. Click Start.
+   **I see:** the dialog shows no path; a line says Humata makes the folder (DK-14). After Start, the session opens on its agent tab, and the folder bar shows the folder and a "scratch" chip.
    **State and events:** one new Desk session is started on this-mac. It is filed under the desk channel. The route becomes the new session. The form closes.
-   **Status:** Fakes only. `desktop/tests/native/desk.rs::a_new_desk_session_starts_from_the_form_and_opens` checks one new session and the route. The path preview is `features/desk/tests/start.rs::the_dialog_previews_the_path_the_folder_will_get` (Fakes only). The real start is `daemon/humatad/tests/desk.rs::a_scratch_session_runs_its_agent_in_a_folder_named_from_its_title`.
+   **Status:** Works (real daemon). `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel` types the title, clicks Start, and sees the session page open with the folder bar and its scratch chip. Fake-client version: `desktop/tests/native/desk.rs::a_new_desk_session_starts_from_the_form_and_opens`. The form with no folder to pick and no path is Fakes only: the frame 40 snapshot in `desktop/tests/native/desk.rs::a_new_desk_session_starts_from_the_form_and_opens`. The form no longer draws the path. It still works out where the folder will be, and that the daemon makes that folder Works (real daemon): `desktop/tests/live_flows/desk_form.rs::the_new_desk_session_form_previews_the_folder_the_daemon_makes_and_clones_its_repo_chip` and `::a_taken_title_previews_the_suffixed_folder_the_daemon_then_makes`. The real start is `daemon/humatad/tests/desk.rs::a_scratch_session_runs_its_agent_in_a_folder_named_from_its_title`.
 
 3. **I do:** nothing more in the form. I look at the folder bar.
    **I see:** the folder is `desk/batch-export-idea` under the machine's Humata root. It is not named by me, and it has no name field (DK-14).
@@ -31,7 +31,7 @@ Layer: macro. Platforms: macOS first; Linux where the host runs; the web build s
 4. **I do:** in the form, add the repo acme/api before Start (optional). Start.
    **I see:** the folder contains an `api/` folder with the repo's default branch after the start finishes.
    **State and events:** the repo is cloned into the session's folder. The Desk session lists it.
-   **Status:** Works (real daemon). `daemon/humatad/tests/desk.rs::a_start_with_repos_clones_each_into_the_folder` (asserts `api/README.md` and the repo list). The form's repo chip is Fakes only.
+   **Status:** Works (real daemon). `daemon/humatad/tests/desk.rs::a_start_with_repos_clones_each_into_the_folder` (asserts `api/README.md` and the repo list). The form's repo chip Works (real daemon): `desktop/tests/live_flows/desk_form.rs::the_new_desk_session_form_previews_the_folder_the_daemon_makes_and_clones_its_repo_chip` adds it in the form and finds the clone in the folder. Add repo in the folder bar, with its chip, Works (real daemon): `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel`.
 
 5. **I do:** paste the teammate's message as the first prompt. The Desk form has no field for it (DK-14 asks for a title, an agent, a machine, a folder, repos and access switches, and no first message). So I paste it into the agent's terminal once the agent is up.
    **I see:** the message appears at the agent's prompt, and the agent starts on it.
@@ -51,7 +51,7 @@ Layer: macro. Platforms: macOS first; Linux where the host runs; the web build s
 8. **I do:** keep the document, then copy it to the acme channel's shared folder.
    **I see:** Keep folder marks the folder as kept, and the delete time goes away. The copy appears in acme's shared folder, and the Desk's own copy stays.
    **State and events:** the copy goes to `shared/` of acme on this-mac. The folder keeps its days cleared.
-   **Status:** Works (real daemon) for the copy and the keep: `daemon/humatad/tests/desk.rs::markdown_in_the_folder_is_listed_and_copies_into_a_channels_shared_folder` and `daemon/humatad/tests/desk.rs::keeping_a_folder_takes_away_its_delete_time`. The copy dialog in the UI is `desktop/tests/native/desk.rs::a_document_is_copied_into_a_channels_shared_folder` (Fakes only).
+   **Status:** Works (real daemon) for the copy and the keep: `daemon/humatad/tests/desk.rs::markdown_in_the_folder_is_listed_and_copies_into_a_channels_shared_folder` and `daemon/humatad/tests/desk.rs::keeping_a_folder_takes_away_its_delete_time`. The copy dialog in the UI Works (real daemon): `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel` (the test writes the file by hand). Fake-client version: `desktop/tests/native/desk.rs::a_document_is_copied_into_a_channels_shared_folder`. Keep isn't clicked in the app live.
 
 9. **I do:** try to copy the same file again into acme (or a file with the same name that acme already has).
    **I see:** the copy is refused. acme's file is unchanged.
@@ -80,11 +80,11 @@ Layer: macro. Platforms: macOS first; Linux where the host runs; the web build s
 
 ### I pick an existing folder instead of a scratch one
 
-- **When:** I choose A folder on the machine and type a path.
-- **I do:** pick a folder that exists and sits outside Humata, then Start.
+- **When:** a client starts a session with a picked folder; the New desk session form no longer offers one (DK-14).
+- **I do:** start it with a folder that exists and sits outside Humata, through the CLI or the API.
 - **I see:** the session runs in that folder. The folder bar shows it with no "scratch" chip.
 - **Expected outcome:** the folder is used where it is. A path that is missing, relative, a file, inside Humata's channels, or the channels root is refused with an invalid-argument error, and nothing starts.
-- **Status:** Works (real daemon). `daemon/humatad/tests/desk.rs::a_picked_folder_is_used_where_it_is` and `daemon/humatad/tests/desk.rs::a_picked_folder_must_exist_and_sit_outside_humata`. A picked folder is never deleted: `daemon/humatad/tests/desk.rs::a_picked_folder_is_never_deleted` (Works (real daemon)).
+- **Status:** Works (real daemon). `daemon/humatad/tests/desk.rs::a_picked_folder_is_used_where_it_is` and `daemon/humatad/tests/desk.rs::a_picked_folder_must_exist_and_sit_outside_humata`. A picked folder is never deleted: `daemon/humatad/tests/desk.rs::a_picked_folder_is_never_deleted` (Works (real daemon)). The dialog also Works (real daemon): `desktop/tests/live_flows/desk.rs::a_picked_folder_is_used_where_it_is_and_survives_close_and_clean_up`.
 
 ### Another machine is refused for a Desk session
 
@@ -152,14 +152,14 @@ Layer: macro. Platforms: macOS first; Linux where the host runs; the web build s
 
 | Step or branch | Status | Evidence |
 | --- | --- | --- |
-| 1. Desk page lists open and closed | Fakes only | `desktop/tests/native/desk.rs::the_desk_page_lists_open_documents_and_closed` |
-| 2. New desk session form and start | Fakes only | `desktop/tests/native/desk.rs::a_new_desk_session_starts_from_the_form_and_opens` |
+| 1. Desk page lists open and closed | Works (real daemon) | `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel`; fakes: `desktop/tests/native/desk.rs::the_desk_page_lists_open_documents_and_closed` |
+| 2. New desk session form and start | Works (real daemon); no folder and no path on the form: Fakes only (DK-14) | `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel`; today's preview and chip: `desktop/tests/live_flows/desk_form.rs::the_new_desk_session_form_previews_the_folder_the_daemon_makes_and_clones_its_repo_chip`; fakes: `desktop/tests/native/desk.rs::a_new_desk_session_starts_from_the_form_and_opens` |
 | 3. Folder named from the title | Works (real daemon) | `daemon/humatad/tests/desk.rs::a_scratch_session_runs_its_agent_in_a_folder_named_from_its_title` |
-| 4. Repo cloned into the folder | Works (real daemon) | `daemon/humatad/tests/desk.rs::a_start_with_repos_clones_each_into_the_folder` |
+| 4. Repo cloned into the folder | Works (real daemon) | `daemon/humatad/tests/desk.rs::a_start_with_repos_clones_each_into_the_folder`; the chip: `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel` |
 | 5. Paste the message into the agent | Fakes only | `terminal/pane/tests/pane.rs::a_one_line_paste_is_sent_and_bracketed_when_asked` |
 | 6. Agent runs (fake agent) | Works (real daemon) | `daemon/humatad/tests/desk.rs::a_scratch_session_runs_its_agent_in_a_folder_named_from_its_title` |
 | 7. Markdown listed in the folder | Works (real daemon) | `daemon/humatad/tests/desk.rs::markdown_in_the_folder_is_listed_and_copies_into_a_channels_shared_folder` |
-| 8. Keep and copy to acme's shared folder | Works (real daemon) | `daemon/humatad/tests/desk.rs::keeping_a_folder_takes_away_its_delete_time`; copy test as step 7 |
+| 8. Keep and copy to acme's shared folder | Works (real daemon) | `daemon/humatad/tests/desk.rs::keeping_a_folder_takes_away_its_delete_time`; the copy dialog: `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel` |
 | 9. Copy never overwrites | Works (real daemon) | `daemon/humatad/tests/desk.rs::a_copy_never_overwrites_the_channels_file` |
 | 10. Close stops the agent, keeps seven days | Works (real daemon) | `daemon/humatad/tests/desk.rs::closing_stops_the_agent_and_keeps_the_folder_for_seven_days` |
 | 11. Reopen resumes in the same folder | Works (real daemon) | `daemon/humatad/tests/desk.rs::reopening_resumes_the_conversation_in_the_same_folder` |
@@ -176,6 +176,6 @@ Layer: macro. Platforms: macOS first; Linux where the host runs; the web build s
 - Not built: moving a Desk session to another machine (DK-3). The native test for the move passes against the fake only, so the Desk bar looks as if it works while the live client refuses it.
 - Not built: a first-prompt field on the Desk form. The spec (DK-14) does not ask for one, so the paste into the agent terminal is the path.
 - Code, no test: a Desk session open through a reboot resumes its agent.
-- Fakes only: the page, the form, the copy dialog, the path preview and the repo chips. The real daemon proves the folder rules, clones, copy, keep, close and reopen.
+- The page, the form's start and repo chip, Add repo and the copy dialog now run against a real daemon (`desktop/tests/live_flows/desk.rs`, `desk_form.rs`). The form with no folder and no path (DK-14) is proven on the fake clients only, by the frame 40 snapshot.
 - Stale doc: `daemon/humatad/tests/desk.rs` (its header) says the tests are "parked until DeskService is served". The service is served (`daemon/humatad/src/serve.rs:736`), so the header is out of date.
 - Not proven live: a real agent writing a markdown file into the folder. The tests use a fake agent and write the file by hand.

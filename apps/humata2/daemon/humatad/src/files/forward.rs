@@ -29,6 +29,8 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status, Streaming};
 
+use crate::upgrade::items::Migrations;
+
 use super::{Placed, ReadFileStream, Roots};
 use crate::guard::{self, Guard};
 use crate::host_relay::{Links, Relayed};
@@ -113,6 +115,20 @@ fn offline(machine: &str, sent: bool) -> Status {
     )
 }
 
+/// An agent on a machine read a file on another machine. Only the host
+/// holds the links, and a read's stream isn't sent up the Uplink (D768).
+fn read_from_machine() -> Status {
+    status::failure(
+        Code::FailedPrecondition,
+        pb::Error {
+            message: "a file on another machine can't be read from this machine directly: only the host Mac links the machines, and it relays copies, not reads".to_owned(),
+            fix: "copy the file in first (`humata cp <machine>:<path> shared/`, or files_copy_in), then read the copy here".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
 fn machine_id(machine: &str) -> pb::MachineId {
     pb::MachineId {
         value: machine.to_owned(),
@@ -145,7 +161,7 @@ fn entry_for(location: &pb::FileLocation) -> Entry {
 }
 
 /// A trash item's id as the host gives it for an item on `machine`.
-fn qualified(machine: &str, id: &str) -> String {
+pub(crate) fn qualified(machine: &str, id: &str) -> String {
     format!("{machine}:{id}")
 }
 
@@ -159,6 +175,12 @@ pub(crate) struct Forward {
     roots: Arc<Roots>,
     guard: Arc<Guard>,
     reach: Reach,
+    /// The host's Migrate items, given late (the host only). A change to a
+    /// machine at another release is refused while they say it is (UP-1).
+    migrations: OnceLock<Migrations>,
+    /// On a machine, the Uplink its agents' reads of other machines go up
+    /// (D768); unset on the host.
+    host: OnceLock<Arc<crate::away::Forwarder>>,
 }
 
 impl Forward {
@@ -167,7 +189,29 @@ impl Forward {
             roots,
             guard,
             reach: Reach::default(),
+            migrations: OnceLock::new(),
+            host: OnceLock::new(),
         }
+    }
+
+    /// On a machine: its agents' reads of another machine's files go up
+    /// `host` (D768). The first call wins.
+    pub(crate) fn ask_host_for_agents(&self, host: Arc<crate::away::Forwarder>) {
+        let _ = self.host.set(host);
+    }
+
+    /// The Uplink and the agent's session when `request` is an agent's on a
+    /// machine, so the host answers it (D768); none otherwise.
+    fn host_for<T>(&self, request: &Request<T>) -> Result<Option<(&crate::away::Forwarder, String)>, Status> {
+        let Some(host) = self.host.get() else {
+            return Ok(None);
+        };
+        Ok(crate::away::agent_session(request)?.map(|session| (host.as_ref(), session)))
+    }
+
+    /// The host's Migrate items, once they exist. The first call wins.
+    pub(crate) fn use_migrations(&self, migrations: Migrations) {
+        let _ = self.migrations.set(migrations);
     }
 
     /// The machines' links, once they exist. The first call wins.
@@ -178,6 +222,14 @@ impl Forward {
     /// The machine `location` is on when that isn't this one. A location
     /// that can't be placed is left to the local handler to refuse.
     pub(crate) fn elsewhere(&self, location: Option<&pb::FileLocation>) -> Option<String> {
+        // On a machine, another machine's location goes up to the host
+        // whether or not this machine knows its session or channel (D768).
+        if self.host.get().is_some()
+            && let Some(location) = location
+            && crate::away::names_another(self.roots.machine(), location)
+        {
+            return location.machine.as_ref().map(|machine| machine.value.clone());
+        }
         let placed = self
             .roots
             .place(location.cloned(), "location", Entry::Folder)
@@ -221,6 +273,15 @@ impl Forward {
         self.guard.require(caller, &call)?;
         if change {
             placed.require_writable(field)?;
+            // UP-1, D281 e: nothing is written on a machine at another release.
+            if let Some(migrations) = self.migrations.get() {
+                crate::upgrade::gate::machine_ready(
+                    migrations,
+                    &pb::MachineId {
+                        value: placed.machine().to_owned(),
+                    },
+                )?;
+            }
         }
         Ok(placed)
     }
@@ -229,6 +290,10 @@ impl Forward {
         &self,
         request: Request<pb::ListDirectoryRequest>,
     ) -> Result<Response<pb::ListDirectoryResponse>, Status> {
+        if let Some((host, session)) = self.host_for(&request)? {
+            let sent = request.into_inner();
+            return crate::away::ask_host(host, &session, crate::away::Method::ListDirectory, sent, None).await;
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let placed = self.judged(&caller, request.location, "location", Entry::Folder, false)?;
@@ -253,6 +318,10 @@ impl Forward {
         &self,
         request: Request<pb::StatRequest>,
     ) -> Result<Response<pb::FileEntry>, Status> {
+        if let Some((host, session)) = self.host_for(&request)? {
+            let sent = request.into_inner();
+            return crate::away::ask_host(host, &session, crate::away::Method::Stat, sent, None).await;
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let placed = self.judged(&caller, request.location, "location", Entry::Folder, false)?;
@@ -441,6 +510,9 @@ impl Forward {
         &self,
         request: Request<pb::ReadFileRequest>,
     ) -> Result<Response<ReadFileStream>, Status> {
+        if self.host_for(&request)?.is_some() {
+            return Err(read_from_machine());
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         // The reply is a stream that can't be held and replayed after an approval, so Ask stays refused.

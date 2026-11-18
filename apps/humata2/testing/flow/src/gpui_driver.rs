@@ -176,7 +176,9 @@ pub enum FrameMode {
 
 /// Plays flows in one window of a GPUI context that shows nothing on
 /// screen. Clicks and drags go to the middle of the control a [`Target`]
-/// names, as a pointer would.
+/// names, as a pointer would. With natural frames a drag's drop target is
+/// looked up after the drag has begun, so a zone shown only while dragging
+/// can be named.
 pub struct GpuiDriver<'a, H: Host> {
     host: &'a mut H,
     window: AnyWindowHandle,
@@ -271,6 +273,12 @@ impl<H: Host> Driver for GpuiDriver<'_, H> {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                 window.press("secondary-v", cx);
             })?,
+            Action::Hover(target) => self.window(|window, cx| {
+                window.render_frame(cx);
+                let at = pick_hoverable(window, target)?;
+                window.pointer_move(at, None, cx);
+                Ok::<(), GpuiDriverError>(())
+            })??,
         }
         self.host.settle();
         Ok(())
@@ -368,24 +376,39 @@ impl<H: Host> GpuiDriver<'_, H> {
                     })?;
                 }
             }
-            Action::Key(key) => self.window(|window, cx| {
-                frame::press(window, key, cx).map_err(|error| frame_error(key, error))
-            })??,
+            Action::Key(key) => {
+                let keystroke = self.window(|window, cx| {
+                    frame::press(window, key, cx).map_err(|error| frame_error(key, error))
+                })??;
+                // Separate updates, so the key's events have reached their
+                // subscribers before anything draws (see `frame::press`).
+                self.window(|window, cx| frame::release(window, keystroke, cx))?;
+                self.window(|window, cx| frame::natural_frame(window, cx))?;
+            }
             Action::Drag { from, to } => self.window(|window, cx| {
                 let start = find(window, from)?;
-                let end = find(window, to)?;
-                frame::drag(window, start, end, 8, cx);
-                Ok::<(), GpuiDriverError>(())
+                // Where to drop is looked up once the drag has started: a
+                // drop zone that only exists during a drag isn't drawn yet.
+                frame::drag_to_found(window, start, 8, |window| find(window, to), cx)
             })??,
             Action::Scroll { target, x, y } => self.window(|window, cx| {
                 let at = find(window, target)?;
                 frame::scroll(window, at, point(px(*x as f32), px(*y as f32)), cx);
                 Ok::<(), GpuiDriverError>(())
             })??,
-            Action::Paste(text) => self.window(|window, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                frame::press(window, "secondary-v", cx)
-                    .map_err(|error| frame_error("secondary-v", error))
+            Action::Paste(text) => {
+                let keystroke = self.window(|window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    frame::press(window, "secondary-v", cx)
+                        .map_err(|error| frame_error("secondary-v", error))
+                })??;
+                self.window(|window, cx| frame::release(window, keystroke, cx))?;
+                self.window(|window, cx| frame::natural_frame(window, cx))?;
+            }
+            Action::Hover(target) => self.window(|window, cx| {
+                let at = pick_hoverable(window, target)?;
+                frame::move_pointer(window, at, None, cx);
+                Ok::<(), GpuiDriverError>(())
             })??,
         }
         self.host.settle();
@@ -420,10 +443,29 @@ fn locate(window: &mut Window, target: &Target, cx: &mut App) -> Result<Point<Pi
 }
 
 fn pick(window: &Window, target: &Target) -> Result<Point<Pixels>, GpuiDriverError> {
+    pick_among(window, target, |element| element.visible())
+}
+
+/// The middle of the one element `target` names whose middle is inside the
+/// window, drawn or still transparent: a hover-only control shows once the
+/// pointer is over it, so a person moves there before they can see it.
+fn pick_hoverable(window: &Window, target: &Target) -> Result<Point<Pixels>, GpuiDriverError> {
+    let size = window.viewport_size();
+    pick_among(window, target, |element| {
+        let middle = element.bounds().center();
+        middle.x >= px(0.) && middle.y >= px(0.) && middle.x < size.width && middle.y < size.height
+    })
+}
+
+fn pick_among(
+    window: &Window,
+    target: &Target,
+    shown: impl Fn(&gpui_kit::test::ElementSnapshot) -> bool,
+) -> Result<Point<Pixels>, GpuiDriverError> {
     let candidates: Vec<_> = window
         .find_all_by_role(target.role())
         .into_iter()
-        .filter(|element| element.visible())
+        .filter(|element| shown(element))
         .collect();
     let matching: Vec<_> = candidates
         .iter()

@@ -20,6 +20,7 @@ use pb::invalid_field::Problem;
 use prost::Message;
 use tonic::{Code, Request, Response, Status};
 
+use crate::desk_service::channel_desk_close::DeskHandle;
 use crate::files::TrashForward;
 use crate::grant_target;
 use crate::guard::{self, Guard};
@@ -44,12 +45,12 @@ const PAGE_MAX: usize = 1000;
 
 /// This machine's trash, opened on first use.
 pub(crate) struct Bin {
-    folder: PathBuf,
     open: Mutex<Open>,
 }
 
-#[derive(Default)]
 struct Open {
+    /// `<root>/.trash`; changes when the machine's root does (FC-10).
+    folder: PathBuf,
     trash: Option<Arc<Trash>>,
     swept: Option<Instant>,
 }
@@ -58,9 +59,21 @@ impl Bin {
     /// `folder` is `<root>/.trash`. Never fails and touches no disk.
     pub(crate) fn new(folder: PathBuf) -> Self {
         Self {
-            folder,
-            open: Mutex::new(Open::default()),
+            open: Mutex::new(Open {
+                folder,
+                trash: None,
+                swept: None,
+            }),
         }
+    }
+
+    /// Keeps the trash in `folder` from now on; it is opened there on the
+    /// next use. The items are moved by the caller.
+    pub(crate) fn move_to(&self, folder: PathBuf) {
+        let mut open = lock(&self.open);
+        open.folder = folder;
+        open.trash = None;
+        open.swept = None;
     }
 
     /// The trash, opened if it wasn't yet, with items past their 30 days
@@ -71,11 +84,11 @@ impl Bin {
         let trash = match &open.trash {
             Some(trash) => trash.clone(),
             None => {
-                let trash = Trash::open(self.folder.clone()).map_err(|error| {
+                let trash = Trash::open(open.folder.clone()).map_err(|error| {
                     status::internal(
                         format!(
                             "the trash folder {} can't be used: {}. Check that the folder belongs to you and the disk has free space; the next call tries again",
-                            self.folder.display(),
+                            open.folder.display(),
                             status::chain(&error)
                         ),
                         "",
@@ -216,6 +229,9 @@ pub(crate) struct TrashSvc {
     emptied: Answers<u64>,
     /// The state a restored channel's records go back to (D194).
     store: std::sync::OnceLock<Arc<humata2_store::Store>>,
+    /// The Desk service, which checks and reopens a restored channel Desk
+    /// session (CD-4, CD-5).
+    desk: std::sync::OnceLock<DeskHandle>,
 }
 
 impl TrashSvc {
@@ -229,12 +245,18 @@ impl TrashSvc {
             restored: Answers::new(),
             emptied: Answers::new(),
             store: std::sync::OnceLock::new(),
+            desk: std::sync::OnceLock::new(),
         }
     }
 
     /// Lets a restored channel's records come back (D194).
     pub(crate) fn use_store(&self, store: Arc<humata2_store::Store>) {
         let _ = self.store.set(store);
+    }
+
+    /// Lets a restored channel Desk session reopen (CD-4).
+    pub(crate) fn use_desk(&self, desk: DeskHandle) {
+        let _ = self.desk.set(desk);
     }
 
     /// The machines' links (the host only; without them every other
@@ -315,12 +337,19 @@ fn after(token: &str, item: &TrashItem) -> bool {
 }
 
 /// Puts the item back where it was; a channel's folder goes to the first
-/// free `-2`, `-3`, ... of its old place when something took it (D194).
+/// free `-2`, `-3`, ... of its old place when something took it (D194). A
+/// channel Desk session's goes to `place`, its channel's Desk folder as the
+/// channel stands now (MV-16), which is its old place unless the channel
+/// moved while it sat in the trash.
 fn restore_at_free_place(
     trash: &Trash,
     id: &str,
     channels: Option<&humata2_store::Store>,
+    place: Option<&Path>,
 ) -> Result<PathBuf, TrashError> {
+    if let Some(place) = place {
+        return trash.restore_to(id, place);
+    }
     // A file trashed inside a channel names the channel too; only a
     // deleted channel's own folder carries its records and may need a new
     // place.
@@ -416,7 +445,40 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         request: Request<pb::RestoreFromTrashRequest>,
     ) -> Result<Response<pb::RestoreFromTrashResponse>, Status> {
         if self.forward.elsewhere_item(request.get_ref().id.as_ref()).is_some() {
-            return self.forward.restore_from_trash(request).await;
+            let item = request.get_ref().id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+            let caller = identity::caller(&request)?;
+            if matches!(caller, Caller::Peer) {
+                return Err(status::refused(&Refusal::PeerCannotCall));
+            }
+            // CD-4, CD-5: a channel Desk session comes back only with its
+            // channel and its target, which the host holds (SL-1); the
+            // machine doesn't judge them. Its channel's rule is asked
+            // first, so a caller who may not restore there learns nothing
+            // of the channel or the target; any other item the machine
+            // judges.
+            if let Some(desk) = self.desk.get().and_then(DeskHandle::get) {
+                if let Some(channel) = desk.closed_channel_of(&item).await? {
+                    self.guard.require(
+                        &caller,
+                        &Call::Use {
+                            capability: Capability::TrashRestore,
+                            target: Target::Channel(ChannelId::new(channel.as_str())),
+                        },
+                    )?;
+                }
+                desk.before_restore(&item).await?;
+            }
+            let restored = self.forward.restore_from_trash(request).await?;
+            // CD-4: the machine reopened the session; the host's row follows.
+            if let Some(desk) = self.desk.get().and_then(DeskHandle::get)
+                && let Err(error) = desk.restored_there(&caller, &item).await
+            {
+                crate::log::say!(
+                    "humatad2: {item} was restored on its machine, but the host's row of the Desk session didn't reopen: {}; reload the Desk, and restart the host if it still shows the session closed",
+                    error.message()
+                );
+            }
+            return Ok(restored);
         }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
@@ -461,6 +523,13 @@ impl pb::trash_service_server::TrashService for TrashSvc {
                 target,
             },
         )?;
+        // CD-4, CD-5: a channel Desk session comes back only with its
+        // channel and its target.
+        let mut place = None;
+        if let Some(desk) = self.desk.get().and_then(DeskHandle::get) {
+            desk.before_restore(&id).await?;
+            place = desk.restore_place(&id).await?;
+        }
         let bin = self.bin.clone();
         let wanted = id.clone();
         let channel_store = match &was {
@@ -472,7 +541,7 @@ impl pb::trash_service_server::TrashService for TrashSvc {
         let restoring = channel_store.clone();
         let placed = blocking(move || {
             let trash = bin.get()?;
-            restore_at_free_place(&trash, &wanted, channel_store.as_deref()).map_err(|error| match error {
+            restore_at_free_place(&trash, &wanted, channel_store.as_deref(), place.as_deref()).map_err(|error| match error {
                 TrashError::NoSuchItem { id } => no_item(&id),
                 TrashError::Occupied { path } => status::failure(
                     Code::AlreadyExists,
@@ -493,6 +562,10 @@ impl pb::trash_service_server::TrashService for TrashSvc {
             })
         })
         .await??;
+        // CD-4: a restored channel Desk session reopens.
+        if let Some(desk) = self.desk.get().and_then(DeskHandle::get) {
+            desk.after_restore(&caller, &id, &placed).await?;
+        }
         // A file or folder trashed inside a channel names that channel too;
         // only a deleted channel's own folder carries its records' side file.
         let restoring = restoring.filter(|_| placed.join(humata2_store::SIDE_FILE).is_file());
@@ -502,7 +575,7 @@ impl pb::trash_service_server::TrashService for TrashSvc {
                 .map_err(|error| {
                     status::internal(
                         format!(
-                            "the channel's folder is back, but its records were not: {}. Restart Humata on this machine to finish bringing the channel back; the folder is safe",
+                            "the channel's folder is back, but bringing the channel fully back failed: {}. The folder is safe where it is: fix the cause the message names, then restart Humata on this machine so it finishes what it can",
                             status::chain(&error)
                         ),
                         "",

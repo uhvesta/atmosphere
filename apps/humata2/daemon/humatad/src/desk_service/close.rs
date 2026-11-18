@@ -7,12 +7,14 @@ use std::time::SystemTime;
 
 use humata2_access::SessionId as AccessSessionId;
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{AgentState, TabKind};
+use humata2_sessions::doc_repo::{self, DocGit};
+use humata2_store::{AgentState, DeskFolderKind, TabKind};
 use tonic::Status;
 
 use super::view;
 use super::{DeskSvc, failed_precondition, now_ms, session_id};
 use crate::channel_service::blocking;
+use crate::holder_end;
 use crate::identity::{self, Caller};
 use crate::operations::{Started, Progress};
 use crate::session_service::{Loaded, run_resume};
@@ -31,8 +33,39 @@ impl DeskSvc {
         let _held = self.locks.hold(&id).await;
         let (session, mut row) = self.load(&id).await?;
         if row.closed_unix_ms.is_none() {
+            if let Some(machine) = self.elsewhere(&session) {
+                // The machine stops the agent and its shells; the host only
+                // notes that the session is closed.
+                let shown = self.close_there(&machine, &id).await?;
+                // The machine checks for a version before it closes, as this
+                // one does (DV-4): its answer says whether the folder is kept.
+                if matches!(row.kind, DeskFolderKind::Scratch { kept: false })
+                    && matches!(
+                        shown.folder.as_ref().and_then(|folder| folder.kind.as_ref()),
+                        Some(pb::desk_folder::Kind::Scratch(pb::desk_folder::Scratch { kept: true }))
+                    )
+                {
+                    row.kind = DeskFolderKind::Scratch { kept: true };
+                }
+                let now = now_ms();
+                row.closed_unix_ms = Some(now);
+                row.last_used_unix_ms = now;
+                self.save_row(&row).await?;
+                self.end_grants(&id).await?;
+                self.tell
+                    .session(&id, pb::Change::Updated, Some(identity::actor(caller)))
+                    .await;
+                self.wake.notify_one();
+                return Ok(shown);
+            }
             self.stop_agent(&id).await?;
             self.stop_shells(&id).await?;
+            // A folder that holds a version is kept for good (DV-4, D451).
+            if matches!(row.kind, DeskFolderKind::Scratch { kept: false })
+                && self.holds_version(&session.folder).await
+            {
+                row.kind = DeskFolderKind::Scratch { kept: true };
+            }
             let now = now_ms();
             row.closed_unix_ms = Some(now);
             row.last_used_unix_ms = now;
@@ -45,6 +78,38 @@ impl DeskSvc {
             self.wake.notify_one();
         }
         Ok(view::desk_pb(&session, &row))
+    }
+
+    /// Whether the folder is a versions repository holding a version (DV-4).
+    /// A folder that isn't one, or that git can't be asked about, answers
+    /// as the check can: an error is logged and counts as a version, so a
+    /// folder that can't be checked is never lost.
+    pub(super) async fn holds_version(&self, folder: &std::path::Path) -> bool {
+        let folder = folder.to_owned();
+        let asked = blocking(move || {
+            if !doc_repo::is_doc_repo(&folder) {
+                return Ok(false);
+            }
+            doc_repo::has_version(&DocGit::inherit(), &folder).map_err(|error| (folder, error))
+        })
+        .await;
+        match asked {
+            Ok(Ok(has)) => has,
+            Ok(Err((folder, error))) => {
+                crate::log::say!(
+                    "humatad2: couldn't check whether {} holds a version, so it is kept: {error}",
+                    folder.display()
+                );
+                true
+            }
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: couldn't check a Desk folder for a version, so it is kept: {}",
+                    error.message()
+                );
+                true
+            }
+        }
     }
 
     /// Reopens a Desk session: its folder must still be there, then its
@@ -109,15 +174,31 @@ impl DeskSvc {
     /// Saves the reopened row, then hands the agent's resume to the same
     /// work a resumed channel session runs. A failure before the hand-off
     /// fails the operation it was given.
-    async fn resume_after_reopen(
+    pub(super) async fn resume_after_reopen(
         &self,
         caller: &Caller,
         id: &str,
         row: &humata2_store::DeskRow,
         progress: Progress,
     ) -> Result<(), Status> {
+        let saved = self.save_row(row).await;
+        self.resume_saved(caller, id, saved, progress).await
+    }
+
+    /// The resume Reopen and a restored channel Desk session share: reads
+    /// the session back and hands its agent's resume to the same work a
+    /// resumed channel session runs. `saved` is what saving the reopened
+    /// row answered; a failure of it, or before the hand-off, fails the
+    /// operation it was given.
+    pub(super) async fn resume_saved(
+        &self,
+        caller: &Caller,
+        id: &str,
+        saved: Result<(), Status>,
+        progress: Progress,
+    ) -> Result<(), Status> {
         let prepared: Result<Loaded, Status> = async {
-            self.save_row(row).await?;
+            saved?;
             let (store, key) = (self.starter.store.clone(), id.to_owned());
             let loaded = blocking(move || Loaded::read(&store, &key))
                 .await?
@@ -156,7 +237,7 @@ impl DeskSvc {
     /// Stops the session's agent the way Stop does (SE-14): its holder is
     /// shut and the agent is saved as stopped, so nothing resumes it until
     /// Reopen. An agent still starting or resuming is not stopped now.
-    async fn stop_agent(&self, id: &str) -> Result<(), Status> {
+    pub(super) async fn stop_agent(&self, id: &str) -> Result<(), Status> {
         let (store, key) = (self.starter.store.clone(), id.to_owned());
         let agent = blocking(move || store.agent(&key))
             .await?
@@ -166,7 +247,7 @@ impl DeskSvc {
         let Some(mut agent) = agent else {
             return Ok(());
         };
-        match agent.state {
+        let holder_pid = match agent.state {
             AgentState::Launching => {
                 return Err(failed_precondition(
                     format!("Desk session {id}'s agent is still starting, so it can't be closed yet"),
@@ -179,17 +260,20 @@ impl DeskSvc {
                     "wait until the agent is running, then close the session again",
                 ));
             }
-            AgentState::Running { .. } => {}
+            AgentState::Running { holder_pid } => holder_pid,
             AgentState::Exited { .. } | AgentState::Stopped | AgentState::ResumeFailed { .. } => {
                 return Ok(());
             }
-        }
+        };
         // A holder already gone is as stopped as one that was asked to.
-        if let Err(error) = humata2_holder::shutdown(&agent.launch.holder_socket).await {
-            crate::log::say!(
-                "humatad2: stopping Desk session {id}'s terminal: {}",
-                status::chain(&error)
-            );
+        if let Err(error) = holder_end::shut_or_end(
+            &agent.launch.holder_socket,
+            holder_pid,
+            &format!("Desk session {id}'s terminal"),
+        )
+        .await
+        {
+            crate::log::say!("humatad2: {error}");
         }
         self.terminals.forget_tab(&agent.tab);
         agent.state = AgentState::Stopped;
@@ -203,7 +287,7 @@ impl DeskSvc {
     /// Shuts every shell of the session and forgets it: a closed session
     /// has no shell for restart to bring back (DK-11). Each shell's session
     /// token is revoked.
-    async fn stop_shells(&self, id: &str) -> Result<(), Status> {
+    pub(super) async fn stop_shells(&self, id: &str) -> Result<(), Status> {
         let store = self.starter.store.clone();
         let tabs = blocking(move || store.tabs())
             .await?
@@ -212,12 +296,14 @@ impl DeskSvc {
             .into_iter()
             .filter(|tab| tab.session.as_deref() == Some(id) && tab.kind == TabKind::Shell)
         {
-            if let Err(error) = humata2_holder::shutdown(&tab.holder_socket).await {
-                crate::log::say!(
-                    "humatad2: stopping Desk session {id}'s shell {}: {}",
-                    tab.id,
-                    status::chain(&error)
-                );
+            if let Err(error) = holder_end::shut_or_end(
+                &tab.holder_socket,
+                tab.holder_pid,
+                &format!("Desk session {id}'s shell {}", tab.id),
+            )
+            .await
+            {
+                crate::log::say!("humatad2: {error}");
             }
             self.terminals.forget_tab(&tab.id);
             let (store, tab_id) = (self.starter.store.clone(), tab.id.clone());
@@ -232,7 +318,7 @@ impl DeskSvc {
 
     /// Ends the session's standing grants in the policy and in the store,
     /// and withdraws the Inbox requests it was waiting on (IN-22, TP-15).
-    async fn end_grants(&self, id: &str) -> Result<(), Status> {
+    pub(super) async fn end_grants(&self, id: &str) -> Result<(), Status> {
         let ended = self
             .guard
             .with_policy(|policy, _| policy.end_grants_of(&AccessSessionId::new(id)));

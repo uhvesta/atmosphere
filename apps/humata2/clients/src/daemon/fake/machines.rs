@@ -1,6 +1,6 @@
 use super::FakeDaemon;
 use crate::daemon::{DaemonError, Event, Operation, Reply};
-use crate::model::{MachineId, Recovery, SessionId, Status, Turn};
+use crate::model::{MachineId, Recovery, RootPlan, SessionId, Status, Turn};
 
 pub(super) fn reconnect(
     daemon: &FakeDaemon,
@@ -87,6 +87,8 @@ pub(super) fn add_machine(daemon: &FakeDaemon, address: &str) -> Reply<MachineId
             detail: "Ubuntu 24.04 · ssh".into(),
             last_seen: "now".into(),
             lost_at: None,
+            stop: None,
+            root: crate::desk::DEFAULT_ROOT.into(),
         });
         inner.workspace.machine_health.insert(
             id.clone(),
@@ -100,4 +102,61 @@ pub(super) fn add_machine(daemon: &FakeDaemon, address: &str) -> Reply<MachineId
         inner.emit(Event::Resync);
         Ok(id)
     })
+}
+
+impl FakeDaemon {
+    /// What changing `machine`'s root to `root` would reach in the fake
+    /// workspace: the channels that use the machine, and its sessions that
+    /// run. Changes nothing.
+    pub(crate) fn plan_root(&self, machine: &MachineId, root: &str) -> Result<RootPlan, DaemonError> {
+        let inner = self.inner();
+        let found = inner.workspace.machine(machine).ok_or_else(|| DaemonError::NotFound {
+            what: format!("Host {machine}"),
+        })?;
+        let running = inner
+            .workspace
+            .sessions
+            .iter()
+            .filter(|session| {
+                &session.machine == machine
+                    && !session.archived
+                    && matches!(
+                        session.status,
+                        Status::Working | Status::NeedsYou | Status::Idle | Status::ProbablyIdle
+                    )
+            })
+            .map(|session| session.id.clone())
+            .collect();
+        Ok(RootPlan {
+            machine: machine.clone(),
+            token: format!("plan-{machine}-{root}"),
+            old_root: found.root.clone(),
+            new_root: root.to_owned(),
+            channels: inner
+                .workspace
+                .channels
+                .iter()
+                .filter(|channel| channel.machines.contains(machine))
+                .map(|channel| channel.id.clone())
+                .collect(),
+            running,
+        })
+    }
+
+    /// Makes `root` the machine's Humata folder and says so on the event
+    /// feed. The fake keeps no folders, so moving channels changes nothing
+    /// more than the root.
+    pub(crate) fn apply_root(&self, machine: &MachineId, root: &str) -> Result<(), DaemonError> {
+        let mut inner = self.inner();
+        let found = inner
+            .workspace
+            .machines
+            .iter_mut()
+            .find(|found| &found.id == machine)
+            .ok_or_else(|| DaemonError::NotFound { what: format!("Host {machine}") })?;
+        found.root = root.to_owned();
+        let changed = found.clone();
+        inner.emit(Event::Machine(changed));
+        Ok(())
+    }
 }

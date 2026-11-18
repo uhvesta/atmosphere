@@ -1,0 +1,28 @@
+[package]
+name = "stack"
+description = "Turns trailer-tagged commits into a linked stack of GitHub pull requests through the gh CLI."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "stack_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "stack"
+path = "src/main.rs"
+
+[dependencies]
+stack-graph = { path = "graph" }
+clap.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

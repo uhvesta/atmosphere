@@ -11,9 +11,13 @@ the same thing under the same check.
 
 - Binary: `humatad mcp`, the same binary as the daemon. Transport: stdio.
   Server name `humata`. One process per agent process.
-- Humata starts it, not the agent: the holder writes the agent's MCP config
-  (e.g. `claude --mcp-config <session>/.humata/mcp.json`) pointing at
-  `humatad mcp`, and sets `HUMATA_SESSION_TOKEN` (128 random bits, new on
+- Humata starts it, not the agent (D748): the daemon writes MCP config files
+  into its state folder, naming `humatad2 mcp --socket <socket>` and no
+  token. Each built-in agent is started and resumed with flags that load the
+  server on top of the agent's own (`claude --mcp-config=<file>`, `copilot
+  --additional-mcp-config=@<file>`, `codex -c mcp_servers.humata={…}`) and
+  pre-allow its tools. Nothing is written into the agent's own config. The
+  holder sets `HUMATA_SESSION_TOKEN` (128 random bits, new on
   every launch and resume) in the agent's environment.
 - On start the server connects to its machine's socket and presents the
   token. The daemon binds the connection to that session only after checking
@@ -170,6 +174,9 @@ Location   = {root: "clone", repo: "owner/name", session?: SessionId, machine?: 
            | {root: "shared", path, machine?: MachineId}
            | {root: "channel_folder", path, machine?: MachineId}
            | {root: "main_clone", repo, path, machine?: MachineId}     -- read-only
+           | {root: "session_folder", session?: SessionId, path, machine?: MachineId}
+             -- the session's own folder, where a Desk session's documents sit (D382);
+             -- judged as that session's clone: its own agent reads it, another's asks
              session and machine default to the caller's own
 Item       = {id, board, title, description, column, rank, sessions: SessionId[], depends_on: [{id, title, done}], done_at?, created_by, revision, pinned, vip}
 Column     = "backlog" | "to_do" | "in_progress" | "in_review" | "done"
@@ -187,12 +194,12 @@ Allow (IN-17); a user can set any of those to Ask me or Never.
 | --- | --- | --- | --- | --- | --- |
 | `whoami` | `daemon.whoami` / WhoAmI | none | `{}` → `{session, channel, machine, agent, host_reachable, policy_as_of}` | none | local |
 | `session_info` | `session.get` / GetSession(self) | none | `{}` → `{title, status, repos:[{repo, branch, head, pushed, dirty}], fork_of?}` | none | local |
-| `topology_get` | `channel.topology` / WhoAmI + GetChannel + ListSessions | CHANNEL_READ | `{}` → `{this_machine, machines:[{id, name, reachability, sessions:[{id, title, agent, status}]}]}` (TP-1) | none | stale |
+| `topology_get` | `channel.topology` / WhoAmI + GetChannel + ListSessions + GetGrid | CHANNEL_READ | `{}` → `{this_machine, machines:[{id, name, reachability, sessions:[{id, title, agent, status}]}]}` (TP-1). This machine first, then the channel's, then any other a live session is on; `reachability` is `online`, `offline` or `unknown` (no grid cell), read from the grid (D772) | none | stale |
 | `access_explain` | `access.explain` / Explain | none (self only) | `{capability, target?}` → `{decision, source, grant_id?, host_away, away_mode}` | none | local (from policy copy) |
 | `board_items_list` | `board.items_list` / ListItems | OWN_BOARD_WRITE rule's read (session board); CHANNEL_READ (channel board) | `{board, columns?: Column[], page_token?}` → `{items: Item[], counts, next_page_token?}` | none | stale |
 | `board_item_get` | `board.item_get` / GetItem | as list | `{id}` → `Item` | none | stale |
 | `board_item_history` | `board.item_history` / GetItemHistory | as list | `{id, page_token?}` → `{entries:[{at, by, change, lost_conflict}]}` | none | stale |
-| `board_item_create` | `board.item_create` / CreateItem | OWN_BOARD_WRITE (session board), CHANNEL_BOARD_ADD (channel board) | `{board, title, column?, description?, sessions?: SessionId[], depends_on?: ItemId[], reason?}` → `Item` (journaled: `{}`, with the journal position) | adds an item | journal |
+| `board_item_create` | `board.item_create` / CreateItem | OWN_BOARD_WRITE (session board), CHANNEL_BOARD_ADD (channel board) | `{board?, title, column?, description?, sessions?: SessionId[], depends_on?: ItemId[], reason?}` (no `board`: the caller's session board; a column defaults to to_do) → `Item` (journaled: `{}`, with the journal position) | adds an item | journal |
 | `board_item_update` | `board.item_update` / UpdateItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, title?, description?, sessions_add?, sessions_remove?, depends_on_add?, depends_on_remove?, expected_revision?, reason?}` (a stale revision fails only when a field it sets changed since; lists never conflict, D155) → `Item` | changes fields given | journal |
 | `board_item_move` | `board.item_move` / MoveItem | as update | `{id, column, after?: ItemId, expected_revision?, reason?}` → `Item` | moves it | journal |
 | `board_item_delete` | `board.item_delete` / DeleteItem | OWN_BOARD_WRITE (session board); CHANNEL_BOARD_EDIT_OWN for channel items it made | `{id, expected_revision?, reason?}` → `{deleted: true}` | tombstone, kept in history | journal |
@@ -203,6 +210,7 @@ Allow (IN-17); a user can set any of those to Ask me or Never.
 | `review_draft` | `review.draft` / CreateComment(dest PR) | REVIEW_DRAFT, PR review sessions only | `{pr: "owner/repo#n", path, lines: {first, last}, side?: "old"\|"new", quoted, text}` → `{comment_id, status: "draft"}` | a draft, never posted (PR-12) | journal |
 | `review_draft_edit` | `review.draft_edit` / EditComment | REVIEW_DRAFT, own drafts | `{comment_id, text, expected_revision?}` → comment | | journal |
 | `review_draft_drop` | `review.draft_drop` / DropComment | REVIEW_DRAFT, own drafts | `{comment_id}` → `{dropped: true}` | | journal |
+| `review_commits` | `review.commits` / ListPullRequestCommits(self) | none, PR review sessions only (D299) | `{pr: "owner/repo#n"}` → `{head_sha, commits: [{sha, subject, patch_id, state: "unreviewed"\|"reviewed"\|"carried", reviewed_as_sha, reviewed_at?, reviewed_head_sha, by?: {actor, gh_login}}], history: [{seq, at, kind: "marked"\|"unmarked"\|"carried"\|"whole_pr", commits, head_sha, snapshot_n?, by?}]}`; only the user marks commits | none | stale |
 | `review_context` | `review.context` / GetReviewContext(self) | none, PR review sessions only | `{}` → `{diff_specs, open: {repo, path, visible_lines, selection?}, order, groups, viewed, notes}` | none | stale |
 | `review_focus` | `review.focus` / FocusReview | REVIEW_FOCUS (PR-25 "Focus"), own review | `{repo, path, lines?: {first, last}, side?, highlights?: [{repo, path, lines, label?}]}` → `{applied: true, undo_id}` | moves the view now, after the user stops scrolling or typing (PR-24) | live |
 | `review_note` | `review.note` / CreateComment(dest note) | REVIEW_NOTE (PR-25 "Notes"), own review | `{repo, path, lines?, hunk_at?, side?, quoted?, text}` → `{note_id, undo_id}` | a note for the user, never posted (PR-23); outdated when its lines change (RV-34) | journal |
@@ -213,10 +221,12 @@ Allow (IN-17); a user can set any of those to Ask me or Never.
 | `comments_list` | `comment.list` / ListComments(self) | none (a read of its own session, D21) | `{status?: ("sent"\|"queued"\|"addressed")[], path?}` → `{comments:[{id, repo, path, lines?, side?, quoted, text, status, addressed_text?, replies:[{by, text}]}]}` (q2); without `status`, all three; never drafts or resolved ones | none | stale |
 | `comment_reply` | `comment.reply` / ReplyToComment | COMMENT_REPLY, comments typed into its own session (DK-9) | `{comment_id, text}` → `{comment_id, status, replies}` | a reply in the comment's thread, under the agent's name | journal |
 | `comment_resolve` | `comment.resolve` / ResolveComment | COMMENT_RESOLVE, comments typed into its own session (SM-19) | `{comment_id, reply}` → `{comment_id, status: "resolved", replies}` | resolves the comment; the reply is required and joins the thread; the user can reopen it | journal |
+| `doc_versions_list` | `doc.versions_list` / ListDocVersions(self) | none (a read of its own session's folder, D21) | `{path, location?: {session?}}` (default: its own session) → `{versions:[{id, number, unix_ms, by: "you" or the agent, message, added, removed, has_comments}], unsaved_changes}` (newest first) | none | local |
+| `doc_version_read` | `doc.version_read` / ReadDocVersion(self) | none (own session's folder, D21) | `{path, version, location?: {session?}}` → `{text, comments?:[{id, lines, quoted, text, status, replies}]}`; `comments` absent when the version has no record (DV-12) | none | local |
 | `files_list` | `file.list` / ListDirectory | none (own clones, `shared/` and the channel folder on its machine) | `{location: Location, page_token?}` → `{entries:[{path, kind, size, changed, writable}]}` | none | local |
 | `file_read` | `file.read` / ReadFile | none (as above) | `{location, offset?, max_bytes?}` → `{text \| base64, size, sha256, truncated}` | none | local |
 | `files_find` | `file.find` / FindFiles(self) | none | `{query}` → `{entries}` | none | local |
-| `file_write` | `file.write` / WriteFile | none (own clone); SHARED_WRITE (`shared/`) | `{location, text \| base64, replace?: bool}` → `{path, size, sha256}` | creates or replaces one file; a replaced file goes to trash | local |
+| `file_write` | `file.write` / WriteFile | none (own clone); SHARED_WRITE (`shared/` on its machine; another machine's `shared/` is refused, D755) | `{location, text \| base64, replace?: bool}` → `{path, size, sha256}` | creates or replaces one file; a replaced file goes to trash | local |
 | `folder_create` | `file.folder_create` / CreateFolder | as write | `{location}` → `{path}` | | local |
 | `file_fetch` | `file.fetch` / StartTransfer(copy) | FILES_FETCH_LOCAL: from `shared/`, the channel folder or a main clone on its machine into its own clone | `{source: Location, destination: Location, on_existing?: "fail"\|"replace"\|"keep_both"}` → `{transfer_id, files, bytes}` | copies | local |
 | `inbox_ask` | `inbox.ask` / AskUser | INBOX_ASK | `{question, choices?: string[] (at most 4), wait_seconds?}` → `{reply, choice?}` | a question card (IN-25) | waits; journaled with the host away, answerable on the machine |
@@ -239,18 +249,23 @@ rule named until the user changes the rule (IN-18).
 | Tool | Op / gRPC | Capability (default) | Input → output | Side effects | Host away |
 | --- | --- | --- | --- | --- | --- |
 | `channels_list` | `channel.list` / ListChannels | GLOBAL_READ (Allow by default, D127.4; Global board and other channels are one row, D21) | `{}` → `{channels:[{id, name, machines, sessions}]}` | none | stale |
+| `repo_search` | `repo.search` / SearchRepos | GLOBAL_READ (Allow by default, D278) | `{query, owners?: string[], all_of_github?: bool, page_token?}` → `{library:[{repo, remote, default_branch, added_at, last_used_at, last_used_in?, last_used_channel?}], github:[{repo, description, private}], scope, problem?: {kind, message, retry_at?}, unknown_owners, next_page_token?}` | none; `owners` or `all_of_github` widen this one call and are never saved (RL-11, D479); a GitHub failure is `problem`, not an error (RL-10) | host; from a machine it is forwarded, and `host_unreachable` while the host is away (RL-12, D568) |
+| `repo_library` | `repo.library` / ListRepoLibrary | GLOBAL_READ (Allow by default, D278) | `{}` → `{repos:[{repo, remote, default_branch, added_at, last_used_at, last_used_in?, last_used_channel?}]}`, most recently used first | none | host; forwarded from a machine (RL-12, D568) |
 | `board_items_list` (global or another channel) | as 6.1 | GLOBAL_READ (Allow by default, D127.4) | as 6.1 | none | stale |
 | `board_item_create/update/move/delete` on another's channel item | as 6.1 | CHANNEL_BOARD_EDIT_OTHERS (Ask) | as 6.1 | as 6.1 | per away rule |
 | `board_item_*` reads on the Global board or another channel's board | as 6.1 | GLOBAL_READ (Allow by default, D127.4) | as 6.1 | none | stale |
 | `board_item_create/update/move/delete` on the Global board or another channel's board | as 6.1 | GLOBAL_BOARD_WRITE (Ask, D155), whoever made the item | as 6.1 | as 6.1 | per away rule |
 | `files_list`, `file_read` in another session, same machine | as 6.1 | FILES_READ_OTHER_SESSION (Ask); also `humata attach --read-only` of another session (D21) | `location.session` set | none | per away rule (local) |
 | `files_list`, `file_read` on another machine | as 6.1 | FILES_READ_OTHER_MACHINE (Ask) | `location.machine` set | none | host |
-| `files_copy_in` | `file.copy_in` / StartTransfer | FILES_COPY_IN (Ask) | `{sources: Location[], destination: Location (own clone or shared/), on_existing?, reason?}` → `{transfer_id}` | copies into its own clone or `shared/` only (TP-4) | host (other machine) / per away rule (same machine) |
+| `doc_versions_list`, `doc_version_read` in another session, same machine | as 6.1 | FILES_READ_OTHER_SESSION (Ask), as `file_read` (DV-9) | `location.session` names a session on this machine | none | per away rule (local) |
+| `doc_versions_list`, `doc_version_read` on another machine | as 6.1 | FILES_READ_OTHER_MACHINE (Ask), as `file_read` (DV-9) | `location.session` names a session on another machine; the rule is checked, then the call is refused until the SAFE milestone reads that machine's versions | none | host |
+| `files_copy_in` | `file.copy_in` / StartTransfer | FILES_COPY_IN (Ask) | `{sources: Location[], destination: Location (own clone or shared/ on its machine), on_existing?, reason?}` → `{transfer_id}` | copies into its own clone or `shared/` on its own machine only (TP-4, D755) | host (other machine) / per away rule (same machine) |
 | `session_note` | `session.note` / SendNote | SESSION_NOTE (Ask) | `{session, text, when?: "now"\|"turn_end"}` → `{delivered: "typed"\|"queued"}` | typed into the target's terminal as one message naming the sender (TP-5) | host for another machine; per away rule here |
 | `session_ask` | `session.ask` / AskSession | SESSION_NOTE (Ask) | `{session, question, wait_seconds?}` → `{answer}` | the target is asked; its `session_answer` returns here | as note |
-| `session_type` | `session.type` / Type | SESSION_TYPE (Ask) | `{session, text, when?: "now"\|"turn_end"}` → `{typed, queued_id?}` | keystrokes as one bracketed paste | as note |
+| `session_type` | `session.type` / Type | SESSION_TYPE (Ask) | `{session, text, submit?: boolean (default true), when?: "now"\|"turn_end"}` → `{typed, submitted, agent_busy, queued_id?}` (`agent_busy`: written while the agent was mid-turn, so the agent decides whether to queue it) | types the text and presses Enter; `submit: false` leaves it in the input; for one paste wrap the text in ESC[200~ and ESC[201~ yourself | as note |
 | `session_start` | `session.start` / StartSession | SESSION_START_SAME_MACHINE or _OTHER_MACHINE (Ask) | `{machine, agent?, model?, repos?: string[], title?, first_message?, reason}` → `{operation_id, session}` | a new session in its channel | per away rule / host |
-| `session_fork` | `session.fork` / ForkSession(self) | as start (Ask) | `{machine, kind: "code_and_context"\|"code_only"\|"context_only", repos?, title?, first_message?, reason}` → `{operation_id, session}` | a fork of itself (TP-6); the card shows agent, machine, kind, repos, cost | as start |
+| `session_fork` | `session.fork` / ForkSession(self) | as start (Ask) | `{machine, kind: "code_and_context"\|"code_only"\|"context_only", agent?, before_turn?, repos?, title?, first_message?, reason}` → `{operation_id, session}` | a fork of itself (TP-6); the card shows agent, machine, kind, repos, cost | as start |
+| `session_continue_in_channel` | `session.continue_in_channel` / ContinueInChannel(self) | as start (Ask) | `{channel, before_turn?, reason}` → `{operation, session}` | a new session in another channel of its own conversation copied (CV-8); itself untouched; the card shows the channel and the turn | as start |
 | `network_connect` | `bridge.connect` / BridgeService.OpenPortForward | NETWORK_REACH (Ask; Ask me or Never only, D20) | `{host, port, reason, wait_seconds?}` → `{forward_id, socket_path}` (a unix socket in its session folder, bridged through the Mac) | HO-11: the card shows its machine, host and port and that it stays open until the session stops; it closes then. Never low-risk; can't be approved while the Mac is away. Nothing else crosses the bridge (HO-10) | host: waits for the Mac, or fails under Skip |
 | `session_rename`, `session_add_repo`, `session_drop_repo`, `session_own_copy` | `session.*` (self) | OWN_SESSION_MANAGE (Ask) | `{title}`, `{repo}`, `{repo}` (+ plan), `{}` (every repo, FK-9) | change its own session | host |
 | `session_stop`, `session_archive`, `session_delete` (self) | `session.*` (self) | OWN_SESSION_END (Ask) | `{}`; archive and delete show the plan on the card | end its own session | host |
@@ -262,10 +277,12 @@ rule named until the user changes the rule (IN-18).
 | `machine_add_ssh`, `machine_create`, `machine_start`, `machine_stop`, `machine_reconnect`, `skills_sync` | `machine.*`, `skills.sync` | MACHINE_PROVISION (Ask) | `{ssh_host, name}`, `{provider, name, params}`, `{machine}`… → `{operation_id}` | as in Hosts | host |
 | `trash_restore` | `trash.restore` / RestoreFromTrash | TRASH_RESTORE (Ask) | `{trash_item_id}` → `{restored}` | | host |
 | `channel_create` | `channel.create` / CreateChannel | CHANNEL_CREATE (Ask) | `{name, repos, machines}` → `{channel}` | | host |
-| `session_stop`, `session_archive`, `session_delete` of another session | `session.*` | SESSION_STOP_OTHER (**Never**; archive joins this row, D21) | `{session}` | | denied at once |
+| `session_stop`, `session_archive` of another session | `session.*` | SESSION_STOP_OTHER (**Ask me**, D306; archive joins this row, D21) | `{session}` | | waits for the user |
+| `session_delete` of another session | `session.*` | SESSION_DELETE_OTHER (**Never**, D306) | `{session}` | | denied at once |
 | `session_restore`, `session_rebuild` | `session.restore` / RestoreSession, `session.rebuild` / RebuildSession | SESSION_START_SAME_MACHINE or _OTHER_MACHINE (Ask, D21) | `{session, machine?, reason}` → `{operation_id}` | an archived session back, or rebuilt from its record (SL-4) | host |
 | `channel_rename`, `channel_add_repo`, `channel_remove_repo`, `channel_add_machine`, `channel_remove_machine` | `channel.*` | CHANNEL_CHANGE (**Never**) | | | denied at once |
 | `machine_remove`, `machine_forget`, `machine_delete` | `machine.*` | MACHINE_DESTROY (**Never**) | | | denied at once |
+| `machine_script_run` (not built yet) | `machine.script_run` / RunMachineScript | MACHINE_SCRIPT_RUN (**Never** by default, D688) | `{rule, machine, session?}` → `{operation_id}` | runs a rule from the owner's machine-scripts file now; there is no tool that writes rules or scripts | host |
 
 ### 6.3 Example schemas
 
@@ -307,6 +324,8 @@ rule named until the user changes the rule (IN-18).
     "properties": {
       "machine": { "type": "string", "description": "A machine id or name from topology_get" },
       "kind": { "enum": ["code_and_context", "code_only", "context_only"] },
+      "agent": { "type": "string", "description": "The fork's agent; default: this session's agent" },
+      "before_turn": { "type": "integer", "minimum": 2, "description": "Fork from just before this turn; default: from now" },
       "repos": { "type": "array", "items": { "type": "string" }, "description": "Default: all of this session's repos" },
       "title": { "type": "string" },
       "first_message": { "type": "string" },
@@ -335,8 +354,9 @@ one by name anyway gets `user_only`, whose `fix` says to ask the user with
 | `channel.delete` | CH-25: only the user deletes a channel; there is no request for it either |
 | `inbox.answer`, `inbox.answer_all` | An agent approving requests would approve its own |
 | `access.set_rule`, `access.set_away_rule`, `access.set_defaults`, `access.revoke_grant`, `access.set_passphrase` | Changing access is how an agent would widen its own grant (BOUNDARIES.md §6) |
-| `settings.update`, `channel_settings.update`, `agents.add`, `agents.update` | Launch commands and their variables run as the user |
+| `settings.update`, `channel_settings.update`, `agents.add`, `agents.update`, `agents.set_enabled` | Launch commands and their variables run as the user |
 | `marks.set`, `pinned.reorder` | NV-20, NV-25 |
+| `repo.remove`, `repo.forget`, `repo.update_scope` | RL-4, RL-11, D479: removing a repo from the library, forgetting the library and saving the search scope change the owner's lasting state; an agent may widen one `repo_search` call only |
 | `review.submit`, `review.set_push_allowed` | PR-8, PR-12: only the user posts or lets an agent push |
 | `diff.mark_reviewed`, `view.set_state`, the user's own comments and `comment.send` | The user's review state (RV-*, VW-*, SM-*) |
 | `trash.empty` | Not undoable |

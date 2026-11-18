@@ -6,14 +6,13 @@
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{ErrorKind, Write};
-use std::os::fd::FromRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
-use humata2_machines::{Builds, Bundle, MANIFEST, Machines, MachinesConfig, Platform, RetryPolicy};
+use humata2_machines::{Builds, Bundle, MANIFEST, Machines, MachinesConfig, Platform, RetryPolicy, StackConfig};
 use humata2_store::Store;
 use tokio::net::UnixListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -53,6 +52,7 @@ use crate::terminal_session::Kernel;
 use crate::transfer_end_service::TransferEndSvc;
 use crate::transfer_service::TransferSvc;
 use crate::trash_service::{Bin, TrashSvc};
+use crate::upgrade::build::Release;
 
 /// What Unix sockets allow in a path, without its terminating NUL.
 #[cfg(target_os = "linux")]
@@ -118,10 +118,10 @@ pub(crate) struct ServeArgs {
     /// one beside humatad2.
     #[arg(long)]
     humata: Option<PathBuf>,
-    /// The tools bundle machines get their humatad2, humata2_holder and
-    /// humata from (TS-2): a folder with a manifest.json. Default: the
+    /// The tools bundle machines get their humatad2, humata2_holder, humata
+    /// and stack from (TS-2): a folder with a manifest.json. Default: the
     /// `tools` folder beside humatad2 when it has one, else this host's
-    /// own three files beside humatad2 (machines of this platform only).
+    /// own files beside humatad2 (machines of this platform only).
     #[arg(long)]
     tools: Option<PathBuf>,
     /// The home folder the host's agent skill folders (.claude/skills,
@@ -143,9 +143,9 @@ pub(crate) struct ServeArgs {
     /// How much of each tab's output its holder keeps.
     #[arg(long, default_value_t = 8 << 20)]
     scrollback_bytes: usize,
-    /// An open pipe to write a byte to, then close, once the socket
-    /// listens: how `humatad2 bridge` hears that a daemon it started is
-    /// ready. Not for people.
+    /// An open pipe to write READY=1 to, then close, once the socket
+    /// listens (D398): how `humatad2 bridge` and tests hear that a daemon
+    /// they started is ready. Not for people.
     #[arg(long, hide = true, conflicts_with = "stdio", value_parser = clap::value_parser!(i32).range(3..))]
     ready_fd: Option<i32>,
     /// Test daemons only: a call with no credential acts as the user.
@@ -198,19 +198,31 @@ pub(crate) fn default_socket() -> Result<PathBuf, DaemonError> {
 }
 
 pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
-    // SAFETY: the process that started this one opened the descriptor for
-    // it alone, and nothing else here takes it. Owning it from the start
-    // closes it on any way out, which tells the bridge this one won't
-    // listen.
+    // Owning the pipe from the start closes it on any way out, which tells
+    // the starter this one won't listen (D398).
     let ready = args
         .ready_fd
-        .map(|fd| File::from(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }));
+        .map(crate::ready::take_pipe)
+        .transpose()
+        .map_err(|source| DaemonError::Ready { source })?;
     // D146: a link given its own state folder reaches no socket unless told.
     let state_given = args.state.is_some();
     let state = match args.state {
         Some(state) => state,
         None => home_folder()?.join("state"),
     };
+    // UP-1, D281: which release this daemon is, read at boot before any
+    // swap of the binary: this binary's hash, and the bundle in `bin`
+    // beside the state folder.
+    let own_exe = std::env::current_exe().unwrap_or_default();
+    let bin = state
+        .parent()
+        .map(|dir| dir.join("bin"))
+        .unwrap_or_else(|| PathBuf::from("bin"));
+    let store_schema = u32::try_from(humata2_store::SCHEMA_VERSION).unwrap_or(u32::MAX);
+    let release = Release::read(&bin, &own_exe, env!("CARGO_PKG_VERSION"), store_schema);
+    // Where an upgrade of this daemon swaps the release in (UP-1, D281 f).
+    let upgrade_bin = bin;
     if args.stdio {
         private_folder(&state)?;
         private_folder(&state.join("logs"))?;
@@ -221,7 +233,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             // A test's state folder: never reach the real socket.
             (None, true) => None,
         };
-        return peer_link::run(&state, machine, args.sync.as_deref(), socket).await;
+        return peer_link::run(&state, machine, args.sync.as_deref(), socket, release).await;
     }
     let socket = match args.socket {
         Some(socket) => socket,
@@ -261,6 +273,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         path: state.clone(),
         source,
     })?;
+    // HO-13: where this machine keeps its host variable values; the one
+    // place a store is chosen (a keychain or another store would be set here).
+    crate::host_vars::install(Arc::new(crate::host_vars::FileStore::in_folder(&state)));
     let holders = state.join("holders");
     let logs = state.join("logs");
     crate::terminal::check_holder_sockets(&holders)?;
@@ -270,6 +285,33 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // daemon on this state stops here, and it can't take the first one's
     // socket. The lock lasts as long as this function does.
     let state_lock = lock_state(&state, LOCK_WAIT).await?;
+    // UP-1, D281 g: this start is counted against an upgrade under way,
+    // before anything else runs.
+    let upgrades = crate::upgrade::record::UpgradeFolder::new(&state);
+    if let Err(error) = upgrades.count_boot() {
+        crate::log::say!("humatad2: warning: {}", crate::status::chain(&error));
+    }
+    // UP-1, D281 g: a first start of the new build keeps a copy of the
+    // store; a second without ready, or a swap that was cut, puts the old
+    // release and store back and starts the old daemon. Before the store
+    // is opened.
+    match crate::upgrade::rollback::at_start(&state, &upgrade_bin, &release) {
+        Ok(crate::upgrade::rollback::Start::Proceed) => {}
+        Ok(crate::upgrade::rollback::Start::Restart(path)) => {
+            let _ = state_lock.unlock();
+            // SEAM (D439): the old release says it listens in this one's
+            // place, on the pipe handed on to it.
+            let owed = ready.map_or(crate::stop::exec::Ready::Told, crate::stop::exec::Ready::Owed);
+            return match crate::stop::exec::exec_at(path, "upgrade.rollback.exec", owed) {
+                Ok(never) => match never {},
+                Err(source) => Err(DaemonError::Relaunch { source }),
+            };
+        }
+        Err(source) => return Err(DaemonError::Upgrade { source }),
+    }
+    // A rolled back or abandoned upgrade put the previous bundle.json back:
+    // this daemon is the release that one names.
+    let release = release.reread(&upgrade_bin);
     // D261, D265: whether this machine's sessions are stopped, read before
     // anything is started.
     let stop_folder = crate::stop::StopFolder::new(&state);
@@ -282,15 +324,22 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let daemon_log = crate::log::start(&logs);
     let (store, restored) = Store::open_or_restore(state.join("store"))
         .map_err(|source| DaemonError::Store { source })?;
+    crate::fault::point("upgrade.schema.migrated");
     let store = Arc::new(store);
     let machine = machine_id(&state.join("machine-id"))?;
-    if stopped_now {
-        crate::stop::gate::enter(&machine);
-    }
     let role = match args.role {
         Role::Host => pb::DaemonRole::Host,
         Role::Machine => pb::DaemonRole::Machine,
     };
+    // D500: text a person reads calls the host's own machine "This Mac"; a
+    // machine's own daemon has no name of its own, so it uses its id.
+    let names = match role {
+        pb::DaemonRole::Host => crate::upgrade::items::Names::of_host(&machine),
+        _ => crate::upgrade::items::Names::default(),
+    };
+    if stopped_now {
+        crate::stop::gate::enter(&machine, &names.of(&machine));
+    }
 
     let identities = Arc::new(Identities::load(
         state.join("session-tokens"),
@@ -372,6 +421,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     ));
     let authenticate = authenticate.with_relay(relay.clone());
     let guard = Arc::new(Guard::new(&machine, role));
+    let stop_guard = guard.clone();
     let login_host_link = guard.host_link();
     crate::rules_kept::restore(&store, &guard).map_err(DaemonError::RulesKept)?;
     // AW-8: a machine judges by the host's last copy, kept across restarts.
@@ -381,7 +431,14 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         crate::log::say!("humatad2: warning: {}", crate::status::chain(&error));
     }
 
-    let channels_folder = args.channels.clone().unwrap_or_else(|| root.join("Humata"));
+    // FC-10: the root the user saved for this Mac wins over the folder the
+    // daemon was started with; every service below shares this one layout, so
+    // a root change reaches them while the daemon runs.
+    let layout = crate::machine_service::start_layout(
+        &store,
+        args.channels.clone().unwrap_or_else(|| root.join("Humata")),
+        &root,
+    );
     let agents = match &args.agents {
         Some(path) => {
             let bytes = std::fs::read(path).map_err(|source| DaemonError::AgentsRead {
@@ -395,6 +452,20 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         }
         None => humata2_sessions::Agents::builtin(),
     };
+    // MV-16: when the daemon runs with Claude's, Codex's or Copilot's own
+    // dir set (CLAUDE_CONFIG_DIR, CODEX_HOME, COPILOT_HOME), the agents it
+    // starts inherit it, so their conversations live there and a carry
+    // must look and place there.
+    let agents = [
+        ("CLAUDE_CONFIG_DIR", humata2_sessions::ConversationFormat::ClaudeJsonl),
+        ("CODEX_HOME", humata2_sessions::ConversationFormat::CodexRollout),
+        ("COPILOT_HOME", humata2_sessions::ConversationFormat::CopilotSessionState),
+    ]
+    .into_iter()
+    .fold(agents, |agents, (var, format)| match std::env::var_os(var).filter(|dir| !dir.is_empty()) {
+        Some(dir) => agents.with_cli_home(format, Path::new(&dir)),
+        None => agents,
+    });
     // D169: Claude Code starts with hooks that run `humata turn`; the file is
     // written now and again before each launch.
     let humata = args
@@ -412,18 +483,50 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // plugin in the state folder; the agents' own settings stay as they are.
     let agent_hooks = crate::session_service::install_agent_hooks(&state, &humata, &socket)
         .map_err(|source| DaemonError::Hooks { source })?;
+    // D748: each agent's CLI gets this daemon's MCP server (`humatad2 mcp`)
+    // for its session, from files in the state folder that hold no token.
+    let humatad = std::env::current_exe()
+        .map(|exe| std::fs::canonicalize(&exe).unwrap_or(exe))
+        .unwrap_or_else(|_| beside_this_binary("humatad2"));
+    let humata_tools = crate::session_service::install_mcp_configs(&state, &humatad, &socket)
+        .map_err(|source| DaemonError::McpConfigs { source })?;
     let agents = agents
         .with_hooks(&hooks)
         .with_agent_hooks(&agent_hooks.codex, &agent_hooks.copilot_plugin)
         // D201a: OpenCode runs through `humata opencode` on this daemon.
-        .with_wrapper(&humata, &socket, &state);
+        .with_wrapper(&humata, &socket, &state)
+        .with_humata_tools(&humata_tools)
+        // D312: a Terminal session runs the shell new shell tabs run.
+        .with_shell(&shell, &shell_args);
+    // D748: every tab's PATH starts with the folder `humata` is in.
+    if let Some(tools) = humata.parent() {
+        crate::identity::set_tools_folder(tools);
+    }
+    // D748: an agent saved by an earlier daemon resumes with this one's tools.
+    tools_in_saved_launches(&store, &agents);
     crate::session_service::set_sources(&agents);
+    // AGENTSET (D720): which agents are on, read afresh from the humata home's
+    // `config/agents.toml` for every start; a machine reads its shipped copy.
+    let agents = match state.parent() {
+        Some(home) => agents.with_settings(crate::agent_switches::host_path(home)),
+        None => agents,
+    };
+    // ST-1: AgentService lists these kinds; the built-in list when no agents file was given.
+    let agent_service = crate::agent_service::AgentSvc::new(agents.clone(), args.agents.is_none());
+    // ST-15: Settings checks a default agent it saves against these.
+    let settings_agents = agents.clone();
+    // B9: the history learns a conversation its agent wrote before the
+    // session named it, as a resume does.
+    let history_agents = agents.clone();
     let reports = state.join("restarts");
     private_folder(&reports)?;
+    // D373: which holder file each holder is spawned from.
+    let builds = Arc::new(crate::upgrade::holders::Builds::new(&state, &holder));
     let revive = restart::Revive {
+        builds: Some(builds.clone()),
         contain: Some(Arc::new(crate::contained::Contained::new(
             store.clone(),
-            channels_folder.clone(),
+            layout.clone(),
             state.clone(),
             socket.clone(),
             root.clone(),
@@ -434,27 +537,40 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         shell: shell.clone(),
         shell_args: shell_args.clone(),
         home: root.clone(),
+        // B5: the agents' CLIs keep their conversations under the home they
+        // run in, which `--root` doesn't move.
+        agent_home: agent_home(std::env::var_os("HOME"), &root),
         reports,
         machine: machine.clone(),
         daemon_log,
     };
     // The names a live holder's process may have, for the stop's sweep.
     let holder_names = crate::stop::sweep::holder_names(&holder);
-    let starter = restart::starter(
+    let mut starter = restart::starter(
         &store,
         revive,
         restart::Sessions {
-            channels: channels_folder.clone(),
+            channels: layout.clone(),
             remote_template: args.remote_template.clone(),
             agents,
             holders: holders.clone(),
         },
     );
+    // D763: a start's first message waits for the agent's input to clear
+    // (D762's gate), and one left unsent is asked about in the Inbox.
+    let start_messages = Arc::new(crate::start_message::StartMessages::default());
+    starter.first_message = humata2_sessions::FirstMessage::default()
+        .with_gate(Arc::new(crate::input_gate::StartGate))
+        .with_held(start_messages.clone());
     let feed = Arc::new(Feed::default());
     // AWAY: the peer link's PeerUplink, and whether the host is reachable.
     // AW-8: the policy copy, made here on the host, put in force on a machine.
     let policy_copy = crate::away::PolicySource::new(guard.clone(), store.clone());
     let tell = crate::session_service::Tell::new(feed.clone(), store.clone(), machine.clone());
+    // D158.7: the app hears when an agent starts or stops waiting on its own request.
+    crate::session_service::tell_asks(tell.clone());
+    // Bug 23: the pointer loop of this tell and the file service tell file changes through one.
+    let file_changes = tell.file_changes();
     // D265: a start after a stop names the stop once it has brought back.
     let after_stop = match &stop_mode {
         crate::stop::boot::Mode::Starting(record) => Some(crate::stop::boot::AfterStop {
@@ -487,6 +603,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine.clone(),
         feed.clone(),
     ));
+    start_messages.tell(inbox.clone(), store.clone(), machine.clone());
     // D261: a stopped boot ends every holder, withdraws the Inbox's pending
     // requests and settles the record; that is its start.
     if let crate::stop::boot::Mode::Stopped(record) = stop_mode {
@@ -513,6 +630,32 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     ));
     // D268: a wait on a request the host holds goes up the same link.
     inbox.forwarding(uplinks.forwarder());
+    // PER-30, D242 and UP-1, D281 f: the restart doctor's store repair and an
+    // upgrade of this daemon make it leave once it has answered; `leave` is
+    // what they wake.
+    let leave = Arc::new(tokio::sync::Notify::new());
+    let restarting = crate::upgrade::run::Restarting::new(leave.clone());
+    // UP-1, D281: running an upgrade of this daemon, and the Migrate items of
+    // this Inbox, which carry theirs out the same way (D290 n).
+    // Another machine's is staged and called by the host, once its machine work exists.
+    let host_slot = Arc::new(std::sync::OnceLock::new());
+    let holders_slot = Arc::new(std::sync::OnceLock::new());
+    let upgrade = crate::upgrade::run::Runner::new(&machine, upgrade_bin.clone(), upgrades, release.clone(), restarting.clone())
+        .with_holders(holders_slot.clone());
+    let carry = crate::upgrade::remote::Routed::new(
+        &machine,
+        Arc::new(crate::upgrade::holders::Split::new(&machine, Arc::new(upgrade.clone()), holders_slot.clone())),
+        Arc::new(crate::upgrade::remote::Remote::of_host(host_slot.clone())),
+    );
+    let migrations = crate::upgrade::items::Migrations::new(inbox.clone(), Arc::new(carry));
+    migrations.set_names(names.clone());
+    // UP-1, D370, D371: a release the app staged beside this host's daemon,
+    // and a CLI or holder that isn't the release's, are Migrate items. A
+    // machine's own tools are checked by the host from what the machine
+    // reports, so a machine's daemon never posts for itself.
+    let local = (role == pb::DaemonRole::Host).then(|| {
+        crate::upgrade::local::Local::new(migrations.clone(), release.clone(), &machine, upgrade_bin)
+    });
     // The host's machine list and its links come first: the terminal, channel and
     // session services each hold a part of them (D139). A machine's own daemon has
     // none, so every session it knows is here and its local path is untouched.
@@ -528,6 +671,33 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let remote_slot = Arc::new(std::sync::OnceLock::new());
     let session_tell =
         Tell::new(feed.clone(), store.clone(), machine.clone()).with_remote(remote_slot.clone());
+    // D373: the agents still on an old holder after an upgrade are one Holders
+    // item, and Migrate restarts them. D378: a machine's daemon looks at its own
+    // the same way and reports the list to the host, which posts the item.
+    {
+        let report = (role == pb::DaemonRole::Machine).then(|| {
+            let (report, held) = tokio::sync::watch::channel(None);
+            uplinks.report_holders(held);
+            Arc::new(report)
+        });
+        let item = crate::upgrade::holders::Holders::new(crate::upgrade::holders::Deps {
+            machine: machine.clone(),
+            release: release.clone(),
+            builds: builds.clone(),
+            migrations: migrations.clone(),
+            starter: starter.clone(),
+            identities: identities.clone(),
+            socket: socket.clone(),
+            tell: session_tell.clone(),
+            feed: feed.clone(),
+            report,
+        });
+        let _ = holders_slot.set(item.clone());
+        if let Some(local) = &local {
+            local.wake_after_looks(item.wake());
+        }
+        item.start(last_start.clone());
+    }
     let remote_work = host_work.as_ref().map(|work| {
         let remote = RemoteWork::new(
             work.links(),
@@ -535,6 +705,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             Arc::new(StoreMemory(store.clone())),
             Arc::new(TellSink(session_tell.clone())),
         );
+        // D262: the stops kept for other machines, on this host's disk, set
+        // before any link starts.
+        let stops = crate::stop::remote::HostStops::open(&state);
+        let _ = work.stops.set(stops.clone());
+        remote.use_stops(stops);
         let _ = remote_slot.set(remote.clone());
         // What the machines report, for the daemon's life (SL-3, TR-7).
         tokio::spawn({
@@ -564,25 +739,34 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         inbox: inbox.clone(),
         remote: remote_terminal,
         socket: socket.clone(),
+        migrations: migrations.clone(),
+        builds: builds.clone(),
+        tell: session_tell.clone(),
     });
+    // D767: a question an agent asks on its screen becomes an Inbox question.
+    crate::screen_ask::start(terminals.holder_links(), inbox.clone(), store.clone(), machine.clone());
     let roots = Arc::new(Roots::new(
         store.clone(),
         machine.clone(),
-        channels_folder.clone(),
-        home,
+        layout.clone(),
+        home.clone(),
     ));
     // LD-6: one trash per machine, in the folder the channels live in.
-    let bin = Arc::new(Bin::new(channels_folder.join(".trash")));
-    let files = Files::new(
+    let bin = Arc::new(Bin::new(layout.channel(".trash")));
+    let files = Arc::new(Files::new(
         roots.clone(),
         guard.clone(),
         bin.clone(),
         compression.clone(),
         Link::Local,
-    );
+    ));
     let trash = TrashSvc::new(bin.clone(), guard.clone(), machine.clone());
     // D194: a restored channel's records come back into the state.
     trash.use_store(store.clone());
+    // CD-4, CD-5, CH-24: the trash and the channel delete reach the Desk
+    // service through this handle, set when the Desk service is made below.
+    let desk_handle = crate::desk_service::channel_desk_close::DeskHandle::new(feed.clone());
+    trash.use_desk(desk_handle.clone());
     let channel_bin = bin.clone();
     // FM-9: the far end of a transfer the host drives on this machine.
     let transfer_end = TransferEndSvc::new(
@@ -598,6 +782,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         state.clone(),
         machine.clone(),
         compression.clone(),
+        inbox.clone(),
     );
     // LD-7, PER-27: trash past its 30 days goes, and transfers a restart
     // cut short continue or finish undoing, off the runtime.
@@ -616,14 +801,26 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         feed.clone(),
         Arc::new(crate::review::TerminalSink::new(terminals.core())),
     );
+    // BUG 42: the user's own write of a file is not the agent's change.
+    files.use_user_writes(Arc::new(review.clone()));
+    files.use_changes(file_changes);
     // D138: a batch of comments the last run was still typing is settled
     // before anyone asks.
     // A stopped machine types nothing, so it settles them at its Start.
     if !stopped_now {
         let review = review.clone();
-        tokio::spawn(async move { review.recover_comments().await });
+        let operations = last_start.operations().clone();
+        // D241: each batch in doubt is named pending before the report is written.
+        let doubtful = review.note_comments(&operations);
+        tokio::spawn(async move { review.recover_comments(&operations, doubtful).await });
     }
-    let access = Access::new(guard.clone(), feed.clone(), inbox.clone(), store.clone());
+    let access = Access::new(
+        guard.clone(),
+        feed.clone(),
+        inbox.clone(),
+        store.clone(),
+        policy_copy.clone(),
+    );
     let events = EventSvc::new(feed.clone(), guard.clone(), machine.clone());
     // NV-24, D170: pins and VIP marks, in a file of their own in the state folder.
     let marks = crate::mark_service::MarkSvc::new(
@@ -632,14 +829,41 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         feed.clone(),
         store.clone(),
     );
+    // CH-16, D394: a view of a remote session is held open on its machine.
+    marks.use_remote(remote_slot.clone(), machine.clone());
+    // REPOS (RL-5): the repo library (RL-1) in `<state>/repos.db` and the default
+    // search scope in `<home>/config/repos.toml` (RL-7). Opened when first used.
+    let repos = crate::repo_service::RepoSvc::new(
+        state.join("repos.db"),
+        state.parent().unwrap_or(&state),
+        guard.clone(),
+    );
     // LD-8, LD-23 to LD-25: search and read the mirrored conversations, kept under the state folder.
     let history = Arc::new(crate::history_service::HistorySvc::new(
         state.clone(),
         guard.clone(),
         feed.clone(),
         store.clone(),
+        history_agents,
+        agent_home(std::env::var_os("HOME"), &home),
     ));
     let operations = Arc::new(Operations::new(feed.clone()));
+    let pull_requests = crate::review::PullRequests::new(
+        store.clone(),
+        guard.clone(),
+        machine.clone(),
+        starter.clone(),
+        session_tell.clone(),
+        feed.clone(),
+        args.default_agent.clone(),
+        review.clone(),
+        operations.clone(),
+    );
+    // D286: a stopped machine asks GitHub nothing on its own; its Start
+    // (the daemon starting itself again, running) follows the reviews again.
+    if !stopped_now {
+        pull_requests.spawn_poll();
+    }
     let channel_svc = ChannelSvc::new(
         guard.clone(),
         operations.clone(),
@@ -650,6 +874,16 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         remote_work.clone(),
         host_work.clone(),
     );
+    // CH-24: a delete closes the channel's Desk sessions first.
+    channel_svc.use_desk(desk_handle.clone());
+    // REPOS (RL-1): every successful repo add is recorded in the repo library.
+    match repos.library() {
+        Ok(library) => channel_svc.use_repo_library(library),
+        Err(error) => crate::log::say!(
+            "humatad2: warning: repos added now won't be listed in the repo library: {}",
+            crate::status::chain(&error)
+        ),
+    }
     // D194: a delete a restart cut short is finished once the start is done.
     channel_svc.recover_deletes_after(channel_bin, last_start.clone());
     // D227: on a machine, the agents' board calls go to the host while its Uplink is open.
@@ -661,7 +895,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine.clone(),
     )
     .forwarding(uplinks.forwarder())
-    .telling(session_tell.clone());
+    .telling(session_tell.clone())
+    // REPOS (RL-12, D568): a machine's agents search the host's library.
+    .with_repos(repos.clone());
+    // REPOS (RL-12, D568): on a machine, its RepoService sends up the Uplink.
+    let repo_forwarder = uplinks.forwarder();
     // DK-14, D182: the Desk's sessions, beside the session service.
     let desk = crate::desk_service::server(crate::desk_service::DeskDeps {
         guard: guard.clone(),
@@ -676,6 +914,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         bin: bin.clone(),
         terminals: terminals.core(),
         state: state.clone(),
+        handle: desk_handle,
+        remote: remote_work.clone(),
+        migrations: migrations.clone(),
+        channels: channel_svc.clone(),
+        last_start: last_start.clone(),
     });
     // D195: how a session leaves this machine or arrives on it.
     let carry_svc = SessionCarrySvc::new(starter.clone(), bin.clone(), host_work.is_some());
@@ -689,12 +932,30 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         remote_work,
         session_tell,
         socket.clone(),
+        migrations.clone(),
     );
     // Archives a cut run left are finished once the start has brought the
     // sessions back (MV-15, PER-27).
     session_svc.finish_archives_after(last_start.clone());
     // CH-8: a machine's removal moves and archives its sessions through the session service.
     channel_svc.use_sessions(session_svc.clone());
+    // A removal of a machine the last run cut short is finished once the
+    // start is done; a stopped machine moves nothing until its Start.
+    if !stopped_now {
+        channel_svc.recover_removals_after(last_start.clone());
+    }
+    // REPOS (CH-21): AddRepoToSession adds a repo the channel lacks.
+    session_svc.use_channels(channel_svc.clone());
+    // PR-17: Archive names a review's unsubmitted drafts.
+    session_svc.use_review(review.clone());
+    pull_requests.use_sessions(session_svc.clone());
+    // D287: a submit cut short is settled against GitHub before anyone
+    // posts again. A stopped machine asks GitHub nothing; its records stay
+    // until the next start.
+    if !stopped_now {
+        let pull_requests = pull_requests.clone();
+        tokio::spawn(async move { pull_requests.reconcile_submits().await });
+    }
     // SL-4: a rebuilt session's conversation comes from the host's mirror.
     {
         let history = history.clone();
@@ -703,9 +964,29 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         // MV-13, D209: a moved or rebuilt conversation is mirrored once.
         session_svc.use_rebase(Arc::new(move |session, machine, skip| rebase.rebase_source(session, machine, skip)));
     }
-    let settings = crate::settings_service::SettingsSvc::new(guard.clone(), store.clone(), machine.clone(), feed.clone());
+    let settings = crate::settings_service::SettingsSvc::new(
+        guard.clone(),
+        store.clone(),
+        machine.clone(),
+        feed.clone(),
+        &state,
+        settings_agents,
+        args.default_agent.clone(),
+    );
     // The default branch prefix is the host's gh login; a start never waits for it (D196).
     settings.follow_gh_login();
+    // A machine's own storage and Humata folder, for the host's relayed
+    // Storage and root-change calls.
+    let box_machines = machine_service::BoxMachineSvc::new(
+        Arc::new(
+            crate::storage::Storage::new(store.clone(), machine.clone(), layout.clone(), bin.clone(), logs.clone())
+                .with_home(home.clone()),
+        ),
+        machine.clone(),
+        operations.clone(),
+        // D768: its agents' machine lookups go to the host.
+        uplinks.forwarder(),
+    );
     let machines = match host_work {
         Some(work) => {
             let skills_home = match args.skills_home {
@@ -722,12 +1003,44 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             let _ = work.policy.set(policy_copy.clone());
             // D226: each link replays its machine's Inbox journal into the host's Inbox.
             let _ = work.inbox.set(inbox.clone());
+            // UP-1: a Migrate of another machine stages its release and calls its daemon.
+            let _ = host_slot.set(work.clone());
+            // UP-1: each link-up posts or withdraws its machine's Migrate item.
+            let _ = work
+                .upgrade
+                .set(crate::upgrade::items::Watch::new(migrations.clone(), release.clone()));
             // D227: each link runs its machine's forwarded board calls and replays its board journal.
             let _ = work.boards.set(board_svc.clone());
+            // VW-12: each link keeps the views its machine's agents offered.
+            let _ = work.views.set(review.clone());
             // LD-11: forgetting a machine archives its sessions through the SessionService.
             work.forgetting.set(Arc::new(session_svc.clone()));
+            // MACHINESCRIPTS (D681): the owner's rules run as machines and sessions change. Set before
+            // any link starts, so the first link-up reaches it.
+            if let Some(humata_home) = state.parent() {
+                let scripts = crate::machine_scripts::build(crate::machine_scripts::Parts {
+                    work: work.clone(),
+                    sessions: session_svc.clone(),
+                    terminal: terminals.core(),
+                    feed: feed.clone(),
+                    inbox: inbox.clone(),
+                    humata_home: humata_home.to_owned(),
+                    state: state.clone(),
+                });
+                session_svc.use_machine_scripts(scripts.clone());
+                work.install_scripts(scripts, humata_home);
+            }
+            // MACHINESCRIPTS (D689): a finished Migrate runs that machine's
+            // `upgraded` rules; This Mac has no triggers (D681).
+            let upgraded = work.clone();
+            let this_mac = machine.clone();
+            migrations.on_migrated(Arc::new(move |migrated: &str| {
+                if migrated != this_mac {
+                    upgraded.fire_upgraded(migrated);
+                }
+            }));
             // A forget the last run began and didn't answer is finished now.
-            tokio::spawn(machine_service::finish_forgets(work.clone()));
+            tokio::spawn(machine_service::finish_forgets(work.clone(), last_start.clone()));
             // FM-8, FM-9: transfers reach other machines over their links.
             transfers.use_links(work.links());
             // D195: the host moves sessions between machines.
@@ -737,7 +1050,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 bin.clone(),
                 state.clone(),
                 machine.clone(),
-                channels_folder.clone(),
+                layout.clone(),
                 compression.clone(),
             ));
             // MV-14: a move the last run cut short is undone or finished once its machines are linked.
@@ -747,6 +1060,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             }
             // A pane on another machine: its file and trash calls are forwarded.
             files.use_links(work.links());
+            files.use_migrations(migrations.clone());
             // D189: other machines' conversations reach the host's mirror.
             history.use_links(work.links(), work.reports());
             trash.use_links(work.links());
@@ -765,13 +1079,16 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                     work,
                     operations.clone(),
                     inbox.clone(),
-                    Arc::new(crate::storage::Storage::new(
-                        store.clone(),
-                        machine.clone(),
-                        channels_folder.clone(),
-                        bin.clone(),
-                        logs.clone(),
-                    )),
+                    Arc::new(
+                        crate::storage::Storage::new(
+                            store.clone(),
+                            machine.clone(),
+                            layout.clone(),
+                            bin.clone(),
+                            logs.clone(),
+                        )
+                        .with_home(home.clone()),
+                    ),
                 ),
                 providers,
                 skills,
@@ -779,11 +1096,24 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         }
         _ => None,
     };
+    // D768: only the host keeps machines and links them, so a machine's
+    // agents look machines up, read other machines' files and copy between
+    // machines through the host, which answers as that agent.
+    match &machines {
+        Some((machine_svc, _, _)) => board_svc.answer_host_calls(crate::board_service::HostCalls {
+            machines: machine_svc.clone(),
+            files: files.clone(),
+            transfers: transfers.clone(),
+        }),
+        None if role == pb::DaemonRole::Machine => {
+            files.ask_host_for_agents(uplinks.forwarder());
+            transfers.ask_host_for_agents(uplinks.forwarder());
+        }
+        None => {}
+    }
 
-    // PER-30, D242: the restart doctor's store repair makes this daemon
-    // leave once it has answered, so its next start restores the last good
-    // copy; `leave` is what it wakes.
-    let leave = Arc::new(tokio::sync::Notify::new());
+    // The restart doctor's store repair makes this daemon leave once it has
+    // answered, so its next start restores the last good copy.
     let relaunch = crate::stop::service::Relaunch::new(leave.clone());
     let doctor = crate::doctor::Doctor::new(
         session_svc.clone(),
@@ -796,14 +1126,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // first layer is the outer one: it marks the methods open to anyone,
     // which the interceptor can't see the path of. The last, next to the
     // services, ends their streams when the daemon leaves (D270).
+    // D241: every recovery of a cut operation has noted itself pending by
+    // now, so the restart report that follows names each one.
+    last_start.recoveries_noted();
     let (leaving, cut_streams) = crate::stop::streams::Leaving::signal();
     let router = Server::builder()
         .layer(MapRequestLayer::new(identity::mark_open))
         .layer(InterceptorLayer::new(authenticate))
+        // UP-1, D281, D290 m: a CLI at another release than this daemon's is refused.
+        .layer(crate::upgrade::gate::CliRelease::new(release.clone(), &machine).named(&names.of(&machine)))
         .layer(cut_streams)
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(
             Daemon::new(machine.clone(), role)
                 .offering(compression)
+                .with_build(release.clone())
+                .with_upgrade(upgrade.clone())
                 .started(last_start)
                 .with_relay(relay)
                 .with_uplinks(uplinks)
@@ -812,9 +1149,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                     stop_folder,
                     machine.clone(),
                     relaunch.clone(),
+                    stop_guard,
+                    inbox.clone(),
                 )),
         ))
-        .add_service(pb::file_service_server::FileServiceServer::new(files))
+        .add_service(pb::file_service_server::FileServiceServer::from_arc(files.clone()))
         .add_service(pb::trash_service_server::TrashServiceServer::new(trash))
         .add_service(pb::transfer_service_server::TransferServiceServer::from_arc(transfers))
         .add_service(
@@ -832,6 +1171,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             review.clone(),
         ))
         .add_service(pb::review_chat_service_server::ReviewChatServiceServer::new(review.clone()))
+        .add_service(pb::pull_request_review_service_server::PullRequestReviewServiceServer::new(pull_requests))
         .add_service(pb::comment_service_server::CommentServiceServer::new(
             review.clone(),
         ))
@@ -874,11 +1214,23 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             .add_service(pb::skills_service_server::SkillsServiceServer::new(
                 skills,
             )),
-        None => not_built::register_host_only(router),
+        None => not_built::register_host_only(router.add_service(
+            pb::machine_service_server::MachineServiceServer::new(box_machines),
+        )),
     };
     let router = router.add_service(pb::settings_service_server::SettingsServiceServer::new(settings));
     let router = router.add_service(pb::mark_service_server::MarkServiceServer::new(marks));
+    // REPOS (RL-5): the library is the host's. A machine's agents search it
+    // there through the Uplink, and the rest is the host's alone (RL-12, D568).
+    let router = if role == pb::DaemonRole::Host {
+        router.add_service(pb::repo_service_server::RepoServiceServer::new(repos))
+    } else {
+        router.add_service(pb::repo_service_server::RepoServiceServer::new(
+            crate::repo_service::OnMachine::new(repo_forwarder),
+        ))
+    };
     let router = router.add_service(pb::history_service_server::HistoryServiceServer::from_arc(history));
+    let router = router.add_service(pb::agent_service_server::AgentServiceServer::new(agent_service));
     let router = not_built::register(router);
 
     let stop = {
@@ -890,9 +1242,15 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             }
         }
     };
-    if let Some(mut ready) = ready {
-        // A bridge that went meanwhile has nothing to hear.
-        let _ = ready.write_all(b"\n");
+    if let Err(error) = crate::ready::tell(ready, crate::ready::notify_socket().as_deref()) {
+        crate::log::say!("humatad2: warning: {}", crate::status::chain(&error));
+    }
+    // UP-1, D281 g: ready. The upgrade this start came from is settled, and
+    // the Migrate item waiting for it is finished.
+    upgrade.ready(&migrations).await;
+    // What is in the bin folder is looked at before the first call is answered.
+    if let Some(local) = &local {
+        local.start().await;
     }
     let incoming = humata2_app_peer::incoming(listener, app_requirement());
     // A stop ends every event subscription and every other stream:
@@ -924,6 +1282,18 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         }
     };
     unlink_socket(&socket, socket_id);
+    // UP-1, D281 f: an upgrade has the daemon start the file it swapped in,
+    // in this process, once the Upgrade call's answer has gone out. Holders
+    // aren't touched: the new run reattaches them.
+    if outcome.is_ok()
+        && let Some(path) = restarting.take()
+    {
+        let _ = state_lock.unlock();
+        return match crate::stop::exec::exec_at(path, "upgrade.exec", crate::stop::exec::Ready::Told) {
+            Ok(never) => match never {},
+            Err(source) => Err(DaemonError::Relaunch { source }),
+        };
+    }
     // D261, D265: a stop or a start has the daemon start itself again, in
     // this process. The state lock and the socket are close-on-exec, so the
     // new run takes both.
@@ -933,7 +1303,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         // Let go of the lock now rather than at the exec, which on a
         // loaded machine can leave it taken past the new run's start.
         let _ = state_lock.unlock();
-        return match crate::stop::exec::exec_again(point) {
+        return match crate::stop::exec::installed_path()
+            .and_then(|path| crate::stop::exec::exec_at(path, point, crate::stop::exec::Ready::Told))
+        {
             Ok(never) => match never {},
             Err(source) => Err(DaemonError::Relaunch { source }),
         };
@@ -967,22 +1339,48 @@ fn machine_work(
     ssh_config: Option<PathBuf>,
     feed: Arc<Feed>,
 ) -> Result<Work, DaemonError> {
-    let builds: Box<dyn Builds + Send + Sync> = match tools {
-        Some(tools) => {
-            Box::new(Bundle::open(&tools).map_err(|source| DaemonError::Tools { source })?)
-        }
+    let bundle = match tools {
+        Some(tools) => Bundle::open(&tools).map_err(|source| DaemonError::Tools { source })?,
         None => {
             let beside = beside_this_binary("tools");
             if beside.join(MANIFEST).is_file() {
-                Box::new(Bundle::open(&beside).map_err(|source| DaemonError::Tools { source })?)
+                Bundle::open(&beside).map_err(|source| DaemonError::Tools { source })?
             } else {
                 let here = beside_this_binary("humatad2");
                 let folder = here.parent().map(Path::to_owned).unwrap_or_default();
                 let platform = Platform::host().ok_or(DaemonError::UnknownHostPlatform)?;
-                Box::new(Bundle::beside(&folder, platform))
+                let host = Bundle::beside(&folder, platform);
+                // TS-2: the app installed the Linux tools it carries in
+                // `~/.humata2/machine-tools`; machines of those platforms are set up from them.
+                match state.parent() {
+                    Some(home) => with_machine_tools(host, home, &folder),
+                    None => host,
+                }
             }
         }
     };
+    // REPOS (RL-12): the host's `config/repos.toml` goes to machines beside `stack.toml`.
+    let bundle = match state.parent() {
+        Some(home) => bundle.with_repos_config(StackConfig::repos_host_path(home)),
+        None => bundle,
+    };
+    // AGENTSET (D724): the host's `config/agents.toml` goes to machines the same way.
+    let bundle = match state.parent() {
+        Some(home) => bundle.with_agents_config(StackConfig::agents_host_path(home)),
+        None => bundle,
+    };
+    // MACHINESCRIPTS (D680): the host's `config/machine-scripts.toml` goes to
+    // machines the same way.
+    let bundle = match state.parent() {
+        Some(home) => bundle.with_machine_scripts_config(StackConfig::machine_scripts_host_path(home)),
+        None => bundle,
+    };
+    // The host's `stack.toml` machines get beside the tools (D411) lives in
+    // the humata home, the folder the state folder is in (`~/.humata2`).
+    let builds: Box<dyn Builds + Send + Sync> = Box::new(match state.parent() {
+        Some(home) => bundle.with_stack_config(StackConfig::host_path(home)),
+        None => bundle,
+    });
     let ssh_config = match ssh_config {
         Some(path) => path,
         None => std::env::var_os("HOME")
@@ -1003,6 +1401,77 @@ fn machine_work(
         feed,
         Arc::new(std::time::SystemTime::now),
     ))
+}
+
+/// Where the app installs the Linux tools it carries, in the humata home.
+const MACHINE_TOOLS: &str = "machine-tools";
+/// A release's manifest, installed beside its tools.
+const RELEASE_JSON: &str = "bundle.json";
+
+/// `host` (this machine's own tools in `bin`) plus the platforms the app put
+/// in `home`'s `machine-tools` (TS-2). The folder is used only when its
+/// `bundle.json` is the one in `bin`: the bundle id covers every platform,
+/// so tools of another release would give machines an id the host's own
+/// release (UP-1) doesn't have. After an app update that is the window until
+/// Migrate on This Mac; the daemon restarts at the new release and then
+/// agrees.
+fn with_machine_tools(host: Bundle, home: &Path, bin: &Path) -> Bundle {
+    let folder = home.join(MACHINE_TOOLS);
+    if !folder.join(MANIFEST).is_file() {
+        return host;
+    }
+    match (std::fs::read(folder.join(RELEASE_JSON)), std::fs::read(bin.join(RELEASE_JSON))) {
+        (Ok(theirs), Ok(ours)) if theirs == ours => {}
+        _ => {
+            crate::log::say!(
+                "humatad2: warning: the machine tools in {} are from another release than this daemon, so Linux machines can't be set up until it is migrated; use Migrate on This Mac, or open Humata again",
+                folder.display()
+            );
+            // Adding a machine of those platforms says to Migrate This Mac first.
+            return match Bundle::open(&folder) {
+                Ok(tools) => host.with_stale_platforms(tools.platforms()),
+                Err(_) => host,
+            };
+        }
+    }
+    match Bundle::open(&folder) {
+        Ok(tools) => host.with_platforms_from(tools),
+        Err(error) => {
+            crate::log::say!(
+                "humatad2: warning: couldn't read the machine tools in {}: {error}; open Humata again so it installs them",
+                folder.display()
+            );
+            host
+        }
+    }
+}
+
+/// Gives every saved agent launch this daemon's Humata tools arguments
+/// for its kind (D748), so an agent saved before them resumes with them.
+/// One that can't be read or saved resumes as it was, and the log says so.
+fn tools_in_saved_launches(store: &humata2_store::Store, agents: &humata2_sessions::Agents) {
+    let saved = match store.agents() {
+        Ok(saved) => saved,
+        Err(error) => {
+            crate::log::say!(
+                "humatad2: couldn't read the saved agents to give them Humata's tools, so agents started before this version resume without them until restarted: {}",
+                crate::status::chain(&error)
+            );
+            return;
+        }
+    };
+    for mut agent in saved {
+        if !agents.with_tools_in(&mut agent.launch) {
+            continue;
+        }
+        if let Err(error) = store.put_agent(&agent) {
+            crate::log::say!(
+                "humatad2: couldn't save session {}'s agent with Humata's tools, so it resumes without them: {}",
+                agent.session,
+                crate::status::chain(&error)
+            );
+        }
+    }
 }
 
 fn beside_this_binary(name: &str) -> PathBuf {
@@ -1239,8 +1708,29 @@ pub(crate) fn stop_signal() -> Result<impl Future<Output = ()>, DaemonError> {
     })
 }
 
+/// The home the agents' CLIs run in (B5): `$HOME` when it is set, since
+/// they keep their conversations under it and `--root` doesn't move them;
+/// `root` only when there is none.
+fn agent_home(home: Option<std::ffi::OsString>, root: &Path) -> PathBuf {
+    home.filter(|home| !home.is_empty())
+        .map_or_else(|| root.to_owned(), PathBuf::from)
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// B5: `{home}` in an agent's conversation file is the user's home,
+    /// not the daemon's `--root`.
+    #[test]
+    fn the_agents_home_is_home_not_the_root() {
+        let root = Path::new("/var/humata-root");
+        assert_eq!(
+            agent_home(Some("/Users/someone".into()), root),
+            PathBuf::from("/Users/someone")
+        );
+        assert_eq!(agent_home(Some("".into()), root), root);
+        assert_eq!(agent_home(None, root), root);
+    }
     use std::sync::{Arc, Barrier};
 
     use super::*;
@@ -1253,6 +1743,94 @@ mod tests {
         let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
         file.try_lock().unwrap();
         file
+    }
+
+    const LINUX: Platform = Platform { os: humata2_machines::Os::Linux, arch: humata2_machines::Arch::X86_64 };
+    const MAC: Platform = Platform { os: humata2_machines::Os::Darwin, arch: humata2_machines::Arch::Aarch64 };
+
+    /// A humata home whose `machine-tools` carry linux-x86_64 under release
+    /// `tools_release`, and a `bin` whose bundle.json is `bin_release`.
+    fn home_with_machine_tools(tools_release: &str, bin_release: &str) -> (tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let tools = home.path().join(MACHINE_TOOLS);
+        std::fs::create_dir_all(&tools).unwrap();
+        let entries: Vec<String> = ["humatad2", "humata2_holder", "humata", "stack"]
+            .iter()
+            .map(|name| format!(r#""{name}": {{"path": "linux-x86_64/{name}", "sha256": "{}"}}"#, "0".repeat(64)))
+            .collect();
+        std::fs::write(
+            tools.join(MANIFEST),
+            format!(r#"{{"platforms": {{"linux-x86_64": {{{}}}}}}}"#, entries.join(", ")),
+        )
+        .unwrap();
+        std::fs::write(tools.join(RELEASE_JSON), tools_release).unwrap();
+        let bin = home.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(RELEASE_JSON), bin_release).unwrap();
+        (home, bin)
+    }
+
+    #[test]
+    fn machine_tools_of_this_release_add_their_platforms_to_the_host() {
+        let (home, bin) = home_with_machine_tools("release-a", "release-a");
+
+        let bundle = with_machine_tools(Bundle::beside(&bin, MAC), home.path(), &bin);
+
+        assert_eq!(bundle.platforms(), [MAC, LINUX]);
+    }
+
+    #[test]
+    fn machine_tools_of_another_release_are_left_out() {
+        let (home, bin) = home_with_machine_tools("release-b", "release-a");
+
+        let bundle = with_machine_tools(Bundle::beside(&bin, MAC), home.path(), &bin);
+
+        assert_eq!(bundle.platforms(), [MAC]);
+    }
+
+    #[test]
+    fn a_linux_add_after_an_app_update_asks_to_migrate_this_mac_first() {
+        let (home, bin) = home_with_machine_tools("release-b", "release-a");
+
+        let bundle = with_machine_tools(Bundle::beside(&bin, MAC), home.path(), &bin);
+
+        assert!(matches!(
+            bundle.payloads(LINUX),
+            Err(humata2_machines::BuildsError::HostNeedsMigrate { platform }) if platform == LINUX
+        ));
+    }
+
+    #[test]
+    fn a_linux_add_with_current_machine_tools_does_not_ask_to_migrate() {
+        let (home, bin) = home_with_machine_tools("release-a", "release-a");
+
+        let bundle = with_machine_tools(Bundle::beside(&bin, MAC), home.path(), &bin);
+
+        // The files themselves are not there in this fixture, so it is a missing
+        // file, never the Migrate reason.
+        assert!(!matches!(
+            bundle.payloads(LINUX),
+            Err(humata2_machines::BuildsError::HostNeedsMigrate { .. })
+        ));
+    }
+
+    #[test]
+    fn no_machine_tools_leave_the_host_alone() {
+        let home = tempfile::tempdir().unwrap();
+
+        let bundle = with_machine_tools(Bundle::beside(home.path(), MAC), home.path(), home.path());
+
+        assert_eq!(bundle.platforms(), [MAC]);
+    }
+
+    #[test]
+    fn an_unreadable_machine_tools_manifest_leaves_the_host_alone() {
+        let (home, bin) = home_with_machine_tools("release-a", "release-a");
+        std::fs::write(home.path().join(MACHINE_TOOLS).join(MANIFEST), "not json").unwrap();
+
+        let bundle = with_machine_tools(Bundle::beside(&bin, MAC), home.path(), &bin);
+
+        assert_eq!(bundle.platforms(), [MAC]);
     }
 
     #[tokio::test]

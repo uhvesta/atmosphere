@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Humata 2 · UI Prototype</title>
+  <link rel="icon" href="data:,">
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #17181b; color: #dedfe3; font: 13px system-ui; }
     #loading { position: absolute; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; }
@@ -15,22 +16,35 @@
   <div id="loading"><span>Humata 2</span><small>Starting the Rust UI prototype…</small></div>
   <script type="module">
     const loading = document.getElementById('loading');
+    window.__humataPrototype = { phase: 'initializing', errors: [] };
+    const showError = error => {
+      window.__humataPrototype.phase = 'failed';
+      window.__humataPrototype.errors.push(String(error));
+      loading.style.display = 'grid';
+      loading.style.zIndex = '10';
+      loading.textContent = `Could not start the prototype: ${error}. Reload after rebuilding; browser diagnostics are available in the console.`;
+    };
+    window.addEventListener('error', event => showError(event.error || event.message));
+    window.addEventListener('unhandledrejection', event => showError(event.reason));
     try {
       const { default: init, run } = await import('./pkg/humata2_ui_prototype.js');
       await init();
       run();
-      // GPUI starts graphics asynchronously. Remove this only after it paints.
-      const observe = new MutationObserver(() => {
-        if (document.querySelector('canvas')) {
-          loading.style.pointerEvents = 'none';
-          loading.style.zIndex = '-1';
-          observe.disconnect();
-        }
-      });
-      observe.observe(document.body, { childList: true, subtree: true });
-      if (document.querySelector('canvas')) loading.style.display = 'none';
+      // A 1×1 placeholder canvas exists before GPUI opens its window.
+      // Keep the startup state visible until the window has a drawable surface.
+      const waitForWindow = () => {
+        if (window.__humataPrototype.phase === 'failed') return;
+        const canvas = document.querySelector('canvas');
+        if (canvas && canvas.width > 1 && canvas.height > 1) {
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            loading.style.display = 'none';
+            window.__humataPrototype.phase = 'running';
+          }));
+        } else requestAnimationFrame(waitForWindow);
+      };
+      requestAnimationFrame(waitForWindow);
     } catch (error) {
-      loading.textContent = `Could not start the prototype: ${error}. Check the browser console, enable graphics acceleration, and reload.`;
+      showError(error);
       console.error(error);
     }
   </script>

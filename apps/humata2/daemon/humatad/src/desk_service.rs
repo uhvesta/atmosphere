@@ -10,6 +10,10 @@
 //! folders whose 7 days are up (D182.4). A closed session's agent is saved
 //! stopped and its shells' rows are removed, so a restart brings nothing back
 //! and restart.rs needs no filter for Desk sessions.
+//!
+//! PlanDeskMove and MoveDeskSessionToChannel move a Desk session into a
+//! channel (DK-15..DK-19, D305; move_to_channel.rs). The session's own agent
+//! may call the move too, under the target channel's rule.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,18 +31,31 @@ use crate::guard::Guard;
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
 use crate::operations::Operations;
+use crate::remote_work::RemoteWork;
 use crate::restart::Tokens;
 use crate::session_service::{Tell, start_error};
 use crate::status;
 use crate::terminal::Core;
 use crate::trash_service::Bin;
+use crate::upgrade::items::Migrations;
 
+pub(crate) mod channel_desk;
+pub(crate) mod channel_desk_close;
 mod clean_up;
 mod close;
 mod copy;
+mod doc_watch;
+mod follow;
+mod migrate;
+mod move_to_channel;
+mod remote;
+mod remote_asked;
+mod remote_close;
+mod remote_view;
 mod repos;
 mod start;
 mod view;
+mod versions;
 
 /// What the Desk service is built from. All of it is in serve.rs's scope
 /// where the session service is made.
@@ -59,6 +76,19 @@ pub(crate) struct DeskDeps {
     pub(crate) terminals: Arc<Core>,
     /// Humata's state folder, which a picked folder may not be inside.
     pub(crate) state: PathBuf,
+    /// How the trash and the channel delete reach this service (CD-4,
+    /// CH-24); set here once the service is made.
+    pub(crate) handle: channel_desk_close::DeskHandle,
+    /// The host's way to other machines: a Desk session starts on any of
+    /// them (MV-17). None on a machine's own daemon.
+    pub(crate) remote: Option<RemoteWork>,
+    /// Which machines are at another release than this host's (UP-1).
+    pub(crate) migrations: Migrations,
+    /// The channel service, which adds the repos a moved Desk session
+    /// brings (DK-16).
+    pub(crate) channels: crate::channel_service::ChannelSvc,
+    /// This start, after which a Desk move cut short is settled (DK-17).
+    pub(crate) last_start: Arc<crate::restart::Started>,
 }
 
 /// The Desk service, served beside the session service.
@@ -84,6 +114,13 @@ pub(crate) struct DeskSvc {
     cleaned: Arc<Mutex<HashMap<String, pb::CleanUpDeskResponse>>>,
     /// CopyDeskDocument's answers by idempotency key, kept until restart.
     copied: Arc<Mutex<HashMap<String, pb::CopyDeskDocumentResponse>>>,
+    remote: Option<RemoteWork>,
+    migrations: Migrations,
+    channels: crate::channel_service::ChannelSvc,
+    /// This start, whose report says which starts it couldn't finish.
+    restart: Arc<crate::restart::Started>,
+    /// The host's change feed, where a Desk session's changes are told.
+    feed: Arc<crate::events::Feed>,
 }
 
 /// One lock per Desk session, held across any change to its row, its agent
@@ -132,9 +169,29 @@ pub(crate) fn server(deps: DeskDeps) -> pb::desk_service_server::DeskServiceServ
         wake: Arc::new(Notify::new()),
         cleaned: Arc::default(),
         copied: Arc::default(),
+        remote: deps.remote,
+        migrations: deps.migrations,
+        channels: deps.channels,
+        restart: deps.last_start.clone(),
+        feed: deps.handle.feed(),
     };
+    // DK-17: a Desk move a restart cut short is finished or undone.
+    move_to_channel::recover_after(svc.clone(), deps.last_start.clone());
+    // D731: a Desk start the host asked a machine for and heard no answer
+    // to is asked again under the same id once the machine links.
+    remote_asked::recover_after(svc.clone(), deps.last_start.clone());
     // The sweep runs from here on: at start, after each Close and hourly.
     clean_up::spawn_sweep(svc.clone());
+    // D458: Desk folders made before DOCV get their repository through a Migrate item.
+    migrate::wire(&svc);
+    // DV-12, DV-5: a new commit in a Desk folder records its comments and tells the app.
+    doc_watch::spawn_watch(svc.clone(), deps.handle.feed());
+    // DESKWATCH: every change to a Desk session is told on the feed as a Desk event.
+    follow::spawn_follow(svc.clone(), deps.handle.feed());
+    // CD-5: closes or stops a channel Desk session whose target or channel
+    // is gone.
+    deps.handle.set(svc.clone());
+    channel_desk_close::spawn_watch(svc.clone(), deps.handle.feed());
     pb::desk_service_server::DeskServiceServer::new(svc)
 }
 
@@ -146,9 +203,15 @@ impl pb::desk_service_server::DeskService for DeskSvc {
     ) -> Result<Response<pb::StartDeskSessionResponse>, Status> {
         let caller = identity::caller(&request)?;
         user_only(&caller)?;
-        self.start(&caller, request.into_inner())
-            .await
-            .map(Response::new)
+        let assigned = remote::assigned_of(&request, &caller)?;
+        let request = request.into_inner();
+        if request.channel.is_some() {
+            return self
+                .start_channel_desk(&caller, request, assigned)
+                .await
+                .map(Response::new);
+        }
+        self.start(&caller, request, assigned).await.map(Response::new)
     }
 
     async fn list_desk_sessions(
@@ -157,7 +220,12 @@ impl pb::desk_service_server::DeskService for DeskSvc {
     ) -> Result<Response<pb::ListDeskSessionsResponse>, Status> {
         let caller = identity::caller(&request)?;
         user_only(&caller)?;
-        let sessions = self.list().await?;
+        let request = request.into_inner();
+        let sessions = if request.channel.is_some() || request.target.is_some() {
+            self.list_channel_desk(request.channel, request.target).await?
+        } else {
+            self.list().await?
+        };
         Ok(Response::new(pb::ListDeskSessionsResponse { sessions }))
     }
 
@@ -167,9 +235,11 @@ impl pb::desk_service_server::DeskService for DeskSvc {
     ) -> Result<Response<pb::DeskSession>, Status> {
         let caller = identity::caller(&request)?;
         user_only(&caller)?;
-        self.close(&caller, request.into_inner())
-            .await
-            .map(Response::new)
+        let request = request.into_inner();
+        if let Some(closed) = self.close_channel_desk(&caller, &request).await? {
+            return Ok(Response::new(closed));
+        }
+        self.close(&caller, request).await.map(Response::new)
     }
 
     async fn reopen_desk_session(
@@ -178,9 +248,11 @@ impl pb::desk_service_server::DeskService for DeskSvc {
     ) -> Result<Response<pb::Operation>, Status> {
         let caller = identity::caller(&request)?;
         user_only(&caller)?;
-        self.reopen(&caller, request.into_inner())
-            .await
-            .map(Response::new)
+        let request = request.into_inner();
+        if let Some(operation) = self.reopen_channel_desk(&caller, &request).await? {
+            return Ok(Response::new(operation));
+        }
+        self.reopen(&caller, request).await.map(Response::new)
     }
 
     async fn keep_desk_folder(
@@ -193,13 +265,81 @@ impl pb::desk_service_server::DeskService for DeskSvc {
             .map(Response::new)
     }
 
+    async fn list_doc_versions(
+        &self,
+        request: Request<pb::ListDocVersionsRequest>,
+    ) -> Result<Response<pb::ListDocVersionsResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        self.list_versions(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn read_doc_version(
+        &self,
+        request: Request<pb::ReadDocVersionRequest>,
+    ) -> Result<Response<pb::DocVersionText>, Status> {
+        let caller = identity::caller(&request)?;
+        self.read_version(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn save_doc_version(
+        &self,
+        request: Request<pb::SaveDocVersionRequest>,
+    ) -> Result<Response<pb::DocVersion>, Status> {
+        let caller = identity::caller(&request)?;
+        user_only(&caller)?;
+        self.save_version(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn restore_doc_version(
+        &self,
+        request: Request<pb::RestoreDocVersionRequest>,
+    ) -> Result<Response<pb::RestoreDocVersionResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        user_only(&caller)?;
+        self.restore_version(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn diff_doc_version(
+        &self,
+        request: Request<pb::DiffDocVersionRequest>,
+    ) -> Result<Response<pb::DocVersionDiff>, Status> {
+        let caller = identity::caller(&request)?;
+        self.diff_version(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
     async fn set_desk_access(
         &self,
         request: Request<pb::SetDeskAccessRequest>,
     ) -> Result<Response<pb::DeskSession>, Status> {
         let caller = identity::caller(&request)?;
         user_only(&caller)?;
-        self.set_access(&caller, request.into_inner())
+        let request = request.into_inner();
+        if request.switches.is_some() {
+            return self
+                .set_channel_desk_switches(&caller, request)
+                .await
+                .map(Response::new);
+        }
+        self.set_access(&caller, request).await.map(Response::new)
+    }
+
+    async fn set_desk_target(
+        &self,
+        request: Request<pb::SetDeskTargetRequest>,
+    ) -> Result<Response<pb::DeskSession>, Status> {
+        let caller = identity::caller(&request)?;
+        user_only(&caller)?;
+        self.set_channel_desk_target(&caller, request.into_inner())
             .await
             .map(Response::new)
     }
@@ -256,6 +396,43 @@ impl pb::desk_service_server::DeskService for DeskSvc {
             .await
             .map(Response::new)
     }
+
+    async fn plan_desk_move(
+        &self,
+        request: Request<pb::PlanDeskMoveRequest>,
+    ) -> Result<Response<pb::DeskMovePlan>, Status> {
+        let caller = identity::caller(&request)?;
+        user_only(&caller)?;
+        self.plan_move(&caller, request.into_inner())
+            .await
+            .map(Response::new)
+    }
+
+    async fn move_desk_session_to_channel(
+        &self,
+        request: Request<pb::MoveDeskSessionToChannelRequest>,
+    ) -> Result<Response<pb::Operation>, Status> {
+        let caller = identity::caller(&request)?;
+        self.move_session(&caller, request.into_inner()).await
+    }
+
+    async fn check_desk_folders(
+        &self,
+        request: Request<pb::CheckDeskFoldersRequest>,
+    ) -> Result<Response<pb::CheckDeskFoldersResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        user_only(&caller)?;
+        self.count_stale().await.map(Response::new)
+    }
+
+    async fn migrate_desk_folders(
+        &self,
+        request: Request<pb::MigrateDeskFoldersRequest>,
+    ) -> Result<Response<pb::MigrateDeskFoldersResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        user_only(&caller)?;
+        self.migrate_asked().await.map(Response::new)
+    }
 }
 
 impl DeskSvc {
@@ -277,14 +454,16 @@ impl DeskSvc {
             .filter(|session| session.channel == DESK_CHANNEL)
             .collect();
         sessions.sort_by(|a, b| (a.created_unix_ms, &a.id).cmp(&(b.created_unix_ms, &b.id)));
-        Ok(sessions
+        let shown: Vec<_> = sessions
             .iter()
             .filter_map(|session| {
                 rows.get(&session.id)
                     .filter(|row| row.deleted_unix_ms.is_none())
-                    .map(|row| view::desk_pb(session, row))
+                    .map(|row| (self.elsewhere(session), view::desk_pb(session, row)))
             })
-            .collect())
+            .collect();
+        // A session on another machine shows what that machine holds (MV-17).
+        Ok(self.fill_remote(shown, pb::ListDeskSessionsRequest::default()).await)
     }
 
     /// Keep (DK-2, D182.6): the user may keep any Desk folder; an agent may
@@ -419,15 +598,21 @@ pub(crate) async fn refuse_channel_action(
     action: &str,
 ) -> Result<(), Status> {
     let (store, key) = (store.clone(), session.to_owned());
-    let row = blocking(move || store.desk(&key))
+    let rows = blocking(move || -> Result<_, StoreError> { Ok((store.desk(&key)?, store.channel_desk(&key)?)) })
         .await?
         .map_err(|error| status::store(error, machine, "look up the Desk session"))?;
-    match row {
-        Some(_) => Err(failed_precondition(
+    match rows {
+        // CD-1: a channel's Desk session has no fork, archive or clones of
+        // its own.
+        (_, Some(_)) => Err(failed_precondition(
+            format!("{action} isn't for session {session}: it is a channel's Desk session, which has no branch, clones or fork of its own"),
+            format!("close it from the channel's Desk instead; copy any files you want to keep to the channel's shared folder first, since {action} works on channel sessions only"),
+        )),
+        (Some(_), None) => Err(failed_precondition(
             format!("{action} isn't for session {session}: it is a Desk session, which belongs to no channel"),
             format!("use the Desk's own actions for it (Close, Keep, Clean up); {action} works on channel sessions only"),
         )),
-        None => Ok(()),
+        (None, None) => Ok(()),
     }
 }
 
@@ -497,10 +682,6 @@ pub(crate) fn start_failure(error: &DeskError) -> (Code, pb::Error) {
             Code::FailedPrecondition,
             error_of(error, "check the repository's name and that this Mac can reach its remote, then try again", None),
         ),
-        DeskError::NotAbsolute { .. } => picked_failure(error, pb::invalid_field::Problem::BadFormat),
-        DeskError::NotAFolder { .. } => picked_failure(error, pb::invalid_field::Problem::BadFormat),
-        DeskError::Missing { .. } => picked_failure(error, pb::invalid_field::Problem::UnknownValue),
-        DeskError::InsideHumata { .. } => picked_failure(error, pb::invalid_field::Problem::NotAllowedHere),
         _ => (
             Code::Internal,
             error_of(
@@ -525,20 +706,6 @@ fn invalid_field_failure(
             "give the file or repository as the message says, then try again",
             Some(pb::error::Kind::InvalidField(pb::InvalidField {
                 field: field.to_owned(),
-                problem: problem as i32,
-            })),
-        ),
-    )
-}
-
-fn picked_failure(error: &DeskError, problem: pb::invalid_field::Problem) -> (Code, pb::Error) {
-    (
-        Code::InvalidArgument,
-        error_of(
-            error,
-            "pick a folder that exists, given by its full path, outside Humata's channels folder",
-            Some(pb::error::Kind::InvalidField(pb::InvalidField {
-                field: "picked_path".to_owned(),
                 problem: problem as i32,
             })),
         ),

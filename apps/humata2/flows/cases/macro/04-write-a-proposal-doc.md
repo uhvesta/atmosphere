@@ -15,7 +15,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 1. **I do:** Open the Desk and start a session titled "queue proposal".
    **I see:** The Desk form, then the session opens with its agent starting. It is listed on the Desk, not in a channel.
    **State and events:** A Desk session row is recorded. Its folder is named from the title.
-   **Status:** Fakes only. `features/app/tests/desk.rs::empty_home_starts_a_desk_session_and_opens_it` covers the form. The daemon side is step 2.
+   **Status:** Works (real daemon). `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel` starts a Desk session from the Desk page, and it is listed on the Desk, not in a channel. Fake-client version: `features/app/tests/desk.rs::empty_home_starts_a_desk_session_and_opens_it`. The daemon side is step 2.
 
 2. **I do:** Add the three repos to the session when I start it (or add them afterwards).
    **I see:** Each repo is cloned into the session's folder.
@@ -65,7 +65,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 11. **I do:** Press Copy to channel on `PROPOSAL.md` and choose `queue`.
     **I see:** A confirmation that the document was copied to the channel's shared folder.
     **State and events:** The copy request goes to the daemon. The Desk's own copy stays.
-    **Status:** Fakes only. `desktop/tests/native/desk.rs::a_document_is_copied_into_a_channels_shared_folder` covers the button and the message.
+    **Status:** Works (real daemon). `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel` clicks Copy to a channel…, picks the channel, and sees the note saying where it went. Fake-client version: `desktop/tests/native/desk.rs::a_document_is_copied_into_a_channels_shared_folder`.
 
 12. **I do:** Nothing. The file is in the channel.
     **I see:** `shared/PROPOSAL.md` exists in the `queue` channel's folder, with the same text. An existing file of that name is never overwritten.
@@ -88,7 +88,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 - **I do:** Look at the comment in the Diff panel.
 - **I see:** Per the spec, a detached draft with Re-attach and Drop.
 - **Expected (SM-16, D190):** A sent comment whose passage is gone returns to a detached draft.
-- **Status:** Likely bug. `review/src/model/comments.rs:676-682` (`reanchor`) sets such a comment to `Addressed`, not a detached draft. The daemon does it right in `daemon/review_diff/src/comments.rs` (`gone`, around line 909). To confirm which copy the Diff panel draws: check whether the app's review model reruns this rule when changes arrive. `review::model::session::set_review` (`review/src/model/session.rs:251-280`) does, and `review/src/view/mod.rs:305` is its public entry point. If the Diff panel draws that model, it shows Addressed where the daemon says detached.
+- **Status:** Fakes only: `review/tests/model.rs::a_sent_comment_whose_passage_is_gone_is_a_detached_draft_again` proves the app's review model makes it a detached draft again, as the daemon's copy does (`daemon/review_diff/tests/gone.rs::a_sent_comment_whose_passage_is_gone_is_a_detached_draft_again`). The rule runs inside the app's model, so no step crosses the daemon. (Was a likely bug: the app's copy set it Addressed; fixed by BUGS.)
 
 ### Someone changes the file while I have a sent comment on it
 
@@ -96,7 +96,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 - **I do:** Save my change to the same passage.
 - **I see:** The comment changes state as if the agent had changed the passage.
 - **Expected (SM-16):** "Changes the user makes never address a comment."
-- **Status:** Likely bug. `daemon/humatad/src/review/comments.rs:657-660` (`refresh_user_comments`) calls `ledger.changed` for any change to a watched file. It does not check who made it. A user change to a sent passage therefore addresses the comment. To confirm: send a comment, edit that line in another editor, and check the status. No write conflict check exists either: `api/proto/humata/v1/files.proto:145-151` (`WriteFileHeader`) has a `replace` flag and a hash of the content, but no base version, and `daemon/humatad/src/files.rs:245` writes whatever arrives. No test covers either.
+- **Status:** Works (real daemon): `daemon/humatad/tests/comments.rs::a_sent_comment_stays_sent_when_the_user_writes_its_lines_through_files` writes a commented passage through Files and the comment stays sent (SM-16). Two writers are told apart by the base: `daemon/humatad/tests/files.rs::a_replace_made_from_a_stale_read_is_refused_and_writes_nothing` refuses a replace made from a stale read and writes nothing. (Was a likely bug; fixed by BUGS.)
 
 ### Re-attach or Drop a comment whose passage is gone
 
@@ -156,7 +156,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 
 | Step or branch | Status | Evidence |
 |---|---|---|
-| 1. Start the Desk session | Fakes only | `features/app/tests/desk.rs::empty_home_starts_a_desk_session_and_opens_it` |
+| 1. Start the Desk session | Works (real daemon) | `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel`; fakes: `features/app/tests/desk.rs::empty_home_starts_a_desk_session_and_opens_it` |
 | 2. Repos cloned into the folder | Works (real daemon) | `daemon/humatad/tests/desk.rs::a_start_with_repos_clones_each_into_the_folder` |
 | 3. Agent writes PROPOSAL.md | Works (real daemon) | `desktop/tests/live_flows/review.rs::a_document_is_commented_on_rewritten_and_its_comments_followed` (fake agent) |
 | 4. Open as tab, Side by side | Works (real daemon) | `desktop/tests/live_flows/review.rs::a_document_is_commented_on_rewritten_and_its_comments_followed` |
@@ -166,11 +166,11 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 | 8. Agent rewrites; addressed and detached | Works (real daemon) | `desktop/tests/live_flows/review.rs::a_document_is_commented_on_rewritten_and_its_comments_followed` |
 | 9. Resolve, re-attach, send again | Works (real daemon) | `desktop/tests/live_flows/review.rs::a_document_is_commented_on_rewritten_and_its_comments_followed` |
 | 10. Edit in my own editor | Not built | SE-17; `ui/src/panel_files.rs:306`; OVERVIEW.md:459 |
-| 11. Copy to channel, button | Fakes only | `desktop/tests/native/desk.rs::a_document_is_copied_into_a_channels_shared_folder` |
+| 11. Copy to channel, button | Works (real daemon) | `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel`; fakes: `desktop/tests/native/desk.rs::a_document_is_copied_into_a_channels_shared_folder` |
 | 12. File lands in shared folder | Works (real daemon) | `daemon/humatad/tests/desk.rs::markdown_in_the_folder_is_listed_and_copies_into_a_channels_shared_folder` |
 | Branch: agent edits a commented line | Works (real daemon) | `daemon/humatad/tests/comments.rs::a_sent_comment_is_addressed_when_its_lines_change_and_a_draft_detaches` |
-| Branch: passage gone, app's copy of the rule | Likely bug | `review/src/model/comments.rs:676-682` |
-| Branch: user or concurrent change | Likely bug | `daemon/humatad/src/review/comments.rs:657-660`; `daemon/humatad/src/files.rs:245` |
+| Branch: passage gone, app's copy of the rule | Fakes only (fixed) | `review/tests/model.rs::a_sent_comment_whose_passage_is_gone_is_a_detached_draft_again`; `daemon/review_diff/tests/gone.rs::a_sent_comment_whose_passage_is_gone_is_a_detached_draft_again` |
+| Branch: user or concurrent change | Works (real daemon) | `daemon/humatad/tests/comments.rs::a_sent_comment_stays_sent_when_the_user_writes_its_lines_through_files`; `daemon/humatad/tests/files.rs::a_replace_made_from_a_stale_read_is_refused_and_writes_nothing` |
 | Branch: re-attach or drop | Works (real daemon) | `daemon/humatad/tests/comments.rs::the_user_drafts_edits_lists_and_drops_comments` |
 | Branch: resolve, reopen or re-attach a note | Not built | `daemon/humatad/src/review.rs:981, 998, 1007`; REVIEW.md:60 |
 | Branch: Open in editor | Not built | SE-17; `ui/src/panel_changes.rs:289`; OVERVIEW.md:459 |
@@ -181,6 +181,6 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 
 - **Not built:** editing a Markdown file in Humata, and "Open in editor" (SE-17). The brief's step 10 (I edit a paragraph myself while the agent writes) can only happen in my own editor, outside Humata.
 - **Not built:** Re-attach, Resolve and Reopen for notes (`daemon/humatad/src/review.rs:981, 998, 1007`). No milestone; REVIEW.md keeps the user's ReplyToComment not built too.
-- **Likely bug:** a sent comment whose passage is gone becomes Addressed in the app's review model (`review/src/model/comments.rs:676-682`). The spec and the daemon say it becomes a detached draft. Confirm which copy the Diff panel draws (`review/src/view/mod.rs:305` is the entry point that feeds it).
-- **Likely bug:** a change made by the user addresses a sent comment, which SM-16 forbids. `daemon/humatad/src/review/comments.rs:657-660` does not tell the user's change from the agent's. Confirm by editing a commented passage in another editor.
-- **Likely bug:** no write conflict check on `WriteFile`. `api/proto/humata/v1/files.proto:145-151` has no base version, and `daemon/humatad/src/files.rs:245` writes what arrives. Confirm by writing a file from two places at once. No test covers this.
+- **Fixed (was a likely bug):** a sent comment whose passage is gone is a detached draft again in the app's model too (`review/tests/model.rs::a_sent_comment_whose_passage_is_gone_is_a_detached_draft_again`).
+- **Fixed (was a likely bug):** a change the user makes leaves a sent comment sent (`daemon/humatad/tests/comments.rs::a_sent_comment_stays_sent_when_the_user_writes_its_lines_through_files`).
+- **Fixed (was a likely bug):** a write made from a stale read is refused and writes nothing (`daemon/humatad/tests/files.rs::a_replace_made_from_a_stale_read_is_refused_and_writes_nothing`).

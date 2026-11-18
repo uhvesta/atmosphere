@@ -31,6 +31,20 @@ pub enum FileRoot {
         /// The repository.
         repo: String,
     },
+    /// What was pasted into a session's terminals; the user only (D335).
+    SessionPastes(SessionId),
+    /// A session's own folder, where a Desk session's documents sit,
+    /// outside every clone (D382).
+    SessionFolder {
+        /// The session.
+        session: SessionId,
+    },
+    /// What other machines sent here: `<root>/received/<machine>/`. People
+    /// see it as "From <machine name>", never as a path (PL-4).
+    Received {
+        /// The machine the files came from.
+        from: MachineId,
+    },
 }
 
 /// A folder on a machine: where a pane is.
@@ -101,6 +115,9 @@ impl Folder {
             FileRoot::ChannelFolder(channel) => format!("#{channel}"),
             FileRoot::ChannelShared(channel) => format!("#{channel}/shared"),
             FileRoot::SessionClone { session, repo } => format!("{repo} ({session})"),
+            FileRoot::SessionPastes(session) => format!("pastes ({session})"),
+            FileRoot::SessionFolder { session } => format!("({session})"),
+            FileRoot::Received { from } => format!("received/{from}"),
         };
         join(&base, &self.path)
     }
@@ -200,6 +217,26 @@ impl TransferPhase {
     }
 }
 
+/// Where one thing a transfer carried ended up (PL-13).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Landing {
+    /// Under its own name.
+    AsAsked,
+    /// The name was taken there, so it was kept beside it under this name.
+    SavedAs(String),
+    /// The same bytes were already there, so nothing was copied.
+    AlreadyThere,
+}
+
+/// What became of one thing a finished transfer carried.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemLanding {
+    /// What it is called where it came from.
+    pub name: String,
+    /// Where it ended up.
+    pub landing: Landing,
+}
+
 /// One line of the transfers tray (FM-7).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransferRow {
@@ -219,6 +256,8 @@ pub struct TransferRow {
     pub total_bytes: u64,
     /// Where it is.
     pub phase: TransferPhase,
+    /// What became of each thing it carried; empty until it is done.
+    pub outcomes: Vec<ItemLanding>,
 }
 
 impl TransferRow {
@@ -423,6 +462,25 @@ pub trait FileManager: Send + Sync + 'static {
     ) -> FileReply<TransferId>;
     /// Uploads files from this computer, as dropped from Finder (FM-4).
     fn upload(&self, local: Vec<PathBuf>, into: &Folder) -> FileReply<TransferId>;
+    /// Like [`FileManager::start_transfer`], but a name taken in `into` is
+    /// kept and the arriving one gets a number (`a-2.txt`) instead of the
+    /// transfer failing (PL-13).
+    fn start_transfer_keep_both(
+        &self,
+        from: &Folder,
+        names: Vec<String>,
+        into: &Folder,
+        mode: TransferMode,
+    ) -> FileReply<TransferId>;
+    /// Uploads files from this computer into the session's pastes on
+    /// `machine`, each paste in a folder of its own, and returns where each
+    /// file is on that machine's disk, in order (D335).
+    fn paste_files(
+        &self,
+        local: Vec<PathBuf>,
+        machine: &MachineId,
+        session: &SessionId,
+    ) -> FileReply<Vec<String>>;
     /// Stops a transfer.
     fn cancel_transfer(&self, transfer: &TransferId) -> FileReply<()>;
     /// Every transfer, newest first.
@@ -493,6 +551,10 @@ struct Transfer {
     into: Folder,
     mode: TransferMode,
     names: Vec<String>,
+    /// What each of `names` is called where it lands.
+    targets: Vec<String>,
+    /// How each of `names` lands; parallel to `names`.
+    landings: Vec<Landing>,
     uploads: Vec<(String, u64)>,
 }
 
@@ -572,10 +634,13 @@ impl ManagerInner {
                 done_bytes: 0,
                 total_bytes: total,
                 phase: TransferPhase::Copying,
+                outcomes: Vec::new(),
             },
             from: from.clone(),
             into: into.clone(),
             mode,
+            targets: names.clone(),
+            landings: vec![Landing::AsAsked; names.len()],
             names,
             uploads,
         });
@@ -603,11 +668,13 @@ impl ManagerInner {
         if matches!(transfer.row.phase, TransferPhase::Paused { .. }) || transfer.row.phase.is_over() {
             return;
         }
-        let (from, into, mode, names, uploads, total) = (
+        let (from, into, mode, names, targets, landings, uploads, total) = (
             transfer.from.clone(),
             transfer.into.clone(),
             transfer.mode,
             transfer.names.clone(),
+            transfer.targets.clone(),
+            transfer.landings.clone(),
             transfer.uploads.clone(),
             transfer.row.total_bytes,
         );
@@ -622,10 +689,16 @@ impl ManagerInner {
                 },
             );
         }
-        for name in &names {
+        for ((name, kept_as), landing) in names.iter().zip(&targets).zip(&landings) {
             let source = from.child(name);
+            if *landing == Landing::AlreadyThere {
+                if mode == TransferMode::Move {
+                    self.trash_names(&from, std::slice::from_ref(name));
+                }
+                continue;
+            }
             let nodes = subtree(self.data(&from.machine), &source.root, &source.path);
-            let target = into.child(name);
+            let target = into.child(kept_as);
             let destination = self.data(&into.machine);
             for (path, node) in nodes {
                 let relative = path.strip_prefix(&source.path).unwrap_or("");
@@ -642,6 +715,15 @@ impl ManagerInner {
         if let Some(transfer) = self.transfers.get_mut(index) {
             transfer.row.done_bytes = transfer.row.total_bytes;
             transfer.row.phase = TransferPhase::Done;
+            transfer.row.outcomes = transfer
+                .names
+                .iter()
+                .zip(&transfer.landings)
+                .map(|(name, landing)| ItemLanding {
+                    name: name.clone(),
+                    landing: landing.clone(),
+                })
+                .collect();
         }
         self.emit(index);
     }
@@ -913,12 +995,110 @@ fn folder_exists(data: &MachineData, folder: &Folder) -> bool {
             .is_some_and(|node| node.kind == EntryKind::Folder)
 }
 
+/// `name`, or the first of `name-2`, `name-3`... not taken in `into`, with
+/// the number before the extension (FC-14).
+fn free_name(data: &MachineData, into: &Folder, name: &str) -> String {
+    let taken = |candidate: &str| {
+        let child = into.child(candidate);
+        data.files.contains_key(&(child.root, child.path))
+    };
+    if !taken(name) {
+        return name.to_owned();
+    }
+    let (stem, extension) = match name.rfind('.') {
+        Some(at) if at > 0 => name.split_at(at),
+        _ => (name, ""),
+    };
+    (2..)
+        .map(|number| format!("{stem}-{number}{extension}"))
+        .find(|candidate| !taken(candidate.as_str()))
+        .unwrap_or_else(|| name.to_owned())
+}
+
+/// Whether what is at `name` in `from` holds the same bytes as what is at
+/// `name` in `into`. The fake keeps sizes, not bytes, so it takes the same
+/// kind and size at every path for the same bytes; a folder needs a file.
+fn same_content(inner: &mut ManagerInner, from: &Folder, into: &Folder, name: &str) -> bool {
+    let (source, target) = (from.child(name), into.child(name));
+    let held = |data: &MachineData, child: &Folder| -> Vec<(String, EntryKind, u64)> {
+        subtree(data, &child.root, &child.path)
+            .into_iter()
+            .map(|(path, node)| (path[child.path.len()..].to_owned(), node.kind, node.size))
+            .collect()
+    };
+    let mut here = held(inner.data(&from.machine), &source);
+    let mut there = held(inner.data(&into.machine), &target);
+    here.sort_by(|a, b| a.0.cmp(&b.0));
+    there.sort_by(|a, b| a.0.cmp(&b.0));
+    here == there && here.iter().any(|(_, kind, _)| *kind != EntryKind::Folder)
+}
+
+/// The error for a folder that isn't there.
 fn not_found(folder: &Folder) -> FileManagerError {
     FileManagerError::NotFound {
         path: folder.display_path(),
     }
 }
 
+impl FakeFileManager {
+    fn begin_transfer(
+        &self,
+        from: &Folder,
+        names: Vec<String>,
+        into: &Folder,
+        mode: TransferMode,
+        keep_both: bool,
+    ) -> FileReply<TransferId> {
+        let mut inner = self.lock();
+        let result = (|| {
+            inner.guard(&from.machine)?;
+            inner.online(&into.machine)?;
+            let mut total = 0;
+            let mut targets = Vec::new();
+            let mut landings = Vec::new();
+            for name in &names {
+                let child = from.child(name);
+                let nodes = subtree(inner.data(&from.machine), &child.root, &child.path);
+                if nodes.is_empty() {
+                    return Err(not_found(&child));
+                }
+                let size = nodes.iter().map(|(_, node)| node.size).sum::<u64>();
+                let taken = {
+                    let target = into.child(name);
+                    inner.data(&into.machine).files.contains_key(&(target.root, target.path))
+                };
+                if keep_both && taken && same_content(&mut inner, from, into, name) {
+                    targets.push(name.clone());
+                    landings.push(Landing::AlreadyThere);
+                } else if keep_both {
+                    total += size;
+                    let kept = free_name(inner.data(&into.machine), into, name);
+                    landings.push(if kept == *name { Landing::AsAsked } else { Landing::SavedAs(kept.clone()) });
+                    targets.push(kept);
+                } else {
+                    total += size;
+                    landings.push(Landing::AsAsked);
+                    let target = into.child(name);
+                    if inner.data(&into.machine).files.contains_key(&(target.root, target.path)) {
+                        return Err(FileManagerError::NameTaken { name: name.clone() });
+                    }
+                    targets.push(name.clone());
+                }
+            }
+            inner.check_room(&into.machine, total)?;
+            let what = names.join(", ");
+            let id = inner.new_transfer(from, into, mode, names, Vec::new(), total, what);
+            if let Some(transfer) = inner.transfers.last_mut() {
+                transfer.targets = targets;
+                transfer.landings = landings;
+            }
+            Ok(id)
+        })();
+        ready(result)
+    }
+}
+
+// The trait, on the in-memory tree.
 impl FileManager for FakeFileManager {
     fn list(&self, folder: &Folder) -> FileReply<Listing> {
         let mut inner = self.lock();
@@ -1009,28 +1189,17 @@ impl FileManager for FakeFileManager {
         into: &Folder,
         mode: TransferMode,
     ) -> FileReply<TransferId> {
-        let mut inner = self.lock();
-        let result = (|| {
-            inner.guard(&from.machine)?;
-            inner.online(&into.machine)?;
-            let mut total = 0;
-            for name in &names {
-                let child = from.child(name);
-                let nodes = subtree(inner.data(&from.machine), &child.root, &child.path);
-                if nodes.is_empty() {
-                    return Err(not_found(&child));
-                }
-                total += nodes.iter().map(|(_, node)| node.size).sum::<u64>();
-                let target = into.child(name);
-                if inner.data(&into.machine).files.contains_key(&(target.root, target.path)) {
-                    return Err(FileManagerError::NameTaken { name: name.clone() });
-                }
-            }
-            inner.check_room(&into.machine, total)?;
-            let what = names.join(", ");
-            Ok(inner.new_transfer(from, into, mode, names, Vec::new(), total, what))
-        })();
-        ready(result)
+        self.begin_transfer(from, names, into, mode, false)
+    }
+
+    fn start_transfer_keep_both(
+        &self,
+        from: &Folder,
+        names: Vec<String>,
+        into: &Folder,
+        mode: TransferMode,
+    ) -> FileReply<TransferId> {
+        self.begin_transfer(from, names, into, mode, true)
     }
 
     fn upload(&self, local: Vec<PathBuf>, into: &Folder) -> FileReply<TransferId> {
@@ -1056,6 +1225,45 @@ impl FileManager for FakeFileManager {
             let what = uploads.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ");
             let from = Folder::home(inner.host.clone());
             Ok(inner.new_transfer(&from, into, TransferMode::Copy, Vec::new(), uploads, total, what))
+        })();
+        ready(result)
+    }
+
+    fn paste_files(
+        &self,
+        local: Vec<PathBuf>,
+        machine: &MachineId,
+        session: &SessionId,
+    ) -> FileReply<Vec<String>> {
+        let mut inner = self.lock();
+        let now = inner.now;
+        let result = (|| {
+            inner.next += 1;
+            let folder = format!("paste-{}", inner.next);
+            let data = inner.guard(machine)?;
+            let root = FileRoot::SessionPastes(session.clone());
+            let node = |kind, size| Node {
+                kind,
+                size,
+                modified: now,
+            };
+            data.files
+                .insert((root.clone(), folder.clone()), node(EntryKind::Folder, 0));
+            let mut typed = Vec::new();
+            for path in &local {
+                let Some(name) = path.file_name().map(|name| name.to_string_lossy().into_owned())
+                else {
+                    return Err(FileManagerError::NotAllowed {
+                        what: format!("{} isn't a file, so it can't be pasted", path.display()),
+                    });
+                };
+                let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+                let file = format!("{folder}/{name}");
+                data.files
+                    .insert((root.clone(), file.clone()), node(EntryKind::File, size));
+                typed.push(format!("/home/me/.humata2/store/files/{session}/paste/{file}"));
+            }
+            Ok(typed)
         })();
         ready(result)
     }

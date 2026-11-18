@@ -1,0 +1,45 @@
+// Which release a daemon or CLI is (UP-1, D281). Its own file so that
+// errors, Inbox previews and the link's Hello can all name a build without
+// importing one another.
+syntax = "proto3";
+
+package humata.v1;
+
+// One file of a release, as the bundle names it for this platform.
+message BuildFile {
+  string name = 1;     // "humatad2", "humata2_holder", "humata"
+  string sha256 = 2;   // lowercase hex
+}
+
+// What a daemon is. Two daemons are at the same release exactly when their
+// bundle ids are equal and neither is "".
+message BuildInfo {
+  string version = 1;
+  // The sha256 (lowercase hex) of the bundle manifest installed beside the
+  // daemon (~/.humata2/bin/bundle.json). "" when there is none, it doesn't
+  // parse, or this daemon's own sha256 isn't its platform's humatad2 entry
+  // there: "" never matches anything, itself included.
+  string bundle = 2;
+  // The running binary's own sha256, whatever the bundle says.
+  string own_sha256 = 3;
+  // The store schema this build opens (the number of its migrations).
+  uint32 store_schema = 4;
+  // The bundle's files for this platform; empty when bundle is "".
+  repeated BuildFile files = 5;
+  // The sha256 of the files found in the daemon's bin folder: humata2_holder
+  // and humata, as they were when the release was read or last put in place.
+  // A file that isn't there is left out, so the host posts a CLI or host tools
+  // item only for one that is there and differs from `files` (D371).
+  repeated BuildFile installed = 6;
+}
+
+// What a Migrate item would bring to the host's release.
+enum MigrateThing {
+  MIGRATE_THING_UNSPECIFIED = 0;
+  MIGRATE_THING_DAEMON = 1;
+  MIGRATE_THING_CLI = 2;
+  MIGRATE_THING_STORE = 3;
+  MIGRATE_THING_HOLDERS = 4;
+  MIGRATE_THING_HOST_TOOLS = 5;
+  MIGRATE_THING_DESK_FOLDERS = 6;
+}

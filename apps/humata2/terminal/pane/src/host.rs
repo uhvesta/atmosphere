@@ -61,12 +61,6 @@ pub enum PaneEvent {
         target: ghostty_vt::ClipboardTarget,
         text: String,
     },
-    /// The program asked to read a clipboard (OSC 52 `?`). Never answer
-    /// without the user's say (D30); answer with
-    /// [`TerminalPane::answer_clipboard_read`](crate::TerminalPane::answer_clipboard_read).
-    ClipboardReadRequested {
-        target: ghostty_vt::ClipboardTarget,
-    },
     /// An image was pasted. Upload it to the session's paste folder and
     /// paste its path with [`TerminalPane::paste_text`](crate::TerminalPane::paste_text)
     /// (D30, `TerminalService.PasteImage`).
@@ -82,6 +76,11 @@ pub enum PaneEvent {
     /// The user pressed ⌘\\ (Ctrl+Shift+\\ off the Mac): split this pane
     /// with a new shell beside it (NV-30). The pane tree does the split.
     SplitRequested,
+    /// Something typed or pasted was dropped because the pane takes no
+    /// input now ([`TerminalPane::set_connected`](crate::TerminalPane::set_connected)).
+    /// Told once until it takes input again, so the app can say why
+    /// without repeating itself.
+    InputRefused,
 }
 
 /// A paste held back until the user agrees: without bracketed paste, a
@@ -98,7 +97,13 @@ pub(crate) struct Shared {
     /// Off while the session's machine is offline (SE-16): input is
     /// dropped, never queued to arrive out of context later.
     pub(crate) connected: bool,
+    /// Whether the app was told input is dropped since `connected` went
+    /// off.
+    pub(crate) told_refused: bool,
     pub(crate) pending_paste: Option<PendingPaste>,
+    /// A clipboard the program asked to read (OSC 52 `?`), waiting for
+    /// the user: never answered without them (D30).
+    pub(crate) clipboard_read: Option<ghostty_vt::ClipboardTarget>,
     pub(crate) events: Vec<PaneEvent>,
     pub(crate) cell: CellSize,
     paste_accepted: bool,
@@ -109,11 +114,21 @@ impl Shared {
         Rc::new(RefCell::new(Shared {
             pty,
             connected: true,
+            told_refused: false,
             pending_paste: None,
+            clipboard_read: None,
             events: Vec::new(),
             cell: CellSize::default(),
             paste_accepted: false,
         }))
+    }
+
+    /// Input was dropped while the pane takes none: tells the app once.
+    pub(crate) fn refuse(&mut self) {
+        if !self.told_refused {
+            self.told_refused = true;
+            self.events.push(PaneEvent::InputRefused);
+        }
     }
 
     pub(crate) fn send(&mut self, bytes: &[u8]) {
@@ -136,14 +151,26 @@ impl Shared {
             Event::PwdChanged(pwd) => PaneEvent::PwdChanged(pwd),
             Event::Bell => PaneEvent::Bell,
             Event::ClipboardWrite { target, text } => PaneEvent::ClipboardWrite { target, text },
+            // The pane asks the user; a newer read replaces one waiting.
             Event::ClipboardReadRequested { target } => {
-                PaneEvent::ClipboardReadRequested { target }
+                self.clipboard_read = Some(target);
+                return;
             }
         };
         self.events.push(event);
     }
     fn fail(&mut self, error: PaneError) {
         self.events.push(PaneEvent::Failed(error));
+    }
+    pub(crate) fn clipboard_read_failed(&mut self, source: gpui_kit::ClipboardReadError) {
+        let error = match source {
+            gpui_kit::ClipboardReadError::Unavailable => PaneError::ClipboardUnavailable { source },
+            gpui_kit::ClipboardReadError::Denied(_) => PaneError::ClipboardDenied { source },
+            gpui_kit::ClipboardReadError::UnsupportedContent => {
+                PaneError::ClipboardUnsupported { source }
+            }
+        };
+        self.fail(error);
     }
 }
 
@@ -206,8 +233,9 @@ impl GhosttyHost {
 /// the letter. GPUI doesn't say which Option key is held, so the left-only
 /// and right-only settings act as on.
 fn option_as_alt_text(grid: &Terminal, event: &KeyEvent<'_>) -> Option<String> {
-    if !cfg!(target_os = "macos")
-        || grid.option_as_alt() == OptionAsAlt::Off
+    // Not gated on the build's platform: a browser on a Mac sends ⌥ keys
+    // too, and only a Mac turns the setting on.
+    if grid.option_as_alt() == OptionAsAlt::Off
         || !event.mods.contains(Mods::ALT)
         || event.mods.contains(Mods::CTRL)
         || event.mods.contains(Mods::SUPER)
@@ -235,14 +263,7 @@ impl TerminalHost<Terminal> for GhosttyHost {
             .fail(PaneError::BufferedInput { source });
     }
     fn clipboard_read_failed(&mut self, source: gpui_kit::ClipboardReadError) {
-        let error = match source {
-            gpui_kit::ClipboardReadError::Unavailable => PaneError::ClipboardUnavailable { source },
-            gpui_kit::ClipboardReadError::Denied(_) => PaneError::ClipboardDenied { source },
-            gpui_kit::ClipboardReadError::UnsupportedContent => {
-                PaneError::ClipboardUnsupported { source }
-            }
-        };
-        self.shared.borrow_mut().fail(error);
+        self.shared.borrow_mut().clipboard_read_failed(source);
     }
 
     fn open_link(&mut self, uri: String) {
@@ -255,6 +276,7 @@ impl TerminalHost<Terminal> for GhosttyHost {
     fn key(&mut self, grid: &mut Terminal, event: KeyEvent<'_>) {
         let mut shared = self.shared.borrow_mut();
         if !shared.connected {
+            shared.refuse();
             return;
         }
         let alt_text = option_as_alt_text(grid, &event);
@@ -279,10 +301,12 @@ impl TerminalHost<Terminal> for GhosttyHost {
     }
 
     fn mouse(&mut self, grid: &mut Terminal, event: MouseEvent) -> bool {
-        if !grid.is_mouse_tracking() {
+        let mut shared = self.shared.borrow_mut();
+        // With nobody listening, as after the program ended with mouse
+        // reporting on, the mouse selects instead.
+        if !grid.is_mouse_tracking() || !shared.connected {
             return false;
         }
-        let mut shared = self.shared.borrow_mut();
         match grid.encode_mouse(&event) {
             Ok(bytes) => shared.send(&bytes),
             Err(source) => shared.fail(PaneError::Mouse { source }),
@@ -295,7 +319,12 @@ impl TerminalHost<Terminal> for GhosttyHost {
         let cell = shared.cell;
         let up = lines > 0;
         let mut sent_to_program = false;
-        for _ in 0..lines.unsigned_abs() {
+        // ⇧ keeps the wheel for the history from a program that takes the
+        // mouse, as it keeps a drag for selecting; and with nobody
+        // listening it is the history's too.
+        let program_hears =
+            shared.connected && !(mods.contains(Mods::SHIFT) && grid.is_mouse_tracking());
+        for _ in 0..if program_hears { lines.unsigned_abs() } else { 0 } {
             match GhosttyHost::wheel_bytes(grid, up, at, mods, cell) {
                 Ok(Some(bytes)) => {
                     sent_to_program = true;
@@ -333,6 +362,12 @@ impl TerminalHost<Terminal> for GhosttyHost {
         }
     }
 
+    fn select_all(&mut self, grid: &mut Terminal) {
+        if let Err(source) = grid.select_all() {
+            self.shared.borrow_mut().fail(PaneError::Select { source });
+        }
+    }
+
     fn scroll_to(&mut self, grid: &mut Terminal, to: ScrollTo) {
         let page = isize::try_from(grid.size().rows.max(1)).unwrap_or(1);
         let scroll = match to {
@@ -350,6 +385,7 @@ impl TerminalHost<Terminal> for GhosttyHost {
     fn text(&mut self, grid: &mut Terminal, text: &str) {
         let mut shared = self.shared.borrow_mut();
         if !shared.connected {
+            shared.refuse();
             return;
         }
         if let Err(source) = follow_output(grid) {
@@ -372,6 +408,7 @@ impl TerminalHost<Terminal> for GhosttyHost {
         let mut shared = self.shared.borrow_mut();
         shared.paste_accepted = false;
         if !shared.connected {
+            shared.refuse();
             return;
         }
         match paste {

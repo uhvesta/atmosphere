@@ -5,8 +5,11 @@
 //! (`humata2_machines::Managed`), which writes beside the live set, checks
 //! every hash, and switches with one rename at the end of the stream. A
 //! stream that breaks, ends early, or carries a bad file leaves the
-//! machine's current set as it was. Nothing outside the managed folder is
-//! written (SK-4).
+//! machine's current set as it was. Then each synced skill is linked into
+//! its agent's own folder, `~/.<agent>/skills/<name>`, through the stable
+//! `.skills` link, so the agents Humata starts there see it (SK-4, VF-5).
+//! Nothing else outside the managed folder is written, and nothing the
+//! machine made is replaced or removed.
 //!
 //! The host end: [`send`] streams a scanned set to a machine over a proven
 //! link, reading each file in chunks of at most [`CHUNK_BYTES`] through a
@@ -133,6 +136,11 @@ pub(crate) enum ApplyError {
     },
     #[error("this machine has no HOME to keep the Humata folder in")]
     NoHome,
+    #[error("the new skills are on this machine, but linking them into the agents' folders failed: {source}")]
+    Link {
+        #[source]
+        source: SkillsError,
+    },
     #[error("applying the set stopped before it finished: {source}")]
     Task {
         #[source]
@@ -147,6 +155,9 @@ impl ApplyError {
                 "the machine's current skills were kept; fix the cause above and sync again"
             }
             Self::NoHome => "start humatad2 on this machine with HOME set, then sync again",
+            Self::Link { .. } => {
+                "the machine's agents don't see the new skills yet; fix the cause above and sync again"
+            }
             _ => "the machine's current skills were kept; sync again from the host (update Humata on both sides if it keeps failing)",
         }
     }
@@ -168,7 +179,7 @@ fn status_of(error: &ApplyError) -> Status {
         },
         ApplyError::Stream { .. } => Code::Aborted,
         ApplyError::NoHome => Code::FailedPrecondition,
-        ApplyError::Task { .. } => Code::Internal,
+        ApplyError::Link { .. } | ApplyError::Task { .. } => Code::Internal,
         _ => Code::InvalidArgument,
     };
     status::failure(
@@ -184,9 +195,10 @@ fn status_of(error: &ApplyError) -> Status {
 
 /// Applies the set `stream` carries into the managed folder at
 /// `managed_root`, switching to it only when the whole stream arrived and
-/// every file checks. `locals` are the machine's own skill folders; the
-/// response names the synced skills whose name also exists there (SK-5), as
-/// `agent/skill`.
+/// every file checks, then links the set into `locals`, each agent's own
+/// skill folder (VF-5). The response names the synced skills whose name the
+/// machine's own skills also have there (SK-5), as `agent/skill`; Humata's
+/// links don't count.
 pub(crate) async fn apply<S>(
     managed_root: &Path,
     locals: &[SkillsSource],
@@ -234,13 +246,17 @@ where
             None => return Err(ApplyError::EmptyMessage),
         }
     }
-    tokio::task::spawn_blocking(move || incoming.finish())
-        .await
-        .map_err(|source| ApplyError::Task { source })??;
-    Ok(pb::ApplySkillsResponse {
-        version,
-        clashes: clashes(&skills, locals),
+    let agents = locals.to_vec();
+    let clashes = tokio::task::spawn_blocking(move || {
+        incoming.finish()?;
+        managed
+            .link_agents(&agents)
+            .map_err(|source| ApplyError::Link { source })?;
+        Ok::<_, ApplyError>(clashes(&skills, &agents, &managed))
     })
+    .await
+    .map_err(|source| ApplyError::Task { source })??;
+    Ok(pb::ApplySkillsResponse { version, clashes })
 }
 
 fn stream_broke(source: Status) -> ApplyError {
@@ -320,14 +336,15 @@ fn skill_names(manifest: &SkillsManifest) -> BTreeSet<(String, String)> {
 }
 
 /// The synced skills a machine-made skill has the name of, as `agent/skill`.
-fn clashes(skills: &BTreeSet<(String, String)>, locals: &[SkillsSource]) -> Vec<String> {
+/// Humata's own links in the agents' folders aren't the machine's skills.
+fn clashes(skills: &BTreeSet<(String, String)>, locals: &[SkillsSource], managed: &Managed) -> Vec<String> {
     skills
         .iter()
         .filter(|(agent, skill)| {
-            locals
-                .iter()
-                .filter(|local| local.agent == *agent)
-                .any(|local| std::fs::symlink_metadata(local.root.join(skill)).is_ok())
+            locals.iter().filter(|local| local.agent == *agent).any(|local| {
+                let slot = local.root.join(skill);
+                std::fs::symlink_metadata(&slot).is_ok() && !managed.owns_link(&slot)
+            })
         })
         .map(|(agent, skill)| format!("{agent}/{skill}"))
         .collect()
@@ -722,5 +739,113 @@ mod tests {
         let refused = apply(&root, &[], stream(messages(&set))).await.unwrap_err();
         assert_eq!(refused.code(), Code::FailedPrecondition);
         assert_eq!(std::fs::read(root.join(".skills/mine/SKILL.md")).unwrap(), b"mine");
+    }
+
+    /// A host home whose Copilot has the skills named, each with a
+    /// SKILL.md saying `<name> from the host`.
+    fn copilot_set(skills: &[&str]) -> (tempfile::TempDir, SkillSet) {
+        let dir = tempfile::tempdir().unwrap();
+        for skill in skills {
+            write(
+                &dir.path().join(".copilot/skills"),
+                &format!("{skill}/SKILL.md"),
+                format!("{skill} from the host").as_bytes(),
+            );
+        }
+        let set = scan_skills(&agent_sources(dir.path()), &[]).unwrap();
+        (dir, set)
+    }
+
+    /// A machine home with a Copilot skill of its own, `mine`.
+    fn machine_with_mine() -> (tempfile::TempDir, MachineSkills) {
+        let home = tempfile::tempdir().unwrap();
+        write(&home.path().join(".copilot/skills"), "mine/SKILL.md", b"made on the machine");
+        let skills = MachineSkills::under_home(home.path());
+        (home, skills)
+    }
+
+    async fn sync(machine: &MachineSkills, set: &SkillSet) -> pb::ApplySkillsResponse {
+        apply(&machine.managed_root, &machine.locals, stream(messages(set))).await.unwrap()
+    }
+
+    fn is_link(path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+    }
+
+    #[tokio::test]
+    async fn a_synced_skill_shows_in_the_agents_own_folder_and_the_machines_own_is_untouched() {
+        let (home, machine) = machine_with_mine();
+        let (_host, set) = copilot_set(&["a", "mine"]);
+
+        let answer = sync(&machine, &set).await;
+
+        let folder = home.path().join(".copilot/skills");
+        let a = folder.join("a");
+        assert!(is_link(&a), "the agent's folder lists the synced skill `a`");
+        assert_eq!(
+            std::fs::read_link(&a).unwrap(),
+            home.path().join("Humata/.skills/copilot/a"),
+            "it resolves into the set through the stable `.skills` link"
+        );
+        assert_eq!(std::fs::read(a.join("SKILL.md")).unwrap(), b"a from the host");
+        let mine = folder.join("mine");
+        assert!(!is_link(&mine) && mine.is_dir());
+        assert_eq!(std::fs::read(mine.join("SKILL.md")).unwrap(), b"made on the machine");
+        assert_eq!(answer.clashes, vec!["copilot/mine".to_owned()]);
+
+        // Syncing the same set again finds Humata's own link no clash.
+        assert_eq!(sync(&machine, &set).await.clashes, vec!["copilot/mine".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn a_later_sync_without_a_skill_removes_only_its_link() {
+        let (home, machine) = machine_with_mine();
+        let (_first, set) = copilot_set(&["a", "b", "mine"]);
+        sync(&machine, &set).await;
+        let (_second, smaller) = copilot_set(&["b", "mine"]);
+
+        sync(&machine, &smaller).await;
+
+        let folder = home.path().join(".copilot/skills");
+        assert!(std::fs::symlink_metadata(folder.join("a")).is_err(), "the link to `a` is gone");
+        assert!(is_link(&folder.join("b")));
+        assert_eq!(std::fs::read(folder.join("b/SKILL.md")).unwrap(), b"b from the host");
+        assert_eq!(std::fs::read(folder.join("mine/SKILL.md")).unwrap(), b"made on the machine");
+    }
+
+    #[tokio::test]
+    async fn a_real_folder_or_someone_elses_link_named_like_a_synced_skill_is_never_replaced() {
+        let (home, machine) = machine_with_mine();
+        let folder = home.path().join(".copilot/skills");
+        let elsewhere = tempfile::tempdir().unwrap();
+        write(elsewhere.path(), "SKILL.md", b"the user's own link");
+        std::os::unix::fs::symlink(elsewhere.path(), folder.join("theirs")).unwrap();
+        let (_host, set) = copilot_set(&["a", "mine", "theirs"]);
+
+        let answer = sync(&machine, &set).await;
+        assert_eq!(answer.clashes, vec!["copilot/mine".to_owned(), "copilot/theirs".to_owned()]);
+        // A later sync that drops them doesn't take them away either.
+        let (_later, later) = copilot_set(&["a"]);
+        sync(&machine, &later).await;
+
+        assert!(!is_link(&folder.join("mine")));
+        assert_eq!(std::fs::read(folder.join("mine/SKILL.md")).unwrap(), b"made on the machine");
+        assert_eq!(std::fs::read_link(folder.join("theirs")).unwrap(), elsewhere.path());
+        assert_eq!(std::fs::read(folder.join("theirs/SKILL.md")).unwrap(), b"the user's own link");
+        assert!(is_link(&folder.join("a")));
+    }
+
+    #[tokio::test]
+    async fn an_agent_with_no_folder_yet_gets_one_holding_the_links() {
+        let home = tempfile::tempdir().unwrap();
+        let machine = MachineSkills::under_home(home.path());
+        let (_host, set) = copilot_set(&["a"]);
+
+        sync(&machine, &set).await;
+
+        let a = home.path().join(".copilot/skills/a");
+        assert!(is_link(&a));
+        assert_eq!(std::fs::read(a.join("SKILL.md")).unwrap(), b"a from the host");
+        assert!(!home.path().join(".claude").exists(), "an agent with no synced skills gets no folder");
     }
 }

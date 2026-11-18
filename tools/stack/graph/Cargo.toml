@@ -1,0 +1,11 @@
+[package]
+name = "stack-graph"
+description = "The stack model of linked pull requests: base chains, trees and native-stack chains. No I/O."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "stack_graph"
+path = "src/lib.rs"

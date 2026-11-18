@@ -5,7 +5,7 @@
 use rusqlite::{OptionalExtension, params};
 
 use crate::store::{check_id, from_sql, to_sql};
-use crate::{BoardReplay, BoardReplayed, InboxRecord, LeftOut, Store, StoreError};
+use crate::{BoardReplay, BoardReplayed, InboxRecord, LeftOut, Store, StoreError, ViewRecord};
 
 impl Store {
     /// The highest journal sequence of `machine` the host has applied or
@@ -132,6 +132,49 @@ impl Store {
                 )
                 .map(drop)
                 .map_err(inner.failed(doing))
+        })
+    }
+
+    /// Keeps a view `machine` journaled as offered, and records that its
+    /// journal is applied through `through`, in the same transaction: both
+    /// happen or neither. It says whether a row was inserted. An entry at or
+    /// below the mark was applied before, and a view whose id the host
+    /// already has is left as it is (the host owns its state); either way
+    /// the mark moves up when `through` is past it. The session must be
+    /// saved, else this is `NoSession` and nothing changes.
+    pub fn apply_machine_journal_view(
+        &self,
+        machine: &str,
+        through: u64,
+        view: &ViewRecord,
+    ) -> Result<bool, StoreError> {
+        check_id(machine)?;
+        check_id(&view.id)?;
+        check_id(&view.session)?;
+        let inner = self.inner();
+        let doing = "record a machine's journaled view";
+        inner.write_for_session("machine_journal.apply_view", doing, Some(&view.session), |transaction| {
+            let mark: Option<i64> = transaction
+                .query_row(
+                    "SELECT applied_through FROM machine_journal WHERE machine = ?1",
+                    [machine],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(inner.failed(doing))?;
+            if through <= mark.map_or(0, from_sql) {
+                return Ok(false);
+            }
+            let inserted = crate::views::insert_if_absent(inner, transaction, view)?;
+            transaction
+                .execute(
+                    "INSERT INTO machine_journal (machine, applied_through) VALUES (?1, ?2)
+                     ON CONFLICT (machine) DO UPDATE SET
+                         applied_through = max(applied_through, excluded.applied_through)",
+                    params![machine, to_sql(through)],
+                )
+                .map_err(inner.failed(doing))?;
+            Ok(inserted)
         })
     }
 
@@ -262,6 +305,64 @@ mod tests {
         store.forget_machine_journal("ma_a").unwrap();
         store.apply_machine_journal("ma_a", 1, None).unwrap();
         assert_eq!(store.machine_journal_mark("ma_a").unwrap(), 1);
+    }
+
+    fn offered_view(id: &str, session: &str, state: u8) -> ViewRecord {
+        ViewRecord {
+            id: id.to_owned(),
+            session: session.to_owned(),
+            view: vec![state],
+            keys: Vec::new(),
+            prepared_unix_ms: 5,
+            updated_unix_ms: 5,
+        }
+    }
+
+    #[test]
+    fn an_offered_view_and_the_mark_are_saved_together() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.put_session(&session("se_a")).unwrap();
+        let inserted = store
+            .apply_machine_journal_view("ma_a", 3, &offered_view("vw_1", "se_a", 1))
+            .unwrap();
+        assert!(inserted);
+        assert_eq!(store.machine_journal_mark("ma_a").unwrap(), 3);
+        let kept = store.view("vw_1").unwrap().unwrap();
+        assert_eq!((kept.session.as_str(), kept.view, kept.keys), ("se_a", vec![1], Vec::<String>::new()));
+    }
+
+    #[test]
+    fn a_view_applied_again_or_already_known_keeps_its_row_and_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.put_session(&session("se_a")).unwrap();
+        store.apply_machine_journal_view("ma_a", 3, &offered_view("vw_1", "se_a", 1)).unwrap();
+        // The user answers on the host.
+        let mut answered = offered_view("vw_1", "se_a", 9);
+        answered.keys = vec!["k".to_owned()];
+        store.put_view(&answered).unwrap();
+
+        let same_seq = store
+            .apply_machine_journal_view("ma_a", 3, &offered_view("vw_1", "se_a", 1))
+            .unwrap();
+        let known_id = store
+            .apply_machine_journal_view("ma_a", 4, &offered_view("vw_1", "se_a", 1))
+            .unwrap();
+        assert!(!same_seq && !known_id);
+        assert_eq!(store.view("vw_1").unwrap().unwrap(), answered);
+        assert_eq!(store.machine_journal_mark("ma_a").unwrap(), 4);
+    }
+
+    #[test]
+    fn a_view_of_a_session_that_isnt_saved_is_no_session_and_leaves_the_mark() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.apply_machine_journal("ma_a", 2, None).unwrap();
+        let failed = store.apply_machine_journal_view("ma_a", 5, &offered_view("vw_1", "se_missing", 1));
+        assert!(matches!(failed, Err(StoreError::NoSession { .. })), "{failed:?}");
+        assert_eq!(store.machine_journal_mark("ma_a").unwrap(), 2);
+        assert!(store.view("vw_1").unwrap().is_none());
     }
 
     use crate::{BoardItemChange, BoardKey, BoardWrite, NewBoardItem};

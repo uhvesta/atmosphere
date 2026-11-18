@@ -103,7 +103,7 @@ fn folder_text(folder: &Folder) -> String {
     match folder {
         Folder::Scratch { kept: false, .. } => "scratch folder".to_owned(),
         Folder::Scratch { kept: true, .. } => "scratch folder · kept".to_owned(),
-        Folder::Picked { path } => path.clone(),
+        Folder::Picked { .. } => "your folder".to_owned(),
     }
 }
 
@@ -118,9 +118,9 @@ fn closed_folder_text(desk: &DeskSession) -> String {
         None => {}
     }
     match (&desk.folder, &desk.unpushed) {
-        (Folder::Scratch { kept: true, .. } | Folder::Picked { .. }, _) => {
-            folder_text(&desk.folder)
-        }
+        // Frame 9 (DV-4): a kept folder says so.
+        (Folder::Scratch { kept: true, .. }, _) => "Kept".to_owned(),
+        (Folder::Picked { .. }, _) => folder_text(&desk.folder),
         (Folder::Scratch { kept: false, .. }, Some(work)) => format!("not deleted · {work}"),
         (Folder::Scratch { kept: false, .. }, None) => folder_text(&desk.folder),
     }

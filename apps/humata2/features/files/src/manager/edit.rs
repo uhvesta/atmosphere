@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use humata2_clients::{FileManagerError, TransferMode};
+use humata2_clients::{FileManagerError, TransferMode, model::MachineId};
 use tca::{Effect, Reducer};
 
 use super::{Delegate, Edit, Files, FilesAction, FilesState, Side, storage};
@@ -60,6 +60,7 @@ impl Files {
         if names.is_empty() {
             return Effect::none();
         }
+        state.send_menu = None;
         state.retry = Some(again);
         let manager = self.clients.file_manager.clone();
         Effect::future(async move {
@@ -68,6 +69,32 @@ impl Files {
         })
     }
 
+    /// Copies or moves the active pane's selection to a machine, where the
+    /// placement rules put it (PL-3). The name is never asked: a name taken
+    /// there keeps both (PL-13).
+    pub(super) fn send_to(&self, state: &mut FilesState, machine: MachineId, mode: TransferMode) -> Effect<FilesAction> {
+        state.send_menu = None;
+        let again = match mode {
+            TransferMode::Copy => FilesAction::CopyTo(machine.clone()),
+            TransferMode::Move => FilesAction::MoveTo(machine.clone()),
+        };
+        let Some(from) = state.usable(state.active) else {
+            return Effect::none();
+        };
+        let names = state.active_pane().selected.clone();
+        if names.is_empty() || !state.is_online(&machine) {
+            return Effect::none();
+        }
+        let into = super::placement::landing(&from, &machine, &state.workspace);
+        state.retry = Some(again);
+        let manager = self.clients.file_manager.clone();
+        Effect::future(async move {
+            let result = manager.start_transfer_keep_both(&from, names, &into, mode).await;
+            FilesAction::Finished(Edit::Transfer, result.map(|_| ()))
+        })
+    }
+
+    /// Uploads files dropped from Finder (FM-4).
     pub(super) fn dropped(&self, state: &mut FilesState, side: Side, paths: Vec<PathBuf>) -> Effect<FilesAction> {
         let Some(into) = state.usable(side) else {
             return Effect::none();

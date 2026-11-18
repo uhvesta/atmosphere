@@ -17,7 +17,7 @@ use super::{COLS, Gated, Loaded, ROWS, SessionSvc, Tell, choose_repos, clean_tit
 use crate::channel_service::blocking;
 use crate::identity::{self, Caller};
 use crate::operations::Started;
-use crate::remote_work::{HostOp, RemoteView, RemoteWork, Sink};
+use crate::remote_work::{HostOp, RemoteError, RemoteView, RemoteWork, Sink};
 use crate::status;
 
 /// Whether `record` says its session lives on a machine other than `here`.
@@ -36,6 +36,33 @@ impl Sink for TellSink {
 
     /// The host's record decides whether the session still exists; nothing to publish.
     async fn gone(&self, _machine: &str, _session: &str) {}
+}
+
+/// The start the restart's report names as one it couldn't finish or remove:
+/// what it says about `id`, which is what the person has to do. Only the
+/// session's own line counts, not a shell tab of it.
+pub(crate) fn stuck_start<'a>(last: &'a pb::LastStart, id: &str) -> Option<&'a str> {
+    last.not_brought_back
+        .iter()
+        .find(|line| line.session == id && line.tab.is_empty())
+        .map(|line| line.problem.as_str())
+}
+
+/// The status a machine's refusal of a start answers with. A machine that
+/// made the session under another id than the host's has that session still:
+/// nothing on the host points to it, so the answer names it and the machine
+/// for the person to remove there, as a stop of it here could end someone
+/// else's session of that id.
+fn refusal(error: RemoteError) -> Status {
+    match &error {
+        RemoteError::IdNotHonoured { machine, got, .. } if !got.is_empty() => {
+            let message = format!(
+                "{error}; the session it made, {got:?}, is still on {machine} and nothing here points to it, so remove it on {machine} before you start again"
+            );
+            status::internal(message, "")
+        }
+        _ => Status::from(error),
+    }
 }
 
 /// The failure an operation records for `status`.
@@ -159,19 +186,59 @@ impl SessionSvc {
             cols: COLS,
             rows: ROWS,
         };
+        // D432: the start's journal goes first, so a power cut anywhere
+        // from the host's record to the machine's answer leaves a start to
+        // ask again, never a record on the host that nothing runs.
+        if let Err(status) = self
+            .keep_asked(&super::remote_start::Asked::new(&progress, &id, &machine, &request))
+            .await
+        {
+            progress.set_step("write_record", pb::StepState::Failed, Some(status.message().to_owned()));
+            progress.fail(failure_of(&status));
+            return Err(status);
+        }
         if let Err(error) = self.starter.place_session(&start).await {
+            self.drop_asked(&id).await;
             let (code, failure) = start_error(&error);
             progress.set_step("write_record", pb::StepState::Failed, Some(status::chain(&error)));
             progress.fail(failure.clone());
             return Err(status::failure(code, failure));
         }
         progress.set_step("write_record", pb::StepState::Done, None);
+        // The machine makes the branch this record names, not one of its own
+        // picking: its prefix may differ, and a restore here fetches the name
+        // recorded here.
+        let (store, placed, named) = (self.starter.store.clone(), id.clone(), id.clone());
+        let read = blocking(move || store.session_detail(&placed)).await.and_then(|read| {
+            read.map_err(|error| {
+                status::internal(
+                    format!("couldn't read the branch just recorded for session {named}: {}", status::chain(&error)),
+                    "",
+                )
+            })
+        });
+        let branch = match read {
+            Ok(detail) => detail
+                .and_then(|detail| detail.repos.into_iter().next())
+                .map(|repo| repo.branch),
+            Err(status) => {
+                progress.fail(failure_of(&status));
+                self.drop_asked(&id).await;
+                let (store, removing) = (self.starter.store.clone(), id);
+                let _ = blocking(move || store.remove_session(&removing)).await;
+                return Err(status);
+            }
+        };
         let host = Arc::new(HostOp::new(progress));
         let asked = pb::StartSessionRequest {
             idempotency_key: None,
+            branch: branch.unwrap_or(request.branch.clone()),
             ..request
         };
-        match remote.start_session_on(&machine, &id, asked, host.clone()).await {
+        match remote
+            .start_session_answered(&machine, &id, asked, host.clone(), Some(self.answered_hook(&id)))
+            .await
+        {
             Ok(response) => {
                 self.tell
                     .session(&id, pb::Change::Created, Some(identity::actor(caller)))
@@ -179,10 +246,11 @@ impl SessionSvc {
                 Ok(Gated::Done(response))
             }
             Err(error) => {
-                let status = Status::from(error);
+                let status = refusal(error);
                 if let Some(progress) = host.take() {
                     progress.fail(failure_of(&status));
                 }
+                self.drop_asked(&id).await;
                 let (store, removing) = (self.starter.store.clone(), id);
                 let _ = blocking(move || store.remove_session(&removing)).await;
                 Err(status)
@@ -190,9 +258,36 @@ impl SessionSvc {
         }
     }
 
+    /// Loads session `id` for a reader that may be the host following a start
+    /// it asked for: a session whose start isn't recorded as done is the
+    /// restart's recovery to finish or undo, so it is read once that is over.
+    /// Answering earlier lets the host settle on a session that recovery then
+    /// removes, leaving its record claiming a clone that is gone.
+    pub(super) async fn load_after_recovery(&self, id: &str) -> Result<Loaded, Status> {
+        let loaded = self.load(id).await?;
+        let started = loaded
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.start == StartStep::Done);
+        let Some(restart) = self.restart.get() else {
+            return Ok(loaded);
+        };
+        if started {
+            return Ok(loaded);
+        }
+        restart.wait_for(crate::restart::Awaited::Read).await?;
+        self.load(id).await
+    }
+
     /// The answer for a start that names a session this machine already has: the session,
     /// and its start's operation as it stands. None when it has no such session.
     pub(super) async fn known_start(&self, id: &str) -> Result<Option<pb::StartSessionResponse>, Status> {
+        // A start asked again across this machine's restart (its answer was
+        // lost with the link) is answered once recovery has finished or
+        // undone it, never from a record recovery is about to remove.
+        if let Some(started) = self.restart.get() {
+            started.wait_for(crate::restart::Awaited::Start).await?;
+        }
         let loaded = match self.load(id).await {
             Ok(loaded) => loaded,
             Err(status) if status.code() == Code::NotFound => return Ok(None),
@@ -202,6 +297,29 @@ impl SessionSvc {
             .detail
             .as_ref()
             .is_some_and(|detail| detail.start == StartStep::Done);
+        // A start the restart couldn't finish or remove stays as it was
+        // saved; answered as still running, the host would wait on it
+        // forever. It is answered as failed, with the restart's words.
+        let stuck = if done {
+            None
+        } else {
+            self.restart
+                .get()
+                .and_then(|started| started.get())
+                .and_then(|last| stuck_start(last, id))
+                .map(str::to_owned)
+        };
+        let state = match (done, &stuck) {
+            (true, _) => pb::OperationState::Succeeded,
+            (false, Some(_)) => pb::OperationState::Failed,
+            (false, None) => pb::OperationState::Running,
+        };
+        let error = stuck.map(|problem| pb::Error {
+            message: problem,
+            fix: "remove the session's folder on this machine as the message says, then start the session again".to_owned(),
+            retry: None,
+            kind: None,
+        });
         let operation = pb::Operation {
             id: loaded
                 .detail
@@ -214,11 +332,8 @@ impl SessionSvc {
                     value: loaded.record.channel.clone(),
                 })),
             }),
-            state: if done {
-                pb::OperationState::Succeeded
-            } else {
-                pb::OperationState::Running
-            } as i32,
+            state: state as i32,
+            error,
             result: Some(pb::operation::Result::Session(pb::SessionId {
                 value: id.to_owned(),
             })),
@@ -269,6 +384,13 @@ impl SessionSvc {
             return Ok(Gated::Done(operation));
         }
         remote.require_link(&machine).map_err(Status::from)?;
+        // D757: the machine trusts an after-move resume from the host, so a
+        // caller's own is passed on as the plain resume. The move asks the
+        // machine itself, not through here.
+        let mut request = request;
+        if request.mode == pb::resume_session_request::Mode::AfterMove as i32 {
+            request.mode = pb::resume_session_request::Mode::Resume as i32;
+        }
         let steps = [
             ("launch".to_owned(), "Starting the agent again".to_owned()),
             (
@@ -307,5 +429,73 @@ impl SessionSvc {
                 Err(status)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(session: &str, tab: &str, problem: &str) -> pb::NotBroughtBack {
+        pb::NotBroughtBack {
+            session: session.to_owned(),
+            tab: tab.to_owned(),
+            problem: problem.to_owned(),
+        }
+    }
+
+    /// A session the restart couldn't finish or remove is named stuck, with
+    /// the restart's own words; one it didn't name, or no restart, is not.
+    #[test]
+    fn a_start_the_restart_left_stuck_is_found_by_its_session() {
+        let last = pb::LastStart {
+            not_brought_back: vec![
+                line("", "", "the store is damaged"),
+                line("se_other", "", "other problem"),
+                line("se_1", "", "delete its folder by hand"),
+            ],
+            ..pb::LastStart::default()
+        };
+        assert_eq!(stuck_start(&last, "se_1"), Some("delete its folder by hand"));
+        assert_eq!(stuck_start(&last, "se_2"), None);
+        assert_eq!(stuck_start(&pb::LastStart::default(), "se_1"), None);
+    }
+
+    /// A shell tab that didn't come back is not its session's stuck start.
+    #[test]
+    fn a_shell_tab_that_did_not_come_back_is_not_a_stuck_start() {
+        let last = pb::LastStart {
+            not_brought_back: vec![line("se_1", "tab_1", "shell gone")],
+            ..pb::LastStart::default()
+        };
+        assert_eq!(stuck_start(&last, "se_1"), None);
+    }
+
+    /// A machine that made the session under another id leaves that session
+    /// on it, so the refusal names it and the machine for the person to remove.
+    #[test]
+    fn a_machine_that_ignored_the_id_is_refused_naming_the_session_it_made() {
+        let error = RemoteError::IdNotHonoured {
+            machine: "devbox".to_owned(),
+            asked: "se_1".to_owned(),
+            got: "se_other".to_owned(),
+        };
+        let status = refusal(error);
+        assert_eq!(status.code(), Code::Internal);
+        assert!(status.message().contains("se_other"));
+        assert!(status.message().contains("devbox"));
+    }
+
+    /// Any other refusal goes to the caller as the machine said it.
+    #[test]
+    fn another_refusal_is_the_machines_own_answer() {
+        let source = Status::failed_precondition("no clone");
+        let error = RemoteError::Machine {
+            machine: "devbox".to_owned(),
+            doing: "start the session",
+            reason: "no clone".to_owned(),
+            source,
+        };
+        assert_eq!(refusal(error).code(), Code::FailedPrecondition);
     }
 }

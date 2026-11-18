@@ -1,17 +1,19 @@
-//! SettingsService (ST-13, FC-12, D196, D199): serves only the branch
-//! prefix, the one in Settings and a channel's own, and where agents ask
-//! for permission. Reads give the defaults for every
-//! other section, and a write that sets another section is refused as not
-//! built, naming the section. Writes are the user's: agents are refused as
+//! SettingsService (ST-13, FC-12, D196, D199, D770): the branch prefix,
+//! where agents ask for permission and Contain agents, kept in the store;
+//! the default agent, terminal, retention defaults, long lines, skills and
+//! notifications, kept as portable config (see `sections`); and a
+//! channel's own prefix, default agent, retention and Contain agents. Each
+//! section reads its default until it is set. Writes are the user's: agents are refused as
 //! user-only, and the user must be at the Mac. Every change is told on the
 //! Settings feed with the settings as they are after it.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use humata2_access::{Call, Capability, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::{BRANCH_PREFIX_KEY, default_prefix, set_default_prefix, valid_prefix};
+use humata2_sessions::{Agents, BRANCH_PREFIX_KEY, default_prefix, set_default_prefix, valid_prefix};
 use humata2_store::Store;
 use tonic::{Code, Request, Response, Status};
 
@@ -23,6 +25,9 @@ use crate::inbox::permission;
 use crate::status;
 
 mod gh_login;
+mod sections;
+
+pub(crate) use sections::default_agent_for;
 
 #[derive(Clone)]
 pub(crate) struct SettingsSvc {
@@ -32,11 +37,24 @@ pub(crate) struct SettingsSvc {
     feed: Arc<Feed>,
     /// A `gh` login question is in flight.
     asking: Arc<AtomicBool>,
+    /// Where the portable sections are kept.
+    sections: Arc<sections::Places>,
 }
 
 impl SettingsSvc {
-    pub(crate) fn new(guard: Arc<Guard>, store: Arc<Store>, machine: String, feed: Arc<Feed>) -> Self {
-        Self { guard, store, machine, feed, asking: Arc::default() }
+    /// `state` is the daemon's state folder, inside the humata home;
+    /// `default_agent` is shown until Settings names one.
+    pub(crate) fn new(
+        guard: Arc<Guard>,
+        store: Arc<Store>,
+        machine: String,
+        feed: Arc<Feed>,
+        state: &Path,
+        agents: Agents,
+        default_agent: String,
+    ) -> Self {
+        let sections = Arc::new(sections::Places::new(state, agents, default_agent));
+        Self { guard, store, machine, feed, asking: Arc::default(), sections }
     }
 
     /// Learns the host's `gh` login in the background, once, and tells the
@@ -103,13 +121,14 @@ impl SettingsSvc {
 
     async fn shown(&self) -> Result<pb::Settings, Status> {
         let store = self.store.clone();
-        let (saved, (in_agent, agents_revision), codex_needs_trust, (contain, contain_revision)) =
+        let (saved, (in_agent, agents_revision), codex_needs_trust, (contain, contain_revision), sections_revision) =
             blocking(move || -> Result<_, humata2_store::StoreError> {
                 Ok((
                     store.setting(BRANCH_PREFIX_KEY)?,
                     permission::in_agent(&store)?,
                     permission::codex_trust::needs_trust(&store)?,
                     crate::contained::global(&store)?,
+                    store.setting(sections::REVISION_KEY)?.map_or(0, |saved| saved.revision),
                 ))
             })
         .await?
@@ -122,8 +141,9 @@ impl SettingsSvc {
             .as_ref()
             .map_or(0, |saved| saved.revision)
             .max(agents_revision)
-            .max(contain_revision);
-        Ok(pb::Settings {
+            .max(contain_revision)
+            .max(sections_revision);
+        let mut shown = pb::Settings {
             branch_prefix_is_default: saved.is_none(),
             // The default is the host's gh login and "/", or none until it is known.
             branch_prefix: saved.map_or_else(default_prefix, |saved| saved.value),
@@ -134,13 +154,20 @@ impl SettingsSvc {
             }),
             security: Some(pb::SecuritySettings { contain_agents: contain }),
             ..Default::default()
-        })
+        };
+        self.sections.show(&mut shown);
+        Ok(shown)
     }
 
     async fn channel_settings(&self, id: &str) -> Result<pb::ChannelSettings, Status> {
         let (store, key) = (self.store.clone(), id.to_owned());
-        let (channel, contain) = blocking(move || -> Result<_, humata2_store::StoreError> {
-            Ok((store.channel(&key)?, crate::contained::channel(&store, &key)?))
+        let (channel, contain, agent, retention) = blocking(move || -> Result<_, humata2_store::StoreError> {
+            Ok((
+                store.channel(&key)?,
+                crate::contained::channel(&store, &key)?,
+                store.setting(&sections::channel_agent_key(&key))?,
+                store.setting(&sections::channel_retention_key(&key))?,
+            ))
         })
         .await?
         .map_err(|error| status::store(error, &self.machine, "read the channel"))?;
@@ -150,7 +177,16 @@ impl SettingsSvc {
             branch_prefix: channel.branch_prefix,
             revision: Some(pb::Revision { value: channel.revision }),
             contain_agents: contain,
-            ..Default::default()
+            // Unset: the default agent in Settings.
+            default_agent: agent
+                .filter(|saved| !saved.value.is_empty())
+                .map(|saved| sections::default_agent_of(&saved.value, "")),
+            // Unset: the retention defaults in Settings.
+            retention: Some(
+                retention
+                    .and_then(|saved| sections::parse_retention(&saved.value))
+                    .unwrap_or_else(|| self.sections.retention_defaults()),
+            ),
         })
     }
 }
@@ -187,29 +223,6 @@ fn changed_since(what: &str, field: &str) -> Status {
     )
 }
 
-/// The first section of an update that isn't built, if any.
-fn unbuilt_section(request: &pb::UpdateSettingsRequest) -> Option<&'static str> {
-    [
-        (request.default_agent.is_some(), "default_agent"),
-        (request.terminal.is_some(), "terminal"),
-        (request.retention_defaults.is_some(), "retention_defaults"),
-        (request.long_lines.is_some(), "long_lines"),
-        (request.skills.is_some(), "skills"),
-        (request.notifications.is_some(), "notifications"),
-    ]
-    .into_iter()
-    .find_map(|(set, name)| set.then_some(name))
-}
-
-fn unbuilt_channel_section(request: &pb::UpdateChannelSettingsRequest) -> Option<&'static str> {
-    [
-        (request.default_agent.is_some() || request.clear_default_agent, "default_agent"),
-        (request.retention.is_some(), "retention"),
-    ]
-    .into_iter()
-    .find_map(|(set, name)| set.then_some(name))
-}
-
 #[tonic::async_trait]
 impl pb::settings_service_server::SettingsService for SettingsSvc {
     async fn get_settings(&self, request: Request<pb::GetSettingsRequest>) -> Result<Response<pb::Settings>, Status> {
@@ -230,10 +243,11 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         let caller = identity::caller(&request)?;
         self.require_user(&caller)?;
         let request = request.into_inner();
-        if let Some(section) = unbuilt_section(&request) {
-            return Err(status::not_built(&format!("humata.v1.SettingsService.UpdateSettings for {section}")));
-        }
-        if request.branch_prefix.is_none() && request.agents.is_none() && request.security.is_none() {
+        if request.branch_prefix.is_none()
+            && request.agents.is_none()
+            && request.security.is_none()
+            && !sections::sets_any(&request)
+        {
             return self.shown().await.map(Response::new);
         }
         if let Some(prefix) = &request.branch_prefix
@@ -241,15 +255,27 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
         {
             return Err(bad_prefix("branch_prefix"));
         }
+        // Every section is checked before any is saved.
+        self.sections.check(&request)?;
         let current = self.shown().await?.revision.map_or(0, |revision| revision.value);
         if let Some(expected) = request.expected_revision
             && expected.value != current
         {
             return Err(changed_since("settings", "expected_revision"));
         }
+        if sections::sets_any(&request) {
+            // A file the user broke by hand is named, not overwritten.
+            self.sections.read().map_err(|error| error.status())?;
+            let (places, wanted) = (self.sections.clone(), request.clone());
+            blocking(move || places.save(&wanted)).await?.map_err(|error| error.status())?;
+        }
+        let saves_sections = sections::sets_any(&request);
         let (store, prefix, agents, security) =
             (self.store.clone(), request.branch_prefix, request.agents, request.security);
         blocking(move || -> Result<(), humata2_store::StoreError> {
+            if saves_sections {
+                store.put_setting(sections::REVISION_KEY, "", current + 1)?;
+            }
             if let Some(security) = security {
                 crate::contained::put_global(&store, security.contain_agents, current + 1)?;
             }
@@ -298,11 +324,22 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
             .map(|channel| channel.value)
             .filter(|id| !id.is_empty())
             .ok_or_else(|| status::missing("channel"))?;
-        if let Some(section) = unbuilt_channel_section(&request) {
-            return Err(status::not_built(&format!(
-                "humata.v1.SettingsService.UpdateChannelSettings for {section}"
-            )));
-        }
+        // ST-15: the channel's own default agent, or back to Settings when cleared.
+        let agent = match (request.clear_default_agent, &request.default_agent) {
+            (true, _) => Some(String::new()),
+            (false, Some(agent)) => {
+                self.sections.check_agent(agent)?;
+                Some(agent.agent.as_ref().map(|agent| agent.value.clone()).unwrap_or_default())
+            }
+            (false, None) => None,
+        };
+        let retention = match &request.retention {
+            Some(retention) => {
+                sections::check_retention("retention", retention)?;
+                Some(sections::retention_value(retention))
+            }
+            None => None,
+        };
         let shown = self.channel_settings(&id).await?;
         let prefix = match (request.clear_branch_prefix, request.branch_prefix) {
             (true, _) => Some(None),
@@ -320,7 +357,7 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
             (false, Some(on)) => Some(Some(on)),
             (false, None) => None,
         };
-        if prefix.is_none() && contain.is_none() {
+        if prefix.is_none() && contain.is_none() && agent.is_none() && retention.is_none() {
             return Ok(Response::new(shown));
         }
         let current = shown.revision.map_or(0, |revision| revision.value);
@@ -340,6 +377,12 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
             channel.revision += 1;
             if let Some(on) = contain {
                 crate::contained::put_channel(&store, &key, on, channel.revision)?;
+            }
+            if let Some(agent) = agent {
+                store.put_setting(&sections::channel_agent_key(&key), &agent, channel.revision)?;
+            }
+            if let Some(retention) = retention {
+                store.put_setting(&sections::channel_retention_key(&key), &retention, channel.revision)?;
             }
             store.put_channel(&channel)
         })

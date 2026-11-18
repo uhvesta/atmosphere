@@ -2,7 +2,15 @@ use super::FakeDaemon;
 use crate::daemon::{DaemonError, Event, Operation, Reply};
 use crate::model::{Item, ItemId, ItemKind, ItemStatus, Scope, SessionId};
 
-pub(super) fn move_item(daemon: &FakeDaemon, item: &ItemId, status: ItemStatus) -> Reply<()> {
+/// Like the daemon, a move from an old copy is refused when the item's
+/// column changed since. The fake counts only moves in `revision`, so any
+/// newer revision is a newer column.
+pub(super) fn move_item(
+    daemon: &FakeDaemon,
+    item: &ItemId,
+    status: ItemStatus,
+    seen: Option<u64>,
+) -> Reply<()> {
     let id = item.clone();
     daemon.reply(
         Some(Operation::MoveItem),
@@ -16,7 +24,14 @@ pub(super) fn move_item(daemon: &FakeDaemon, item: &ItemId, status: ItemStatus) 
                 .ok_or_else(|| DaemonError::NotFound {
                     what: format!("Item {id}"),
                 })?;
+            if seen.is_some_and(|seen| seen < found.revision) {
+                return Err(DaemonError::Conflict {
+                    what: format!("Moving {id}"),
+                    reason: "it moved since you last looked. The board now shows where it is; move it again if you still want to".to_owned(),
+                });
+            }
             found.status = status;
+            found.revision += 1;
             let details = inner.workspace.item_details.entry(id.clone()).or_default();
             details.done_day = (status == ItemStatus::Done).then_some(13);
             details
@@ -28,7 +43,12 @@ pub(super) fn move_item(daemon: &FakeDaemon, item: &ItemId, status: ItemStatus) 
     )
 }
 
-pub(super) fn create_item(daemon: &FakeDaemon, scope: Scope, title: &str) -> Reply<ItemId> {
+pub(super) fn create_item(
+    daemon: &FakeDaemon,
+    scope: Scope,
+    title: &str,
+    status: ItemStatus,
+) -> Reply<ItemId> {
     let title = title.trim().to_owned();
     daemon.reply(
         None,
@@ -46,10 +66,11 @@ pub(super) fn create_item(daemon: &FakeDaemon, scope: Scope, title: &str) -> Rep
                 scope,
                 kind: ItemKind::Task,
                 title,
-                status: ItemStatus::Todo,
+                status,
                 depends_on: Vec::new(),
                 session: None,
                 parent: None,
+                revision: 0,
             });
             inner.emit(Event::Resync);
             Ok(id)

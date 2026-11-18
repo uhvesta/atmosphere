@@ -12,7 +12,9 @@
 //!   "excludes": ["*.bak"]}` (SK-3, SK-6). All three are optional.
 //! - `skills/<machine>.json`: the manifest of the last set the machine took,
 //!   the clashes it reported for it, the user's clash picks, whether a sync
-//!   is waiting for the link, and the last failure (SK-8).
+//!   is waiting for the link, and the last failure (SK-8). Removing a
+//!   machine, forgetting it, or adding one afresh deletes it, so the next
+//!   machine of that name starts with a first sync that asks (SK-5).
 //!
 //! Nothing polls (TR-7): a sync runs when the user asks, and once each time
 //! a machine's link comes up.
@@ -56,6 +58,12 @@ pub(crate) enum HostError {
     },
     #[error("couldn't write {}: {source}. Check that the state folder is writable and the disk isn't full, then try again", .path.display())]
     Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("couldn't delete {}, the skills record of a machine that is gone: {source}. Delete the file by hand before adding a machine of that name again, or its first sync won't be shown and asked for", .path.display())]
+    Delete {
         path: PathBuf,
         #[source]
         source: std::io::Error,
@@ -369,9 +377,9 @@ impl SkillsHost {
             source,
         };
         std::fs::create_dir_all(&self.dir).map_err(write)?;
-        let temp = path.with_extension("json.new");
-        std::fs::write(&temp, text).map_err(write)?;
-        std::fs::rename(&temp, &path).map_err(write)
+        humata2_store::write_atomic(&path, text.as_bytes()).map_err(|error| {
+            write(std::io::Error::other(error))
+        })
     }
 
     /// Scans the host's skills once and plans each of `machines` (blocking).
@@ -530,6 +538,31 @@ impl SkillsHost {
                 }
                 Outcome::Failed(failure)
             }
+        }
+    }
+
+    /// `machine` was removed or forgotten: what it took, its picks and any
+    /// sync waiting for it go, once a sync running to it ends, so a machine
+    /// added later under that name is new and its first sync asks (SK-5).
+    pub(crate) async fn forget(&self, machine: &str) -> Result<(), HostError> {
+        let gate = self.gate(machine);
+        let _one_at_a_time = gate.lock().await;
+        self.forget_record(machine)
+    }
+
+    /// As [`Self::forget`], for a machine with no link yet (one being
+    /// added afresh), so nothing can be syncing to it.
+    pub(crate) fn forget_now(&self, machine: &str) -> Result<(), HostError> {
+        self.forget_record(machine)
+    }
+
+    fn forget_record(&self, machine: &str) -> Result<(), HostError> {
+        lock(&self.plans).retain(|_, (planned, _, _)| planned != machine);
+        let path = self.record_path(machine)?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(HostError::Delete { path, source }),
         }
     }
 
@@ -1000,6 +1033,35 @@ mod tests {
                 ("claude".to_owned(), "gamma".to_owned(), ChangeKind::Add),
             ]
         );
+    }
+
+    #[test]
+    fn a_forgotten_machine_starts_over_with_a_first_sync_and_no_picks() {
+        let (_dir, host) = host();
+        let prepared = host.prepare_blocking(&["box-1".to_owned()]).unwrap();
+        let mut record = Record::default();
+        record.manifest = Some(prepared.set.manifest());
+        record.pending = Some(prepared.set.set_id().to_owned());
+        record.picks.insert(
+            SkillName {
+                agent: "claude".to_owned(),
+                skill: "alpha".to_owned(),
+            },
+            Choice::Local,
+        );
+        host.save("box-1", &record).unwrap();
+        let token = host.issue("box-1", prepared.set.set_id());
+
+        host.forget_now("box-1").unwrap();
+
+        let plan = &host.prepare_blocking(&["box-1".to_owned()]).unwrap().machines[0];
+        assert!(plan.2.first_sync);
+        assert!(plan.2.needs_asking());
+        assert!(plan.1.pending.is_none());
+        assert!(plan.1.picks.is_empty());
+        assert!(host.good_plan(&[token], "box-1", prepared.set.set_id()).is_none());
+        // Forgetting one that has nothing kept is fine.
+        host.forget_now("box-2").unwrap();
     }
 
     #[test]

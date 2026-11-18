@@ -41,8 +41,8 @@ column of MCP.md §6. The matrix in §2 here sums it up per actor.
 | CH-10 | SessionService.StartSession (no repos) | session_start | `humata session start` | |
 | CH-11..CH-14 | ChannelService.GetChannel, SessionService.ListSessions | channels_list | `humata ls`, `humata channels` | tabs, tree table: UI only |
 | CH-15 | ActivityService.ListActivity | — | `humata activity` | |
-| CH-16 | ChannelService.ListChannels, ActivityService.MarkSeen | channels_list | `humata channels` | |
-| CH-17 | ActivityService.MarkSeen | — | — | app marks on open |
+| CH-16 | ChannelService.ListChannels, SessionService (Session.unread) | channels_list | `humata channels` | D392 |
+| CH-17 | MarkService.ViewSession | — | — | app views the open session (D392) |
 | CH-18, CH-19 | ChannelService.AddRepo | channel_add_repo | `humata channel repo add` | |
 | CH-20 | Internal | — | — | existing sessions unchanged |
 | CH-21 | SessionService.AddRepoToSession | session_add_repo | `humata session repo add` | |
@@ -107,6 +107,7 @@ column of MCP.md §6. The matrix in §2 here sums it up per actor.
 | FK-11 | ActivityService.ListActivity | — | `humata activity` | |
 | FK-12 | PeerService.CreateBundle/ReceiveBundle | session_fork | — | |
 | FK-13 | SessionService.ArchiveSession | session_archive | `humata session archive` | |
+| CV-8 | SessionService.ContinueInChannel | session_continue_in_channel | `humata session continue` | D307 |
 
 ### MV: move and archive (12)
 
@@ -264,6 +265,7 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | TP-1 | ChannelService.GetGrid, MachineService.ListMachines | topology_get, session_info | `humata topology` | |
 | TP-2 | FileService.* | files_list, file_read, files_find | `humata files` | |
 | TP-3 | FileService.* (other session/machine) | file_read | `humata files cat` | FILES_READ_OTHER_* |
+| DV-9 | DeskService.ListDocVersions, ReadDocVersion | doc_versions_list, doc_version_read | — | FILES_READ_OTHER_* for another session or machine; no save or restore tool |
 | TP-4 | TransferService.StartTransfer | files_copy_in, file_fetch | `humata cp` | |
 | TP-5 | SessionService.SendNote, AskSession, AnswerQuestion | session_note, session_ask, session_answer | `humata session note/ask` | |
 | TP-6 | SessionService.ForkSession | session_fork | `humata session fork` | |
@@ -417,6 +419,23 @@ Review summary drafts: PullRequestReviewService.DraftSummary, MCP
 | ST-14 | SettingsService (retention) | — | `humata settings` | |
 | ST-16 | SettingsService (skills) | — | `humata settings` | |
 | ST-17 | Settings.security, ChannelSettings.contain_agents | — | `humata settings contain` | |
+
+### RL: repo library and repo search (12)
+
+| ID | RPC | MCP | CLI | Note |
+| --- | --- | --- | --- | --- |
+| RL-1 | RepoService.ListRepoLibrary | repo_library | `humata repos list` | the library is `daemon/repo_library`, in `<state>/repos.db`; tests: daemon/repo_library/tests, daemon/humatad/tests/repos.rs |
+| RL-2 | Internal (ChannelService, SessionService, DeskService add paths record the repo) | — | — | daemon/humatad/src/channel_service/library_adds.rs; test: daemon/humatad/tests/repo_library_adds.rs |
+| RL-3 | RepoService.ListRepoLibrary, SearchRepos | — | — | UI only: clients/src/repos.rs, features/app/src/repo_search.rs, ui/src/repo_search_field.rs |
+| RL-4 | RepoService.ListRepoLibrary, RemoveFromRepoLibrary, ForgetRepoLibrary | repo_library | `humata repos list`, `humata repos remove`, `humata repos forget-all` | Remove and Forget are user-only; forget-all asks first |
+| RL-5 | RepoService.SearchRepos | repo_search | `humata repos search` | one search for every picker: daemon/humatad/src/repo_service.rs, features/app/src/repo_search.rs; tests: daemon/humatad/tests/repos.rs, clients tests, cli/tests/repos.rs, daemon/humatad/tests/repo_tools.rs |
+| RL-6 | SearchReposResponse.library, github | repo_search | `humata repos search` | the scope never filters the library group |
+| RL-7 | RepoService.GetRepoScope, UpdateRepoScope | — | `humata repos scope show`, `humata repos scope set` | saving is user-only; `config/repos.toml` on the host (ST-21) |
+| RL-8 | SearchReposRequest.scope; UpdateRepoScope (Save as default) | repo_search `owners`, `all_of_github` | `humata repos search --owner`, `--all-of-github`, `--your-repos` | widening is for one call; saving is user-only; ui/src/repo_search_field.rs draws the chips |
+| RL-9 | Internal (gh on the host) | — | — | daemon/humatad/src/repo_service.rs; test: daemon/humatad/tests/repos.rs |
+| RL-10 | SearchReposResponse.problem, unknown_owners | repo_search | `humata repos search` | exit 0 with the problem line; the library still answers |
+| RL-11 | SearchRepos, ListRepoLibrary as global reads | repo_search, repo_library | `humata repos search`, `list` | agents never save a scope or remove (D479); tests: daemon/mcp/tests/repo_tools.rs, daemon/humatad/tests/repo_tools.rs |
+| RL-12 | PeerService (config sync of repos.toml); SearchRepos answered by the host | — | `humata repos search` | Internal; the library stays on the host |
 
 ### SEC: security (15)
 

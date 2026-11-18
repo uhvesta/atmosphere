@@ -7,17 +7,21 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 // `#[gpui_kit::test]` expands to paths under `gpui`.
+use gpui_kit::base::input as edit;
 use gpui_kit::gpui;
 use gpui_kit::test::{ClickOptions, TestWindowExt};
 use gpui_kit::{
     AnyWindowHandle, AppContext, Bounds, ClipboardEntry, ClipboardItem, Entity, Focusable, Image,
-    ImageFormat, Modifiers, Pixels, Point, ScrollDelta, TestAppContext, Window, WindowBounds, WindowOptions,
-    point, px, size,
+    ImageFormat, Modifiers, Pixels, Point, ScrollDelta, TestAppContext, Window, WindowBounds,
+    WindowOptions, point, px, size,
 };
 use terminal_grid::{
-    Cell, Cursor, CursorStyle, FakeGrid, Grid, Key, KeyAction, KeyEvent, Mods, Row, Scrollbar, Size, ViewportPoint,
+    Cell, Cursor, CursorStyle, FakeGrid, Grid, Key, KeyAction, KeyEvent, Mods, Row, Scrollbar,
+    Size, ViewportPoint,
 };
-use terminal_view::{CellSize, HistoryPoint, Mark, Paste, ScrollTo, TerminalHost, TerminalView, Theme};
+use terminal_view::{
+    CellSize, HistoryPoint, Mark, Paste, ScrollTo, TerminalHost, TerminalView, Theme,
+};
 
 const COLS: u16 = 40;
 const ROWS: u16 = 10;
@@ -42,12 +46,10 @@ struct TestHost(Rc<RefCell<Log>>);
 
 impl TerminalHost<FakeGrid> for TestHost {
     fn key(&mut self, _: &mut FakeGrid, event: KeyEvent<'_>) {
-        self.0.borrow_mut().keys.push((
-            event.key,
-            event.action,
-            event.mods,
-            event.text.to_owned(),
-        ));
+        self.0
+            .borrow_mut()
+            .keys
+            .push((event.key, event.action, event.mods, event.text.to_owned()));
     }
 
     fn scroll(&mut self, _: &mut FakeGrid, lines: i32, _: ViewportPoint, _: Mods) {
@@ -244,7 +246,13 @@ fn the_view_asks_the_host_for_the_size_that_fills_it(cx: &mut TestAppContext) {
             cols: (f32::from(bounds.size.width) / cell.width).floor() as u16,
             rows: (f32::from(bounds.size.height) / cell.height).floor() as u16,
         };
-        assert_ne!(wanted, Size { cols: COLS, rows: ROWS });
+        assert_ne!(
+            wanted,
+            Size {
+                cols: COLS,
+                rows: ROWS
+            }
+        );
         // Asked once, though the grid (whose host ignored it) never fits.
         assert_eq!(log.borrow().resizes, vec![wanted]);
     })
@@ -311,12 +319,50 @@ fn dragging_selects_cells_and_the_copy_shortcut_copies_them(cx: &mut TestAppCont
         window.render_frame(cx);
 
         let grid = view.read(cx).grid();
-        assert_eq!(grid.selection(0).map(|span| (span.start, span.end)), Some((6, COLS - 1)));
-        assert_eq!(grid.selection(1).map(|span| (span.start, span.end)), Some((0, 5)));
+        assert_eq!(
+            grid.selection(0).map(|span| (span.start, span.end)),
+            Some((6, COLS - 1))
+        );
+        assert_eq!(
+            grid.selection(1).map(|span| (span.start, span.end)),
+            Some((0, 5))
+        );
 
         window.press(COPY, cx);
         let copied = cx.read_from_clipboard().and_then(|item| item.text());
         assert_eq!(copied.as_deref(), Some("worldsecond"));
+    })
+    .expect("the test window is open");
+}
+
+/// The Edit menu's Copy, Paste and Select All act on a focused terminal as
+/// its shortcuts do.
+#[gpui_kit::test]
+fn the_edit_menu_copies_pastes_and_selects_all(cx: &mut TestAppContext) {
+    let (handle, view, log) = open(cx, grid_with(&["hello world", "second line"]));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        focus(&view, window, cx);
+        // `Window::dispatch_action` runs the action only after this update;
+        // the menu reaches the focused terminal the same way, so dispatch
+        // on its focus handle, which runs the handler now.
+        let menu = view.read(cx).focus_handle(cx);
+
+        menu.dispatch_action(&edit::SelectAll, window, cx);
+        window.render_frame(cx);
+        let grid = view.read(cx).grid();
+        assert!((0..ROWS).all(|y| grid.selection(y).is_some()));
+
+        menu.dispatch_action(&edit::Copy, window, cx);
+        let copied = cx.read_from_clipboard().and_then(|item| item.text());
+        let copied = copied.unwrap_or_default();
+        assert!(copied.contains("hello world"));
+        assert!(copied.contains("second line"));
+
+        cx.write_to_clipboard(ClipboardItem::new_string("echo hi".to_owned()));
+        menu.dispatch_action(&edit::Paste, window, cx);
+        assert_eq!(log.borrow().pastes, vec![Paste::Text("echo hi".to_owned())]);
+        assert!(log.borrow().keys.is_empty());
     })
     .expect("the test window is open");
 }
@@ -403,7 +449,9 @@ fn small_pixel_scrolls_add_up_to_a_row(cx: &mut TestAppContext) {
 
 fn selected(view: &View, cx: &gpui_kit::App) -> Vec<Option<(u16, u16)>> {
     let grid = view.read(cx).grid();
-    (0..3).map(|y| grid.selection(y).map(|span| (span.start, span.end))).collect()
+    (0..3)
+        .map(|y| grid.selection(y).map(|span| (span.start, span.end)))
+        .collect()
 }
 
 #[gpui_kit::test]
@@ -413,12 +461,20 @@ fn a_double_click_selects_a_word_and_a_triple_click_a_line(cx: &mut TestAppConte
         window.render_frame(cx);
         let terminal = window.find("terminal").bounds().origin;
         let at = cell_center(&view, window, 8, 0, cx) - terminal;
-        window.click_with_options("terminal", ClickOptions::new().with_offset(at).with_count(2), cx);
+        window.click_with_options(
+            "terminal",
+            ClickOptions::new().with_offset(at).with_count(2),
+            cx,
+        );
         window.render_frame(cx);
         // A path is one word: `/`, `~`, `-` and `.` don't break it.
         assert_eq!(selected(&view, cx), vec![Some((3, 16)), None, None]);
 
-        window.click_with_options("terminal", ClickOptions::new().with_offset(at).with_count(3), cx);
+        window.click_with_options(
+            "terminal",
+            ClickOptions::new().with_offset(at).with_count(3),
+            cx,
+        );
         window.render_frame(cx);
         assert_eq!(selected(&view, cx), vec![Some((0, COLS - 1)), None, None]);
     })
@@ -465,7 +521,10 @@ fn history_keys_and_the_scrollbar_move_through_the_history(cx: &mut TestAppConte
         };
         window.press(up, cx);
         window.press(top, cx);
-        assert_eq!(log.borrow().scrolled_to, vec![ScrollTo::PageUp, ScrollTo::Top]);
+        assert_eq!(
+            log.borrow().scrolled_to,
+            vec![ScrollTo::PageUp, ScrollTo::Top]
+        );
         // The keys went to the history, not the program.
         assert!(log.borrow().keys.is_empty());
 
@@ -479,7 +538,10 @@ fn history_keys_and_the_scrollbar_move_through_the_history(cx: &mut TestAppConte
         window.drag(bottom, top, cx);
         let rows = log.borrow().scrolled_to.clone();
         assert_eq!(rows.last(), Some(&ScrollTo::Row(0)), "{rows:?}");
-        assert!(view.read(cx).grid().selection(0).is_none(), "the drag didn't select");
+        assert!(
+            view.read(cx).grid().selection(0).is_none(),
+            "the drag didn't select"
+        );
     })
     .expect("the test window is open");
 }
@@ -502,8 +564,14 @@ fn at_the_newest_output_the_right_edge_selects_instead_of_scrolling(cx: &mut Tes
         let start = point(x, bounds.origin.y + bounds.size.height - px(2.));
         let end = point(x, bounds.origin.y + px(2.));
         window.drag(start, end, cx);
-        assert!(log.borrow().scrolled_to.is_empty(), "the history didn't move");
-        assert!(view.read(cx).grid().selection(0).is_some(), "the drag selected");
+        assert!(
+            log.borrow().scrolled_to.is_empty(),
+            "the history didn't move"
+        );
+        assert!(
+            view.read(cx).grid().selection(0).is_some(),
+            "the drag selected"
+        );
     })
     .expect("the test window is open");
 }
@@ -547,7 +615,12 @@ fn marks_in_view_draw_their_rows_again(cx: &mut TestAppContext) {
         view.update(cx, |view, cx| view.set_marks(vec![mark(1), mark(0)], cx));
         window.render_frame(cx);
         // Kept in history order whatever order they came in.
-        let rows: Vec<_> = view.read(cx).marks().iter().map(|mark| mark.start.row).collect();
+        let rows: Vec<_> = view
+            .read(cx)
+            .marks()
+            .iter()
+            .map(|mark| mark.start.row)
+            .collect();
         assert_eq!(rows, vec![0, 1]);
         assert!(view.read(cx).stats().rows_rebuilt >= 2);
     })

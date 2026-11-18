@@ -30,8 +30,11 @@
 //! notice (SE-16), and its input is dropped, never kept for later ("Typing is
 //! disabled"). The machine keeps the holder and the scrollback. When the
 //! link returns with a new generation the relay opens Attach again from the
-//! offset after the last output it delivered, with the latest size, sends a
-//! `RECONNECTED` notice and goes on: the client gets exactly what it missed
+//! offset after the last output it delivered, with the latest size, and
+//! goes on. Once the machine has replayed what the client missed it sends a
+//! `CAUGHT_UP` notice with the lines that was, which the relay sends on as
+//! the `RECONNECTED` notice; a fresh screen gets `RECONNECTED` with no count
+//! just before it. The client gets exactly what it missed
 //! while the machine still keeps it, or the machine's own fresh snapshot
 //! when it doesn't (TR-4), passed through as it is.
 
@@ -419,6 +422,8 @@ impl Relay {
         let mut waiting: Option<pb::AttachClientMessage> = None;
         let mut finishing = false;
         let mut was_down = false;
+        // Owed the reconnected line, which waits for the machine's replay.
+        let mut catching_up = false;
 
         // The link may have changed while the first attach was opening.
         let mut pending_change = match current {
@@ -447,7 +452,7 @@ impl Relay {
                             Ok(upstream) => {
                                 if was_down {
                                     was_down = false;
-                                    outbox.push_back(Ok(self.reconnected()));
+                                    catching_up = true;
                                 }
                                 generation = Some(upstream.generation);
                                 to = Some(upstream.to);
@@ -518,10 +523,37 @@ impl Relay {
                 }
                 Event::Machine(Some(Ok(mut message))) => {
                     self.tracker.delivered(&message);
-                    if let Some(ServerMessage::State(state)) = &mut message.message {
-                        self.show_moving(state);
+                    let counted = match &message.message {
+                        Some(ServerMessage::Notice(notice))
+                            if notice.kind() == pb::terminal_notice::Kind::CaughtUp =>
+                        {
+                            Some(notice.caught_up_lines)
+                        }
+                        _ => None,
+                    };
+                    match counted {
+                        // The machine's count goes out as the reconnected
+                        // line, never as a line of its own.
+                        Some(lines) => {
+                            if std::mem::take(&mut catching_up) {
+                                outbox.push_back(Ok(self.reconnected(lines)));
+                            }
+                        }
+                        None => {
+                            // A fresh screen replays nothing: the machine is
+                            // back all the same.
+                            if catching_up
+                                && matches!(message.message, Some(ServerMessage::Snapshot(_)))
+                            {
+                                catching_up = false;
+                                outbox.push_back(Ok(self.reconnected(0)));
+                            }
+                            if let Some(ServerMessage::State(state)) = &mut message.message {
+                                self.show_moving(state);
+                            }
+                            outbox.push_back(Ok(message));
+                        }
                     }
-                    outbox.push_back(Ok(message));
                 }
                 Event::Machine(Some(Err(status))) if link_failure(&status) => {
                     self.go_down(&mut to, &mut from, &mut generation, &mut waiting, &mut outbox, &mut was_down);
@@ -621,17 +653,16 @@ impl Relay {
         *waiting = None;
     }
 
-    /// The line shown when the machine is back (SE-16). The relay can't
-    /// count lines without decoding chunks, which it never does (TR-11), so
-    /// the count stays 0 and the client derives it from the output that
-    /// follows `at_offset`.
-    fn reconnected(&self) -> pb::AttachServerMessage {
+    /// The line shown when the machine is back (SE-16), with the lines the
+    /// machine counted as it replayed what was missed: the relay never
+    /// decodes chunks to count them (TR-11). 0 before a fresh screen.
+    fn reconnected(&self, caught_up_lines: u32) -> pb::AttachServerMessage {
         pb::AttachServerMessage {
             message: Some(ServerMessage::Notice(pb::TerminalNotice {
                 kind: pb::terminal_notice::Kind::Reconnected as i32,
                 text: format!("reconnected to {}", self.machine),
                 at_offset: self.tracker.delivered.unwrap_or(0),
-                caught_up_lines: 0,
+                caught_up_lines,
                 at: Some(now()),
             })),
         }
@@ -869,6 +900,16 @@ mod tests {
         }
     }
 
+    /// The machine's count of what an attach from an offset replayed.
+    fn caught_up(at_offset: u64, lines: u32) -> ServerMessage {
+        ServerMessage::Notice(pb::TerminalNotice {
+            kind: pb::terminal_notice::Kind::CaughtUp as i32,
+            at_offset,
+            caught_up_lines: lines,
+            ..Default::default()
+        })
+    }
+
     fn open(from: u64) -> pb::AttachOpen {
         pb::AttachOpen {
             tab: Some(pb::TabId { value: "tb_1".into() }),
@@ -1058,6 +1099,7 @@ mod tests {
         assert_eq!(opens.len(), 2);
         assert_eq!(opens[1].from_offset, 5);
         assert_eq!((opens[1].cols, opens[1].rows), (100, 30));
+        rig.fake.say(1, caught_up(5, 0)).await;
         match next(&mut stream).await {
             ServerMessage::Notice(notice) => {
                 assert_eq!(notice.kind, pb::terminal_notice::Kind::Reconnected as i32);
@@ -1087,7 +1129,6 @@ mod tests {
 
         rig.links.up("devbox", connect(rig.fake.clone()).await);
         settle().await;
-        next(&mut stream).await;
         let snapshot = pb::TerminalSnapshot {
             offset: 900,
             vt: vec![1, 2, 3].into(),
@@ -1098,8 +1139,45 @@ mod tests {
         rig.fake.say(1, ServerMessage::Snapshot(snapshot.clone())).await;
         rig.fake.say(1, output(900, b"z")).await;
 
+        assert!(matches!(
+            next(&mut stream).await,
+            ServerMessage::Notice(notice)
+                if notice.kind == pb::terminal_notice::Kind::Reconnected as i32
+        ));
         assert_eq!(next(&mut stream).await, ServerMessage::Snapshot(snapshot));
         assert_eq!(next(&mut stream).await, output(900, b"z"));
+    }
+
+    /// SE-16: the line saying the machine is back comes after what it
+    /// replayed and counts its lines; the machine's own count is not passed
+    /// on as a second line.
+    #[tokio::test(start_paused = true)]
+    async fn the_reconnected_line_counts_what_the_machine_replayed() {
+        let rig = rig().await;
+        let (_typed, mut stream) = attached(&rig, 0).await;
+        rig.fake.say(0, output(0, b"abc")).await;
+        next(&mut stream).await;
+        rig.fake.cut(0).await;
+        rig.links.down("devbox");
+        settle().await;
+        next(&mut stream).await;
+        next(&mut stream).await;
+
+        rig.links.up("devbox", connect(rig.fake.clone()).await);
+        settle().await;
+        rig.fake.say(1, output(3, b"d\r\ne\r\n")).await;
+        rig.fake.say(1, caught_up(9, 2)).await;
+
+        assert_eq!(next(&mut stream).await, output(3, b"d\r\ne\r\n"));
+        match next(&mut stream).await {
+            ServerMessage::Notice(notice) => {
+                assert_eq!(notice.kind, pb::terminal_notice::Kind::Reconnected as i32);
+                assert_eq!(notice.caught_up_lines, 2);
+                assert_eq!(notice.at_offset, 9);
+            }
+            other => panic!("expected a notice, got {other:?}"),
+        }
+        assert!(quiet(&mut stream).await, "the machine's count is not a second line");
     }
 
     #[tokio::test(start_paused = true)]

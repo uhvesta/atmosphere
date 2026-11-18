@@ -1,20 +1,53 @@
 use super::FakeDaemon;
-use crate::daemon::{DaemonError, Reply};
+use crate::daemon::{DaemonError, ImageKind, Reply};
 use crate::fixture;
 use crate::model::{Agent, Session, SessionId, Speaker, Status};
+
+/// A new tab running `agent` in `folder`; the fake keeps the folder only in
+/// its call log.
+pub(super) fn open_in(
+    daemon: &FakeDaemon,
+    session: &SessionId,
+    agent: Agent,
+    folder: &str,
+) -> Reply<(usize, Session)> {
+    open_as(
+        daemon,
+        session,
+        agent,
+        format!("open_in {session} {} {folder}", agent.command()),
+        true,
+    )
+}
 
 pub(super) fn open(
     daemon: &FakeDaemon,
     session: &SessionId,
     agent: Agent,
 ) -> Reply<(usize, Session)> {
+    open_as(
+        daemon,
+        session,
+        agent,
+        format!("open {session} {}", agent.command()),
+        false,
+    )
+}
+
+fn open_as(
+    daemon: &FakeDaemon,
+    session: &SessionId,
+    agent: Agent,
+    call: String,
+    always_new: bool,
+) -> Reply<(usize, Session)> {
     let id = session.clone();
     daemon.reply(
         None,
-        format!("open {session} {}", agent.command()),
+        call,
         move |inner| {
             let session = inner.session_mut(&id)?;
-            let existing = if agent == Agent::Shell {
+            let existing = if agent == Agent::Shell || always_new {
                 None
             } else if session.agent == agent {
                 Some(0)
@@ -68,18 +101,71 @@ pub(super) fn write(daemon: &FakeDaemon, session: &SessionId, tab: usize, text: 
     )
 }
 
-pub(super) fn input(
+/// Saves a pasted image as the daemon does and returns where: a name of its
+/// kind under the session's folder. Bytes that are not of `kind` are
+/// refused, as the daemon refuses them.
+pub(super) fn paste_image(
     daemon: &FakeDaemon,
     session: &SessionId,
-    tab: usize,
+    kind: ImageKind,
     bytes: Vec<u8>,
-) -> Reply<()> {
+) -> Reply<String> {
     let id = session.clone();
     daemon.reply(
         None,
-        format!("terminal input {session} {tab} {} bytes", bytes.len()),
+        format!("paste-image {session} {kind:?} {}", bytes.len()),
         move |inner| {
-            let session = inner.session_mut(&id)?;
+            inner.session_mut(&id)?;
+            let Some(extension) = image_extension(kind, &bytes) else {
+                return Err(DaemonError::Refused {
+                    what: "The pasted image".into(),
+                    reason: format!(
+                        "its bytes are not a {kind:?} image. Copy the image again, then paste it"
+                    ),
+                });
+            };
+            inner.pasted_images += 1;
+            Ok(format!(
+                "/tmp/humata-pastes/{id}/paste-{}.{extension}",
+                inner.pasted_images
+            ))
+        },
+    )
+}
+
+/// The extension an image of `kind` is saved with, when `bytes` start as
+/// one does.
+fn image_extension(kind: ImageKind, bytes: &[u8]) -> Option<&'static str> {
+    let (extension, matches) = match kind {
+        ImageKind::Png => ("png", bytes.starts_with(b"\x89PNG\r\n\x1a\n")),
+        ImageKind::Jpeg => ("jpg", bytes.starts_with(b"\xff\xd8\xff")),
+        ImageKind::Gif => (
+            "gif",
+            bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        ),
+        ImageKind::Webp => (
+            "webp",
+            bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP".as_slice()),
+        ),
+        ImageKind::Tiff => (
+            "tiff",
+            bytes.starts_with(b"II*\0") || bytes.starts_with(b"MM\0*"),
+        ),
+        ImageKind::Heic => ("heic", bytes.get(4..8) == Some(b"ftyp".as_slice())),
+    };
+    matches.then_some(extension)
+}
+
+/// What typing `bytes` into a tab does, for a view's link.
+pub(super) fn apply_input(
+    inner: &mut super::Inner,
+    id: &SessionId,
+    tab: usize,
+    bytes: Vec<u8>,
+) -> Result<(), DaemonError> {
+    {
+        {
+            let session = inner.session_mut(id)?;
             if tab > session.shells.len() {
                 return Err(DaemonError::NotFound {
                     what: format!("Terminal {tab} of {id}"),
@@ -100,8 +186,16 @@ pub(super) fn input(
                     .copied()
                     .unwrap_or(Agent::Shell)
             };
+            if inner.exited_tabs.contains_key(&(id.clone(), tab)) {
+                return Err(DaemonError::Refused {
+                    what: "Typing into this terminal".into(),
+                    reason: "its shell has exited. Open a new terminal to run more commands"
+                        .into(),
+                });
+            }
             super::desk::used(inner, &id);
             let mut output = Vec::new();
+            let mut exited = None;
             // This is a deterministic fake PTY, never a local command executor.
             let pending = inner.terminal_input.entry((id.clone(), tab)).or_default();
             for byte in bytes {
@@ -110,6 +204,12 @@ pub(super) fn input(
                         let text = String::from_utf8_lossy(pending).into_owned();
                         pending.clear();
                         output.extend_from_slice(b"\r\n");
+                        // A shell tab's shell ends at `exit`; what follows
+                        // it reaches nothing.
+                        if tab != 0 && agent == Agent::Shell && text.trim() == "exit" {
+                            exited = Some(0);
+                            break;
+                        }
                         let result = if agent == Agent::Shell {
                             match text.trim() {
                                 "pwd" => "~/humata".into(),
@@ -148,25 +248,31 @@ pub(super) fn input(
                     _ => {}
                 }
             }
-            inner.terminal_data(&id, tab, output);
+            let printed = !output.is_empty();
+            inner.terminal_data(id, tab, output);
+            if printed {
+                inner.heard(id, tab);
+            }
+            if let Some(code) = exited {
+                inner.exited_tabs.insert((id.clone(), tab), code);
+                super::terminal_link::exit(&inner.links, id, tab, code);
+            }
             Ok(())
-        },
-    )
+        }
+    }
 }
 
-pub(super) fn resize(
-    daemon: &FakeDaemon,
-    session: &SessionId,
+/// What a new size does to a tab, for a view's link.
+pub(super) fn apply_resize(
+    inner: &mut super::Inner,
+    id: &SessionId,
     tab: usize,
     columns: u16,
     rows: u16,
-) -> Reply<()> {
-    let id = session.clone();
-    daemon.reply(
-        None,
-        format!("terminal resize {session} {tab} {columns}x{rows}"),
-        move |inner| {
-            let session = inner.session_mut(&id)?;
+) -> Result<(), DaemonError> {
+    {
+        {
+            let session = inner.session_mut(id)?;
             if tab > session.shells.len() {
                 return Err(DaemonError::NotFound {
                     what: format!("Terminal {tab} of {id}"),
@@ -193,9 +299,9 @@ pub(super) fn resize(
             {
                 let mut screen = b"\x1b[H\x1b[2J".to_vec();
                 screen.extend(fixture::terminal_screen(&session, tab));
-                inner.terminal_data(&id, tab, screen);
+                inner.terminal_data(id, tab, screen);
             }
             Ok(())
-        },
-    )
+        }
+    }
 }

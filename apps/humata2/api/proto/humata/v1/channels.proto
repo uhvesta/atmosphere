@@ -13,7 +13,10 @@ service ChannelService {
   rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
   rpc GetChannel(GetChannelRequest) returns (Channel);
   rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
-  // Renames the channel; its folder name stays (FC-1, like FC-17).
+  // Renames the channel and moves its folder to the new name's (D314,
+  // reversing FC-1): every session of the channel stops and resumes in
+  // its new folder with its conversation. Asks first (confirm_running)
+  // when that would cut off a running turn; a taken folder is refused.
   rpc RenameChannel(RenameChannelRequest) returns (Channel);
   // CH-3: repos gh on the Mac can see, fuzzy-matched.
   rpc SearchGitHubRepos(SearchGitHubReposRequest) returns (SearchGitHubReposResponse);
@@ -43,14 +46,14 @@ service ChannelService {
 service ActivityService {
   // CH-15, HM-2. Newest first. Unset channel: every channel.
   rpc ListActivity(ListActivityRequest) returns (ListActivityResponse);
-  // CH-17: clears the session's unread mark for this user.
-  rpc MarkSeen(MarkSeenRequest) returns (MarkSeenResponse);
+  // CH-17 is MarkService.ViewSession (D392): it also keeps the session read
+  // while it is viewed.
 }
 
 message Channel {
   ChannelId id = 1;
   string name = 2;
-  // CH-2: derived once, never renamed.
+  // CH-2: derived from the name; a rename moves it (D314).
   string folder = 3;
   repeated RepoRef repos = 4;
   repeated MachineId machines = 5;
@@ -95,6 +98,10 @@ message RenameChannelRequest {
   ChannelId id = 2;
   string name = 3;
   Revision expected_revision = 4;
+  // D314: a rename stops and resumes every session of the channel. Unset,
+  // it is refused (FailedPrecondition, SessionBusy) while any of them is
+  // in a turn or needs input; set once the person agreed to cut it off.
+  bool confirm_running = 5;
 }
 
 message SearchGitHubReposRequest {
@@ -232,6 +239,9 @@ message DeleteChannelPlan {
   repeated MachineId machines = 10;
   // Offline ones get it when they return (the operation waits on them).
   repeated MachineId offline_machines = 11;
+  // CH-24: the channel's open Desk sessions. The delete closes each into
+  // its own trash item before the channel's folder moves.
+  repeated SessionId desk_sessions = 12;
 }
 
 message DeleteChannelRequest {
@@ -295,8 +305,3 @@ message ListActivityResponse {
   PageResponse page = 2;
 }
 
-message MarkSeenRequest {
-  SessionId session = 1;
-}
-
-message MarkSeenResponse {}

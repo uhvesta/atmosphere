@@ -5,7 +5,7 @@ use humata2_grpc::humata::v1 as pb;
 use humata2_store::BoardItemRecord;
 
 use super::scope::{column_label, column_pb};
-use super::{FIRST_COLUMN, Op};
+use super::{DEFAULT_COLUMN, Op};
 use crate::inbox::BoardAsk;
 
 pub(super) fn field_change(field: &str, before: &str, after: &str) -> pb::FieldChange {
@@ -64,7 +64,7 @@ pub(super) fn away_ask(op: &Op) -> BoardAsk {
                 board: request.board.clone(),
                 title: request.title.trim().to_owned(),
                 column: match request.column {
-                    0 => column_pb(FIRST_COLUMN) as i32,
+                    0 => column_pb(DEFAULT_COLUMN) as i32,
                     column => column,
                 },
                 description: request.description.clone(),
@@ -232,7 +232,7 @@ mod tests {
             panic!("an add's card shows the new item");
         };
         assert_eq!(made.title, "Fix login");
-        assert_eq!(made.column, pb::BoardColumn::Backlog as i32);
+        assert_eq!(made.column, pb::BoardColumn::ToDo as i32);
     }
 
     #[test]

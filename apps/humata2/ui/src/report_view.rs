@@ -284,7 +284,21 @@ impl ReportView {
                 ReportKind::Recording => "Bug report from your recording",
                 ReportKind::Snapshot => "Bug report from a snapshot",
             }))
-            .child(widgets::faint_in(look, format!("Saved in {}", form.folder.display())))
+            .child(
+                row()
+                    .items_center()
+                    .gap_2()
+                    .child(widgets::faint_in(look, "Saved"))
+                    .child({
+                        let folder = form.folder.display().to_string();
+                        Button::new("report-copy-path")
+                            .small()
+                            .label("Copy path")
+                            .on_click(move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(folder.clone()));
+                            })
+                    }),
+            )
             .child(field(
                 look,
                 "What happened",

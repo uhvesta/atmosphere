@@ -117,3 +117,28 @@ async fn a_daemon_that_never_answers_is_given_up_on() {
     );
     assert!(console.written().is_empty());
 }
+
+/// D761: the agent's ask-user form goes to the daemon as a `question` hook,
+/// and the daemon's answer is printed as it is.
+#[tokio::test]
+async fn an_ask_user_form_goes_to_the_daemon_as_a_question() {
+    const ASK: &[u8] = br#"{"toolName":"ask_user","toolArgs":{"message":"Which one?"}}"#;
+    const ANSWER: &[u8] = br#"{"permissionDecision":"deny","permissionDecisionReason":"a"}"#;
+    let daemon = FakeDaemon::new();
+    daemon.stream(
+        rpc::session::HOOK,
+        &[&pb::HookReply {
+            keepalive: false,
+            stdout: ANSWER.to_vec(),
+        }],
+    );
+    let console = FakeConsole::pipe().with_stdin(ASK);
+    assert_eq!(
+        run(&daemon, &console, &["hook", "copilot", "question"]).await,
+        exit::OK
+    );
+    let sent: pb::HookRequest = daemon.only(rpc::session::HOOK);
+    assert_eq!(sent.event, "question");
+    assert_eq!(sent.payload, ASK);
+    assert_eq!(console.written(), ANSWER);
+}

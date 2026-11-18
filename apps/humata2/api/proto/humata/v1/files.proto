@@ -63,6 +63,18 @@ message FileLocation {
     // FM-10: the user's home folder on the machine. The user only: an
     // agent that names it gets Error.outside_humata_folders.
     MachineHome home = 7;
+    // D335: what was pasted into a session's terminals, on the session's
+    // machine. The user only, like home.
+    SessionPastes session_pastes = 8;
+    // D382: a session's own folder, where a Desk session's documents sit,
+    // outside every clone. An agent reaches it as it reaches a clone of
+    // that session: by the session's own grants.
+    SessionFolder session_folder = 9;
+    // PL-4, D540: where files sent machine-only from a place that is not a
+    // channel's land on this machine, `<root>/received/<from>/`. The user
+    // only, like home: an agent that names it gets
+    // Error.outside_humata_folders.
+    MachineReceived received = 10;
   }
   // Relative to the root; "..", absolute paths and symlinks out fail with
   // Error.outside_humata_folders.
@@ -84,6 +96,14 @@ message MainClone {
 message ChannelFolder { ChannelId channel = 1; }
 
 message MachineHome {}
+
+message SessionPastes { SessionId session = 1; }
+
+message SessionFolder { SessionId session = 1; }
+
+// The received place for files that came from machine `from` (PL-4). `from`
+// is one machine id: no "/" and no "..".
+message MachineReceived { MachineId from = 1; }
 
 message FileEntry {
   FileLocation location = 1;
@@ -148,6 +168,11 @@ message WriteFileHeader {
   uint64 size = 3;
   string sha256 = 4;
   bool replace = 5;
+  // With replace: the SHA-256 of the file as the writer last read it. If the
+  // file on disk is not that (someone else changed or removed it), nothing
+  // is written and the call fails Aborted. Left out: the write replaces
+  // whatever is there.
+  optional string expected_sha256 = 6;
 }
 
 message WriteFileMessage {
@@ -216,6 +241,19 @@ enum TransferState {
   TRANSFER_STATE_CANCELLED = 7;
 }
 
+// PL-13: where one source ended up once the transfer is done.
+enum TransferLanding {
+  TRANSFER_LANDING_UNSPECIFIED = 0;   // not placed yet, or under its own name
+  TRANSFER_LANDING_SAVED_AS = 1;      // the name was taken; kept as saved_as
+  TRANSFER_LANDING_ALREADY_THERE = 2; // a file with the same bytes was there
+}
+
+message TransferOutcome {
+  TransferLanding landing = 1;
+  // The name it was kept under (FC-14), set with SAVED_AS.
+  string saved_as = 2;
+}
+
 message Transfer {
   TransferId id = 1;
   repeated FileLocation sources = 2;
@@ -231,6 +269,13 @@ message Transfer {
   Error problem = 10;
   google.protobuf.Timestamp started_at = 11;
   uint64 version = 12;
+  // D335: where the file is on the destination machine's disk, absolute.
+  // Set only in the answer to an upload into a session's pastes that is
+  // done; empty everywhere else.
+  string disk_path = 13;
+  // One per entry of sources, in the same order; empty until the transfer
+  // is done (PL-13).
+  repeated TransferOutcome outcomes = 14;
 }
 
 message StartTransferRequest {
@@ -241,6 +286,10 @@ message StartTransferRequest {
   TransferMode mode = 4;
   OnExisting on_existing = 5;
   string reason = 6;
+  // D769: the name the one source lands under in destination, as plain
+  // `cp a b` makes a new file b. Empty keeps the source's own name. Only
+  // with one source; one path part, never "." or "..".
+  string name = 7;
 }
 
 message UploadHeader {
@@ -346,6 +395,10 @@ service TransferEndService {
   rpc FreeSpace(FreeSpaceRequest) returns (FreeSpaceResponse);
   // True for anything at the path, a dangling link included.
   rpc Exists(EndPathRequest) returns (ExistsResponse);
+  // Which of the named chunks a chunk folder holds (MV-17, D346): a chunk
+  // is a file named by its SHA-256 (64 lowercase hex digits). A name
+  // that isn't one, and a folder that isn't there, hold nothing.
+  rpc HaveChunks(HaveChunksRequest) returns (HaveChunksResponse);
   rpc MakeFolder(MakeFolderRequest) returns (EndAck);
   rpc MakeLink(MakeLinkRequest) returns (EndAck);
   // The header, then chunks from header.offset: the file is made if
@@ -354,7 +407,9 @@ service TransferEndService {
   rpc WriteAt(stream WriteAtMessage) returns (WriteAtResponse);
   // SHA-256 of the first `bytes` of a file, computed where the file is.
   rpc HashPrefix(HashPrefixRequest) returns (HashPrefixResponse);
-  // Sets the mode and modified time of a file that is complete.
+  // Sets the mode and modified time of a file that is complete, or of a
+  // folder once everything in it is written (a transfer sets its folders
+  // deepest first, so a read-only one is set after what it holds).
   rpc FinishFile(FinishFileRequest) returns (EndAck);
   // Renames within one root; fails with name_taken if `to` exists.
   rpc MoveEntry(MoveEntryRequest) returns (EndAck);
@@ -362,7 +417,12 @@ service TransferEndService {
   // Removes a transfer's staging folder or something in one; a missing
   // path is fine. Refused for any path not inside a staging folder.
   rpc RemoveStaged(EndPathRequest) returns (EndAck);
+  // D335: where a file in a session's pastes is on this machine's disk.
+  // Refused for any other root.
+  rpc Locate(EndPathRequest) returns (LocateResponse);
 }
+
+message LocateResponse { string path = 1; }
 
 message EndAck {}
 
@@ -387,6 +447,15 @@ message FreeSpaceRequest { FileLocation folder = 1; }
 message FreeSpaceResponse { uint64 free_bytes = 1; }
 
 message ExistsResponse { bool exists = 1; }
+
+message HaveChunksRequest {
+  // The chunk folder.
+  FileLocation location = 1;
+  repeated string sha256 = 2;
+}
+
+// The asked names that are held, in the order asked.
+message HaveChunksResponse { repeated string sha256 = 1; }
 
 message MakeFolderRequest {
   FileLocation location = 1;

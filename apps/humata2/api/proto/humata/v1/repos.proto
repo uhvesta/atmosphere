@@ -1,0 +1,128 @@
+// The repo library and the one repo search (RL-1 to RL-12, D470-D479).
+// Host only. Searching and listing are global reads (D278); Remove, Forget
+// and UpdateRepoScope are user-only: no capability lets an agent call them
+// (RL-4, RL-11, D479).
+syntax = "proto3";
+
+package humata.v1;
+
+import "google/protobuf/timestamp.proto";
+import "humata/v1/common.proto";
+
+service RepoService {
+  // RL-5, RL-6: the library group, then the GitHub group within the scope.
+  // A GitHub failure is a problem in the answer, never a failed call
+  // (RL-10, D478).
+  rpc SearchRepos(SearchReposRequest) returns (SearchReposResponse);
+  // RL-4: the library, most recently used first.
+  rpc ListRepoLibrary(ListRepoLibraryRequest) returns (ListRepoLibraryResponse);
+  rpc RemoveFromRepoLibrary(RemoveFromRepoLibraryRequest) returns (ListRepoLibraryResponse);
+  rpc ForgetRepoLibrary(ForgetRepoLibraryRequest) returns (ForgetRepoLibraryResponse);
+  // RL-7, ST-21: config/repos.toml on the host.
+  rpc GetRepoScope(GetRepoScopeRequest) returns (RepoScope);
+  // RL-8 Save as default. All of GitHub is refused (InvalidArgument).
+  rpc UpdateRepoScope(UpdateRepoScopeRequest) returns (RepoScope);
+  // RL-8: the orgs the host's gh user belongs to, for + Org's suggestions.
+  // A global read. A gh failure is `problem` in the answer, never a failed call.
+  rpc ListRepoOwners(ListRepoOwnersRequest) returns (ListRepoOwnersResponse);
+}
+
+message RepoScope {
+  oneof kind {
+    // No owners set: the repos gh lists as owner, collaborator or member.
+    bool your_repos = 1;
+    RepoOwners owners = 2;
+    // One search only; never saved.
+    bool all_of_github = 3;
+  }
+}
+
+message RepoOwners {
+  repeated string owners = 1;
+  bool include_me = 2;
+}
+
+enum RepoPlaceKind {
+  REPO_PLACE_KIND_UNSPECIFIED = 0;
+  REPO_PLACE_KIND_CHANNEL = 1;
+  REPO_PLACE_KIND_DESK = 2;
+}
+
+message LibraryRepo {
+  RepoRef repo = 1;
+  string remote = 2;
+  string default_branch = 3;
+  google.protobuf.Timestamp added_at = 4;
+  google.protobuf.Timestamp last_used_at = 5;
+  RepoPlaceKind last_used_kind = 6;
+  // The channel's id when last used in a channel.
+  ChannelId last_used_channel = 7;
+}
+
+message FoundRepo {
+  RepoRef repo = 1;
+  string description = 2;
+  bool is_private = 3;
+}
+
+// RL-10: why the GitHub group is missing; `message` says what to do.
+message RepoSearchProblem {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_GH_MISSING = 1;
+    KIND_GH_SIGNED_OUT = 2;
+    KIND_RATE_LIMITED = 3;
+    KIND_GITHUB_UNREACHABLE = 4;
+    // The query is shorter than the scope needs (RL-9); not an error.
+    KIND_TOO_SHORT = 5;
+  }
+  Kind kind = 1;
+  string message = 2;
+  // KIND_RATE_LIMITED: when GitHub says the limit lifts, if it does.
+  google.protobuf.Timestamp retry_at = 3;
+}
+
+message SearchReposRequest {
+  string query = 1;
+  // Unset: the default scope. Set: this search only (RL-8).
+  RepoScope scope = 2;
+  PageRequest page = 3;
+}
+
+message SearchReposResponse {
+  repeated LibraryRepo library = 1;
+  repeated FoundRepo github = 2;
+  // The scope searched, for the chips and the group's heading.
+  RepoScope scope = 3;
+  RepoSearchProblem problem = 4;
+  // Owners GitHub doesn't know, marked on their chips (RL-10).
+  repeated string unknown_owners = 5;
+  // Pages the GitHub group.
+  PageResponse page = 6;
+}
+
+message ListRepoLibraryRequest {}
+
+message ListRepoLibraryResponse {
+  repeated LibraryRepo repos = 1;
+  Revision revision = 2;
+}
+
+message RemoveFromRepoLibraryRequest { RepoRef repo = 1; }
+
+message ForgetRepoLibraryRequest {}
+
+message ForgetRepoLibraryResponse { uint32 forgotten = 1; }
+
+message GetRepoScopeRequest {}
+
+message UpdateRepoScopeRequest { RepoScope scope = 1; }
+
+message ListRepoOwnersRequest {}
+
+message ListRepoOwnersResponse {
+  // Org logins, each once, in the order gh lists them.
+  repeated string owners = 1;
+  // Why the orgs could not be listed; `owners` is empty then.
+  RepoSearchProblem problem = 2;
+}

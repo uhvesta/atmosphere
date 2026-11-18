@@ -47,9 +47,6 @@ pub struct HostEntry {
     pub os: String,
     #[serde(default)]
     pub arch: String,
-    /// Files whose new copy waits beside the old one (TS-1).
-    #[serde(default)]
-    pub staged: Vec<String>,
     /// An undo that couldn't reach the machine; it runs again at the next
     /// start or reconnect.
     #[serde(default)]
@@ -180,6 +177,24 @@ impl Hosts {
         })
     }
 
+    /// Sets the root of the machine called `name`; false when none has
+    /// that name.
+    pub(crate) fn set_root(&self, name: &str, root: &str) -> Result<bool, HostsError> {
+        let mut found = false;
+        self.change(|machines| {
+            let Some(entry) = machines.iter_mut().find(|entry| entry.name == name) else {
+                return false;
+            };
+            found = true;
+            if entry.root == root {
+                return false;
+            }
+            root.clone_into(&mut entry.root);
+            true
+        })?;
+        Ok(found)
+    }
+
     /// Adds `entry` unless a machine has its name; false when one has.
     pub(crate) fn insert_new(&self, entry: HostEntry) -> Result<bool, HostsError> {
         let mut added = false;
@@ -300,7 +315,6 @@ mod tests {
             state,
             os: String::new(),
             arch: String::new(),
-            staged: Vec::new(),
             undo_pending: false,
             provider: None,
         }
@@ -367,5 +381,19 @@ mod tests {
         fs::write(&path, b"{\"version\": 9, \"machines\": []}").unwrap();
         assert!(matches!(hosts.list(), Err(HostsError::Newer { found: 9, .. })));
         assert_eq!(fs::read(&path).unwrap(), b"{\"version\": 9, \"machines\": []}");
+    }
+
+    #[test]
+    fn a_machines_root_changes_in_the_file_and_an_unknown_machine_changes_nothing() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("hosts.json");
+        let hosts = Hosts::open(&path);
+        hosts.put(entry("box-1", EntryState::Ready)).unwrap();
+
+        assert!(hosts.set_root("box-1", "~/Work").unwrap());
+        assert!(!hosts.set_root("nobody", "~/Work").unwrap());
+
+        assert_eq!(Hosts::open(&path).get("box-1").unwrap().unwrap().root, "~/Work");
+        assert_eq!(Hosts::open(&path).get("nobody").unwrap(), None);
     }
 }

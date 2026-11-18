@@ -15,8 +15,8 @@ mod identity;
 mod install;
 mod known_hosts;
 mod link;
-mod local;
 mod login;
+mod machine_scripts;
 mod manage;
 mod name;
 mod platform;
@@ -25,6 +25,7 @@ mod quote;
 mod runner;
 mod service;
 mod setup;
+mod stack_config;
 mod system;
 mod takeover;
 
@@ -34,24 +35,24 @@ pub use error::{
     QuoteError, Remedy, RunError, SetupError, TakeoverError, ValuesError,
 };
 pub use identity::{parse_identity, HostKey, Identity, SshAccess, SshTarget};
-pub use bundle::{Bundle, MANIFEST};
+pub use bundle::{canonical_manifest, manifest_json, stage_next, Bundle, StageError, StagedRelease, MANIFEST};
 pub use hosts::{EntryState, HostEntry, Hosts, HostsError, ProviderMachine, StoredLink};
-pub use install::{Builds, BuildsError, InstallProblem, InstalledFile, Payload};
+pub use install::{stage_next_remote, Builds, BuildsError, InstallProblem, InstalledFile, Payload, RemoteStageError};
 pub use link::Link;
-pub use local::{install_local, Holders, LocalInstallError, LocalReport, RunningHolders};
 pub use login::{
     detect_prompt, existing_link, is_interactive, make_unattended, mark_interactive, provider_link, register, unregister,
     LinkReader, LinkWriter, LoginError, LoginEvent, LoginHandle, LoginLink, LoginSession, LoginTerminal, Method, Observed,
     Plan, Prompt, PromptKind,
 };
 pub use manage::{
-    AddSsh, Drive, Machines, MachinesConfig, ManageError, OpStep, PlannedAdd, PlannedCreate, Recovered, StepEvent, DEFAULT_ROOT,
+    AddSsh, Drive, Machines, MachinesConfig, ManageError, OpStep, PlannedAdd, PlannedCreate, Recovered, ScriptBody, StepEvent, DEFAULT_ROOT,
 };
 pub use name::MachineName;
 pub use platform::{Arch, Os, Platform};
 pub use provider::{parse_status, Action, MachineStatus, Param, Provider, Reach};
 pub use runner::{EnvValue, Exit, Invocation, Output, Purpose, Runner};
 pub use service::ServiceKind;
+pub use stack_config::{StackConfig, StackConfigError};
 pub use setup::{Failure, LoginNeeded, LoginReason, Progress, Ready, RetryPolicy, Setup, Step};
 pub use system::{HostVariables, SystemRunner};
 pub use takeover::{Takeover, TakeoverAction};
@@ -65,3 +66,9 @@ pub use skills::{
     scan as scan_skills,
 };
 pub use sync_rules::{RuleProblem, RuleSource, SyncRule, SyncRulesError, parse_rules};
+// `Step` is already setup's, so the rules' steps are `ScriptStep` outside the crate.
+pub use machine_scripts::{
+    parse_machine_scripts, read_machine_scripts, rules_path, scripts_dir, Keys, MachineScriptsError, Scope,
+    ScriptName, ScriptProblem, ScriptRule, ScriptRules, ScriptWarning, Step as ScriptStep, Trigger, Wait,
+    SAMPLE_RULES, WAIT_IDLE,
+};

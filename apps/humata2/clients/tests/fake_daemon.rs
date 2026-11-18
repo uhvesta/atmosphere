@@ -10,6 +10,7 @@ use humata2_clients::{
     Daemon, DaemonError, EVENT_QUEUE, Event, FakeDaemon, ForkOptions, Operation, fixture,
 };
 use tca::TestClock;
+use terminal_wire::ClientFrame;
 use tokio::runtime::Builder;
 
 fn options(kind: humata2_clients::model::ForkKind, title: &str) -> ForkOptions {
@@ -334,17 +335,35 @@ fn raw_terminal_input_waits_for_enter_and_cannot_type_while_offline() {
     let id = SessionId::new("ledger");
     let initial = daemon.workspace();
     let agent = initial.terminal_bytes[&(id.clone(), 0)].clone();
-    block_on(daemon.input(&id, 1, b"pwd".to_vec())).unwrap();
+    let link = block_on(daemon.link(&id, 1)).unwrap();
+    let typed = |seq: u64, bytes: &[u8]| {
+        link.sink
+            .send(ClientFrame::Input {
+                id: 1,
+                seq,
+                bytes: bytes.to_vec(),
+            })
+            .unwrap();
+    };
+    typed(1, b"pwd");
     let before_enter = daemon.workspace().terminal_bytes[&(id.clone(), 1)].clone();
     assert!(before_enter.ends_with(b"pwd"));
-    block_on(daemon.input(&id, 1, b"\r".to_vec())).unwrap();
+    typed(2, b"\r");
     assert!(daemon.workspace().terminal_bytes[&(id.clone(), 1)].ends_with(b"~/humata\r\n$ "));
     assert_eq!(daemon.workspace().terminal_bytes[&(id.clone(), 0)], agent);
-    block_on(daemon.resize(&id, 1, 73, 29)).unwrap();
+    link.sink
+        .send(ClientFrame::Resize {
+            id: 1,
+            cols: 73,
+            rows: 29,
+            cell_width: 8,
+            cell_height: 16,
+        })
+        .unwrap();
     assert_eq!(daemon.workspace().terminal_sizes[&(id, 1)], (73, 29));
     let snapshot = daemon.workspace().terminal_bytes.clone();
     assert!(matches!(
-        block_on(daemon.input(&offline, 0, b"x".to_vec())),
+        block_on(daemon.link(&offline, 0)),
         Err(DaemonError::Offline { .. })
     ));
     assert_eq!(daemon.workspace().terminal_bytes, snapshot);

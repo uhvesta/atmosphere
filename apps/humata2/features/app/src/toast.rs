@@ -7,6 +7,9 @@ use tca::Effect;
 
 use crate::{App, AppAction, AppState, ReportForm, TOAST};
 
+/// How long an archive toast stays: the undo window (MV-15, D110).
+pub(super) const UNDO_TOAST: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The action a toast offers.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToastAction {
@@ -30,6 +33,15 @@ pub struct Toast {
 
 impl AppState {
     pub(super) fn toast(&mut self, text: String, clock: &Arc<dyn tca::Clock>) -> Effect<AppAction> {
+        self.toast_for(text, clock, TOAST)
+    }
+
+    pub(super) fn toast_for(
+        &mut self,
+        text: String,
+        clock: &Arc<dyn tca::Clock>,
+        shown: std::time::Duration,
+    ) -> Effect<AppAction> {
         self.next_toast += 1;
         let id = self.next_toast;
         self.toasts.push(Toast {
@@ -41,7 +53,7 @@ impl AppState {
         if self.toasts.len() > 3 {
             self.toasts.remove(0);
         }
-        let sleep = clock.sleep(TOAST);
+        let sleep = clock.sleep(shown);
         Effect::future(async move {
             sleep.await;
             AppAction::ToastExpired(id)

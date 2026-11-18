@@ -12,6 +12,22 @@ use std::{
 };
 use terminal_lab::{Assets, Lab};
 use terminal_session::{Endpoint, SessionSpec, SessionStore};
+
+/// Stops every process whose command line names this test's own folder (its
+/// holders, under `/private/tmp`), even when the test fails partway.
+struct OwnHolders(String);
+impl OwnHolders {
+    fn of(dir: &std::path::Path) -> Self {
+        let dir = std::fs::canonicalize(dir).unwrap();
+        assert!(dir.starts_with("/private/tmp/"), "{} is not under /private/tmp", dir.display());
+        Self(format!("{}/", dir.display()))
+    }
+}
+impl Drop for OwnHolders {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("pkill").arg("-f").arg(&self.0).status();
+    }
+}
 fn pump(
     runtime: &tokio::runtime::Runtime,
     cx: &mut HeadlessAppContext,
@@ -137,6 +153,7 @@ fn actual_zsh_commands_clipboard_movement_and_twelve_thousand_history_lines() {
         .prefix("tinteractive-")
         .tempdir_in("/tmp")
         .unwrap();
+    let _holders = OwnHolders::of(dir.path());
     let state = dir.path().join("state");
     std::fs::create_dir(&state).unwrap();
     std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -362,14 +379,19 @@ fn actual_zsh_commands_clipboard_movement_and_twelve_thousand_history_lines() {
     wait_cursor(&runtime, &mut cx, &lab, window, "VERIFIED");
     cx.update_window(window, |_, w, cx| w.press("down", cx))
         .unwrap();
-    for _ in 0..20 {
-        pump(&runtime, &mut cx, &lab, window);
-    }
-    assert_eq!(
+    // A remote shell redraws the line later under load: wait, don't count frames.
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let cursor_x = |cx: &mut HeadlessAppContext| {
         cx.update(|cx| {
             let t = lab.read(cx).terminal(2).unwrap();
             t.read(cx).pane().read(cx).view().read(cx).grid().cursor().x
-        }),
+        })
+    };
+    while cursor_x(&mut cx) != prompt_x && Instant::now() < deadline {
+        pump(&runtime, &mut cx, &lab, window);
+    }
+    assert_eq!(
+        cursor_x(&mut cx),
         prompt_x
     );
     // Select the actual output cells and copy via Cmd+C to the frontend clipboard.

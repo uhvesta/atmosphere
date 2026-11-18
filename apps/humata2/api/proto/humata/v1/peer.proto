@@ -16,6 +16,7 @@ package humata.v1;
 
 import "google/protobuf/timestamp.proto";
 import "humata/v1/access.proto";
+import "humata/v1/build.proto";
 import "humata/v1/capabilities.proto";
 import "humata/v1/common.proto";
 import "humata/v1/errors.proto";
@@ -91,6 +92,8 @@ message HelloRequest {
   string sync_marker = 5;
   // The codecs the host decodes, best first (TR-11).
   repeated ChunkCodec chunk_codecs = 6;
+  // UP-1, D281: the host's build.
+  BuildInfo host_build = 7;
 }
 
 message HelloResponse {
@@ -110,6 +113,12 @@ message HelloResponse {
   bytes machine_nonce = 9;
   // The codecs the machine decodes, best first (TR-11).
   repeated ChunkCodec chunk_codecs = 10;
+  // D262: set while this machine's sessions are stopped, read from its stop
+  // record by the link itself, so it is told even while the daemon is down.
+  SessionsStopped sessions_stopped = 11;
+  // UP-1, D281: the build of the daemon the link relays to (not the
+  // link's own binary), as its ServerInfo reports it.
+  BuildInfo build = 12;
 }
 
 message ProveHostRequest {
@@ -151,7 +160,25 @@ message MachineToHost {
     PushRequested push = 9;
     UplinkResume resume = 10;
     InboxAnswerRefused answer_refused = 11;
+    // D378: the holders on this machine that are on an old release's holder
+    // file. Pushed on each change, and again after UplinkResume on every link.
+    HoldersReport holders = 12;
   }
+}
+
+// D378: the whole list each time, so a lost one costs nothing. Agent rows and
+// shell rows (an empty session) alike; an empty list means none is on an old
+// holder.
+message HoldersReport {
+  repeated HolderSession holders = 1;
+  // Added after D378: why the machine's last restart of an agent onto the
+  // current holder failed. Its message names the session and the cause, its
+  // fix says to click Migrate again or close the session. The host shows the
+  // machine's Holders item as Failed with it, and Migrate stays on offer. The
+  // machine drops it when it begins the next restart round and when it lists
+  // no old holder; a report without it clears the host's Failed. Unset: no
+  // failure.
+  Error failed = 2;
 }
 
 // What the sender has made durable. The host acks journal seqs once the
@@ -223,6 +250,9 @@ message SessionStatusReport {
   Turn turn = 3;
   int32 exit_code = 4;
   Error problem = 5;   // resume_failed, disk_full
+  // CH-16, D394: the machine's read mark for the session, so the host shows
+  // it unread too and viewing it there clears it here.
+  bool unread = 6;
 }
 
 // The agent a forwarded call or journal entry speaks for. The host accepts

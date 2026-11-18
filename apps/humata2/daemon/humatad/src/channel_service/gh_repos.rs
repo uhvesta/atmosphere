@@ -26,7 +26,7 @@ const LIST_PATH: &str =
 const LIST_JQ: &str = ".[] | {full_name, description, private, default_branch, pushed_at}";
 
 #[derive(Debug, thiserror::Error)]
-enum GhReposError {
+pub(crate) enum GhReposError {
     #[error("couldn't run {program} to list your GitHub repos")]
     Spawn {
         program: String,
@@ -35,6 +35,12 @@ enum GhReposError {
     },
     #[error("{program} couldn't list your GitHub repos ({status}): {stderr}")]
     Failed {
+        program: String,
+        status: String,
+        stderr: String,
+    },
+    #[error("GitHub is limiting how often {program} may list your repos ({status}): {stderr}")]
+    RateLimited {
         program: String,
         status: String,
         stderr: String,
@@ -58,6 +64,7 @@ impl GhReposError {
     fn code(&self) -> Code {
         match self {
             Self::Spawn { .. } | Self::Failed { .. } => Code::FailedPrecondition,
+            Self::RateLimited { .. } => Code::ResourceExhausted,
             Self::Parse { .. } | Self::Name { .. } => Code::Internal,
             Self::Join { .. } => Code::Unavailable,
         }
@@ -71,6 +78,9 @@ impl GhReposError {
             Self::Failed { .. } => {
                 "run `gh auth login` in a terminal if gh is signed out, then try again"
             }
+            Self::RateLimited { .. } => {
+                "wait a few minutes for GitHub's limit to lift, then try again; signing in again does not lift it"
+            }
             Self::Parse { .. } | Self::Name { .. } => {
                 "update the GitHub CLI (brew upgrade gh) and try again"
             }
@@ -79,13 +89,31 @@ impl GhReposError {
     }
 }
 
+/// What `gh` ending with a failure means: a rate limit (primary or
+/// secondary) is told apart from a signed-out or otherwise broken `gh`.
+fn gh_failure(program: String, status: String, stderr: String) -> GhReposError {
+    if stderr.to_ascii_lowercase().contains("rate limit") {
+        GhReposError::RateLimited {
+            program,
+            status,
+            stderr,
+        }
+    } else {
+        GhReposError::Failed {
+            program,
+            status,
+            stderr,
+        }
+    }
+}
+
 /// One repo as `gh` listed it.
 #[derive(Debug)]
-struct Repo {
-    owner: String,
-    name: String,
-    description: String,
-    is_private: bool,
+pub(crate) struct Repo {
+    pub(crate) owner: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) is_private: bool,
     default_branch: String,
     pushed_at: Option<humata2_grpc::Timestamp>,
 }
@@ -137,7 +165,7 @@ pub(super) async fn search(
 
 /// The full listing: the cached one while it is fresh, else `gh` run on a
 /// thread of its own.
-async fn listing() -> Result<Arc<Vec<Repo>>, GhReposError> {
+pub(crate) async fn listing() -> Result<Arc<Vec<Repo>>, GhReposError> {
     if let Some(repos) = cached() {
         return Ok(repos);
     }
@@ -160,7 +188,7 @@ fn cached() -> Option<Arc<Vec<Repo>>> {
 
 /// The `gh` to run: `HUMATA2_GH` in an admin build (the tests' fake), else
 /// `gh` on the PATH. The same choice the login check makes.
-fn gh_program() -> OsString {
+pub(crate) fn gh_program() -> OsString {
     #[cfg(feature = "admin")]
     if let Some(program) = std::env::var_os("HUMATA2_GH") {
         return program;
@@ -184,11 +212,11 @@ fn list_with_gh() -> Result<Vec<Repo>, GhReposError> {
             source,
         })?;
     if !output.status.success() {
-        return Err(GhReposError::Failed {
-            program: name,
-            status: output.status.to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+        return Err(gh_failure(
+            name,
+            output.status.to_string(),
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     text.lines()
@@ -236,7 +264,7 @@ fn parse_line(line: &str) -> Result<Repo, GhReposError> {
 /// when the lowercased query is a substring of its lowercased "owner/name",
 /// and a scattered match when the query's letters appear in it in order.
 /// Both tiers keep `repos`' order. An empty query matches everything.
-fn rank<'a>(query: &str, repos: &'a [Repo]) -> Vec<&'a Repo> {
+pub(crate) fn rank<'a>(query: &str, repos: &'a [Repo]) -> Vec<&'a Repo> {
     let query = query.to_lowercase();
     let mut whole = Vec::new();
     let mut scattered = Vec::new();
@@ -261,7 +289,10 @@ fn in_order(query: &str, text: &str) -> bool {
 /// The part of a `total`-long list that `page` asks for: where it starts,
 /// how many it holds, and the token of the page after it ("" on the last).
 /// A token is the offset to start at; an empty one starts at the top.
-fn window(total: usize, page: Option<&pb::PageRequest>) -> Result<(usize, usize, String), Status> {
+pub(crate) fn window(
+    total: usize,
+    page: Option<&pb::PageRequest>,
+) -> Result<(usize, usize, String), Status> {
     let (asked, token) = page.map_or((0, ""), |page| (page.page_size, page.page_token.as_str()));
     let size = match asked {
         0 => DEFAULT_PAGE,
@@ -375,5 +406,26 @@ mod tests {
     fn a_token_that_is_not_a_number_is_refused_as_invalid() {
         let refused = window(7, Some(&page(3, "next"))).expect_err("a bad token is refused");
         assert_eq!(refused.code(), Code::InvalidArgument);
+    }
+
+    fn gh_ended(stderr: &str) -> GhReposError {
+        gh_failure("gh".to_owned(), "exit status: 1".to_owned(), stderr.to_owned())
+    }
+
+    #[test]
+    fn a_rate_limited_gh_is_a_wait_and_not_a_sign_in() {
+        let limited = gh_ended("gh: API rate limit exceeded for user ID 42. (HTTP 403)");
+        assert_eq!(limited.code(), Code::ResourceExhausted);
+        assert!(!limited.fix().contains("auth login"), "{}", limited.fix());
+
+        let secondary = gh_ended("gh: You have exceeded a secondary rate limit. (HTTP 403)");
+        assert_eq!(secondary.code(), Code::ResourceExhausted);
+    }
+
+    #[test]
+    fn a_signed_out_gh_is_still_told_to_sign_in() {
+        let signed_out = gh_ended("To get started with GitHub CLI, please run:  gh auth login");
+        assert_eq!(signed_out.code(), Code::FailedPrecondition);
+        assert!(signed_out.fix().contains("auth login"), "{}", signed_out.fix());
     }
 }

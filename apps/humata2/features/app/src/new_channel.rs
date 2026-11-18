@@ -1,6 +1,7 @@
 use humata2_clients::DaemonError;
-use humata2_clients::github::matching;
-use humata2_clients::model::{ChannelId, ChannelSetup, MachineId, MachineKind, SetupState};
+// REPOS (RL-5): the picker is the one repo search.
+use crate::repo_search::{self, PickRow, RepoPicker, RepoSearchAction, RepoSearchState};
+use humata2_clients::model::{ChannelId, ChannelSetup, Machine, MachineId, MachineKind, SetupState};
 use std::sync::Arc;
 use tca::Effect;
 
@@ -16,12 +17,9 @@ pub struct NewChannel {
     pub name: String,
     /// The repo search as typed; the list shows the repos it matches.
     pub query: String,
-    /// The repos `gh` sees on the host, in the order it lists them; `None`
-    /// while they are being listed or when they could not be listed.
-    pub listed: Option<Vec<String>>,
-    /// Why the repos could not be listed, and what to do about it; `None`
-    /// when they are listed or still being listed.
-    pub repos_error: Option<String>,
+    /// The one repo search (RL-5): the Library and GitHub groups, the scope
+    /// chips and why GitHub could not be searched.
+    pub search: RepoSearchState,
     /// The ticked repos, in the order they were ticked.
     pub repos: Vec<String>,
     /// The ticked machines, in the order they were ticked.
@@ -57,25 +55,33 @@ impl NewChannel {
         folder
     }
 
+    /// The names of the ticked machines in tick order, joined as
+    /// "This Mac, devbox-1"; `None` when none is ticked or none is known.
+    #[must_use]
+    pub fn machines_line(&self, machines: &[Machine]) -> Option<String> {
+        let names: Vec<&str> = self
+            .machines
+            .iter()
+            .filter_map(|ticked| machines.iter().find(|machine| &machine.id == ticked))
+            .map(|machine| machine.name.as_str())
+            .collect();
+        (!names.is_empty()).then(|| names.join(", "))
+    }
+
     /// The repos the list shows (CH-3): the ticked repos in tick order, shown
     /// whether or not they match, then the listed repos the query matches that
     /// are not ticked, at most 50 in all. Empty while the repos are not listed.
     #[must_use]
     pub fn shown_repos(&self) -> Vec<&str> {
-        let Some(listed) = self.listed.as_deref() else {
-            return Vec::new();
-        };
-        self.repos
-            .iter()
-            .map(String::as_str)
-            .chain(self.unticked_matches().into_iter().filter_map(|repo| {
-                listed
-                    .iter()
-                    .find(|found| **found == repo)
-                    .map(String::as_str)
-            }))
-            .take(REPO_LIMIT)
-            .collect()
+        self.search.names(&self.repos, REPO_LIMIT)
+    }
+
+    /// The rows the picker draws: the ticked repos first, then the Library
+    /// group, then the GitHub group (RL-6), at most 50, and how many
+    /// matches the cap leaves out.
+    #[must_use]
+    pub fn picker(&self) -> (Vec<PickRow>, usize) {
+        self.search.rows(&self.repos, REPO_LIMIT)
     }
 
     /// How many matching repos the 50-repo cap leaves out of
@@ -83,8 +89,7 @@ impl NewChannel {
     /// line.
     #[must_use]
     pub fn more_repos(&self) -> usize {
-        let room = REPO_LIMIT.saturating_sub(self.repos.len());
-        self.unticked_matches().len().saturating_sub(room)
+        self.picker().1
     }
 
     /// The create button's label, which says how many repos it will clone
@@ -96,18 +101,6 @@ impl NewChannel {
             1 => "Create channel and clone 1 repo".to_owned(),
             count => format!("Create channel and clone {count} repos"),
         }
-    }
-
-    /// The listed repos the query matches and that are not ticked, in the
-    /// order `matching` ranks them.
-    fn unticked_matches(&self) -> Vec<String> {
-        let Some(listed) = self.listed.as_deref() else {
-            return Vec::new();
-        };
-        matching(&self.query, listed)
-            .into_iter()
-            .filter(|repo| !self.repos.contains(repo))
-            .collect()
     }
 }
 
@@ -125,8 +118,6 @@ pub enum NewChannelAction {
     ToggleMachine(MachineId),
     /// List the repos again after they could not be listed.
     RetryRepos,
-    /// The daemon listed the repos, or could not.
-    ReposListed(Result<Vec<String>, DaemonError>),
     /// Make it.
     Create,
     /// Stop the setup that is running (CH-5).
@@ -155,7 +146,8 @@ impl App {
             machines,
             ..NewChannel::default()
         }));
-        self.list_repos()
+        // REPOS (RL-3): the picker opens on the library, then asks GitHub.
+        self.repo_search(state, RepoPicker::NewChannel, RepoSearchAction::Open)
     }
 
     pub(super) fn change_new_channel(
@@ -168,7 +160,9 @@ impl App {
         };
         match change {
             NewChannelAction::Name(name) => sheet.name = name,
-            NewChannelAction::Query(query) => sheet.query = query,
+            NewChannelAction::Query(query) => {
+                return self.query_new_channel_repos(sheet, query);
+            }
             NewChannelAction::ToggleRepo(repo) => toggle(&mut sheet.repos, repo),
             NewChannelAction::ToggleMachine(machine) => {
                 // CH-4: an offline machine is shown but cannot be chosen; one
@@ -183,17 +177,13 @@ impl App {
                 }
             }
             NewChannelAction::RetryRepos => {
-                sheet.repos_error = None;
-                sheet.listed = None;
-                return self.list_repos();
-            }
-            NewChannelAction::ReposListed(Ok(repos)) => {
-                sheet.listed = Some(repos);
-                sheet.repos_error = None;
-            }
-            NewChannelAction::ReposListed(Err(error)) => {
-                sheet.listed = None;
-                sheet.repos_error = Some(error.to_string());
+                return repo_search::reduce(
+                    &self.clients,
+                    &mut sheet.search,
+                    RepoSearchAction::Retry,
+                    "new-channel",
+                )
+                .map(|action| AppAction::RepoSearch(RepoPicker::NewChannel, action));
             }
             NewChannelAction::Create => {
                 let name = sheet.name.trim().trim_start_matches('#').to_owned();
@@ -263,16 +253,6 @@ impl App {
             NewChannelAction::SetupRetried(Ok(id)) => return self.channel_created(state, Ok(id)),
         }
         Effect::none()
-    }
-
-    /// Asks the daemon for the repos gh sees on the host (CH-3).
-    fn list_repos(&self) -> Effect<AppAction> {
-        let daemon = self.clients.daemon.clone();
-        Effect::future(async move {
-            AppAction::NewChannel(NewChannelAction::ReposListed(
-                daemon.github_repos("").await,
-            ))
-        })
     }
 
     /// A channel setup moved on: keep it in the workspace and in the sheet;

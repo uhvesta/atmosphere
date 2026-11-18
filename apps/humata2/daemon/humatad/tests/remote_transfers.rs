@@ -21,7 +21,7 @@ use std::path::Path;
 
 use humata2_chunk::{CHUNK_MAX, Codec, Encoder};
 use humata2_grpc::humata::v1 as pb;
-use rig::{LONG, Rig, Way, shared};
+use rig::{LONG, Rig, Way, pastes, shared};
 use sha2::{Digest, Sha256};
 use tonic::transport::Channel;
 use tonic::{Status, Streaming};
@@ -147,6 +147,7 @@ async fn start(
             mode: mode as i32,
             on_existing: pb::OnExisting::Fail as i32,
             reason: String::new(),
+            name: String::new(),
         })
         .await
         .map(tonic::Response::into_inner)
@@ -379,6 +380,70 @@ async fn a_folder_copied_from_one_machine_to_another_arrives_whole() {
     );
 }
 
+/// The mode of each entry of a tree of folders at 0750, 0555 (one inside
+/// another) and 0700, and a 0555 top, with a file in each read-only one.
+const MODED: [(&str, u32); 8] = [
+    ("tree", 0o750),
+    ("tree/ro", 0o555),
+    ("tree/ro/sub", 0o555),
+    ("tree/ro/inside.txt", 0o644),
+    ("tree/ro/sub/deep.txt", 0o600),
+    ("tree/private", 0o700),
+    ("locked", 0o555),
+    ("locked/note.txt", 0o640),
+];
+
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+}
+
+/// Makes read-only folders under `root` writable again, so the rig's
+/// temporary folder can go.
+fn unlock(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::symlink_metadata(root) else { return };
+    if meta.is_dir() {
+        let _ = std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700));
+        for entry in std::fs::read_dir(root).unwrap().flatten() {
+            unlock(&entry.path());
+        }
+    }
+}
+
+// VF-59 (FM-6). Fails if a folder copied to a machine arrives with another
+// mode than its source's: a read-only one made writable to fill it and
+// left so, at the top or deeper, or one inside it set before what it holds.
+#[tokio::test(flavor = "multi_thread")]
+async fn folders_copied_to_a_machine_keep_their_exact_modes() {
+    use std::os::unix::fs::PermissionsExt;
+    let rig = Rig::start(&["box-1"], &[]).await;
+    let src = rig.host_shared();
+    for (rel, _) in MODED {
+        if rel.ends_with(".txt") {
+            std::fs::write(src.join(rel), noise(7, 64)).unwrap();
+        } else {
+            std::fs::create_dir_all(src.join(rel)).unwrap();
+        }
+    }
+    for (rel, mode) in MODED.iter().rev() {
+        std::fs::set_permissions(src.join(rel), std::fs::Permissions::from_mode(*mode)).unwrap();
+    }
+    let there = rig.the("box-1");
+    std::fs::create_dir_all(there.shared().join("in")).unwrap();
+
+    let sources = [shared(None, "tree"), shared(None, "locked")];
+    let done = finish(&rig, &sources, there.at("in"), pb::TransferMode::Copy).await;
+
+    let arrived: Vec<(&str, u32)> =
+        MODED.iter().map(|(rel, _)| (*rel, mode_of(&there.shared().join("in").join(rel)))).collect();
+    no_staging(&there.shared());
+    unlock(&there.shared());
+    unlock(&src);
+    assert_eq!(done.done_bytes, done.total_bytes, "{}", told(&done));
+    assert_eq!(arrived, MODED.to_vec());
+}
+
 // Flow 26.15, steps 4 and 5 (FM-13). Fails if a machine to machine copy
 // whose destination's link is lost part way doesn't wait naming the
 // destination (and not the source, whose link stayed up), doesn't go on by
@@ -544,6 +609,67 @@ async fn an_upload_to_a_machine_arrives_whole() {
     assert!(!rig.host_shared().join("in").exists(), "nothing of it is on the host");
 }
 
+/// D335: a file uploaded into the pastes of a session on another machine
+/// lands on that machine, and the upload says where on its disk: what the
+/// app types into the session's terminal there.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_into_a_remote_sessions_pastes_says_its_path_there() {
+    use pb::upload_message::Message as Part;
+
+    let rig = Rig::start(&["box-1"], &[]).await;
+    pb::file_service_client::FileServiceClient::new(rig.channel().await)
+        .create_folder(pb::CreateFolderRequest {
+            idempotency_key: None,
+            location: Some(pastes(Some("box-1"), "p1")),
+        })
+        .await
+        .expect("the paste's folder is made on the machine");
+    let data = noise(7, 12_288);
+    let chunk = Encoder::new(Codec::None).encode(data.clone()).unwrap();
+    let messages = vec![
+        pb::UploadMessage {
+            message: Some(Part::Header(pb::UploadHeader {
+                idempotency_key: None,
+                destination: Some(pastes(Some("box-1"), "p1")),
+                name: "notes.txt".to_owned(),
+                size: data.len() as u64,
+                sha256: sha256(&data),
+                on_existing: pb::OnExisting::Fail as i32,
+                resume: None,
+            })),
+        },
+        pb::UploadMessage {
+            message: Some(Part::Chunk(pb::FileChunk {
+                offset: 0,
+                data: chunk.data,
+                last: true,
+                codec: chunk.header.codec.wire(),
+                raw_size: chunk.header.raw_len,
+                crc32: chunk.header.crc32,
+                ..Default::default()
+            })),
+        },
+    ];
+
+    let done = transfers(&rig)
+        .await
+        .upload(tokio_stream::iter(messages))
+        .await
+        .expect("the upload is taken")
+        .into_inner();
+
+    assert_eq!(done.state(), pb::TransferState::Done, "{}", told(&done));
+    assert!(!done.disk_path.is_empty(), "{}", told(&done));
+    assert!(
+        std::fs::read(&done.disk_path).unwrap() == data,
+        "the file at the path told isn't what was uploaded"
+    );
+    assert!(
+        !Path::new(&done.disk_path).starts_with(rig.host.dir.path()),
+        "the path is the machine's, not the host's"
+    );
+}
+
 /// The host daemon, the machines behind its `ssh`, and the test's hold on
 /// their links. `remote_transfers.rs` and `remote_files.rs` carry the same
 /// text, because each test file is a crate of its own; harness-needs.md
@@ -565,7 +691,7 @@ mod rig {
 
     use humata2_fake_machine::FakeMachine;
     use humata2_grpc::humata::v1 as pb;
-    use humata2_store::{ChannelRecord, Store};
+    use humata2_store::{ChannelRecord, SessionRecord, Store};
     use rustix::process::{Pid, Signal, kill_process_group};
     use sha2::{Digest, Sha256};
     use tokio::sync::Mutex;
@@ -576,6 +702,9 @@ mod rig {
 
     /// The one channel, known to the host and to every machine.
     pub const CHANNEL: &str = "ch_remote";
+    /// The one session, in the channel on `box-1`: the host and the machine
+    /// both know it.
+    pub const SESSION: &str = "se_remote_paste";
     const CHANNEL_FOLDER: &str = "remote-channel";
 
     /// The most a test waits for something the host does on its own. It is a
@@ -587,7 +716,7 @@ mod rig {
     /// most, `common::WAIT`). This is more than twice the two together.
     pub const LONG: Duration = Duration::from_secs(120);
 
-    const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+    const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
     /// The gate is a perl script until the harness has a helper of its own
     /// (harness-needs.md).
@@ -741,11 +870,13 @@ exit($? >> 8);
         root
     }
 
-    /// Writes the channel into the store under `state`, before the daemon
-    /// that owns the store starts. The host judges a location by its own
-    /// record of the channel and the machine resolves it by its own, so
-    /// both get the same one.
-    fn seed_channel(state: &Path) {
+    /// Writes the channel and the session into the store under `state`,
+    /// before the daemon that owns the store starts. The host judges a
+    /// location by its own record of the channel and the machine resolves
+    /// it by its own, so both get the same one. The session is on
+    /// `session_machine` as that store knows it: `box-1` on the host, the
+    /// machine itself (empty) on a machine.
+    fn seed_channel(state: &Path, session_machine: &str) {
         let store = Store::open(state.join("store")).unwrap();
         store
             .put_channel(&ChannelRecord {
@@ -760,6 +891,32 @@ exit($? >> 8);
                 created_unix_ms: 0,
             })
             .unwrap();
+        store
+            .put_session(&SessionRecord {
+                id: SESSION.to_owned(),
+                channel: CHANNEL.to_owned(),
+                machine: session_machine.to_owned(),
+                title: "remote pastes".to_owned(),
+                agent: "zsh".to_owned(),
+                folder: state.to_owned(),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+    }
+
+    /// `path` in the session's pastes on `machine` (none: the host).
+    pub fn pastes(machine: Option<&str>, path: &str) -> pb::FileLocation {
+        pb::FileLocation {
+            machine: machine.map(|name| pb::MachineId {
+                value: name.to_owned(),
+            }),
+            root: Some(pb::file_location::Root::SessionPastes(pb::SessionPastes {
+                session: Some(pb::SessionId {
+                    value: SESSION.to_owned(),
+                }),
+            })),
+            path: path.to_owned(),
+        }
     }
 
     /// `path` in the channel's shared folder on `machine` (none: the host).
@@ -815,7 +972,7 @@ exit($? >> 8);
             // writes the enrollment key into the state folder the daemon
             // uses, and the link finds the daemon's socket there.
             let dir = folder();
-            seed_channel(&state_folder(dir.path()));
+            seed_channel(&state_folder(dir.path()), "");
             std::os::unix::fs::symlink(dir.path(), machine.home().join(".humata2")).unwrap();
             let channels = machine.home().join("Humata");
             std::fs::create_dir_all(channels.join(CHANNEL_FOLDER).join("shared")).unwrap();
@@ -958,7 +1115,7 @@ exit($? >> 8);
                     .replace("__SETSID__", &binary("HUMATA2_SETSID").display().to_string())
                     .replace("__GATE__", &gate.display().to_string()),
             );
-            seed_channel(&state_folder(dir.path()));
+            seed_channel(&state_folder(dir.path()), "box-1");
             // The host's channels are in `Humata` in its root, the default.
             let shared = dir.path().join("Humata").join(CHANNEL_FOLDER).join("shared");
             std::fs::create_dir_all(shared).unwrap();
@@ -1044,7 +1201,7 @@ exit($? >> 8);
                 .expect("the add starts")
                 .into_inner();
             let asked = self.ended(&first).await;
-            let Some(pb::error::Kind::HostKeyChanged(key)) =
+            let Some(pb::error::Kind::HostKeyUnknown(key)) =
                 asked.error.clone().and_then(|error| error.kind)
             else {
                 panic!("the first add of {name} should stop at its host key; it ended {asked:?}");

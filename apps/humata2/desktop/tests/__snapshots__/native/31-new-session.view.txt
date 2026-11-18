@@ -32,7 +32,7 @@ Navigation "Sidebar"
   Link "Settings"
 Splitter "Resize the sidebar"
 #board-filter-input
-  #input-4294967333
+  #input
     TextInput "Filter" value="" placeholder="Filter"
 Button "Scope: All channels"
 Button "New item"
@@ -41,7 +41,7 @@ Tab "Table"
 Tab "Dashboard"
 Dialog "New session" focused
   Button "Choose channel"
-  #input-4294967302 focused
+  #input focused
     TextInput "Title" value="Backfill progress bar" placeholder="What should it do?" focused
   Tab "Claude Code" selected
   Tab "Codex"
@@ -51,7 +51,7 @@ Dialog "New session" focused
   Button "devbox-1"
   Button "Own clone, new branch from main"
   Button "Leave this repo out"
-  #input-4294967306
+  #input
     MultilineTextInput "First message" value="" placeholder="Optional. Typed into the agent once it starts, e.g. “Work on PAY-9”."
   Button "Cancel"
   Button "Start session"

@@ -1,0 +1,19 @@
+[package]
+name = "humata2-pr-review"
+description = "Reviewing a pull request with an agent beside you: the start dialog, the chat follower, Submit review and new commits."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "humata2_pr_review"
+path = "src/lib.rs"
+
+[dependencies]
+humata2-clients = { path = "../../clients" }
+tca-rust = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

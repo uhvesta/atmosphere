@@ -11,7 +11,7 @@
 mod channels;
 mod desk;
 mod design_session;
-mod diffs;
+pub(crate) mod diffs;
 mod files;
 mod items;
 mod journal;
@@ -39,7 +39,7 @@ use requests::requests;
 use rules::rules;
 use sessions::{session, sessions};
 
-pub use desk::{desk, empty};
+pub use desk::{channel_desk, desk, empty};
 pub use design_session::design_session;
 pub(crate) use desk::session as desk_session;
 pub(crate) use terminal::{extra_terminal, terminal_line, terminal_screen};

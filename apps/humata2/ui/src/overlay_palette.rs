@@ -5,7 +5,7 @@ use crate::bridge::Ui;
 use crate::widgets::{col, row};
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
-use gpui_kit::base::FocusTrapElement as _;
+use gpui_kit::base::{FocusTrapElement as _, TestTextExt as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
@@ -23,6 +23,7 @@ impl Overlays {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         sync(&self.query, &palette.query, window, cx);
+        let mac = cx.platform_info().is_mac();
         let group = |command: &Command| match command {
             Command::Session(_) => 0,
             Command::File { .. } => 1,
@@ -55,7 +56,11 @@ impl Overlays {
                     .text_size(px(11.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(rgb(look.secondary))
-                    .child(name),
+                    .child(if palette.asking.is_some() {
+                        "Move to which machine?"
+                    } else {
+                        name
+                    }),
             );
             for (at, entry) in palette
                 .entries
@@ -118,7 +123,7 @@ impl Overlays {
                             .when(!selected, |x| x.bg(rgb(look.fill)))
                             .text_size(px(11.))
                             .text_color(rgb(color))
-                            .child(entry.hint.clone()),
+                            .child(crate::keys::label(&entry.hint, mac)),
                     );
                 } else {
                     item = item.child(
@@ -129,7 +134,7 @@ impl Overlays {
                             .whitespace_nowrap()
                             .text_size(px(11.5))
                             .text_color(rgb(color))
-                            .child(entry.hint.clone()),
+                            .child(crate::keys::label(&entry.hint, mac)),
                     );
                 }
                 if let Command::Session(id) = &entry.command
@@ -180,7 +185,11 @@ impl Overlays {
         // One empty-state line when nothing is listed at all. A failed search
         // says so in its own line, so this one stays away.
         if palette.entries.is_empty() && no_hits && !failed {
-            let text = if loading {
+            let text = if palette.no_machine_to_move_to() {
+                "No other machine this session can move to is online. Start one, or link \
+                 another machine to its channel from Machines, then move again."
+                    .to_owned()
+            } else if loading {
                 "Searching every machine's conversations…".to_owned()
             } else if crate::palette_hits::searchable(&palette.query) {
                 format!(
@@ -195,7 +204,8 @@ impl Overlays {
                     .flex_shrink_0()
                     .p(px(16.))
                     .text_color(rgb(look.secondary))
-                    .child(text),
+                    .child(text.clone())
+                    .test_text(text),
             );
         }
         col()

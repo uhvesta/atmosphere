@@ -193,6 +193,8 @@ fn two_desk_sessions_are_not_channel_mates() {
     let policy = policy();
     let agent = desk_agent(true, true);
     let other = file_of(&desk_session("dk_other"), "notes.md");
+    // No channel-mates for a Desk session, so reading another one's folder
+    // is refused, not asked (D182.3; DV-9 reads under file_read's rules).
     let read = check(&policy, &agent, &read(other.clone()), &on_mac());
     assert!(
         matches!(read, Verdict::Refused(Refusal::OtherChannel { .. })),
@@ -200,6 +202,18 @@ fn two_desk_sessions_are_not_channel_mates() {
     );
     let written = check(&policy, &agent, &write(other), &on_mac());
     assert!(!is_allowed(&written), "{written:?}");
+}
+
+#[test]
+fn a_desk_agent_asks_the_user_under_its_own_desk_channel() {
+    let policy = policy();
+    let agent = desk_agent(false, false);
+    let own = use_on(Capability::InboxAsk, Target::Channel(ChannelId::new("desk")));
+    let asked = check(&policy, &agent, &own, &on_mac());
+    assert!(is_allowed(&asked), "{asked:?}");
+    let other = use_on(Capability::InboxAsk, Target::Channel(payments()));
+    let reached = check(&policy, &agent, &other, &on_mac());
+    assert!(!is_allowed(&reached), "{reached:?}");
 }
 
 #[test]

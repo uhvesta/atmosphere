@@ -28,6 +28,7 @@ const RESIZE: u8 = 3;
 const SHUTDOWN: u8 = 4;
 const KEYED_INPUT: u8 = 5;
 const KEY_QUERY: u8 = 6;
+const AWAIT_KEYS: u8 = 7;
 
 const WELCOME: u8 = 101;
 const OUTPUT: u8 = 102;
@@ -37,6 +38,7 @@ const INPUT_WRITTEN: u8 = 105;
 const REFUSED: u8 = 106;
 const KEYED_WRITTEN: u8 = 107;
 const KEY_ANSWER: u8 = 108;
+const KEYS_READ: u8 = 109;
 
 /// Where the terminal stands when a client attaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +63,10 @@ pub(crate) enum ClientFrame {
     KeyedInput { key: String, last: bool, data: Vec<u8> },
     /// Asks whether a keyed input with `key` was typed.
     KeyQuery { key: String },
+    /// Asks to be answered once the program reads keys itself (the
+    /// terminal's line editing is off), or once it has run for
+    /// `starting_ms`.
+    AwaitKeys { starting_ms: u32 },
 }
 
 pub(crate) enum ServerFrame {
@@ -77,6 +83,9 @@ pub(crate) enum ServerFrame {
     /// for the same tab, so a client can tell a "no" from the holder that
     /// was there from a "no" from a fresh one with an empty memory.
     KeyAnswer { arrived: bool, instance: u64 },
+    /// The answer to `AwaitKeys`: whether the program reads keys itself
+    /// now. `false` when it ran for the time given or ended first.
+    KeysRead { ready: bool },
 }
 
 #[derive(Debug)]
@@ -210,6 +219,7 @@ impl ClientFrame {
                 .u8(u8::from(*last))
                 .rest(data),
             Self::KeyQuery { key } => Frame::new(KEY_QUERY).key(key),
+            Self::AwaitKeys { starting_ms } => Frame::new(AWAIT_KEYS).u32(*starting_ms),
         }
         .finish()
     }
@@ -241,6 +251,9 @@ impl ClientFrame {
                 });
             }
             KEY_QUERY => Self::KeyQuery { key: body.key()? },
+            AWAIT_KEYS => Self::AwaitKeys {
+                starting_ms: body.u32()?,
+            },
             _ => return Err(FrameError::Malformed("a client sent a frame of no known kind")),
         };
         body.end()?;
@@ -272,6 +285,7 @@ impl ServerFrame {
             Self::KeyAnswer { arrived, instance } => {
                 Frame::new(KEY_ANSWER).u8(u8::from(*arrived)).u64(*instance)
             }
+            Self::KeysRead { ready } => Frame::new(KEYS_READ).u8(u8::from(*ready)),
         }
         .finish()
     }
@@ -311,6 +325,9 @@ impl ServerFrame {
             KEY_ANSWER => Self::KeyAnswer {
                 arrived: body.u8()? != 0,
                 instance: body.u64()?,
+            },
+            KEYS_READ => Self::KeysRead {
+                ready: body.u8()? != 0,
             },
             REFUSED => {
                 return Ok(Self::Refused {

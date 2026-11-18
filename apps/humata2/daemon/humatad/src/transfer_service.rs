@@ -17,10 +17,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
-use humata2_access::{Call, Entry};
+use humata2_access::{AccessRequest, Call, Entry};
 use humata2_chunk::Decoder;
 use humata2_grpc::humata::v1 as pb;
 use humata2_transfers as tr;
+use humata2_transfers::End as _;
 use pb::invalid_field::Problem as Field;
 use prost::Message;
 use tokio::sync::{broadcast, mpsc};
@@ -32,6 +33,7 @@ use crate::files::{Placed, Roots, Target};
 use crate::grant_target;
 use crate::guard::{Checked, Guard};
 use crate::host_relay::Links;
+use crate::inbox::{BoardAsk, Deferred, Inbox, Run};
 use crate::identity::{self, Caller};
 use crate::remote_end::{self, RemoteEnd, RouterEnd};
 use crate::status;
@@ -109,6 +111,12 @@ fn finished(snapshot: &tr::Snapshot) -> bool {
 /// This machine's transfers.
 pub(crate) struct TransferSvc {
     core: Arc<Core>,
+    /// Where an agent's copy that the rules send to Ask me waits for the
+    /// user (D38.6, IN-10).
+    inbox: Arc<Inbox>,
+    /// On a machine: the Uplink, which takes its agents' copies that reach
+    /// another machine to the host, the one that holds the links (D768).
+    host: std::sync::OnceLock<Arc<crate::away::Forwarder>>,
 }
 
 struct Core {
@@ -137,12 +145,15 @@ impl TransferSvc {
         state: PathBuf,
         machine: String,
         compression: Arc<Compression>,
+        inbox: Arc<Inbox>,
     ) -> Arc<Self> {
         let (changes, _) = broadcast::channel(WATCH_BUFFER);
         // Called from the daemon's async start: the engine's blocking threads
         // reach the runtime through this handle.
         let remote = Arc::new(RemoteEnd::new(tokio::runtime::Handle::current(), compression));
         Arc::new(Self {
+            inbox,
+            host: std::sync::OnceLock::new(),
             core: Arc::new(Core {
                 roots,
                 guard,
@@ -156,6 +167,38 @@ impl TransferSvc {
                 controlled: Answers::new(),
             }),
         })
+    }
+
+    /// On a machine: its agents' copies that name another machine go up
+    /// `host` and run there, as that agent (D768). The first call wins.
+    pub(crate) fn ask_host_for_agents(&self, host: Arc<crate::away::Forwarder>) {
+        let _ = self.host.set(host);
+    }
+
+    /// An agent's copy that reaches another machine, sent to the host: it
+    /// runs there, since this machine holds no links (D768). None when the
+    /// copy stays on this machine, or this daemon is the host.
+    async fn up_to_host(&self, request: &Request<pb::StartTransferRequest>) -> Option<Result<Response<pb::Transfer>, Status>> {
+        let host = self.host.get()?;
+        let session = match crate::away::agent_session(request) {
+            Ok(session) => session?,
+            Err(status) => return Some(Err(status)),
+        };
+        let here = self.core.machine.as_str();
+        let asked = request.get_ref();
+        let reaches = asked
+            .sources
+            .iter()
+            .chain(asked.destination.as_ref())
+            .any(|location| crate::away::names_another(here, location));
+        if !reaches {
+            return None;
+        }
+        let mut sent = asked.clone();
+        sent.sources = sent.sources.into_iter().map(|location| crate::away::unnamed_here(here, location)).collect();
+        sent.destination = sent.destination.map(|location| crate::away::unnamed_here(here, location));
+        let key = sent.idempotency_key.clone();
+        Some(crate::away::ask_host(host, &session, crate::away::Method::StartTransfer, sent, key).await)
     }
 
     /// Opens the engine, so transfers a restart cut short continue (PER-27).
@@ -277,6 +320,33 @@ impl Core {
         transfer(&self.machine, snapshot, data)
     }
 
+    /// An upload's answer, with where the file `name` is on its machine's
+    /// disk when the upload went into a session's pastes and is done: what
+    /// the app types into the session's terminal (D335). Blocks: asks the
+    /// machine when it is another one.
+    fn with_pasted_path(&self, mut transfer: pb::Transfer, name: &str) -> Result<pb::Transfer, Status> {
+        use pb::file_location::Root as R;
+        let Some(folder) = transfer.destination.clone() else {
+            return Ok(transfer);
+        };
+        if transfer.state() != pb::TransferState::Done
+            || !matches!(folder.root, Some(R::SessionPastes(_)))
+        {
+            return Ok(transfer);
+        }
+        let path = match folder.path.as_str() {
+            "" => name.to_owned(),
+            path => format!("{path}/{name}"),
+        };
+        let file = pb::FileLocation { path, ..folder };
+        let placed = self.roots.place(Some(file), "header.destination", Entry::File)?;
+        transfer.disk_path = match placed.machine() == self.machine {
+            true => crate::transfer_end_service::path_text(&placed.into_target().existing()?)?,
+            false => self.remote.locate(&placed.location)?,
+        };
+        Ok(transfer)
+    }
+
     /// A folder to write into, here or on another machine: the caller must
     /// be allowed to write it. Nothing is looked at on any disk.
     fn placed_folder(&self, caller: &Caller, location: Option<pb::FileLocation>, field: &str) -> Result<Placed, Status> {
@@ -318,17 +388,21 @@ impl Core {
         )
     }
 
-    fn start(&self, caller: &Caller, begin: Begin) -> Result<pb::Transfer, Status> {
+    fn start(&self, caller: &Caller, begin: Begin) -> Result<Started, Status> {
         let engine = self.engine()?;
         if let Some(found) = begin.key.as_deref().and_then(|key| self.started_by(&engine, key)) {
-            return Ok(found);
+            return Ok(Started::Done(found));
         }
         if begin.sources.is_empty() {
             return Err(status::missing("sources"));
         }
+        let name = landing_name(&begin.name, begin.sources.len())?;
         let destination = self.placed_folder(caller, begin.destination, "destination")?;
         let mut sources = Vec::new();
-        for (index, location) in begin.sources.into_iter().enumerate() {
+        // The first copy the rules send to Ask me (IN-10): the call waits in
+        // the Inbox with a preview of what would be copied where.
+        let mut asked: Option<AccessRequest> = None;
+        for (index, location) in begin.sources.iter().cloned().enumerate() {
             let field = format!("sources[{index}]");
             let source = self.roots.place(Some(location), &field, Entry::File)?;
             if begin.mode == tr::Mode::Move {
@@ -344,14 +418,25 @@ impl Core {
                 self.guard
                     .require(caller, &Call::WriteFiles(source.place.clone()))?;
             }
-            self.guard.require(
-                caller,
-                &Call::CopyFiles {
-                    from: source.place.clone(),
-                    into: destination.place.clone(),
-                },
-            )?;
+            let copy = Call::CopyFiles {
+                from: source.place.clone(),
+                into: destination.place.clone(),
+            };
+            if matches!(caller, Caller::Agent(_)) {
+                // An approved call goes on without asking again.
+                if !begin.approved {
+                    if let Checked::Ask(ask) = self.guard.check(caller, &copy)? {
+                        asked.get_or_insert(ask);
+                    }
+                }
+            } else {
+                self.guard.require(caller, &copy)?;
+            }
             sources.push(source);
+        }
+        if let Some(asked) = asked {
+            let preview = self.copy_preview(&sources, &destination)?;
+            return Ok(Started::Ask(Box::new(asked), Box::new(preview)));
         }
         let folder = self.destination_folder(&destination)?;
         let mut items = Vec::new();
@@ -398,14 +483,59 @@ impl Core {
         let mut keys = lock(&self.keys);
         if let Some(found) = begin.key.as_deref().and_then(|key| keys.get(key).cloned()) {
             if let Some(snapshot) = engine.get(&found) {
-                return Ok(self.view(&snapshot));
+                return Ok(Started::Done(self.view(&snapshot)));
             }
         }
-        let snapshot = engine.start(request).map_err(|error| self.failure(&error))?;
+        let snapshot = engine.start_as(request, name).map_err(|error| self.failure(&error))?;
         if let Some(key) = begin.key {
             keys.insert(key, id);
         }
-        Ok(self.view(&snapshot))
+        Ok(Started::Done(self.view(&snapshot)))
+    }
+
+    /// What an agent's copy would do, measured at its sources: the machines,
+    /// the places, how many files and how many bytes (IN-10, D467). Blocking:
+    /// it reads the sources' trees, over a machine's link when they are on
+    /// another machine.
+    fn copy_preview(&self, sources: &[Placed], destination: &Placed) -> Result<pb::CrossMachineCopyPreview, Status> {
+        let router = RouterEnd::new(
+            Arc::new(tr::Disk::new(self.machine.clone(), self.bin.get()?)),
+            self.remote.clone(),
+        );
+        let (mut bytes, mut files) = (0u64, 0u32);
+        for source in sources {
+            let path = remote_end::source_path(source, &self.machine)?;
+            let tree = router.plan(&path).map_err(|error| {
+                status::internal(
+                    format!(
+                        "{} can't be measured before asking you: {}. Check that its machine is reachable, then repeat the copy",
+                        source.shown,
+                        status::chain(&error)
+                    ),
+                    "",
+                )
+            })?;
+            for entry in tree.iter().filter(|entry| entry.kind == tr::Kind::File) {
+                bytes = bytes.saturating_add(entry.size);
+                files = files.saturating_add(1);
+            }
+        }
+        let machine = |placed: &Placed| pb::MachineId {
+            value: placed.machine().to_owned(),
+        };
+        Ok(pb::CrossMachineCopyPreview {
+            source_machine: sources.first().map(machine),
+            source_path: sources
+                .iter()
+                .map(|source| source.shown.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            destination_machine: Some(machine(destination)),
+            destination_path: destination.shown.clone(),
+            bytes,
+            files,
+            destination_place: place_label(&destination.location),
+        })
     }
 
     fn list(&self, caller: &Caller, active_only: bool, size: usize, token: &str) -> Result<pb::ListTransfersResponse, Status> {
@@ -556,6 +686,12 @@ impl Core {
                 "give one plain file name without '/'",
             ),
             E::NoSources => status::missing("sources"),
+            E::NameNeedsOneSource { .. } => status::invalid_field(
+                "name",
+                Field::NotAllowedHere,
+                error.to_string(),
+                "copy the one file to its new name, or leave the name out to keep each source's own",
+            ),
             E::WrongOffset { id, expected, got } => status::invalid_field(
                 "chunk.offset",
                 Field::OutOfRange,
@@ -625,7 +761,56 @@ enum Began {
     Existing(pb::Transfer),
 }
 
+/// How a start call went: it started, or the rules say Ask me first.
+enum Started {
+    Done(pb::Transfer),
+    Ask(Box<AccessRequest>, Box<pb::CrossMachineCopyPreview>),
+}
+
+/// The words for where a copy lands, to follow the machine's name: the
+/// kind of place, never a path (D467).
+fn place_label(location: &pb::FileLocation) -> String {
+    use pb::file_location::Root as R;
+    match &location.root {
+        Some(R::SessionClone(clone)) => clone
+            .repo
+            .as_ref()
+            .map_or_else(|| "clone".to_owned(), |repo| format!("{} clone", repo.name)),
+        Some(R::ChannelShared(_)) => "shared".to_owned(),
+        Some(R::ChannelFolder(_)) => "channel folder".to_owned(),
+        Some(R::SessionFolder(_)) => "session folder".to_owned(),
+        _ => String::new(),
+    }
+}
+
+/// The new name a copy's one source lands under (D769): none when it keeps
+/// its own, refused when it isn't one plain path part or more than one
+/// source would take it.
+fn landing_name(name: &str, sources: usize) -> Result<Option<String>, Status> {
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        return Err(status::invalid_field(
+            "name",
+            Field::BadFormat,
+            format!("{name:?} isn't a name a file can land under"),
+            "give one plain name without '/', or leave the name out",
+        ));
+    }
+    if sources != 1 {
+        return Err(status::invalid_field(
+            "name",
+            Field::NotAllowedHere,
+            format!("a new name is for one source, and {sources} were given"),
+            "copy the one file to its new name, or leave the name out to keep each source's own",
+        ));
+    }
+    Ok(Some(name.to_owned()))
+}
+
 /// What a start call asks for, checked.
+#[derive(Clone)]
 struct Begin {
     key: Option<String>,
     sources: Vec<pb::FileLocation>,
@@ -633,6 +818,11 @@ struct Begin {
     mode: tr::Mode,
     on_existing: tr::OnExisting,
     by: pb::Actor,
+    /// The user said yes in the Inbox: the copy rule isn't asked again.
+    approved: bool,
+    /// The one source's new name in the destination (D769); empty keeps
+    /// its own.
+    name: String,
 }
 
 /// Where in the newest-first order a transfer stands, as a page token.
@@ -914,7 +1104,34 @@ fn transfer(machine: &str, snapshot: &tr::Snapshot, data: Data) -> pb::Transfer 
             UNIX_EPOCH + Duration::from_millis(u64::try_from(snapshot.started_unix_ms).unwrap_or(0)),
         )),
         version: snapshot.version,
+        disk_path: String::new(),
+        outcomes: outcomes(snapshot),
     }
+}
+
+/// What the tray says about each source of a finished transfer (PL-13).
+fn outcomes(snapshot: &tr::Snapshot) -> Vec<pb::TransferOutcome> {
+    if snapshot.state != tr::State::Done {
+        return Vec::new();
+    }
+    snapshot
+        .landings
+        .iter()
+        .map(|landing| match landing {
+            tr::Landing::AsAsked => pb::TransferOutcome {
+                landing: pb::TransferLanding::Unspecified as i32,
+                saved_as: String::new(),
+            },
+            tr::Landing::SavedAs(name) => pb::TransferOutcome {
+                landing: pb::TransferLanding::SavedAs as i32,
+                saved_as: name.clone(),
+            },
+            tr::Landing::AlreadyThere => pb::TransferOutcome {
+                landing: pb::TransferLanding::AlreadyThere as i32,
+                saved_as: String::new(),
+            },
+        })
+        .collect()
 }
 
 fn id_of(id: Option<pb::TransferId>) -> Result<String, Status> {
@@ -953,6 +1170,9 @@ impl pb::transfer_service_server::TransferService for TransferSvc {
         &self,
         request: Request<pb::StartTransferRequest>,
     ) -> Result<Response<pb::Transfer>, Status> {
+        if let Some(answered) = self.up_to_host(&request).await {
+            return answered;
+        }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let mode = mode_of(request.mode)?;
@@ -964,10 +1184,43 @@ impl pb::transfer_service_server::TransferService for TransferSvc {
             mode,
             on_existing,
             by: identity::actor(&caller),
+            approved: false,
+            name: request.name,
         };
+        let key = request.idempotency_key.as_ref().map(|key| key.value.clone());
+        let again = begin.clone();
         let core = self.core.clone();
-        let started = blocking(move || core.start(&caller, begin)).await??;
-        Ok(Response::new(started))
+        let first = {
+            let caller = caller.clone();
+            blocking(move || core.start(&caller, begin)).await??
+        };
+        match first {
+            Started::Done(started) => Ok(Response::new(started)),
+            Started::Ask(asked, preview) => {
+                let core = self.core.clone();
+                let by = caller.clone();
+                let run: Run = Box::new(move |_| {
+                    Box::pin(async move {
+                        let begin = Begin { approved: true, ..again };
+                        match blocking(move || core.start(&by, begin)).await?? {
+                            Started::Done(done) => Ok(Deferred {
+                                result: done.encode_to_vec(),
+                                result_type: "humata.v1.Transfer".to_owned(),
+                            }),
+                            Started::Ask(..) => Err(status::internal(
+                                "an approved copy was sent to Ask me a second time",
+                                "",
+                            )),
+                        }
+                    })
+                });
+                let card = BoardAsk {
+                    preview: pb::request_preview::Preview::CrossMachineCopy(*preview),
+                    reason: request.reason.clone(),
+                };
+                Err(self.inbox.defer_board(&caller, *asked, key, card, run).await)
+            }
+        }
     }
 
     /// The header, then chunks in order from the upload's offset, each in
@@ -989,10 +1242,15 @@ impl pb::transfer_service_server::TransferService for TransferSvc {
             _ => return Err(status::missing("header")),
         };
         let by = identity::actor(&caller);
+        let name = header.name.clone();
         let core = self.core.clone();
         let began = blocking(move || core.begin_upload(&caller, header, by)).await??;
         let (mut upload, id) = match began {
-            Began::Existing(found) => return Ok(Response::new(found)),
+            Began::Existing(found) => {
+                let core = self.core.clone();
+                let found = blocking(move || core.with_pasted_path(found, &name)).await??;
+                return Ok(Response::new(found));
+            }
             Began::Upload(upload, id) => (Some(upload), id),
         };
         let core = self.core.clone();
@@ -1060,6 +1318,7 @@ impl pb::transfer_service_server::TransferService for TransferSvc {
                 up.finish()
                     .map(|snapshot| core.view(&snapshot))
                     .map_err(|error| core.failure(&error))
+                    .and_then(|finished| core.with_pasted_path(finished, &name))
             })
             .await??;
             return Ok(Response::new(finished));

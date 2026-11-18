@@ -12,6 +12,9 @@ use crate::host::ScrollTo;
 pub(crate) enum KeyIntent {
     Copy,
     Paste,
+    /// Select the whole screen and history: Cmd+A on a Mac,
+    /// Ctrl+Shift+A elsewhere.
+    SelectAll,
     /// Move through the history: Cmd with Page Up, Page Down, Home or End
     /// on a Mac, Shift with them elsewhere, as in `Ghostty`.
     Scroll(ScrollTo),
@@ -23,6 +26,9 @@ pub(crate) enum KeyIntent {
         text: String,
         unshifted: Option<char>,
     },
+    /// Bytes a key stands for whatever the program's key encoding, such as
+    /// Esc b for ⌥← on a Mac.
+    Text(&'static str),
     /// Not the terminal's: leave it to the app.
     Ignore,
 }
@@ -58,14 +64,21 @@ pub(crate) fn intent(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
             return match key {
                 "c" if !m.shift => KeyIntent::Copy,
                 "v" if !m.shift => KeyIntent::Paste,
+                "a" if !m.shift => KeyIntent::SelectAll,
                 _ if !m.shift => scroll_key(key).map_or(KeyIntent::Ignore, KeyIntent::Scroll),
                 _ => KeyIntent::Ignore,
             };
         }
         Platform::Mac if m.platform => return KeyIntent::Ignore,
+        Platform::Mac if m.alt && !m.control && !m.shift => {
+            if let Some(bytes) = word_key(key) {
+                return KeyIntent::Text(bytes);
+            }
+        }
         Platform::Other if m.control && m.shift && !m.alt && !m.platform => match key {
             "c" => return KeyIntent::Copy,
             "v" => return KeyIntent::Paste,
+            "a" => return KeyIntent::SelectAll,
             _ => {}
         },
         Platform::Other if m.shift && !m.control && !m.alt && key == "insert" => {
@@ -78,6 +91,13 @@ pub(crate) fn intent(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
         }
         _ => {}
     }
+    send(keystroke, platform)
+}
+
+/// The key as the program gets it.
+fn send(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
+    let m = keystroke.modifiers;
+    let key = keystroke.key.as_str();
     let Some(physical) = physical_key(key) else {
         return KeyIntent::Ignore;
     };
@@ -113,6 +133,18 @@ pub(crate) fn intent(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
     }
 }
 
+/// A history key on a screen that keeps no history, a full-screen
+/// program's: the program gets the key without the modifier that made it
+/// a history key, so ⌘PgUp pages up in `htop`.
+pub(crate) fn program_key(keystroke: &Keystroke, platform: Platform) -> KeyIntent {
+    let mut keystroke = keystroke.clone();
+    match platform {
+        Platform::Mac => keystroke.modifiers.platform = false,
+        Platform::Other => keystroke.modifiers.shift = false,
+    }
+    send(&keystroke, platform)
+}
+
 /// Where a history key scrolls to.
 fn scroll_key(key: &str) -> Option<ScrollTo> {
     match key {
@@ -120,6 +152,18 @@ fn scroll_key(key: &str) -> Option<ScrollTo> {
         "pagedown" => Some(ScrollTo::PageDown),
         "home" => Some(ScrollTo::Top),
         "end" => Some(ScrollTo::Bottom),
+        _ => None,
+    }
+}
+
+/// On a Mac, ⌥←, ⌥→ and ⌥⌫ move and delete by word whatever Option does
+/// to other keys (D420): Esc b, Esc f and Esc DEL, which shells and line
+/// editors bind.
+fn word_key(key: &str) -> Option<&'static str> {
+    match key {
+        "left" => Some("\x1bb"),
+        "right" => Some("\x1bf"),
+        "backspace" => Some("\x1b\x7f"),
         _ => None,
     }
 }
@@ -276,6 +320,17 @@ mod tests {
     }
 
     #[::std::prelude::v1::test]
+    fn select_all_follows_the_platform() {
+        assert_eq!(intent(&stroke("cmd-a"), Platform::Mac), KeyIntent::SelectAll);
+        assert_eq!(intent(&stroke("ctrl-shift-a"), Platform::Other), KeyIntent::SelectAll);
+        assert_eq!(intent(&stroke("cmd-shift-a"), Platform::Mac), KeyIntent::Ignore);
+        let KeyIntent::Send { key, mods, .. } = intent(&stroke("ctrl-a"), Platform::Mac) else {
+            panic!("ctrl-a should go to the program");
+        };
+        assert_eq!((key, mods), (Key::A, Mods::CTRL));
+    }
+
+    #[::std::prelude::v1::test]
     fn a_browser_uses_the_shortcuts_of_the_system_it_runs_on() {
         use gpui_kit::{OperatingSystem, PlatformTarget};
         let on = |os| Platform::of(PlatformInfo { os, target: PlatformTarget::Web });
@@ -294,6 +349,27 @@ mod tests {
             assert_eq!(key, Key::C);
             assert_eq!(mods, Mods::CTRL);
         }
+    }
+
+    /// D420: on a Mac, ⌥←, ⌥→ and ⌥⌫ move and delete by word whatever the
+    /// Option setting, with the bytes shells bind; with Shift, and off a
+    /// Mac, they keep the program's own key encoding.
+    #[::std::prelude::v1::test]
+    fn option_arrows_and_backspace_move_by_word_on_a_mac() {
+        assert_eq!(intent(&stroke("alt-left"), Platform::Mac), KeyIntent::Text("\x1bb"));
+        assert_eq!(intent(&stroke("alt-right"), Platform::Mac), KeyIntent::Text("\x1bf"));
+        assert_eq!(
+            intent(&stroke("alt-backspace"), Platform::Mac),
+            KeyIntent::Text("\x1b\x7f")
+        );
+        assert!(matches!(
+            intent(&stroke("alt-shift-left"), Platform::Mac),
+            KeyIntent::Send { .. }
+        ));
+        assert!(matches!(
+            intent(&stroke("alt-left"), Platform::Other),
+            KeyIntent::Send { .. }
+        ));
     }
 
     #[::std::prelude::v1::test]
@@ -332,6 +408,14 @@ mod tests {
         ];
         for (source, platform, to) in cases {
             assert_eq!(intent(&stroke(source), platform), KeyIntent::Scroll(to), "{source}");
+        }
+        // On a screen with no history, a full-screen program's, the
+        // program gets the key without the history modifier.
+        for (source, platform) in [("cmd-pageup", Platform::Mac), ("shift-pageup", Platform::Other)] {
+            let KeyIntent::Send { key, mods, .. } = program_key(&stroke(source), platform) else {
+                panic!("{source} goes to the program");
+            };
+            assert_eq!((key, mods), (Key::PageUp, Mods::NONE), "{source}");
         }
         // Without the modifier the program gets the key, as `less` wants.
         assert!(matches!(

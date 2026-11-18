@@ -3,7 +3,8 @@
 //! machine's sessions started and keeps them stopped across daemon
 //! restarts; a start brings them back as after a shutdown, with a restart
 //! report that names the stop. A stop or a start cut at any of its fault
-//! points still ends stopped or running, with nothing lost.
+//! points, by a crash or by a power cut, still ends stopped or running,
+//! with nothing lost.
 //!
 //! The daemon restarts itself (same process id) after a stop and after a
 //! start, so the waits here ask the socket until the new run answers with
@@ -23,6 +24,8 @@ use common::{
 };
 use humata2_grpc::humata::v1 as pb;
 use hyper_util::rt::TokioIo;
+use rustix::process::{Pid, Signal, kill_process};
+use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -182,6 +185,7 @@ fn stop_request(stop_id: &str, reason: &str) -> pb::StopSessionsRequest {
         stop_id: stop_id.to_owned(),
         reason: reason.to_owned(),
         via: pb::StopVia::App as i32,
+        ..Default::default()
     }
 }
 
@@ -243,6 +247,20 @@ impl Fixture {
     async fn with_env(env: &[(&str, &str)]) -> Self {
         let dir = folder();
         let world = World::new(dir.path());
+        Self::in_world(dir, world, env).await
+    }
+
+    /// A fixture whose daemon stops at `point` the way `cut` says.
+    async fn cut_at(point: &str, cut: Cut) -> Self {
+        let dir = folder();
+        let world = World::new(dir.path());
+        // The daemon keeps its state in `<dir>/state` (common::Daemon).
+        let env = cut_env(&dir.path().join("state"), &world.channels, dir.path(), point, cut);
+        let refs: Vec<(&str, &str)> = env.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+        Self::in_world(dir, world, &refs).await
+    }
+
+    async fn in_world(dir: tempfile::TempDir, world: World, env: &[(&str, &str)]) -> Self {
         world.remote("acme", "api");
         let args = world.args();
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -660,28 +678,142 @@ async fn a_repeated_stop_acts_once_and_a_start_with_nothing_stopped_is_refused()
 }
 
 // ---------------------------------------------------------------------------
-// 8. Cuts: the daemon killed at each fault point of a stop and of a start.
+// 8. Cuts: the daemon killed, or the machine's power cut, at each fault
+//    point of a stop and of a start.
 
-/// A stop whose daemon is killed at `point`, then started again. It ends
+/// How a cut at a fault point ends the machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cut {
+    /// The daemon is killed there; its holders and the programs they run
+    /// carry on.
+    Crash,
+    /// The power goes there: whatever the daemon and the holders wrote and
+    /// didn't sync is undone (humata2_durable's simulation, on the faults
+    /// builds), and every process the machine ran dies with them.
+    Power,
+}
+
+/// The environment that stops a daemon at `point` the way `cut` says,
+/// for a daemon whose state is `state`, whose channels are `channels`,
+/// and whose test folder is `dir`. It stays through the daemon's own
+/// restarts of itself, which run in the same process.
+///
+/// The power-cut simulation keeps what wasn't synced in the process that
+/// wrote it, so a write a stop leaves unsynced before it restarts itself
+/// counts as kept: a pass here says nothing of those writes.
+fn cut_env(state: &Path, channels: &Path, dir: &Path, point: &str, cut: Cut) -> Vec<(String, String)> {
+    let mut env = vec![("HUMATA2_STOP_AT".to_owned(), point.to_owned())];
+    if cut == Cut::Power {
+        let roots = std::env::join_paths([state, channels]).expect("the test folders' paths hold no ':'");
+        env.push(("HUMATA2_POWER_CUT_ROOTS".to_owned(), roots.to_string_lossy().into_owned()));
+        // On the same file system as the roots, as the simulation needs.
+        env.push(("HUMATA2_POWER_CUT_SPARE".to_owned(), dir.join("spare").display().to_string()));
+    }
+    env
+}
+
+/// The processes under `pid`: its children, theirs, and so on.
+fn descendants(pid: u32) -> Vec<u32> {
+    let output = Command::new("ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid="])
+        .output()
+        .expect("ps runs");
+    let pairs: Vec<(u32, u32)> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect();
+    let mut found = Vec::new();
+    let mut parents = vec![pid];
+    while let Some(parent) = parents.pop() {
+        for &(child, of) in &pairs {
+            if of == parent && !found.contains(&child) {
+                found.push(child);
+                parents.push(child);
+            }
+        }
+    }
+    found
+}
+
+/// The power cut reaches the holder of `tab` if it still answers: SIGUSR2
+/// makes the faults holder drop what it hadn't synced and die. Waits on
+/// its socket closing, not on a time.
+async fn cut_holder(tab: &humata2_store::TabRecord) {
+    let Ok(mut connection) = UnixStream::connect(&tab.holder_socket).await else {
+        return;
+    };
+    let Some(pid) = i32::try_from(tab.holder_pid).ok().and_then(Pid::from_raw) else {
+        return;
+    };
+    if kill_process(pid, Signal::USR2).is_err() {
+        // It ended on its own between the connect and the signal.
+        return;
+    }
+    let gone = tokio::time::timeout(LONG, async {
+        let mut buffer = [0u8; 4096];
+        while matches!(connection.read(&mut buffer).await, Ok(read) if read > 0) {}
+    })
+    .await;
+    assert!(gone.is_ok(), "the holder of tab {} never died at the power cut", tab.id);
+}
+
+/// What the power cut takes after the daemon: every holder of `tabs` (and
+/// of the tabs stored now) that still answers, then every process that ran
+/// under one of them, as the machine going dark would.
+async fn power_off_sessions(fix: &Fixture, tabs: &[humata2_store::TabRecord]) {
+    let mut tabs = tabs.to_vec();
+    tabs.extend(stored_tabs(&fix.daemon.state));
+    tabs.sort_by_key(|tab| tab.holder_pid);
+    tabs.dedup_by_key(|tab| tab.holder_pid);
+    let programs: Vec<u32> = tabs
+        .iter()
+        .filter(|tab| alive(tab.holder_pid))
+        .flat_map(|tab| descendants(tab.holder_pid))
+        .collect();
+    for tab in &tabs {
+        cut_holder(tab).await;
+    }
+    for program in programs {
+        if let Some(pid) = i32::try_from(program).ok().and_then(Pid::from_raw) {
+            // One that ended with its holder is fine.
+            let _ = kill_process(pid, Signal::KILL);
+        }
+    }
+}
+
+/// A stop cut at `point` by `cut`, then the daemon started again. It ends
 /// stopped with nothing running, and a start then brings everything back;
 /// or, only where `may_still_run` (the cut came before the stop was
-/// recorded), it ends running as before.
-async fn a_stop_cut_at(point: &str, may_still_run: bool) {
+/// recorded), it ends running: as before after a crash, brought back as
+/// after any outage after a power cut.
+async fn a_stop_cut_at(point: &str, may_still_run: bool, cut: Cut) {
     const STOP: &str = "5d0c1f6e-7a54-4c0f-9a52-2f3b8f6f0a08";
     assert!(STOP_POINTS.contains(&point), "{point} is not a stop's fault point");
-    let mut fix = Fixture::with_env(&[("HUMATA2_STOP_AT", point)]).await;
+    let mut fix = Fixture::cut_at(point, cut).await;
     fix.say("one").await;
     let before = stored_tabs(&fix.daemon.state);
 
     // The daemon may die under the call.
     let _ = try_stop(&fix.daemon, STOP, "agents running wild").await;
     fix.daemon.stopped(LONG).await;
+    if cut == Cut::Power {
+        power_off_sessions(&fix, &before).await;
+    }
     fix.daemon.restart().await;
 
     let start = last_start(&fix.daemon).await;
     let Some(stopped) = start.sessions_stopped.clone() else {
         assert!(may_still_run, "{point}: the stop was recorded, yet the sessions were started again");
-        fix.assert_still_running(&before).await;
+        match cut {
+            Cut::Crash => fix.assert_still_running(&before).await,
+            Cut::Power => {
+                assert!(start.not_brought_back.is_empty(), "{point}: {:?}", start.not_brought_back);
+                fix.assert_agent_is_back().await;
+            }
+        }
         assert!(fix.heard().contains("one"), "{point}");
         return;
     };
@@ -697,21 +829,26 @@ async fn a_stop_cut_at(point: &str, may_still_run: bool) {
     assert!(fix.heard().contains("one"), "{point}");
 }
 
-/// A start whose daemon is killed at `point`, then started again: the
+/// A start cut at `point` by `cut`, then the daemon started again: the
 /// sessions are back and running, and a restart report names the stop.
-async fn a_start_cut_at(point: &str) {
+async fn a_start_cut_at(point: &str, cut: Cut) {
     const STOP: &str = "5d0c1f6e-7a54-4c0f-9a52-2f3b8f6f0a09";
     assert!(START_POINTS.contains(&point), "{point} is not a start's fault point");
     let mut fix = Fixture::new().await;
     fix.say("one").await;
     stop_and_wait(&fix.daemon, STOP).await;
     // The fault build, still stopped: only the start can reach `point`.
-    fix.daemon.restart_env(&[("HUMATA2_STOP_AT", point)]).await;
+    let env = cut_env(&fix.daemon.state, &fix.world.channels, fix.daemon.dir.path(), point, cut);
+    let refs: Vec<(&str, &str)> = env.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+    fix.daemon.restart_env(&refs).await;
     wait_stopped(&fix.daemon, STOP).await;
 
     // The daemon may die under the call.
     let _ = try_start(&fix.daemon).await;
     fix.daemon.stopped(LONG).await;
+    if cut == Cut::Power {
+        power_off_sessions(&fix, &[]).await;
+    }
     fix.daemon.restart().await;
 
     let start = last_start(&fix.daemon).await;
@@ -728,55 +865,184 @@ async fn a_start_cut_at(point: &str) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_cut_as_its_record_is_written_ends_stopped_or_still_running_with_nothing_lost() {
-    a_stop_cut_at("stop.record.written", true).await;
+    a_stop_cut_at("stop.record.written", true, Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_cut_as_the_daemon_restarts_itself_ends_stopped_with_nothing_lost() {
-    a_stop_cut_at("stop.exec", false).await;
+    a_stop_cut_at("stop.exec", false, Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_cut_once_the_programs_are_hung_up_on_ends_stopped_with_nothing_lost() {
-    a_stop_cut_at("stop.programs.hungup", false).await;
+    a_stop_cut_at("stop.programs.hungup", false, Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_cut_once_the_holders_are_signalled_ends_stopped_with_nothing_lost() {
-    a_stop_cut_at("stop.holders.signalled", false).await;
+    a_stop_cut_at("stop.holders.signalled", false, Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_cut_once_the_inbox_is_withdrawn_ends_stopped_with_nothing_lost() {
-    a_stop_cut_at("stop.inbox.withdrawn", false).await;
+    a_stop_cut_at("stop.inbox.withdrawn", false, Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_cut_once_the_holders_are_gone_ends_stopped_with_nothing_lost() {
-    a_stop_cut_at("stop.holders.gone", false).await;
+    a_stop_cut_at("stop.holders.gone", false, Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stop_cut_as_its_record_is_settled_ends_stopped_with_nothing_lost() {
-    a_stop_cut_at("stop.record.settled", false).await;
+    a_stop_cut_at("stop.record.settled", false, Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_cut_once_its_record_is_renamed_ends_running_with_a_report_naming_the_stop() {
-    a_start_cut_at("start.record.renamed").await;
+    a_start_cut_at("start.record.renamed", Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_cut_as_the_daemon_restarts_itself_ends_running_with_a_report_naming_the_stop() {
-    a_start_cut_at("start.exec").await;
+    a_start_cut_at("start.exec", Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_cut_once_its_report_is_written_ends_running_with_a_report_naming_the_stop() {
-    a_start_cut_at("start.report.written").await;
+    a_start_cut_at("start.report.written", Cut::Crash).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_cut_once_its_record_is_removed_ends_running_with_a_report_naming_the_stop() {
-    a_start_cut_at("start.record.removed").await;
+    a_start_cut_at("start.record.removed", Cut::Crash).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_with_the_power_cut_as_its_record_is_written_ends_stopped_or_still_running_with_nothing_lost() {
+    a_stop_cut_at("stop.record.written", true, Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_with_the_power_cut_as_the_daemon_restarts_itself_ends_stopped_with_nothing_lost() {
+    a_stop_cut_at("stop.exec", false, Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_with_the_power_cut_once_the_programs_are_hung_up_on_ends_stopped_with_nothing_lost() {
+    a_stop_cut_at("stop.programs.hungup", false, Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_with_the_power_cut_once_the_holders_are_signalled_ends_stopped_with_nothing_lost() {
+    a_stop_cut_at("stop.holders.signalled", false, Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_with_the_power_cut_once_the_inbox_is_withdrawn_ends_stopped_with_nothing_lost() {
+    a_stop_cut_at("stop.inbox.withdrawn", false, Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_with_the_power_cut_once_the_holders_are_gone_ends_stopped_with_nothing_lost() {
+    a_stop_cut_at("stop.holders.gone", false, Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_with_the_power_cut_as_its_record_is_settled_ends_stopped_with_nothing_lost() {
+    a_stop_cut_at("stop.record.settled", false, Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_with_the_power_cut_once_its_record_is_renamed_ends_running_with_a_report_naming_the_stop() {
+    a_start_cut_at("start.record.renamed", Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_with_the_power_cut_as_the_daemon_restarts_itself_ends_running_with_a_report_naming_the_stop() {
+    a_start_cut_at("start.exec", Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_with_the_power_cut_once_its_report_is_written_ends_running_with_a_report_naming_the_stop() {
+    a_start_cut_at("start.report.written", Cut::Power).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_with_the_power_cut_once_its_record_is_removed_ends_running_with_a_report_naming_the_stop() {
+    a_start_cut_at("start.record.removed", Cut::Power).await;
+}
+
+// ---------------------------------------------------------------------------
+// 9. A terminal query whose answer the holder never confirms.
+
+/// The bytes of a terminal query that asks where the cursor is (ESC[6n).
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
+/// The longest a stop may take with a holder that never confirms. A stop
+/// with a stopped holder takes a few seconds (the grace of each step), so
+/// this only catches a hang.
+const STOP_GUARD: Duration = Duration::from_secs(30);
+
+/// Sends `sig` to process `pid`.
+fn send_signal(pid: u32, sig: Signal) {
+    let pid = i32::try_from(pid).ok().and_then(Pid::from_raw).expect("a process id");
+    kill_process(pid, sig).expect("the test can signal its own holder");
+}
+
+/// Resumes a process the test stopped, when the test ends, so a failing
+/// assertion leaves nothing stopped behind.
+struct Resumed(u32);
+
+impl Drop for Resumed {
+    fn drop(&mut self) {
+        // A pid that no longer names a process is fine.
+        if let Some(pid) = i32::try_from(self.0).ok().and_then(Pid::from_raw) {
+            let _ = kill_process(pid, Signal::CONT);
+        }
+    }
+}
+
+/// A shell's terminal query (ESC[6n) asks where its cursor is. The answer
+/// is written to the holder and waits there to be confirmed. The holder is
+/// stopped as soon as the query shows on the attach, so that confirmation
+/// may never come. The stop must still end the shell and the holder rather
+/// than wait for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_finishes_while_a_terminal_reply_waits_on_its_holder() {
+    const STOP: &str = "5d0c1f6e-7a54-4c0f-9a52-2f3b8f6f0a10";
+    let mut fix = Fixture::new().await;
+    let before = stored_tabs(&fix.daemon.state);
+    let holder = before
+        .iter()
+        .find(|tab| tab.id == fix.shell_tab.value)
+        .expect("the shell tab is stored")
+        .holder_pid;
+
+    // `printf` makes the escape byte; the typed line holds only the backslash form.
+    fix.shell.type_text("printf '\\033[6n'\r").await;
+    fix.shell
+        .wait_until(|attach| {
+            attach
+                .screen
+                .windows(CURSOR_QUERY.len())
+                .any(|window| window == CURSOR_QUERY)
+        })
+        .await;
+    send_signal(holder, Signal::STOP);
+    let _resumed = Resumed(holder);
+
+    let (_, stopped) = tokio::time::timeout(STOP_GUARD, async {
+        try_stop(&fix.daemon, STOP, "agents running wild")
+            .await
+            .expect("the stop is taken");
+        wait_stopped(&fix.daemon, STOP).await
+    })
+    .await
+    .expect("the stop finished within the guard, though the holder never confirmed the reply");
+
+    let ended = stopped.ended.clone().expect("the sweep says what it ended");
+    assert!(ended.killed >= 1, "the stopped holder can only end by SIGKILL: {ended:?}");
+    fix.assert_nothing_runs(&before, &stopped).await;
+}
+

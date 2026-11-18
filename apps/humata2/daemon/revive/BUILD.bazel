@@ -9,7 +9,6 @@ REVIVE_DEPS = [
     "//apps/humata2/daemon/contain",
     "//apps/humata2/report",
     "@crates//:notify",
-    "@crates//:rustix",
     "@crates//:serde",
     "@crates//:serde_json",
     "@crates//:thiserror",

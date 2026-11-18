@@ -57,6 +57,7 @@ impl Fixture {
                 idempotency_key: None,
                 session: Some(session(ASKER)),
                 repo: None,
+                folder: String::new(),
             })
             .await
             .unwrap()
@@ -779,17 +780,29 @@ async fn feed(
         .into_inner()
 }
 
+/// The next event that isn't a session's: the asking session's own change
+/// (Needs you while its agent waits on the request, D158 item 7) comes on
+/// the same feed, around the request's.
+async fn next_not_session(events: &mut tonic::Streaming<pb::Event>) -> pb::Event {
+    loop {
+        let event = tokio::time::timeout(WAIT, events.message())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        if !matches!(event.payload, Some(pb::event::Payload::Session(_))) {
+            return event;
+        }
+    }
+}
+
 /// The next request event's change, request id and state.
 /// The next event's change, request, its state, and who made the change:
 /// the asking session's agent, the user, or no one (the daemon).
 async fn next_request(
     events: &mut tonic::Streaming<pb::Event>,
 ) -> (i32, pb::RequestId, i32, &'static str) {
-    let event = tokio::time::timeout(WAIT, events.message())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let event = next_not_session(events).await;
     let by = match event.by.and_then(|by| by.actor) {
         Some(pb::actor::Actor::Agent(agent)) if agent.session == Some(session(ASKER)) => "asker",
         Some(pb::actor::Actor::User(_)) => "user",
@@ -896,11 +909,7 @@ async fn the_feed_tells_of_each_request_and_its_answer() {
 /// The next event's change and what it tells of: `Ok` a grant's id, `Err`
 /// a request's state.
 async fn next_told(events: &mut tonic::Streaming<pb::Event>) -> (i32, Result<pb::GrantId, i32>) {
-    let event = tokio::time::timeout(WAIT, events.message())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let event = next_not_session(events).await;
     match event.payload {
         Some(pb::event::Payload::Grant(grant)) => (event.change, Ok(grant.id.unwrap())),
         Some(pb::event::Payload::Request(request)) => (event.change, Err(request.state)),

@@ -65,6 +65,24 @@ fn counted(count: usize, noun: &str) -> String {
     }
 }
 
+/// The toast for a restart: what came back and what didn't.
+fn told(state: &AppState, restart: &Restart) -> String {
+    let host = state
+        .workspace
+        .machine(&restart.machine)
+        .map_or_else(|| restart.machine.as_str().to_owned(), |m| m.name.clone());
+    let back = restart.resumed.len();
+    let lost = restart.not_brought_back.len();
+    let mut text = format!(
+        "{host} restarted: {} started again, {lost} couldn't.",
+        counted(back, "session")
+    );
+    if back > 0 {
+        text.push_str(" Mid-turn agents are idle.");
+    }
+    text
+}
+
 impl App {
     pub(super) fn heard_restart(
         &self,
@@ -72,23 +90,40 @@ impl App {
         restart: Restart,
     ) -> Effect<AppAction> {
         let clock = self.clients.clock.clone();
-        let host = state
-            .workspace
-            .machine(&restart.machine)
-            .map_or_else(|| restart.machine.as_str().to_owned(), |m| m.name.clone());
-        let back = restart.resumed.len();
-        let lost = restart.not_brought_back.len();
-        let mut text = format!(
-            "{host} restarted: {} started again, {lost} couldn't.",
-            counted(back, "session")
-        );
-        if back > 0 {
-            text.push_str(" Mid-turn agents are idle.");
-        }
+        let text = told(state, &restart);
         let workspace = Arc::make_mut(&mut state.workspace);
         workspace.restarts.retain(|old| old.machine != restart.machine);
         workspace.restarts.insert(0, restart);
         state.toast(text, &clock)
+    }
+
+    /// Tells each restart a load brought that the app hadn't held before:
+    /// the daemon brought its sessions back before this app connected, so
+    /// no restart event came (D390). `before` is what the app held before
+    /// the load replaced its workspace, so a reload tells nothing again.
+    pub(super) fn loaded_restarts(
+        &self,
+        state: &mut AppState,
+        before: &[Restart],
+    ) -> Effect<AppAction> {
+        let clock = self.clients.clock.clone();
+        let fresh: Vec<String> = state
+            .workspace
+            .restarts
+            .iter()
+            .filter(|restart| {
+                !before.iter().any(|old| {
+                    old.machine == restart.machine && old.at_unix_ms == restart.at_unix_ms
+                })
+            })
+            .map(|restart| told(state, restart))
+            .collect();
+        Effect::merge(
+            fresh
+                .into_iter()
+                .map(|text| state.toast(text, &clock))
+                .collect::<Vec<_>>(),
+        )
     }
 
     pub(super) fn change_restart(

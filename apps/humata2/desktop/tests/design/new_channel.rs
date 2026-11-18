@@ -45,6 +45,23 @@ fn repo(look: Look, on: bool, name: &'static str) -> Div {
     div().flex().items_center().gap(px(8.)).child(checkbox(look, on, "")).child(small_icon(IconName::FolderGit2, look.secondary)).child(name)
 }
 
+/// A repo source chip (REPOS): the picked one is filled and can be removed.
+fn source(look: Look, text: &'static str, on: bool) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(5.))
+        .h(px(22.))
+        .px(px(9.))
+        .rounded_full()
+        .border_1()
+        .border_color(c(look.line))
+        .text_size(px(12.))
+        .when(on, |chip| chip.bg(c(look.fill)))
+        .child(text)
+        .when(on, |chip| chip.child(small_icon(IconName::X, look.secondary)))
+}
+
 fn machine(look: Look, on: bool, name: &'static str, note: &'static str, choosable: bool) -> Div {
     div()
         .flex()
@@ -64,7 +81,7 @@ pub fn create(look: Look) -> Div {
         .child(row(
             look,
             "Name",
-            div().flex().flex_col().gap(px(5.)).child(field(look, "Billing exports", false)).child(secondary(look, "Folder: ~/Humata/billing-exports/")),
+            div().flex().flex_col().gap(px(5.)).child(field(look, "Billing exports", false)).child(secondary(look, "On: This Mac, devbox-1")),
         ))
         .child(row(
             look,
@@ -73,8 +90,17 @@ pub fn create(look: Look) -> Div {
                 .flex()
                 .flex_col()
                 .gap(px(7.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(source(look, "Your repos", true))
+                        .child(source(look, "+ Org", false))
+                        .child(source(look, "All of GitHub", false)),
+                )
                 .child(div().flex().items_center().gap(px(8.)).child(small_icon(IconName::Search, look.secondary)).child(field(look, "acme", false).flex_1()))
-                .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child("From gh on This Mac. Zero or more."))
+                .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child("Your library first, then GitHub. Zero or more."))
                 .child(
                     div()
                         .flex()
@@ -82,6 +108,7 @@ pub fn create(look: Look) -> Div {
                         .gap(px(7.))
                         .child(repo(look, true, "acme/ledger"))
                         .child(repo(look, true, "acme/api"))
+                        .child(div().pt(px(4.)).text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(c(look.tertiary)).child("GitHub · your repos"))
                         .child(repo(look, false, "acme/web"))
                         .child(repo(look, false, "acme/infra"))
                         .child(repo(look, false, "acme/docs")),

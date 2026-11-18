@@ -12,6 +12,7 @@ import "humata/v1/access.proto";
 import "humata/v1/boards.proto";
 import "humata/v1/channels.proto";
 import "humata/v1/common.proto";
+import "humata/v1/desk.proto";
 import "humata/v1/errors.proto";
 import "humata/v1/files.proto";
 import "humata/v1/hosts.proto";
@@ -92,7 +93,25 @@ message Event {
     Resync resync = 27;
     HostLinkChanged host_link = 28;
     PolicyCopyKept policy_copy = 29;
+    PullRequestHeadsChanged pull_request_heads = 30;
+    FileChanged file_changed = 31;
+    // SEAM (D438): the history index caught a session up.
+    HistoryIndexed history_indexed = 32;
+    // SEAM (DESKWATCH): a Desk session, plain or a channel's own, as it is
+    // after the change; on Change DELETED only `session` is set. Scoped to
+    // the session (channel "desk" for a plain one), sent as Session is.
+    DeskSession desk = 33;
+    // SEAM (MACHINESCRIPTS, D686): a machine's script run started, moved or
+    // ended; read it with ListMachineScriptRuns. On TOPIC_MACHINES, to the
+    // user only.
+    MachineScriptRunChanged machine_script_run = 34;  // next free: 35
   }
+}
+
+// D686: a machine's script run changed. Sent on TOPIC_MACHINES.
+message MachineScriptRunChanged {
+  MachineId machine = 1;
+  string run_id = 2;
 }
 
 // AWAY: a machine's daemon gained or lost its host's link (GRPC.md §9).
@@ -105,6 +124,45 @@ message HostLinkChanged {
 // Sent on TOPIC_MACHINES, to the user only, by machines' daemons.
 message PolicyCopyKept {
   uint64 revision = 1;
+}
+
+// D286: on TOPIC_SESSIONS, scoped to the session, when a poll finds a
+// review's pull request with new commits, a force push or a new state.
+message PullRequestHeadsChanged {
+  SessionId session = 1;
+  // Same shape and meaning as CheckHeadsResponse.changes.
+  repeated HeadChange changes = 2;
+}
+
+// Bug 23: a file was added to, removed from or renamed in a session's clone,
+// by the user's write or the agent's edit; a changed file's text is not
+// news. On TOPIC_SESSIONS, scoped to the session, as PullRequestHeadsChanged
+// is. A branch switch tells at most 500 files; read the list again after one.
+message FileChanged {
+  SessionId session = 1;
+  RepoRef repo = 2;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_CREATED = 1;
+    KIND_DELETED = 2;
+    KIND_RENAMED = 3;
+  }
+  Kind kind = 3;
+  // Relative to the clone's root; for a rename, where the file is now.
+  string path = 4;
+  // Only for a rename: where the file was.
+  string old_path = 5;
+  bool folder = 6;
+}
+
+// D438: the host's history index added entries of a session's conversation,
+// read from this host's file or from the session's machine. On
+// TOPIC_SESSIONS, scoped to the session, as FileChanged is. A search made
+// before it may have missed those entries: search again.
+message HistoryIndexed {
+  SessionId session = 1;
+  // How many entries were added; never 0.
+  uint64 added = 2;
 }
 
 // AW-6: one machine's journal has been replayed up to `through`.

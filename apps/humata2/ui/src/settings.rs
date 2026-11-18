@@ -10,13 +10,92 @@ use gpui_kit::component::{Sizable as _, button::Button};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::model::Agent;
-use humata2_settings::{FONT_SIZES, Row, Section, SettingsAction as A, Theme};
+use humata2_settings::{AgentsAction, FONT_SIZES, Row, Section, SettingsAction as A, Theme};
 use std::rc::Rc;
 fn dim(look: Look, text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(11.5))
         .text_color(rgb(look.secondary))
         .child(text.into())
+}
+/// Settings › Agents › Agents (AGENTSET, D725): one switch per agent, and
+/// under an enabled one that has an install command, "Install when missing".
+/// Nothing but a loading line until the daemon has said which are on.
+fn agent_switches_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+    let mut block = col()
+        .gap(px(8.))
+        .child(dim(look, "Agents").font_weight(FontWeight::SEMIBOLD))
+        .child(dim(look, "Agents shown in pickers and started on your machines"));
+    let Some(switches) = &state.settings.agents.switches else {
+        return block.child(dim(look, "Loading agents"));
+    };
+    let line = |content: AnyElement, pad: f32| {
+        row()
+            .gap(px(16.))
+            .pl(px(14. + pad))
+            .pr(px(14.))
+            .py(px(10.))
+            .border_b_1()
+            .border_color(rgb(look.line))
+            .items_center()
+            .child(content)
+    };
+    let mut rows = card(look);
+    for switch in switches {
+        let id = switch.agent.command();
+        rows = rows.child(line(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(crate::desk::runs(switch.agent))
+                .into_any_element(),
+            0.,
+        ).child(toggle(
+            ui,
+            &format!("settings-agent-enabled-{id}"),
+            switch.enabled,
+            A::Agents(AgentsAction::Toggle(switch.agent)),
+            look,
+        )));
+        if let (true, Some(command)) = (switch.enabled, &switch.install_command) {
+            rows = rows.child(line(
+                col()
+                    .flex_1()
+                    .min_w_0()
+                    .child("Install when missing")
+                    .child(
+                        div()
+                            .font_family("Menlo")
+                            .text_size(px(11.5))
+                            .text_color(rgb(look.secondary))
+                            .child(command.clone()),
+                    )
+                    .child(dim(look, "Never replaces one that's there"))
+                    .into_any_element(),
+                18.,
+            ).child(toggle(
+                ui,
+                &format!("settings-agent-install-{id}"),
+                switch.install_when_missing,
+                A::Agents(AgentsAction::ToggleInstall(switch.agent)),
+                look,
+            )));
+        }
+    }
+    block = block.child(rows);
+    if let Some(error) = &state.settings.error {
+        block = block.child(
+            div()
+                .id("settings-agents-error")
+                .role(Role::Alert)
+                .aria_label(error.clone())
+                .text_size(px(11.5))
+                .text_color(rgb(0xff453a))
+                .child(error.clone())
+                .test_support(),
+        );
+    }
+    block
 }
 fn open_card(look: Look) -> Div {
     col()
@@ -26,7 +105,87 @@ fn open_card(look: Look) -> Div {
         .bg(rgb(look.card))
 }
 fn card(look: Look) -> Div {
-    open_card(look).overflow_hidden()
+    // A clipped card in the scrolling page would otherwise shrink to fit
+    // the window and hide its rows instead of letting the page scroll.
+    open_card(look).overflow_hidden().flex_shrink_0()
+}
+/// Scripts (MACHINESCRIPTS, D680): the owner's rules and script names, read
+/// from the host, with the two ways to change them: the owner's editor and
+/// the scripts folder in Finder. Nothing here writes a rule or a script.
+fn machine_scripts_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+    let settings = &state.settings;
+    let mut block = col()
+        .gap(px(8.))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child("Scripts"))
+        .child(dim(
+            look,
+            "What Humata runs on a machine when it is added, reconnects, or a session arrives or leaves. The rules and scripts are your own files; Humata never changes them.",
+        ));
+    if let Some(error) = &settings.scripts_error {
+        block = block.child(
+            div()
+                .id("settings-scripts-error")
+                .role(Role::Alert)
+                .aria_label(error.clone())
+                .text_size(px(11.5))
+                .text_color(rgb(0xff453a))
+                .child(error.clone())
+                .test_support(),
+        );
+    }
+    if let Some(scripts) = &settings.scripts {
+        if let Some(problem) = &scripts.problem {
+            block = block.child(
+                div()
+                    .id("settings-scripts-problem")
+                    .role(Role::Alert)
+                    .aria_label(problem.clone())
+                    .text_size(px(11.5))
+                    .text_color(rgb(0xff453a))
+                    .child(problem.clone())
+                    .test_support(),
+            );
+        }
+        if !scripts.rules.is_empty() {
+            let mut rules = card(look);
+            for rule in &scripts.rules {
+                let steps = match rule.steps.len() {
+                    1 => "1 step".to_owned(),
+                    n => format!("{n} steps"),
+                };
+                rules = rules.child(setting(
+                    look,
+                    &rule.name,
+                    &format!("{} \u{b7} {steps}", rule.triggers.join(" \u{b7} ")),
+                    div().into_any_element(),
+                ));
+            }
+            block = block.child(rules);
+        }
+        block = block.child(dim(
+            look,
+            if scripts.script_names.is_empty() {
+                "No scripts in the scripts folder yet.".to_owned()
+            } else {
+                format!("Scripts: {}", scripts.script_names.join(", "))
+            },
+        ));
+        for warning in &scripts.warnings {
+            block = block.child(dim(look, warning.clone()));
+        }
+    }
+    block.child(
+        row()
+            .gap(px(8.))
+            .child(button(ui, "settings-scripts-edit", "Edit rules", AppAction::Settings(A::EditScriptRules), look))
+            .child(button(
+                ui,
+                "settings-scripts-reveal",
+                "Reveal scripts",
+                AppAction::Settings(A::RevealScripts),
+                look,
+            )),
+    )
 }
 /// The terminal font pop-up: the closed control, and the size list under it while open.
 fn font_popup(ui: &Rc<Ui>, size: u8, open: bool, look: Look) -> Div {
@@ -321,16 +480,39 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                     )
                     .into_any_element(),
                 )),
-            );
+            )
+            .child(card(look).child(setting(
+                look,
+                Row::FreeHiddenTerminals.title(),
+                "A terminal you have not looked at for 30 seconds gives its screen memory back and shows again when you open it. Turn off to keep every screen in memory. Terminals with unsent or unconfirmed typing are never freed.",
+                toggle(
+                    ui,
+                    "settings-free-hidden-terminals",
+                    prefs.free_hidden_terminals,
+                    A::ToggleFreeHiddenTerminals,
+                    look,
+                )
+                .into_any_element(),
+            )));
+            // REPOS (ST-21): the repo library and the default scope.
+            body = body.child(crate::settings_repositories::section(ui, state, look));
         }
         Section::Agents => {
+            // AGENTSET (D725): the agents that are on, then the plain shell.
+            let default_agents: Vec<Agent> = state
+                .settings
+                .offered_agents()
+                .into_iter()
+                .chain([Agent::Shell])
+                .collect();
             body = body
+                .child(agent_switches_block(ui, state, look))
                 .child(dim(look, "Default agent").font_weight(FontWeight::SEMIBOLD))
                 .child(
                     card(look)
                         .p(px(14.))
                         .gap(px(8.))
-                        .children(Agent::ALL.into_iter().map(|agent| {
+                        .children(default_agents.into_iter().map(|agent| {
                             button(
                                 ui,
                                 SharedString::from(format!("settings-agent-{}", agent.command())),
@@ -381,14 +563,37 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                     .font_weight(FontWeight::SEMIBOLD),
                 )
                 .children(state.workspace.machines.iter().map(|m| {
-                    button(
-                        ui,
-                        SharedString::from(format!("settings-machine {}", m.id)),
-                        m.name.clone(),
-                        AppAction::Hosts(humata2_hosts::HostsAction::Select(m.id.clone())),
-                        look,
-                    )
-                }));
+                    col()
+                        .gap(px(8.))
+                        .child(button(
+                            ui,
+                            SharedString::from(format!("settings-machine {}", m.id)),
+                            m.name.clone(),
+                            AppAction::Hosts(humata2_hosts::HostsAction::Select(m.id.clone())),
+                            look,
+                        ))
+                        .when(state.settings.section == Section::Machines, |x| {
+                            // Change… opens the Humata folder sheet: type
+                            // the folder, Plan, then choose (FC-10).
+                            x.child(card(look).child(setting(
+                                look,
+                                "Humata folder",
+                                &m.root,
+                                button(
+                                    ui,
+                                    SharedString::from(format!("settings-machine-root {}", m.id)),
+                                    "Change…",
+                                    AppAction::Hosts(humata2_hosts::HostsAction::OpenRoot(m.id.clone())),
+                                    look,
+                                )
+                                .into_any_element(),
+                            )))
+                        })
+                }))
+                // MACHINESCRIPTS (D680): rules and script names, with Edit rules and Reveal scripts.
+                .when(state.settings.section == Section::Machines, |x| {
+                    x.child(machine_scripts_block(ui, state, look))
+                });
         }
         Section::Access => {
             body=body.child(div().font_weight(FontWeight::SEMIBOLD).child("Agent access")).child(dim(look,"Requests to change items you own wait in Inbox. Review each request before allowing it.")).child(button(ui,"settings-open-inbox","Review Inbox",AppAction::Switch(humata2_app::Route::Inbox),look));
@@ -427,7 +632,20 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                     "Keyboard shortcuts",
                     AppAction::ShowShortcuts,
                     look,
-                ));
+                ))
+                .child(card(look).child(setting(
+                    look,
+                    Row::OptionAsAlt.title(),
+                    "For Mac keyboards. ⌥ keys send Esc and the key, for shells and editors that bind ⌥ letters, instead of the character the layout gives. Some layouts then can't type characters that need ⌥. ⌥←, ⌥→ and ⌥⌫ move and delete by word either way.",
+                    toggle(
+                        ui,
+                        "settings-option-as-alt",
+                        prefs.option_as_alt,
+                        A::ToggleOptionAsAlt,
+                        look,
+                    )
+                    .into_any_element(),
+                )));
         }
     }
     row()
@@ -437,7 +655,7 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
         .text_size(px(12.5))
         .text_color(rgb(look.text))
         .child(nav)
-        .child(body)
+        .child(body.test_support())
 }
 
 pub(crate) fn toolbar(look: Look) -> Div {

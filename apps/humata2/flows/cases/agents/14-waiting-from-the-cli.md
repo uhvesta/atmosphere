@@ -31,12 +31,12 @@ Layer: agents. Platforms: macOS and Linux for the CLI. The app's own prompts are
 4. **I do:** the host is away (its link is down), and I log in on `box-1` with `humata login`. The command asks "Approval passphrase:" and I type the passphrase.
    **I see:** the passphrase is not echoed. The login succeeds on `box-1`, and `humata inbox approve` then works there.
    **State and events:** the passphrase is checked on the machine against the hash its policy copy holds. A right passphrase makes a login bound to this terminal session.
-   **Status:** Fakes only for the typed-at-a-terminal prompt: `cli/tests/waiting.rs::a_passphrase_is_typed_at_the_terminal`. The daemon side is Works (real daemon): `daemon/humatad/tests/away_login.rs::the_approval_passphrase_logs_in_on_a_machine_while_its_host_is_away`.
+   **Status:** Works (real daemon, real shell): `daemon/humatad/tests/away_login.rs::the_approval_passphrase_logs_in_on_a_machine_while_its_host_is_away` runs the real `humata login` in a pty of its own on a machine whose host is away and types the passphrase at its prompt.
 
 5. **I do:** pipe a passphrase into the command: `echo "correct horse" | humata inbox approve rq_1` on `box-1`.
    **I see:** the command exits 5 with the kind `presence_required`. It does not read the pipe.
    **State and events:** no answer is sent with a passphrase from a pipe.
-   **Status:** Fakes only. `cli/tests/waiting.rs::a_passphrase_is_never_read_from_a_pipe`.
+   **Status:** Works (real daemon, real shell): `daemon/humatad/tests/away_login_pipe.rs::the_passphrase_piped_into_login_is_not_read_and_a_typed_one_still_logs_in`. The fake test is `cli/tests/waiting.rs::a_passphrase_is_never_read_from_a_pipe`.
 
 6. **I do:** the agent, from its shell tab in `fix-retry`, runs `humata inbox approve rq_1` with its session token.
    **I see:** the command fails. The agent is told that only the user can answer, and no presence prompt is offered.
@@ -46,52 +46,52 @@ Layer: agents. Platforms: macOS and Linux for the CLI. The app's own prompts are
 7. **I do:** run `humata --dry-run --machine this-mac trash empty`.
    **I see:** the command prints the plan: how many items and how many bytes it would free. It prints a plan token. It says nothing was changed.
    **State and events:** only the plan call is made. The empty call is not made, and the trash is unchanged.
-   **Status:** Fakes only for the CLI flags: `cli/tests/waiting.rs::dry_run_prints_the_plan_and_changes_nothing`. The daemon's plan and its token are Works (real daemon): `daemon/humatad/tests/trash.rs::emptying_frees_what_the_plan_said_and_a_token_works_once`.
+   **Status:** Works (real daemon): `daemon/humatad/tests/cli_files.rs::a_dry_run_empties_nothing_and_its_printed_plan_empties_the_trash` runs the real `humata --dry-run trash empty` and the trash keeps its item.
 
 8. **I do:** run `humata --plan <token> --machine this-mac trash empty`, with the token from step 7.
    **I see:** the command empties exactly the items the plan named, and exits 0.
    **State and events:** the empty call carries the plan token. The token works once.
-   **Status:** Fakes only for the CLI: `cli/tests/waiting.rs::plan_does_what_the_printed_plan_said`. The daemon side is Works (real daemon): `daemon/humatad/tests/trash.rs::emptying_removes_only_what_was_planned`.
+   **Status:** Works (real daemon): `daemon/humatad/tests/cli_files.rs::a_dry_run_empties_nothing_and_its_printed_plan_empties_the_trash` passes the printed token to `--plan`, and the trash is emptied. That the token works once is the daemon's `trash.rs::emptying_frees_what_the_plan_said_and_a_token_works_once`.
 
 9. **I do:** run `humata --machine this-mac trash empty` with no flags, in a pipe, so there is no one to answer "Continue?".
    **I see:** the command refuses. It prints the plan, then says to use `--dry-run` and `--plan`, or `--yes`. It exits 2.
    **State and events:** no empty call is made.
-   **Status:** Fakes only. `cli/tests/waiting.rs::a_change_with_no_one_to_confirm_it_is_refused`. The exit 2 is not in the CLI.md §7 table, which lists no case for it.
+   **Status:** Works (real daemon): `daemon/humatad/tests/cli_files.rs::emptying_the_trash_with_no_one_to_confirm_it_is_refused_and_keeps_it`. The exit 2 is not in the CLI.md §7 table, which lists no case for it.
 
 10. **I do:** run `humata --yes --machine this-mac trash empty`.
     **I see:** the plan is printed, the question is skipped, and the empty runs. It exits 0.
     **State and events:** the empty call carries the plan's token. `--yes` never skips presence.
-    **Status:** Fakes only. `cli/tests/waiting.rs::yes_skips_the_question_and_uses_the_plans_token`.
+    **Status:** Works (real daemon): `daemon/humatad/tests/cli_files.rs::trash_empty_frees_what_it_listed` empties the trash with `--yes` and no question. The fake test is `cli/tests/waiting.rs::yes_skips_the_question_and_uses_the_plans_token`.
 
 11. **I do:** run `humata --machine this-mac trash empty` in a terminal, and at "Continue?" I type n.
     **I see:** nothing is emptied. The command prints nothing else.
     **State and events:** no empty call is made. The trash is unchanged.
-    **Status:** Likely bug. The test `cli/tests/waiting.rs::answering_no_changes_nothing` passes only because it expects exit 130; see Likely bug 1. The "nothing changed" part is Fakes only.
+    **Status:** Fakes only (fixed): `cli/tests/waiting.rs::answering_no_changes_nothing` answers n and the run exits `declined` (not 130, interrupted), says so on stderr and calls nothing. The question is the CLI's own and never reaches the daemon. (Was a likely bug; fixed by BUGS.)
 
 12. **I do:** the agent runs `humata --json access ask-ahead network_reach network:api.example.com:443 --reason "file the follow-ups"`, with no wait.
     **I see:** the command exits 12 with the kind `pending` and the request id `rq_9`. It does not wait.
     **State and events:** the request is held in the Inbox. Its `wait_seconds` is 0.
-    **Status:** Fakes only for the CLI: `cli/tests/waiting.rs::json_doesnt_wait_and_exits_12_with_the_request`. The agent's MCP path gives the same pending outcome: `daemon/humatad/tests/mcp.rs::an_approved_request_is_waited_for_with_inbox_wait` (first call).
+    **Status:** Works (real daemon): `daemon/humatad/tests/cli_waiting.rs::json_doesnt_wait_and_exits_pending_naming_the_request_in_the_inbox`. The agent's MCP path gives the same pending outcome: `daemon/humatad/tests/mcp.rs::an_approved_request_is_waited_for_with_inbox_wait`.
 
 13. **I do:** the same command with `--wait 30`.
     **I see:** the command holds for up to 30 seconds. If no one answers, it exits 12.
     **State and events:** the daemon is asked to hold the answer for 30 seconds.
-    **Status:** Fakes only. `cli/tests/waiting.rs::wait_asks_the_daemon_to_hold_the_answer_that_long`.
+    **Status:** Works (real daemon): `daemon/humatad/tests/cli_waiting.rs::a_wait_that_runs_out_leaves_the_request_pending`.
 
 14. **I do:** run the same request in a terminal, with no `--wait`, and I approve it in the app while it waits.
     **I see:** the command keeps waiting, prints "Waiting for an answer (request rq_9). Ctrl-C stops waiting; the request stays.", and exits 0 once I approve.
     **State and events:** one wait stream is held until the answer comes. It is not asked again.
-    **Status:** Fakes only for the CLI: `cli/tests/waiting.rs::a_terminal_waits_until_the_answer_comes`. The daemon's side of the same wait is Works (real daemon): `daemon/humatad/tests/inbox.rs::the_users_reply_ends_the_agents_wait`.
+    **Status:** Works (real daemon) for a held wait: `daemon/humatad/tests/cli_waiting.rs::a_wait_ends_with_the_users_yes` waits with `--wait` until the user approves. The terminal's wait with no flag is Fakes only: `cli/tests/waiting.rs::a_terminal_waits_until_the_answer_comes`.
 
 15. **I do:** in the same wait, I press ⌃C.
     **I see:** the command stops waiting and exits 130 with the kind `interrupted`. The request stays pending. `humata inbox show rq_9` still shows it.
     **State and events:** the wait ends. The request is not changed.
-    **Status:** Fakes only. `cli/tests/waiting.rs::ctrl_c_stops_waiting_with_130` and `cli/tests/exit_codes.rs::ctrl_c_while_waiting_exits_130` both call the command with an interrupt that is already fired. The real terminal signal is not tested.
+    **Status:** Works (real daemon): `daemon/humatad/tests/cli_waiting.rs::ctrl_c_stops_waiting_and_the_request_stays` sends SIGINT to the real `humata` while it waits; it exits 130 and the request stays pending.
 
 16. **I do:** I deny `rq_9` in the app, and the waiting command's terminal is still open.
     **I see:** the command exits 4 with the kind `denied`.
     **State and events:** the request is denied. The wait ends with the denial.
-    **Status:** Fakes only. `cli/tests/waiting.rs::a_denied_request_is_an_error_with_its_kind`.
+    **Status:** Works (real daemon): `daemon/humatad/tests/cli_waiting.rs::a_wait_ends_denied_with_the_users_no`.
 
 ## Branches
 
@@ -109,7 +109,7 @@ Layer: agents. Platforms: macOS and Linux for the CLI. The app's own prompts are
 - **I do:** type the passphrase at the prompt.
 - **I see:** the answer is refused again with `presence_required`, and the CLI exits 5.
 - **Expected outcome:** a right passphrase is checked and the answer goes through, or the prompt is not offered.
-- **Status:** Likely bug 2. See Gaps.
+- **Status:** Fakes only (fixed): `cli/tests/waiting.rs::an_answer_refused_for_a_passphrase_is_not_retried_with_one`. An answer refused for a passphrase is not retried with one; the CLI says to log in with it first (SEC-13). A passphrase is typed only for a login (`cli/tests/waiting.rs::a_passphrase_is_typed_at_the_terminal_for_a_login`). (Was a likely bug; fixed by BUGS.)
 
 ### The agent waits with `inbox_wait` after an approved request
 
@@ -157,7 +157,7 @@ Layer: agents. Platforms: macOS and Linux for the CLI. The app's own prompts are
 - **I do:** run a command that waits, and restart the host while it waits.
 - **I see:** the command exits 70 with the kind `internal`. Its message says that humata and humatad may be different versions and to update Humata.
 - **Expected outcome:** the command says the wait ended, that the request stays pending, and how to wait again.
-- **Status:** Likely bug 3. The test `cli/tests/waiting.rs::a_wait_that_ends_unanswered_is_an_error` only checks that the exit is not 0.
+- **Status:** Works (real daemon): `daemon/humatad/tests/cli_waiting.rs::a_wait_that_runs_out_leaves_the_request_pending` ends a wait with no answer as pending, naming the request. The fake test is `cli/tests/waiting.rs::a_wait_that_ends_unanswered_is_pending_not_a_version_mismatch`. (Was a likely bug; fixed by BUGS.)
 
 ### A presence prompt is refused from a session's terminal
 
@@ -165,7 +165,7 @@ Layer: agents. Platforms: macOS and Linux for the CLI. The app's own prompts are
 - **I do:** run it from the session's shell.
 - **I see:** the CLI does not ask for a passphrase or a confirmation. It exits 5 with the kind `presence_required`, and it says to run the command from a terminal outside Humata's sessions.
 - **Expected outcome:** nothing is changed. The refusal is the CLI's, and no prompt is shown.
-- **Status:** Fakes only for the CLI: `cli/tests/waiting.rs::presence_is_never_offered_from_a_sessions_terminal`. The daemon never offers a presence prompt to an agent at all (`daemon/access/src/verdict.rs`, the agent's principal), and `daemon/humatad/tests/inbox.rs::an_agent_cannot_answer_its_own_request` covers that.
+- **Status:** Works (real daemon) for the refusal: `daemon/humatad/tests/cli_waiting.rs::an_agent_cannot_approve_its_own_request_from_the_cli`, where the agent's `humata inbox approve` fails and the request stays. That no prompt is offered is Fakes only: `cli/tests/waiting.rs::presence_is_never_offered_from_a_sessions_terminal`.
 
 ### The app's "Allow or Don't Allow" card for a command
 
@@ -179,20 +179,20 @@ Layer: agents. Platforms: macOS and Linux for the CLI. The app's own prompts are
 ## Expected outcomes
 
 - [ ] A command refused for want of presence exits 5 with `presence_required` and says how to fix it.
-- [ ] A passphrase is read only from a terminal that can read it, never from a pipe.
+- [x] A passphrase is read only from a terminal that can read it, never from a pipe (`daemon/humatad/tests/away_login_pipe.rs::the_passphrase_piped_into_login_is_not_read_and_a_typed_one_still_logs_in`).
 - [ ] A session's terminal is never offered a presence prompt.
-- [ ] `--dry-run` prints a plan and a token, and changes nothing.
+- [x] `--dry-run` prints a plan and a token, and changes nothing (`daemon/humatad/tests/cli_files.rs::a_dry_run_empties_nothing_and_its_printed_plan_empties_the_trash`).
 - [ ] `--plan <token>` runs exactly what the printed plan named, and the token works once.
-- [ ] A destructive command with no one to confirm refuses before it changes anything.
+- [x] A destructive command with no one to confirm refuses before it changes anything (`daemon/humatad/tests/cli_files.rs::emptying_the_trash_with_no_one_to_confirm_it_is_refused_and_keeps_it`).
 - [ ] `--yes` skips "Continue?" and never skips presence.
 - [ ] Declining "Continue?" changes nothing.
-- [ ] `--json` without `--wait` does not wait, and exits 12 with the request id.
-- [ ] `--wait N` holds the answer for N seconds, then exits 12 if none came.
+- [x] `--json` without `--wait` does not wait, and exits 12 with the request id (`daemon/humatad/tests/cli_waiting.rs::json_doesnt_wait_and_exits_pending_naming_the_request_in_the_inbox`).
+- [x] `--wait N` holds the answer for N seconds, then exits 12 if none came (`daemon/humatad/tests/cli_waiting.rs::a_wait_that_runs_out_leaves_the_request_pending`).
 - [ ] A terminal wait holds one stream until the answer comes.
 - [ ] A wait that ends without an answer says so and says how to wait again.
-- [ ] A denied request exits 4 with the kind `denied`.
-- [ ] ⌃C stops waiting with exit 130, and the request stays pending.
-- [ ] An agent cannot answer any request, its own included.
+- [x] A denied request exits 4 with the kind `denied` (`daemon/humatad/tests/cli_waiting.rs::a_wait_ends_denied_with_the_users_no`).
+- [x] ⌃C stops waiting with exit 130, and the request stays pending (`daemon/humatad/tests/cli_waiting.rs::ctrl_c_stops_waiting_and_the_request_stays`).
+- [x] An agent cannot answer any request, its own included (`daemon/humatad/tests/cli_waiting.rs::an_agent_cannot_approve_its_own_request_from_the_cli`; `daemon/humatad/tests/inbox.rs::an_agent_cannot_answer_its_own_request`).
 
 ## Status summary
 
@@ -201,36 +201,36 @@ Layer: agents. Platforms: macOS and Linux for the CLI. The app's own prompts are
 | 1. Answer refused for want of presence | Works (real daemon) | `auth.rs::the_release_daemon_refuses_a_call_with_no_credential`; CLI exit is Fakes only |
 | 2. `humata login` approved in the app | Works (real daemon) | `cli_login.rs::a_confirmed_login_makes_its_terminal_the_user_until_logout`; app card Not built |
 | 3. Approve after login | Works (real daemon) | `inbox.rs::the_users_reply_ends_the_agents_wait` |
-| 4. Typed passphrase while away | Fakes only | `waiting.rs::a_passphrase_is_typed_at_the_terminal`; daemon Works in `away_login.rs::the_approval_passphrase_logs_in_on_a_machine_while_its_host_is_away` |
-| 5. Passphrase from a pipe refused | Fakes only | `waiting.rs::a_passphrase_is_never_read_from_a_pipe` |
+| 4. Typed passphrase while away | Works (real daemon, real shell) | `daemon/humatad/tests/away_login.rs::the_approval_passphrase_logs_in_on_a_machine_while_its_host_is_away` |
+| 5. Passphrase from a pipe refused | Works (real daemon, real shell) | `daemon/humatad/tests/away_login_pipe.rs::the_passphrase_piped_into_login_is_not_read_and_a_typed_one_still_logs_in` |
 | 6. Agent cannot answer, no presence offered | Works (real daemon) | `inbox.rs::an_agent_cannot_answer_its_own_request` |
-| 7. Dry run changes nothing | Fakes only | `waiting.rs::dry_run_prints_the_plan_and_changes_nothing`; daemon `trash.rs::emptying_frees_what_the_plan_said_and_a_token_works_once` |
-| 8. `--plan` does the printed plan | Fakes only | `waiting.rs::plan_does_what_the_printed_plan_said`; daemon `trash.rs::emptying_removes_only_what_was_planned` |
-| 9. No one to confirm, refused | Fakes only | `waiting.rs::a_change_with_no_one_to_confirm_it_is_refused` |
-| 10. `--yes` skips the question | Fakes only | `waiting.rs::yes_skips_the_question_and_uses_the_plans_token` |
-| 11. Declining changes nothing | Likely bug | `waiting.rs::answering_no_changes_nothing` expects exit 130 |
-| 12. `--json` exits 12 with the request | Fakes only | `waiting.rs::json_doesnt_wait_and_exits_12_with_the_request`; MCP real in `mcp.rs::an_approved_request_is_waited_for_with_inbox_wait` |
-| 13. `--wait N` holds N seconds | Fakes only | `waiting.rs::wait_asks_the_daemon_to_hold_the_answer_that_long` |
-| 14. Terminal waits for the answer | Fakes only | `waiting.rs::a_terminal_waits_until_the_answer_comes`; daemon `inbox.rs::the_users_reply_ends_the_agents_wait` |
-| 15. ⌃C exits 130 | Fakes only | `waiting.rs::ctrl_c_stops_waiting_with_130`; `exit_codes.rs::ctrl_c_while_waiting_exits_130` |
-| 16. Denied exits 4 | Fakes only | `waiting.rs::a_denied_request_is_an_error_with_its_kind` |
+| 7. Dry run changes nothing | Works (real daemon) | `daemon/humatad/tests/cli_files.rs::a_dry_run_empties_nothing_and_its_printed_plan_empties_the_trash` |
+| 8. `--plan` does the printed plan | Works (real daemon) | `daemon/humatad/tests/cli_files.rs::a_dry_run_empties_nothing_and_its_printed_plan_empties_the_trash`; token once: `trash.rs::emptying_frees_what_the_plan_said_and_a_token_works_once` |
+| 9. No one to confirm, refused | Works (real daemon) | `daemon/humatad/tests/cli_files.rs::emptying_the_trash_with_no_one_to_confirm_it_is_refused_and_keeps_it` |
+| 10. `--yes` skips the question | Works (real daemon) | `daemon/humatad/tests/cli_files.rs::trash_empty_frees_what_it_listed` |
+| 11. Declining changes nothing | Fakes only (fixed) | `cli/tests/waiting.rs::answering_no_changes_nothing` |
+| 12. `--json` exits 12 with the request | Works (real daemon) | `daemon/humatad/tests/cli_waiting.rs::json_doesnt_wait_and_exits_pending_naming_the_request_in_the_inbox` |
+| 13. `--wait N` holds N seconds | Works (real daemon) | `daemon/humatad/tests/cli_waiting.rs::a_wait_that_runs_out_leaves_the_request_pending` |
+| 14. Terminal waits for the answer | Works (real daemon) with `--wait`; no-flag terminal wait Fakes only | `daemon/humatad/tests/cli_waiting.rs::a_wait_ends_with_the_users_yes`; `waiting.rs::a_terminal_waits_until_the_answer_comes` |
+| 15. ⌃C exits 130 | Works (real daemon) | `daemon/humatad/tests/cli_waiting.rs::ctrl_c_stops_waiting_and_the_request_stays` |
+| 16. Denied exits 4 | Works (real daemon) | `daemon/humatad/tests/cli_waiting.rs::a_wait_ends_denied_with_the_users_no` |
 | Branch: presence asked twice | Fakes only | `waiting.rs::presence_asked_twice_is_reported` |
-| Branch: typed passphrase on an answer | Likely bug | `call.rs:232-238`; `inbox.rs:807` ignores `presence` |
+| Branch: typed passphrase on an answer | Fakes only (fixed) | `cli/tests/waiting.rs::an_answer_refused_for_a_passphrase_is_not_retried_with_one`; `cli/tests/waiting.rs::a_passphrase_is_typed_at_the_terminal_for_a_login` |
 | Branch: agent's `inbox_wait` | Works (real daemon) | `mcp.rs::an_approved_request_is_waited_for_with_inbox_wait` |
 | Branch: `humata inbox wait` | Not built (no milestone) | `args.rs` `InboxCommand` has no Wait |
 | Branch: agent's MCP `inbox_answer` | Fakes only (refusal); daemon Works | `daemon/mcp/tests/refusals.rs:16`; `inbox.rs::an_agent_cannot_answer_its_own_request` |
 | Branch: passphrase login while away | Works (real daemon, real shell) | `away_boundary.rs::row_7_while_away_only_answering_with_the_passphrase_and_reading_the_copy_are_open_to_the_user` |
 | Branch: five wrong passphrases | Works (real daemon) | `away_login.rs::five_wrong_tries_lock_the_passphrase_and_a_restart_keeps_the_lock` |
-| Branch: wait ends unanswered | Likely bug | `call.rs:164`, `error.rs:292`; test checks only "not OK" |
-| Branch: session's terminal, no presence | Fakes only | `waiting.rs::presence_is_never_offered_from_a_sessions_terminal` |
+| Branch: wait ends unanswered | Works (real daemon) | `daemon/humatad/tests/cli_waiting.rs::a_wait_that_runs_out_leaves_the_request_pending`; `cli/tests/waiting.rs::a_wait_that_ends_unanswered_is_pending_not_a_version_mismatch` |
+| Branch: session's terminal, no presence | Works (real daemon) for the refusal; no prompt Fakes only | `daemon/humatad/tests/cli_waiting.rs::an_agent_cannot_approve_its_own_request_from_the_cli`; `waiting.rs::presence_is_never_offered_from_a_sessions_terminal` |
 | Branch: app's Allow or Don't Allow card | Not built (no milestone) | `cli_login.rs` only; no app client |
 
 ## Gaps and likely bugs
 
 - **Not built:** the app's "Allow or Don't Allow" card for a command that needs presence (CLI.md §3). The daemon never sends `ConfirmInApp` for an answer, and no app crate calls the pending-login service. No milestone found.
 - **Not built:** `humata inbox wait`. The wait is the `--wait` flag, or the MCP tool `inbox_wait`.
-- **Likely bug 1:** a declined "Continue?" exits 130 with the kind `interrupted` and an empty message. `cli/src/error.rs:151` maps `NotConfirmed` to `plain("interrupted", exit::INTERRUPTED, String::new())`. CLI.md §7 lists 130 as "Interrupted" only, so a script reads a refusal as a Ctrl-C. To confirm: run a destructive command with `--machine` in a terminal and answer n. Expect exit 130 and no message.
-- **Likely bug 2:** the CLI types a passphrase for an answer, and the daemon never reads it. `daemon/humatad/src/inbox.rs:807-822` (`answer_request`) does not look at `request.presence`. Only `daemon/humatad/src/cli_login.rs:381` reads it, for login. `DECISIONS.md` D48 item 6 says the answer's presence fields are ignored for now. So the typed passphrase is sent, not checked, and refused again. The daemon asks for a passphrase only from a terminal whose login was confirmed in the app, while the host is away (`daemon/access/src/policy.rs`, `user_only_while_away`). To confirm: while the host is away, from such a terminal, run `humata inbox approve` and type the passphrase. Expect a second `presence_required`, even though the passphrase is right.
-- **Likely bug 3:** a wait that ends without an answer maps to `DaemonError::Ended`. `cli/src/error.rs:292` turns that into exit 70 `internal` with "humata and humatad may be different versions". That message is wrong here. The request is still pending. To confirm: restart the host during `humata --wait 60 ...`. The test `cli/tests/waiting.rs::a_wait_that_ends_unanswered_is_an_error` should check the exit and the kind, not only "not OK".
+- **Fixed (was likely bug 1):** a declined "Continue?" exits `declined`, not interrupted (`cli/tests/waiting.rs::answering_no_changes_nothing`).
+- **Fixed (was likely bug 2):** the CLI asks for the passphrase only at `humata login` (`cli/tests/waiting.rs::an_answer_refused_for_a_passphrase_is_not_retried_with_one`).
+- **Fixed (was likely bug 3):** a wait that ends unanswered exits `pending` with the request (`cli/tests/waiting.rs::a_wait_that_ends_unanswered_is_pending_not_a_version_mismatch`).
 - **Test gap:** every CLI result in this case is a fake. The real terminal signal for ⌃C is not tested by any real-process test.
 - **Test gap:** the first step's "presence asked in the app, then the call is sent again" has no real test. The `waiting.rs` test that names it uses a fake that refuses with `ConfirmInApp`, which the daemon does not send for an answer.

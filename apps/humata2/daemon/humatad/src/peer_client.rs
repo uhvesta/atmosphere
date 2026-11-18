@@ -162,15 +162,21 @@ pub(crate) struct HostSide {
     pub(crate) inbox: Arc<Inbox>,
     /// Runs the board calls a machine forwards and replays its board writes (D227).
     pub(crate) boards: BoardSvc,
+    /// Keeps the views a machine's agents offered, replayed from its journal (VW-12).
+    pub(crate) views: crate::review::Review,
+    /// Compares each machine's build with this host's at link-up (UP-1).
+    pub(crate) upgrade: Option<crate::upgrade::items::Watch>,
 }
 
 impl HostSide {
     /// Applies one journal entry of `machine` by its operation: `board.` to
-    /// the boards, anything else to the Inbox, which leaves out what isn't
-    /// its own (D226, D227).
+    /// the boards, `view.` to the views, anything else to the Inbox, which
+    /// leaves out what isn't its own (D226, D227, VW-12).
     async fn replay_at(&self, machine: &str, entry: &pb::JournalEntry, link_up: i64) -> Replayed {
         if entry.operation.starts_with("board.") {
             self.boards.replay_at(machine, entry, link_up).await
+        } else if entry.operation.starts_with("view.") {
+            self.views.replay_offered(machine, entry).await
         } else {
             self.inbox.replay(machine, entry).await
         }
@@ -197,12 +203,28 @@ pub(crate) struct Up {
     /// copies (AW-8).
     to_machine: mpsc::Sender<pb::HostToMachine>,
     channel: Channel,
+    /// The stop of the machine's sessions its Hello told, if it is stopped
+    /// (D262).
+    stopped: Option<pb::SessionsStopped>,
+    /// The build of the daemon the link relays to, as its Hello said.
+    build: Option<pb::BuildInfo>,
 }
 
 impl Up {
     /// The machine's humatad2 version, as its Hello said.
     pub(crate) fn daemon_version(&self) -> &str {
         &self.daemon_version
+    }
+
+    /// The stop the machine's Hello told, when its sessions are stopped.
+    pub(crate) fn stopped(&self) -> Option<&pb::SessionsStopped> {
+        self.stopped.as_ref()
+    }
+
+    /// The machine's build, as its Hello said; `None` from a daemon too
+    /// old to say.
+    pub(crate) fn build(&self) -> Option<&pb::BuildInfo> {
+        self.build.as_ref()
     }
 
     /// The link's connection, for more calls to the machine while it is up.
@@ -219,6 +241,8 @@ impl Up {
     pub(crate) async fn closed(mut self, sink: &Sink, host: Option<&HostSide>) -> LinkError {
         let policy = host.map(|host| &host.policy);
         let mut changes = policy.map(|policy| policy.changes());
+        // The host can say which machines have its newest copy (AW-8).
+        let _linked = policy.map(|policy| policy.linked(&self.machine));
         if let Some(policy) = policy {
             self.send_copy(policy).await;
         }
@@ -231,6 +255,9 @@ impl Up {
         let link_up = crate::trash_service::now_ms();
         // The calls the machine forwarded that are still running here (D227).
         let mut forwarded = Forwarded::default();
+        // The machine's first holders report on this link comes after its
+        // Resume (D378).
+        let mut first_holders = true;
         loop {
             let changed = async {
                 match changes.as_mut() {
@@ -284,7 +311,25 @@ impl Up {
                         host.inbox.relays().refused(&self.machine, refused);
                     }
                 }
-                Next::Message(Ok(Some(message))) => sink(message),
+                Next::Message(Ok(Some(pb::MachineToHost {
+                    message: Some(pb::machine_to_host::Message::Holders(report)),
+                }))) if host.is_some() => {
+                    if let Some(upgrade) = host.and_then(|host| host.upgrade.as_ref()) {
+                        upgrade
+                            .holders(&self.machine, report, first_holders, &self.channel)
+                            .await;
+                    }
+                    first_holders = false;
+                }
+                Next::Message(Ok(Some(message))) => {
+                    if let (Some(policy), Some(pb::machine_to_host::Message::Ack(ack))) =
+                        (policy, message.message.as_ref())
+                        && ack.policy_revision > 0
+                    {
+                        policy.acked(&self.machine, ack.policy_revision);
+                    }
+                    sink(message);
+                }
                 Next::Message(Ok(None)) => return LinkError::Ended { machine: self.machine },
                 Next::Message(Err(source)) => {
                     return LinkError::Lost {
@@ -475,6 +520,7 @@ async fn open_from(pipe: Pipe, key: &EnrollmentKey, machine: &str, through: u64)
             nonce: nonce.clone(),
             sync_marker: String::new(),
             chunk_codecs: Vec::new(),
+            host_build: None,
         })
         .await
         .map_err(|source| refused_or(source, machine, call_failed("Hello")))?
@@ -536,6 +582,8 @@ async fn open_from(pipe: Pipe, key: &EnrollmentKey, machine: &str, through: u64)
         from_machine,
         to_machine,
         channel,
+        stopped: hello.sessions_stopped,
+        build: hello.build,
     })
 }
 
@@ -578,6 +626,9 @@ pub(crate) enum LinkEvent<'a> {
         daemon_version: &'a str,
         /// The link's connection, good until the matching `Down`.
         channel: &'a Channel,
+        /// The stop the machine's Hello told, when its sessions are
+        /// stopped (D262).
+        stopped: Option<&'a pb::SessionsStopped>,
     },
     /// `retry_in` is when the next dial is; none when the supervisor gives
     /// up, since another dial can't help.
@@ -608,9 +659,13 @@ pub(crate) async fn supervise(
     loop {
         let error = match connect(&*dial, &key_file, &machine, host.as_ref()).await {
             Ok(up) => {
+                if let Some(upgrade) = host.as_ref().and_then(|host| host.upgrade.as_ref()) {
+                    upgrade.linked(&machine, up.build()).await;
+                }
                 report(LinkEvent::Up {
                     daemon_version: up.daemon_version(),
                     channel: up.channel(),
+                    stopped: up.stopped(),
                 });
                 wait = RETRY_FIRST;
                 up.closed(&sink, host.as_ref()).await

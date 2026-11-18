@@ -46,7 +46,18 @@ impl Overlays {
                 if forks == 1 { "s" } else { "" },
             )));
         }
-        body = body.child(
+        let drafts = confirm.plan.unsubmitted_drafts;
+        if drafts > 0 {
+            body = body.child(div().id("archive-drafts").test_support().child(format!(
+                "{drafts} draft{} on the pull request {} never submitted; {} kept with the archived review.",
+                if drafts == 1 { "" } else { "s" },
+                if drafts == 1 { "was" } else { "were" },
+                if drafts == 1 { "it's" } else { "they're" },
+            )));
+        }
+        let unpushed = !confirm.plan.unpushed.is_empty();
+        if unpushed {
+            body = body.child(
             col()
                 .gap(px(5.))
                 .mt(px(4.))
@@ -67,7 +78,8 @@ impl Overlays {
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Archiving deletes that work."),
                 ),
-        );
+            );
+        }
         if let Some(error) = error {
             body = body.child(
                 div()
@@ -78,15 +90,12 @@ impl Overlays {
             );
         }
         let busy = confirm.sending;
-        let body = body.child(
-            row()
-                .gap(px(8.))
-                .pt(px(10.))
-                .justify_end()
-                .child(
-                    widgets::push_quiet(ui, "archive-cancel", "Cancel", send(SessionAction::CancelArchive), look)
-                        .disabled(busy),
-                )
+        let mut buttons = row().gap(px(8.)).pt(px(10.)).justify_end().child(
+            widgets::push_quiet(ui, "archive-cancel", "Cancel", send(SessionAction::CancelArchive), look)
+                .disabled(busy),
+        );
+        buttons = if unpushed {
+            buttons
                 .child(
                     widgets::push_quiet(
                         ui,
@@ -108,8 +117,20 @@ impl Overlays {
                         look,
                     )
                     .disabled(busy),
-                ),
-        )
+                )
+        } else {
+            buttons.child(
+                widgets::push_primary(
+                    ui,
+                    "archive-confirm",
+                    "Archive",
+                    send(SessionAction::ConfirmArchive(false)),
+                    look,
+                )
+                .disabled(busy),
+            )
+        };
+        let body = body.child(buttons)
         .test_support()
         .focus_trap("archive-trap", &self.sheet);
         div()

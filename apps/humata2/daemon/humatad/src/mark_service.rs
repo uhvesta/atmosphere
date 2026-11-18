@@ -18,6 +18,12 @@
 //! used (a full disk, wrong permissions) fails the calls that need it and
 //! never stops the daemon.
 //!
+//! CH-16, CH-17 (D392): ViewSession holds a session viewed while its
+//! stream is open, through `read_marks`, which keeps the read marks in the
+//! same file. A session placed on another machine is marked there; the
+//! host shows the machine's mark from its reports and, while a client views
+//! it, holds the machine's own view of it open (D394).
+//!
 //! How failures are told (errors.proto):
 //! - `MarksError::Stale` is `revision_conflict` (ABORTED) carrying the
 //!   revision the list is at now; an unset `expected_revision` skips the
@@ -37,13 +43,28 @@ use humata2_marks::{Event, Marks, MarksError, Thing};
 use humata2_store::Store;
 use pb::entity_ref::Entity;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Response, Status};
 
 use crate::channel_service::{blocking, timestamp_ms};
 use crate::events::Feed;
 use crate::guard::Guard;
 use crate::identity::{self, Caller};
+use crate::remote_work::RemoteWork;
 use crate::status;
+
+/// What holds a session viewed.
+enum Viewing {
+    /// This daemon's own session: its read mark is here.
+    Here(crate::read_marks::Viewing),
+    /// A session placed on `machine`: its mark is there.
+    Remote {
+        remote: RemoteWork,
+        machine: String,
+        session: String,
+    },
+}
 
 /// The marks file and what a call needs to check its caller, name a
 /// pinned thing and tell the feed.
@@ -63,24 +84,43 @@ struct Shared {
     /// Each session's latest event as the feed told it, so a session
     /// pinned after its event shows it at once.
     latest: Mutex<HashMap<String, Option<Event>>>,
+    /// Sessions whose pin or VIP mark just changed: the next Session event
+    /// for one is the feed telling the flag, not a change in what it shows.
+    flagged: Mutex<std::collections::HashSet<String>>,
+    /// The host's way to other machines and this machine's name, set once
+    /// (D394); none on a machine's own daemon, where every session is here.
+    host: OnceLock<(Arc<OnceLock<RemoteWork>>, String)>,
 }
 
 impl MarkSvc {
-    /// `path` is `<state>/marks.db`. Never fails and touches no disk. On a
-    /// tokio runtime it starts following the feed's Session events for
-    /// NV-21.
+    /// `path` is `<state>/marks.db`. Never fails; reads the read marks from
+    /// the file if it is there (D392) and makes none. On a tokio runtime it
+    /// starts following the feed's Session events for NV-21.
     pub(crate) fn new(path: PathBuf, _guard: Arc<Guard>, feed: Arc<Feed>, store: Arc<Store>) -> Self {
+        if let Err(error) = crate::read_marks::open(&path) {
+            crate::log::say!(
+                "humatad2: {error}. Until that is fixed, sessions marked unread before this start show as read"
+            );
+        }
         let shared = Arc::new(Shared {
             path,
             marks: OnceLock::new(),
             feed,
             store,
             latest: Mutex::new(HashMap::new()),
+            flagged: Mutex::new(std::collections::HashSet::new()),
+            host: OnceLock::new(),
         });
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(follow_sessions(Arc::downgrade(&shared)));
         }
         Self { shared }
+    }
+
+    /// The host's remote work, once it exists, and this machine's name: a
+    /// view of a session placed elsewhere is held open on its machine (D394).
+    pub(crate) fn use_remote(&self, remote: Arc<OnceLock<RemoteWork>>, machine: String) {
+        let _ = self.shared.host.set((remote, machine));
     }
 }
 
@@ -147,7 +187,21 @@ impl Shared {
 
     /// The pinned list as ListPinned answers it.
     fn listed(&self, marks: &Marks) -> Result<pb::ListPinnedResponse, MarksError> {
-        let (pinned, revision) = marks.pinned()?;
+        let (mut pinned, mut revision) = marks.pinned()?;
+        // NV-26: a deleted session loses its pin. A lookup that fails says
+        // nothing about the session, so it keeps its pin.
+        let mut forgot = false;
+        for mark in &pinned {
+            if let Thing::Session(id) = &mark.thing
+                && matches!(self.store.session(id), Ok(None))
+            {
+                marks.forget(&mark.thing)?;
+                forgot = true;
+            }
+        }
+        if forgot {
+            (pinned, revision) = marks.pinned()?;
+        }
         let events = marks.events()?;
         Ok(self.response(&pinned, revision, &events))
     }
@@ -206,15 +260,21 @@ async fn follow_sessions(shared: std::sync::Weak<Shared>) {
             text: text.to_owned(),
             at_unix_ms,
         });
+        let from_flag =
+            shared.flagged.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
         let unchanged = {
             let mut latest = shared.latest.lock().unwrap_or_else(PoisonError::into_inner);
-            let same = latest
-                .get(&id)
+            let known = latest.get(&id);
+            let same = known
                 .is_some_and(|was| was.as_ref().map(|e| &e.text) == event.as_ref().map(|e| &e.text));
+            // The first Session event a pin or VIP change sends is not news
+            // about the session: it only gives the baseline, so the pin's
+            // revision doesn't rise after the call has answered.
+            let baseline_only = from_flag && known.is_none();
             if !same {
                 latest.insert(id.clone(), event.clone());
             }
-            same
+            same || baseline_only
         };
         if unchanged {
             continue;
@@ -394,6 +454,14 @@ impl pb::mark_service_server::MarkService for MarkSvc {
         })
         .await?
         .map_err(|error| failed(&error))?;
+        if let Thing::Session(id) = &mark.thing {
+            // D387: the session shows its pin and VIP mark; clients hear it.
+            let flagged = &self.shared.flagged;
+            flagged.lock().unwrap_or_else(PoisonError::into_inner).insert(id.clone());
+            if !crate::read_marks::flags_changed(id, mark.pinned, mark.vip) {
+                flagged.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
+            }
+        }
         if changed {
             self.shared.publish(&mark, Some(by));
         }
@@ -449,5 +517,82 @@ impl pb::mark_service_server::MarkService for MarkSvc {
             self.shared.publish(&first, Some(by));
         }
         Ok(Response::new(listed))
+    }
+
+    type ViewSessionStream = ReceiverStream<Result<pb::ViewSessionResponse, Status>>;
+
+    /// CH-16, CH-17 (D392): the user views a session while the stream is
+    /// open. Clears its read mark at once, and the first message says
+    /// whether it had one; its output marks nothing until the client closes
+    /// the stream. User-only.
+    async fn view_session(
+        &self,
+        request: Request<pb::ViewSessionRequest>,
+    ) -> Result<Response<Self::ViewSessionStream>, Status> {
+        let caller = identity::caller(&request)?;
+        if !matches!(caller, Caller::User(_)) {
+            return Err(status::user_only_call(
+                Capability::MarksChange,
+                "marking a session read",
+                "a session is marked read when the user opens it in the app",
+            ));
+        }
+        let session = request
+            .into_inner()
+            .session
+            .map(|id| id.value)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| status::missing("session"))?;
+        let store = self.shared.store.clone();
+        let host = self.shared.host.get().and_then(|(slot, here)| Some((slot.get()?.clone(), here.clone())));
+        let (viewing, was_unread) = blocking(move || match store.session(&session) {
+            Ok(Some(record)) => {
+                // D394: a session placed on another machine is marked there;
+                // the host answers with the machine's report.
+                if let Some((remote, here)) = host
+                    && !record.machine.is_empty()
+                    && record.machine != here
+                {
+                    let unread = remote.view(&record.machine, &session).is_some_and(|view| view.unread);
+                    let machine = record.machine;
+                    return Ok((Viewing::Remote { remote, machine, session }, unread));
+                }
+                let (viewing, was_unread) = crate::read_marks::view(&session);
+                Ok((Viewing::Here(viewing), was_unread))
+            }
+            Ok(None) => Err(status::not_found(
+                pb::EntityKind::Session,
+                &session,
+                format!("there is no session {session} on this host"),
+                "list the sessions again and open one of those",
+            )),
+            Err(error) => Err(status::internal(
+                format!("couldn't look up session {session} to mark it read: {error}"),
+                "",
+            )),
+        })
+        .await??;
+        let (sender, receiver) = mpsc::channel(1);
+        // The channel is empty and holds one, so this can't fail.
+        let _ = sender.try_send(Ok(pb::ViewSessionResponse { was_unread }));
+        tokio::spawn(async move {
+            match viewing {
+                Viewing::Here(viewing) => {
+                    sender.closed().await;
+                    drop(viewing);
+                }
+                // The machine's view is held while the client's stream is,
+                // and is dropped with it.
+                Viewing::Remote { remote, machine, session } => {
+                    let hold = remote.hold_view(&machine, &session);
+                    tokio::pin!(hold);
+                    tokio::select! {
+                        () = sender.closed() => {}
+                        () = &mut hold => sender.closed().await,
+                    }
+                }
+            }
+        });
+        Ok(Response::new(ReceiverStream::new(receiver)))
     }
 }

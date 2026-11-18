@@ -5,6 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::base::TestSupportExt as _;
+use gpui_kit::base::input as edit;
 use gpui_kit::{
     App, AppContext as _, BorderStyle, Bounds, ClipboardItem, ContentMask, Context, DispatchPhase,
     ElementInputHandler, EntityInputHandler, FocusHandle, Focusable, Font, FontStyle, FontWeight,
@@ -23,7 +24,7 @@ use crate::boxes::{self, Area};
 use crate::cursor::{CursorPlan, plan_cursor};
 use crate::frame::{Decoration, Drawn, Fill, LineKind, Piece, plan_row};
 use crate::host::{CellSize, ScrollTo, TerminalHost};
-use crate::keys::{KeyIntent, Platform, intent, mods};
+use crate::keys::{KeyIntent, Platform, intent, mods, program_key};
 use crate::paste::Paste;
 use crate::pending_input::{Input as PendingInputEvent, PendingInput};
 use crate::selection::{Granularity, extend};
@@ -729,6 +730,14 @@ impl<G: Grid + 'static> TerminalView<G> {
         }
         self.pending_input.clear();
     }
+    /// Ends a composition the input method has in progress, as when the
+    /// program can no longer take its text: nothing half-typed stays drawn.
+    pub fn end_composition(&mut self, cx: &mut Context<Self>) {
+        if self.preedit.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// Cancel a platform read and its following typeahead after authority changes.
     pub fn cancel_pending_clipboard(&mut self, cx: &mut Context<Self>) {
         if !self.pending_input.is_empty() {
@@ -848,6 +857,55 @@ impl<G: Grid + 'static> TerminalView<G> {
         cx.notify();
     }
 
+    /// Puts the selection on the clipboard: the copy shortcut and
+    /// Edit ▸ Copy.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.host.copy(&mut self.grid) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Pastes the clipboard: the paste shortcut and Edit ▸ Paste.
+    fn paste_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(item) = cx.read_from_clipboard() {
+            if let Some(paste) = Paste::from_clipboard(&item) {
+                if self.pending_input.is_empty() {
+                    self.host.paste(&mut self.grid, paste);
+                } else if let Some(id) = self.begin_clipboard_read(cx) {
+                    self.clipboard_read_completed(id, Ok(Some(item)), window, cx);
+                }
+            }
+        } else {
+            let Some(id) = self.begin_clipboard_read(cx) else {
+                return;
+            };
+            // Web clipboard permission must be requested during this gesture.
+            // Completion may arrive after focus moved to another terminal.
+            let read = cx.read_from_clipboard_async();
+            let target = window.window_handle();
+            cx.spawn(async move |view, cx| {
+                let result = read.await;
+                let _ = cx.update_window(target, |_, window, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.clipboard_read_completed(id, result, window, cx);
+                    });
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// What `keystroke` does here. The history keys are a full-screen
+    /// program's, since its screen keeps no history.
+    fn key_intent(&self, keystroke: &gpui_kit::Keystroke) -> KeyIntent {
+        match intent(keystroke, self.platform) {
+            KeyIntent::Scroll(_) if self.grid.is_alternate_screen() => {
+                program_key(keystroke, self.platform)
+            }
+            intent => intent,
+        }
+    }
+
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if !self.focus_handle.is_focused(window) {
             self.input_stats.unfocused_key_downs =
@@ -859,42 +917,17 @@ impl<G: Grid + 'static> TerminalView<G> {
             // The input method is composing: the key is its to take.
             return;
         }
-        match intent(&event.keystroke, self.platform) {
+        match self.key_intent(&event.keystroke) {
             KeyIntent::Ignore => return,
             KeyIntent::Scroll(to) => self.host.scroll_to(&mut self.grid, to),
-            KeyIntent::Copy => {
-                if let Some(text) = self.host.copy(&mut self.grid) {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
-                }
+            KeyIntent::Copy => self.copy_selection(cx),
+            KeyIntent::Paste => self.paste_clipboard(window, cx),
+            KeyIntent::SelectAll => {
+                self.host.select_all(&mut self.grid);
+                self.anchor = None;
             }
-            KeyIntent::Paste => {
-                if let Some(item) = cx.read_from_clipboard() {
-                    if let Some(paste) = Paste::from_clipboard(&item) {
-                        if self.pending_input.is_empty() {
-                            self.host.paste(&mut self.grid, paste);
-                        } else if let Some(id) = self.begin_clipboard_read(cx) {
-                            self.clipboard_read_completed(id, Ok(Some(item)), window, cx);
-                        }
-                    }
-                } else {
-                    let Some(id) = self.begin_clipboard_read(cx) else {
-                        cx.stop_propagation();
-                        return;
-                    };
-                    // Web clipboard permission must be requested during this gesture.
-                    // Completion may arrive after focus moved to another terminal.
-                    let read = cx.read_from_clipboard_async();
-                    let target = window.window_handle();
-                    cx.spawn(async move |view, cx| {
-                        let result = read.await;
-                        let _ = cx.update_window(target, |_, window, cx| {
-                            let _ = view.update(cx, |this, cx| {
-                                this.clipboard_read_completed(id, result, window, cx);
-                            });
-                        });
-                    })
-                    .detach();
-                }
+            KeyIntent::Text(text) => {
+                self.send_input(PendingInputEvent::Text(text.to_owned()), cx)
             }
             KeyIntent::Send {
                 key,
@@ -943,7 +976,7 @@ impl<G: Grid + 'static> TerminalView<G> {
             consumed_mods,
             unshifted,
             ..
-        } = intent(&event.keystroke, self.platform)
+        } = self.key_intent(&event.keystroke)
         {
             if self.canceled_key_releases.contains(&key) {
                 self.canceled_key_releases
@@ -1160,7 +1193,14 @@ impl<G: Grid + 'static> TerminalView<G> {
         let Some(cell) = self.cell_size() else {
             return;
         };
-        let delta = f32::from(event.delta.pixel_delta(px(cell.height)).y);
+        let delta = event.delta.pixel_delta(px(cell.height));
+        // A Mac turns a ⇧ mouse wheel into a sideways scroll; the terminal
+        // has no sideways history, so it scrolls up and down.
+        let delta = f32::from(if event.modifiers.shift && delta.y == px(0.) {
+            delta.x
+        } else {
+            delta.y
+        });
         self.scroll_remainder += delta;
         let lines = (self.scroll_remainder / cell.height).trunc();
         if lines == 0.0 {
@@ -1207,6 +1247,20 @@ impl<G: Grid + 'static> Render for TerminalView<G> {
             .on_key_up(
                 cx.listener(|this, event: &KeyUpEvent, window, cx| this.key_up(event, window, cx)),
             )
+            // The Edit menu sends these to whatever has focus.
+            .on_action(cx.listener(|this, _: &edit::Copy, _, cx| {
+                this.copy_selection(cx);
+            }))
+            .on_action(cx.listener(|this, _: &edit::Paste, window, cx| {
+                this.paste_clipboard(window, cx);
+                this.restart_blink();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &edit::SelectAll, _, cx| {
+                this.host.select_all(&mut this.grid);
+                this.anchor = None;
+                cx.notify();
+            }))
             .on_mouse_down(
                 GpuiButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -1602,7 +1656,13 @@ impl<G: Grid + 'static> EntityInputHandler for TerminalView<G> {
         if !self.focus_handle.is_focused(window) {
             return;
         }
+        let starting = self.preedit.is_none() && !text.is_empty();
         self.preedit = (!text.is_empty()).then(|| text.to_owned());
+        // Composing is typing: a view scrolled back goes to the live
+        // cursor, where the candidate window opens and the text lands.
+        if starting && self.grid.scrollbar().is_some_and(|bar| !bar.at_bottom()) {
+            self.host.scroll_to(&mut self.grid, ScrollTo::Bottom);
+        }
         cx.notify();
     }
 

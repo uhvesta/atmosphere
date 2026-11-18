@@ -5,6 +5,14 @@
 //! Filesystem only: no network, no gRPC. The caller decides every real path.
 //! On a machine, `<root>/.skills` is a symlink to `<root>/.skills-sets/<id>`,
 //! and nothing else under `<root>` is ever touched (SK-4).
+//!
+//! Each agent reads its own skills folder (`~/.copilot/skills`,
+//! `~/.claude/skills`, `~/.codex/skills`), so after a sync
+//! [`Managed::link_agents`] puts one link per synced skill there,
+//! `<folder>/<name>` → `<root>/.skills/<agent>/<name>`. The links go through
+//! the stable `.skills` link, so an agent sees the old set or the new one,
+//! never a mix (SK-9). A folder, file or link Humata didn't make is never
+//! replaced or removed (SK-4); no home variable is set (D193, VF-5).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -664,6 +672,64 @@ impl Managed {
             .collect())
     }
 
+    /// Whether `path` is a link Humata made into an agent's folder: a
+    /// symlink pointing into this folder's `.skills`.
+    pub fn owns_link(&self, path: &Path) -> bool {
+        let is_link = fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink());
+        is_link
+            && fs::read_link(path).is_ok_and(|target| target.starts_with(self.absolute_link()))
+    }
+
+    /// `<root>/.skills` as an absolute path, which the agents' links hold.
+    fn absolute_link(&self) -> PathBuf {
+        std::path::absolute(self.link()).unwrap_or_else(|_| self.link())
+    }
+
+    /// Links each skill of the live set into its agent's own folder
+    /// (`agents`, one per agent), and takes away Humata's links whose skill
+    /// left the set (VF-5). A name the folder already holds as anything but
+    /// Humata's link is the machine's own skill and stays (SK-4); a clash
+    /// picked `local` gets no link (SK-5). An agent folder that isn't there
+    /// is made only when the agent has a synced skill.
+    pub fn link_agents(&self, agents: &[Source]) -> Result<(), SkillsError> {
+        let manifest = self.current_manifest()?;
+        let entries = manifest.as_ref().map_or(&[][..], |manifest| &manifest.entries[..]);
+        let synced = by_skill(entries);
+        let choices = self.choices()?;
+        let base = self.absolute_link();
+        for agent in agents {
+            let wanted: BTreeSet<&str> = synced
+                .keys()
+                .filter(|name| name.agent == agent.agent)
+                .filter(|name| choices.get(*name) != Some(&Choice::Local))
+                .map(|name| name.skill.as_str())
+                .collect();
+            self.unlink_stale(&agent.root, &wanted)?;
+            for skill in wanted {
+                link_one(&agent.root.join(skill), &base.join(&agent.agent).join(skill), self)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes Humata's links in `folder` whose skill isn't `wanted`.
+    fn unlink_stale(&self, folder: &Path, wanted: &BTreeSet<&str>) -> Result<(), SkillsError> {
+        let listing = match fs::read_dir(folder) {
+            Ok(listing) => listing,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => return Err(SkillsError::Io { action: "read the folder", path: folder.to_path_buf(), source }),
+        };
+        for child in listing {
+            let child = child.map_err(io_err("read the folder", folder))?;
+            let path = child.path();
+            let keep = child.file_name().to_str().is_some_and(|name| wanted.contains(name));
+            if !keep && self.owns_link(&path) {
+                fs::remove_file(&path).map_err(io_err("remove Humata's link", &path))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Saves one clash choice, atomically; it stays across syncs.
     pub fn set_choice(&self, name: &SkillName, choice: Choice) -> Result<(), SkillsError> {
         let mut all = self.choices()?;
@@ -687,6 +753,37 @@ impl Managed {
             return Err(SkillsError::Io { action: "write", path, source });
         }
         sync_dir(&self.root)
+    }
+}
+
+/// Puts Humata's link at `slot` pointing at `target`: made when the name is
+/// free, re-pointed (with one rename) when Humata's link points elsewhere,
+/// and left alone when the name holds anything Humata didn't make.
+fn link_one(slot: &Path, target: &Path, managed: &Managed) -> Result<(), SkillsError> {
+    match fs::symlink_metadata(slot) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Some(folder) = slot.parent() {
+                fs::create_dir_all(folder).map_err(io_err("create", folder))?;
+            }
+            match symlink(target, slot) {
+                // Something took the name since it was looked at: it's the
+                // machine's own now, so it stays.
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+                result => result.map_err(io_err("create the link", slot)),
+            }
+        }
+        Err(source) => Err(SkillsError::Io { action: "inspect", path: slot.to_path_buf(), source }),
+        Ok(_) if !managed.owns_link(slot) => Ok(()),
+        Ok(_) if fs::read_link(slot).ok().as_deref() == Some(target) => Ok(()),
+        Ok(_) => {
+            let name = slot.file_name().and_then(|name| name.to_str()).unwrap_or("skill");
+            let temp = slot.with_file_name(format!(".{name}{LINK_PREFIX}{}", unique()));
+            symlink(target, &temp).map_err(io_err("create the link", &temp))?;
+            fs::rename(&temp, slot).map_err(|source| {
+                let _ = fs::remove_file(&temp);
+                SkillsError::Io { action: "switch the link", path: slot.to_path_buf(), source }
+            })
+        }
     }
 }
 

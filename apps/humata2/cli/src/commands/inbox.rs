@@ -129,15 +129,13 @@ async fn answer_one<D: Daemon, C: Console>(
     let answer = pb::RequestAnswer {
         answer: Some(answer),
     };
-    ctx.present_json(rpc::inbox::ANSWER_REQUEST, |presence| pb::AnswerRequestRequest {
+    ctx.change_present(rpc::inbox::ANSWER_REQUEST, |presence| pb::AnswerRequestRequest {
         idempotency_key: key.clone(),
         id: id.clone(),
         answer: Some(answer.clone()),
         expected_revision: None,
         presence,
-    })
-    .await
-    .map(Done::reply)
+    }).await
 }
 
 /// Answers the pending requests listed now, and only those: one that
@@ -173,15 +171,13 @@ async fn answer_all<D: Daemon, C: Console>(
     let verb = if approve { "Approving" } else { "Denying" };
     ctx.note(&format!("{verb} {} requests…", ids.len()));
     let key = ctx.key();
-    ctx.present_json(rpc::inbox::ANSWER_ALL, |presence| pb::AnswerAllRequest {
+    ctx.change_present(rpc::inbox::ANSWER_ALL, |presence| pb::AnswerAllRequest {
         idempotency_key: key.clone(),
         scope: Some(scope.clone()),
         ids: ids.clone(),
         approve,
         presence,
-    })
-    .await
-    .map(Done::reply)
+    }).await
 }
 
 /// A grant target as text: `session:<s>` or `network:<host>:<port>` (on
@@ -241,7 +237,7 @@ pub(super) async fn access<D: Daemon, C: Console>(
             let capability = resolve::capability(&capability)? as i32;
             let channel = Some(ctx.this_channel().await?);
             let decision = values::decision(decision) as i32;
-            ctx.present_json(rpc::access::SET_CHANNEL_RULE, |presence| {
+            ctx.change_present(rpc::access::SET_CHANNEL_RULE, |presence| {
                 pb::SetChannelRuleRequest {
                     idempotency_key: key.clone(),
                     channel: channel.clone(),
@@ -250,9 +246,7 @@ pub(super) async fn access<D: Daemon, C: Console>(
                     expected_revision: None,
                     presence,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         Some(AccessCommand::Away { mode, kinds }) => {
             let low_risk: Vec<i32> = kinds
@@ -264,7 +258,7 @@ pub(super) async fn access<D: Daemon, C: Console>(
                 mode: values::away(mode) as i32,
                 low_risk,
             };
-            ctx.present_json(rpc::access::SET_AWAY_RULE, |presence| {
+            ctx.change_present(rpc::access::SET_AWAY_RULE, |presence| {
                 pb::SetAwayRuleRequest {
                     idempotency_key: key.clone(),
                     channel: channel.clone(),
@@ -272,9 +266,7 @@ pub(super) async fn access<D: Daemon, C: Console>(
                     expected_revision: None,
                     presence,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         Some(AccessCommand::Grants) => {
             let channel = ctx.channel_flag().await?;
@@ -289,13 +281,11 @@ pub(super) async fn access<D: Daemon, C: Console>(
         }
         Some(AccessCommand::Revoke { grant }) => {
             let grant = Some(pb::GrantId { value: grant });
-            ctx.present_json(rpc::access::REVOKE_GRANT, |presence| pb::RevokeGrantRequest {
+            ctx.change_present(rpc::access::REVOKE_GRANT, |presence| pb::RevokeGrantRequest {
                 idempotency_key: key.clone(),
                 grant: grant.clone(),
                 presence,
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         Some(AccessCommand::Why {
             session,
@@ -328,16 +318,14 @@ pub(super) async fn access<D: Daemon, C: Console>(
                 }
                 typed
             };
-            ctx.present_json(rpc::access::SET_APPROVAL_PASSPHRASE, |presence| {
+            ctx.change_present(rpc::access::SET_APPROVAL_PASSPHRASE, |presence| {
                 pb::SetApprovalPassphraseRequest {
                     idempotency_key: key.clone(),
                     passphrase: passphrase.clone(),
                     presence,
                     generate,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         Some(AccessCommand::AskAhead {
             capability,
@@ -351,6 +339,9 @@ pub(super) async fn access<D: Daemon, C: Console>(
                 reason,
                 wait_seconds: ctx.wait_seconds(),
             };
+            if ctx.flags.dry_run {
+                return ctx.change(rpc::inbox::REQUEST_ACCESS, &request).await;
+            }
             let first: pb::WaitResponse = ctx.call(rpc::inbox::REQUEST_ACCESS, &request).await?;
             let answered = ctx.wait(first).await?;
             if let Some(error) = answered.error.clone() {
@@ -386,7 +377,7 @@ pub(super) async fn token<D: Daemon, C: Console>(
                 .map(|text| resolve::capability(text).map(|capability| capability as i32))
                 .collect::<Result<_, CliError>>()?;
             let channels: Vec<pb::ChannelId> = ctx.channel_flag().await?.into_iter().collect();
-            ctx.present_json(rpc::cli_auth::CREATE_SCRIPT_TOKEN, |presence| {
+            ctx.change_present(rpc::cli_auth::CREATE_SCRIPT_TOKEN, |presence| {
                 pb::CreateScriptTokenRequest {
                     idempotency_key: key.clone(),
                     name: name.clone(),
@@ -395,21 +386,19 @@ pub(super) async fn token<D: Daemon, C: Console>(
                     days,
                     presence,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         TokenCommand::Ls => {
             reply(ctx, rpc::cli_auth::LIST_SCRIPT_TOKENS, &pb::ListScriptTokensRequest {}).await
         }
-        TokenCommand::Revoke { token } => ctx
-            .present_json(rpc::cli_auth::REVOKE_SCRIPT_TOKEN, |presence| {
+        TokenCommand::Revoke { token } => {
+            ctx.change_present(rpc::cli_auth::REVOKE_SCRIPT_TOKEN, |presence| {
                 pb::RevokeScriptTokenRequest {
                     token_id: token.clone(),
                     presence,
                 }
             })
             .await
-            .map(Done::reply),
+        }
     }
 }

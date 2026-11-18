@@ -64,6 +64,7 @@ pub(super) async fn opencode<D: Daemon, C: Console>(
     conversation: String,
     state: PathBuf,
     program: PathBuf,
+    model: Option<String>,
 ) -> Result<Done, CliError> {
     let folder = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let wrapper = Wrapper {
@@ -73,6 +74,7 @@ pub(super) async fn opencode<D: Daemon, C: Console>(
         folder,
         retry: RETRY,
         wait_for_url: URL_WAIT,
+        model,
     };
     let (calls, mut asked) = mpsc::unbounded_channel();
     let ran = run_wrapper(wrapper, Arc::new(Bridge { calls }));
@@ -121,6 +123,14 @@ async fn open<D: Daemon, C: Console>(
     payload: Vec<u8>,
     answer: oneshot::Sender<Result<Vec<u8>, HumataError>>,
 ) {
+    // The hold raises an Inbox card; under `--dry-run` the ask is refused
+    // (no answer), and nothing is sent.
+    if let Err(error) = ctx.dry_run_guard(rpc::session::HOOK) {
+        let _ = answer.send(Err(HumataError::Lost {
+            reason: error.to_string(),
+        }));
+        return;
+    }
     let request = pb::HookRequest {
         agent: "opencode".to_owned(),
         event: "permission".to_owned(),

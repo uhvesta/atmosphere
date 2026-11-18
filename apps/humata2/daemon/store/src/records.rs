@@ -36,6 +36,12 @@ pub struct TabRecord {
     pub holder_socket: PathBuf,
     pub holder_pid: u32,
     pub created_unix_ms: i64,
+    /// How many holder processes the tab has had before this one: 0 for
+    /// its first, one more each time it gets a new holder (a revive). A
+    /// daemon that reattaches the live holder leaves it. With the tab's id
+    /// it names the terminal clients see, so they can tell a new process
+    /// from the old one.
+    pub holder_generation: u64,
 }
 
 /// Where a session's clones stand (SL-3).
@@ -126,6 +132,25 @@ pub struct InboxRecord {
     pub updated_unix_ms: i64,
 }
 
+/// A Migrate item (UP-1, D281) as the store keeps it. It belongs to no
+/// session, so it has no session to go with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MigrateRecord {
+    pub id: String,
+    /// The `MigrateThing` the item is about, as its number.
+    pub thing: i32,
+    /// The machine the item is for.
+    pub machine: String,
+    /// Whether the item is still pending. Only a pending one holds its
+    /// thing and machine, so a withdrawn one doesn't block a new item for
+    /// them.
+    pub pending: bool,
+    /// A `humata.store.v1.InboxEntry`, as the daemon encodes it.
+    pub entry: Vec<u8>,
+    pub created_unix_ms: i64,
+    pub updated_unix_ms: i64,
+}
+
 /// Everything needed to start an agent again in the same conversation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentLaunch {
@@ -147,6 +172,11 @@ pub struct AgentLaunch {
     pub holder_socket: PathBuf,
     pub cols: u16,
     pub rows: u16,
+    /// What the agent's CLI said its version was when this conversation was
+    /// launched (CV-3), as its version command printed it; None when its
+    /// kind names no version command or the CLI didn't answer. The
+    /// conversation adapter's `check` is given it.
+    pub cli_version: Option<String>,
 }
 
 /// Where an agent stands.

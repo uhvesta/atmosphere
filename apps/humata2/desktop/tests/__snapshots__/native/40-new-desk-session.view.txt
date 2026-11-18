@@ -31,7 +31,7 @@ Button "Sort: last used"
 Button "Clean up…"
 Button "New desk session"
 Dialog "New desk session" focused
-  #input-4294967312 focused
+  #input focused
     TextInput "Title" value="Plan Q4 board" placeholder="What is it for?" focused
   Tab "Claude Code" selected
   Tab "Codex"
@@ -39,8 +39,6 @@ Dialog "New desk session" focused
   Tab "OpenCode"
   Tab "Terminal"
   Button "This Mac"
-  RadioButton "A new scratch folder" selected
-  RadioButton "A folder on the machine"
   Button "Add a repo…"
   CheckBox "Read and change every channel's board" selected
   CheckBox "Make channels and add machines (asks you each time when off)"
@@ -54,7 +52,7 @@ Link "BRIN rollout RFC"
   text "scratch folder · kept"
 Link "Tidy infra items"
   text "Nov 2"
-  text "~/notes"
+  text "your folder"
 ListItem "rfc-brin.md"
   Button "Copy to a channel…"
 ListItem "q4-plan.md"
@@ -67,7 +65,7 @@ ListItem "Sketch the release checklist"
 ListItem "Notes cleanup"
   Button "Reopen"
   text "Nov 9"
-  text "~/notes"
+  text "your folder"
 ListItem "Port the cron jobs"
   Button "Reopen"
   text "Nov 6"
@@ -75,4 +73,4 @@ ListItem "Port the cron jobs"
 ListItem "Draft the onboarding doc"
   Button "Reopen"
   text "Nov 3"
-  text "scratch folder · kept"
+  text "Kept"

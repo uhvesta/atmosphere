@@ -12,6 +12,7 @@ use crate::compression::Compression;
 use crate::identity::{self, Caller, UserVia};
 use crate::relay_auth::RelayAuth;
 use crate::status;
+use crate::upgrade::build::Release;
 
 /// This API's version. `api_minor` grows with every addition once Humata 2
 /// ships; until then the protos change in place.
@@ -37,6 +38,17 @@ pub(crate) struct Daemon {
     /// What serves StopSessions and StartSessions (D261, D265). None on the
     /// peer link, where they answer "not built".
     stop: Option<Arc<crate::stop::service::StopSvc>>,
+    /// On the peer link: the connection to this machine's own daemon, which
+    /// StopSessions and StartSessions are handed to (D262). None on the
+    /// socket, which answers them itself.
+    link: Option<crate::relay::Relay>,
+    /// What this daemon's release is, for ServerInfo and BeginRelay (UP-1,
+    /// D281). None on the peer link: its ServerInfo carries no build, and
+    /// Hello reports the build it relays to instead.
+    build: Option<Release>,
+    /// What serves Upgrade (UP-1, D281). None on the peer link, which
+    /// hands it to the machine's own daemon.
+    upgrade: Option<crate::upgrade::run::Runner>,
 }
 
 impl Daemon {
@@ -50,7 +62,36 @@ impl Daemon {
             uplinks: None,
             doctor: None,
             stop: None,
+            link: None,
+            build: None,
+            upgrade: None,
         }
+    }
+
+    /// Hands StopSessions and StartSessions to the machine's own daemon
+    /// over `link`: the host's stop reaches a box on its peer link (D262).
+    pub(crate) fn with_link(self, link: crate::relay::Relay) -> Self {
+        Self {
+            link: Some(link),
+            ..self
+        }
+    }
+
+    /// The proven connection to the machine's own daemon, for a call the
+    /// peer link hands on.
+    fn daemon_client(&self, what: &str) -> Result<pb::daemon_service_client::DaemonServiceClient<tonic::transport::Channel>, Status> {
+        let channel = self.link.as_ref().and_then(crate::relay::Relay::proven_channel).ok_or_else(|| {
+            status::failure(
+                tonic::Code::Unavailable,
+                pb::Error {
+                    message: format!("the machine's daemon doesn't answer on this link, so {what} didn't reach it"),
+                    fix: "the link ends and the host dials a new one; try again once the machine is shown online".to_owned(),
+                    retry: None,
+                    kind: None,
+                },
+            )
+        })?;
+        Ok(pb::daemon_service_client::DaemonServiceClient::new(channel))
     }
 
     /// Answers StopSessions and StartSessions from `stop` (D261, D265).
@@ -89,6 +130,22 @@ impl Daemon {
     pub(crate) fn offering(self, compression: Arc<Compression>) -> Self {
         Self {
             compression: Some(compression),
+            ..self
+        }
+    }
+
+    /// Reports `build` as this daemon's release (UP-1, D281).
+    pub(crate) fn with_build(self, build: Release) -> Self {
+        Self {
+            build: Some(build),
+            ..self
+        }
+    }
+
+    /// Answers Upgrade from `upgrade` (UP-1, D281).
+    pub(crate) fn with_upgrade(self, upgrade: crate::upgrade::run::Runner) -> Self {
+        Self {
+            upgrade: Some(upgrade),
             ..self
         }
     }
@@ -136,6 +193,7 @@ impl pb::daemon_service_server::DaemonService for Daemon {
                 .uplinks
                 .as_ref()
                 .map_or(self.role != pb::DaemonRole::Machine, |uplinks| uplinks.reachable()),
+            build: self.build.as_ref().map(Release::info),
         }))
     }
 
@@ -204,6 +262,7 @@ impl pb::daemon_service_server::DaemonService for Daemon {
         };
         Ok(Response::new(pb::BeginRelayResponse {
             nonce: relay.begin(conn, std::time::Instant::now()).to_vec(),
+            build: self.build.as_ref().map(Release::info),
         }))
     }
 
@@ -247,7 +306,12 @@ impl pb::daemon_service_server::DaemonService for Daemon {
         request: Request<pb::StopSessionsRequest>,
     ) -> Result<Response<pb::StopSessionsResponse>, Status> {
         let Some(stop) = &self.stop else {
-            return Err(status::not_built("humata.v1.DaemonService.StopSessions"));
+            if self.link.is_none() {
+                return Err(status::not_built("humata.v1.DaemonService.StopSessions"));
+            }
+            // A new request from the message alone: the host's credentials
+            // are not the machine daemon's to see (D139).
+            return self.daemon_client("the stop")?.stop_sessions(request.into_inner()).await;
         };
         stop.stop(request).await
     }
@@ -258,9 +322,26 @@ impl pb::daemon_service_server::DaemonService for Daemon {
         request: Request<pb::StartSessionsRequest>,
     ) -> Result<Response<pb::StartSessionsResponse>, Status> {
         let Some(stop) = &self.stop else {
-            return Err(status::not_built("humata.v1.DaemonService.StartSessions"));
+            if self.link.is_none() {
+                return Err(status::not_built("humata.v1.DaemonService.StartSessions"));
+            }
+            return self.daemon_client("the start")?.start_sessions(request.into_inner()).await;
         };
         stop.start(request).await
+    }
+
+    /// UP-1, D281: swaps in the release staged in `bin` and starts it.
+    async fn upgrade(
+        &self,
+        request: Request<pb::UpgradeRequest>,
+    ) -> Result<Response<pb::UpgradeResponse>, Status> {
+        let Some(upgrade) = &self.upgrade else {
+            if self.link.is_none() {
+                return Err(status::not_built("humata.v1.DaemonService.Upgrade"));
+            }
+            return self.daemon_client("the upgrade")?.upgrade(request.into_inner()).await;
+        };
+        upgrade.upgrade(request).await
     }
 
     type PeerUplinkStream = UplinkStream;

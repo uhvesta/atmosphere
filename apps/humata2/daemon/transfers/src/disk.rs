@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use humata2_durable::{File, create_dir_all, rename, sync_dir};
+use humata2_durable::{File, create_dir_all, sync_dir};
 use sha2::{Digest, Sha256};
 
 use crate::end::{End, Entry, Kind, Sink};
 use crate::error::EndError;
-use crate::fsutil::remove_all;
+use crate::fsutil::{remove_all, rename_keeping_mode};
 use crate::trash::{NewItem, Trash};
 
 pub struct Disk {
@@ -269,10 +269,17 @@ impl End for Disk {
     }
 
     fn finish_file(&self, path: &Path, mode: u32, modified_unix_ms: i64) -> Result<(), EndError> {
-        let file = OpenOptions::new()
-            .write(true)
-            .open(path)
-            .map_err(fail("open", path))?;
+        let folder = fs::symlink_metadata(path)
+            .map_err(fail("look at", path))?
+            .is_dir();
+        // A folder can't be opened for writing; its time and mode are set
+        // through a read-only handle just the same.
+        let file = if folder {
+            fs::File::open(path)
+        } else {
+            OpenOptions::new().write(true).open(path)
+        }
+        .map_err(fail("open", path))?;
         let ms = u64::try_from(modified_unix_ms).unwrap_or(0);
         file.set_modified(UNIX_EPOCH + Duration::from_millis(ms))
             .map_err(fail("set the time of", path))?;
@@ -285,7 +292,7 @@ impl End for Disk {
         if fs::symlink_metadata(to).is_ok() {
             return Err(EndError::Exists { path: to.to_owned() });
         }
-        rename(from, to).map_err(fail("move", from))
+        rename_keeping_mode(from, to).map_err(fail("move", from))
     }
 
     fn sync_folder(&self, folder: &Path) -> Result<(), EndError> {

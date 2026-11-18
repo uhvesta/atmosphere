@@ -1,6 +1,8 @@
 //! What a `FileLocation` names on this machine (FC-1, FM-10): a session's
 //! clone, a channel's folder, its `shared/`, a main clone, or (for the
-//! user only, which the policy enforces) the home folder, and a path
+//! user only, which the policy enforces) the home folder or what was
+//! pasted into a session's terminals (D335), or the place files from
+//! another machine land (PL-4), and a path
 //! inside it. A path never leaves its root: not by "..", not by an
 //! absolute path, and not through a symlink.
 
@@ -12,7 +14,7 @@ use std::sync::Arc;
 use humata2_access::{ChannelId, Entry, MachineId, Place, RepoPath, RepoRef, Root};
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::Layout;
-use humata2_store::{ChannelRecord, Store};
+use humata2_store::{ChannelRecord, SessionRecord, Store};
 use pb::invalid_field::Problem;
 use tonic::{Code, Status};
 
@@ -35,13 +37,13 @@ impl Roots {
     pub(crate) fn new(
         store: Arc<Store>,
         machine: String,
-        channels: PathBuf,
+        channels: impl Into<Layout>,
         home: PathBuf,
     ) -> Self {
         Self {
             store,
             machine,
-            layout: Layout { root: channels },
+            layout: channels.into(),
             home,
         }
     }
@@ -128,7 +130,8 @@ impl Roots {
     /// machine's (D139). A session says which machine it is on (a location
     /// that names another is refused); a channel's folders are on the machine
     /// the location names, this one when it names none. The location comes
-    /// back with its machine filled in.
+    /// back with its machine filled in. A session's pastes folder is made
+    /// when the session is this machine's (D335).
     pub(crate) fn place(
         &self,
         location: Option<pb::FileLocation>,
@@ -157,20 +160,7 @@ impl Roots {
                     .map(|session| session.value)
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| status::missing(&format!("{field}.session_clone.session")))?;
-                let record = match self.store.session(&id) {
-                    Ok(Some(record)) => record,
-                    Ok(None) => {
-                        return Err(status::not_found(
-                            pb::EntityKind::Session,
-                            &id,
-                            format!("no session {id} on this machine"),
-                            "check the session id; sessions on other machines can't be named here yet",
-                        ));
-                    }
-                    Err(error) => {
-                        return Err(status::store(error, &self.machine, "look up the session"));
-                    }
-                };
+                let record = self.session_record(&id)?;
                 let repo = repo_of(clone.repo, &format!("{field}.session_clone.repo"))?;
                 let policy_path = under(&format!("{}/{}", repo.owner, repo.name), &path, &location.path)?;
                 let session = identity::session_ref(&record, &self.machine);
@@ -204,6 +194,97 @@ impl Roots {
                             value: session_machine,
                         }),
                         root: Some(normal),
+                        path: location.path,
+                    },
+                    writable: true,
+                });
+            }
+            // D382: a session's own folder, where a Desk session's
+            // documents sit. The policy judges it as that session's clone
+            // (its owner, its parent, and whoever its grants cover), with
+            // the path as given; a session with no repository has no
+            // other path in it.
+            Some(R::SessionFolder(own)) => {
+                let id = own
+                    .session
+                    .map(|session| session.value)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| status::missing(&format!("{field}.session_folder.session")))?;
+                let record = self.session_record(&id)?;
+                let session = identity::session_ref(&record, &self.machine);
+                let place_machine = session.machine.clone();
+                let session_machine = place_machine.as_str().to_owned();
+                if given.as_ref().is_some_and(|given| *given != session_machine) {
+                    return Err(status::invalid_field(
+                        &format!("{field}.machine"),
+                        Problem::NotAllowedHere,
+                        format!("session {id} is on machine {session_machine}, not {named}"),
+                        "leave the machine out, or name the session's own",
+                    ));
+                }
+                return Ok(Placed {
+                    place: Place {
+                        machine: place_machine,
+                        root: Root::Clone(session),
+                        path: path.clone(),
+                        entry,
+                    },
+                    folder: record.folder,
+                    path,
+                    shown: shown(&location.path),
+                    location: pb::FileLocation {
+                        machine: Some(pb::MachineId {
+                            value: session_machine,
+                        }),
+                        root: Some(R::SessionFolder(pb::SessionFolder {
+                            session: Some(pb::SessionId { value: id }),
+                        })),
+                        path: location.path,
+                    },
+                    writable: true,
+                });
+            }
+            Some(R::SessionPastes(pastes)) => {
+                let id = pastes
+                    .session
+                    .map(|session| session.value)
+                    .filter(|id| !id.is_empty())
+                    .ok_or_else(|| status::missing(&format!("{field}.session_pastes.session")))?;
+                let record = self.session_record(&id)?;
+                let session = identity::session_ref(&record, &self.machine);
+                let session_machine = session.machine.as_str().to_owned();
+                if given.as_ref().is_some_and(|given| *given != session_machine) {
+                    return Err(status::invalid_field(
+                        &format!("{field}.machine"),
+                        Problem::NotAllowedHere,
+                        format!("session {id} is on machine {session_machine}, not {named}"),
+                        "leave the machine out, or name the session's own",
+                    ));
+                }
+                // Another machine's pastes are its own daemon's to make.
+                let folder = match session_machine == self.machine {
+                    true => self.store.paste_folder(&id).map_err(|error| {
+                        status::store(error, &self.machine, "make the session's paste folder")
+                    })?,
+                    false => PathBuf::new(),
+                };
+                return Ok(Placed {
+                    place: Place {
+                        machine: session.machine.clone(),
+                        root: Root::Pastes(session),
+                        path: path.clone(),
+                        entry,
+                    },
+                    folder,
+                    path,
+                    shown: shown(&location.path),
+                    location: pb::FileLocation {
+                        machine: Some(pb::MachineId {
+                            value: session_machine,
+                        }),
+                        root: Some(R::SessionPastes(pb::SessionPastes {
+                            session: Some(pb::SessionId { value: id }),
+                        })),
                         path: location.path,
                     },
                     writable: true,
@@ -274,6 +355,31 @@ impl Roots {
                 true,
                 R::Home(pb::MachineHome {}),
             ),
+            // PL-4: where files from another machine land here. Only the
+            // user gets past the policy with this root.
+            Some(R::Received(received)) => {
+                let from = received
+                    .from
+                    .map(|machine| machine.value)
+                    .ok_or_else(|| status::missing(&format!("{field}.received.from")))?;
+                check_machine_name(&from, &format!("{field}.received.from"))?;
+                let folder = self.layout.root().join("received").join(&from);
+                // Made when it is this machine's and a place is asked for,
+                // so a copy can land in it and a listing shows it empty;
+                // another machine's is its own daemon's to make.
+                if named == self.machine {
+                    fs::create_dir_all(&folder).map_err(|error| io_failure(&error, "make", &folder))?;
+                }
+                (
+                    Root::Received,
+                    folder,
+                    path.clone(),
+                    true,
+                    R::Received(pb::MachineReceived {
+                        from: Some(pb::MachineId { value: from }),
+                    }),
+                )
+            }
             None => return Err(status::missing(&format!("{field}.root"))),
         };
         // FC-2, D165: a change is judged by where its path lands. Through
@@ -306,11 +412,40 @@ impl Roots {
         })
     }
 
+    /// The session `id` as this daemon's store has it.
+    fn session_record(&self, id: &str) -> Result<SessionRecord, Status> {
+        match self.store.session(id) {
+            Ok(Some(record)) => Ok(record),
+            Ok(None) => Err(status::not_found(
+                pb::EntityKind::Session,
+                id,
+                format!("no session {id} on this machine"),
+                "check the session id; sessions on other machines can't be named here yet",
+            )),
+            Err(error) => Err(status::store(error, &self.machine, "look up the session")),
+        }
+    }
+
     fn channel(&self, id: Option<pb::ChannelId>, field: &str) -> Result<ChannelRecord, Status> {
         let id = id
             .map(|id| id.value)
             .filter(|id| !id.is_empty())
             .ok_or_else(|| status::missing(field))?;
+        // A Desk session moves through the channels folder itself, which no
+        // agent's channel is (MV-17).
+        if id == humata2_sessions::CHANNELS_ROOT {
+            return Ok(ChannelRecord {
+                id,
+                name: "Desk".to_owned(),
+                folder: String::new(),
+                branch_prefix: None,
+                default_agent: String::new(),
+                repos: Vec::new(),
+                machines: Vec::new(),
+                revision: 0,
+                created_unix_ms: 0,
+            });
+        }
         match self.store.channel(&id) {
             Ok(Some(channel)) => Ok(channel),
             Ok(None) => Err(status::not_found(
@@ -359,6 +494,20 @@ fn repo_of(repo: Option<pb::RepoRef>, field: &str) -> Result<pb::RepoRef, Status
         ));
     }
     Ok(repo)
+}
+
+/// `from` checked to be one machine id, which names a folder under
+/// `received/`.
+fn check_machine_name(from: &str, field: &str) -> Result<(), Status> {
+    if from.is_empty() || from.contains(['/', '\\']) || from == "." || from == ".." {
+        return Err(status::invalid_field(
+            field,
+            Problem::BadFormat,
+            format!("{from:?} isn't a machine id"),
+            "name the machine the files came from by its id, like this-mac",
+        ));
+    }
+    Ok(())
 }
 
 /// `path` under `prefix`, as the policy sees a path in a session's clones.

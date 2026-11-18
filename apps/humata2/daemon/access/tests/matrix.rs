@@ -5,7 +5,7 @@
 //! - No rule: reading a file in session `a`'s clone (for agents, their own).
 //! - Default Allow: adding an item to the Payments channel board.
 //! - Ask me: a note to another session.
-//! - Never by default: stopping another session.
+//! - Never by default: deleting another session.
 //! - User-only: changing access rules.
 //! - Peer: a machine's report to the Mac.
 //!
@@ -32,7 +32,7 @@ struct Cell {
 }
 
 fn stop(session: humata2_access::SessionRef) -> Call {
-    use_on(Capability::SessionStopOther, Target::Session(session))
+    use_on(Capability::SessionDeleteOther, Target::Session(session))
 }
 
 fn change_access() -> Call {
@@ -350,7 +350,7 @@ fn a_script_token_does_only_what_it_lists_in_its_channels() {
 
     // Listed, whatever its tier (CLI.md's triage token lists
     // channel_board_edit_others).
-    let triage = listing(&[Capability::ChannelBoardEditOthers, Capability::SessionStopOther]);
+    let triage = listing(&[Capability::ChannelBoardEditOthers, Capability::SessionDeleteOther]);
     assert!(allowed(Source::ScriptToken).met_by(&check(&policy, &triage, &edit_others(), &on_mac())));
     assert!(allowed(Source::ScriptToken).met_by(&check(&policy, &triage, &stop_b, &on_mac())));
 

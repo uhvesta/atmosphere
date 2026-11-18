@@ -122,6 +122,8 @@ fn path_scope(scope: &PathScope) -> pb::PathScope {
         | Root::ChannelFolder(_)
         | Root::MainClone { .. }
         | Root::Home
+        | Root::Pastes(_)
+        | Root::Received
         | Root::Outside => None,
     };
     let prefix = scope.prefix.as_str();
@@ -253,6 +255,7 @@ pub(crate) fn ask_ahead_call(
                     channel: me.channel.clone(),
                     machine: machine_or(start.machine, &me.machine),
                     agent: AgentId::new(agent),
+                    fork_of: None,
                 },
             })
         }
@@ -360,6 +363,7 @@ pub(crate) fn answer_failed(error: &AnswerError) -> Status {
             pb::error::Kind::PresenceRequired(pb::PresenceRequired {
                 accepted: vec![pb::presence_required::Method::ApprovalPassphrase as i32],
                 caller_in_session_terminal: false,
+                tries_left: 0,
             }),
         ),
         AnswerError::NeedsHost => (
@@ -489,6 +493,8 @@ fn machine_action_kind(kind: MachineActionKind) -> pb::MachineActionKind {
         K::Remove => P::Remove,
         K::Forget => P::Forget,
         K::Delete => P::Delete,
+        K::StopSessions => P::StopSessions,
+        K::StartSessions => P::StartSessions,
     }
 }
 
@@ -506,5 +512,7 @@ fn action_kind(kind: pb::MachineActionKind) -> Option<MachineActionKind> {
         P::Remove => K::Remove,
         P::Forget => K::Forget,
         P::Delete => K::Delete,
+        P::StopSessions => K::StopSessions,
+        P::StartSessions => K::StartSessions,
     })
 }

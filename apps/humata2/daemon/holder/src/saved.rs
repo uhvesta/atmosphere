@@ -14,7 +14,7 @@ use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use humata2_durable::{File, rename, sync_dir};
 
@@ -29,8 +29,10 @@ const RESERVE: u8 = 2;
 /// after.
 const HEAD: usize = 1 + 8 + 4;
 const CHECK: usize = 8;
-/// How far past the output sent a reservation reaches.
+/// How far past the output sent a reservation reaches, at least.
 const RESERVE_AHEAD: u64 = 1 << 20;
+/// How far it reaches at most, when output keeps outrunning it.
+const MOST_AHEAD: u64 = 16 << 20;
 /// How often output written since the last sync is synced.
 pub(crate) const SYNC_EVERY: Duration = Duration::from_millis(500);
 
@@ -172,6 +174,15 @@ pub(crate) struct SaveLog {
     len: u64,
     reserved: u64,
     unsynced: bool,
+    /// A new log isn't synced when it is made: nothing on it is anyone's
+    /// yet, and an empty log lost in a power cut reads as no log. It is
+    /// synced whole, folder included, before the first reservation counts.
+    made_unsynced: bool,
+    /// How far the last reservation reached past the output, and when it
+    /// was made: each sync on macOS is a flush of the whole disk, so a
+    /// flood mustn't wait on one per MiB.
+    ahead: u64,
+    reserved_at: Option<Instant>,
     failed: bool,
 }
 
@@ -184,23 +195,28 @@ impl SaveLog {
             path: path.to_owned(),
             source,
         };
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
+        let (bytes, new) = match fs::read(path) {
+            Ok(bytes) => (bytes, false),
+            Err(error) if error.kind() == ErrorKind::NotFound => (Vec::new(), true),
             Err(error) => return Err(failed(error)),
         };
         let parsed = parse(&bytes, limit);
         let mut kept = parsed.kept;
         kept.skip_to(parsed.reserved);
         // Written again whole, so a damaged tail doesn't stay to hide what
-        // comes after it.
-        let (file, len) = rewrite(path, &kept).map_err(failed)?;
+        // comes after it. A new one is synced at its first reservation, so
+        // a holder's start doesn't wait on a disk flush (F_FULLFSYNC on
+        // macOS waits behind every other flush on the disk).
+        let (file, len) = rewrite(path, &kept, !new).map_err(failed)?;
         let log = Self {
             path: path.to_owned(),
             file,
             len,
             reserved: kept.end(),
             unsynced: false,
+            made_unsynced: new,
+            ahead: RESERVE_AHEAD,
+            reserved_at: None,
             failed: false,
         };
         Ok((log, kept))
@@ -232,9 +248,10 @@ impl SaveLog {
         // output that came since.
         let grown = self.len > 2 * kept.limit() as u64 + RESERVE_AHEAD;
         if grown {
-            (self.file, self.len) = rewrite(&self.path, kept)?;
+            (self.file, self.len) = rewrite(&self.path, kept, true)?;
             self.reserved = kept.end();
             self.unsynced = false;
+            self.made_unsynced = false;
             return Ok(());
         }
         let mut out = Vec::with_capacity(data.len() + 2 * (HEAD + CHECK));
@@ -245,12 +262,22 @@ impl SaveLog {
         }
         let reserving = end > self.reserved;
         if reserving {
-            self.reserved = end + RESERVE_AHEAD;
+            let now = Instant::now();
+            self.ahead = next_ahead(self.ahead, self.reserved_at.map(|at| now - at));
+            self.reserved_at = Some(now);
+            self.reserved = end + self.ahead;
             put_record(&mut out, RESERVE, self.reserved, &[]);
         }
         self.file.append(&out)?;
         self.len += out.len() as u64;
-        if reserving {
+        if reserving && self.made_unsynced {
+            self.file.sync_all()?;
+            if let Some(folder) = self.path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+                sync_dir(folder)?;
+            }
+            self.made_unsynced = false;
+            self.unsynced = false;
+        } else if reserving {
             self.file.sync_data()?;
             self.unsynced = false;
         } else {
@@ -268,9 +295,21 @@ impl SaveLog {
     }
 }
 
+/// How far the next reservation reaches, given the last one's reach and
+/// how long ago it was made: twice as far while output uses each up within
+/// a sync interval, back to the least once it doesn't. Reaching further
+/// costs nothing but offsets a takeover skips.
+fn next_ahead(last: u64, since: Option<Duration>) -> u64 {
+    match since {
+        Some(since) if since < SYNC_EVERY => (last * 2).clamp(RESERVE_AHEAD, MOST_AHEAD),
+        _ => RESERVE_AHEAD,
+    }
+}
+
 /// Writes `kept` to `path` whole, through a file renamed into place, and
-/// returns the file opened to append to and its length.
-fn rewrite(path: &Path, kept: &Scrollback) -> std::io::Result<(File, u64)> {
+/// returns the file opened to append to and its length. With `sync`, the
+/// file and its folder are synced before it is returned.
+fn rewrite(path: &Path, kept: &Scrollback, sync: bool) -> std::io::Result<(File, u64)> {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
     for (start, data) in kept.since(0) {
@@ -287,10 +326,12 @@ fn rewrite(path: &Path, kept: &Scrollback) -> std::io::Result<(File, u64)> {
     options.write(true).create(true).truncate(true).mode(0o600);
     let mut file = File::open(&options, &partial)?;
     file.append(&out)?;
-    file.sync_all()?;
+    if sync {
+        file.sync_all()?;
+    }
     drop(file);
     rename(&partial, path)?;
-    if let Some(folder) = path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
+    if sync && let Some(folder) = path.parent().filter(|folder| !folder.as_os_str().is_empty()) {
         sync_dir(folder)?;
     }
     let file = File::open(OpenOptions::new().read(true).write(true), path)?;
@@ -307,6 +348,27 @@ mod tests {
             put_record(&mut out, *kind, *offset, data);
         }
         out
+    }
+
+    #[test]
+    fn a_flood_reserves_further_each_time_up_to_a_limit() {
+        let quick = Some(Duration::from_millis(10));
+        let mut ahead = RESERVE_AHEAD;
+        let mut syncs = 0;
+        let mut reached = 0;
+        while reached < 64 << 20 {
+            ahead = next_ahead(ahead, quick);
+            reached += ahead;
+            syncs += 1;
+        }
+        assert!(syncs < 10, "a 64 MiB flood took {syncs} syncs");
+        assert_eq!(ahead, MOST_AHEAD);
+    }
+
+    #[test]
+    fn output_after_a_pause_reserves_the_least_again() {
+        assert_eq!(next_ahead(MOST_AHEAD, Some(SYNC_EVERY * 2)), RESERVE_AHEAD);
+        assert_eq!(next_ahead(MOST_AHEAD, None), RESERVE_AHEAD);
     }
 
     #[test]

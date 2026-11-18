@@ -31,18 +31,19 @@ Navigation "Sidebar"
   Link "gpu-box"
   Link "Settings" selected
 Splitter "Resize the sidebar"
+#settings-content
+  Tab "System" selected
+  Tab "Light"
+  Tab "Dark"
+  Button "Terminal font: Menlo 12"
+  Button "On" selected
+  Tab "Wrap" selected
+  Tab "Scroll"
 Tab "General"
 Tab "Agents"
-Tab "System" selected
-Tab "Light"
-Tab "Dark"
 Tab "Machines"
 Tab "Layout" selected
-Button "Terminal font: Menlo 12"
 Tab "Agent access"
 Tab "Storage"
-Button "On" selected
 Tab "Notifications"
 Tab "Keyboard"
-Tab "Wrap" selected
-Tab "Scroll"

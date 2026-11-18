@@ -29,6 +29,10 @@ service AgentService {
   // ST-1 Edit. User-only. Running sessions keep the command they started
   // with; the change applies to the next start, fork or resume.
   rpc UpdateAgent(UpdateAgentRequest) returns (AgentDefinition);
+  // AGENTSET (D720, D727): Settings › Agents. Turns a kind on or off, and
+  // its "Install when missing", in the host's config/agents.toml. Only
+  // the fields set change. User-only; peers and agents are refused.
+  rpc SetAgentEnabled(SetAgentEnabledRequest) returns (AgentDefinition);
 }
 
 service MarkService {
@@ -39,6 +43,13 @@ service MarkService {
   // NV-25: order within Pinned, by drag there or from the palette. A newly
   // pinned item goes at the end.
   rpc ReorderPinned(ReorderPinnedRequest) returns (ListPinnedResponse);
+  // CH-16, CH-17 (D392): the user looks at a session while this stream is
+  // open. Opening it clears the session's unread mark, and the first
+  // message says whether it had one; while any client holds one open, the
+  // session's new output marks nothing. The stream sends nothing more and
+  // ends when the client closes it. User-only. A session the host doesn't
+  // know is not_found.
+  rpc ViewSession(ViewSessionRequest) returns (stream ViewSessionResponse);
 }
 
 // AR-5: open panels and tabs, folds, scroll positions, filters (SE-13),
@@ -201,10 +212,31 @@ message AgentDefinition {
   Revision revision = 12;
   // SE-21, shown in Settings › Agents.
   TurnEndSource turn_end_source = 13;
+  // AGENTSET (D720): offered in pickers and startable. The plain shell is
+  // always enabled.
+  bool enabled = 14;
+  // AGENTSET (D722): Humata installs the CLI on a machine that doesn't
+  // have it, and never replaces one that is there. Off by default.
+  bool install_when_missing = 15;
+  // Whether the kind has an install command, so the option can be on.
+  bool can_install = 16;
+  // The command "Install when missing" runs (`bash -lc`), shown in
+  // Settings › Agents; empty when there is none.
+  string install_command = 17;
 }
 
 
-message ListAgentsRequest {}
+message ListAgentsRequest {
+  // AGENTSET (D720): false lists only enabled kinds (pickers, CLI, MCP);
+  // true lists every kind, for Settings › Agents.
+  bool include_disabled = 1;
+}
+
+message SetAgentEnabledRequest {
+  AgentId agent = 1;
+  optional bool enabled = 2;
+  optional bool install_when_missing = 3;
+}
 
 message ListAgentsResponse { repeated AgentDefinition agents = 1; }
 
@@ -259,6 +291,15 @@ message ReorderPinnedRequest {
   IdempotencyKey idempotency_key = 1;
   repeated EntityRef order = 2;
   Revision expected_revision = 3;
+}
+
+message ViewSessionRequest {
+  SessionId session = 1;
+}
+
+message ViewSessionResponse {
+  // Whether the session was unread until this view cleared it.
+  bool was_unread = 1;
 }
 
 // ---------------------------------------------------------------------------

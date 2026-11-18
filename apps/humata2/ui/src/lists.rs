@@ -13,7 +13,7 @@ use humata2_app::{AppAction, AppState, NeedsRow, Route};
 use humata2_clients::model::{
     Answer, MachineKind, Request, RequestKind, Session, SessionId, Status,
 };
-use humata2_inbox::{Bulk, History, InboxAction};
+use humata2_inbox::{Bulk, Group, History, InboxAction, MigrateStatus};
 use humata2_session::{Panel, SessionAction};
 use std::rc::Rc;
 
@@ -613,6 +613,24 @@ fn bulk_strip(ui: &Rc<Ui>, confirm: Option<Bulk>, waiting: usize, look: Look) ->
     ))
 }
 
+/// A list row's second line: a Migrate item is from Humata, and says where it
+/// stands; any other request names who asks and how it was answered.
+fn row_from(state: &AppState, request: &Request, session: Option<&Session>) -> String {
+    let Some(card) = request.migrate() else {
+        return asked_from(session, request.answer.as_ref());
+    };
+    let status = match state.inbox.migrate_status(&request.id) {
+        Some(MigrateStatus::Migrating) => "migrating…".to_owned(),
+        Some(MigrateStatus::Failed(_)) => "couldn't migrate".to_owned(),
+        Some(MigrateStatus::Migrated { .. }) => "migrated".to_owned(),
+        _ => state
+            .workspace
+            .machine(&card.machine)
+            .map_or_else(|| card.machine.to_string(), |machine| machine.name.clone()),
+    };
+    format!("Humata · {status}")
+}
+
 /// A row's second line: who asks and from which session, then how it was
 /// answered once it is (IN-7).
 fn asked_from(session: Option<&Session>, answer: Option<&Answer>) -> String {
@@ -646,7 +664,8 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
         .selection()
         .filter(|r| shown.iter().any(|v| v.id == r.id))
         .or_else(|| shown.first().copied());
-    let waiting = shown.iter().filter(|r| r.answer.is_none()).count();
+    // Allow all and Deny all never answer a Migrate item.
+    let waiting = state.inbox.bulk_count();
     let strip = (waiting > 1 || state.inbox.confirm.is_some())
         .then(|| bulk_strip(ui, state.inbox.confirm, waiting, look));
     let list = col()
@@ -654,16 +673,16 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
-        .children(state.workspace.channels.iter().map(|channel| (channel.id.clone(), format!("# {}", channel.name))).chain(std::iter::once((humata2_clients::desk::channel(), "Desk".to_owned()))).filter_map(|(channel_id, heading)| {
-            let requests = shown
-                .iter()
-                .filter(|r| r.channel == channel_id)
-                .copied()
-                .collect::<Vec<_>>();
-            if requests.is_empty() {
-                return None;
-            }
-            Some(
+        .children(state.inbox.groups().into_iter().map(|(group, requests)| {
+            let heading = match &group {
+                Group::Humata => "Humata".to_owned(),
+                Group::Channel(id) if *id == humata2_clients::desk::channel() => "Desk".to_owned(),
+                Group::Channel(id) => state
+                    .workspace
+                    .channel(id)
+                    .map_or_else(|| format!("# {id}"), |channel| format!("# {}", channel.name)),
+            };
+            {
                 col()
                     .child(
                         div()
@@ -673,7 +692,7 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_size(px(11.))
                             .text_color(rgb(look.secondary))
-                            .child(heading.clone()),
+                            .child(heading),
                     )
                     .children(requests.into_iter().map(|request| {
                         let session = state.workspace.session(&request.session);
@@ -696,20 +715,9 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                             .child(
                                 row()
                                     .gap(px(6.))
-                                    .when(
-                                        // The VIP mark asks for attention: answered rows don't carry it.
-                                        request.answer.is_none() && session.is_some_and(|s| s.vip),
-                                        |x| {
-                                        x.child(
-                                            div()
-                                                .px(px(4.))
-                                                .rounded(px(3.))
-                                                .bg(rgb(0xbf5af2))
-                                                .text_size(px(9.5))
-                                                .font_weight(FontWeight::BOLD)
-                                                .text_color(rgb(0xffffff))
-                                                .child("VIP"),
-                                        )
+                                    // The VIP mark asks for attention: answered rows don't carry it.
+                                    .when(state.inbox.vip(request), |x| {
+                                        x.child(request_card::vip_badge())
                                     })
                                     .child(
                                         div()
@@ -732,14 +740,14 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                                 div()
                                     .text_size(px(11.5))
                                     .text_color(rgb(if on { 0xffffff } else { look.secondary }))
-                                    .child(asked_from(session, request.answer.as_ref())),
+                                    .child(row_from(state, request, session)),
                             )
                             .on_click(move |_, _, cx| {
                                 ui.send(AppAction::Inbox(InboxAction::Select(id.clone())), cx)
                             })
                             .test_support()
-                    })),
-            )
+                    }))
+            }
         }));
     row()
         .size_full()

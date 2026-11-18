@@ -37,7 +37,7 @@ struct Running {
 }
 
 /// Watches `session`'s agent if its record says it runs. Returns at once.
-pub(super) fn agent(tell: Tell, session: String) {
+pub(crate) fn agent(tell: Tell, session: String) {
     tokio::spawn(async move {
         let Some(Running {
             holder_pid,
@@ -55,6 +55,8 @@ pub(super) fn agent(tell: Tell, session: String) {
                 .await;
         }
         let code = follow(&tell, &session, holder_pid, &socket, timed).await;
+        // D767: a question its screen asked goes with the agent.
+        crate::screen_ask::gone(&session);
         // A watch that lost its holder keeps what it knew: the next one
         // finds it, and a report in between still has an entry to change.
         let Some(code) = code else {
@@ -72,6 +74,12 @@ pub(super) fn agent(tell: Tell, session: String) {
 /// stands, since the app may have read it before it was brought back, and
 /// watches each agent that runs.
 pub(crate) async fn after_restart(tell: Tell) {
+    // The restart report was set before this runs. A start with no agent
+    // to tell of publishes nothing else, so the app would never read the
+    // report; Resync is the existing cue that its lists may be stale. It
+    // goes to those subscribed now, unnumbered and not kept, so a client
+    // resuming later doesn't replay a stale one (D341).
+    tell.feed.resync_all();
     // A start fresh the stop cut short types its first message now.
     tokio::spawn(super::start_fresh::retype_pending(tell.store.clone()));
     let store = tell.store.clone();
@@ -188,19 +196,47 @@ async fn follow(
     let (sender, mut received) = mpsc::channel(EVENTS_QUEUE);
     let _reader = Reader(read_events(events, sender));
     let mut quieting = Quieting::new(Instant::now(), timed);
+    // A working report restarts the quiet clock (D733).
+    let mut changes = turns::changes();
+    let mut armed = turns::armed(session, holder_pid);
+    // The words the agent printed lately, to tell a repaint from new text.
+    let mut printed = crate::read_marks::Printed::default();
     loop {
         let level = tokio::select! {
             event = received.recv() => match event {
                 Some(Ok(Event::Exited { code })) => return Some(code),
-                Some(Ok(Event::Output { .. })) => match quieting.output(Instant::now()) {
-                    Some(level) => level,
-                    None => continue,
-                },
+                Some(Ok(Event::Output { data, .. })) => {
+                    // CH-16 (D392): output no client views marks the session
+                    // unread; the feed hears of it from `read_marks`. A
+                    // repaint after our own resize is not output (D393).
+                    let shows_new_text = printed.hear(&data);
+                    if crate::read_marks::would_mark(session, shows_new_text) {
+                        let id = session.to_owned();
+                        let _ = spawn_blocking(move || crate::read_marks::heard_output(&id)).await;
+                    }
+                    match quieting.output(Instant::now()) {
+                        Some(level) => level,
+                        None => continue,
+                    }
+                }
                 Some(Ok(_)) => continue,
                 Some(Err(_)) | None => return None,
             },
             level = quieting.next_level() => level,
+            Ok(()) = changes.changed() => {
+                let now = turns::armed(session, holder_pid);
+                if now != armed {
+                    armed = now;
+                    quieting.rearm(Instant::now());
+                }
+                continue;
+            }
         };
+        // D767: a quiet agent may be asking on its screen, where no hook
+        // fires, such as Copilot's folder trust.
+        if level == turns::Quiet::Quiet {
+            crate::screen_ask::quiet(session, holder_pid);
+        }
         if turns::set_quiet(session, holder_pid, level) {
             tell.session(session, humata2_grpc::humata::v1::Change::Updated, None)
                 .await;
@@ -235,5 +271,25 @@ async fn record_exit(tell: &Tell, session: &str, holder_pid: u32, code: i32) -> 
             false
         }
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::events::Feed;
+
+    /// A start with nothing to resume still cues a subscriber, so the app
+    /// reads the restart report the start set.
+    #[tokio::test]
+    async fn a_restart_with_no_agents_still_tells_the_feed() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("a temp folder: {e}"));
+        let store = humata2_store::Store::open(dir.path()).unwrap_or_else(|e| panic!("a store: {e}"));
+        let feed = Arc::new(Feed::default());
+        let (_, mut live) = feed.subscribe(None);
+        after_restart(Tell::new(feed, Arc::new(store), "this-mac".to_owned())).await;
+        assert!(live.try_recv().is_ok(), "a restart with no agents told nobody");
     }
 }

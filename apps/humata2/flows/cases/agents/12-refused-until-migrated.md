@@ -126,8 +126,8 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 
 **When:** I save a file into `box-1`'s folder, or move the session to `box-1`, while `box-1` is at another release.
 **I do:** write a file (or start a move) to `box-1`.
-**I see:** expected by UPGRADE.md:48 and by the header of `upgrade_refusals.rs` (line 3): refused with `migration_needed`. Actual: the write is forwarded to the machine.
-**Status:** Likely bug. `daemon/humatad/src/files.rs:245-262` sends a remote write to `forward.write_file`, and `daemon/humatad/src/files/forward.rs:471-480` relays it with no `machine_ready` call. `machine_ready` is called only from `session_service.rs:1854` (start), `terminal.rs:888`, `:1109` and `:1133` (type and attach). `move_session_of` (`session_service/move_session.rs:162`) has no call either. The test header and the spec disagree with the code. To confirm: write a file to a box at another release and watch it arrive.
+**I see:** refused with `migration_needed`, naming the Migrate item, as UPGRADE.md:48 says; nothing is written and the session does not move.
+**Status:** Works (real daemon): `daemon/humatad/tests/upgrade_refusals.rs::writing_a_file_to_a_machine_at_another_release_is_refused_with_its_item` and `daemon/humatad/tests/upgrade_refusals.rs::moving_a_session_to_a_machine_at_another_release_is_refused_with_its_item`. (Was a likely bug: only start, type and writable attach checked the release; fixed by BUGS.)
 
 ### B8. An agent on `box-1` calls its own daemon
 
@@ -154,7 +154,7 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 - [ ] Migrate swaps the release in, keeps the old daemon, and resolves the item.
 - [ ] A local upgrade cut at any point comes back whole on one release.
 - [ ] No mixed-version fallback runs.
-- [ ] Writes and moves to a mismatched machine are refused. (Likely bug: they are not.)
+- [x] Writes and moves to a mismatched machine are refused (`daemon/humatad/tests/upgrade_refusals.rs::writing_a_file_to_a_machine_at_another_release_is_refused_with_its_item`; `daemon/humatad/tests/upgrade_refusals.rs::moving_a_session_to_a_machine_at_another_release_is_refused_with_its_item`).
 - [ ] After the migration, the same start, type and attach work. (Code, no test.)
 
 ## Status summary
@@ -180,13 +180,13 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 | B4. Identity mismatch | Works (real daemon) | `daemon/humatad/tests/upgrade_identity.rs::a_daemon_whose_binary_differs_from_its_entry_names_no_bundle`; `upgrade_inbox.rs::a_machine_whose_binary_is_off_its_bundle_counts_as_another_release` |
 | B5. Changes release again, one item | Works (real daemon) | `upgrade_inbox.rs::a_machine_that_changes_release_again_keeps_its_one_item_showing_what_it_is_now` |
 | B6. Back at host's release, item withdrawn | Works (real daemon) | `upgrade_inbox.rs::a_machine_back_at_the_hosts_release_withdraws_its_item_as_resolved` |
-| B7. Writes and moves refused | Likely bug | `daemon/humatad/src/files/forward.rs:471-480`; `daemon/humatad/src/session_service/move_session.rs:162`; spec `UPGRADE.md:48` |
+| B7. Writes and moves refused | Works (real daemon) | `daemon/humatad/tests/upgrade_refusals.rs::writing_a_file_to_a_machine_at_another_release_is_refused_with_its_item`; `daemon/humatad/tests/upgrade_refusals.rs::moving_a_session_to_a_machine_at_another_release_is_refused_with_its_item` |
 | B8. Agent on box calls its own daemon | Code, no test | `session_service.rs:1854` (host side only) |
 | B9. Agent on box answers the item | Code, no test | `upgrade_inbox.rs::an_agent_cannot_answer_a_migrate_item` runs on this Mac |
 
 ## Gaps and likely bugs
 
-- Likely bug: writes and moves to a machine at another release are not refused. Only start, type and writable attach call `machine_ready`. `daemon/humatad/src/files/forward.rs:471-480` relays a remote write, and `daemon/humatad/src/session_service/move_session.rs:162` starts a move, with no gate. The spec (`workflow/milestones/UPGRADE.md:48`) and the header of `daemon/humatad/tests/upgrade_refusals.rs` both say writes and moves are refused.
+- Fixed (was a likely bug): writes and moves to a machine at another release are refused (`daemon/humatad/tests/upgrade_refusals.rs::writing_a_file_to_a_machine_at_another_release_is_refused_with_its_item`; `daemon/humatad/tests/upgrade_refusals.rs::moving_a_session_to_a_machine_at_another_release_is_refused_with_its_item`).
 - Test gap: no test runs a start, a type or an attach after a migration (step 13), so the "same calls work" outcome is unproven.
 - Test gap: no test cuts the SSH upgrade of a box (B2).
 - Test gap: no test covers an agent on the box itself (B8, B9). The gate and the answer tests run from this Mac.

@@ -43,6 +43,7 @@ async fn shell_tab(rig: &Rig, session: &pb::SessionId) -> Attach {
             idempotency_key: None,
             session: Some(session.clone()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .expect("a shell tab opens on devbox-1")

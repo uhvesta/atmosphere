@@ -490,6 +490,21 @@ fn repo(look: Look, name: &'static str, branch: &'static str) -> Div {
         .child(div().text_size(px(11.)).text_color(c(look.tertiary)).child(branch))
 }
 
+/// The line under a repo while every repo shares the header's base (D510
+/// as amended by D739): the base menu's chevron alone, and Push & PR.
+fn repo_actions(look: Look) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .h(px(26.))
+        .pl(px(40.))
+        .pr(px(4.))
+        .child(div().w(px(24.)).flex().justify_center().child(small_icon(IconName::ChevronsUpDown, look.secondary)))
+        .child(div().flex_1())
+        .child(div().px(px(6.)).text_size(px(11.5)).text_color(c(look.accent)).child("Push & PR"))
+}
+
 fn diff_lines(look: Look) -> Div {
     let line = |n: &'static str, bg: Option<u32>, text: &'static str| {
         div()
@@ -574,8 +589,10 @@ fn diff_panel(look: Look, full: bool) -> Div {
                 .child(div().text_size(px(11.)).text_color(c(RED)).child("−24")),
         )
         .child(repo(look, "ledger", "ledger-schema"))
+        .child(repo_actions(look))
         .child(diff_file(look, "migrations/0042_accounts.sql", "+41", "−0", false, None))
         .child(repo(look, "api", "ledger-schema"))
+        .child(repo_actions(look))
         .child(diff_file(look, "src/client.rs", "+62", "−21", true, Some("2")))
         .child(diff_file(look, "src/entry.rs", "+81", "−3", false, None));
     let view = div()
@@ -829,8 +846,11 @@ fn board_panel(look: Look, full: bool) -> Div {
         ))
 }
 
+/// VW-10: every view prepared in the session and its forks, newest first:
+/// its title and state, then its kind, the fork it came from (for a fork's
+/// view) and when, its summary, and Open.
 fn journal_panel(look: Look, full: bool) -> Div {
-    let entry = |title: &'static str, note: &'static str| {
+    let entry = |title: &'static str, state: &'static str, meta: &'static str, summary: &'static str| {
         div()
             .flex()
             .flex_col()
@@ -840,8 +860,18 @@ fn journal_panel(look: Look, full: bool) -> Div {
             .bg(c(look.card))
             .border_1()
             .border_color(c(look.line))
-            .child(div().flex().items_center().gap(px(6.)).child(small_icon(IconName::Sparkles, PURPLE)).child(div().font_weight(FontWeight::SEMIBOLD).child(title)))
-            .child(secondary(look, note))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(small_icon(IconName::Sparkles, PURPLE))
+                    .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child(title))
+                    .child(secondary(look, state)),
+            )
+            .child(secondary(look, meta))
+            .child(secondary(look, summary))
+            .child(div().flex().justify_end().pt(px(4.)).child(button(look, Kind::Secondary, "Open")))
     };
     div()
         .flex_1()
@@ -855,9 +885,9 @@ fn journal_panel(look: Look, full: bool) -> Div {
                 .gap(px(8.))
                 .p(px(10.))
                 .text_size(px(12.5))
-                .child(entry("Review: ledger schema", "A guided walk through the 3 files, risky parts first · 14m"))
-                .child(entry("Backfill plan", "Batches, timings and the rollback · 1h"))
-                .child(entry("Index benchmark", "BRIN vs B-tree on 48k rows · yesterday")),
+                .child(entry("Review: ledger schema", "Opened", "Review · 14m", "A guided walk through the 3 files, risky parts first"))
+                .child(entry("Backfill plan", "Opened and closed", "View · 1h", "Batches, timings and the rollback"))
+                .child(entry("Index benchmark", "Later", "View · in Try BRIN index · yesterday", "BRIN vs B-tree on 48k rows")),
         )
 }
 

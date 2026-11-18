@@ -167,3 +167,152 @@ fn a_restored_journal_entry_still_finds_its_file() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].payload, big);
 }
+
+// The copy an upgrade keeps before it changes the schema (D281g). An older
+// build's database stands in as this build's with a lower schema number:
+// the tables are the same, only the number the upgrade reads differs.
+
+/// Sets the schema number of the closed database in `root`.
+fn set_schema(root: &Path, version: i64) {
+    let connection = rusqlite::Connection::open(root.join("state.sqlite")).unwrap();
+    connection.pragma_update(None, "user_version", version).unwrap();
+}
+
+/// A closed store in `root` at the schema before this build's, holding
+/// session `se_a` titled "old".
+fn older_store(root: &Path) {
+    Store::open(root).unwrap().put_session(&session("se_a", "old")).unwrap();
+    set_schema(root, humata2_store::SCHEMA_VERSION - 1);
+}
+
+/// `len` bytes that don't compress, so a journal entry of them is kept in
+/// a blob file rather than its row.
+fn noise(len: usize) -> Vec<u8> {
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut bytes = Vec::with_capacity(len + 8);
+    while bytes.len() < len {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        bytes.extend_from_slice(&state.to_le_bytes());
+    }
+    bytes.truncate(len);
+    bytes
+}
+
+fn blob_files(root: &Path) -> usize {
+    fs::read_dir(root.join("blobs")).unwrap().count()
+}
+
+#[test]
+fn a_copy_before_an_upgrade_is_kept_only_when_the_schema_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let none_yet = Store::copy_before_upgrade(dir.path(), "to_2.0.5").unwrap();
+    assert!(none_yet.is_none(), "copied a database that isn't there");
+
+    Store::open(dir.path()).unwrap().put_session(&session("se_a", "old")).unwrap();
+    let same = Store::copy_before_upgrade(dir.path(), "to_2.0.5").unwrap();
+    assert!(same.is_none(), "copied a database already at this build's schema");
+
+    set_schema(dir.path(), humata2_store::SCHEMA_VERSION - 1);
+    let copy = Store::copy_before_upgrade(dir.path(), "to_2.0.5").unwrap().unwrap();
+    assert_eq!(copy.schema, humata2_store::SCHEMA_VERSION - 1);
+    assert!(copy.path.is_file());
+}
+
+#[test]
+fn a_database_newer_than_this_build_is_refused_rather_than_copied() {
+    let dir = tempfile::tempdir().unwrap();
+    Store::open(dir.path()).unwrap();
+    set_schema(dir.path(), humata2_store::SCHEMA_VERSION + 1);
+
+    let copied = Store::copy_before_upgrade(dir.path(), "to_2.0.5");
+
+    assert!(matches!(copied, Err(StoreError::SchemaTooNew { .. })), "{copied:?}");
+}
+
+#[test]
+fn putting_the_copy_back_undoes_the_upgrade_and_keeps_what_it_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    older_store(dir.path());
+    Store::copy_before_upgrade(dir.path(), "to_2.0.5").unwrap().unwrap();
+    // The new build migrates and writes, then never reaches ready.
+    set_schema(dir.path(), humata2_store::SCHEMA_VERSION);
+    Store::open(dir.path()).unwrap().put_session(&session("se_a", "upgraded")).unwrap();
+
+    let restored = Store::restore_upgrade_copy(dir.path(), "to_2.0.5").unwrap();
+
+    assert_eq!(restored.schema, humata2_store::SCHEMA_VERSION - 1);
+    assert!(restored.replaced_kept_at.is_file(), "the replaced database wasn't kept");
+    set_schema(dir.path(), humata2_store::SCHEMA_VERSION);
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(titles(&store), vec![("se_a".to_owned(), "old".to_owned())]);
+}
+
+#[test]
+fn a_restore_puts_back_a_last_good_copy_the_older_build_can_read() {
+    let dir = tempfile::tempdir().unwrap();
+    older_store(dir.path());
+    Store::copy_before_upgrade(dir.path(), "to_2.0.5").unwrap().unwrap();
+    set_schema(dir.path(), humata2_store::SCHEMA_VERSION);
+    Store::open(dir.path()).unwrap().save_last_good().unwrap();
+
+    Store::restore_upgrade_copy(dir.path(), "to_2.0.5").unwrap();
+
+    // The older build, finding its database damaged later, restores a copy
+    // of its own schema, not the newer build's.
+    let last_good = rusqlite::Connection::open(dir.path().join("last-good.sqlite")).unwrap();
+    let schema: i64 = last_good.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+    assert_eq!(schema, humata2_store::SCHEMA_VERSION - 1);
+}
+
+#[test]
+fn putting_back_a_copy_never_taken_or_dropped_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    older_store(dir.path());
+
+    let never = Store::restore_upgrade_copy(dir.path(), "to_2.0.5");
+    assert!(matches!(never, Err(StoreError::NoUpgradeCopy { .. })), "{never:?}");
+
+    Store::copy_before_upgrade(dir.path(), "to_2.0.5").unwrap().unwrap();
+    Store::drop_upgrade_copy(dir.path(), "to_2.0.5").unwrap();
+    Store::drop_upgrade_copy(dir.path(), "to_2.0.5").unwrap();
+    let dropped = Store::restore_upgrade_copy(dir.path(), "to_2.0.5");
+    assert!(matches!(dropped, Err(StoreError::NoUpgradeCopy { .. })), "{dropped:?}");
+}
+
+#[test]
+fn a_copy_name_that_could_leave_its_folder_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    older_store(dir.path());
+
+    let copied = Store::copy_before_upgrade(dir.path(), "../state");
+
+    assert!(matches!(copied, Err(StoreError::InvalidId { .. })), "{copied:?}");
+}
+
+#[test]
+fn the_files_a_pre_upgrade_copy_names_are_kept_until_it_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path()).unwrap();
+        store.journal().append("write", &noise(300 << 10)).unwrap();
+    }
+    let with_file = blob_files(dir.path());
+    assert!(with_file > 0, "the payload went in its row, not a file");
+    set_schema(dir.path(), humata2_store::SCHEMA_VERSION - 1);
+    Store::copy_before_upgrade(dir.path(), "to_2.0.5").unwrap().unwrap();
+    set_schema(dir.path(), humata2_store::SCHEMA_VERSION);
+    {
+        let store = Store::open(dir.path()).unwrap();
+        let last = store.journal().entries().unwrap().last().unwrap().seq;
+        store.journal().ack_through(last).unwrap();
+    }
+
+    drop(Store::open(dir.path()).unwrap());
+    assert_eq!(blob_files(dir.path()), with_file, "a file the copy names was swept");
+
+    Store::drop_upgrade_copy(dir.path(), "to_2.0.5").unwrap();
+    drop(Store::open(dir.path()).unwrap());
+    assert!(blob_files(dir.path()) < with_file, "the dropped copy's file was kept");
+}

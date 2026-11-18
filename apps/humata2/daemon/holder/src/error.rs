@@ -33,6 +33,12 @@ pub enum HolderError {
     },
 
     #[error(
+        "the terminal's holder at {} is from an older Humata build, which can't take typing the way this build sends it, so nothing was typed; the holder and the program in it keep running. Click Migrate on the \"Migrate the holders\" item in the Inbox: it restarts agent sessions onto the current holder at their next idle moment and keeps their conversations. A shell tab is never migrated; close it and open a new one",
+        socket.display()
+    )]
+    Outdated { socket: PathBuf },
+
+    #[error(
         "the terminal's holder at {} refused: {message}",
         socket.display()
     )]
@@ -53,6 +59,12 @@ pub enum HolderError {
         socket.display()
     )]
     AlreadyRunning { socket: PathBuf },
+
+    #[error(
+        "the holder answering at {} isn't the one its tab names: it was just started and the tab isn't saved with it yet. Try again in a moment; if it keeps happening, restart humatad2, which saves each tab with the holder that answers",
+        socket.display()
+    )]
+    NotSaved { socket: PathBuf },
 
     #[error(
         "the socket path {} is longer than the {max} bytes Unix sockets allow; use a shorter state folder",
@@ -118,7 +130,18 @@ pub enum HolderError {
     StartFailed { holder: PathBuf, log: PathBuf },
 
     #[error(
-        "the holder {} wasn't ready after {seconds} seconds and was stopped; its log {} may say why",
+        "the holder {} didn't begin running within {seconds} seconds of being launched and was stopped. The machine is likely too busy to start programs; try again once it is less loaded. Its log {} may say more",
+        holder.display(),
+        log.display()
+    )]
+    LaunchTimeout {
+        holder: PathBuf,
+        log: PathBuf,
+        seconds: u64,
+    },
+
+    #[error(
+        "the holder {} was running but wasn't ready after {seconds} seconds and was stopped; its log {} may say why",
         holder.display(),
         log.display()
     )]
@@ -126,6 +149,17 @@ pub enum HolderError {
         holder: PathBuf,
         log: PathBuf,
         seconds: u64,
+    },
+
+    #[error(
+        "the terminal's holder at {} didn't answer within {seconds} seconds, so it may be stopped or wedged. End its process by the pid in the .pid file beside its socket; that also stops the program running in its tab",
+        socket.display()
+    )]
+    ShutdownTimeout {
+        socket: PathBuf,
+        seconds: u64,
+        #[source]
+        source: tokio::time::error::Elapsed,
     },
 
     #[error(

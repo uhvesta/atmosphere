@@ -204,6 +204,7 @@ async fn session_token(daemon: &common::Daemon, session: &pb::SessionId) -> Stri
             idempotency_key: None,
             session: Some(session.clone()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()
@@ -253,9 +254,18 @@ fn add_web(channel: &pb::Channel) -> pb::AddRepoRequest {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agents_add_repo_is_refused_by_default() {
+async fn an_agents_add_repo_is_refused_when_the_repo_add_rule_is_never() {
     let (daemon, world) = start_world().await;
     let (channel, token) = agent_in_channel(&daemon, &world).await;
+    pb::access_service_client::AccessServiceClient::new(daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: channel.id.clone(),
+            capability: pb::Capability::ChannelRepoAdd as i32,
+            decision: pb::Decision::Never as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 
     let refused = daemon
         .channel_service()
@@ -276,7 +286,7 @@ async fn an_agents_add_repo_that_a_rule_sends_to_ask_runs_once_the_user_approves
     pb::access_service_client::AccessServiceClient::new(daemon.channel().await)
         .set_channel_rule(pb::SetChannelRuleRequest {
             channel: channel.id.clone(),
-            capability: pb::Capability::ChannelChange as i32,
+            capability: pb::Capability::ChannelRepoAdd as i32,
             decision: pb::Decision::Ask as i32,
             ..Default::default()
         })

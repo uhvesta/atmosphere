@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use humata2_holder::HolderError;
+use humata2_holder::{EndError, HolderError};
 use humata2_contain::ContainError;
 use humata2_store::StoreError;
 
@@ -24,9 +24,23 @@ pub enum ReviveError {
     },
 
     #[error(
+        "the old terminal of {what} didn't take its shutdown and couldn't be ended by its pid either, so it wasn't started again; end it as the cause says, then restart humatad2 to try again"
+    )]
+    EndHolder {
+        what: String,
+        #[source]
+        source: EndError,
+    },
+
+    #[error(
         "session {session}'s agent was saved with no command to run; start a new session for it from Humata"
     )]
     NoCommand { session: String },
+
+    #[error(
+        "a test asked for a failure at {point} (HUMATA2_FAIL_AT); only test daemons read that variable, so start the daemon again without it"
+    )]
+    Injected { point: &'static str },
 
     #[error("a background task stopped before it finished; restart humatad2 to try again")]
     Background {

@@ -170,4 +170,10 @@ pub trait Grid {
     fn scrollbar(&self) -> Option<Scrollbar> {
         None
     }
+
+    /// Whether a full-screen program has the screen (the alternate
+    /// screen), which keeps no history.
+    fn is_alternate_screen(&self) -> bool {
+        false
+    }
 }

@@ -57,6 +57,7 @@ fn anchor(line: u32) -> Anchor {
         quoted: vec!["        tx.insert_legacy(&entry).await?;".into()],
         base: None,
         detached: false,
+        outdated: false,
     }
 }
 

@@ -89,6 +89,7 @@ impl App {
             quoted: Vec::new(),
             base: None,
             detached: false,
+            outdated: false,
         };
         self.send(AppAction::Comments(C::OpenBox(id.clone(), anchor)));
         self.send(AppAction::Comments(C::Typed(id.clone(), body.into())));

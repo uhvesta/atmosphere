@@ -194,6 +194,7 @@ async fn session_token(rig: &Rig, id: &pb::SessionId) -> String {
             idempotency_key: None,
             session: Some(id.clone()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()
@@ -258,10 +259,12 @@ async fn an_agent_forks_itself_onto_another_machine_once_the_user_approves() {
         .await
         .unwrap()
         .into_inner();
+    let card_reason = card.reason.clone();
     let Some(pb::request_preview::Preview::NewSession(shown)) = card.preview.and_then(|preview| preview.preview) else {
         panic!("the card previews no new session: {:?}", card.action_title);
     };
     assert_eq!(shown.machine.as_ref(), Some(&one), "the card names box-1");
+    assert_eq!(card_reason, "benchmark on the bigger box", "the card carries the agent's reason");
     assert_eq!(shown.fork_kind, pb::ForkKind::CodeAndContext as i32);
     assert_eq!(shown.repos.len(), 1, "{shown:?}");
     let repo = &shown.repos[0];
@@ -684,4 +687,163 @@ async fn a_fork_cut_short_as_it_starts_is_undone_at_restart() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fork_cut_short_as_its_copy_begins_is_undone_at_restart() {
     fork_cut_short_is_undone_at_restart("fork-copying").await;
+}
+
+/// The prompts of the conversations a box's Codex or Copilot session holds.
+const PROMPTS: [&str; 3] = ["Find the flaky test", "Make it deterministic", "Now delete the old sleep"];
+
+/// A Codex rollout of [`PROMPTS`], each turn finished, for conversation `id`.
+fn codex_rollout(id: &str) -> String {
+    let mut lines = vec![json!({
+        "timestamp": "2026-11-16T00:00:00Z",
+        "type": "session_meta",
+        "payload": {"id": id, "session_id": id, "timestamp": "2026-11-16T00:00:00Z", "cli_version": "0.130.0"},
+    })];
+    for (turn, prompt) in (1..).zip(PROMPTS) {
+        let at = format!("2026-11-16T00:0{turn}:00Z");
+        lines.push(json!({
+            "timestamp": at,
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "turn_id": format!("t{turn}"),
+                "item": {"type": "UserMessage", "id": format!("u{turn}"), "content": [{"type": "text", "text": prompt}]},
+            },
+        }));
+        lines.push(json!({
+            "timestamp": at,
+            "type": "event_msg",
+            "payload": {"type": "task_complete", "turn_id": format!("t{turn}"), "last_agent_message": "ok"},
+        }));
+    }
+    lines.iter().map(|line| format!("{line}\n")).collect()
+}
+
+/// A Copilot session state of [`PROMPTS`], each turn finished, for
+/// conversation `id` working in `folder`.
+fn copilot_events(id: &str, folder: &Path) -> String {
+    let start = "00000000-0000-4000-8000-000000000000";
+    let mut lines = vec![json!({
+        "type": "session.start",
+        "data": {
+            "sessionId": id,
+            "version": 1,
+            "producer": "copilot-agent",
+            "copilotVersion": "1.0.112-0",
+            "startTime": "2026-11-16T00:00:00.000Z",
+            "selectedModel": "gpt-4.1",
+            "contextTier": null,
+            "context": {"cwd": text(folder)},
+            "alreadyInUse": false,
+            "remoteSteerable": false,
+        },
+        "id": start,
+        "timestamp": "2026-11-16T00:00:00.000Z",
+        "parentId": null,
+    })];
+    let mut parent = start.to_owned();
+    for (turn, prompt) in (1..).zip(PROMPTS) {
+        let at = format!("2026-11-16T00:0{turn}:00.000Z");
+        let records = [
+            (
+                "user.message",
+                json!({
+                    "content": prompt,
+                    "hasSubmittedTask": false,
+                    "transformedContent": prompt,
+                    "messageId": format!("m{turn}"),
+                    "supportedNativeDocumentMimeTypes": [],
+                    "delivery": "immediate",
+                    "interactionId": format!("i{turn}"),
+                    "turnId": "0",
+                    "parentAgentTaskId": null,
+                }),
+            ),
+            ("assistant.turn_start", json!({"turnId": "0", "interactionId": format!("i{turn}"), "agentMode": "interactive"})),
+            (
+                "assistant.message",
+                json!({
+                    "messageId": format!("a{turn}"),
+                    "originatingMessageId": format!("m{turn}"),
+                    "model": "gpt-4.1",
+                    "content": "ok",
+                    "toolRequests": [],
+                    "interactionId": format!("i{turn}"),
+                    "turnId": "0",
+                    "rte": null,
+                    "apiCallId": format!("c{turn}"),
+                }),
+            ),
+            ("assistant.turn_end", json!({"turnId": "0"})),
+        ];
+        for (step, (kind, data)) in records.into_iter().enumerate() {
+            let record = format!("00000000-0000-4000-8000-00000000{turn:02}{step:02}");
+            lines.push(json!({"type": kind, "data": data, "id": record, "timestamp": at, "parentId": parent}));
+            parent = record;
+        }
+    }
+    lines.iter().map(|line| format!("{line}\n")).collect()
+}
+
+/// FK-3, D181 across machines: a session of `agent` on box-1, whose
+/// conversation holds the three prompts, forked onto box-2 with its
+/// conversation before turn 2 resumes there with turn 1 only, cut where
+/// its own CLI's format says turn 2 starts. box-1's conversation is as it
+/// was.
+async fn box_fork_before_turn_2_carries_turn_1_only(agent: &str) {
+    let rig = Rig::start(&["box-1", "box-2"], &[REPO]).await;
+    let (one, two) = (Rig::box_id("box-1"), Rig::box_id("box-2"));
+    let channel = rig.create_channel("Payments", &[REPO], &[rig.host_id().await, one.clone(), two.clone()]).await;
+    let mut start = common::start_request(channel.id.as_ref().unwrap(), &one, "Cache warmup");
+    start.agent = Some(pb::AgentId { value: agent.to_owned() });
+    let started = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .start_session(start)
+        .await
+        .expect("the session starts")
+        .into_inner();
+    let ended = rig.ended(&started.operation.expect("a start has an operation")).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    let parent = started.session.expect("a start names its session");
+    rig.wait_session(&parent, "live", is_live).await;
+    let box_one = rig.the("box-1");
+    let launch = box_one.store().agent(&parent.value).unwrap().expect("box-1 has the agent").launch;
+    let folder = box_one.store().session(&parent.value).unwrap().expect("box-1 has the session").folder;
+    let talk = match agent {
+        remote_rig::CODEX_AGENT => codex_rollout(&launch.conversation_id),
+        _ => copilot_events(&launch.conversation_id, &folder),
+    };
+    std::fs::create_dir_all(launch.conversation_file.parent().unwrap()).unwrap();
+    std::fs::write(&launch.conversation_file, &talk).unwrap();
+
+    let mut cut = request(&parent, pb::ForkKind::CodeAndContext, &two);
+    cut.before_turn = 2;
+    let started = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .fork_session(cut)
+        .await
+        .expect("the fork starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    let Some(pb::operation::Result::Session(id)) = ended.result else {
+        panic!("the fork made no session: {ended:?}");
+    };
+    rig.wait_session(&id, "live on box-2", |s| s.machine.as_ref() == Some(&two) && is_live(s)).await;
+
+    let theirs = rig.the("box-2").store().agent(&id.value).unwrap().expect("box-2 has the fork's agent").launch;
+    let copy = std::fs::read_to_string(&theirs.conversation_file).unwrap();
+    assert!(copy.contains(PROMPTS[0]), "the fork keeps turn 1:\n{copy}");
+    for prompt in &PROMPTS[1..] {
+        assert!(!copy.contains(prompt), "the fork stops before turn 2:\n{copy}");
+    }
+    assert_eq!(std::fs::read_to_string(&launch.conversation_file).unwrap(), talk);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_fork_from_box_1_onto_box_2_before_turn_2_carries_turn_1_only() {
+    box_fork_before_turn_2_carries_turn_1_only(remote_rig::CODEX_AGENT).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copilot_fork_from_box_1_onto_box_2_before_turn_2_carries_turn_1_only() {
+    box_fork_before_turn_2_carries_turn_1_only(remote_rig::COPILOT_AGENT).await;
 }

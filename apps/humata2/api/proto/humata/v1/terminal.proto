@@ -22,8 +22,10 @@ service TerminalService {
   // Output from the offset on, gapless and without repeats (PER-3, TR-4).
   // Detaching or a dropped stream leaves the process running (PER-4).
   rpc Attach(stream AttachClientMessage) returns (stream AttachServerMessage);
-  // Types text into a tab as one bracketed paste (SM-10), now or when the
-  // agent's turn ends. Used for comments, notes and session_type.
+  // Types text into a tab as raw keystrokes, now or when the agent's turn
+  // ends. The caller adds the Enter, and wraps the text in a bracketed paste
+  // (SM-10) when it must arrive as one paste. Used for comments, notes and
+  // session_type.
   rpc Type(TypeRequest) returns (TypeResponse);
   // Withdraws text still waiting for a turn end.
   rpc CancelQueuedTyping(CancelQueuedTypingRequest) returns (CancelQueuedTypingResponse);
@@ -59,6 +61,11 @@ message Tab {
   uint64 earliest_offset = 6;
   // Set for a machine shell (session unset).
   MachineId machine = 7;
+  // What the program in the tab reports about itself (D480): the title it
+  // sets (OSC 0/2) and its folder (OSC 7, as a path). Unset until it says.
+  // Never the tab's name: `title` stays the user's own.
+  optional string program_title = 8;
+  optional string pwd = 9;
 }
 
 message OpenMachineShellRequest {
@@ -74,6 +81,13 @@ message OpenShellTabRequest {
   SessionId session = 2;
   // Start in this repo's clone; unset starts in the session folder.
   RepoRef repo = 3;
+  // PL-10 "Open terminal here": start in this folder, an absolute path on the
+  // session's machine, instead of the session folder or `repo`. It must be
+  // inside the session's folder, one of its clones, its channel's folder or
+  // the place files from other machines land. It is made canonical first;
+  // `..`, a link out of those places, a missing folder and a file are
+  // refused. Unset (empty) leaves the start to `repo`.
+  string folder = 4;
 }
 
 message CloseTabRequest {
@@ -225,6 +239,10 @@ message TerminalNotice {
     KIND_EXITED = 5;
     KIND_REQUEST_ANSWERED = 6; // IN-12, IN-13
     KIND_FORKED_FROM = 7;      // FK-10
+    // From a machine, once an attach from an offset has replayed what it
+    // missed, with caught_up_lines counting those lines. The host folds it
+    // into the KIND_RECONNECTED it shows (SE-16, D345).
+    KIND_CAUGHT_UP = 8;
   }
   Kind kind = 1;
   string text = 2;
@@ -256,6 +274,13 @@ message TypeResponse {
   bool typed = 2;
   // SE-23: queued, and waits for Send now rather than a turn end.
   bool turn_end_uncertain = 3;
+  // True only when the daemon wrote the return that submits the text (the
+  // text ended in a newline, D671). False when there was no trailing
+  // newline, so the text is only in the input, and while queued.
+  bool submitted = 4;
+  // True when the text was written while the agent was mid-turn: the agent
+  // itself decides whether to queue it, and Humata can't tell.
+  bool agent_busy = 5;
 }
 
 message QueuedMessage {

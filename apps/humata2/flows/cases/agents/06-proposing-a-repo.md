@@ -99,6 +99,14 @@ Layer: agents. Platforms: macOS, Linux, web (the Inbox card).
 - **Expected outcome:** the channel name and machines are unchanged, and the Inbox is empty.
 - **Status:** Works (real daemon). `daemon/humatad/tests/channel_repo_propose.rs::other_channel_changes_by_an_agent_are_still_never`. The test runs at the default rule. The tool text says the user can change the rule, so this is "never by default", not "never".
 
+### The agent searches outside the default scope
+
+- **When:** the scope is `acme`, and the agent needs `acme-labs/rounding`.
+- **I do:** nothing. The agent calls `repo_search` with `owners: ["acme-labs"]`, then `channel_add_repo`.
+- **I see:** the card names the repo and marks it "not in your library yet".
+- **Expected:** the widened search covers that call only. The agent can't save the scope or remove library repos. Approving adds the repo to the channel and the library, and denying adds nothing (RL-11, D479).
+- **Status:** **Works** in the daemon: `daemon/humatad/tests/repo_tools.rs::naming_owners_widens_that_one_call_and_saves_nothing` and `::an_agent_cannot_remove_a_repo_and_the_library_is_unchanged`; approving adds the repo to the library: `daemon/humatad/tests/repo_library_adds.rs::an_approved_agent_proposal_is_recorded_once_the_user_says_yes`. The card's "not in your library yet" mark is **Not built: ROAM** (the CH-26 card is not drawn yet). No test checks that denying adds nothing to the library.
+
 ## Expected outcomes
 
 - [ ] A proposal from the agent's CLI becomes one Inbox request on its own channel, under the repo-add rule.

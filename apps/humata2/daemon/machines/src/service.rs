@@ -77,8 +77,10 @@ WantedBy=default.target
 /// Shell helpers every script shares. `stray` stops a machine daemon this
 /// unit doesn't own, such as one a bridge or an older setsid start left
 /// behind, which would hold the socket and make the new one exit; it never
-/// matches a `serve --stdio` peer link. The bracket keeps pkill and pgrep
-/// from matching the script itself.
+/// matches a `serve --stdio` peer link. `-x -f` matches the whole command
+/// line, which must start with the daemon's own path: the scripts run as
+/// `sh -c '<script>'` and their text holds the unit's `ExecStart=` line, so
+/// a pattern matched anywhere in the command line would stop the script.
 const HELPERS: &str = r#"set -u
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -89,9 +91,9 @@ drop_cron() {
   return 0
 }
 stray() {
-  pkill -u "$(id -u)" -f '[h]umatad2 serve --role machine' 2>/dev/null
+  pkill -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine' 2>/dev/null
   n=0
-  while pgrep -u "$(id -u)" -f '[h]umatad2 serve --role machine' >/dev/null 2>&1 && [ "$n" -lt 10 ]; do
+  while pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine' >/dev/null 2>&1 && [ "$n" -lt 10 ]; do
     sleep 1; n=$((n + 1))
   done
   return 0
@@ -121,7 +123,7 @@ if [ -f "$unit_dir/humatad2.service" ] && [ "$(cat "$unit_dir/humatad2.service" 
   && systemctl --user is-active --quiet humatad2.service 2>/dev/null; then
   printf 'humata2.running=systemd\n'
 elif [ ! -f "$unit_dir/humatad2.service" ] && [ "$boot_entry" = yes ] \
-  && pgrep -u "$(id -u)" -f '[h]umatad2 serve --role machine' >/dev/null 2>&1; then
+  && pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine' >/dev/null 2>&1; then
   printf 'humata2.running=setsid\n'
 else
   printf 'humata2.running=no\n'
@@ -185,7 +187,7 @@ line='{BOOT_LINE}'
 stray
 setsid "$bin" serve --role machine </dev/null >/dev/null 2>&1 &
 sleep 2
-pgrep -u "$(id -u)" -f '[h]umatad2 serve --role machine' >/dev/null || {{ echo "humatad2 exited as soon as it started; run $bin serve --role machine there to see why" >&2; exit {DID_NOT_START}; }}
+pgrep -u "$(id -u)" -x -f '[^ ]*humatad2 serve --role machine' >/dev/null || {{ echo "humatad2 exited as soon as it started; run $bin serve --role machine there to see why" >&2; exit {DID_NOT_START}; }}
 "#
         ),
     };
@@ -203,9 +205,16 @@ pub(crate) fn remove_script() -> String {
             [
                 format!("\"$HOME/{BIN_DIR}/{name}\""),
                 format!("\"$HOME/{BIN_DIR}/{}\"", file.staged_name()),
+                format!("\"$HOME/{BIN_DIR}/.{name}.next\""),
                 format!("\"$HOME/{BIN_DIR}\"/.{name}.*.new"),
             ]
         })
+        .chain([
+            format!("\"$HOME/{BIN_DIR}/bundle.json\""),
+            format!("\"$HOME/{BIN_DIR}/.bundle.json.next\""),
+            format!("\"$HOME/{BIN_DIR}\"/.bundle.json.*.new"),
+            format!("\"$HOME/{BIN_DIR}/humatad2.previous\""),
+        ])
         .collect();
     let files = files.join(" ");
     format!(
@@ -276,8 +285,21 @@ esac"#,
             "crontab",
             r#"if [ "$1" = -l ]; then [ -e "$STATE/crontab" ] && cat "$STATE/crontab"; else cat > "$STATE/crontab.new" && mv "$STATE/crontab.new" "$STATE/crontab"; fi"#,
         ),
-        ("pkill", r#"rm -f "$STATE/running""#),
-        ("pgrep", r#"[ -e "$STATE/running" ]"#),
+        // pkill and pgrep also ask the real pgrep whether their pattern
+        // matches the script that called them, as the real ones would. On
+        // macOS pgrep skips its own ancestors unless given `-a`.
+        (
+            "pkill",
+            r#"a=; [ "$(/usr/bin/uname)" = Darwin ] && a=-a
+if /usr/bin/pgrep $a "$@" 2>/dev/null | grep -qx "$PPID"; then touch "$STATE/matched_self"; fi
+rm -f "$STATE/running""#,
+        ),
+        (
+            "pgrep",
+            r#"a=; [ "$(/usr/bin/uname)" = Darwin ] && a=-a
+if /usr/bin/pgrep $a "$@" 2>/dev/null | grep -qx "$PPID"; then touch "$STATE/matched_self"; fi
+[ -e "$STATE/running" ]"#,
+        ),
         (
             "setsid",
             r#"[ -e "$STATE/broken" ] || touch "$STATE/running"; touch "$STATE/setsid_ran""#,
@@ -349,7 +371,12 @@ exec {real} 0.2
             fs::write(installed.join("humatad2"), "").unwrap();
             fs::write(installed.join("humata2_holder"), "").unwrap();
             fs::write(installed.join("humata"), "").unwrap();
+            fs::write(installed.join("stack"), "").unwrap();
             fs::write(installed.join(".humata.staged"), "").unwrap();
+            fs::write(installed.join(".humatad2.next"), "").unwrap();
+            fs::write(installed.join("bundle.json"), "").unwrap();
+            fs::write(installed.join(".bundle.json.next"), "").unwrap();
+            fs::write(installed.join("humatad2.previous"), "").unwrap();
             fs::create_dir_all(home.join(".humata2/state")).unwrap();
             Self {
                 _folder: folder,
@@ -427,6 +454,19 @@ exec {real} 0.2
 
         assert_eq!(machine.run(&remove_script()), Some(0));
         assert_eq!(machine.running(), "humata2.running=no");
+    }
+
+    #[test]
+    fn no_script_takes_itself_for_the_daemon() {
+        let machine = Machine::new(true);
+        machine.set("manager");
+        machine.set("running");
+        assert_eq!(machine.run(&script(ServiceKind::SystemdUser)), Some(0));
+        machine.running();
+        assert_eq!(machine.run(&script(ServiceKind::Setsid)), Some(0));
+        machine.running();
+        assert_eq!(machine.run(&remove_script()), Some(0));
+        assert!(!machine.has("matched_self"));
     }
 
     #[test]
@@ -538,7 +578,13 @@ exec {real} 0.2
             assert!(!machine.home.join(BIN_DIR).join("humatad2").exists());
             assert!(!machine.home.join(BIN_DIR).join("humata2_holder").exists());
             assert!(!machine.home.join(BIN_DIR).join("humata").exists());
+            assert!(!machine.home.join(BIN_DIR).join("stack").exists());
             assert!(!machine.home.join(BIN_DIR).join(".humata.staged").exists());
+            // The release's manifest, what waits to replace it and what it
+            // replaced go too.
+            for name in [".humatad2.next", "bundle.json", ".bundle.json.next", "humatad2.previous"] {
+                assert!(!machine.home.join(BIN_DIR).join(name).exists(), "{name} is still there");
+            }
             assert!(machine.home.join(".humata2/state").is_dir());
         }
     }

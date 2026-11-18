@@ -114,6 +114,91 @@ async fn forgetting_archives_its_sessions_as_lost_and_takes_it_out_of_every_chan
     assert!(!ids.contains(&Rig::box_id("box-1")), "box-1 is still a machine here: {ids:?}");
 }
 
+/// D760: removing a machine from Hosts takes it out of every channel's
+/// machine list too, so it isn't shown anywhere.
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_machine_takes_it_out_of_every_channel() {
+    let rig = Rig::start(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let first = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let second = rig.create_channel("Ledger", &[REPO], &[host.clone(), one.clone()]).await;
+
+    let plan = machines(&rig)
+        .await
+        .plan_remove_machine(pb::PlanRemoveMachineRequest { id: Some(one.clone()) })
+        .await
+        .expect("the removal is planned")
+        .into_inner();
+    let started = machines(&rig)
+        .await
+        .remove_machine(pb::RemoveMachineRequest { id: Some(one.clone()), plan: plan.token, ..Default::default() })
+        .await
+        .expect("the removal starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+
+    for channel in channels_of(&rig, [&first.id, &second.id]).await {
+        assert!(!channel.machines.contains(&one), "box-1 is still in {}: {:?}", channel.name, channel.machines);
+        assert!(channel.machines.contains(&host), "this Mac stays in {}", channel.name);
+    }
+}
+
+/// A removal that fails (the machine refuses every dial, so nothing on it
+/// can be uninstalled) leaves the machine listed and in every channel it
+/// was in (D760).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removal_that_fails_leaves_the_machine_listed_and_in_its_channels() {
+    let mut rig = Rig::start(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let first = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let second = rig.create_channel("Ledger", &[REPO], &[host.clone(), one.clone()]).await;
+    rig.the_mut("box-1").kill();
+    rig.link_lost("box-1").await;
+    rig.the("box-1").refuse_dials();
+
+    let plan = machines(&rig)
+        .await
+        .plan_remove_machine(pb::PlanRemoveMachineRequest { id: Some(one.clone()) })
+        .await
+        .expect("the removal is planned")
+        .into_inner();
+    let started = machines(&rig)
+        .await
+        .remove_machine(pb::RemoveMachineRequest { id: Some(one.clone()), plan: plan.token, ..Default::default() })
+        .await
+        .expect("the removal starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Failed as i32, "a machine that refuses every dial can't be removed");
+
+    let listed = machines(&rig)
+        .await
+        .list_machines(pb::ListMachinesRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .machines;
+    assert!(listed.iter().any(|machine| machine.name == "box-1"), "box-1 is still listed: {listed:?}");
+    for channel in channels_of(&rig, [&first.id, &second.id]).await {
+        assert!(channel.machines.contains(&one), "box-1 left {} though its removal failed", channel.name);
+        assert!(channel.machines.contains(&host), "this Mac stays in {}", channel.name);
+    }
+}
+
+/// The channels `ids`, as the host lists them now.
+async fn channels_of<const N: usize>(rig: &Rig, ids: [&Option<pb::ChannelId>; N]) -> Vec<pb::Channel> {
+    let listed = pb::channel_service_client::ChannelServiceClient::new(rig.channel().await)
+        .list_channels(pb::ListChannelsRequest::default())
+        .await
+        .unwrap()
+        .into_inner()
+        .channels;
+    ids.iter()
+        .map(|id| listed.iter().find(|channel| &channel.id == *id).cloned().expect("the channel is still listed"))
+        .collect()
+}
+
 /// The same key answers the same; a used plan with a new key is refused;
 /// an agent can't forget a machine.
 #[tokio::test(flavor = "multi_thread")]

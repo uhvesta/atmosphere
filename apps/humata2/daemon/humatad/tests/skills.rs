@@ -26,7 +26,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Code, Request};
 
-const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
 /// A tools bundle for linux-x86_64 whose humatad2 runs the real one.
 fn bundle(dir: &Path) -> PathBuf {
@@ -177,21 +177,59 @@ impl Host {
 
     /// Adds box-1 and waits for its link.
     async fn add_box(&self) {
-        let first = self.machines().await.add_ssh_machine(add("", "first")).await.unwrap().into_inner();
+        self.add_box_as("").await;
+    }
+
+    /// As [`Self::add_box`], with `round` in the calls' idempotency keys so
+    /// a second add after a removal is a new call.
+    async fn add_box_as(&self, round: &str) {
+        let first = self
+            .machines()
+            .await
+            .add_ssh_machine(add("", &format!("first{round}")))
+            .await
+            .unwrap()
+            .into_inner();
         let failed = self.watch(&first).await;
-        let Some(pb::error::Kind::HostKeyChanged(key)) = failed.error.and_then(|error| error.kind) else {
+        let Some(pb::error::Kind::HostKeyUnknown(key)) = failed.error.and_then(|error| error.kind) else {
             panic!("expected the host key to need confirming");
         };
         let added = self
             .machines()
             .await
-            .add_ssh_machine(add(&key.presented_fingerprint, "second"))
+            .add_ssh_machine(add(&key.presented_fingerprint, &format!("second{round}")))
             .await
             .unwrap()
             .into_inner();
         let last = self.watch(&added).await;
         assert_eq!(last.state, pb::OperationState::Succeeded as i32, "{:?}", last.error);
         self.linked().await;
+    }
+
+    /// Removes box-1 and waits for the removal to finish.
+    async fn remove_box(&self, key: &str) {
+        let plan = self
+            .machines()
+            .await
+            .plan_remove_machine(pb::PlanRemoveMachineRequest { id: box_id() })
+            .await
+            .unwrap()
+            .into_inner();
+        let operation = self
+            .machines()
+            .await
+            .remove_machine(pb::RemoveMachineRequest {
+                id: box_id(),
+                plan: plan.token,
+                idempotency_key: Some(pb::IdempotencyKey { value: key.to_owned() }),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let done = self.watch(&operation).await;
+        assert_eq!(done.state, pb::OperationState::Succeeded as i32, "{:?}", done.error);
+        assert!(self.list().await.is_empty());
     }
 
     async fn preview(&self) -> pb::SkillsSyncPlan {
@@ -298,6 +336,31 @@ async fn a_first_sync_applies_with_its_plan_and_the_next_preview_is_empty() {
     let next = host.preview().await;
     assert!(!next.first_sync);
     assert!(next.changes.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_removed_and_added_again_has_a_first_sync_that_asks_again() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    write(&host.skills_folder("claude").join("alpha/SKILL.md"), b"alpha v1");
+    host.add_box().await;
+    let plan = host.preview().await;
+    let operation = host.sync("s1", plan.token.into_iter().collect()).await.unwrap();
+    let done = host.watch(&operation).await;
+    assert_eq!(done.state, pb::OperationState::Succeeded as i32, "{:?}", done.error);
+    assert!(!host.preview().await.first_sync);
+
+    host.remove_box("r1").await;
+    host.add_box_as("-again").await;
+
+    // SK-5: the machine added again is new, so its first sync is shown and
+    // asked for, and it doesn't go without the plan.
+    let again = host.preview().await;
+    assert!(again.first_sync);
+    assert_eq!(again.changes.len(), 1);
+    assert_eq!(again.changes[0].kind(), pb::skill_change::Kind::Add);
+    let refused = host.sync("s2", Vec::new()).await.unwrap_err();
+    assert_eq!(refused.code(), Code::FailedPrecondition);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -462,6 +525,7 @@ async fn daemon_with_agent() -> (Daemon, String) {
                 value: SESSION.to_owned(),
             }),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()

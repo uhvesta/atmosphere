@@ -4,7 +4,6 @@
 
 use humata2_proto::humata::v1 as pb;
 
-use super::reply;
 use crate::args::DeskCommand;
 use crate::call::{Ctx, Done};
 use crate::console::Console;
@@ -22,7 +21,7 @@ pub(super) async fn desk<D: Daemon, C: Console>(
                 None => None,
             };
             let request = pb::KeepDeskFolderRequest { session };
-            reply(ctx, rpc::desk::KEEP_DESK_FOLDER, &request).await
+            ctx.change(rpc::desk::KEEP_DESK_FOLDER, &request).await
         }
     }
 }

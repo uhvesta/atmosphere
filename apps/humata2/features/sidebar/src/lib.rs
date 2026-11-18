@@ -24,6 +24,10 @@ pub enum RowKey {
     Channel(ChannelId),
     /// A session in its channel's tree.
     Session(SessionId),
+    /// The Desk row under a channel that has open Desk sessions (CD-2): a
+    /// stop of its own for the keyboard, between the channel and its Desk
+    /// sessions.
+    ChannelDesk(ChannelId),
 }
 
 /// What a row shows.
@@ -98,6 +102,11 @@ pub struct SidebarState {
     /// set, ↑ and ↓ walk through `desk` too, before the channels, in the
     /// order they are drawn.
     pub desk_shown: bool,
+    /// Each channel's open Desk sessions, in the order they were started
+    /// (CD-2): the view draws a Desk row under the channel, above its
+    /// sessions, while the channel has any. Each is a session row at depth
+    /// 1.
+    pub channel_desks: Arc<std::collections::BTreeMap<ChannelId, Vec<Row>>>,
     /// The keyboard cursor.
     pub cursor: Option<RowKey>,
     /// The session or channel the main area shows, highlighted.
@@ -128,6 +137,8 @@ pub enum Delegate {
     OpenChannel(ChannelId),
     /// Open a session.
     OpenSession(SessionId),
+    /// Open a channel's page on its Desk tab.
+    OpenChannelDesk(ChannelId),
 }
 
 /// What happens in the sidebar.
@@ -174,7 +185,12 @@ impl Reducer for Sidebar {
                 state.rebuild();
             }
             SidebarAction::SetCurrent(current) => {
-                if current.is_some() {
+                // Opening a channel from its Desk row leaves the cursor there.
+                let from_desk_row = matches!(
+                    (&state.cursor, &current),
+                    (Some(RowKey::ChannelDesk(from)), Some(RowKey::Channel(to))) if from == to
+                );
+                if current.is_some() && !from_desk_row {
                     state.cursor.clone_from(&current);
                 }
                 state.current = current;
@@ -223,6 +239,7 @@ fn open(key: &RowKey) -> Effect<SidebarAction> {
     Effect::send(SidebarAction::Delegate(match key {
         RowKey::Channel(id) => Delegate::OpenChannel(id.clone()),
         RowKey::Session(id) => Delegate::OpenSession(id.clone()),
+        RowKey::ChannelDesk(id) => Delegate::OpenChannelDesk(id.clone()),
     }))
 }
 
@@ -258,6 +275,8 @@ impl SidebarState {
                     self.folding.sessions.insert(id.clone());
                 }
             }
+            // The Desk row folds with its channel.
+            RowKey::ChannelDesk(_) => {}
         }
     }
 
@@ -270,28 +289,38 @@ impl SidebarState {
             .collect()
     }
 
-    /// Where ↑ or ↓ goes when the Desk rows are showing and the cursor is on
-    /// a row: the neighbour in drawing order (the Desk rows, then the
-    /// channels). `None` leaves the move to the tree alone.
+    /// Where ↑ or ↓ goes when Desk rows are showing and the cursor is on a
+    /// row: the neighbour in drawing order (the Desk rows, then the
+    /// channels, each open channel's own Desk sessions right under it and
+    /// above its sessions, CD-2). `None` leaves the move to the tree alone.
     fn walk_with_desk(&self, movement: Move) -> Option<RowKey> {
-        if !self.desk_shown || self.desk.is_empty() {
+        let desk_shown = self.desk_shown && !self.desk.is_empty();
+        if !desk_shown && self.channel_desks.is_empty() {
             return None;
         }
-        let mut order: Vec<&RowKey> = Vec::new();
+        let mut order: Vec<RowKey> = Vec::new();
         for row in self.rows.iter() {
-            if matches!(row.kind, RowKind::Section("Channels")) {
-                order.extend(self.desk.iter().filter_map(|desk| desk.key.as_ref()));
+            if desk_shown && matches!(row.kind, RowKind::Section("Channels")) {
+                order.extend(self.desk.iter().filter_map(|desk| desk.key.clone()));
             }
-            order.extend(row.key.as_ref());
+            order.extend(row.key.clone());
+            if let Some(RowKey::Channel(id)) = &row.key
+                && !self.folding.channels.contains(id)
+                && let Some(desks) = self.channel_desks.get(id)
+                && !desks.is_empty()
+            {
+                order.push(RowKey::ChannelDesk(id.clone()));
+                order.extend(desks.iter().filter_map(|desk| desk.key.clone()));
+            }
         }
         let at = order
             .iter()
-            .position(|key| Some(*key) == self.cursor.as_ref())?;
+            .position(|key| Some(key) == self.cursor.as_ref())?;
         let next = match movement {
             Move::Down => (at + 1).min(order.len() - 1),
             _ => at.saturating_sub(1),
         };
-        order.get(next).map(|key| (*key).clone())
+        order.get(next).cloned()
     }
 
     fn step(&mut self, movement: Move) {
@@ -300,6 +329,28 @@ impl SidebarState {
         {
             self.cursor = Some(key);
             return;
+        }
+        // On a channel's Desk row, → goes into its Desk sessions and ← back
+        // to the channel.
+        if let Some(RowKey::ChannelDesk(id)) = &self.cursor {
+            match movement {
+                Move::Out => {
+                    self.cursor = Some(RowKey::Channel(id.clone()));
+                    return;
+                }
+                Move::In => {
+                    if let Some(first) = self
+                        .channel_desks
+                        .get(id)
+                        .and_then(|desks| desks.first())
+                        .and_then(|desk| desk.key.clone())
+                    {
+                        self.cursor = Some(first);
+                    }
+                    return;
+                }
+                _ => {}
+            }
         }
         let selectable = self.selectable();
         let Some(&first) = selectable.first() else {
@@ -362,10 +413,21 @@ impl SidebarState {
 
     /// Whether a row with `key` is listed, in the tree or under the Desk.
     fn lists(&self, key: &RowKey) -> bool {
+        if let RowKey::ChannelDesk(id) = key {
+            return self
+                .channel_desks
+                .get(id)
+                .is_some_and(|desks| !desks.is_empty());
+        }
         self.index_of(key).is_some()
             || self
                 .desk
                 .iter()
+                .any(|row| row.key.as_ref() == Some(key))
+            || self
+                .channel_desks
+                .values()
+                .flatten()
                 .any(|row| row.key.as_ref() == Some(key))
     }
 
@@ -465,6 +527,21 @@ impl SidebarState {
                 .map(|session| session_row(RowKey::Session(session.id.clone()), 1, session, None))
                 .collect(),
         );
+        let mut channel_desks: std::collections::BTreeMap<ChannelId, Vec<Row>> =
+            std::collections::BTreeMap::new();
+        for session in &workspace.sessions {
+            let Some(record) = workspace.desk.channel_sessions.get(&session.id) else {
+                continue;
+            };
+            if session.archived || record.desk.closed.is_some() {
+                continue;
+            }
+            channel_desks
+                .entry(record.channel.clone())
+                .or_default()
+                .push(session_row(RowKey::Session(session.id.clone()), 1, session, None));
+        }
+        self.channel_desks = Arc::new(channel_desks);
         if self
             .cursor
             .as_ref()

@@ -17,6 +17,7 @@ use humata2_contain::{
     seed_claude_copy,
 };
 use humata2_revive::{Contain, ContainRefused};
+use humata2_sessions::Layout;
 use humata2_store::{AgentRecord, Store, StoreError};
 
 use crate::guard::Guard;
@@ -86,7 +87,7 @@ fn agent_of(name: &str) -> Agent {
 pub(crate) struct Contained {
     store: Arc<Store>,
     /// Where every channel's folder is; hidden but for the session's own.
-    channels: PathBuf,
+    channels: Layout,
     /// The daemon's state folder: hidden, but for the hook files agents run.
     state: PathBuf,
     /// The daemon's socket: the one local connection allowed.
@@ -99,10 +100,10 @@ pub(crate) struct Contained {
 }
 
 impl Contained {
-    pub(crate) fn new(store: Arc<Store>, channels: PathBuf, state: PathBuf, socket: PathBuf, home: PathBuf) -> Self {
+    pub(crate) fn new(store: Arc<Store>, channels: impl Into<Layout>, state: PathBuf, socket: PathBuf, home: PathBuf) -> Self {
         Self {
             store,
-            channels,
+            channels: channels.into(),
             state,
             socket,
             home,
@@ -129,7 +130,8 @@ impl Contained {
         let agent = agent_of(&session.agent);
         let own = own_state(agent, &self.home, &self.state, &session.folder, login)?;
         let mut hidden = own.hidden;
-        hidden.push(self.channels.clone());
+        hidden.push(self.channels.root());
+        hidden.extend(self.channels.older_roots());
         hidden.push(self.state.clone());
         Ok(Containment {
             session_folder: session.folder.clone(),
@@ -297,7 +299,7 @@ impl Contain for Contained {
             .ok_or_else(|| ContainRefused::NoSession {
                 session: record.session.clone(),
             })?;
-        let shared = self.channels.join(&channel.folder).join("shared");
+        let shared = self.channels.shared(&channel.folder);
         Ok(self.containment(&session, shared, login)?.wrap(argv)?)
     }
 }
@@ -350,6 +352,7 @@ mod tests {
                 holder_socket: PathBuf::new(),
                 cols: 80,
                 rows: 24,
+                cli_version: None,
             },
             state: humata2_store::AgentState::Launching,
             generation: 1,

@@ -12,7 +12,7 @@ use crate::check::{self, Facts};
 use crate::enroll::{self, Key};
 use crate::error::{Remedy, SetupError, ValuesError};
 use crate::identity::{self, HostKey, Identity};
-use crate::install::{self, InstallProblem, Installed, InstalledFile, Payload};
+use crate::install::{self, InstallProblem, InstalledFile, Payload};
 use crate::known_hosts;
 use crate::link::Link;
 use crate::login::{Prompt, detect_prompt, kind_of_line};
@@ -21,6 +21,7 @@ use crate::platform::{Os, Platform};
 use crate::provider::{Action, Provider, Reach};
 use crate::runner::{Exit, Output, Purpose, Runner};
 use crate::service::{self, ServiceKind, ServiceOutcome};
+use crate::stack_config::{self, StackConfig};
 
 /// How many output lines a failed step keeps (MP-20).
 const TAIL_LINES: usize = 40;
@@ -155,26 +156,19 @@ pub struct Ready {
     pub link: Link,
     pub facts: Facts,
     pub service: ServiceKind,
-    /// Files whose new copy waits beside the old one because a holder runs
-    /// (TS-1); the next connect after the holders end swaps them in.
-    pub staged: Vec<InstalledFile>,
 }
 
 /// One file the install step still has to do.
 #[derive(Debug, Clone)]
 enum Pending {
-    /// Send the bytes.
+    /// Send a tool's bytes.
     Send(Payload),
-    /// A verified copy is already staged there; move it in.
-    Promote(Payload),
-}
-
-impl Pending {
-    fn payload(&self) -> &Payload {
-        match self {
-            Self::Send(payload) | Self::Promote(payload) => payload,
-        }
-    }
+    /// Write the release's `bundle.json` (UP-1), after the tools it names.
+    Bundle(Arc<[u8]>),
+    /// Put the host's stack settings in `~/.humata2/config` (D411), last:
+    /// the machine already has the `stack` that reads them. The send leaves
+    /// a copy that already matches alone.
+    Config(StackConfig),
 }
 
 /// One machine's setup.
@@ -191,7 +185,6 @@ pub struct Setup {
     identity: Option<Identity>,
     facts: Option<Facts>,
     pending: Vec<Pending>,
-    staged: Vec<InstalledFile>,
     service: Option<ServiceKind>,
     /// The enrollment key to write on the machine, until it is written.
     enroll: Option<Key>,
@@ -203,6 +196,11 @@ pub struct Setup {
 struct Failed {
     error: SetupError,
     tail: String,
+}
+
+/// Whether a failed command printed anything its failure shows (MP-20).
+fn printed_anything(output: &Output) -> bool {
+    !output.tail(TAIL_LINES).trim().is_empty()
 }
 
 impl Failed {
@@ -277,7 +275,6 @@ impl Setup {
             identity: None,
             facts: None,
             pending: Vec::new(),
-            staged: Vec::new(),
             service: None,
             enroll: None,
             restart: false,
@@ -358,6 +355,7 @@ impl Setup {
                     SetupError::HostKeyScanFailed {
                         machine: machine.clone(),
                         exit: output.exit,
+                        printed: !tail.trim().is_empty(),
                     },
                     tail,
                 )
@@ -420,7 +418,6 @@ impl Setup {
                         link: link.clone(),
                         facts: facts.clone(),
                         service,
-                        staged: self.staged.clone(),
                     }),
                     _ => None,
                 };
@@ -508,6 +505,7 @@ impl Setup {
                     SetupError::CommandFailed {
                         action: Action::Create,
                         exit: output.exit,
+                        printed: printed_anything(&output),
                     },
                     &output,
                 ));
@@ -553,6 +551,7 @@ impl Setup {
             return Err(failed(SetupError::CommandFailed {
                 action: Action::Identity,
                 exit: output.exit,
+                printed: printed_anything(&output),
             }));
         }
         let identity = identity::parse_identity(&output.stdout, &self.machine)
@@ -620,7 +619,8 @@ impl Setup {
             return Ok(Done::Login(LoginReason::Prompted(prompt_of(&output)), output.tail(TAIL_LINES)));
         }
         if output.exit == Exit::Code(127) {
-            return Err(Failed::with_output(SetupError::ToolMissing { machine }, &output));
+            let printed = printed_anything(&output);
+            return Err(Failed::with_output(SetupError::ToolMissing { machine, printed }, &output));
         }
         // Still booting, sshd not up yet, or the key not installed yet.
         self.attempt += 1;
@@ -630,6 +630,7 @@ impl Setup {
                     machine,
                     attempts: self.attempt,
                     exit: output.exit,
+                    printed: printed_anything(&output),
                 },
                 &output,
             ));
@@ -695,27 +696,44 @@ impl Setup {
                 .ok_or_else(|| Failed::new(SetupError::NoServiceManager { machine: machine.clone() }))?,
         };
         let payloads = builds.payloads(found).map_err(Failed::new)?;
+        // A machine that already runs humatad2 is upgraded by Migrate
+        // (UP-1), never by a reconnect: only a file it lacks is put back.
+        // A first install sends every file and the release's bundle.json.
+        let first = facts.installed(InstalledFile::Humatad).is_none();
         self.pending.clear();
-        self.staged.clear();
         for payload in payloads {
             let file = payload.file();
-            if facts.installed(file) == Some(payload.sha256()) {
-                continue;
+            let wanted = if first {
+                facts.installed(file) != Some(payload.sha256())
+            } else {
+                facts.installed(file).is_none()
+            };
+            if wanted {
+                self.pending.push(Pending::Send(payload));
             }
-            if facts.staged(file) == Some(payload.sha256()) {
-                if facts.holders && file.waits_for_holders() {
-                    // Still in use: it stays staged, and nothing is sent.
-                    self.staged.push(file);
-                } else {
-                    self.pending.push(Pending::Promote(payload));
-                }
-                continue;
+        }
+        if first {
+            if let Some(bundle) = builds.bundle_json(found).map_err(Failed::new)? {
+                self.pending.push(Pending::Bundle(bundle));
             }
-            self.pending.push(Pending::Send(payload));
         }
         // Nothing to install and the service already runs the way setup
         // would start it: a reconnect leaves the daemon and its sessions be.
+        // The stack settings are read by `stack` each time it runs, so they
+        // never ask for a restart.
         self.restart = !self.pending.is_empty() || facts.running != Some(service);
+        if let Some(config) = builds.stack_config().map_err(Failed::new)? {
+            self.pending.push(Pending::Config(config));
+        }
+        if let Some(config) = builds.repos_config().map_err(Failed::new)? {
+            self.pending.push(Pending::Config(config));
+        }
+        if let Some(config) = builds.agents_config().map_err(Failed::new)? {
+            self.pending.push(Pending::Config(config));
+        }
+        if let Some(config) = builds.machine_scripts_config().map_err(Failed::new)? {
+            self.pending.push(Pending::Config(config));
+        }
         self.service = Some(service);
         self.facts = Some(facts);
         Ok(if self.enroll.is_some() || !self.pending.is_empty() {
@@ -749,6 +767,7 @@ impl Setup {
                 SetupError::Enroll {
                     machine: self.machine.clone(),
                     exit: output.exit,
+                    printed: printed_anything(&output),
                 },
                 &output,
             ));
@@ -757,8 +776,9 @@ impl Setup {
         Ok(self.after_install())
     }
 
-    /// Installs the next file that differs from the build, or moves in a
-    /// staged copy; one per call.
+    /// Installs the next file that differs from the build, writes the
+    /// release's bundle.json, or puts the stack settings in place; one per
+    /// call.
     fn install(&mut self, runner: &dyn Runner) -> Result<Done, Failed> {
         if let Some(key) = self.enroll.clone() {
             return self.enroll(runner, key);
@@ -766,43 +786,42 @@ impl Setup {
         let Some(pending) = self.pending.first().cloned() else {
             return Ok(self.after_install());
         };
-        let payload = pending.payload();
         let link = self.require_link()?;
-        let invocation = match &pending {
-            Pending::Send(payload) => link.script(
-                &install::script(payload, &install::nonce()),
-                Purpose::Install,
-                Some(INSTALL_TIMEOUT),
-                Some(Arc::clone(payload.bytes())),
+        let (file, invocation) = match &pending {
+            Pending::Send(payload) => (
+                Some(payload.file()),
+                link.script(
+                    &install::script(payload, &install::nonce()),
+                    Purpose::Install,
+                    Some(INSTALL_TIMEOUT),
+                    Some(Arc::clone(payload.bytes())),
+                ),
             ),
-            Pending::Promote(payload) => link.script(
-                &install::promote_script(payload.file(), payload.sha256()),
-                Purpose::Promote,
-                Some(CHECK_TIMEOUT),
+            Pending::Bundle(bundle) => (
                 None,
+                link.script(
+                    &install::bundle_script(bundle, &install::nonce()),
+                    Purpose::Install,
+                    Some(INSTALL_TIMEOUT),
+                    Some(Arc::clone(bundle)),
+                ),
             ),
-        }
-        .map_err(Failed::new)?;
-        let output = runner.run(&invocation).map_err(Failed::new)?;
-        let file = payload.file();
-        match Installed::from_exit(output.exit) {
-            Some(Installed::Swapped) => {}
-            Some(Installed::Staged) => self.staged.push(file),
-            None => {
-                let problem = InstallProblem::from_exit(output.exit);
-                if matches!(pending, Pending::Promote(_)) {
-                    // The staged copy went or was damaged: send it whole.
-                    self.pending[0] = Pending::Send(payload.clone());
-                }
-                return Err(Failed::with_output(
-                    SetupError::Install {
-                        machine: self.machine.clone(),
-                        file,
-                        problem,
-                    },
-                    &output,
-                ));
+            Pending::Config(config) => {
+                stack_config::push(link, runner, config).map_err(Failed::new)?;
+                self.pending.remove(0);
+                return Ok(self.after_install());
             }
+        };
+        let invocation = invocation.map_err(Failed::new)?;
+        let output = runner.run(&invocation).map_err(Failed::new)?;
+        if !output.exit.success() {
+            let machine = self.machine.clone();
+            let problem = InstallProblem::from_exit(output.exit, printed_anything(&output));
+            let error = match file {
+                Some(file) => SetupError::Install { machine, file, problem },
+                None => SetupError::Bundle { machine, problem },
+            };
+            return Err(Failed::with_output(error, &output));
         }
         self.pending.remove(0);
         Ok(self.after_install())
@@ -846,11 +865,18 @@ impl Setup {
                 ))
             }
             ServiceOutcome::DidNotStart => Err(Failed::with_output(
-                SetupError::ServiceDidNotStart { machine },
+                SetupError::ServiceDidNotStart {
+                    machine,
+                    printed: printed_anything(&output),
+                },
                 &output,
             )),
             ServiceOutcome::Failed(exit) => Err(Failed::with_output(
-                SetupError::ServiceFailed { machine, exit },
+                SetupError::ServiceFailed {
+                    machine,
+                    exit,
+                    printed: printed_anything(&output),
+                },
                 &output,
             )),
         }

@@ -179,6 +179,13 @@ crate.annotation(
     crate_features = ["syntect"],
 )
 
+# Hashing stays fast in fastbuild: humatad2 hashes its ~150 MB binary when it
+# starts, and unoptimized sha2 made that take seconds under load.
+crate.annotation(
+    crate = "sha2",
+    rustc_flags = ["-Copt-level=3"],
+)
+
 # Humata 2's diff view (D67) replaces and adds files in gpui-component's diff
 # without starting over; see apps/humata2/diff/patches. In both @crates and
 # @crates_gpui_fast.
@@ -198,6 +205,16 @@ crate.annotation(
     crate = "gpui-base",
     patch_args = ["-p1"],
     patches = ["//apps/humata2/markdown/patches:gpui-base-selection.patch"],
+)
+
+# gpui's test scheduler, patched (D759): a block with a timeout took its two
+# locks in the opposite order to a wake from another thread, so a headless
+# app shutting down while a client thread woke one of its tasks hung for
+# good; see apps/humata2/engine/patches. In every crate repository.
+crate.annotation(
+    crate = "gpui-pre-scheduler",
+    patch_args = ["-p1"],
+    patches = ["//apps/humata2/engine/patches:gpui-scheduler-lock-order.patch"],
 )
 
 # GPUI's dev build derives inspector reflection under debug_assertions.
@@ -379,6 +396,43 @@ copilot_cli(
 
 copilot_cli(
     name = "copilot_cli_linux_x64",
+    platform = "linux_x64",
+)
+
+# Test-only agent CLIs for Humata 2's Linux VM rig: Copilot and Codex, one
+# repository per platform, each fetched only when used. See
+# apps/humata2/testing/agent_clis/agent_clis.bzl.
+h2_copilot_cli = use_repo_rule("//apps/humata2/testing/agent_clis:agent_clis.bzl", "h2_copilot_cli")
+
+h2_codex_cli = use_repo_rule("//apps/humata2/testing/agent_clis:agent_clis.bzl", "h2_codex_cli")
+
+h2_copilot_cli(
+    name = "h2_copilot_darwin_arm64",
+    platform = "darwin_arm64",
+)
+
+h2_copilot_cli(
+    name = "h2_copilot_linux_arm64",
+    platform = "linux_arm64",
+)
+
+h2_copilot_cli(
+    name = "h2_copilot_linux_x64",
+    platform = "linux_x64",
+)
+
+h2_codex_cli(
+    name = "h2_codex_darwin_arm64",
+    platform = "darwin_arm64",
+)
+
+h2_codex_cli(
+    name = "h2_codex_linux_arm64",
+    platform = "linux_arm64",
+)
+
+h2_codex_cli(
+    name = "h2_codex_linux_x64",
     platform = "linux_x64",
 )
 

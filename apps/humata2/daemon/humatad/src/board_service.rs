@@ -47,8 +47,9 @@ const PAGE_DEFAULT: usize = 200;
 /// The most items in one page.
 const PAGE_MAX: usize = 1000;
 
-/// The column an item made without one starts in: Backlog.
-const FIRST_COLUMN: i32 = 1;
+/// The column an item made without one starts in: To do, as the app's New
+/// item and every door's default say (VF-21).
+const DEFAULT_COLUMN: i32 = 2;
 
 /// The Done column.
 const DONE: i32 = 5;
@@ -68,6 +69,19 @@ pub(crate) struct BoardSvc {
     /// On the host: tells the feed a session changed, merged as the app
     /// sees it, when a replay leaves a write out of its summary (AW-9, D267).
     told: Option<crate::session_service::Tell>,
+    /// On the host: the repo library a machine's agents search (RL-12, D568).
+    repos: Option<crate::repo_service::RepoSvc>,
+    /// On the host: the machine, file and transfer services a machine's
+    /// agents reach through it (D768), given once they are made.
+    host_calls: Arc<std::sync::OnceLock<HostCalls>>,
+}
+
+/// The host's services that answer a machine's agents' lookups, file reads
+/// and transfers, as those agents (D768).
+pub(crate) struct HostCalls {
+    pub(crate) machines: crate::machine_service::MachineSvc,
+    pub(crate) files: Arc<crate::files::Files>,
+    pub(crate) transfers: Arc<crate::transfer_service::TransferSvc>,
 }
 
 /// A write, as asked.
@@ -142,10 +156,10 @@ fn revision_conflict(current: &BoardItemRecord, expected: Option<u64>) -> Status
         Code::Aborted,
         pb::Error {
             message: format!(
-                "{} is at revision {}, not {expected} as the change was made against, and a field this change sets was changed since",
+                "{} changed since you read it: it is at revision {}, not {expected}, and a field this change sets changed too",
                 current.key, current.revision
             ),
-            fix: "read the item again, check the change still makes sense, and send it again; the change was kept in the item's history as lost".to_owned(),
+            fix: "read the item again with `humata board` or `board_item_get`, check the change still makes sense, and send it again with the new revision; the refused change is kept in the item's history as lost".to_owned(),
             retry: None,
             kind: Some(pb::error::Kind::RevisionConflict(pb::RevisionConflict {
                 kind: pb::EntityKind::BoardItem as i32,
@@ -157,6 +171,21 @@ fn revision_conflict(current: &BoardItemRecord, expected: Option<u64>) -> Status
             })),
         },
     )
+}
+
+/// An item made with no board goes on the calling agent's own session board
+/// (VF-21, BD-9): the daemon decides, so the CLI, MCP and the app agree. Done
+/// before forwarding and journaling, so the board travels with the request.
+/// A person names the board, and `create` refuses one that doesn't.
+fn board_defaulted(caller: &Caller, mut request: pb::CreateItemRequest) -> pb::CreateItemRequest {
+    if let (None, Caller::Agent(agent)) = (&request.board, caller) {
+        request.board = Some(pb::BoardRef {
+            board: Some(pb::board_ref::Board::Session(pb::SessionId {
+                value: agent.session.id.to_string(),
+            })),
+        });
+    }
+    request
 }
 
 /// `current` without `remove`, then `add` after it, each once.
@@ -223,6 +252,8 @@ impl BoardSvc {
             finished: Arc::new(Answers::new()),
             forwarder: None,
             told: None,
+            repos: None,
+            host_calls: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -231,6 +262,30 @@ impl BoardSvc {
     pub(crate) fn telling(mut self, told: crate::session_service::Tell) -> Self {
         self.told = Some(told);
         self
+    }
+
+    /// Runs the repo searches and library lists a machine forwards for its
+    /// agents against `repos`, the host's library (RL-12, D568).
+    pub(crate) fn with_repos(mut self, repos: crate::repo_service::RepoSvc) -> Self {
+        self.repos = Some(repos);
+        self
+    }
+
+    /// Runs a machine's agents' machine lookups, file reads and transfers
+    /// against `calls`, the host's own services (D768). The first call wins;
+    /// every clone of this service sees it.
+    pub(crate) fn answer_host_calls(&self, calls: HostCalls) {
+        let _ = self.host_calls.set(calls);
+    }
+
+    /// The host's services, or why a forwarded `method` can't be run.
+    fn host_calls_for(&self, method: &str) -> Result<&HostCalls, Status> {
+        self.host_calls.get().ok_or_else(|| status::not_built(method))
+    }
+
+    /// The host's repo library, or why a forwarded `method` can't be run.
+    fn repos_for(&self, method: &str) -> Result<crate::repo_service::RepoSvc, Status> {
+        self.repos.clone().ok_or_else(|| status::not_built(method))
     }
 
     /// Sends the board calls of this machine's agents to the host while it
@@ -636,10 +691,17 @@ impl BoardSvc {
             return Err(status::missing("title"));
         }
         let column = match request.column {
-            0 => FIRST_COLUMN,
+            0 => DEFAULT_COLUMN,
             column => column_number(column, "column")?,
         };
-        let board = request.board.as_ref().ok_or_else(|| status::missing("board"))?;
+        let board = request.board.as_ref().ok_or_else(|| {
+            status::invalid_field(
+                "board",
+                pb::invalid_field::Problem::Missing,
+                "this item names no board, and only an agent's item defaults to its session's board",
+                "name the board with --global, --session or --channel, or on the Board page of the app",
+            )
+        })?;
         let (key, channel, channel_name) = self.resolve_board(board)?;
         // D216: an archived session's board is hidden, so it takes no new
         // items, as a missing session's board doesn't.
@@ -1069,7 +1131,7 @@ impl pb::board_service_server::BoardService for BoardSvc {
         request: Request<pb::CreateItemRequest>,
     ) -> Result<Response<pb::WriteItemResponse>, Status> {
         let caller = identity::caller(&request)?;
-        let request = request.into_inner();
+        let request = board_defaulted(&caller, request.into_inner());
         if let Some((forwarder, session)) = self.forwarder_for(&caller) {
             return self
                 .forward(forwarder, &session, Method::CreateItem.row(), &request, request.idempotency_key.clone())

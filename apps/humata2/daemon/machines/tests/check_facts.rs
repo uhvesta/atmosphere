@@ -30,7 +30,7 @@ use humata2_machines::{
     ManageError, OpStep, Os, Payload, Platform, RetryPolicy, StepEvent,
 };
 
-/// The same three files for every platform.
+/// The same files for every platform.
 struct Files;
 
 impl Builds for Files {

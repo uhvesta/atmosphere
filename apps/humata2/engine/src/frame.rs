@@ -27,8 +27,9 @@
 //! [`type_character`], [`scroll`], [`drag`]) dispatch real platform events with
 //! `Window::dispatch_event` and draw a natural frame after each one, as a
 //! person's events arrive between frames. Nothing here refreshes.
-//! `type_character` doesn't draw: the caller draws the natural frame in its
-//! own window update, after GPUI delivers the events the key caused.
+//! [`press`], [`release`] and `type_character` don't draw: the caller
+//! releases the key and draws the natural frame each in its own window
+//! update, after GPUI delivers the events the key caused.
 //!
 //! GPUI itself refreshes on some input, and a refreshed frame builds every
 //! view on both engines. The one that matters here: pressing a mouse button
@@ -69,7 +70,7 @@ use gpui_kit::test::{ElementSnapshot, TestQueryExt as _};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext, InputEvent as _, InvalidKeystrokeError, KeyDownEvent,
     KeyUpEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ScrollDelta, ScrollEvent, Window, point,
+    Point, ScrollDelta, ScrollEvent, Window, point, px,
 };
 
 use crate::window::{FrameCounts, frame_counts, painted_sprites};
@@ -284,6 +285,53 @@ pub fn drag(
     button_up(window, to, MouseButton::Left, cx);
 }
 
+/// Drags with the left button from `from`, to a place found only once the
+/// drag has started: a drop zone that exists while something is dragged is
+/// not drawn before the pointer has picked the item up.
+///
+/// Presses at `from`, moves a few pixels so GPUI starts the drag and a
+/// natural frame draws what the drag shows, then calls `find` for where to
+/// drop, moves there in `steps` moves, and releases. When `find` fails
+/// the button is released where the pointer is, so no drag is left open,
+/// and the error is returned.
+///
+/// # Errors
+///
+/// What `find` returns when it can't name the place to drop.
+pub fn drag_to_found<E>(
+    window: &mut Window,
+    from: Point<Pixels>,
+    steps: usize,
+    find: impl FnOnce(&Window) -> Result<Point<Pixels>, E>,
+    cx: &mut App,
+) -> Result<(), E> {
+    move_pointer(window, from, None, cx);
+    button_down(window, from, MouseButton::Left, cx);
+    // GPUI starts a drag once the pointer has moved a few pixels with the
+    // button held; two moves make sure of it.
+    let nudged = point(from.x + px(6.), from.y + px(6.));
+    move_pointer(window, nudged, Some(MouseButton::Left), cx);
+    move_pointer(window, nudged, Some(MouseButton::Left), cx);
+    let to = match find(window) {
+        Ok(to) => to,
+        Err(error) => {
+            button_up(window, nudged, MouseButton::Left, cx);
+            return Err(error);
+        }
+    };
+    let steps = steps.max(1);
+    for step in 1..=steps {
+        let fraction = step as f32 / steps as f32;
+        let at = point(
+            nudged.x + (to.x - nudged.x) * fraction,
+            nudged.y + (to.y - nudged.y) * fraction,
+        );
+        move_pointer(window, at, Some(MouseButton::Left), cx);
+    }
+    button_up(window, to, MouseButton::Left, cx);
+    Ok(())
+}
+
 /// Scrolls by `delta` pixels with the pointer at `at`, then draws a natural
 /// frame.
 pub fn scroll(window: &mut Window, at: Point<Pixels>, delta: Point<Pixels>, cx: &mut App) {
@@ -302,21 +350,31 @@ pub fn scroll(window: &mut Window, at: Point<Pixels>, delta: Point<Pixels>, cx: 
     natural_frame(window, cx);
 }
 
-/// Presses and releases `key`, such as `"enter"` or `"secondary-k"`, then
-/// draws a natural frame. Enter and Tab only run their bindings; other keys
-/// insert their text too, as GPUI's simulated IME does.
+/// Presses `key`, such as `"enter"` or `"secondary-k"`, without drawing
+/// or releasing it, and returns the keystroke for [`release`]. Enter and
+/// Tab only run their bindings; other keys insert their text too, as
+/// GPUI's simulated IME does.
+///
+/// Release the key and draw the natural frame in separate window updates,
+/// as a running app gets them. A control's events (an input's Change after
+/// Backspace, say) reach their subscribers only when the update that
+/// dispatched the key ends, and GPUI draws a window that is due before it
+/// dispatches the next key event, the key-up included. Either frame,
+/// drawn in the key's own update, shows a view that hasn't heard the
+/// change yet, and a view that copies its store into the input as it draws
+/// would put the old text back.
 ///
 /// # Errors
 ///
 /// [`FrameError::InvalidKey`] when GPUI can't parse `key`.
-pub fn press(window: &mut Window, key: &str, cx: &mut App) -> Result<(), FrameError> {
+pub fn press(window: &mut Window, key: &str, cx: &mut App) -> Result<Keystroke, FrameError> {
     let keystroke = Keystroke::parse_with_os(key, cx.platform_info().os).map_err(|source| {
         FrameError::InvalidKey {
             key: key.to_owned(),
             source,
         }
     })?;
-    let keystroke = if matches!(keystroke.key.as_str(), "enter" | "tab") {
+    if matches!(keystroke.key.as_str(), "enter" | "tab") {
         window.dispatch_event(
             KeyDownEvent {
                 keystroke: keystroke.clone(),
@@ -326,16 +384,18 @@ pub fn press(window: &mut Window, key: &str, cx: &mut App) -> Result<(), FrameEr
             .to_platform_input(),
             cx,
         );
-        keystroke
+        Ok(keystroke)
     } else {
         let keystroke = keystroke.with_simulated_ime();
         window.dispatch_keystroke(keystroke.clone(), cx);
-        keystroke
-    };
-    // Buttons activate on key-up, so every press completes the pair.
+        Ok(keystroke)
+    }
+}
+
+/// Releases the key [`press`] pressed, without drawing. Buttons activate on
+/// key-up, so every press is completed by one, in its own window update.
+pub fn release(window: &mut Window, keystroke: Keystroke, cx: &mut App) {
     window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
-    natural_frame(window, cx);
-    Ok(())
 }
 
 /// Types `character` into the focused control, as one key press, without
@@ -426,7 +486,11 @@ pub fn observe(window: &Window) -> Frame {
 #[must_use]
 pub fn find(window: &Window, id: &str) -> Option<ElementSnapshot> {
     observe(window).elements.into_iter().find(|element| {
-        element.visible() && element.path().last().is_some_and(|last| last.to_string() == id)
+        element.visible()
+            && element
+                .path()
+                .last()
+                .is_some_and(|last| last.to_string() == id)
     })
 }
 

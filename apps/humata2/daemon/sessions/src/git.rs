@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::error::GitError;
-use crate::layout::partial;
+use crate::layout::{make_dirs, partial};
 
 /// The production repository address template.
 pub const DEFAULT_REMOTE_TEMPLATE: &str = "https://github.com/{owner}/{name}.git";
@@ -20,7 +20,11 @@ pub fn remote_url(template: &str, owner: &str, name: &str) -> Result<String, Git
 
 pub(crate) fn git(dir: Option<&Path>, args: &[&str]) -> Result<String, GitError> {
     let mut cmd = Command::new("git");
-    cmd.args(args).env("GIT_TERMINAL_PROMPT", "0");
+    // No background gc/maintenance: a detached one outlives the command and
+    // deletes temp files while sync_tree walks the clone (ENOENT).
+    cmd.args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0");
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }
@@ -62,14 +66,41 @@ pub(crate) fn in_partial(
     let tmp = partial(dest);
     clear(&tmp)?;
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent).map_err(io(parent))?;
+        make_dirs(parent, 0o700).map_err(io(parent))?;
     }
-    let done = build(&tmp).and_then(|()| fs::rename(&tmp, dest).map_err(io(dest)));
+    let done = build(&tmp).and_then(|()| settle(&tmp, dest));
     if done.is_err() {
         // Best effort: the original error is the one worth reporting.
         let _ = fs::remove_dir_all(&tmp);
     }
     done
+}
+
+/// Puts everything under `tmp` on disk, then renames it to `dest` and puts
+/// the rename on disk. Git writes the checkout without fsync, so without
+/// this a power cut could leave `dest` named but its files empty.
+fn settle(tmp: &Path, dest: &Path) -> Result<(), GitError> {
+    sync_tree(tmp).map_err(io(tmp))?;
+    humata2_durable::rename(tmp, dest).map_err(io(dest))?;
+    if let Some(parent) = dest.parent() {
+        humata2_durable::sync_dir(parent).map_err(io(parent))?;
+    }
+    Ok(())
+}
+
+/// Fsyncs every file and folder under `path`, and `path` itself. Links
+/// aren't followed.
+pub(crate) fn sync_tree(path: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            sync_tree(&entry.path())?;
+        } else if kind.is_file() {
+            fs::File::open(entry.path())?.sync_all()?;
+        }
+    }
+    humata2_durable::sync_dir(path)
 }
 
 pub(crate) fn text(path: &Path) -> Result<&str, GitError> {
@@ -98,6 +129,7 @@ pub fn clone_session(
     in_partial(dest, |tmp| {
         git(None, &["clone", "--", text(main_clone)?, text(tmp)?])?;
         git(Some(tmp), &["remote", "set-url", "origin", remote_url])?;
+        copy_remote_branches(main_clone, tmp)?;
         // No upstream: the new branch is pushed to the real remote, not the base.
         git(
             Some(tmp),
@@ -111,6 +143,45 @@ pub fn clone_session(
         )?;
         Ok(())
     })
+}
+
+/// Clones the main clone into `dest`, points origin at the remote, fetches the
+/// head GitHub keeps for pull request `number` (`refs/pull/<n>/head`, so a
+/// fork's own repository is never asked) and checks out `branch` at it.
+pub fn clone_pull_head(
+    main_clone: &Path,
+    remote_url: &str,
+    dest: &Path,
+    branch: &str,
+    number: u32,
+) -> Result<(), GitError> {
+    in_partial(dest, |tmp| {
+        git(None, &["clone", "--", text(main_clone)?, text(tmp)?])?;
+        git(Some(tmp), &["remote", "set-url", "origin", remote_url])?;
+        copy_remote_branches(main_clone, tmp)?;
+        git(Some(tmp), &["fetch", "origin", &format!("refs/pull/{number}/head")])?;
+        git(Some(tmp), &["checkout", "--no-track", "-B", branch, "FETCH_HEAD"])?;
+        Ok(())
+    })
+}
+
+/// Copies the main clone's view of the remote (`refs/remotes/origin/*`) into
+/// the clone at `clone`, from disk. A clone of the main clone only gets the
+/// main clone's local branches as its `origin/*`, so without this a branch
+/// the remote has, such as a release base (D510), would be missing.
+fn copy_remote_branches(main_clone: &Path, clone: &Path) -> Result<(), GitError> {
+    git(
+        Some(clone),
+        &[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--",
+            text(main_clone)?,
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ],
+    )
+    .map(|_| ())
 }
 
 /// Local branch names of the repository at `repo`.
@@ -135,13 +206,10 @@ pub fn remote_branches(remote_url: &str) -> Result<Vec<String>, GitError> {
 
 /// The branch the clone's origin points at (its default branch).
 pub fn default_branch(repo: &Path) -> Result<String, GitError> {
-    if let Ok(out) = git(
-        Some(repo),
-        &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-    ) {
-        if let Some(name) = out.trim().strip_prefix("origin/") {
-            return Ok(name.to_string());
-        }
+    if let Some(head) = humata2_git_head::origin_head(repo)
+        && let Some(name) = head.strip_prefix("origin/")
+    {
+        return Ok(name.to_string());
     }
     // No origin/HEAD (e.g. the repo is not a clone): use the checked out branch.
     let out = git(Some(repo), &["symbolic-ref", "--short", "HEAD"])?;
@@ -226,6 +294,19 @@ mod tests {
                 .unwrap()
                 .contains(&"me/fix".to_string())
         );
+    }
+
+    #[test]
+    fn a_session_clone_sees_every_branch_the_main_clone_knows_on_the_remote() {
+        let t = tempfile::tempdir().unwrap();
+        let o = origin(t.path());
+        let main = t.path().join("main/api");
+        clone_main(&url(&o), &main).unwrap();
+        // `other` is only a remote branch in the main clone, not a local one.
+        assert!(!local_branches(&main).unwrap().contains(&"other".to_string()));
+        let dest = t.path().join("sessions/s/api");
+        clone_session(&main, &url(&o), &dest, "me/fix").unwrap();
+        assert!(git(Some(&dest), &["rev-parse", "--verify", "--quiet", "refs/remotes/origin/other"]).is_ok());
     }
 
     #[test]

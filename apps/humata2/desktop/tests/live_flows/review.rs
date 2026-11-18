@@ -2,7 +2,6 @@
 //! (switch long lines between Wrap and Scroll) and 26.20 (iterate on a
 //! document with the agent) on a real daemon, every step included.
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use gpui_kit::Role;
 use humata2_app::{AppAction, Route};
@@ -13,38 +12,35 @@ use humata2_review::comments::CommentsAction;
 use humata2_session::{DocumentMode, Panel, SessionAction, Tab};
 
 use super::world::World;
-use super::{App, DEADLINE, running_session, runtime};
+use super::{App, agent_has, running_session, runtime};
 
 const REPOS: [&str; 3] = ["api", "ledger", "web"];
 
-/// The session's clone of `name`, once the daemon has made it.
-fn clone_of(channels: &Path, name: &str) -> PathBuf {
+/// The session's clone of `name`. Call it once the agent has its first
+/// message: the daemon clones before it launches the agent (D441), so one
+/// look is enough.
+pub(super) fn clone_of(channels: &Path, name: &str) -> PathBuf {
     let children = |folder: &Path| -> Vec<PathBuf> {
         std::fs::read_dir(folder)
             .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
             .unwrap_or_default()
     };
-    let until = Instant::now() + DEADLINE;
-    loop {
-        for channel in children(channels) {
-            for session in children(&channel.join("sessions")) {
-                let clone = session.join(name);
-                if clone.join("README.md").exists() {
-                    return clone;
-                }
+    for channel in children(channels) {
+        for session in children(&channel.join("sessions")) {
+            let clone = session.join(name);
+            if clone.join("README.md").exists() {
+                return clone;
             }
         }
-        assert!(
-            Instant::now() < until,
-            "the session's clone of {name} never appeared under {}",
-            channels.display()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    panic!(
+        "the running session has no clone of {name} under {}",
+        channels.display()
+    );
 }
 
 /// Writes `text` to `path` in `clone`, making its folders.
-fn write(clone: &Path, path: &str, text: &str) {
+pub(super) fn write(clone: &Path, path: &str, text: &str) {
     let file = clone.join(path);
     if let Some(folder) = file.parent() {
         std::fs::create_dir_all(folder).expect("make the file's folder");
@@ -53,7 +49,7 @@ fn write(clone: &Path, path: &str, text: &str) {
 }
 
 /// Lines `1..=count`, each naming its number.
-fn numbered(count: u32) -> String {
+pub(super) fn numbered(count: u32) -> String {
     (1..=count).map(|n| format!("line {n}\n")).collect()
 }
 
@@ -100,6 +96,7 @@ fn draft(app: &mut App, session: &SessionId, repo: &str, path: &str, line: u32, 
         quoted: Vec::new(),
         base: None,
         detached: false,
+        outdated: false,
     };
     send(app, AppAction::Comments(CommentsAction::OpenBox(session.clone(), anchor)));
     send(app, AppAction::Comments(CommentsAction::Typed(session.clone(), body.to_owned())));
@@ -140,6 +137,7 @@ fn a_three_repo_diff_is_reviewed_commented_on_and_marked_reviewed() {
             )
             .await
             .expect("create the session");
+        agent_has(&world, "hello agent").await;
         (world, clients, session)
     });
     let channels = world
@@ -289,7 +287,8 @@ fn a_three_repo_diff_is_reviewed_commented_on_and_marked_reviewed() {
                     .pushes
                     .get(&(session.clone(), "owner/api".to_owned())),
                 Some(humata2_review::PushState::Pushed {
-                    pull_request: Some(7)
+                    pull_request: Some(7),
+                    ..
                 })
             )
         })
@@ -396,6 +395,7 @@ fn rfc_line(first: u32, last: u32) -> Anchor {
         quoted: Vec::new(),
         base: None,
         detached: false,
+        outdated: false,
     }
 }
 
@@ -624,4 +624,481 @@ fn a_document_is_commented_on_rewritten_and_its_comments_followed() {
             .contains(&format!("[comment on {RFC}:10]"))
     });
     assert_eq!(world.conversation_text().matches("[comment on ").count(), 4);
+}
+
+// ---------------------------------------------------------------------
+// Flow 02 steps 10, 11, 13 and 14, by clicks on the real controls.
+// ---------------------------------------------------------------------
+
+/// The base the Diff panel's chip names for `session`, as the chip reads it.
+fn chip_base(app: &App, session: &SessionId) -> String {
+    app.ui.read(|state| {
+        state
+            .workspace
+            .diffs
+            .iter()
+            .find(|diff| &diff.session == session)
+            .map(|diff| diff.base.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// Clicks the base chip and waits for the menu.
+fn open_base_menu(app: &mut App, session: &SessionId) {
+    let chip = format!("Against {}", chip_base(app, session));
+    app.click(Role::Button, &chip);
+    app.wait_until("the base menu to open", |app| {
+        app.view().contains("Compare with")
+    });
+}
+
+/// Opens the menu, picks the base called `option`, and waits until the
+/// panel compares against `expected` with the menu closed.
+fn pick_base(app: &mut App, session: &SessionId, option: &str, expected: DiffBase) {
+    open_base_menu(app, session);
+    app.click(Role::ListBoxOption, option);
+    app.wait_until("the picked base to apply and the menu to close", |app| {
+        app.ui
+            .read(|state| state.review.targets_of(session).preset == expected)
+            && !app.view().contains("Compare with")
+    });
+}
+
+/// The open comment box: first line, last line, text.
+fn box_of(app: &App, session: &SessionId) -> Option<(u32, u32, String)> {
+    app.ui.read(|state| {
+        state
+            .comments
+            .sessions
+            .get(session)
+            .and_then(|held| held.editing.as_ref())
+            .map(|b| (b.anchor.first, b.anchor.last, b.text.clone()))
+    })
+}
+
+/// Clicks the box's field and types `text` into it, then waits until the
+/// box holds it.
+fn type_in_box(app: &mut App, session: &SessionId, text: &str) {
+    app.click(Role::MultilineTextInput, "Comment");
+    app.type_text(text);
+    app.wait_until("the typed comment to reach the box", |app| {
+        box_of(app, session).is_some_and(|(_, _, held)| held == text)
+    });
+}
+
+/// Whether `repo`'s last push left `outcome`: `true` for pushed with a
+/// pull request, `false` for failed.
+fn push_outcome(app: &App, session: &SessionId, repo: &str, pushed: bool) -> bool {
+    app.ui.read(|state| {
+        match state.review.pushes.get(&(session.clone(), repo.to_owned())) {
+            Some(humata2_review::PushState::Pushed { pull_request, .. }) => {
+                pushed && pull_request.is_some()
+            }
+            Some(humata2_review::PushState::Failed(_)) => !pushed,
+            _ => false,
+        }
+    })
+}
+
+/// Flow 02 steps 10, 11 and 13: the base menu, a comment box opened by
+/// clicking a diff line, drafts shown and sent together from the panel, and
+/// the repo group's Push & PR (failing once, then trying again).
+///
+/// The session has one repo; the two-repo push is proved by
+/// `each_repo_group_pushes_its_own_branch_by_clicking_its_button`.
+#[test]
+fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
+    let runtime = runtime();
+    let (world, clients, session) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let session =
+            running_session(&world, &clients, "Ledger schema migration", "hello agent").await;
+        (world, clients, session)
+    });
+    let ledger = clone_of(&world.channels_folder(), "ledger");
+    write(&ledger, "src/client.rs", &numbered(6));
+    let only_client = vec![("owner/ledger".to_owned(), vec!["src/client.rs".to_owned()])];
+
+    let mut app = App::open(&runtime, clients);
+    app.wait_until("the session to load", |app| {
+        app.ui
+            .read(|state| state.workspace.session(&session).is_some())
+    });
+    // Opening the session and its Diff panel is not what this test is about
+    // (the other live tests drive it); these two go through actions.
+    send(&mut app, AppAction::Navigate(Route::Session(session.clone())));
+    send(
+        &mut app,
+        AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))),
+    );
+    app.wait_until("the changed file in the Diff panel", |app| {
+        shown(app, &session) == only_client
+    });
+
+    // 10. The base menu lists the bases (no fork base: this is no fork) and
+    // Mark reviewed; picking one compares against it and closes the menu.
+    open_base_menu(&mut app, &session);
+    let menu = app.view();
+    for option in [
+        "origin/main (where the branch started)",
+        "Uncommitted only",
+        "Since I last reviewed",
+        "Mark reviewed",
+    ] {
+        assert!(menu.contains(option), "the base menu offers {option}");
+    }
+    assert!(
+        !menu.contains("Since the fork from its parent"),
+        "a session that is no fork has no fork base"
+    );
+    app.click(Role::ListBoxOption, "Uncommitted only");
+    app.wait_until("Uncommitted only to apply and the menu to close", |app| {
+        app.ui.read(|state| {
+            state.review.targets_of(&session).preset == DiffBase::UncommittedOnly
+        }) && !app.view().contains("Compare with")
+    });
+    pick_base(
+        &mut app,
+        &session,
+        "origin/main (where the branch started)",
+        DiffBase::OriginMain,
+    );
+    app.wait_until("the changed file against the branch's start", |app| {
+        shown(app, &session) == only_client
+    });
+
+    // 11. Click a changed line's number: a box opens on it. Type, click a
+    // second line: the first is kept as a draft and the box moves.
+    app.click(Role::ListBoxOption, "owner/ledger/src/client.rs");
+    app.click(Role::Button, "Comment on line 2");
+    app.wait_until("the box to open on line 2", |app| {
+        box_of(app, &session).is_some_and(|(first, last, text)| (first, last) == (2, 2) && text.is_empty())
+    });
+    type_in_box(&mut app, &session, "Name this error.");
+    app.click(Role::Button, "Comment on line 4");
+    app.wait_until("the box to move to line 4", |app| {
+        box_of(app, &session).is_some_and(|(first, last, text)| (first, last) == (4, 4) && text.is_empty())
+    });
+    type_in_box(&mut app, &session, "Retry once here.");
+    app.wait_until("both comments to be held as drafts", |app| {
+        ["Name this error.", "Retry once here."].iter().all(|text| {
+            comments_of(app, &session)
+                .iter()
+                .any(|c| &c.text == text && c.status == Status::Draft)
+        })
+    });
+    assert!(
+        !world.conversation_text().contains("Name this error."),
+        "drafts wait; the agent has not got them"
+    );
+    // The panel offers them together; Send types both into the agent.
+    app.wait_until("Send 2 comments in the panel", |app| {
+        app.view().contains("Send 2 comments")
+    });
+    app.click(Role::Button, "Send 2 comments");
+    app.wait_until("the agent to get both comments", |_| {
+        let text = world.conversation_text();
+        // One repo: the paste names files without it (several_clones).
+        [
+            "[comment on src/client.rs:2 ",
+            "[comment on src/client.rs:4 ",
+            "Name this error.",
+            "Retry once here.",
+        ]
+        .iter()
+        .all(|part| text.contains(part))
+    });
+    assert_eq!(
+        world.conversation_text().matches("[comment on ").count(),
+        2,
+        "each comment is typed once"
+    );
+    app.wait_until("both comments to show as sent", |app| {
+        let held = comments_of(app, &session);
+        ["Name this error.", "Retry once here."]
+            .iter()
+            .all(|text| held.iter().any(|c| &c.text == text && c.status == Status::Sent))
+    });
+    assert!(
+        !app.view().contains("Send 2 comments"),
+        "nothing is left to send"
+    );
+
+    // 10 again. Mark reviewed from the menu closes it; Since I last reviewed
+    // then holds only what changes afterwards.
+    open_base_menu(&mut app, &session);
+    app.click(Role::Button, "Mark reviewed");
+    app.wait_until("the menu to close after Mark reviewed", |app| {
+        !app.view().contains("Compare with")
+    });
+    write(&ledger, "src/retry.rs", &numbered(3));
+    pick_base(&mut app, &session, "Since I last reviewed", DiffBase::SinceLastReviewed);
+    app.wait_until("only the change after Mark reviewed", |app| {
+        shown(app, &session) == vec![("owner/ledger".to_owned(), vec!["src/retry.rs".to_owned()])]
+    });
+
+    // 13. Push & PR on the repo's group. With its remote gone the push fails
+    // and the group says so; once the remote is back, the same button
+    // pushes and names the pull request.
+    let remote = world
+        .channels_folder()
+        .parent()
+        .expect("the channels folder has a parent")
+        .join("remotes/owner/ledger.git");
+    let away = remote.with_extension("away");
+    std::fs::rename(&remote, &away).expect("take the remote away");
+    app.click(Role::Button, "Push & PR: owner/ledger");
+    app.wait_until("the push to fail on its group", |app| {
+        push_outcome(app, &session, "owner/ledger", false)
+    });
+    assert_eq!(
+        world.remote_branches("owner", "ledger").len(),
+        0,
+        "nothing reached the missing remote"
+    );
+    std::fs::rename(&away, &remote).expect("put the remote back");
+    app.click(Role::Button, "Push & PR: owner/ledger");
+    app.wait_until("the group to name its pull request", |app| {
+        push_outcome(app, &session, "owner/ledger", true)
+    });
+    assert!(
+        app.view().contains("PR #7"),
+        "the group shows the pull request"
+    );
+    assert!(
+        world.remote_branches("owner", "ledger").len() > 1,
+        "the session's branch is on the remote"
+    );
+    assert_eq!(
+        world
+            .gh_calls()
+            .iter()
+            .filter(|call| call.starts_with("pr create"))
+            .count(),
+        1,
+        "one pull request, opened by the successful push"
+    );
+    drop(app);
+    drop(world);
+}
+
+/// Flow 02 step 14: archiving a session whose work is unpushed asks first
+/// (frame 65); Cancel keeps it; "Commit, push and open a PR, then archive"
+/// pushes the work and archives; the toast's Undo brings the session back.
+#[test]
+fn archiving_unpushed_work_asks_first_and_undo_brings_the_session_back() {
+    let runtime = runtime();
+    let (world, clients, id) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let id = running_session(&world, &clients, "Fix the ledger", "hello agent").await;
+        (world, clients, id)
+    });
+    // Work that exists only in the session's clone.
+    let ledger = clone_of(&world.channels_folder(), "ledger");
+    write(&ledger, "src/unsaved.rs", &numbered(3));
+    let daemon = clients.daemon.clone();
+    let mut app = App::open(&runtime, clients);
+    app.wait_until("the session to load", |app| {
+        app.ui.read(|state| state.workspace.session(&id).is_some())
+    });
+    app.show_session(&id);
+    app.wait_until("the session page to show", |app| {
+        app.ui.read(|state| state.route == Route::Session(id.clone()))
+    });
+
+    let active_on_daemon = |runtime: &tokio::runtime::Runtime| {
+        runtime
+            .block_on(daemon.load())
+            .expect("the daemon loads")
+            .sessions
+            .iter()
+            .any(|session| session.id == id && !session.archived)
+    };
+
+    // The dialog asks, naming the repo whose work would be lost.
+    app.click(Role::Button, "Session actions");
+    app.click(Role::Button, "Archive session…");
+    app.wait_until("the dialog to ask about unpushed work", |app| {
+        app.ui.read(|state| state.session.archiving.is_some())
+    });
+    let named = app.ui.read(|state| {
+        state
+            .session
+            .archiving
+            .as_ref()
+            .map(|confirm| {
+                confirm
+                    .plan
+                    .unpushed
+                    .iter()
+                    .map(|work| work.repo.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
+    assert!(
+        named.iter().any(|repo| repo.contains("ledger")),
+        "the dialog names the repo with unpushed work: {named:?}"
+    );
+    assert!(
+        app.view().contains("Commit, push and open a PR, then archive"),
+        "the dialog offers to push first"
+    );
+
+    // Cancel archives nothing.
+    app.click(Role::Button, "Cancel");
+    app.wait_until("the dialog to close", |app| {
+        app.ui.read(|state| state.session.archiving.is_none())
+    });
+    assert!(
+        app.ui
+            .read(|state| state.workspace.session(&id).is_some_and(|s| !s.archived)),
+        "Cancel leaves the session as it was"
+    );
+    assert!(active_on_daemon(&runtime), "the daemon still has it active");
+
+    // Push first, then archive: the work reaches the remote, the session
+    // leaves, and the toast offers Undo.
+    app.click(Role::Button, "Session actions");
+    app.click(Role::Button, "Archive session…");
+    app.wait_until("the dialog to ask again", |app| {
+        app.ui.read(|state| state.session.archiving.is_some())
+    });
+    app.click(Role::Button, "Commit, push and open a PR, then archive");
+    app.wait_until("the session to be archived with its Undo toast", |app| {
+        app.ui.read(|state| {
+            state
+                .workspace
+                .session(&id)
+                // A live load leaves archived sessions out, so gone counts.
+                .is_none_or(|session| session.archived)
+                && state.toasts.iter().any(|toast| toast.action.is_some())
+        })
+    });
+    assert!(
+        world.remote_branches("owner", "ledger").len() > 1,
+        "the unpushed work was pushed before archiving"
+    );
+    assert!(!active_on_daemon(&runtime), "the daemon no longer lists it as active");
+
+    // Undo on the toast brings it back, on the daemon too.
+    app.click(Role::Button, "Undo");
+    app.wait_until("the session to be back", |app| {
+        app.ui.read(|state| {
+            state
+                .workspace
+                .session(&id)
+                .is_some_and(|session| !session.archived)
+        })
+    });
+    assert!(active_on_daemon(&runtime), "the daemon holds it as active again");
+    drop(app);
+    drop(world);
+}
+
+/// Flow 02 step 13 with two repos (D388): each group's Push & PR button is
+/// named for its repo, so clicking one pushes that repo's branch only and
+/// names its pull request; the other remote stays as it was until its own
+/// button is clicked.
+#[test]
+fn each_repo_group_pushes_its_own_branch_by_clicking_its_button() {
+    let runtime = runtime();
+    let (world, clients, session) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let mac = World::this_mac(&clients)
+            .await
+            .expect("the workspace has This Mac");
+        let repos: Vec<String> = ["api", "ledger"]
+            .iter()
+            .map(|name| world.repo("owner", name).expect("make a repo"))
+            .collect();
+        let channel = clients
+            .daemon
+            .create_channel("payments", repos.clone(), vec![mac.clone()])
+            .await
+            .expect("create the channel");
+        let session = clients
+            .daemon
+            .create_session(
+                &channel,
+                Agent::Claude,
+                &mac,
+                "Ledger schema migration",
+                SessionOptions {
+                    repos,
+                    first_message: "hello agent".to_owned(),
+                    ..SessionOptions::default()
+                },
+            )
+            .await
+            .expect("create the session");
+        agent_has(&world, "hello agent").await;
+        (world, clients, session)
+    });
+    let channels = world.channels_folder();
+    write(&clone_of(&channels, "api"), "src/client.rs", &numbered(4));
+    write(&clone_of(&channels, "ledger"), "src/retry.rs", &numbered(3));
+
+    let mut app = App::open(&runtime, clients);
+    app.wait_until("the session to load", |app| {
+        app.ui
+            .read(|state| state.workspace.session(&session).is_some())
+    });
+    send(&mut app, AppAction::Navigate(Route::Session(session.clone())));
+    send(
+        &mut app,
+        AppAction::Session(SessionAction::SetPanel(Some(Panel::Changes))),
+    );
+    send(
+        &mut app,
+        AppAction::Review(ReviewAction::PickBase(DiffBase::SinceLastReviewed)),
+    );
+    let both = vec![
+        ("owner/api".to_owned(), vec!["src/client.rs".to_owned()]),
+        ("owner/ledger".to_owned(), vec!["src/retry.rs".to_owned()]),
+    ];
+    app.wait_until("both repo groups in the Changes panel", |app| {
+        shown(app, &session) == both
+    });
+    assert_eq!(world.remote_branches("owner", "api").len(), 1);
+    assert_eq!(world.remote_branches("owner", "ledger").len(), 1);
+
+    // Ledger's button pushes ledger; api's remote is untouched.
+    app.click(Role::Button, "Push & PR: owner/ledger");
+    app.wait_until("ledger's group to name its pull request", |app| {
+        push_outcome(app, &session, "owner/ledger", true)
+    });
+    assert!(
+        world.remote_branches("owner", "ledger").len() > 1,
+        "ledger's branch is on its remote"
+    );
+    assert_eq!(
+        world.remote_branches("owner", "api").len(),
+        1,
+        "api's remote was not pushed to"
+    );
+    assert!(
+        app.ui.read(|state| {
+            !state
+                .review
+                .pushes
+                .contains_key(&(session.clone(), "owner/api".to_owned()))
+        }),
+        "api's group has no push outcome yet"
+    );
+
+    // Then api's own button.
+    app.click(Role::Button, "Push & PR: owner/api");
+    app.wait_until("api's group to name its pull request", |app| {
+        push_outcome(app, &session, "owner/api", true)
+    });
+    assert!(
+        world.remote_branches("owner", "api").len() > 1,
+        "api's branch is on its remote"
+    );
+    drop(app);
+    drop(world);
 }

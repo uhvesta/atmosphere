@@ -7,10 +7,10 @@ use gpui_kit::base::{TestSupportExt as _, TestTextExt as _};
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::{prelude::*, *};
-use humata2_app::AppAction;
-use humata2_clients::comments::{Anchor, Comment, CommentId, Status};
+use humata2_app::{AppAction, AppState, AskAction};
+use humata2_clients::comments::{Anchor, Author, Comment, CommentId, Destination, Status};
 use humata2_clients::model::SessionId;
-use humata2_review::comments::CommentsAction;
+use humata2_review::comments::{CommentsAction, github_target};
 
 use crate::bridge::Ui;
 use crate::theme::Look;
@@ -20,9 +20,48 @@ use crate::widgets::{self, col, row};
 /// person clicks becomes its new place.
 pub(crate) type StartReattach = Rc<dyn Fn(&CommentId, &mut App)>;
 
+impl BoxOffers {
+    /// The box of a comment that already exists for a pull request: it
+    /// can't be turned into another draft.
+    pub(crate) fn without_github(mut self) -> Self {
+        self.github = None;
+        self
+    }
+}
+
+/// What a comment box offers besides Comment in a pull request review
+/// (PR-11, PR-19).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BoxOffers {
+    /// The session reviews a pull request: the box offers Ask.
+    review: bool,
+    /// Draft for GitHub, with the pull request it is for.
+    github: Option<(String, u32)>,
+}
+
+/// What the box for a comment on `repo` of `session` offers.
+pub(crate) fn offers(state: &AppState, session: &SessionId, repo: &str) -> BoxOffers {
+    BoxOffers {
+        review: state
+            .workspace
+            .session(session)
+            .is_some_and(|found| found.pull_request_review),
+        github: github_target(&state.workspace, session, repo),
+    }
+}
+
 fn text(value: impl Into<SharedString>) -> Div {
     let value = value.into();
     div().child(div().child(value.clone()).test_text(value))
+}
+
+/// Who wrote a draft, as people read it: the agent by its product name.
+fn agent_label(author: &Author) -> String {
+    match author {
+        Author::User => "you".to_owned(),
+        Author::Agent(name) if name == "claude" => "Claude Code".to_owned(),
+        Author::Agent(name) => name.clone(),
+    }
 }
 
 /// "line 7" or "lines 13–14".
@@ -75,21 +114,37 @@ pub(crate) fn card(
     let lines = lines_label(&comment.anchor);
     let id = comment.id.clone();
     let session = comment.session.clone();
+    let is_note = comment.destination == Destination::Note;
+    let for_github = matches!(comment.destination, Destination::PullRequest { .. });
+    // A draft for GitHub is titled by what it is and who wrote it, with
+    // Edit and Drop under its text (frame 68).
+    let github_draft = for_github && comment.status == Status::Draft && !comment.archived;
     let label = if comment.anchor.detached {
         Some("Detached")
+    } else if is_note {
+        Some("Note")
+    } else if github_draft {
+        Some("Draft")
     } else {
         match comment.status {
             Status::Draft => Some("Draft"),
             Status::Waiting => Some("Waiting to send"),
             Status::Addressed => Some("Addressed"),
             Status::Resolved => Some("Resolved"),
+            Status::Posted => Some("Posted"),
             Status::Sent => None,
         }
     };
-    let title = if comment.status == Status::Sent && !comment.anchor.detached {
-        format!("You · {lines} · sent to {agent}")
+    let who = match &comment.author {
+        Author::User => "You",
+        Author::Agent(name) => name.as_str(),
+    };
+    let title = if github_draft {
+        format!("Draft for GitHub · by {}", agent_label(&comment.author))
+    } else if comment.status == Status::Sent && !comment.anchor.detached {
+        format!("{who} · {lines} · sent to {agent}")
     } else {
-        format!("You · {lines}")
+        format!("{who} · {lines}")
     };
     let open = matches!(comment.status, Status::Draft | Status::Waiting);
     shell(look, open)
@@ -107,6 +162,18 @@ pub(crate) fn card(
                         SharedString::from(format!("doc-edit-comment-{id}")),
                         "Edit",
                         AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
+                    )
+                    .h(px(20.))
+                    .px(px(6.))
+                    .text_size(px(11.))
+                    .text_color(rgb(look.accent))
+                }))
+                .children(is_note.then(|| {
+                    widgets::ghost_in(look,
+                        ui,
+                        SharedString::from(format!("doc-make-draft-{id}")),
+                        "Make it a draft",
+                        AppAction::Comments(CommentsAction::MakeDraft(session.clone(), id.clone(), None)),
                     )
                     .h(px(20.))
                     .px(px(6.))
@@ -132,6 +199,27 @@ pub(crate) fn card(
                 )),
         )
         .child(text(comment.text.clone()))
+        .children(github_draft.then(|| {
+            row()
+                .gap(px(6.))
+                .child(widgets::push_quiet(
+                    ui,
+                    SharedString::from(format!("doc-edit-comment-{id}")),
+                    "Edit",
+                    AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
+                    look,
+                ))
+                // A detached card has its own Drop below.
+                .children((!comment.anchor.detached).then(|| {
+                    widgets::push_quiet(
+                        ui,
+                        SharedString::from(format!("doc-drop-comment-{id}")),
+                        "Drop",
+                        AppAction::Comments(CommentsAction::Drop(session.clone(), id.clone())),
+                        look,
+                    )
+                }))
+        }))
         .children(comment.anchor.detached.then(|| {
             let start = start_reattach.clone();
             let again = id.clone();
@@ -173,8 +261,10 @@ pub(crate) fn card(
 }
 
 /// The box a comment is written in: who and where, the text, what Comment
-/// does, then Cancel and Comment. `input` is the text field the holder keeps
+/// does, then Cancel, Ask and Draft for GitHub in a pull request review, and
+/// Comment. `input` is the text field the holder keeps
 /// in step with the box.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn open_box(
     ui: &Rc<Ui>,
     look: Look,
@@ -182,6 +272,8 @@ pub(crate) fn open_box(
     anchor: &Anchor,
     input: &Entity<TextareaState>,
     agent: &str,
+    question: &str,
+    offers: &BoxOffers,
 ) -> impl IntoElement {
     shell(look, true)
         .id("doc-comment-box")
@@ -229,6 +321,28 @@ pub(crate) fn open_box(
                     AppAction::Comments(CommentsAction::Cancel(session.clone())),
                     look,
                 ))
+                .children(offers.review.then(|| {
+                    widgets::push_quiet(
+                        ui,
+                        "doc-comment-ask",
+                        "Ask",
+                        AppAction::PrAsk(AskAction::Ask {
+                            session: session.clone(),
+                            anchor: anchor.clone(),
+                            question: question.to_owned(),
+                        }),
+                        look,
+                    )
+                }))
+                .children(offers.github.clone().map(|(repo, number)| {
+                    widgets::push_quiet(
+                        ui,
+                        "doc-comment-github",
+                        "Draft for GitHub",
+                        AppAction::Comments(CommentsAction::DraftForGitHub(session.clone(), repo, number)),
+                        look,
+                    )
+                }))
                 .child(widgets::push_primary(
                     ui,
                     "doc-comment-send",

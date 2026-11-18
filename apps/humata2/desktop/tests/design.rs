@@ -36,6 +36,8 @@ mod overlays;
 mod pages;
 #[path = "design/resume.rs"]
 mod resume;
+#[path = "design/roam.rs"]
+mod roam;
 #[path = "design/session.rs"]
 mod session;
 #[path = "design/sidebar.rs"]
@@ -54,6 +56,12 @@ mod machines;
 mod pr_review;
 #[path = "design/views.rs"]
 mod views;
+#[path = "design/diff_targets.rs"]
+mod diff_targets;
+#[path = "design/stop.rs"]
+mod stop;
+#[path = "design/upgrade.rs"]
+mod upgrade;
 
 use gpui_kit::{prelude::*, *};
 use humata2_engine::Resources;
@@ -240,6 +248,44 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("69-pr-submit-review", LIGHT, pr_review::submit_review),
     ("70-view-tab-showing", LIGHT, views::view_tab),
     ("71-delete-channel", DARK, archive::delete_channel),
+    // Drafts (STOP, 2026-11-16): stay drafts until the owner signs them off
+    // (milestone STOP).
+    ("72-stop-confirm", LIGHT, stop::stop_confirm),
+    ("73-machine-sessions-stopped", DARK, stop::machine_stopped),
+    ("74-hosts-sessions-stopped", LIGHT, stop::hosts_stopped),
+    ("75-start-confirm", DARK, stop::start_confirm),
+    ("76-stop-not-delivered", LIGHT, stop::stop_not_delivered),
+    // Drafts (UPGRADE, 2026-11-16): stay drafts until the owner signs them off
+    // (milestone UPGRADE).
+    ("77-inbox-migrate", LIGHT, upgrade::inbox_migrate),
+    ("78-migrate-details", DARK, upgrade::details),
+    ("79-migrate-migrating", LIGHT, upgrade::migrating),
+    ("79-machine-migrating", DARK, upgrade::machine_migrating),
+    ("80-migrate-failed", DARK, upgrade::failed),
+    ("80-machine-read-only", LIGHT, upgrade::machine_read_only),
+    ("81-migrate-migrated", LIGHT, upgrade::migrated),
+    ("81-machine-migrated", DARK, upgrade::machine_migrated),
+    ("82-migrate-first", LIGHT, upgrade::migrate_first),
+    ("83-migrate-holders", DARK, upgrade::holders),
+    // Drafts (VIEWS A1, 2026-11-16): stay drafts until the owner signs them
+    // off (milestone VIEWS).
+    ("84-diff-per-repo-beside-terminal", LIGHT, diff_targets::beside_terminal),
+    ("85-diff-per-repo-full-screen", DARK, diff_targets::full_screen),
+    ("86-diff-repo-base-picker", LIGHT, diff_targets::base_picker),
+    ("98-diff-no-default-branch", LIGHT, diff_targets::no_default_branch),
+    // Drafts (ROAM, 2026-11-16): stay drafts until the owner signs them off (milestone ROAM).
+    ("87-inbox-repo-proposal", LIGHT, roam::inbox_repo_proposal),
+    ("88-inbox-desk-move-to-channel", DARK, roam::inbox_desk_move),
+    ("89-desk-move-into-channel-dialog", LIGHT, roam::move_into_channel),
+    ("90-move-refused-unknown-format", DARK, roam::move_refused),
+    ("91-channel-desk-tab", LIGHT, roam::channel_desk_tab),
+    ("92-new-channel-desk-session", LIGHT, roam::new_channel_desk),
+    ("93-channel-desk-info-switches", DARK, roam::desk_info_switches),
+    ("94-channel-desk-close", LIGHT, roam::desk_close),
+    ("95-sidebar-channel-desk", DARK, roam::sidebar_channel_desk),
+    ("97-desk-moving-copy-progress", LIGHT, roam::moving_copy_progress),
+    // R2 (CV-8): no frame drew this dialog; built from frames 62 and 63.
+    ("113-continue-in-channel", LIGHT, fork_move::continue_in_channel),
 ];
 
 // The glob import brings in gpui's own `test` attribute, so name std's.
@@ -255,6 +301,7 @@ fn design_goldens() {
     } else {
         Tolerance::default()
     };
+    let mut failed = Vec::new();
     for (name, look, draw) in FRAMES {
         let (look, draw) = (*look, *draw);
         let options = WindowOptions {
@@ -269,6 +316,16 @@ fn design_goldens() {
             .into();
         cx.run_until_parked();
         let image = cx.capture_screenshot(window).expect("the window draws");
-        snapshots.assert_image(name, &image, tolerance);
+        // Each failing frame still writes its .new.png, so one run shows them all.
+        if let Err(error) = snapshots.check_image(name, &image, tolerance) {
+            failed.push(format!("{name}: {error}"));
+        }
     }
+    assert!(
+        failed.is_empty(),
+        "{} of {} design frames failed; look at each .new.png beside its golden, then record the ones the owner approves:\n\n{}",
+        failed.len(),
+        FRAMES.len(),
+        failed.join("\n\n")
+    );
 }

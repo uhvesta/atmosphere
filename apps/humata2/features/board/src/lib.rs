@@ -550,14 +550,16 @@ impl Reducer for Board {
             }
             BoardAction::NewStatus(status) => state.new_status = status,
             BoardAction::SetScope(scope) => {
+                // Picking the scope already shown changes nothing but the
+                // menu: the open drawer and its picker stay.
                 if state.scope != scope {
                     state.view.global_only = false;
                     state.view.filter = Filter::All;
+                    state.drawer = None;
+                    state.picker = None;
                 }
                 state.scope = scope;
                 state.scope_menu = false;
-                state.drawer = None;
-                state.picker = None;
             }
             BoardAction::SetChannelView(view) => {
                 state.view.channel_view = view;
@@ -652,8 +654,17 @@ impl Reducer for Board {
             }
             BoardAction::Move(id, status) => {
                 state.status_menu = false;
+                // The move names the revision this screen shows, so a move
+                // an agent made meanwhile is refused, not overwritten; the
+                // refusal refreshes the board (`Done`) and the drawer stays.
+                let seen = state
+                    .workspace
+                    .items
+                    .iter()
+                    .find(|item| item.id == id)
+                    .map(|item| item.revision);
                 return Effect::future(async move {
-                    BoardAction::Done(daemon.move_item(&id, status).await)
+                    BoardAction::Done(daemon.move_item(&id, status, seen).await)
                 });
             }
             BoardAction::StartNew => {
@@ -685,12 +696,12 @@ impl Reducer for Board {
                 };
                 let status = state.new_status;
                 return Effect::future(async move {
-                    let result = match daemon.create_item(scope, &title).await {
-                        Ok(id) if status != ItemStatus::Todo => daemon.move_item(&id, status).await,
-                        Ok(_) => Ok(()),
-                        Err(error) => Err(error),
-                    };
-                    BoardAction::Done(result)
+                    BoardAction::Done(
+                        daemon
+                            .create_item_in(scope, &title, status)
+                            .await
+                            .map(|_| ()),
+                    )
                 });
             }
             BoardAction::CancelNew => state.new_title = None,

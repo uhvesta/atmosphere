@@ -9,10 +9,11 @@
 //! it answers.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::error::TakeoverError;
-use crate::install::{self, Builds, InstallProblem, Installed, InstalledFile, Payload};
+use crate::install::{self, Builds, InstallProblem, InstalledFile, Payload};
 use crate::link::BIN_DIR;
 use crate::name::MachineName;
 use crate::platform::{Arch, Os, Platform};
@@ -30,6 +31,9 @@ pub enum TakeoverAction {
     /// Write the payload's bytes, exactly, and nothing else until the next
     /// answer.
     SendFile(Payload),
+    /// Write the release's `bundle.json` bytes, exactly, and nothing else
+    /// until the next answer.
+    SendBundle(Arc<[u8]>),
     /// The bridge is running: from here the terminal carries the gRPC
     /// stream, starting with `leftover`.
     Ready {
@@ -70,6 +74,9 @@ pub struct Takeover {
     buffer: Vec<u8>,
     platform: Option<Platform>,
     pending: Vec<Payload>,
+    /// The release's bundle.json, still to write after the files of a first
+    /// install.
+    bundle: Option<Arc<[u8]>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +88,8 @@ enum State {
     Raw,
     /// Waiting for the install's exit status.
     Installed(InstalledFile),
+    /// Waiting for the bundle.json write's exit status.
+    BundleWritten,
     /// Waiting for the bridge's sync marker.
     Sync,
     Over,
@@ -101,6 +110,7 @@ impl Takeover {
             buffer: Vec::new(),
             platform: None,
             pending: Vec::new(),
+            bundle: None,
         }
     }
 
@@ -245,10 +255,29 @@ impl Takeover {
                     Ok(payloads) => payloads,
                     Err(error) => return self.fail(error.into()),
                 };
+                // A machine that already runs humatad2 is upgraded by Migrate
+                // (UP-1): only a file it lacks is put back. A first install
+                // sends every file and then the release's bundle.json.
+                let first = installed.get(&InstalledFile::Humatad) == Some(&"none");
+                self.bundle = if first {
+                    match builds.bundle_json(platform) {
+                        Ok(bundle) => bundle,
+                        Err(error) => return self.fail(error.into()),
+                    }
+                } else {
+                    None
+                };
                 self.platform = Some(platform);
                 self.pending = payloads
                     .into_iter()
-                    .filter(|payload| installed.get(&payload.file()) != Some(&payload.sha256()))
+                    .filter(|payload| {
+                        let found = installed.get(&payload.file());
+                        if first {
+                            found != Some(&payload.sha256())
+                        } else {
+                            found == Some(&"none")
+                        }
+                    })
                     .collect();
                 self.next()
             }
@@ -256,27 +285,50 @@ impl Takeover {
                 if after(line, &format!("HUMATA_RAW_{n}")).is_none() {
                     return Vec::new();
                 }
-                let Some(payload) = self.pending.first().cloned() else {
+                if let Some(payload) = self.pending.first().cloned() {
+                    self.state = State::Installed(payload.file());
+                    return vec![TakeoverAction::MakeLocalRaw, TakeoverAction::SendFile(payload)];
+                }
+                let Some(bundle) = self.bundle.clone() else {
                     return self.next();
                 };
-                self.state = State::Installed(payload.file());
-                vec![TakeoverAction::MakeLocalRaw, TakeoverAction::SendFile(payload)]
+                self.state = State::BundleWritten;
+                vec![TakeoverAction::MakeLocalRaw, TakeoverAction::SendBundle(bundle)]
+            }
+            State::BundleWritten => {
+                let Some(rest) = after(line, &format!("HUMATA_DONE_{n} ")) else {
+                    return Vec::new();
+                };
+                match rest.trim().parse::<i32>() {
+                    Ok(0) => {
+                        self.bundle = None;
+                        self.next()
+                    }
+                    Ok(code) => {
+                        let output_tail = self.tail();
+                        let problem = InstallProblem::from_exit(Exit::Code(code), !output_tail.trim().is_empty());
+                        self.fail(TakeoverError::Bundle { problem, output_tail })
+                    }
+                    Err(_) => self.fail(TakeoverError::BadAnswer {
+                        line: line.to_owned(),
+                    }),
+                }
             }
             State::Installed(file) => {
                 let Some(rest) = after(line, &format!("HUMATA_DONE_{n} ")) else {
                     return Vec::new();
                 };
                 match rest.trim().parse::<i32>() {
-                    // Swapped, or staged beside the old copy while a holder
-                    // runs: either way this file is done for now.
-                    Ok(code) if Installed::from_exit(Exit::Code(code)).is_some() => {
+                    // Swapped in: this file is done.
+                    Ok(0) => {
                         self.pending.retain(|payload| payload.file() != file);
                         self.next()
                     }
-                    Ok(code) => self.fail(TakeoverError::Install {
-                        file,
-                        problem: InstallProblem::from_exit(Exit::Code(code)),
-                    }),
+                    Ok(code) => {
+                        let output_tail = self.tail();
+                        let problem = InstallProblem::from_exit(Exit::Code(code), !output_tail.trim().is_empty());
+                        self.fail(TakeoverError::Install { file, problem, output_tail })
+                    }
                     Err(_) => self.fail(TakeoverError::BadAnswer {
                         line: line.to_owned(),
                     }),
@@ -289,9 +341,10 @@ impl Takeover {
     /// Installs the next file, or starts the bridge when none is left.
     fn next(&mut self) -> Vec<TakeoverAction> {
         let n = self.nonce.clone();
-        let (script, state) = match self.pending.first() {
-            Some(payload) => (install_script(payload, &n), State::Raw),
-            None => (
+        let (script, state) = match (self.pending.first(), &self.bundle) {
+            (Some(payload), _) => (install_script(&install::script(payload, &n), &n), State::Raw),
+            (None, Some(bundle)) => (install_script(&install::bundle_script(bundle, &n), &n), State::Raw),
+            (None, None) => (
                 format!(
                     "stty raw -echo -iexten 2>/dev/null; exec \"$HOME/{BIN_DIR}/humatad2\" bridge --sync {n}"
                 ),
@@ -415,12 +468,11 @@ fn facts_script(n: &str) -> String {
     )
 }
 
-/// Turns the far terminal raw, says so, reads and installs one file, turns
-/// it back and prints the install's exit status.
-fn install_script(payload: &Payload, n: &str) -> String {
+/// Turns the far terminal raw, says so, runs `install` (which reads one file
+/// from the terminal), turns it back and prints its exit status.
+fn install_script(install: &str, n: &str) -> String {
     format!(
-        "stty raw -echo -iexten 2>/dev/null\nprintf '%s_%s_%s\\n' HUMATA RAW {n}\n(\n{}\n)\ns=$?\nstty sane 2>/dev/null\nprintf '%s_%s_%s %s\\n' HUMATA DONE {n} \"$s\"\n",
-        install::script(payload, n)
+        "stty raw -echo -iexten 2>/dev/null\nprintf '%s_%s_%s\\n' HUMATA RAW {n}\n(\n{install}\n)\ns=$?\nstty sane 2>/dev/null\nprintf '%s_%s_%s %s\\n' HUMATA DONE {n} \"$s\"\n"
     )
 }
 
@@ -502,12 +554,38 @@ mod tests {
         let payload = Payload::new(InstalledFile::Humatad, std::sync::Arc::from(&b"x"[..]));
         let lines = [
             sh_command(&facts_script("0123456789abcdef")).unwrap(),
-            sh_command(&install_script(&payload, "0123456789abcdef")).unwrap(),
+            sh_command(&install_script(&install::script(&payload, "0123456789abcdef"), "0123456789abcdef")).unwrap(),
         ];
         for line in lines {
             for physical in line.lines() {
                 assert!(physical.len() < 1000, "{}", physical.len());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod quiet_failure_tests {
+    use super::*;
+
+    #[test]
+    fn a_takeover_that_ended_with_no_output_promises_none() {
+        let machine = MachineName::new("box-1").unwrap();
+        let quiet = [
+            TakeoverError::NoShell {
+                machine: machine.clone(),
+                waited: Duration::from_secs(30),
+                output_tail: String::new(),
+            },
+            TakeoverError::SyncTimedOut {
+                machine: machine.clone(),
+                waited: Duration::from_secs(30),
+                output_tail: String::new(),
+            },
+            TakeoverError::TerminalEnded { machine, exit: None, output_tail: String::new() },
+        ];
+        for error in quiet {
+            assert!(!error.to_string().contains("below"), "{error}");
         }
     }
 }

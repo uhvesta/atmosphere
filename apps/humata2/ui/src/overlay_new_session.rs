@@ -41,6 +41,13 @@ impl Overlays {
             });
         }
         let workspace = self.ui.read(|s| s.workspace.clone());
+        // AGENTSET (D725): the enabled agents, then Terminal.
+        let offered: Vec<Agent> = self
+            .ui
+            .read(|s| s.settings.offered_agents())
+            .into_iter()
+            .chain([Agent::Shell])
+            .collect();
         let channel = sheet_state
             .channel
             .as_ref()
@@ -177,7 +184,7 @@ impl Overlays {
                 .into_any_element(),
         ));
         let agents = row().flex_shrink_0().p(px(2.)).rounded(px(7.)).bg(rgb(look.fill)).children(
-            Agent::ALL.into_iter().enumerate().map(|(index, agent)| {
+            offered.into_iter().enumerate().map(|(index, agent)| {
                 let ui = ui.clone();
                 let name = match agent {
                     Agent::Claude => "Claude Code",

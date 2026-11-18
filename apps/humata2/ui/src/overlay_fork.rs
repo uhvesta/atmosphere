@@ -9,6 +9,7 @@ use crate::chrome;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::base::FocusTrapElement as _;
+use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::input::Input;
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
@@ -104,7 +105,7 @@ pub(super) fn choice(
 }
 
 /// The grey pop-up button of a form row.
-fn popup(ui: &Rc<Ui>, look: Look, id: &'static str, text: String, action: AppAction) -> impl IntoElement {
+pub(super) fn popup(ui: &Rc<Ui>, look: Look, id: &'static str, text: String, action: AppAction) -> impl IntoElement {
     let ui = ui.clone();
     row()
         .id(id)
@@ -126,7 +127,7 @@ fn popup(ui: &Rc<Ui>, look: Look, id: &'static str, text: String, action: AppAct
         .on_click(move |_, _, cx| ui.send(action.clone(), cx))
 }
 
-fn form_row(look: Look, key: &'static str, value: impl IntoElement) -> Div {
+pub(super) fn form_row(look: Look, key: &'static str, value: impl IntoElement) -> Div {
     row()
         .gap(px(12.))
         .child(
@@ -136,7 +137,8 @@ fn form_row(look: Look, key: &'static str, value: impl IntoElement) -> Div {
                 .justify_end()
                 .flex_shrink_0()
                 .text_color(rgb(look.secondary))
-                .child(key),
+                .child(key)
+                .test_text(key),
         )
         .child(div().flex_1().min_w_0().child(value))
 }
@@ -179,6 +181,12 @@ impl Overlays {
                 .unwrap_or_default();
             (state.workspace.machines.clone(), repos)
         });
+        // AGENTSET (D725): the enabled agents, then the plain shell.
+        let offered: Vec<Agent> = ui
+            .read(|state| state.settings.offered_agents())
+            .into_iter()
+            .chain([Agent::Shell])
+            .collect();
         let parent_title = parent.as_ref().map_or("this session", |s| s.title.as_str());
         let agent = fork
             .agent
@@ -297,7 +305,7 @@ impl Overlays {
         ));
         if fork.picker == Some(ForkPicker::Agent) {
             body = body.child(row().flex_wrap().gap(px(6.)).children(
-                Agent::ALL.into_iter().enumerate().map(|(index, a)| {
+                offered.iter().copied().enumerate().map(|(index, a)| {
                     widgets::push_quiet(
                         ui,
                         ("fork-agent-pick", index),

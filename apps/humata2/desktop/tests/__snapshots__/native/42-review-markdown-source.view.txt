@@ -47,8 +47,9 @@ Button "Expand terminal"
 Button "Toggle side panel"
 Button "Session actions"
 Toolbar "Desk folder"
+  Status "Kept"
+  Button "Copy path"
   Button "Machine: devbox-1"
-  text "~/Humata/desk/brin-rfc"
   Button "Remove acme/ledger"
   Button "Remove acme/api"
   Button "Add repo"
@@ -61,6 +62,15 @@ RadioGroup "Show the file as"
   RadioButton "Preview"
   RadioButton "Source"
   RadioButton "Side by side" selected
+Region "Versions"
+  Button "Older version" disabled
+  Button "Newer version" disabled
+  Button "History ▾" disabled
+  #doc-version-message
+    #input
+      TextInput "What changed? (optional)" value="" placeholder="What changed? (optional)"
+  Button "Save version"
+  Region "No versions yet"
 CheckBox "Link scrolling" selected
 text "Scrolling is linked: the page follows the source. Comment on source lines; the page shows where they are."
 Document "rfc-brin.md source"
@@ -98,7 +108,7 @@ Document "rfc-brin.md source"
   #doc-comment-box
     text "You · lines 13–14"
     text "Draft"
-    #input-4294967345 focused
+    #input focused
       MultilineTextInput "Comment" value="Keep both until range p95 holds for a week on devbox-1, not just until the backfill ends." placeholder="Write a comment" focused
     text "Saved as a draft; Send types it into claude straight away"
     Button "Cancel"
@@ -113,10 +123,6 @@ Document "rfc-brin.md source"
   text ""
   Button "Comment on line 19"
   text "```"
-  Button "Comment on line 20"
-  text "btree  38 GB   range p95 41 ms"
-  Button "Comment on line 21"
-  text "brin   2.1 MB  range p95 57 ms"
 Document "rfc-brin.md preview"
   Document "rfc-brin.md"
     Heading "Heading 1, level 1"

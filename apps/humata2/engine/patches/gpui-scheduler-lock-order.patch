@@ -1,0 +1,18 @@
+diff --git a/src/test_scheduler.rs b/src/test_scheduler.rs
+--- a/src/test_scheduler.rs
++++ b/src/test_scheduler.rs
+@@ -110,9 +110,11 @@
+         });
+         let waker = unsafe { Waker::new(Box::into_raw(waker) as *const (), &WAKER_VTABLE) };
+         let max_ticks = if timeout.is_some() {
+-            self.rng
+-                .lock()
+-                .random_range(self.state.lock().timeout_ticks.clone())
++            // Take the state and the rng one at a time: a wake from another
++            // thread (schedule_local) holds the state while it takes the rng,
++            // so holding the rng while taking the state deadlocks against it.
++            let timeout_ticks = self.state.lock().timeout_ticks.clone();
++            self.rng.lock().random_range(timeout_ticks)
+         } else {
+             usize::MAX
+         };

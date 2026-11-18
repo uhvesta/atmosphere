@@ -17,6 +17,8 @@ pub const TOOL_FAILED: i32 = 9;
 pub const RESOURCES: i32 = 10;
 pub const DATA: i32 = 11;
 pub const PENDING: i32 = 12;
+/// You answered no to the CLI's own "Continue?"; nothing was changed.
+pub const DECLINED: i32 = 13;
 pub const JOURNALED_STRICT: i32 = 20;
 pub const INTERNAL: i32 = 70;
 pub const INTERRUPTED: i32 = 130;
@@ -50,6 +52,7 @@ pub fn of_kind(kind: &Kind) -> (&'static str, i32) {
         Kind::PushRefused(_) => ("push_refused", DENIED),
         Kind::SshFailed(_) => ("ssh_failed", UNREACHABLE),
         Kind::HostKeyChanged(_) => ("host_key_changed", PRECONDITION),
+        Kind::HostKeyUnknown(_) => ("host_key_unknown", PRECONDITION),
         Kind::ChecksumMismatch(_) => ("checksum_mismatch", DATA),
         Kind::ResumeFailed(_) => ("resume_failed", PRECONDITION),
         Kind::AgentLacksFeature(_) => ("agent_lacks_feature", PRECONDITION),
@@ -74,6 +77,9 @@ pub fn of_kind(kind: &Kind) -> (&'static str, i32) {
         Kind::StepFailed(_) => ("step_failed", TOOL_FAILED),
         Kind::PassphraseLocked(_) => ("passphrase_locked", RESOURCES),
         Kind::DependencyLoop(_) => ("dependency_loop", PRECONDITION),
+        Kind::MigrationNeeded(_) => ("migration_needed", PRECONDITION),
+        Kind::HostNeedsMigrate(_) => ("host_needs_migrate", PRECONDITION),
+        Kind::NoDefaultBranch(_) => ("no_default_branch", PRECONDITION),
         Kind::Internal(_) => ("internal", INTERNAL),
     }
 }

@@ -14,6 +14,10 @@ rust_library(
         "//apps/humata2/ui:__pkg__",
     ],
     deps = [
+        # SEAM (MACHINESCRIPTS): the Edit rules starter.
+        "//apps/humata2/daemon/machines/sample",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/terminal/wire",
         "//libs/tca-rust:tca",
         "@crates//:serde",
         "@crates//:thiserror",
@@ -28,7 +32,10 @@ rust_library(
         crate_root = src,
         deps = [
             ":clients",
+            "//apps/humata2/terminal/vt:ghostty_vt",
+            "//apps/humata2/terminal/wire",
             "//libs/tca-rust:tca",
+            "@crates//:serde_json",
             "@crates//:tokio",
         ],
     )

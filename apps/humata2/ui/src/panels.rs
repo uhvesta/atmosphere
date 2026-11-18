@@ -136,30 +136,38 @@ pub(crate) fn header(
         .child(text(title(panel)).font_weight(FontWeight::SEMIBOLD))
         .children(extra)
         .child(div().flex_1())
-        .child(icon_action(
-            ui,
-            "expand-panel",
-            if full {
-                "Show the terminal"
-            } else {
-                "Expand panel"
-            },
-            if full {
-                IconName::Minimize2
-            } else {
-                IconName::Maximize2
-            },
-            AppAction::Session(SessionAction::ToggleWiden),
-            look,
-        ))
-        .child(icon_action(
-            ui,
-            "close-panel",
-            "Close panel",
-            IconName::X,
-            AppAction::Session(SessionAction::SetPanel(None)),
-            look,
-        ))
+        // The buttons are 16 pt for their 12 pt glyphs; the 6 pt gap and the
+        // -2 pt margin put the glyphs 10 pt apart and 14 pt from the edge, as
+        // the design draws them.
+        .child(
+            row()
+                .gap(px(6.))
+                .mr(px(-2.))
+                .child(icon_action(
+                    ui,
+                    "expand-panel",
+                    if full {
+                        "Show the terminal"
+                    } else {
+                        "Expand panel"
+                    },
+                    if full {
+                        IconName::Minimize2
+                    } else {
+                        IconName::Maximize2
+                    },
+                    AppAction::Session(SessionAction::ToggleWiden),
+                    look,
+                ))
+                .child(icon_action(
+                    ui,
+                    "close-panel",
+                    "Close panel",
+                    IconName::X,
+                    AppAction::Session(SessionAction::SetPanel(None)),
+                    look,
+                )),
+        )
 }
 fn status(value: Status) -> Div {
     let dot = div().size(px(8.)).rounded_full().flex_shrink_0();
@@ -167,7 +175,7 @@ fn status(value: Status) -> Div {
         Status::Working => dot.bg(rgb(GREEN)),
         Status::NeedsYou => dot.bg(rgb(ORANGE)),
         Status::Exited { .. } => return div().child(icon(IconName::X, RED, 10.)),
-        Status::Offline => dot.bg(rgb(0x8e8e93)),
+        Status::Offline | Status::Stopped => dot.bg(rgb(0x8e8e93)),
         _ => dot.border_1().border_color(rgb(0x8e8e93)),
     };
     row()
@@ -355,6 +363,7 @@ fn changes_count(
             .iter()
             .filter(|comment| {
                 comment.anchor.base.is_none()
+                    && comment.destination == humata2_clients::comments::Destination::Terminal
                     && !comment.archived
                     && !matches!(
                         comment.status,
@@ -453,17 +462,16 @@ pub(crate) fn strip(ui: &Rc<Ui>, on: Option<Panel>, cx: &App) -> impl IntoElemen
                                         .absolute()
                                         .top(px(2.))
                                         .right(px(6.))
-                                        .min_w(px(16.))
                                         .h(px(16.))
-                                        .px(px(3.))
+                                        .px(px(6.))
                                         .rounded_full()
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .text_size(px(10.))
+                                        .text_size(px(10.5))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .bg(rgb(if panel == Panel::Inbox {
-                                            look.selection
+                                            look.accent
                                         } else {
                                             look.fill
                                         }))
@@ -505,7 +513,7 @@ mod tests {
     use super::*;
     // The glob above brings GPUI's `test` macro; `#[test]` is the standard one.
     use ::core::prelude::v1::test;
-    use humata2_clients::comments::{Anchor, CommentId, Side};
+    use humata2_clients::comments::{Anchor, Author, CommentId, Destination, Side};
     use humata2_review::comments::SessionComments;
 
     const SESSION: &str = "s-rfc";
@@ -526,6 +534,7 @@ mod tests {
             quoted: Vec::new(),
             base: base.map(str::to_owned),
             detached: false,
+            outdated: false,
         }
     }
 
@@ -542,6 +551,10 @@ mod tests {
             replies: Vec::new(),
             resolved_by: None,
             addressed: None,
+            destination: Destination::Terminal,
+            author: Author::User,
+            posted_url: None,
+            post_unconfirmed: false,
         }
     }
 

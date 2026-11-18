@@ -1,7 +1,8 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
-# Installs the host's own tools (humatad2, the holder, the humata CLI) from
-# the app bundle into ~/.humata2/bin on every launch, registers the launchd
+# Installs the host's own tools (humatad2, the holder, the humata and stack CLIs) from
+# the app bundle into ~/.humata2/bin with the release's bundle.json, stages a
+# newer release as .next files for Migrate (UP-1), registers the launchd
 # login item and links `humata` onto the person's PATH (TS-0, PER-20, D51).
 rust_library(
     name = "install",
@@ -9,6 +10,7 @@ rust_library(
     crate_name = "humata2_install",
     visibility = ["//apps/humata2/desktop:__pkg__"],
     deps = [
+        "//apps/humata2/daemon/machines",
         "@crates//:rustix",
         "@crates//:sha2",
         "@crates//:thiserror",
@@ -21,6 +23,21 @@ rust_test(
     crate_root = "tests/install.rs",
     deps = [
         ":install",
+        "//apps/humata2/daemon/machines",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+# D374: the app moves a daemon too old for Migrate to the staged release.
+rust_test(
+    name = "migrate_old_daemon_test",
+    srcs = ["tests/migrate_old_daemon.rs"],
+    crate_root = "tests/migrate_old_daemon.rs",
+    deps = [
+        ":install",
+        "//apps/humata2/daemon/machines",
+        "@crates//:serde_json",
         "@crates//:tempfile",
     ],
 )

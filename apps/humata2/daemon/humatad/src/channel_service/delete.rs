@@ -18,14 +18,16 @@ use std::time::{Duration, Instant};
 
 use humata2_access::{Call, Capability, ChannelId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_holder::shutdown;
 use humata2_sessions::repo_work;
 use humata2_store::{AgentState, ChannelRecord, Placement, SIDE_FILE, Store, StoreError};
 use humata2_transfers::NewItem;
+use serde::{Deserialize, Serialize};
 use tonic::{Code, Status};
 
+use super::move_folder::{self, MoveError};
 use super::{ChannelSvc, blocking, error_of};
 use crate::guard;
+use crate::holder_end;
 use crate::identity::{self, Caller};
 use crate::operations::Started;
 use crate::status;
@@ -247,6 +249,8 @@ enum DeleteError {
     },
     #[error("the requests of the channel's sessions could not be withdrawn")]
     Withdraw(#[source] Status),
+    #[error("the channel's Desk sessions could not be closed into the trash")]
+    DeskSessions(#[source] Status),
     #[error("the trash could not take the channel's folder {}", folder.display())]
     Trash {
         folder: PathBuf,
@@ -264,6 +268,33 @@ enum DeleteError {
 /// What a delete in progress is written down as.
 fn intent_path(root: &Path, channel: &str) -> PathBuf {
     root.join(INTENTS).join(channel)
+}
+
+/// Makes `folder` and its missing parents, and puts each new folder's entry
+/// in its parent on disk, so a power cut can't take the folder back.
+fn make_dirs(folder: &Path) -> std::io::Result<()> {
+    let missing: Vec<&Path> = folder
+        .ancestors()
+        .take_while(|found| !found.as_os_str().is_empty() && fs::symlink_metadata(found).is_err())
+        .collect();
+    humata2_durable::create_dir_all(folder, 0o700)?;
+    for found in missing {
+        match found.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => humata2_durable::sync_dir(parent)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Removes `path` and puts the removal on disk, so a note that finished its
+/// delete can't come back after a power cut and delete a folder again.
+fn remove_durably(path: &Path) -> std::io::Result<()> {
+    humata2_durable::remove_file(path)?;
+    match path.parent() {
+        Some(parent) => humata2_durable::sync_dir(parent),
+        None => Ok(()),
+    }
 }
 
 impl ChannelSvc {
@@ -357,6 +388,10 @@ impl ChannelSvc {
         let machine = |id: &String| pb::MachineId { value: id.clone() };
         let others: Vec<&String> = channel.machines.iter().filter(|m| **m != self.machine).collect();
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+        let desk_sessions = match self.desk.get().and_then(|handle| handle.get()) {
+            Some(desk) => desk.desks_of_channel(&id).await?,
+            None => Vec::new(),
+        };
         Ok(pb::DeleteChannelPlan {
             channel: Some(pb::ChannelId { value: id.clone() }),
             live_sessions: listing.live.iter().map(|(id, s)| work(id, s)).collect(),
@@ -390,6 +425,7 @@ impl ChannelSvc {
             // Other machines' folders are not deleted yet (D194): the plan
             // names them so the person knows the delete will say so.
             offline_machines: others.into_iter().map(machine).collect(),
+            desk_sessions,
         })
     }
 
@@ -477,6 +513,7 @@ impl ChannelSvc {
         let run = self.run_delete(channel.clone(), data, bin, Some(&progress)).await;
         match run {
             Ok(item) => {
+                let _ = remove_durably(&intent_path(&self.starter.layout.root(), &channel.id));
                 progress.succeed(None);
                 let feed = self.operations.feed();
                 let (record, machine_scope) = (channel.clone(), channel.id.clone());
@@ -528,14 +565,14 @@ impl ChannelSvc {
                 progress.set_step(key, state, None);
             }
         };
-        let root = self.starter.layout.root.clone();
+        let root = self.starter.layout.root();
         let folder = self.starter.layout.channel(&channel.folder);
         let note = intent_path(&root, &channel.id);
         {
             let (at, text) = (note.clone(), format!("{}\n{data}\n{}\n", channel.folder, channel.name));
             blocking(move || -> Result<(), std::io::Error> {
                 if let Some(parent) = at.parent() {
-                    fs::create_dir_all(parent)?;
+                    make_dirs(parent)?;
                 }
                 humata2_store::write_atomic(&at, text.as_bytes()).map_err(std::io::Error::other)
             })
@@ -568,6 +605,13 @@ impl ChannelSvc {
                 .map_err(DeleteError::Withdraw)?;
         }
         step("withdraw", pb::StepState::Done);
+        // CH-24: each Desk session's folder is inside the channel's, so it
+        // goes to its own trash item before the channel's folder moves.
+        if let Some(desk) = self.desk.get().and_then(|handle| handle.get()) {
+            desk.close_for_channel(&channel.id)
+                .await
+                .map_err(DeleteError::DeskSessions)?;
+        }
         crate::fault::point("delete_channel.agents_stopped");
 
         step("snapshot", pb::StepState::Running);
@@ -635,9 +679,9 @@ impl ChannelSvc {
         .map_err(|source| DeleteError::Stop { session: String::new(), source })?
         .map_err(DeleteError::Store)?;
         // A kill here leaves only the note: the restart finds nothing left
-        // to do and removes it.
+        // to do and removes it. The caller removes the note once it has
+        // said how the delete ended, so a restart report's line comes first.
         crate::fault::point("delete_channel.forgotten");
-        let _ = fs::remove_file(&note);
         Ok(item)
     }
 
@@ -655,8 +699,14 @@ impl ChannelSvc {
             .into_iter()
             .filter(|tab| tab.session.as_ref().is_some_and(|session| wanted.contains(session)))
         {
-            if let Err(error) = shutdown(&tab.holder_socket).await {
-                crate::log::say!("humatad2: stopping tab {}'s terminal: {}", tab.id, status::chain(&error));
+            if let Err(error) = holder_end::shut_or_end(
+                &tab.holder_socket,
+                tab.holder_pid,
+                &format!("tab {}", tab.id),
+            )
+            .await
+            {
+                crate::log::say!("humatad2: {error}");
             }
         }
         for session in sessions {
@@ -667,11 +717,17 @@ impl ChannelSvc {
                 .map_err(&stopped)?
                 .map_err(DeleteError::Store)?;
             let Some(mut agent) = agent else { continue };
-            if !matches!(agent.state, AgentState::Running { .. }) {
+            let AgentState::Running { holder_pid } = agent.state else {
                 continue;
-            }
-            if let Err(error) = shutdown(&agent.launch.holder_socket).await {
-                crate::log::say!("humatad2: stopping session {session}'s terminal: {}", status::chain(&error));
+            };
+            if let Err(error) = holder_end::shut_or_end(
+                &agent.launch.holder_socket,
+                holder_pid,
+                &format!("session {session}'s terminal"),
+            )
+            .await
+            {
+                crate::log::say!("humatad2: {error}");
             }
             agent.state = AgentState::Stopped;
             agent.updated_unix_ms = now_ms();
@@ -693,32 +749,25 @@ impl ChannelSvc {
         started: Arc<crate::restart::Started>,
     ) {
         self.deletes.use_trash(bin.clone());
+        note_owed_restores(&self.starter.store, &self.starter.layout.root(), started.operations());
         let me = self.clone();
+        // D241: each owed delete is named pending now, before the report.
+        let owed = owed_deletes(&self.starter.layout.root(), started.operations());
         tokio::spawn(async move {
             started.wait().await;
-            me.recover_deletes(bin).await;
+            me.recover_deletes(bin, started.operations(), owed).await;
+            // A machine that was away for a rename is renamed as it links.
+            me.follow_machines().await;
         });
     }
 
-    async fn recover_deletes(&self, bin: Arc<Bin>) {
-        let root = self.starter.layout.root.clone();
-        let notes = blocking({
-            let root = root.clone();
-            move || -> Vec<(PathBuf, String)> {
-                let Ok(entries) = fs::read_dir(root.join(INTENTS)) else {
-                    return Vec::new();
-                };
-                entries
-                    .flatten()
-                    .filter_map(|entry| {
-                        let id = entry.file_name().to_string_lossy().into_owned();
-                        fs::read_to_string(entry.path()).ok().map(|text| (entry.path(), format!("{id}\n{text}")))
-                    })
-                    .collect()
-            }
-        })
-        .await
-        .unwrap_or_default();
+    async fn recover_deletes(
+        &self,
+        bin: Arc<Bin>,
+        operations: &crate::restart::Operations,
+        notes: Vec<(PathBuf, String)>,
+    ) {
+        let root = self.starter.layout.root();
         for (note, text) in notes {
             let mut lines = text.lines();
             let (Some(id), Some(folder), Some(data), Some(name)) =
@@ -739,19 +788,68 @@ impl ChannelSvc {
                 revision: 0,
                 created_unix_ms: 0,
             });
-            if let Err(error) = self.run_delete(channel, data.to_owned(), bin.clone(), None).await {
-                crate::log::say!(
-                    "humatad2: couldn't finish deleting channel {id}: {}",
-                    status::chain(&error)
-                );
+            let operation = format!("delete_channel:{id}");
+            let name = channel.name.clone();
+            let record = |state: crate::restart::OperationState| {
+                operations.record(&operation, "delete_channel", "deleting", state);
+            };
+            match self.run_delete(channel, data.to_owned(), bin.clone(), None).await {
+                Ok(_) => record(crate::restart::OperationState::Finished),
+                Err(error) => {
+                    let reason = format!(
+                        "{}; the channel \"{name}\" may be partly deleted, so check its folder and delete the channel again",
+                        status::chain(&error)
+                    );
+                    crate::log::say!("humatad2: couldn't finish deleting channel {id}: {reason}");
+                    record(crate::restart::OperationState::Stuck { reason });
+                }
             }
-            let _ = fs::remove_file(note);
+            let _ = remove_durably(&note);
         }
+        // A rename cut short leaves its note: finish it, and resume the
+        // sessions it stopped.
+        self.recover_renames().await;
         // A restore cut short leaves a folder with its side file and no
         // channel: bring the channel back from it.
-        let (store, root) = (self.starter.store.clone(), root);
-        let _ = blocking(move || finish_restores(&store, &root)).await;
+        let (store, root) = (
+            Restores { records: self.starter.store.clone(), operations: operations.clone() },
+            root,
+        );
+        let _ = blocking(move || {
+            finish_restores(&store, &root);
+            finish_restore_notes(&store, &root);
+        })
+        .await;
     }
+}
+
+/// The notes of the deletes the last run left, each as `<id>\n<note text>`
+/// with its path, read at once (before anything is served) and each named
+/// pending in the restart report, which is written after this (D241). A
+/// note that doesn't name a channel is left alone, as before.
+fn owed_deletes(root: &Path, operations: &crate::restart::Operations) -> Vec<(PathBuf, String)> {
+    let Ok(entries) = fs::read_dir(root.join(INTENTS)) else {
+        return Vec::new();
+    };
+    let notes: Vec<(PathBuf, String)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            fs::read_to_string(entry.path()).ok().map(|text| (entry.path(), format!("{id}\n{text}")))
+        })
+        .collect();
+    for (_, text) in &notes {
+        let mut lines = text.lines();
+        if let (Some(id), Some(_), Some(_), Some(_)) = (lines.next(), lines.next(), lines.next(), lines.next()) {
+            operations.record(
+                &format!("delete_channel:{id}"),
+                "delete_channel",
+                "deleting",
+                crate::restart::OperationState::Pending { waits_for: "the start to finish".to_owned() },
+            );
+        }
+    }
+    notes
 }
 
 /// A plan that no longer matches (NV-27).
@@ -838,6 +936,85 @@ pub(crate) enum RestoreError {
     },
     #[error("{} has no name to put the channel's records under", folder.display())]
     NoName { folder: PathBuf },
+    #[error("the files in {} still name the folder the channel was deleted from", folder.display())]
+    Files {
+        folder: PathBuf,
+        #[source]
+        source: MoveError,
+    },
+    #[error("couldn't write the note of the restore at {}", path.display())]
+    Note {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "a test asked for a failure at {point} (HUMATA2_FAIL_AT); only test daemons read that variable, so start the daemon again without it"
+    )]
+    Injected { point: &'static str },
+}
+
+/// Where restores under another folder are written down, in the channels
+/// folder, before their records come back and until their files are done.
+const RESTORING: &str = ".restoring";
+
+/// A restore under another folder in progress: what is needed, after its
+/// records came back, to finish moving what names the old folder.
+#[derive(Debug, Serialize, Deserialize)]
+struct RestoreNote {
+    channel: String,
+    old_path: PathBuf,
+    new_path: PathBuf,
+}
+
+fn write_restore_note(path: &Path, note: &RestoreNote) -> Result<(), RestoreError> {
+    let failed = |source| RestoreError::Note {
+        path: path.to_owned(),
+        source,
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(failed)?;
+    }
+    let text = serde_json::to_vec(note).map_err(|error| failed(std::io::Error::other(error)))?;
+    humata2_store::write_atomic(path, &text).map_err(|error| failed(std::io::Error::other(error)))
+}
+
+/// Moves what names the old folder to the new, for a channel whose records
+/// are in place under the new one. The conversations to move are found by
+/// asking where the records, put back the way they were, would have them.
+fn finish_files(store: &Store, note: &RestoreNote) -> Result<(), RestoreError> {
+    // A fault build can be told to fail here (HUMATA2_FAIL_AT); in any other
+    // build this is false and compiled away.
+    if humata2_store::fault::fails("restore_channel.finish_files") {
+        return Err(RestoreError::Injected { point: "restore_channel.finish_files" });
+    }
+    let forward = Placement {
+        name: String::new(),
+        folder: String::new(),
+        old_path: note.old_path.clone(),
+        new_path: note.new_path.clone(),
+        now_unix_ms: now_ms(),
+    };
+    let back = Placement {
+        old_path: note.new_path.clone(),
+        new_path: note.old_path.clone(),
+        ..forward.clone()
+    };
+    let moves: Vec<(PathBuf, PathBuf)> = store
+        .conversation_moves(&note.channel, None, &back)
+        .map_err(|source| RestoreError::Store {
+            folder: note.new_path.clone(),
+            source,
+        })?
+        .into_iter()
+        .map(|(now, was)| (was, now))
+        .collect();
+    move_folder::rewrite_folders(&forward)
+        .and_then(|()| move_folder::carry_conversations(&forward, &moves))
+        .map_err(|source| RestoreError::Files {
+            folder: note.new_path.clone(),
+            source,
+        })
 }
 
 /// The channel whose folder was put back at `folder` comes back with its
@@ -862,23 +1039,161 @@ pub(crate) fn finish_restore(store: &Store, folder: &Path) -> Result<(), Restore
         Some(n) => format!("{}-{n}", head.name),
         None => head.name.clone(),
     };
-    store
-        .import_channel(
-            &side,
-            &Placement {
-                name: shown,
-                folder: name,
-                old_path: root.join(&head.folder),
-                new_path: folder.to_owned(),
-                now_unix_ms: now_ms(),
+    let placement = Placement {
+        name: shown,
+        folder: name,
+        old_path: root.join(&head.folder),
+        new_path: folder.to_owned(),
+        now_unix_ms: now_ms(),
+    };
+    // Put back under another name, what the folder holds still names the
+    // place it was deleted from, and its agents' conversations are kept
+    // under that place's keys (MV-16). The note lets a restart finish that
+    // when the daemon is cut down after the records came back.
+    let moved = placement.old_path != placement.new_path;
+    let note = root.join(RESTORING).join(&head.id);
+    if moved {
+        let written = RestoreNote {
+            channel: head.id.clone(),
+            old_path: placement.old_path.clone(),
+            new_path: placement.new_path.clone(),
+        };
+        write_restore_note(&note, &written)?;
+    }
+    // Its sessions come back archived with the undo window an archive
+    // gets: their folders are not freed the moment they are back.
+    let free_after = placement
+        .now_unix_ms
+        .saturating_add(crate::session_service::archive_undo_window_ms());
+    // A fault build can be told to fail the import here (HUMATA2_FAIL_AT); in
+    // any other build this is false and compiled away.
+    if humata2_store::fault::fails("restore_channel.import_record") {
+        return Err(RestoreError::Injected { point: "restore_channel.import_record" });
+    }
+    let moves = store.import_channel(&side, &placement, free_after).map_err(failed)?;
+    // A kill here leaves the records back and the files not: the restart
+    // finishes them from the note.
+    crate::fault::point("restore_channel.imported");
+    if moved {
+        move_folder::rewrite_folders(&placement)
+            .and_then(|()| move_folder::carry_conversations(&placement, &moves))
+            .map_err(|source| RestoreError::Files {
+                folder: folder.to_owned(),
+                source,
+            })?;
+        let _ = fs::remove_file(&note);
+    }
+    Ok(())
+}
+
+/// Finishes the restores a restart cut short after their records came back:
+/// the files and conversations that still name the old folder.
+fn finish_restore_notes(restores: &Restores, root: &Path) {
+    let Restores { records: store, operations } = restores;
+    let Ok(entries) = fs::read_dir(root.join(RESTORING)) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let read = fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<RestoreNote>(&bytes).ok());
+        let Some(note) = read else {
+            crate::log::say!(
+                "humatad2: {} is not a note of a restore in progress; remove it if no restore is waiting",
+                path.display()
+            );
+            continue;
+        };
+        match store.channel(&note.channel) {
+            Ok(Some(_)) => match finish_files(store, &note) {
+                Ok(()) => {
+                    // The end is named before the note goes (D241).
+                    operations.record(
+                        &restore_operation(&note.channel),
+                        "restore_channel",
+                        "moving its files",
+                        crate::restart::OperationState::Finished,
+                    );
+                    let _ = fs::remove_file(&path);
+                }
+                Err(error) => {
+                    let reason = format!(
+                        "{}; check that the channel's folder can be written to, then restart humatad2 to try again",
+                        status::chain(&error)
+                    );
+                    crate::log::say!("humatad2: couldn't finish bringing back channel {}: {reason}", note.channel);
+                    operations.record(
+                        &restore_operation(&note.channel),
+                        "restore_channel",
+                        "moving its files",
+                        crate::restart::OperationState::Stuck { reason },
+                    );
+                }
             },
-        )
-        .map_err(failed)
+            // Its records never came back, and no side file is left to bring
+            // them from: nothing is waiting on the note.
+            Ok(None) => {
+                let _ = fs::remove_file(&path);
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+/// What the restart report calls the restore of channel `id`.
+fn restore_operation(id: &str) -> String {
+    format!("restore_channel:{id}")
+}
+
+/// Names pending, in the restart report, each restore the last run left to
+/// finish: a folder with a side file whose channel is not in the state, and
+/// a note of a restore whose records came back but whose files didn't
+/// move. Read at once, before anything is served, because the report is
+/// written after this (D241).
+fn note_owed_restores(store: &Store, root: &Path, operations: &crate::restart::Operations) {
+    let mut owed = BTreeSet::new();
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let side = entry.path().join(SIDE_FILE);
+            if entry.file_name().to_string_lossy().starts_with('.') || !side.exists() {
+                continue;
+            }
+            if let Ok(head) = Store::deleted_channel(&side)
+                && matches!(store.channel(&head.id), Ok(None))
+            {
+                owed.insert(head.id);
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir(root.join(RESTORING)) {
+        for entry in entries.flatten() {
+            let read = fs::read(entry.path()).ok().and_then(|bytes| serde_json::from_slice::<RestoreNote>(&bytes).ok());
+            if let Some(note) = read
+                && matches!(store.channel(&note.channel), Ok(Some(_)))
+            {
+                owed.insert(note.channel);
+            }
+        }
+    }
+    for id in owed {
+        operations.record(
+            &restore_operation(&id),
+            "restore_channel",
+            "bringing the channel back",
+            crate::restart::OperationState::Pending { waits_for: "the start to finish".to_owned() },
+        );
+    }
+}
+
+/// What finishing the restores a restart cut short needs: the records, and
+/// the restart report each one's end is named in (D241).
+struct Restores {
+    records: Arc<Store>,
+    operations: crate::restart::Operations,
 }
 
 /// Finishes the restores a restart cut short: a folder with a side file
-/// whose channel is not in the state.
-fn finish_restores(store: &Store, root: &Path) {
+/// whose channel is not in the state. Each is named in the restart report
+/// as it ends (D241).
+fn finish_restores(restores: &Restores, root: &Path) {
+    let Restores { records: store, operations } = restores;
     let Ok(entries) = fs::read_dir(root) else { return };
     for entry in entries.flatten() {
         let folder = entry.path();
@@ -888,8 +1203,27 @@ fn finish_restores(store: &Store, root: &Path) {
         let Ok(head) = Store::deleted_channel(&folder.join(SIDE_FILE)) else { continue };
         match store.channel(&head.id) {
             Ok(None) => {
-                if let Err(error) = finish_restore(store, &folder) {
-                    crate::log::say!("humatad2: couldn't bring back a channel: {}", status::chain(&error));
+                let operation = restore_operation(&head.id);
+                match finish_restore(store, &folder) {
+                    Ok(()) => operations.record(
+                        &operation,
+                        "restore_channel",
+                        "bringing the channel back",
+                        crate::restart::OperationState::Finished,
+                    ),
+                    Err(error) => {
+                        let reason = format!(
+                            "{}; check the channel's folder and the data folder's disk, then restart humatad2 to try again",
+                            status::chain(&error)
+                        );
+                        crate::log::say!("humatad2: couldn't bring back a channel: {reason}");
+                        operations.record(
+                            &operation,
+                            "restore_channel",
+                            "bringing the channel back",
+                            crate::restart::OperationState::Stuck { reason },
+                        );
+                    }
                 }
             }
             // Imported already; only the used-up file is left.
@@ -898,5 +1232,128 @@ fn finish_restores(store: &Store, root: &Path) {
             }
             Err(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod restore_owed_tests {
+    use super::*;
+    use crate::restart::{Operations, pending_in};
+
+    fn record(id: &str, folder: &str) -> ChannelRecord {
+        ChannelRecord {
+            id: id.to_owned(),
+            name: "Payments".to_owned(),
+            folder: folder.to_owned(),
+            branch_prefix: None,
+            default_agent: String::new(),
+            repos: Vec::new(),
+            machines: Vec::new(),
+            revision: 1,
+            created_unix_ms: 0,
+        }
+    }
+
+    /// The last state the report names for `id`.
+    fn last_state(report: &Path, id: &str) -> Option<String> {
+        let text = fs::read_to_string(report.join("operations.jsonl")).ok()?;
+        text.lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|value| value["id"] == id)
+            .filter_map(|value| value["state"].as_str().map(str::to_owned))
+            .next_back()
+    }
+
+    /// A store whose channel `ch_1` was deleted: its side file is in the
+    /// channel's folder under `root` and the state no longer has it.
+    fn deleted(state: &Path, root: &Path) -> Store {
+        let store = Store::open(state.join("store")).unwrap();
+        store.put_channel(&record("ch_1", "payments")).unwrap();
+        let folder = root.join("payments");
+        fs::create_dir_all(&folder).unwrap();
+        store.export_channel("ch_1", &folder.join(SIDE_FILE)).unwrap();
+        store.forget_channel("ch_1").unwrap();
+        store
+    }
+
+    /// A restore the last run left is named pending when it is read, and
+    /// finished once the channel is back.
+    #[test]
+    fn a_restore_the_last_run_left_is_named_pending_then_finished() {
+        let (state, root, report) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let store = Arc::new(deleted(state.path(), root.path()));
+        let operations = Operations::default();
+        operations.set_folder(report.path());
+        let restores = Restores { records: store.clone(), operations: operations.clone() };
+
+        note_owed_restores(&store, root.path(), &operations);
+        assert_eq!(pending_in(report.path()), vec!["restore_channel:ch_1".to_owned()]);
+        assert!(store.channel("ch_1").unwrap().is_none(), "nothing is restored by noting it");
+
+        finish_restores(&restores, root.path());
+        assert!(store.channel("ch_1").unwrap().is_some());
+        assert_eq!(last_state(report.path(), "restore_channel:ch_1").as_deref(), Some("finished"));
+    }
+
+    /// A side file whose channel is back already is only left over: nothing
+    /// is owed, nothing is named, and the file goes.
+    #[test]
+    fn a_leftover_side_file_is_not_a_restore_owed() {
+        let (state, root, report) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let store = Arc::new(deleted(state.path(), root.path()));
+        store.put_channel(&record("ch_1", "payments")).unwrap();
+        let operations = Operations::default();
+        operations.set_folder(report.path());
+        let restores = Restores { records: store.clone(), operations: operations.clone() };
+
+        note_owed_restores(&store, root.path(), &operations);
+        finish_restores(&restores, root.path());
+
+        assert!(pending_in(report.path()).is_empty());
+        assert_eq!(last_state(report.path(), "restore_channel:ch_1"), None);
+        assert!(!root.path().join("payments").join(SIDE_FILE).exists());
+    }
+
+    /// A note of a restore whose records are back, but whose files are not
+    /// moved, is owed too.
+    #[test]
+    fn a_restore_note_of_a_channel_that_is_back_is_named_pending() {
+        let (state, root, report) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let store = Store::open(state.path().join("store")).unwrap();
+        store.put_channel(&record("ch_1", "payments-2")).unwrap();
+        let note = RestoreNote {
+            channel: "ch_1".to_owned(),
+            old_path: root.path().join("payments"),
+            new_path: root.path().join("payments-2"),
+        };
+        write_restore_note(&root.path().join(RESTORING).join("ch_1"), &note).unwrap();
+        let operations = Operations::default();
+        operations.set_folder(report.path());
+
+        note_owed_restores(&store, root.path(), &operations);
+
+        assert_eq!(pending_in(report.path()), vec!["restore_channel:ch_1".to_owned()]);
+    }
+}
+
+#[cfg(test)]
+mod owed_tests {
+    use super::*;
+
+    /// A delete the last run left is named pending when its note is read,
+    /// and a note that names no channel is not.
+    #[test]
+    fn a_delete_the_last_run_left_is_named_pending_when_read() {
+        let (root, report) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        fs::create_dir_all(root.path().join(INTENTS)).unwrap();
+        fs::write(root.path().join(INTENTS).join("ch_1"), "payments\n/data/payments\nPayments\n").unwrap();
+        fs::write(root.path().join(INTENTS).join("ch_2"), "payments\n").unwrap();
+        let operations = crate::restart::Operations::default();
+        operations.set_folder(report.path());
+
+        let owed = owed_deletes(root.path(), &operations);
+
+        assert_eq!(owed.len(), 2, "both notes are kept for the recovery");
+        assert_eq!(crate::restart::pending_in(report.path()), vec!["delete_channel:ch_1".to_owned()]);
     }
 }

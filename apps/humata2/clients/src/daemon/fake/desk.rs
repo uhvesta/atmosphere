@@ -1,14 +1,16 @@
 //! The Desk on the fake daemon (DK-1 to DK-14, SE-26).
 
+use super::repos as library;
 use super::{FakeDaemon, Inner};
 use crate::daemon::{DaemonError, Event, Operation as Call, Reply};
 use crate::desk::{
-    self, Access, CleanUp, CleanUpRow, Closed, DeskClient, DeskSession, Document, Folder,
-    FolderChoice, LastUsed, NewDeskSession,
+    self, Access, ChannelDeskSession, CleanUp, CleanUpRow, Closed, DeskClient, DeskSession,
+    Document, Folder, FolderChoice, LastUsed, NewChannelDesk, NewDeskSession, Switches,
 };
 use crate::model::{
     ChannelId, FileEntry, Line, MachineId, SessionId, Speaker, Status, Trashed, Turn,
 };
+use crate::repos::RepoPlace;
 
 /// The branch the fake clones a repository on: its default branch (DK-3).
 const DEFAULT_BRANCH: &str = "main";
@@ -108,10 +110,11 @@ fn free_path(inner: &Inner, machine: &MachineId, name: &str) -> String {
                     .is_some_and(|session| &session.machine == machine)
         })
     };
-    let mut path = desk::scratch_path(name);
+    let root = desk::root_of(&inner.workspace.machines, machine);
+    let mut path = desk::scratch_path_in(root, name);
     let mut suffix = 2;
     while taken(&path) {
-        path = desk::scratch_path(&format!("{name}-{suffix}"));
+        path = desk::scratch_path_in(root, &format!("{name}-{suffix}"));
         suffix += 1;
     }
     path
@@ -150,18 +153,6 @@ fn start_now(inner: &mut Inner, new: NewDeskSession) -> Result<SessionId, Daemon
             let path = free_path(inner, &new.machine, name);
             Folder::Scratch { path, kept: false }
         }
-        FolderChoice::Picked { path } => {
-            let path = path.trim();
-            if path.is_empty() {
-                return Err(refused(
-                    "Starting the desk session",
-                    "the folder path is empty. Pick a folder and try again",
-                ));
-            }
-            Folder::Picked {
-                path: path.to_owned(),
-            }
-        }
     };
     let mut repos: Vec<String> = Vec::new();
     for repo in &new.repos {
@@ -190,6 +181,10 @@ fn start_now(inner: &mut Inner, new: NewDeskSession) -> Result<SessionId, Daemon
         id.clone(),
         DeskSession {
             session: id.clone(),
+            has_versions: folder.is_scratch(),
+            doc_head: String::new(),
+            version_count: 0,
+            holds_files: false,
             folder,
             repos,
             access: new.access,
@@ -208,12 +203,18 @@ fn start_now(inner: &mut Inner, new: NewDeskSession) -> Result<SessionId, Daemon
             .clone_branches
             .insert((id.clone(), repo.clone()), DEFAULT_BRANCH.to_owned());
     }
+    for repo in &new.repos {
+        library::record(inner, repo, RepoPlace::Desk);
+    }
     inner.changed(&id);
     inner.emit(Event::Resync);
     Ok(id)
 }
 
 fn close_now(inner: &mut Inner, id: &SessionId) -> Result<(), DaemonError> {
+    if inner.workspace.desk.channel_sessions.contains_key(id) {
+        return close_channel_now(inner, id);
+    }
     require(inner, id)?;
     if record(inner, id)?.closed.is_some() {
         return Err(refused(
@@ -238,6 +239,9 @@ fn close_now(inner: &mut Inner, id: &SessionId) -> Result<(), DaemonError> {
 }
 
 fn reopen_now(inner: &mut Inner, id: &SessionId) -> Result<(), DaemonError> {
+    if inner.workspace.desk.channel_sessions.contains_key(id) {
+        return reopen_channel_now(inner, id);
+    }
     require(inner, id)?;
     if record(inner, id)?.closed.is_none() {
         return Err(refused(
@@ -267,6 +271,302 @@ fn keep_now(inner: &mut Inner, id: &SessionId) -> Result<(), DaemonError> {
     }
     inner.emit(Event::Resync);
     Ok(())
+}
+
+/// Starts a channel's own Desk session (CD-1, CD-6): a scratch folder
+/// `<root>/<channel>/desk/<name>`, no clones, filed under no channel's tree.
+fn start_channel_now(inner: &mut Inner, new: NewChannelDesk) -> Result<SessionId, DaemonError> {
+    const WHAT: &str = "Starting the channel desk session";
+    online(inner, &new.machine)?;
+    let title = new.title.trim().to_owned();
+    if title.is_empty() {
+        return Err(refused(
+            WHAT,
+            "it needs a title. Give it a title and try again",
+        ));
+    }
+    let Some(channel) = inner.workspace.channel(&new.channel).cloned() else {
+        return Err(not_found(format!("Channel {}", new.channel)));
+    };
+    if let Some(target) = &new.target {
+        let in_channel = inner
+            .workspace
+            .session(target)
+            .is_some_and(|session| session.channel == new.channel);
+        if !in_channel {
+            return Err(not_found(format!(
+                "Session {target} in channel {}",
+                channel.name
+            )));
+        }
+    }
+    let name = match desk::folder_name(&title) {
+        name if name.is_empty() => "desk-session".to_owned(),
+        name => name,
+    };
+    let root = desk::root_of(&inner.workspace.machines, &new.machine).to_owned();
+    let base = format!("{root}/{}/{}", desk::folder_name(&channel.name), desk::FOLDER);
+    let taken = |inner: &Inner, path: &str| {
+        inner
+            .workspace
+            .desk
+            .channel_sessions
+            .values()
+            .any(|found| found.desk.folder.path() == path)
+    };
+    let mut path = format!("{base}/{name}");
+    let mut suffix = 2;
+    while taken(inner, &path) {
+        path = format!("{base}/{name}-{suffix}");
+        suffix += 1;
+    }
+    let rules = inner
+        .workspace
+        .rules
+        .get(&new.channel)
+        .cloned()
+        .unwrap_or_default();
+    let id = SessionId::new(inner.id("cdesk"));
+    let mut session = crate::fixture::desk_session(
+        id.as_str(),
+        &title,
+        new.agent,
+        new.machine.as_str(),
+        Status::Idle,
+    );
+    session.started = "just now".to_owned();
+    session.active = "just now".to_owned();
+    session.last_used = "just now".to_owned();
+    session.transcript = vec![Line {
+        from: Speaker::System,
+        text: format!("{} started · {title}", new.agent.name()),
+    }];
+    let order = inner
+        .workspace
+        .desk
+        .channel_sessions
+        .values()
+        .map(|found| found.desk.last_used.order)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    inner.workspace.sessions.push(session);
+    inner.workspace.desk.channel_sessions.insert(
+        id.clone(),
+        ChannelDeskSession {
+            desk: DeskSession::fresh(
+                id.clone(),
+                Folder::Scratch { path, kept: false },
+                LastUsed {
+                    order,
+                    label: "now".to_owned(),
+                },
+            ),
+            channel: new.channel,
+            target: new.target,
+            switches: new.switches,
+            blocked: desk::blocked_by(&rules),
+            target_gone: false,
+            documents: Vec::new(),
+            document_lines: std::collections::BTreeMap::new(),
+        },
+    );
+    inner.changed(&id);
+    inner.emit(Event::Resync);
+    Ok(id)
+}
+
+/// A channel Desk session's folder is kept once it holds a version (DV-13).
+/// A channel Desk session has no Keep folder (CD-4).
+fn channel_folder_kept(found: &ChannelDeskSession) -> bool {
+    found.desk.version_count > 0
+}
+
+fn next_channel_order(inner: &Inner) -> u64 {
+    inner
+        .workspace
+        .desk
+        .channel_sessions
+        .values()
+        .map(|found| found.desk.last_used.order)
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
+/// Closing a channel Desk session (CD-4, DV-13): a folder that is not kept
+/// goes to the trash at once, so the session is gone from the channel's
+/// Desk. A kept folder stays: the session closes in place, under Closed.
+/// Closing one that is already closed changes nothing.
+fn close_channel_now(inner: &mut Inner, id: &SessionId) -> Result<(), DaemonError> {
+    let Some(found) = inner.workspace.desk.channel_sessions.get(id) else {
+        return Err(not_found(format!("Channel desk session {id}")));
+    };
+    if found.desk.closed.is_some() {
+        return Ok(());
+    }
+    if !channel_folder_kept(found) {
+        inner.workspace.desk.channel_sessions.remove(id);
+        inner.workspace.sessions.retain(|session| &session.id != id);
+        inner.emit(Event::Resync);
+        return Ok(());
+    }
+    let order = next_channel_order(inner);
+    let session = inner.session_mut(id)?;
+    session.status = Status::Exited { code: 0 };
+    session.turn = Turn::Ended;
+    if let Some(found) = inner.workspace.desk.channel_sessions.get_mut(id) {
+        found.desk.closed = Some(Closed {
+            when: "today".to_owned(),
+            days_left: None,
+        });
+        found.desk.last_used = LastUsed {
+            order,
+            label: "now".to_owned(),
+        };
+    }
+    inner.changed(id);
+    inner.emit(Event::Resync);
+    Ok(())
+}
+
+/// Reopening a channel Desk session closed in place (DV-13): it is an open
+/// row again, the most recently used. One that is open has nothing to reopen.
+fn reopen_channel_now(inner: &mut Inner, id: &SessionId) -> Result<(), DaemonError> {
+    let order = next_channel_order(inner);
+    let Some(found) = inner.workspace.desk.channel_sessions.get_mut(id) else {
+        return Err(not_found(format!("Channel desk session {id}")));
+    };
+    if found.desk.closed.is_none() {
+        return Err(refused(
+            "Reopening the channel desk session",
+            "it isn't closed. Nothing needs reopening",
+        ));
+    }
+    found.desk.closed = None;
+    found.desk.last_used = LastUsed {
+        order,
+        label: "now".to_owned(),
+    };
+    let session = inner.session_mut(id)?;
+    session.status = Status::Idle;
+    session.turn = Turn::Ended;
+    inner.changed(id);
+    inner.emit(Event::Resync);
+    Ok(())
+}
+
+fn set_switches_now(
+    inner: &mut Inner,
+    id: &SessionId,
+    switches: Switches,
+) -> Result<(), DaemonError> {
+    let found = inner
+        .workspace
+        .desk
+        .channel_sessions
+        .get_mut(id)
+        .ok_or_else(|| not_found(format!("Channel desk session {id}")))?;
+    found.switches = switches;
+    inner.emit(Event::Resync);
+    Ok(())
+}
+
+/// Changing what a channel Desk session looks after (CD-5): an open session
+/// moves to a session of its channel, or to the whole channel; "Target gone"
+/// ends. The session's status stays as it was.
+fn set_target_now(
+    inner: &mut Inner,
+    id: &SessionId,
+    target: Option<SessionId>,
+) -> Result<(), DaemonError> {
+    let channel = inner
+        .workspace
+        .desk
+        .channel_sessions
+        .get(id)
+        .filter(|found| found.desk.closed.is_none())
+        .map(|found| found.channel.clone())
+        .ok_or_else(|| not_found(format!("Channel desk session {id}")))?;
+    if let Some(wanted) = &target {
+        let there = inner
+            .workspace
+            .session(wanted)
+            .is_some_and(|session| session.channel == channel && !session.archived);
+        if !there {
+            return Err(refused(
+                "Changing what a desk session looks after",
+                "that session is not one of the channel's any more; pick another session, or have it look after the whole channel",
+            ));
+        }
+    }
+    let mut resumes = false;
+    if let Some(found) = inner.workspace.desk.channel_sessions.get_mut(id) {
+        resumes = found.target_gone;
+        found.target = target;
+        found.target_gone = false;
+    }
+    // The daemon stopped it for its target; a new one runs it again.
+    if resumes
+        && let Some(session) = inner.workspace.sessions.iter_mut().find(|s| &s.id == id)
+    {
+        session.status = Status::Idle;
+    }
+    inner.emit(Event::Resync);
+    Ok(())
+}
+
+/// A session went (deleted, or out of its channel): each open channel Desk
+/// session that looked after it closes when its folder holds no Markdown,
+/// else stops and shows its target gone (CD-5), as the daemon's watch does.
+fn target_went_now(inner: &mut Inner, target: &SessionId) {
+    let hit: Vec<SessionId> = inner
+        .workspace
+        .desk
+        .channel_sessions
+        .iter()
+        .filter(|(_, found)| found.desk.closed.is_none() && found.target.as_ref() == Some(target))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in hit {
+        let keeps = inner
+            .workspace
+            .desk
+            .channel_sessions
+            .get(&id)
+            .is_some_and(|found| !found.documents.is_empty());
+        if !keeps {
+            // Nothing to keep: the session closes at once, as for any close.
+            let _ = close_channel_now(inner, &id);
+            continue;
+        }
+        if let Some(found) = inner.workspace.desk.channel_sessions.get_mut(&id) {
+            found.target_gone = true;
+        }
+        if let Some(session) = inner.workspace.sessions.iter_mut().find(|s| s.id == id) {
+            session.status = Status::Stopped;
+        }
+    }
+    inner.emit(Event::Resync);
+}
+
+impl FakeDaemon {
+    /// Stands in for the daemon deleting session `session`: the channel Desk
+    /// sessions that looked after it close or show their target gone.
+    pub fn remove_session(&self, session: &SessionId) {
+        let mut inner = self.inner();
+        inner.workspace.sessions.retain(|found| &found.id != session);
+        target_went_now(&mut inner, session);
+    }
+
+    /// Stands in for session `session` leaving its channel for `channel`.
+    pub fn relocate_session(&self, session: &SessionId, channel: &ChannelId) {
+        let mut inner = self.inner();
+        if let Some(found) = inner.workspace.sessions.iter_mut().find(|s| &s.id == session) {
+            found.channel = channel.clone();
+        }
+        target_went_now(&mut inner, session);
+    }
 }
 
 fn rows(inner: &Inner) -> Vec<CleanUpRow> {
@@ -403,7 +703,11 @@ fn copy_now(
     };
     online(inner, &machine)?;
     let name = document.path.rsplit('/').next().unwrap_or_default();
-    let path = format!("{}/{}/shared/{name}", desk::ROOT, target.name);
+    let path = format!(
+        "{}/{}/shared/{name}",
+        desk::root_of(&inner.workspace.machines, &machine),
+        target.name
+    );
     let length = inner
         .workspace
         .file_contents
@@ -448,6 +752,7 @@ fn add_repo_now(inner: &mut Inner, id: &SessionId, repo: &str) -> Result<(), Dae
         ));
     }
     found.repos.push(repo.to_owned());
+    library::record(inner, repo, RepoPlace::Desk);
     inner
         .workspace
         .desk
@@ -497,6 +802,19 @@ fn move_now(inner: &mut Inner, id: &SessionId, machine: &MachineId) -> Result<()
     }
     online(inner, machine)?;
     online(inner, &current)?;
+    if record(inner, id)?.folder.is_scratch() {
+        let name = record(inner, id)?
+            .folder
+            .path()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let moved = free_path(inner, machine, &name);
+        if let Folder::Scratch { path, .. } = &mut record(inner, id)?.folder {
+            *path = moved;
+        }
+    }
     inner.session_mut(id)?.machine = machine.clone();
     inner.changed(id);
     inner.emit(Event::Resync);
@@ -601,6 +919,49 @@ impl DeskClient for FakeDaemon {
         )
     }
 
+    fn list_versions(
+        &self,
+        session: &SessionId,
+        path: &str,
+    ) -> Reply<crate::docs::DocVersions> {
+        super::docs::list_versions(self, session, path)
+    }
+
+    fn read_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<crate::docs::VersionText> {
+        super::docs::read_version(self, session, path, id)
+    }
+
+    fn save_version(
+        &self,
+        session: &SessionId,
+        message: &str,
+    ) -> Reply<crate::docs::DocVersion> {
+        super::docs::save_version(self, session, message)
+    }
+
+    fn restore_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<crate::docs::Restored> {
+        super::docs::restore_version(self, session, path, id)
+    }
+
+    fn diff_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<crate::docs::VersionDiff> {
+        super::docs::diff_version(self, session, path, id)
+    }
+
     fn set_access(&self, session: &SessionId, access: Access) -> Reply<()> {
         let id = session.clone();
         self.reply(
@@ -614,6 +975,87 @@ impl DeskClient for FakeDaemon {
             },
         )
     }
+
+    fn channel_sessions(&self, channel: &ChannelId) -> Reply<Vec<ChannelDeskSession>> {
+        let channel = channel.clone();
+        self.reply(
+            None,
+            format!("desk of {channel}"),
+            move |inner| {
+                let mut found: Vec<ChannelDeskSession> = inner
+                    .workspace
+                    .desk
+                    .channel_sessions
+                    .values()
+                    .filter(|found| found.channel == channel)
+                    .cloned()
+                    .collect();
+                found.sort_by(|a, b| {
+                    b.desk
+                        .last_used
+                        .order
+                        .cmp(&a.desk.last_used.order)
+                        .then_with(|| a.desk.session.cmp(&b.desk.session))
+                });
+                Ok(found)
+            },
+        )
+    }
+
+    fn target_sessions(&self, target: &SessionId) -> Reply<Vec<ChannelDeskSession>> {
+        let target = target.clone();
+        self.reply(
+            None,
+            format!("desk looking after {target}"),
+            move |inner| {
+                let mut found: Vec<ChannelDeskSession> = inner
+                    .workspace
+                    .desk
+                    .channel_sessions
+                    .values()
+                    .filter(|found| found.target.as_ref() == Some(&target))
+                    .cloned()
+                    .collect();
+                found.sort_by(|a, b| {
+                    b.desk
+                        .last_used
+                        .order
+                        .cmp(&a.desk.last_used.order)
+                        .then_with(|| a.desk.session.cmp(&b.desk.session))
+                });
+                Ok(found)
+            },
+        )
+    }
+
+    fn start_channel(&self, new: NewChannelDesk) -> Reply<SessionId> {
+        let line = format!(
+            "desk start {:?} in {} on {}",
+            new.title, new.channel, new.machine
+        );
+        self.reply(call(desk::Operation::StartChannel), line, move |inner| {
+            start_channel_now(inner, new)
+        })
+    }
+
+    fn set_switches(&self, session: &SessionId, switches: Switches) -> Reply<()> {
+        let id = session.clone();
+        self.reply(
+            call(desk::Operation::SetSwitches),
+            format!("desk switches {session} {switches:?}"),
+            move |inner| set_switches_now(inner, &id, switches),
+        )
+    }
+
+    fn set_target(&self, session: &SessionId, target: Option<&SessionId>) -> Reply<()> {
+        let id = session.clone();
+        let target = target.cloned();
+        self.reply(
+            call(desk::Operation::SetTarget),
+            format!("desk target {session} {target:?}"),
+            move |inner| set_target_now(inner, &id, target),
+        )
+    }
 }
 
 impl FakeDaemon {
@@ -622,5 +1064,14 @@ impl FakeDaemon {
     /// a session that isn't on the Desk.
     pub fn use_desk_session(&self, session: &SessionId) {
         used(&mut self.inner(), session);
+    }
+
+    /// Stands in for another client (the CLI, another window, another
+    /// machine) changing the Desk behind the app's back: `change` edits the
+    /// Desk and only Desk events follow, no reload.
+    pub fn change_desk_elsewhere(&self, change: impl FnOnce(&mut desk::DeskData)) {
+        let mut inner = self.inner();
+        change(&mut inner.workspace.desk);
+        inner.tell_desk();
     }
 }

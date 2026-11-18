@@ -2,11 +2,11 @@
 //! reachable (D213); the newest open replaces the oldest.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use humata2_grpc::humata::v1 as pb;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status};
 
@@ -33,6 +33,8 @@ pub(crate) struct Uplinks {
     inbox: Arc<Inbox>,
     /// Where this machine's agents' board calls go up, and the host's answers come back (D227).
     forwarder: Arc<Forwarder>,
+    /// The holders on old holder files, which each uplink reports to the host (D378).
+    holders: OnceLock<watch::Receiver<Option<pb::HoldersReport>>>,
 }
 
 impl Uplinks {
@@ -44,7 +46,14 @@ impl Uplinks {
             policy,
             inbox,
             forwarder,
+            holders: OnceLock::new(),
         }
+    }
+
+    /// Each uplink sends the host `holders` once the host's Resume came, and
+    /// again whenever it changes (D378).
+    pub(crate) fn report_holders(&self, holders: watch::Receiver<Option<pb::HoldersReport>>) {
+        let _ = self.holders.set(holders);
     }
 
     /// The machine's end of the calls it forwards to the host (D227).
@@ -95,6 +104,7 @@ impl Uplinks {
         let store = Arc::clone(self.policy.store());
         let inbox = Arc::clone(&self.inbox);
         let mut written = self.link.journal_writes();
+        let mut holders = self.holders.get().cloned();
         tokio::spawn(async move {
             let mut from_host = from_host;
             // Nothing of the journal goes out before the host's Resume says
@@ -118,6 +128,13 @@ impl Uplinks {
                             break;
                         }
                     }
+                    changed = holders_changed(&mut holders), if resumed => {
+                        if !changed {
+                            holders = None;
+                        } else if !send_holders(&mut holders, &to_host).await {
+                            break;
+                        }
+                    }
                     message = from_host.message() => match message {
                         Ok(Some(pb::HostToMachine {
                             message: Some(pb::host_to_machine::Message::Resume(resume)),
@@ -130,6 +147,11 @@ impl Uplinks {
                             // A host that resumes lower gets the entries again.
                             sent_through = through;
                             if !send_journal(&store, &to_host, &mut sent_through).await {
+                                break;
+                            }
+                            // The list is sent whole on every link, so a host
+                            // that was away learns what changed meanwhile.
+                            if !send_holders(&mut holders, &to_host).await {
                                 break;
                             }
                         }
@@ -184,6 +206,33 @@ impl Uplinks {
         });
         Ok(ReceiverStream::new(stream))
     }
+}
+
+/// Waits until the holders report changes; false once nothing can change it.
+async fn holders_changed(holders: &mut Option<watch::Receiver<Option<pb::HoldersReport>>>) -> bool {
+    match holders {
+        Some(holders) => holders.changed().await.is_ok(),
+        None => std::future::pending().await,
+    }
+}
+
+/// Sends the host the holders report as it stands, if there is one yet. False
+/// when the uplink is gone.
+async fn send_holders(
+    holders: &mut Option<watch::Receiver<Option<pb::HoldersReport>>>,
+    to_host: &mpsc::Sender<Result<pb::MachineToHost, Status>>,
+) -> bool {
+    let Some(holders) = holders else {
+        return true;
+    };
+    let report = holders.borrow_and_update().clone();
+    let Some(report) = report else {
+        return true;
+    };
+    let message = pb::MachineToHost {
+        message: Some(pb::machine_to_host::Message::Holders(report)),
+    };
+    to_host.send(Ok(message)).await.is_ok()
 }
 
 /// Puts `snapshot` in force, reports it kept on the feed, and acks its

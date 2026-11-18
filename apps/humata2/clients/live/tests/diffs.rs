@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::Duration;
 
-use humata2_clients::model::{Agent, DiffBase, DiffLine, LineKind, RepoDiff, SessionId, SessionOptions};
+use humata2_clients::model::{
+    Agent, DiffBase, DiffLine, DiffTargets, LineKind, RepoBase, RepoDiff, SessionId, SessionOptions,
+};
 use humata2_clients::Daemon;
 use humata2_clients_live::{LiveDaemon, LiveOptions};
 use tempfile::TempDir;
@@ -183,6 +185,64 @@ impl Host {
         git(&["-C", &work_text, "commit", "-m", "first"]);
         git(&["-C", &work_text, "push", &bare_text, "main"]);
         format!("owner/{name}")
+    }
+
+    /// A remote `owner/<name>` that also has `release/2.4`, cut from its
+    /// first commit, after which `main` moved on with `main-only.md`. A
+    /// session branched from `main` then differs from `main` by what the
+    /// agent did, and from `release/2.4` by that and `main-only.md`.
+    fn repo_with_release(&self, name: &str) -> String {
+        let repo = self.repo(name);
+        let root = self.root();
+        let bare_text = root
+            .join("remotes")
+            .join("owner")
+            .join(format!("{name}.git"))
+            .display()
+            .to_string();
+        let work_text = root.join(format!("scratch-{name}")).display().to_string();
+        git(&["-C", &work_text, "branch", "release/2.4"]);
+        git(&["-C", &work_text, "push", &bare_text, "release/2.4"]);
+        std::fs::write(root.join(format!("scratch-{name}")).join("main-only.md"), "main only\n")
+            .expect("write");
+        git(&["-C", &work_text, "add", "."]);
+        git(&["-C", &work_text, "commit", "-m", "main moves on"]);
+        git(&["-C", &work_text, "push", &bare_text, "main"]);
+        repo
+    }
+
+    /// A session titled `title` over `ledger` (which has `release/2.4`)
+    /// and `api`, in a channel of its own.
+    async fn two_repo_session(&self, daemon: &LiveDaemon, title: &str) -> SessionId {
+        let workspace = within("load", daemon.load()).await.expect("load the workspace");
+        let mac = workspace
+            .machines
+            .first()
+            .expect("the workspace has a machine")
+            .id
+            .clone();
+        let repos = vec![self.repo_with_release("ledger"), self.repo("api")];
+        let channel = within(
+            "create_channel",
+            daemon.create_channel("payments", repos.clone(), vec![mac.clone()]),
+        )
+        .await
+        .expect("create the channel");
+        within(
+            "create_session",
+            daemon.create_session(
+                &channel,
+                Agent::Claude,
+                &mac,
+                title,
+                SessionOptions {
+                    repos,
+                    ..SessionOptions::default()
+                },
+            ),
+        )
+        .await
+        .expect("create the session")
     }
 
     /// A session titled `title`, in a channel of its own, that the host's
@@ -471,4 +531,88 @@ async fn uncommitted_only_leaves_out_what_the_agent_committed() {
         paths_against(&daemon, &session, "owner/ledger", &DiffBase::UncommittedOnly).await,
         ["loose.md"]
     );
+}
+
+/// A two-repository session in which `ledger` and `api` each have a change
+/// of the agent's: `ledger/agent.md` and `api/agent.md`.
+async fn two_repo_case() -> (Host, LiveDaemon, SessionId) {
+    let host = Host::start().await;
+    let daemon = host.connect().await;
+    let session = host.two_repo_session(&daemon, "Fix the ledger").await;
+    for name in ["ledger", "api"] {
+        let clone = clone_of(&host, name).await;
+        std::fs::write(clone.join("agent.md"), format!("{name} change\n")).expect("add a file");
+    }
+    (host, daemon, session)
+}
+
+fn ledger_on_release() -> DiffBase {
+    let mut targets = DiffTargets::default();
+    targets.pick("owner/ledger", RepoBase::Branch("release/2.4".to_owned()));
+    targets.base(&["owner/ledger".to_owned(), "owner/api".to_owned()])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_repository_is_compared_with_its_own_base() {
+    let (_host, daemon, session) = two_repo_case().await;
+    let base = ledger_on_release();
+    assert!(matches!(base, DiffBase::Spec(_)));
+
+    assert_eq!(
+        paths_against(&daemon, &session, "owner/ledger", &base).await,
+        ["agent.md", "main-only.md"],
+        "ledger is compared with release/2.4"
+    );
+    assert_eq!(
+        paths_against(&daemon, &session, "owner/api", &base).await,
+        ["agent.md"],
+        "api keeps the default branch"
+    );
+    assert_eq!(
+        paths_against(&daemon, &session, "owner/ledger", &DiffBase::OriginMain).await,
+        ["agent.md"],
+        "the default branch leaves main-only.md out"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_repositorys_files_are_read_against_its_own_base() {
+    let (_host, daemon, session) = two_repo_case().await;
+    let base = ledger_on_release();
+
+    let ledger = diff_against(&daemon, &session, "owner/ledger", &base)
+        .await
+        .expect("ledger's diff is loaded");
+    let main_only = ledger
+        .files
+        .iter()
+        .find(|file| file.path == "main-only.md")
+        .expect("main-only.md is in ledger's diff against release/2.4");
+    assert_eq!(body(&main_only.lines), [line(LineKind::Added, None, Some(1), "main only")]);
+
+    let api = diff_against(&daemon, &session, "owner/api", &base)
+        .await
+        .expect("api's diff is loaded");
+    let agent = api
+        .files
+        .iter()
+        .find(|file| file.path == "agent.md")
+        .expect("api's agent.md changed");
+    assert_eq!(body(&agent.lines), [line(LineKind::Added, None, Some(1), "api change")]);
+    assert_ne!(ledger.base, api.base, "each repository names its own base");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repository_lists_its_branches_as_of_the_last_fetch() {
+    let (_host, daemon, session) = two_repo_case().await;
+    let ledger = within("bases", daemon.bases(&session, "owner/ledger"))
+        .await
+        .expect("list ledger's branches");
+    assert_eq!(ledger.default_branch, "main");
+    assert!(ledger.branches.iter().any(|branch| branch == "main"), "{ledger:?}");
+    assert!(ledger.branches.iter().any(|branch| branch == "release/2.4"), "{ledger:?}");
+    let api = within("bases", daemon.bases(&session, "owner/api"))
+        .await
+        .expect("list api's branches");
+    assert!(!api.branches.iter().any(|branch| branch == "release/2.4"), "{api:?}");
 }

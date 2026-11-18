@@ -10,6 +10,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 STORE_DEPS = [
     "//apps/humata2/api/proto:humata2_store_rust",
     "//apps/humata2/chunk:humata2_chunk",
+    "//apps/humata2/daemon/conversation",
     "@crates//:prost",
     "@crates//:rusqlite",
     "@crates//:sha2",

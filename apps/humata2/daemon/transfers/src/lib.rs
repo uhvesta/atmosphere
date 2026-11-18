@@ -20,7 +20,7 @@ mod upload;
 pub use disk::Disk;
 pub use end::{End, Entry, Kind, Sink};
 pub use engine::{
-    CHUNK, Config, Item, Listener, Mode, OnExisting, Problem, Request, Snapshot, State, Transfers,
+    CHUNK, Config, Item, Landing, Listener, Mode, OnExisting, Problem, Request, Snapshot, State, Transfers,
     UploadRequest,
 };
 pub use error::{EndError, TransferError, TrashError};

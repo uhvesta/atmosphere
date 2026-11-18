@@ -6,7 +6,9 @@
 
 mod common;
 
-use common::{Daemon, WAIT, error_of, folder, invalid_field, machine_id, shell_token, state_folder};
+use common::{
+    Daemon, WAIT, error_of, folder, get_session, invalid_field, machine_id, shell_token, state_folder,
+};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{SessionRecord, Store};
 use pb::entity_ref::Entity;
@@ -173,17 +175,22 @@ async fn subscribe(daemon: &Daemon, topics: &[pb::Topic]) -> Streaming<pb::Event
 }
 
 /// The next event of a feed that asked for marks only, within `WAIT`. It
-/// must be a marks event: the feed was asked for nothing else.
+/// must be a marks event: the feed was asked for nothing else. The one
+/// `Resync` a start sends every feed once it has brought things back
+/// (D341) is passed over, since it can land after the subscribe.
 async fn next_marks(events: &mut Streaming<pb::Event>) -> (pb::Event, pb::Marks) {
-    let event = tokio::time::timeout(WAIT, events.message())
-        .await
-        .expect("no marks event arrived")
-        .unwrap()
-        .expect("the feed ended");
-    match event.payload.clone() {
-        Some(pb::event::Payload::Marks(marks)) => (event, marks),
-        other => panic!("a feed narrowed to marks sent {other:?}"),
-    }
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let event = events.message().await.unwrap().expect("the feed ended");
+            match event.payload.clone() {
+                Some(pb::event::Payload::Marks(marks)) => return (event, marks),
+                Some(pb::event::Payload::Resync(_)) => continue,
+                other => panic!("a feed narrowed to marks sent {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("no marks event arrived")
 }
 
 /// The next marks event of a feed that carries everything, within `WAIT`.
@@ -546,6 +553,28 @@ async fn a_reorder_that_doesnt_name_every_pin_once_is_refused_and_changes_nothin
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_sessions_pin_is_gone_from_the_pinned_list() {
+    let mut daemon = start().await;
+    pin(&daemon, &session(ALPHA)).await;
+    pin(&daemon, &session(BETA)).await;
+
+    // ALPHA is deleted while the daemon is down.
+    daemon.kill();
+    let store = Store::open(daemon.state.join("store")).unwrap();
+    store.remove_session(ALPHA).unwrap();
+    drop(store);
+    daemon.restart().await;
+
+    let titles: Vec<String> = list(&daemon)
+        .await
+        .entries
+        .into_iter()
+        .map(|entry| entry.title)
+        .collect();
+    assert_eq!(titles, ["Rate limiter"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn marks_and_their_order_survive_a_restart() {
     let mut daemon = start().await;
     pin(&daemon, &session(ALPHA)).await;
@@ -742,4 +771,81 @@ async fn a_pinned_session_is_listed_with_its_title() {
         .map(|entry| entry.title.as_str())
         .collect();
     assert_eq!(titles, ["Rate limiter", "Fix login"]);
+}
+
+fn session_id(id: &str) -> pb::SessionId {
+    pb::SessionId {
+        value: id.to_owned(),
+    }
+}
+
+/// The next Session event for `id` that `wanted` accepts, within `WAIT`.
+async fn next_session(
+    events: &mut Streaming<pb::Event>,
+    id: &str,
+    wanted: impl Fn(&pb::Session) -> bool,
+) -> pb::Session {
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let event = events.message().await.unwrap().expect("the feed ended");
+            if let Some(pb::event::Payload::Session(shown)) = event.payload
+                && shown.id.as_ref().map(|shown| shown.value.as_str()) == Some(id)
+                && wanted(&shown)
+            {
+                return shown;
+            }
+        }
+    })
+    .await
+    .expect("the feed never told the session with its marks")
+}
+
+/// D387: a session shows its pin and its VIP mark, each apart from the
+/// other, and shows them cleared again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_shows_its_pin_and_vip_mark() {
+    let daemon = start().await;
+    let id = session_id(ALPHA);
+    let shown = get_session(&daemon, &id).await;
+    assert!(!shown.pinned && !shown.vip);
+
+    set(&daemon, &session(ALPHA), Some(true), None).await;
+    let shown = get_session(&daemon, &id).await;
+    assert!(shown.pinned && !shown.vip);
+
+    set(&daemon, &session(ALPHA), None, Some(true)).await;
+    let shown = get_session(&daemon, &id).await;
+    assert!(shown.pinned && shown.vip);
+    let other = get_session(&daemon, &session_id(BETA)).await;
+    assert!(!other.pinned && !other.vip, "another session is not marked");
+
+    set(&daemon, &session(ALPHA), Some(false), Some(false)).await;
+    let shown = get_session(&daemon, &id).await;
+    assert!(!shown.pinned && !shown.vip);
+}
+
+/// D387: a client holding the session list hears of a mark change on the
+/// feed, with the session as it now shows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pin_or_vip_change_is_told_as_a_session_event() {
+    let daemon = start().await;
+    let mut events = subscribe(&daemon, &[pb::Topic::Sessions]).await;
+
+    set(&daemon, &session(BETA), Some(true), Some(true)).await;
+    let shown = next_session(&mut events, BETA, |shown| shown.pinned && shown.vip).await;
+    assert!(shown.pinned && shown.vip);
+
+    set(&daemon, &session(BETA), Some(false), None).await;
+    let shown = next_session(&mut events, BETA, |shown| !shown.pinned).await;
+    assert!(shown.vip, "VIP stays when only the pin is cleared");
+}
+
+/// D387: the marks come back from the file after a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_shows_its_marks_after_a_restart() {
+    let mut daemon = start().await;
+    set(&daemon, &session(GAMMA), Some(true), Some(true)).await;
+    daemon.restart().await;
+    let shown = get_session(&daemon, &session_id(GAMMA)).await;
+    assert!(shown.pinned && shown.vip);
 }

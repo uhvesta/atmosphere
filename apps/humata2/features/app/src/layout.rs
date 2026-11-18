@@ -205,4 +205,35 @@ impl Layout {
             panel_hidden,
         }
     }
+
+    /// How the sidebar comes back when ⌘0 or ⌘L asks for it, or `None`
+    /// when it shows already (NV-6). Folded with room to spare, it docks
+    /// again; hidden for want of room, it shows over the page.
+    #[must_use]
+    pub fn reveal_sidebar(
+        &self,
+        viewport: f32,
+        in_session: bool,
+        panel_shown: bool,
+    ) -> Option<Reveal> {
+        if !self.columns(viewport, in_session, panel_shown).sidebar_hidden {
+            return None;
+        }
+        let mut docked = *self;
+        docked.sidebar.collapsed = false;
+        Some(if docked.columns(viewport, in_session, panel_shown).sidebar_hidden {
+            Reveal::Overlay
+        } else {
+            Reveal::Dock
+        })
+    }
+}
+
+/// How a hidden sidebar is shown again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reveal {
+    /// Unfold it: the window has room for it beside the page.
+    Dock,
+    /// Show it over the page: the window is too narrow to dock it.
+    Overlay,
 }

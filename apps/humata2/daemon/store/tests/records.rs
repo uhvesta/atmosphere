@@ -27,6 +27,7 @@ fn tab(id: &str, session: Option<&str>) -> TabRecord {
         holder_socket: PathBuf::from(format!("/tmp/{id}.sock")),
         holder_pid: 4242,
         created_unix_ms: 7,
+        holder_generation: 0,
     }
 }
 
@@ -64,6 +65,42 @@ fn records_survive_reopening() {
     assert_eq!(store.pointers("se_a").unwrap(), Some(pointers));
     assert_eq!(store.pointers("se_b").unwrap(), None);
     assert_eq!(store.session("se_missing").unwrap(), None);
+}
+
+#[test]
+fn a_tab_keeps_its_holder_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let mut saved = tab("tab_g", None);
+    saved.holder_generation = 3;
+    store.put_tab(&saved).unwrap();
+    assert_eq!(store.tab("tab_g").unwrap().unwrap().holder_generation, 3);
+
+    saved.holder_generation = 4;
+    store.put_tab(&saved).unwrap();
+    drop(store);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(reopened.tab("tab_g").unwrap().unwrap(), saved);
+    assert_eq!(reopened.tabs().unwrap(), vec![saved]);
+}
+
+#[test]
+fn a_tab_saved_before_generations_reads_as_generation_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    drop(Store::open(dir.path()).unwrap());
+    // A row as the older schema wrote it: no generation column given.
+    rusqlite::Connection::open(dir.path().join("state.sqlite"))
+        .unwrap()
+        .execute(
+            "INSERT INTO tabs (id, session, kind, title, holder_socket, holder_pid, created_unix_ms)
+             VALUES ('tab_old', NULL, 'shell', 'zsh', ?1, 9, 1)",
+            [b"/tmp/tab_old.sock".as_slice()],
+        )
+        .unwrap();
+
+    let store = Store::open(dir.path()).unwrap();
+
+    assert_eq!(store.tab("tab_old").unwrap().unwrap().holder_generation, 0);
 }
 
 #[test]
@@ -119,12 +156,63 @@ fn a_paste_is_kept_privately_under_its_session() {
     assert_eq!(mode, 0o600);
 }
 
+/// A paste a call names with a key is saved once for that key, even by a
+/// store opened again after a restart; the first bytes stay. Another key is
+/// another paste.
+#[test]
+fn a_keyed_paste_is_saved_once_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put_session(&session("se_a", 1)).unwrap();
+    let first = store.save_keyed_paste("se_a", "key-1", "png", b"first").unwrap();
+    drop(store);
+
+    let store = Store::open(dir.path()).unwrap();
+    let again = store.save_keyed_paste("se_a", "key-1", "png", b"retried").unwrap();
+    let other = store.save_keyed_paste("se_a", "key-2", "png", b"other").unwrap();
+
+    assert_eq!(again, first);
+    assert_eq!(fs::read(&first).unwrap(), b"first");
+    assert_ne!(other, first);
+    assert_eq!(fs::read(&other).unwrap(), b"other");
+    let folder = first.parent().unwrap();
+    assert_eq!(fs::read_dir(folder).unwrap().count(), 2);
+    let mode = fs::metadata(&first).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    assert!(matches!(
+        store.save_keyed_paste("se_gone", "key-1", "png", b"image"),
+        Err(StoreError::NoSession { .. })
+    ));
+}
+
 #[test]
 fn a_paste_needs_its_session() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     let refused = store.save_paste("se_gone", "png", b"image");
     assert!(matches!(refused, Err(StoreError::NoSession { .. })));
+}
+
+#[test]
+fn a_sessions_paste_folder_is_made_privately_and_goes_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put_session(&session("se_a", 1)).unwrap();
+
+    let folder = store.paste_folder("se_a").unwrap();
+    assert!(folder.is_dir());
+    assert!(folder.starts_with(dir.path()));
+    let mode = fs::metadata(&folder).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
+    let image = store.save_paste("se_a", "png", b"image").unwrap();
+    assert_eq!(image.parent(), Some(folder.as_path()));
+    assert!(matches!(
+        store.paste_folder("se_gone"),
+        Err(StoreError::NoSession { .. })
+    ));
+
+    store.remove_session("se_a").unwrap();
+    assert!(!folder.exists());
 }
 
 #[test]

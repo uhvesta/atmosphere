@@ -110,3 +110,42 @@ async fn a_session_on_this_mac_shows_its_own_pointers() {
     let head = git(&["-C", &text(&clone), "rev-parse", "HEAD"]);
     rig.wait_session(&id, "showing its work", |session| shows_the_work(session, &head)).await;
 }
+
+/// BUG 23: a file an agent makes in its session's clone is told on the
+/// feed as created, without anyone asking for the list again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_made_in_a_live_sessions_clone_is_told_on_the_feed() {
+    let rig = Rig::start(&[], &[("acme", "api")]).await;
+    let host = rig.host_id().await;
+    let channel = rig.create_channel("Payments", &[("acme", "api")], &[host.clone()]).await;
+    let id = rig.start_on(&channel, &host, "Cache warmup").await;
+    // The pointers come from the first look, which also remembers the clone's files.
+    rig.wait_session(&id, "with pointers", |session| pointer(session, "api").is_some()).await;
+    let mut events = pb::event_service_client::EventServiceClient::new(rig.channel().await)
+        .subscribe(pb::SubscribeRequest {
+            sessions: vec![id.clone()],
+            topics: vec![pb::Topic::Sessions as i32],
+            ..pb::SubscribeRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+
+    let clone = rig.host_path(&channel, CLONE);
+    std::fs::write(clone.join("agent_made.txt"), "from the agent\n").unwrap();
+
+    let deadline = tokio::time::Instant::now() + remote_rig::LONG;
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.message())
+            .await
+            .expect("the new file was never told on the feed")
+            .unwrap()
+            .expect("the feed ended");
+        if let Some(pb::event::Payload::FileChanged(changed)) = event.payload
+            && changed.path == "agent_made.txt"
+        {
+            assert_eq!(changed.kind, pb::file_changed::Kind::Created as i32);
+            return;
+        }
+    }
+}

@@ -451,7 +451,13 @@ impl Restart {
 
     /// Writes the report into `config.reports.folder` and returns its
     /// folder. Blocks, so run it off the async runtime.
-    pub(crate) fn write(mut self, config: &ReviveConfig) -> Result<PathBuf, ReviveError> {
+    /// `before_json` runs on the folder just before `restart.json` is
+    /// written, the last file of the report.
+    pub(crate) fn write(
+        mut self,
+        config: &ReviveConfig,
+        before_json: Box<dyn FnOnce(&Path) + Send>,
+    ) -> Result<PathBuf, ReviveError> {
         let reports = &config.reports;
         let back = self.entries.iter().filter(|entry| entry.brought_back()).count();
         let not = self.entries.len() - back;
@@ -503,6 +509,7 @@ impl Restart {
                 text = text.replace(inner, marker);
             }
         }
+        before_json(&folder);
         write_beside(&folder, "restart.json", text.as_bytes())?;
         Ok(folder)
     }
@@ -559,9 +566,11 @@ fn failed(entry: &mut Entry, error: &ReviveError) {
         match error {
             ReviveError::Store { doing, .. } => doing,
             ReviveError::Holder { .. } => "start its terminal",
+            ReviveError::EndHolder { .. } => "end its old terminal",
             ReviveError::NoCommand { .. } => "find the command to run",
             ReviveError::Background { .. } => "run a background task",
             ReviveError::Contain { .. } => "start its agent contained",
+            ReviveError::Injected { point } => point,
             ReviveError::ScrubReport { .. } | ReviveError::WriteReport { .. } | ReviveError::RestartJson { .. } => {
                 "write the restart report"
             }

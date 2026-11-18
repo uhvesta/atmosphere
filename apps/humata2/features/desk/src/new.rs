@@ -1,20 +1,11 @@
-//! New desk session (DK-14, frame 40).
+//! New desk session (DK-14, frame 40). The form never asks about the
+//! folder: every new session gets one Humata makes.
 
 use humata2_clients::desk::{self, Access, FolderChoice, NewDeskSession};
 use humata2_clients::model::{Agent, MachineId};
 use tca::Effect;
 
 use crate::{Desk, DeskAction, DeskState};
-
-/// Which folder the new session gets.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum FolderPick {
-    /// A new scratch folder.
-    #[default]
-    Scratch,
-    /// A folder on the machine, picked by its path.
-    Picked,
-}
 
 /// The New desk session form.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,10 +16,6 @@ pub struct NewForm {
     pub agent: Agent,
     /// The machine it runs on.
     pub machine: Option<MachineId>,
-    /// Which kind of folder.
-    pub folder: FolderPick,
-    /// The picked folder's path.
-    pub path: String,
     /// Repositories to clone, such as `acme/ledger`.
     pub repos: Vec<String>,
     /// The two Agent access switches.
@@ -67,12 +54,6 @@ impl NewForm {
             name
         }
     }
-
-    /// Where the scratch folder goes when its name is free.
-    #[must_use]
-    pub fn scratch_path(&self) -> String {
-        desk::scratch_path(&self.scratch_name())
-    }
 }
 
 /// A change to the form.
@@ -88,14 +69,13 @@ pub enum NewAction {
     Machines(bool),
     /// The field for typing a repository was shown or hidden.
     AddingRepo(bool),
-    /// A folder kind was picked.
-    Folder(FolderPick),
-    /// The picked folder's path was typed.
-    Path(String),
     /// A repository was added.
     AddRepo(String),
     /// A repository was removed.
     RemoveRepo(String),
+    /// A repository was ticked or unticked in the repo search; the search
+    /// stays open for more.
+    ToggleRepo(String),
     /// The access switches were set.
     Access(Access),
     /// Start was clicked.
@@ -114,21 +94,37 @@ impl DeskState {
         let name = form.scratch_name();
         let taken = |path: &str| {
             self.workspace.desk.sessions.values().any(|record| {
-                record.folder.path() == path
+                same_folder(record.folder.path(), path)
                     && self
                         .workspace
                         .session(&record.session)
                         .is_some_and(|session| Some(&session.machine) == form.machine.as_ref())
             })
         };
-        let mut path = desk::scratch_path(&name);
+        let root = form.machine.as_ref().map_or(desk::DEFAULT_ROOT, |picked| {
+            desk::root_of(&self.workspace.machines, picked)
+        });
+        let mut path = desk::scratch_path_in(root, &name);
         let mut suffix = 2;
         while taken(&path) {
-            path = desk::scratch_path(&format!("{name}-{suffix}"));
+            path = desk::scratch_path_in(root, &format!("{name}-{suffix}"));
             suffix += 1;
         }
         Some(path)
     }
+}
+
+/// Whether a recorded folder is the one `preview` names. The preview is
+/// written under the short root (`~/Humata`); a live daemon reports the full
+/// path under the machine's root, so only the part after the root is
+/// compared then.
+fn same_folder(recorded: &str, preview: &str) -> bool {
+    if recorded == preview {
+        return true;
+    }
+    preview
+        .strip_prefix(desk::DEFAULT_ROOT)
+        .is_some_and(|rest| recorded.ends_with(rest))
 }
 
 impl Desk {
@@ -147,8 +143,6 @@ impl Desk {
             title: String::new(),
             agent,
             machine,
-            folder: FolderPick::Scratch,
-            path: String::new(),
             repos: Vec::new(),
             access: Access::default(),
             machines_open: false,
@@ -183,8 +177,6 @@ impl Desk {
             }
             NewAction::Machines(open) => form.machines_open = open,
             NewAction::AddingRepo(adding) => form.adding_repo = adding,
-            NewAction::Folder(folder) => form.folder = folder,
-            NewAction::Path(path) => form.path = path,
             NewAction::AddRepo(repo) => {
                 let repo = repo.trim();
                 if !repo.is_empty() && !form.repos.iter().any(|have| have == repo) {
@@ -193,6 +185,14 @@ impl Desk {
                 form.adding_repo = false;
             }
             NewAction::RemoveRepo(repo) => form.repos.retain(|have| *have != repo),
+            NewAction::ToggleRepo(repo) => {
+                let repo = repo.trim();
+                if let Some(at) = form.repos.iter().position(|have| have == repo) {
+                    form.repos.remove(at);
+                } else if !repo.is_empty() {
+                    form.repos.push(repo.to_owned());
+                }
+            }
             NewAction::Access(access) => form.access = access,
             NewAction::Start => return self.start_session(form),
         }
@@ -207,23 +207,8 @@ impl Desk {
             );
             return Effect::none();
         };
-        let folder = match form.folder {
-            FolderPick::Scratch => FolderChoice::Scratch {
-                name: form.scratch_name(),
-            },
-            FolderPick::Picked => {
-                let path = form.path.trim();
-                if path.is_empty() {
-                    form.error = Some(
-                        "Type the path of the folder on this machine, or choose a new scratch folder."
-                            .to_owned(),
-                    );
-                    return Effect::none();
-                }
-                FolderChoice::Picked {
-                    path: path.to_owned(),
-                }
-            }
+        let folder = FolderChoice::Scratch {
+            name: form.scratch_name(),
         };
         let title = form.start_title();
         form.starting = true;

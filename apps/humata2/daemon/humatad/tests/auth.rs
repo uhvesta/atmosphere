@@ -140,6 +140,7 @@ async fn a_session_token_works_on_the_release_daemon() {
             idempotency_key: None,
             session: Some(session()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()

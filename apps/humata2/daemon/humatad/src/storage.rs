@@ -19,7 +19,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::Layout;
-use humata2_store::{ChannelRecord, SessionRecord, Store};
+use humata2_store::{AgentState, ChannelRecord, SessionRecord, Store};
 use humata2_transfers::{BuildCache, Measured, StorageError, build_caches, clear, disk_space, measure};
 use pb::invalid_field::Problem;
 use tonic::{Code, Status};
@@ -39,6 +39,8 @@ pub(crate) struct Storage {
     layout: Layout,
     bin: Arc<Bin>,
     logs: PathBuf,
+    /// What a leading `~` in a Humata folder means.
+    home: PathBuf,
 }
 
 impl Storage {
@@ -47,17 +49,49 @@ impl Storage {
     pub(crate) fn new(
         store: Arc<Store>,
         machine: String,
-        channels: PathBuf,
+        channels: impl Into<Layout>,
         bin: Arc<Bin>,
         logs: PathBuf,
     ) -> Self {
         Self {
             store,
             machine,
-            layout: Layout { root: channels },
+            layout: channels.into(),
             bin,
             logs,
+            home: std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
         }
+    }
+
+    /// Sets the user's home folder, which `~/` in a Humata folder names.
+    pub(crate) fn with_home(mut self, home: PathBuf) -> Self {
+        self.home = home;
+        self
+    }
+
+    /// The user's home folder on this machine.
+    pub(crate) fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// The host's records, for the machine service's root change.
+    pub(crate) fn store(&self) -> &Store {
+        &self.store
+    }
+
+    /// The folder the daemon keeps new channels in.
+    pub(crate) fn channels_root(&self) -> PathBuf {
+        self.layout.root()
+    }
+
+    /// Where channels are, shared with every service that reads them.
+    pub(crate) fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    /// This machine's trash.
+    pub(crate) fn bin(&self) -> &Arc<Bin> {
+        &self.bin
     }
 
     /// LD-13, LD-14: what this machine keeps, measured now, in the order the
@@ -140,12 +174,12 @@ impl Storage {
             pb::StorageAction::Trim,
         ));
 
-        let (free_bytes, total_bytes) = match disk_space(&self.layout.root) {
+        let (free_bytes, total_bytes) = match disk_space(&self.layout.root()) {
             Ok(space) => (space.free_bytes, space.total_bytes),
             Err(error) => {
                 crate::log::say!(
                     "humatad2: couldn't measure the disk of {}: {}",
-                    self.layout.root.display(),
+                    self.layout.root().display(),
                     status::chain(&error)
                 );
                 (0, 0)
@@ -245,6 +279,33 @@ impl Storage {
             .into_iter()
             .filter(|session| session.machine.is_empty() || session.machine == self.machine)
             .collect())
+    }
+
+    /// How many agents run on this machine now: the ones that keep the value
+    /// a host variable had when they started (HO-13). Blocking.
+    pub(crate) fn running_agents(&self) -> Result<u32, Status> {
+        let agents = self
+            .store
+            .agents()
+            .map_err(|error| status::store(error, &self.machine, "list the agents"))?;
+        let running = agents
+            .iter()
+            .filter(|agent| matches!(agent.state, AgentState::Running { .. }))
+            .count();
+        Ok(u32::try_from(running).unwrap_or(u32::MAX))
+    }
+
+    /// The machine session `id` lives on, when this daemon's record says it
+    /// isn't this one; none for a session here or one it doesn't know.
+    /// Blocking.
+    pub(crate) fn machine_of_session(&self, id: &str) -> Result<Option<String>, Status> {
+        match self.store.session(id) {
+            Ok(Some(session)) if !session.machine.is_empty() && session.machine != self.machine => {
+                Ok(Some(session.machine))
+            }
+            Ok(_) => Ok(None),
+            Err(error) => Err(status::store(error, &self.machine, "look up the session")),
+        }
     }
 
     fn local_session(&self, id: &str) -> Result<SessionRecord, Status> {
@@ -426,6 +487,26 @@ mod tests {
             dir.path().join("state/logs"),
         );
         Fixture { dir, storage }
+    }
+
+    #[test]
+    fn a_session_recorded_on_another_machine_is_named_and_one_here_or_unknown_is_not() {
+        let f = fixture();
+        f.storage
+            .store
+            .put_session(&SessionRecord {
+                id: "se_far".to_owned(),
+                channel: "ch_1".to_owned(),
+                machine: "box-1".to_owned(),
+                title: "Far".to_owned(),
+                agent: "zsh".to_owned(),
+                folder: f.dir.path().join("far"),
+                created_unix_ms: 0,
+            })
+            .unwrap();
+        assert_eq!(f.storage.machine_of_session("se_far").unwrap().as_deref(), Some("box-1"));
+        assert_eq!(f.storage.machine_of_session("se_1").unwrap(), None);
+        assert_eq!(f.storage.machine_of_session("se_nobody").unwrap(), None);
     }
 
     fn kinds(report: &pb::StorageReport) -> Vec<i32> {

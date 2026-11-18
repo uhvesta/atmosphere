@@ -1,13 +1,14 @@
 //! [`CommentsClient`] for the real daemon, over its CommentService (D151,
-//! D161). The app's comments are the daemon's terminal-bound ones; the
-//! agent's pull request drafts and the review chat's notes are other
-//! views' business and are left out of every answer and every event.
+//! D161, D284). Every comment the daemon keeps comes through with its
+//! destination: terminal drafts, the review chat's notes and pull request
+//! drafts. Views that only deal with the terminal filter on
+//! [`Comment::destination`].
 
 use std::sync::Arc;
 
 use humata2_clients::comments::{
-    Anchor, Author, Comment, CommentEvent, CommentEvents, CommentId, CommentsClient, Listing, Sent,
-    Side, Status, ThreadReply, Which,
+    Anchor, Author, Comment, CommentEvent, CommentEvents, CommentId, CommentsClient, Destination,
+    Listing, Sent, Side, Status, ThreadReply, Which,
 };
 use humata2_clients::model::SessionId;
 use humata2_clients::{DaemonError, Reply};
@@ -89,6 +90,38 @@ fn pb_repo_named(text: &str) -> Option<pb::RepoRef> {
     (!text.is_empty()).then(|| pb_repo(text))
 }
 
+/// The app's destination for a daemon comment. A comment with none is for
+/// the session's terminal, as every comment was before notes and pull
+/// request drafts.
+fn destination(destination: Option<&pb::CommentDestination>) -> Destination {
+    use pb::comment_destination::Destination as Wire;
+    match destination.and_then(|destination| destination.destination.as_ref()) {
+        None | Some(Wire::Terminal(_)) => Destination::Terminal,
+        Some(Wire::Note(_)) => Destination::Note,
+        Some(Wire::PullRequest(pull_request)) => Destination::PullRequest {
+            repo: pull_request.repo.as_ref().map(repo_name).unwrap_or_default(),
+            number: pull_request.number,
+        },
+    }
+}
+
+/// The daemon's destination for one of the app's.
+fn pb_destination(destination: &Destination) -> pb::CommentDestination {
+    use pb::comment_destination::Destination as Wire;
+    let wire = match destination {
+        Destination::Terminal => Wire::Terminal(pb::SessionTerminal {}),
+        Destination::Note => Wire::Note(pb::UserNote {}),
+        Destination::PullRequest { repo, number } => Wire::PullRequest(pb::PullRequestRef {
+            repo: Some(pb_repo(repo)),
+            number: *number,
+            note: String::new(),
+        }),
+    };
+    pb::CommentDestination {
+        destination: Some(wire),
+    }
+}
+
 fn anchor(anchor: &pb::CommentAnchor) -> Anchor {
     let (repo, path) = match &anchor.file {
         Some(file) => (
@@ -111,6 +144,7 @@ fn anchor(anchor: &pb::CommentAnchor) -> Anchor {
         quoted: lines_of(&anchor.quoted),
         base: (!anchor.base.is_empty()).then(|| anchor.base.clone()),
         detached: anchor.detached,
+        outdated: anchor.outdated,
     }
 }
 
@@ -130,40 +164,23 @@ fn pb_anchor(anchor: &Anchor) -> pb::CommentAnchor {
         } as i32,
         quoted: anchor.quoted.join("\n"),
         detached: anchor.detached,
+        outdated: anchor.outdated,
         base: anchor.base.clone().unwrap_or_default(),
         ..pb::CommentAnchor::default()
     }
 }
 
-/// Whether the comment is one for the session's terminal. One with no
-/// destination is taken to be.
-fn for_terminal(comment: &pb::Comment) -> bool {
-    use pb::comment_destination::Destination;
-    matches!(
-        comment
-            .destination
-            .as_ref()
-            .and_then(|destination| destination.destination.as_ref()),
-        None | Some(Destination::Terminal(_))
-    )
-}
-
-/// The daemon's comment as the app's; `None` for one that isn't for the
-/// session's terminal.
-fn comment(comment: &pb::Comment) -> Option<Comment> {
-    if !for_terminal(comment) {
-        return None;
-    }
+/// The daemon's comment as the app's.
+fn comment(comment: &pb::Comment) -> Comment {
     let status = match pb::CommentStatus::try_from(comment.status) {
         Ok(pb::CommentStatus::Queued) => Status::Waiting,
-        // Posted is a pull request draft's end; a terminal comment is never
-        // there, so it is only shown as the nearest thing.
-        Ok(pb::CommentStatus::Sent | pb::CommentStatus::Posted) => Status::Sent,
+        Ok(pb::CommentStatus::Sent) => Status::Sent,
+        Ok(pb::CommentStatus::Posted) => Status::Posted,
         Ok(pb::CommentStatus::Addressed) => Status::Addressed,
         Ok(pb::CommentStatus::Resolved) => Status::Resolved,
         Ok(pb::CommentStatus::Draft | pb::CommentStatus::Unspecified) | Err(_) => Status::Draft,
     };
-    Some(Comment {
+    Comment {
         id: CommentId::new(comment.id.as_ref().map(|id| id.value.clone()).unwrap_or_default()),
         session: map::session_id(comment.session.as_ref()),
         anchor: comment.anchor.as_ref().map(anchor).unwrap_or_else(|| Anchor {
@@ -175,6 +192,7 @@ fn comment(comment: &pb::Comment) -> Option<Comment> {
             quoted: Vec::new(),
             base: None,
             detached: false,
+            outdated: false,
         }),
         text: comment.text.clone(),
         status,
@@ -194,17 +212,21 @@ fn comment(comment: &pb::Comment) -> Option<Comment> {
             .then(|| comment.resolved.as_ref().map(|resolved| author(resolved.by.as_ref())))
             .flatten(),
         addressed: (status == Status::Addressed).then(|| lines_of(&comment.addressed_text)),
-    })
+        destination: destination(comment.destination.as_ref()),
+        author: author(comment.author.as_ref()),
+        posted_url: (!comment.posted_url.is_empty()).then(|| comment.posted_url.clone()),
+        post_unconfirmed: comment.post_unconfirmed,
+    }
 }
 
-fn comments(comments: &[pb::Comment]) -> Vec<Comment> {
-    comments.iter().filter_map(comment).collect()
+pub(crate) fn comments(comments: &[pb::Comment]) -> Vec<Comment> {
+    comments.iter().map(comment).collect()
 }
 
 fn event(feed: pb::CommentFeedEvent) -> Option<CommentEvent> {
     use pb::comment_feed_event::Event;
     match feed.event? {
-        Event::Changed(changed) => comment(&changed).map(CommentEvent::Changed),
+        Event::Changed(changed) => Some(CommentEvent::Changed(comment(&changed))),
         Event::Dropped(id) => Some(CommentEvent::Dropped(CommentId::new(id.value))),
         Event::Resync(_) => Some(CommentEvent::Resync),
     }
@@ -214,7 +236,7 @@ fn event(feed: pb::CommentFeedEvent) -> Option<CommentEvent> {
 /// No statuses means every status but resolved.
 fn which_request(which: Which) -> (Vec<i32>, bool) {
     use pb::CommentStatus as S;
-    let live = [S::Draft, S::Queued, S::Sent, S::Addressed];
+    let live = [S::Draft, S::Queued, S::Sent, S::Addressed, S::Posted];
     match which {
         Which::Open => (Vec::new(), false),
         Which::WithResolved => (
@@ -250,14 +272,6 @@ fn revision(revision: u64) -> Option<pb::Revision> {
 // ---------------------------------------------------------------------------
 
 impl Shared {
-    /// The one comment a call answered with.
-    fn one(&self, answer: &pb::Comment, what: &str) -> Result<Comment, DaemonError> {
-        comment(answer).ok_or_else(|| DaemonError::Refused {
-            what: what.to_owned(),
-            reason: "the daemon answered with a comment that isn't one for the session's agent. Reload to see what is there".to_owned(),
-        })
-    }
-
     async fn list_comments(&self, session: &SessionId, which: Which) -> Result<Listing, DaemonError> {
         const WHAT: &str = "The comments";
         let (statuses, archived) = which_request(which);
@@ -364,16 +378,42 @@ impl CommentsClient for LiveComments {
                     session: session_id(&session),
                     anchor: Some(pb_anchor(&anchor)),
                     text,
-                    destination: Some(pb::CommentDestination {
-                        destination: Some(pb::comment_destination::Destination::Terminal(
-                            pb::SessionTerminal {},
-                        )),
-                    }),
+                    destination: Some(pb_destination(&Destination::Terminal)),
                 })
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?
                 .into_inner();
-            shared.one(&answer, WHAT)
+            Ok(comment(&answer))
+        })
+    }
+
+    fn create_for_pull_request(
+        &self,
+        session: &SessionId,
+        anchor: Anchor,
+        text: &str,
+        repo: &str,
+        number: u32,
+        key: &str,
+    ) -> Reply<Comment> {
+        const WHAT: &str = "This draft";
+        let shared = self.shared.clone();
+        let (session, text, key) = (session.clone(), text.to_owned(), key.to_owned());
+        let destination = Destination::PullRequest { repo: repo.to_owned(), number };
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .create_comment(pb::CreateCommentRequest {
+                    idempotency_key: Some(pb::IdempotencyKey { value: key }),
+                    session: session_id(&session),
+                    anchor: Some(pb_anchor(&anchor)),
+                    text,
+                    destination: Some(pb_destination(&destination)),
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            Ok(comment(&answer))
         })
     }
 
@@ -393,7 +433,7 @@ impl CommentsClient for LiveComments {
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?
                 .into_inner();
-            shared.one(&answer, WHAT)
+            Ok(comment(&answer))
         })
     }
 
@@ -431,7 +471,7 @@ impl CommentsClient for LiveComments {
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?
                 .into_inner();
-            shared.one(&answer, WHAT)
+            Ok(comment(&answer))
         })
     }
 
@@ -492,7 +532,31 @@ impl CommentsClient for LiveComments {
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?
                 .into_inner();
-            shared.one(&answer, WHAT)
+            Ok(comment(&answer))
+        })
+    }
+
+    fn make_note_a_draft(&self, id: &CommentId, pr: Option<(&str, u32)>) -> Reply<Comment> {
+        const WHAT: &str = "This comment";
+        let shared = self.shared.clone();
+        let id = id.clone();
+        let pr = pr.map(|(repo, number)| pb::PullRequestRef {
+            repo: Some(pb_repo(repo)),
+            number,
+            note: String::new(),
+        });
+        Box::pin(async move {
+            let answer = shared
+                .comments()
+                .make_note_a_draft(pb::MakeNoteADraftRequest {
+                    idempotency_key: fresh_key(),
+                    id: comment_id(&id),
+                    pr,
+                })
+                .await
+                .map_err(|status| shared.error(&status, WHAT))?
+                .into_inner();
+            Ok(comment(&answer))
         })
     }
 
@@ -537,7 +601,7 @@ impl CommentsClient for LiveComments {
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?
                 .into_inner();
-            shared.one(&answer, WHAT)
+            Ok(comment(&answer))
         })
     }
 
@@ -555,7 +619,7 @@ impl CommentsClient for LiveComments {
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?
                 .into_inner();
-            shared.one(&answer, WHAT)
+            Ok(comment(&answer))
         })
     }
 
@@ -573,7 +637,7 @@ impl CommentsClient for LiveComments {
                 .await
                 .map_err(|status| shared.error(&status, WHAT))?
                 .into_inner();
-            shared.one(&answer, WHAT)
+            Ok(comment(&answer))
         })
     }
 }
@@ -621,7 +685,7 @@ mod tests {
     fn a_queued_comment_waits_and_may_be_unconfirmed() {
         let mut queued = daemon_comment(pb::CommentStatus::Queued);
         queued.delivery_unconfirmed = true;
-        let mapped = comment(&queued).expect("a terminal comment");
+        let mapped = comment(&queued);
         assert_eq!(mapped.status, Status::Waiting);
         assert!(mapped.unconfirmed);
         assert_eq!(mapped.revision, 3);
@@ -631,27 +695,86 @@ mod tests {
     #[test]
     fn an_archived_stamp_marks_the_comment_archived() {
         let mut archived = daemon_comment(pb::CommentStatus::Draft);
-        assert!(!comment(&archived).expect("a comment").archived);
+        assert!(!comment(&archived).archived);
         archived.archived_at = Some(Default::default());
-        let mapped = comment(&archived).expect("a comment");
+        let mapped = comment(&archived);
         assert!(mapped.archived);
         assert_eq!(mapped.status, Status::Draft);
     }
 
     #[test]
-    fn comments_for_other_destinations_are_left_out() {
+    fn a_note_keeps_its_destination_and_agent_author() {
         let mut note = daemon_comment(pb::CommentStatus::Draft);
         note.destination = Some(pb::CommentDestination {
             destination: Some(pb::comment_destination::Destination::Note(pb::UserNote {})),
         });
-        assert!(comment(&note).is_none());
-        let mut pull_request = daemon_comment(pb::CommentStatus::Draft);
-        pull_request.destination = Some(pb::CommentDestination {
+        note.author = agent("claude");
+        let mapped = comment(&note);
+        assert_eq!(mapped.destination, Destination::Note);
+        assert_eq!(mapped.author, Author::Agent("claude".to_owned()));
+        assert_eq!(mapped.status, Status::Draft);
+        assert_eq!(Some(pb_destination(&mapped.destination)), note.destination);
+    }
+
+    #[test]
+    fn a_pull_request_draft_keeps_its_repository_number_and_posted_link() {
+        let destination = Some(pb::CommentDestination {
             destination: Some(pb::comment_destination::Destination::PullRequest(
-                pb::PullRequestRef::default(),
+                pb::PullRequestRef {
+                    repo: Some(pb::RepoRef {
+                        owner: "acme".to_owned(),
+                        name: "api".to_owned(),
+                    }),
+                    number: 12,
+                    note: String::new(),
+                },
             )),
         });
-        assert!(comment(&pull_request).is_none());
+        let mut posted = daemon_comment(pb::CommentStatus::Posted);
+        posted.destination = destination.clone();
+        posted.posted_url = "https://github.com/acme/api/pull/12#discussion_r1".to_owned();
+        let mapped = comment(&posted);
+        assert_eq!(
+            mapped.destination,
+            Destination::PullRequest { repo: "acme/api".to_owned(), number: 12 }
+        );
+        assert_eq!(mapped.status, Status::Posted);
+        assert_eq!(
+            mapped.posted_url.as_deref(),
+            Some("https://github.com/acme/api/pull/12#discussion_r1")
+        );
+        assert_eq!(Some(pb_destination(&mapped.destination)), destination);
+
+        let mut unposted = daemon_comment(pb::CommentStatus::Draft);
+        unposted.destination = destination;
+        let mapped = comment(&unposted);
+        assert_eq!(mapped.status, Status::Draft);
+        assert_eq!(mapped.posted_url, None);
+    }
+
+    #[test]
+    fn a_failed_post_and_an_outdated_draft_come_from_the_daemon() {
+        let mut draft = daemon_comment(pb::CommentStatus::Draft);
+        draft.post_unconfirmed = true;
+        draft.anchor = Some(pb::CommentAnchor {
+            outdated: true,
+            ..pb::CommentAnchor::default()
+        });
+        let mapped = comment(&draft);
+        assert!(mapped.post_unconfirmed);
+        assert!(mapped.anchor.outdated);
+
+        let plain = comment(&daemon_comment(pb::CommentStatus::Draft));
+        assert!(!plain.post_unconfirmed);
+        assert!(!plain.anchor.outdated);
+    }
+
+    #[test]
+    fn a_comment_without_a_destination_is_for_the_terminal() {
+        let mut plain = daemon_comment(pb::CommentStatus::Draft);
+        plain.destination = None;
+        assert_eq!(comment(&plain).destination, Destination::Terminal);
+        assert_eq!(comment(&plain).author, Author::User);
     }
 
     #[test]
@@ -661,31 +784,31 @@ mod tests {
             at: None,
             by: agent("claude"),
         });
-        let mapped = comment(&resolved).expect("a comment");
+        let mapped = comment(&resolved);
         assert_eq!(mapped.resolved_by, Some(Author::Agent("claude".to_owned())));
 
         let mut by_user = daemon_comment(pb::CommentStatus::Resolved);
         by_user.resolved = Some(pb::Timestamped::default());
-        assert_eq!(comment(&by_user).expect("a comment").resolved_by, Some(Author::User));
+        assert_eq!(comment(&by_user).resolved_by, Some(Author::User));
 
         // Only a resolved comment says who resolved it.
         let mut draft = daemon_comment(pb::CommentStatus::Draft);
         draft.resolved = Some(pb::Timestamped::default());
-        assert_eq!(comment(&draft).expect("a comment").resolved_by, None);
+        assert_eq!(comment(&draft).resolved_by, None);
     }
 
     #[test]
     fn an_addressed_comment_has_its_lines_after_the_change() {
         let mut addressed = daemon_comment(pb::CommentStatus::Addressed);
         addressed.addressed_text = "one\ntwo".to_owned();
-        let mapped = comment(&addressed).expect("a comment");
+        let mapped = comment(&addressed);
         assert_eq!(mapped.addressed, Some(vec!["one".to_owned(), "two".to_owned()]));
 
         addressed.addressed_text = String::new();
-        assert_eq!(comment(&addressed).expect("a comment").addressed, Some(Vec::new()));
+        assert_eq!(comment(&addressed).addressed, Some(Vec::new()));
 
         let sent = daemon_comment(pb::CommentStatus::Sent);
-        assert_eq!(comment(&sent).expect("a comment").addressed, None);
+        assert_eq!(comment(&sent).addressed, None);
     }
 
     #[test]
@@ -705,7 +828,7 @@ mod tests {
                 at: None,
             },
         ];
-        let replies = comment(&with_replies).expect("a comment").replies;
+        let replies = comment(&with_replies).replies;
         assert_eq!(replies[0].author, Author::Agent("claude".to_owned()));
         assert_eq!(replies[1].author, Author::User);
         assert_eq!(replies[1].text, "Thanks");
@@ -722,6 +845,7 @@ mod tests {
             quoted: vec!["fn a() {".to_owned(), "".to_owned(), "}".to_owned()],
             base: Some("origin/main".to_owned()),
             detached: true,
+            outdated: true,
         };
         assert_eq!(anchor(&pb_anchor(&original)), original);
 
@@ -729,6 +853,7 @@ mod tests {
             base: None,
             side: Side::New,
             detached: false,
+            outdated: false,
             ..original
         };
         assert_eq!(anchor(&pb_anchor(&outside_a_diff)), outside_a_diff);
@@ -745,6 +870,7 @@ mod tests {
             quoted: Vec::new(),
             base: None,
             detached: false,
+            outdated: false,
         };
         let wire = pb_anchor(&document);
         let named = wire
@@ -771,11 +897,13 @@ mod tests {
 
         let (statuses, archived) = which_request(Which::WithResolved);
         assert!(statuses.contains(&(pb::CommentStatus::Resolved as i32)));
+        assert!(statuses.contains(&(pb::CommentStatus::Posted as i32)));
         assert!(!archived);
 
         let (statuses, archived) = which_request(Which::Archived);
         assert!(statuses.contains(&(pb::CommentStatus::Resolved as i32)));
         assert!(statuses.contains(&(pb::CommentStatus::Draft as i32)));
+        assert!(statuses.contains(&(pb::CommentStatus::Posted as i32)));
         assert!(archived);
     }
 
@@ -801,18 +929,19 @@ mod tests {
 
         assert_eq!(event(pb::CommentFeedEvent { event: None }), None);
 
-        // A pull request draft's change is not this client's.
+        // A pull request draft's change is heard like any other.
         let mut draft = daemon_comment(pb::CommentStatus::Draft);
         draft.destination = Some(pb::CommentDestination {
             destination: Some(pb::comment_destination::Destination::PullRequest(
                 pb::PullRequestRef::default(),
             )),
         });
-        assert_eq!(
+        assert!(matches!(
             event(pb::CommentFeedEvent {
                 event: Some(Event::Changed(draft)),
             }),
-            None
-        );
+            Some(CommentEvent::Changed(c))
+                if matches!(c.destination, Destination::PullRequest { .. })
+        ));
     }
 }

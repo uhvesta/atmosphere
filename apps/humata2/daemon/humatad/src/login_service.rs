@@ -550,6 +550,11 @@ fn failed(error: &LoginError, provider: Option<&str>) -> pb::Error {
             -1,
             output_tail.clone(),
         ),
+        LoginError::Takeover(TakeoverError::Install { output_tail, .. } | TakeoverError::Bundle { output_tail, .. }) => (
+            "check that ~/.humata2 on the machine is writable and has room (the output says what the install printed), then log in again",
+            -1,
+            output_tail.clone(),
+        ),
         LoginError::Takeover(_) => (
             "log in again; press Done only when you see the machine's shell prompt",
             -1,

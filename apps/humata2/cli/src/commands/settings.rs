@@ -215,14 +215,12 @@ pub(super) async fn set<D: Daemon, C: Console>(
         idempotency_key: ctx.key(),
         ..global_update(current, key, value)?
     };
-    ctx.present_json(rpc::settings::UPDATE_SETTINGS, |presence| {
+    ctx.change_present(rpc::settings::UPDATE_SETTINGS, |presence| {
         pb::UpdateSettingsRequest {
             presence,
             ..update.clone()
         }
-    })
-    .await
-    .map(Done::reply)
+    }).await
 }
 
 pub(super) async fn channel_get<D: Daemon, C: Console>(
@@ -317,14 +315,12 @@ pub(super) async fn channel_set<D: Daemon, C: Console>(
         idempotency_key: ctx.key(),
         ..channel_update(current, key, value)?
     };
-    ctx.present_json(rpc::settings::UPDATE_CHANNEL_SETTINGS, |presence| {
+    ctx.change_present(rpc::settings::UPDATE_CHANNEL_SETTINGS, |presence| {
         pb::UpdateChannelSettingsRequest {
             presence,
             ..update.clone()
         }
-    })
-    .await
-    .map(Done::reply)
+    }).await
 }
 
 /// `humata settings contain on|off`: globally, or for `--channel`, where

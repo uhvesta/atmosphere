@@ -111,6 +111,10 @@ pub enum Action {
     Scroll { target: Target, x: i32, y: i32 },
     /// Puts text on the clipboard and presses `secondary-v`.
     Paste(String),
+    /// Moves the pointer over the middle of a control, as a person moves the
+    /// mouse to where a hover-only control appears. The control may be
+    /// transparent until hovered, but must sit inside the window.
+    Hover(Target),
 }
 
 impl fmt::Display for Action {
@@ -122,6 +126,7 @@ impl fmt::Display for Action {
             Self::Drag { from, to } => write!(f, "drag {from} to {to}"),
             Self::Scroll { target, x, y } => write!(f, "scroll {target} by ({x}, {y}) pixels"),
             Self::Paste(text) => write!(f, "paste {text:?}"),
+            Self::Hover(target) => write!(f, "hover over {target}"),
         }
     }
 }
@@ -254,6 +259,12 @@ impl Flow {
     /// Pastes `text`.
     pub fn paste(self, text: impl Into<String>) -> Self {
         self.then(Action::Paste(text.into()))
+    }
+
+    /// Moves the pointer over the control with `role` and accessible
+    /// `label`, which may show only while hovered.
+    pub fn hover(self, role: Role, label: impl Into<String>) -> Self {
+        self.then(Action::Hover(Target::new(role, label)))
     }
 
     /// Adds `action` as the next step.

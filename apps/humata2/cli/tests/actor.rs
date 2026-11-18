@@ -105,9 +105,115 @@ async fn whoami_believes_the_daemon_when_it_says_agent() {
     assert_eq!(result["channel"], "ch_1");
 }
 
+/// D748: an agent that asks who it is learns its session's folder and
+/// where each of its clones is, on which branch.
+#[tokio::test]
+async fn whoami_lists_an_agents_clones_with_their_paths_and_branches() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::daemon::WHO_AM_I,
+        &pb::WhoAmIResponse {
+            actor: Some(pb::Actor {
+                actor: Some(pb::actor::Actor::Agent(pb::AgentActor {
+                    session: support::session("se_1"),
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        },
+    );
+    daemon.reply(
+        rpc::session::GET_SESSION,
+        &pb::Session {
+            id: support::session("se_1"),
+            folder: "/home/me/Humata/acme/sessions/s.1".into(),
+            repos: vec![pb::SessionRepo {
+                repo: Some(pb::RepoRef { owner: "acme".into(), name: "api".into() }),
+                branch: "humata/fix".into(),
+                path: "/home/me/Humata/acme/sessions/s.1/api".into(),
+                main_clone: false,
+            }],
+            ..Default::default()
+        },
+    );
+    let console = FakeConsole::pipe();
+    let exit = run_as(&agent_environment(), &daemon, &console, &["--json", "whoami"]).await;
+    assert_eq!(exit, exit::OK);
+    let result = &console.json()["result"];
+    assert_eq!(result["tier"], "agent");
+    assert_eq!(result["folder"], "/home/me/Humata/acme/sessions/s.1");
+    assert_eq!(
+        result["clones"],
+        json!([{ "repo": "acme/api", "path": "/home/me/Humata/acme/sessions/s.1/api", "branch": "humata/fix" }])
+    );
+}
+
+/// An agent whose session can't be read (an agent added to a session asks
+/// only who it is) is still told who it is.
+#[tokio::test]
+async fn whoami_answers_an_agent_whose_session_cant_be_read() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::daemon::WHO_AM_I,
+        &pb::WhoAmIResponse {
+            actor: Some(pb::Actor {
+                actor: Some(pb::actor::Actor::Agent(pb::AgentActor {
+                    session: support::session("se_1"),
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        },
+    );
+    daemon.refuse(rpc::session::GET_SESSION, pb::error::Kind::Denied(Default::default()));
+    let console = FakeConsole::pipe();
+    let exit = run_as(&agent_environment(), &daemon, &console, &["--json", "whoami"]).await;
+    assert_eq!(exit, exit::OK);
+    let result = &console.json()["result"];
+    assert_eq!(result["tier"], "agent");
+    assert!(result.get("clones").is_none(), "{result}");
+}
+
+/// A fake daemon that says the caller is session `se_1`'s agent, with
+/// `repos` in that session.
+fn agent_daemon(repos: &[(&str, &str)]) -> FakeDaemon {
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::daemon::WHO_AM_I,
+        &pb::WhoAmIResponse {
+            actor: Some(pb::Actor {
+                actor: Some(pb::actor::Actor::Agent(pb::AgentActor {
+                    session: support::session("se_1"),
+                    ..Default::default()
+                })),
+            }),
+            channel: support::channel("ch_1"),
+            ..Default::default()
+        },
+    );
+    daemon.reply(
+        rpc::session::GET_SESSION,
+        &pb::Session {
+            id: support::session("se_1"),
+            repos: repos
+                .iter()
+                .map(|(owner, name)| pb::SessionRepo {
+                    repo: Some(pb::RepoRef {
+                        owner: (*owner).into(),
+                        name: (*name).into(),
+                    }),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        },
+    );
+    daemon
+}
+
 #[tokio::test]
 async fn an_agent_names_its_own_clone_with_a_bare_path() {
-    let daemon = FakeDaemon::new();
+    let daemon = agent_daemon(&[("acme", "api")]);
     let console = FakeConsole::pipe();
     let exit = run_as(
         &agent_environment(),
@@ -121,10 +227,50 @@ async fn an_agent_names_its_own_clone_with_a_bare_path() {
     let location = sent.location.expect("a location");
     assert_eq!(location.path, "src/lib");
     assert_eq!(location.machine, None);
-    assert!(matches!(
+    let Some(pb::file_location::Root::SessionClone(clone)) = location.root else {
+        panic!("not a clone: {:?}", location.root);
+    };
+    // The daemon serves only a clone that names its session and repo.
+    assert_eq!(clone.session, support::session("se_1"));
+    let repo = clone.repo.expect("a repo");
+    assert_eq!((repo.owner.as_str(), repo.name.as_str()), ("acme", "api"));
+}
+
+#[tokio::test]
+async fn an_agent_with_no_repository_names_its_own_folder_with_a_bare_path() {
+    let daemon = agent_daemon(&[]);
+    let console = FakeConsole::pipe();
+    let exit = run_as(
+        &agent_environment(),
+        &daemon,
+        &console,
+        &["--json", "files", "ls", "notes"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+    let sent: pb::ListDirectoryRequest = daemon.only(rpc::files::LIST_DIRECTORY);
+    let location = sent.location.expect("a location");
+    assert_eq!(
         location.root,
-        Some(pb::file_location::Root::SessionClone(_))
-    ));
+        Some(pb::file_location::Root::SessionFolder(pb::SessionFolder {
+            session: support::session("se_1"),
+        }))
+    );
+}
+
+#[tokio::test]
+async fn an_agent_with_two_repositories_must_say_which_clone_a_bare_path_is_in() {
+    let daemon = agent_daemon(&[("acme", "api"), ("acme", "web")]);
+    let console = FakeConsole::pipe();
+    let exit = run_as(
+        &agent_environment(),
+        &daemon,
+        &console,
+        &["--json", "files", "ls", "src"],
+    )
+    .await;
+    assert_eq!(exit, exit::USAGE);
+    assert!(!daemon.called(rpc::files::LIST_DIRECTORY));
 }
 
 #[tokio::test]

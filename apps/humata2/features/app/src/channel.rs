@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 pub enum Tab {
     #[default]
     Sessions,
+    Desk,
     Inbox,
     Board,
     Repos,

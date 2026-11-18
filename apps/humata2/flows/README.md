@@ -17,10 +17,11 @@ There's no code here. Tests come later, built from the events each step names.
 | 7 | [After a reboot, a power cut or an upgrade](07-after-a-reboot-or-upgrade.md) | "My Mac just rebooted. Did my sessions survive?" |
 | 8 | [Stopping a machine for the night, and working away from the Mac](08-stop-a-machine-for-the-night.md) | "devbox-1 is burning money overnight." |
 | 9 | [A plain terminal on a remote machine](09-ssh-terminal-session.md) | "I just want a shell on devbox-1." |
+| 10 | [The Board: a person and agents plan and track work](10-the-board.md) | "I want to see what everyone is working on, what waits on what, and what waits on me." |
 
-Flows 6–9 aren't from the owner's list. They cover parts of the spec the first five don't reach: PR review (26.17) and prepared views (26.12); reboots, power cuts and upgrades (26.8, 26.9, UPGRADE); stopping a machine and working away (STOP, 26.10); and plain shells.
+Flows 6–10 aren't from the owner's list. They cover parts of the spec the first five don't reach: PR review (26.17) and prepared views (26.12); reboots, power cuts and upgrades (26.8, 26.9, UPGRADE); stopping a machine and working away (STOP, 26.10); plain shells; and the Board.
 
-A finer-grained set of cases, from single keystrokes up to whole days, is being written separately in [cases/](cases/).
+A finer-grained set of cases, from single keystrokes up to whole days, is being written separately in [cases/](cases/). Its `real/` layer drives the real app, real SSH to the `h2-terminal-c1` VM and the real agent CLIs.
 
 ## How each flow reads
 
@@ -39,7 +40,7 @@ Some steps have a **Do (other case)**, a branch off the main path, such as a mac
 
 Events are named as the feed names them: `<Entity> created`, `updated` or `deleted`, with the state in brackets when it matters. For example, "Session updated (Needs input)" or "InboxRequest created (Pending)". The entities are Session, Channel, Machine, BoardItem, InboxRequest, Grant, Comment, PreparedView, Operation, Transfer (file copies), ActivityEvent, Marks, Settings and ChannelRules. Plus the feed's own notes: JournalReplayed, PullRequestHeadsChanged, HostLinkChanged and Resync.
 
-Desk sessions have no event yet. The Desk page reloads its list instead. Flow 1 lists this as a gap.
+Desk sessions have events now: `DeskSession created`, `updated` or `deleted`. The event carries the session as it is, or only its id when it left the Desk, and the Desk follows it without reading the list again.
 
 ## Status tags
 

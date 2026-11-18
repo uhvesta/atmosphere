@@ -244,7 +244,7 @@ async fn sync(
             }
             shared
                 .describe(&record)
-                .map(Some)
+                .map(|mirror| Some((mirror, record.channel)))
                 .map_err(|source| RemoteError::Describe { session: id, source })
         })
         .await
@@ -253,7 +253,7 @@ async fn sync(
             source,
         })??
     };
-    let Some(mirror) = named else {
+    let Some((mirror, channel_id)) = named else {
         return Ok(());
     };
     let mirror_failed = |source| RemoteError::Mirror {
@@ -347,9 +347,10 @@ async fn sync(
             .map_err(mirror_failed)?
         };
         // None: another read got there first and the mirror is already past this part.
-        if taken.is_none() {
+        let Some(added) = taken else {
             return Ok(());
-        }
+        };
+        shared.indexed(session, &channel_id, added);
         if !more {
             return Ok(());
         }

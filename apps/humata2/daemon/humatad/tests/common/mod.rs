@@ -57,7 +57,8 @@ fn warm(build: Build, faulty: bool) {
 /// The variables that ask for the fault build (`humatad2_faults` and
 /// `humata2_holder_faults`): a start with any of them in its environment
 /// runs those, so every point of the daemon and of its crates is live.
-const FAULT_VARIABLES: [&str; 4] = [
+const FAULT_VARIABLES: [&str; 5] = [
+    "HUMATA2_FAIL_AT",
     "HUMATA2_STOP_AT",
     "HUMATA2_HOLD_AT",
     "HUMATA2_POWER_CUT_ROOTS",
@@ -74,6 +75,22 @@ pub fn binary(variable: &str) -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| panic!("set {variable} to the binary's path"));
     std::fs::canonicalize(path).unwrap()
+}
+
+/// Whether the test numbered `index` is this Bazel shard's. rules_rust
+/// doesn't shard a test binary, so without this every shard runs every
+/// test: the test runs in shard `index % TEST_TOTAL_SHARDS`, and the others
+/// pass it at once. Writing the status file tells Bazel the binary shards.
+/// Outside Bazel's sharding every test runs.
+pub fn in_this_shard(index: usize) -> bool {
+    if let Some(status) = std::env::var_os("TEST_SHARD_STATUS_FILE") {
+        std::fs::write(status, b"").expect("the shard status file is written");
+    }
+    let read = |name: &str| std::env::var(name).ok().and_then(|value| value.parse::<usize>().ok());
+    match (read("TEST_TOTAL_SHARDS"), read("TEST_SHARD_INDEX")) {
+        (Some(total), Some(shard)) if total > 0 => index % total == shard,
+        _ => true,
+    }
 }
 
 /// A folder for a daemon: its socket and state go in here. Under /tmp,
@@ -122,6 +139,10 @@ pub struct Daemon {
     /// Environment variables for the next launch only, as
     /// `HUMATA2_STOP_AT`: a restart starts without them.
     env_once: Vec<(String, String)>,
+    /// The holder file every launch spawns holders from, when a test
+    /// chooses it (an installed `bin/humata2_holder`, which an upgrade
+    /// replaces); unset, the test holder.
+    holder: Option<PathBuf>,
     pub socket: PathBuf,
     pub state: PathBuf,
     pub dir: TempDir,
@@ -145,6 +166,17 @@ impl Daemon {
         Self::launched(build, dir, extra, &[]).await
     }
 
+    /// As [`Self::start_with`], spawning holders from `holder` at this
+    /// start and every restart: a test that upgrades the daemon names the
+    /// installed `bin/humata2_holder`, so holders started after the upgrade
+    /// are the new release's.
+    pub async fn start_with_holder(build: Build, dir: TempDir, extra: &[&str], holder: &Path) -> Self {
+        let mut daemon = Self::unlaunched(build, dir, extra, &[]);
+        daemon.holder = Some(holder.to_path_buf());
+        daemon.launch().await;
+        daemon
+    }
+
     /// The admin test daemon with more environment variables, such as
     /// `HUMATA2_STOP_AT`, for this start only: [`Self::restart`] starts it
     /// again without them.
@@ -163,7 +195,13 @@ impl Daemon {
     }
 
     async fn launched(build: Build, dir: TempDir, extra: &[&str], env: &[(&str, &str)]) -> Self {
-        let mut daemon = Self {
+        let mut daemon = Self::unlaunched(build, dir, extra, env);
+        daemon.launch().await;
+        daemon
+    }
+
+    fn unlaunched(build: Build, dir: TempDir, extra: &[&str], env: &[(&str, &str)]) -> Self {
+        Self {
             child: None,
             build,
             extra: extra.iter().map(|arg| (*arg).to_owned()).collect(),
@@ -171,12 +209,11 @@ impl Daemon {
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
                 .collect(),
+            holder: None,
             socket: dir.path().join("d.sock"),
             state: dir.path().join("state"),
             dir,
-        };
-        daemon.launch().await;
-        daemon
+        }
     }
 
     async fn launch(&mut self) {
@@ -190,10 +227,14 @@ impl Daemon {
             Build::Release if faulty => Command::new(binary("HUMATAD2_FAULTS")),
             Build::Release => Command::new(binary("HUMATAD2_RELEASE")),
         };
-        let holder = binary(if faulty && self.build != Build::Release {
-            "HUMATA2_HOLDER_FAULTS"
-        } else {
-            "HUMATA2_HOLDER"
+        // The faults holder whenever the daemon is the faults build, a
+        // box's too: a power cut (SIGUSR2) has to reach its holders (D243).
+        let holder = self.holder.clone().unwrap_or_else(|| {
+            binary(if faulty {
+                "HUMATA2_HOLDER_FAULTS"
+            } else {
+                "HUMATA2_HOLDER"
+            })
         });
         command.arg("serve");
         match self.build {
@@ -292,6 +333,92 @@ impl Daemon {
         self.launch().await;
     }
 
+    /// As [`Self::restart_env`], handing the new run a `--ready-fd` pipe as
+    /// the app's bridge does (D398), and returning what it says there: up to
+    /// a newline, or what came before the pipe closed.
+    #[allow(dead_code)]
+    pub async fn restart_hearing_ready(&mut self, env: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Read;
+        use std::os::fd::{AsRawFd, BorrowedFd};
+        use std::os::unix::process::CommandExt;
+        self.kill();
+        let env: Vec<(String, String)> = env
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let faulty = wants_faults(&env);
+        warm(self.build, faulty);
+        let mut command = match self.build {
+            Build::Admin | Build::AdminForThisProcess if faulty => Command::new(binary("HUMATAD2_FAULTS")),
+            Build::Admin | Build::AdminForThisProcess => Command::new(binary("HUMATAD2")),
+            Build::Release if faulty => Command::new(binary("HUMATAD2_FAULTS")),
+            Build::Release => Command::new(binary("HUMATAD2_RELEASE")),
+        };
+        let holder = self.holder.clone().unwrap_or_else(|| {
+            binary(if faulty {
+                "HUMATA2_HOLDER_FAULTS"
+            } else {
+                "HUMATA2_HOLDER"
+            })
+        });
+        command.arg("serve");
+        match self.build {
+            Build::Admin => {
+                command.arg("--admin");
+            }
+            Build::AdminForThisProcess => {
+                command.arg(format!("--admin-pid={}", std::process::id()));
+            }
+            Build::Release => {}
+        }
+        command.args(&self.extra);
+        command.envs(env);
+        let (mut reader, writer) = std::io::pipe().expect("make the ready pipe");
+        let fd = writer.as_raw_fd();
+        command.arg(format!("--ready-fd={fd}"));
+        // SAFETY: only fcntl runs between fork and exec.
+        unsafe {
+            command.pre_exec(move || {
+                rustix::io::fcntl_setfd(BorrowedFd::borrow_raw(fd), rustix::io::FdFlags::empty())?;
+                Ok(())
+            });
+        }
+        let child = command
+            .arg("--socket")
+            .arg(&self.socket)
+            .arg("--state")
+            .arg(&self.state)
+            .arg("--root")
+            .arg(self.dir.path())
+            .arg("--holder")
+            .arg(holder)
+            .arg("--shell")
+            .arg("/bin/sh")
+            .arg("--shell-arg=-i")
+            .env("PS1", "$ ")
+            .env("ENV", "/dev/null")
+            .spawn()
+            .unwrap();
+        drop(writer);
+        self.child = Some(child);
+        let heard = tokio::task::spawn_blocking(move || {
+            let mut got = Vec::new();
+            let mut byte = [0u8; 1];
+            while let Ok(1) = reader.read(&mut byte) {
+                got.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            got
+        });
+        let got = tokio::time::timeout(WAIT, heard)
+            .await
+            .unwrap_or_else(|_| panic!("humatad2 neither said ready nor closed its pipe within {WAIT:?}"))
+            .expect("the pipe's reader ran");
+        got
+    }
+
     /// Stops this daemon and starts `build` on the same socket and state.
     pub async fn restart_as(&mut self, build: Build) {
         self.kill();
@@ -312,18 +439,27 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         self.kill();
         // Holders outlive the daemon on purpose; these ones don't.
-        let Ok(store) = humata2_store::Store::open(self.state.join("store")) else {
-            return;
-        };
-        for tab in store.tabs().unwrap_or_default() {
-            if let Some(pid) = i32::try_from(tab.holder_pid).ok().and_then(Pid::from_raw) {
-                let _ = rustix::process::kill_process(pid, Signal::TERM);
+        if let Ok(store) = humata2_store::Store::open(self.state.join("store")) {
+            for tab in store.tabs().unwrap_or_default() {
+                if let Some(pid) = i32::try_from(tab.holder_pid).ok().and_then(Pid::from_raw) {
+                    let _ = rustix::process::kill_process(pid, Signal::TERM);
+                }
             }
         }
+        // A holder no tab names (a power cut before its tab was committed,
+        // or a tab already gone) still carries this daemon's folder, a
+        // fresh one under /tmp, in its command line: stop those by it.
+        let _ = Command::new("pkill").arg("-f").arg(format!("{}/", self.dir.path().display())).status();
     }
 }
 
 pub async fn connect(socket: &Path) -> Channel {
+    try_connect(socket).await.unwrap()
+}
+
+/// A channel to the daemon on `socket`, or the error while no daemon
+/// listens there, such as between two runs of one that restarts itself.
+pub async fn try_connect(socket: &Path) -> Result<Channel, tonic::transport::Error> {
     let socket = socket.to_owned();
     Endpoint::try_from("http://[::]:50051")
         .unwrap()
@@ -332,7 +468,6 @@ pub async fn connect(socket: &Path) -> Channel {
             async move { Ok::<_, std::io::Error>(TokioIo::new(UnixStream::connect(socket).await?)) }
         }))
         .await
-        .unwrap()
 }
 
 /// A gRPC channel over one byte stream, as the Mac's connector makes over
@@ -422,6 +557,8 @@ pub struct Attach {
     pub compressed: u32,
     /// Messages that carried a snapshot, pieces counted one by one.
     pub snapshot_pieces: u32,
+    /// The terminal the last snapshot named; empty for a raw snapshot.
+    pub terminal_uuid: String,
     /// A snapshot whose last piece hasn't come yet.
     piecing: bool,
     decoder: humata2_chunk::Decoder,
@@ -497,6 +634,7 @@ impl Attach {
             accepted: Vec::new(),
             compressed: 0,
             snapshot_pieces: 0,
+            terminal_uuid: String::new(),
             piecing: false,
             decoder: humata2_chunk::Decoder::new(),
             seq: 0,
@@ -534,11 +672,18 @@ impl Attach {
     pub async fn read(&mut self) -> Result<(), Status> {
         let message = tokio::time::timeout(WAIT, self.from.message())
             .await
-            .expect("the attach went quiet")?
+            .unwrap_or_else(|_| {
+                panic!(
+                    "the attach went quiet at offset {}; its screen so far: {:?}",
+                    self.cursor,
+                    String::from_utf8_lossy(&self.screen)
+                )
+            })?
             .expect("the attach ended");
         match message.message.expect("a message") {
             pb::attach_server_message::Message::Snapshot(snapshot) => {
                 self.snapshot_pieces += 1;
+                self.terminal_uuid = snapshot.terminal_uuid.clone();
                 if snapshot.codec != 0 {
                     self.compressed += 1;
                 }
@@ -646,6 +791,47 @@ while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; do
     )
 }
 
+/// The test agent that repaints its screen on SIGWINCH, as a program does
+/// when its terminal is resized (D393). A repaint clears the screen and
+/// shows the agent's last answer, or the text of `repaint-text` in the
+/// conversations folder when that file is there, then a `**` line. Once
+/// `exit-after-repaint` is there, the agent exits after a repaint. Otherwise
+/// it answers as [`agent_script`] does.
+fn redrawing_agent_script(conv: &Path) -> String {
+    format!(
+        r#"CONV_DIR='{}'
+mode=$1; id=$2
+case "$mode" in
+  --session-id) f="$CONV_DIR/$id.jsonl"; : > "$f" ;;
+  --resume) f="$CONV_DIR/$id.jsonl" ;;
+  --fresh) f="$CONV_DIR/other.jsonl"; : > "$f" ;;
+esac
+last="agent up $mode"
+repaint() {{
+  if [ -f "$CONV_DIR/repaint-text" ]; then last=$(cat "$CONV_DIR/repaint-text"); fi
+  printf '\033[H\033[2J%s\n**\n' "$last"
+  if [ -f "$CONV_DIR/exit-after-repaint" ]; then exit 0; fi
+  woke=1
+}}
+trap repaint WINCH
+echo "$last"
+while :; do
+  woke=0
+  IFS= read -r line
+  rc=$?
+  # A repaint that interrupts the read is not the end of the input: bash
+  # says so with a status over 128, dash with 1.
+  if [ "$rc" -ne 0 ] && [ "$woke" = 1 ]; then continue; fi
+  if [ "$rc" -ne 0 ]; then break; fi
+  last="got: $line"
+  echo "$last"
+  printf '%s\n' "$line" >> "$f"
+done
+"#,
+        conv.display()
+    )
+}
+
 /// Runs `git` with an identity, failing the test when it fails; returns
 /// what it printed, trimmed.
 pub fn git(args: &[&str]) -> String {
@@ -713,6 +899,14 @@ impl World {
         ]
     }
 
+    /// The same world, whose test agent repaints its screen on a resize (see
+    /// [`redrawing_agent_script`]). Only the agent's script differs.
+    pub fn redrawing(root: &Path) -> Self {
+        let world = Self::new(root);
+        std::fs::write(root.join("agent.sh"), redrawing_agent_script(&world.conv)).unwrap();
+        world
+    }
+
     /// A bare repository `owner/name` on branch `main` with one commit.
     pub fn remote(&self, owner: &str, name: &str) -> PathBuf {
         let bare = self.remotes.join(owner).join(format!("{name}.git"));
@@ -750,6 +944,16 @@ impl World {
 pub async fn start_world() -> (Daemon, World) {
     let dir = folder();
     let world = World::new(dir.path());
+    let args = world.args();
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    (Daemon::start_with(Build::Admin, dir, &refs).await, world)
+}
+
+/// A daemon serving a world whose test agent repaints on a resize (see
+/// [`World::redrawing`]), and the world.
+pub async fn start_redrawing_world() -> (Daemon, World) {
+    let dir = folder();
+    let world = World::redrawing(dir.path());
     let args = world.args();
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     (Daemon::start_with(Build::Admin, dir, &refs).await, world)
@@ -876,6 +1080,7 @@ pub fn start_request(
         board_item: None,
         branch: String::new(),
         rebuild: None,
+        review: None,
     }
 }
 
@@ -1057,6 +1262,7 @@ pub async fn shell_token(daemon: &Daemon, session: &pb::SessionId) -> (String, A
             idempotency_key: None,
             session: Some(session.clone()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()

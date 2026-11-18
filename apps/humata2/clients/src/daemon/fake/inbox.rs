@@ -1,9 +1,44 @@
 use super::FakeDaemon;
 use crate::daemon::{DaemonError, Event, Operation, Reply};
-use crate::model::{Answer, Grant, GrantId, ItemStatus, RequestId, Status};
+use crate::model::{
+    Answer, Grant, GrantId, ItemStatus, MigratePhase, Preview, Request, RequestId, RequestKind,
+    Status,
+};
+
+impl FakeDaemon {
+    /// Every answer sent, in order, including ones that failed.
+    #[must_use]
+    pub fn answers(&self) -> Vec<(RequestId, Answer)> {
+        self.inner().answers.clone()
+    }
+
+    /// Adds a request, or replaces the one with the same id, and says so.
+    pub fn put_request(&self, request: Request) {
+        let mut inner = self.inner();
+        match inner
+            .workspace
+            .requests
+            .iter_mut()
+            .find(|found| found.id == request.id)
+        {
+            Some(found) => *found = request.clone(),
+            None => inner.workspace.requests.insert(0, request.clone()),
+        }
+        inner.emit(Event::Request(request));
+    }
+
+    /// Removes a request, as the daemon does when it resolves by itself (a
+    /// Migrate item whose machine came back at the host's release).
+    pub fn withdraw_request(&self, id: &RequestId) {
+        let mut inner = self.inner();
+        inner.workspace.requests.retain(|found| &found.id != id);
+        inner.emit(Event::RequestGone(id.clone()));
+    }
+}
 
 pub(super) fn answer(daemon: &FakeDaemon, request: &RequestId, answer: Answer) -> Reply<()> {
     let id = request.clone();
+    daemon.inner().answers.push((id.clone(), answer.clone()));
     daemon.reply(
         Some(Operation::Answer),
         format!("answer {request} {answer:?}"),
@@ -21,6 +56,22 @@ pub(super) fn answer(daemon: &FakeDaemon, request: &RequestId, answer: Answer) -
                     what: format!("Answering “{}”", found.title),
                     reason: "it was already answered, perhaps from another window".to_owned(),
                 });
+            }
+            if found.kind == RequestKind::Migrate {
+                // A Migrate item takes Approve only; the daemon migrates and
+                // answers it when it has arrived, so it stays pending now.
+                if answer != Answer::Approved {
+                    return Err(DaemonError::Refused {
+                        what: format!("Answering “{}”", found.title),
+                        reason: "a Migrate item can only be migrated. Click Migrate, or leave it for later".to_owned(),
+                    });
+                }
+                if let Preview::Migrate(card) = &mut found.preview {
+                    card.phase = MigratePhase::Migrating;
+                }
+                let request = found.clone();
+                inner.emit(Event::Request(request));
+                return Ok(());
             }
             found.answer = Some(answer);
             let request = found.clone();

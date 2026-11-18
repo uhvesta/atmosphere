@@ -72,6 +72,7 @@ fn hello() -> pb::HelloRequest {
         nonce: HOST_NONCE.to_vec(),
         sync_marker: String::new(),
         chunk_codecs: Vec::new(),
+        host_build: None,
     }
 }
 
@@ -214,20 +215,21 @@ async fn a_second_link_replaces_the_first_and_the_machine_stays_reachable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_link_outlives_its_machines_daemon() {
+async fn a_link_whose_machines_daemon_is_gone_ends_so_the_host_dials_a_new_one() {
     let mut daemon = machine_daemon(Build::Admin, "machine").await;
     let (mut child, channel) = link(&daemon).await;
     prove_host(&channel).await;
     let (_keep_open, mut from_machine) = uplink(&channel).await;
     assert!(matches!(next(&mut from_machine).await, pb::machine_to_host::Message::Resume(_)));
 
-    // A daemon that stops (a crash, a restart) ends its PeerUplink, but the
-    // host's Uplink and the link process carry on: the host must not see
-    // the machine lost because its daemon restarted.
+    // A daemon that stops (a crash, a restart) takes the link's one relayed
+    // connection with it, so the link can carry nothing more. The host's
+    // Uplink ends though the host keeps its side open, and the link process
+    // exits, so the host dials a link to the daemon that runs next.
     daemon.kill();
-    let ended = tokio::time::timeout(Duration::from_millis(500), uplink_end(&mut from_machine)).await;
-    assert!(ended.is_err(), "the host's Uplink ended with the daemon: {ended:?}");
-    assert!(child.try_wait().unwrap().is_none(), "the link process ended with the daemon");
+    uplink_end(&mut from_machine).await;
+    let exited = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+    assert!(exited.is_ok(), "the link process outlived its machine's daemon");
 }
 
 #[tokio::test(flavor = "multi_thread")]

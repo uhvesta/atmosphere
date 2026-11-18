@@ -93,6 +93,15 @@ theme change, process factory or notification side effect. The caller supplies
 opt-in shortcut policy) and an ordered `ReplicaSink`. The same entity runs with
 native GPUI, GPUI Fast and the browser GPUI Fast backend.
 
+`ReplicaConfig::fit` chooses when the replica asks its host to fit the terminal
+to its bounds. `FitPolicy::Controlling`, the default, asks whenever the replica
+holds control. `FitPolicy::Focused` also waits for focus, so a view nobody is
+typing in never resizes a terminal that another view shows.
+`ReplicaConfig::default_colors` sets the colors used where the program set
+none. The replica applies them to every checkpoint it installs, host snapshots
+included. `set_default_colors` changes them for the terminal showing and for
+every later checkpoint.
+
 Bind each authenticated connection using `bind_connection(epoch, session, cx)`.
 The caller owns connection epochs: a replacement transport gets a new epoch;
 recreating an entity on the same transport retains its epoch and continuation

@@ -54,12 +54,19 @@ pub enum Capability {
     MachineProvision,
     TrashRestore,
     ChannelCreate,
+    ChannelRepoAdd,
     // Ask me, no Allow (D20).
     NetworkReach,
-    // Never by default.
+    DeskMoveToChannel,
+    // Ask me by default (D306).
     SessionStopOther,
+    // Never by default.
+    SessionDeleteOther,
+    MachineSessionsStop,
     ChannelChange,
     MachineDestroy,
+    // SEAM (MACHINESCRIPTS, D688): run a machine script now.
+    MachineScriptRun,
     // User-only (SEC-7).
     InboxAnswer,
     AccessChange,
@@ -132,7 +139,7 @@ const SETTINGS_NONE: &[Decision] = &[];
 
 impl Capability {
     /// Every capability, once.
-    pub const ALL: [Capability; 49] = [
+    pub const ALL: [Capability; 54] = [
         Self::OwnBoardWrite,
         Self::ChannelRead,
         Self::ChannelBoardAdd,
@@ -165,10 +172,15 @@ impl Capability {
         Self::MachineProvision,
         Self::TrashRestore,
         Self::ChannelCreate,
+        Self::ChannelRepoAdd,
         Self::NetworkReach,
+        Self::DeskMoveToChannel,
         Self::SessionStopOther,
+        Self::SessionDeleteOther,
+        Self::MachineSessionsStop,
         Self::ChannelChange,
         Self::MachineDestroy,
+        Self::MachineScriptRun,
         Self::InboxAnswer,
         Self::AccessChange,
         Self::SettingsChange,
@@ -217,11 +229,15 @@ impl Capability {
             | Self::GitPush
             | Self::MachineProvision
             | Self::TrashRestore
-            | Self::ChannelCreate => Tier::AskMe,
-            Self::NetworkReach => Tier::AskNoAllow,
-            Self::SessionStopOther | Self::ChannelChange | Self::MachineDestroy => {
-                Tier::NeverByDefault
-            }
+            | Self::ChannelCreate
+            | Self::ChannelRepoAdd
+            | Self::SessionStopOther => Tier::AskMe,
+            Self::NetworkReach | Self::DeskMoveToChannel => Tier::AskNoAllow,
+            Self::SessionDeleteOther
+            | Self::MachineSessionsStop
+            | Self::ChannelChange
+            | Self::MachineDestroy
+            | Self::MachineScriptRun => Tier::NeverByDefault,
             Self::InboxAnswer
             | Self::AccessChange
             | Self::SettingsChange
@@ -280,7 +296,10 @@ impl Capability {
             | Self::MachineDestroy
             | Self::TrashRestore
             | Self::ChannelCreate
+            | Self::ChannelRepoAdd
+            | Self::DeskMoveToChannel
             | Self::ChannelChange
+            | Self::MachineScriptRun
             | Self::AccessChange
             | Self::SettingsChange
             | Self::MarksChange
@@ -313,6 +332,8 @@ impl Capability {
             | Self::OwnSessionManage
             | Self::OwnSessionEnd
             | Self::SessionStopOther
+            | Self::SessionDeleteOther
+            | Self::MachineSessionsStop
             | Self::InboxAnswer
             | Self::TerminalInput
             | Self::PeerReport
@@ -324,11 +345,12 @@ impl Capability {
     /// (AW-11): it has a rule that can be Allow, it never needs the Mac,
     /// it is not typing into another session and it is not Never by
     /// default. A listed kind whose call turns out to need another machine
-    /// still waits.
+    /// still waits. Ending another session's work is never low-risk either.
     pub fn may_be_low_risk(self) -> bool {
         matches!(self.tier(), Tier::DefaultAllow | Tier::AskMe)
             && !self.needs_host()
             && self != Self::SessionType
+            && self != Self::SessionStopOther
     }
 
     /// True when "Always allow …" can be offered for it: IN-22 names the
@@ -348,6 +370,7 @@ impl Capability {
                 | Self::NetworkReach
                 | Self::GitPush
                 | Self::MachineProvision
+                | Self::MachineSessionsStop
                 | Self::MachineDestroy
         )
     }
@@ -387,10 +410,15 @@ impl Capability {
             Self::MachineProvision => "add, create, start or stop machines",
             Self::TrashRestore => "restore from trash",
             Self::ChannelCreate => "create a channel",
+            Self::ChannelRepoAdd => "add a repo to a channel",
             Self::NetworkReach => "open a network connection through the Mac",
-            Self::SessionStopOther => "stop or delete another session",
-            Self::ChannelChange => "change channel settings or repos",
+            Self::DeskMoveToChannel => "move a Desk session into a channel",
+            Self::SessionStopOther => "stop or archive another session",
+            Self::SessionDeleteOther => "delete another session",
+            Self::MachineSessionsStop => "stop or start all sessions on a machine",
+            Self::ChannelChange => "change channel settings, or remove a repo from a channel",
             Self::MachineDestroy => "remove, forget or delete machines",
+            Self::MachineScriptRun => "run machine scripts",
             Self::InboxAnswer => "answer Inbox requests",
             Self::AccessChange => "change access rules or grants",
             Self::SettingsChange => "change Settings",

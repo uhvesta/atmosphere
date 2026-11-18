@@ -21,13 +21,17 @@ use super::{
     digest_of, folder_name, io, items_under, project_keyed, remove, sha_of_file,
 };
 use crate::error::{GitError, StartError};
-use crate::fork::{ForkCopy, copy_clone, copy_conversation};
+use crate::fork::{ForkCopy, copy_clone, copy_conversation, copy_durably};
 use crate::setup::unix_ms;
 use crate::start::{RepoName, Started, Starter, blocking};
 use humata2_revive::Env;
 
 /// The folder of a carry operation that holds the fork's staged session folder.
 const FORK: &str = "fork";
+
+/// The folder of a carry operation the fork's conversation is written in
+/// before it is staged.
+const REID: &str = "reid";
 
 /// Why a fork couldn't be staged. Nothing of the parent was changed.
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +61,9 @@ pub enum ForkPackError {
 
     #[error("the parent has no agent conversation to carry; fork with the code only")]
     NoConversation,
+
+    #[error("couldn't find where turn {turn} starts in the parent's conversation; the parent is unchanged, so fork from a turn its list of turns shows, or from now")]
+    NoTurn { turn: u32 },
 }
 
 impl From<CarryError> for ForkPackError {
@@ -162,7 +169,8 @@ impl Starter {
                 .get(&parent.agent)
                 .map_err(|source| CarryError::Agent { agent: parent.agent.clone(), source })?;
             conversation_id = uuid::Uuid::new_v4().hyphenated().to_string();
-            let plan = kind.launch(&self.home, &folder, &conversation_id);
+            // The fork runs the parent's agent, on the parent's model.
+            let plan = kind.launch_with_model(&self.home, &folder, &conversation_id, parent_detail.model.as_deref());
             let name = plan
                 .conversation_file
                 .file_name()
@@ -170,8 +178,26 @@ impl Starter {
                 .unwrap_or_default();
             let target = stage.join(AGENT);
             fs::create_dir_all(&target).map_err(io("create", &target))?;
-            copy_conversation(&parent_agent.launch.conversation_file, &target.join(&name), request.before_turn)
-                .map_err(start)?;
+            let (from, to) = (&parent_agent.launch.conversation_file, target.join(&name));
+            // The parent's conversation through its adapter, as a fork on this
+            // machine copies it, so the copy names the fork's own id. A kind
+            // with no adapter has its file copied as it is.
+            let reid = super::placed::forked_for_stage(
+                kind,
+                &self.home,
+                &parent.folder,
+                &parent_agent.launch,
+                &conversation_id,
+                request.before_turn,
+                &dir.join(REID),
+            )
+            .map_err(start)?;
+            if let Some(bytes) = reid {
+                copy_durably(bytes.as_slice(), &to)
+                    .map_err(|source| start(StartError::Copy { path: to.clone(), source }))?;
+            } else {
+                copy_conversation(from, &to, request.before_turn).map_err(start)?;
+            }
             agent_files = if project_keyed(kind) { AgentFiles::Project } else { AgentFiles::File { name } };
             let tab = format!("tb_{}", uuid::Uuid::new_v4().simple());
             agent = Some(AgentRecord {
@@ -188,6 +214,7 @@ impl Starter {
                     holder_socket: self.holders.join(format!("{tab}.sock")),
                     cols: parent_agent.launch.cols,
                     rows: parent_agent.launch.rows,
+                    cli_version: parent_agent.launch.cli_version.clone(),
                 },
                 state: AgentState::Stopped,
                 generation: 1,

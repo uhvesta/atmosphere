@@ -92,6 +92,32 @@ fn choosing_sends_the_choice_as_a_reply() {
 }
 
 #[test]
+fn a_typed_reply_is_what_send_reply_sends() {
+    let (mut store, fakes, request) = setup("");
+    let id = request.id.clone();
+    store.send(A::StartReply(id.clone()), |s| {
+        s.reply = Some((id.clone(), String::new()));
+    });
+    store.send(A::ReplyText("use the staging key".to_owned()), |s| {
+        s.reply = Some((id.clone(), "use the staging key".to_owned()));
+    });
+    store.send(A::SendReply, |s| {
+        s.reply = None;
+        s.pending.insert(id.clone());
+    });
+    store.receive(A::Answered(id.clone(), Ok(())), |s| {
+        s.pending.remove(&id);
+    });
+    let text = "use the staging key".to_owned();
+    match sent(&fakes, &id) {
+        Some(Answer::Replied { text: sent }) => assert_eq!(sent, text),
+        Some(Answer::Denied { reply }) => assert_eq!(reply, Some(text)),
+        other => panic!("the typed reply was not sent: {other:?}"),
+    }
+    store.finish();
+}
+
+#[test]
 fn open_request_names_the_session_and_the_request() {
     let (mut store, _fakes, request) = setup("");
     store.send(A::OpenRequest(request.id.clone()), |_| {});

@@ -28,6 +28,7 @@ impl Builds for Fakes {
             ),
             Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
             Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
+            Payload::new(InstalledFile::Stack, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         ])
     }
 }
@@ -129,14 +130,14 @@ fn a_lima_vm_is_created_set_up_stopped_and_deleted() {
     assert_eq!(ready.link.machine(), &machine);
     assert_eq!(status(&provider, &machine), MachineStatus::Running);
 
-    // Removing humatad2 takes its files, so setting up again installs both.
+    // Removing humatad2 takes its files, so setting up again installs each.
     let removed = runner.run(&ready.link.remove_daemon().unwrap()).unwrap();
     assert!(removed.exit.success(), "{}", removed.tail(40));
     let again = runner.run(&ready.link.remove_daemon().unwrap()).unwrap();
     assert!(again.exit.success(), "{}", again.tail(40));
     runner.installs.store(0, Ordering::SeqCst);
     drive(&mut setup, &runner);
-    assert_eq!(runner.installs.load(Ordering::SeqCst), 2);
+    assert_eq!(runner.installs.load(Ordering::SeqCst), InstalledFile::ALL.len());
 
     let stop = provider
         .invocation(Action::Stop, &machine, &BTreeMap::new())

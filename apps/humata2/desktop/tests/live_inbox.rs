@@ -49,6 +49,13 @@ const RULE: &str = "global_read";
 /// The line that makes the agent ask to run a tool through its blocking
 /// permission hook (HOOKS), as Claude Code does before it runs a command.
 const PERMISSION_LINE: &str = "ask to run the tests";
+/// The lines that make the agent ask ahead, through the real `humata` and
+/// waiting for the answer, to reach the database: the ask Always allow can
+/// make a grant for. The second asks for the same target.
+const AHEAD_LINE: &str = "ask for the database";
+const AHEAD_AGAIN_LINE: &str = "ask for the database again";
+/// The rule that ask falls under, and its target.
+const AHEAD_RULE: &str = "network_reach";
 /// What the agent asks to run.
 const ASKED_COMMAND: &str = "npm test -- --watch=false";
 /// Claude's PermissionRequest payload (agent_hooks/testdata/claude).
@@ -122,10 +129,11 @@ fn git(args: &[&str]) -> Result<(), WorldError> {
 /// the permission hook the daemon wrote (`out/hook.sh`, set up by
 /// [`World::permission_hook`]) on `out/ask.json`, and leaves its stdout in
 /// `hook.stdout` and then its exit code in `hook.code`.
-fn agent_script(conv: &Path, out: &Path, socket: &Path, humata: &Path) -> String {
+fn agent_script(conv: &Path, out: &Path, wrote: &Path, socket: &Path, humata: &Path) -> String {
     format!(
         r#"CONV_DIR='{conv}'
 OUT='{out}'
+WROTE='{wrote}'
 mode=$1; id=$2
 case "$mode" in
   --session-id) f="$CONV_DIR/$id.jsonl"; : > "$f" ;;
@@ -133,19 +141,26 @@ case "$mode" in
 esac
 echo "agent up $mode"
 while IFS= read -r line; do
-  printf '%s\n' "$line" >> "$f"
+  printf '%s\n' "$line" >> "$f"; printf . > "$WROTE"
   case "$line" in
     '{call}')
       if [ -n "$HUMATA_SESSION_TOKEN" ]; then echo yes > "$OUT/started"; else echo no > "$OUT/started"; fi
+      printf . > "$WROTE"
       HUMATA_SOCKET='{socket}' '{humata}' --json --wait 600 channels > "$OUT/stdout" 2> "$OUT/stderr" < /dev/null
       printf '%s' "$?" > "$OUT/code.part"
-      mv "$OUT/code.part" "$OUT/code"
+      mv "$OUT/code.part" "$OUT/code"; printf . > "$WROTE"
       ;;
     '{permission}')
       rm -f "$OUT/hook.code"
       ( /bin/sh "$OUT/hook.sh" < "$OUT/ask.json" > "$OUT/hook.stdout"
         printf '%s' "$?" > "$OUT/hook.part"
-        mv "$OUT/hook.part" "$OUT/hook.code" ) &
+        mv "$OUT/hook.part" "$OUT/hook.code"; printf . > "$WROTE" ) &
+      ;;
+    '{ahead}'|'{again}')
+      case "$line" in '{ahead}') n=first ;; *) n=again ;; esac
+      HUMATA_SOCKET='{socket}' '{humata}' --json --wait 600 access ask-ahead network_reach network:localhost:5432 --reason 'the migration needs the database' > "$OUT/ahead.$n.stdout" 2> "$OUT/ahead.$n.stderr" < /dev/null
+      printf '%s' "$?" > "$OUT/ahead.$n.part"
+      mv "$OUT/ahead.$n.part" "$OUT/ahead.$n.code"; printf . > "$WROTE"
       ;;
   esac
   echo "got: $line"
@@ -153,8 +168,11 @@ done
 "#,
         conv = conv.display(),
         out = out.display(),
+        wrote = wrote.display(),
         call = CALL_LINE,
         permission = PERMISSION_LINE,
+        ahead = AHEAD_LINE,
+        again = AHEAD_AGAIN_LINE,
         socket = socket.display(),
         humata = humata.display(),
     )
@@ -195,6 +213,12 @@ impl AgentFiles {
         self.read("code")?.trim().parse().ok()
     }
 
+    /// The exit code of the ask-ahead call `which` (`first` or `again`),
+    /// once it has returned.
+    fn ahead_code(&self, which: &str) -> Option<i32> {
+        self.read(&format!("ahead.{which}.code"))?.trim().parse().ok()
+    }
+
     /// The permission hook's exit code, once it has returned.
     fn hook_code(&self) -> Option<i32> {
         self.read("hook.code")?.trim().parse().ok()
@@ -215,9 +239,65 @@ impl AgentFiles {
 }
 
 /// A real `humatad2` in a temp folder with the test agent.
+/// D442: the push for the agent's files. The agent writes a byte to the
+/// fifo `wrote` after each line it keeps and each file it leaves in `out`,
+/// and a thread wakes the test's thread (parked in a wait) and anyone
+/// awaiting [`World::wrote`]. The fifo is held open both ways here, so an
+/// agent's write never waits and the thread never sees its end.
+struct Wrote {
+    fifo: std::fs::File,
+    news: Arc<tokio::sync::Notify>,
+}
+
+impl Wrote {
+    fn open(root: &Path) -> Result<Self, WorldError> {
+        use std::io::Read;
+        let path = root.join("wrote");
+        let made = Command::new("/usr/bin/mkfifo")
+            .arg(&path)
+            .status()
+            .map_err(io("make the wrote fifo"))?;
+        if !made.success() {
+            return Err(WorldError::Io {
+                what: "make the wrote fifo".to_owned(),
+                source: std::io::Error::other(format!("mkfifo exited with {made}")),
+            });
+        }
+        let fifo = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(io("open the wrote fifo"))?;
+        let mut reader = fifo.try_clone().map_err(io("open the wrote fifo"))?;
+        let news = Arc::new(tokio::sync::Notify::new());
+        let thread = std::thread::current();
+        let told = news.clone();
+        std::thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            while let Ok(1) = reader.read(&mut byte) {
+                if byte[0] == b'q' {
+                    return;
+                }
+                told.notify_one();
+                thread.unpark();
+            }
+        });
+        Ok(Self { fifo, news })
+    }
+}
+
+impl Drop for Wrote {
+    fn drop(&mut self) {
+        use std::io::Write;
+        let _ = self.fifo.write_all(b"q");
+    }
+}
+
 struct World {
     dir: tempfile::TempDir,
     daemon: Option<Child>,
+    /// The fifo the agent writes to after each write of its files.
+    wrote: Wrote,
 }
 
 impl World {
@@ -233,7 +313,12 @@ impl World {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
             .map_err(io("restrict the temp folder"))?;
         let root = dir.path().to_path_buf();
-        let world = Self { dir, daemon: None };
+        let wrote = Wrote::open(&root)?;
+        let world = Self {
+            dir,
+            daemon: None,
+            wrote,
+        };
         let agent = world.agent();
         std::fs::create_dir_all(&agent.conv).map_err(io("make conversations folder"))?;
         std::fs::create_dir_all(&agent.out).map_err(io("make the agent's output folder"))?;
@@ -241,7 +326,7 @@ impl World {
         let script = root.join("agent.sh");
         std::fs::write(
             &script,
-            agent_script(&agent.conv, &agent.out, &world.socket(), &binary("HUMATA")?),
+            agent_script(&agent.conv, &agent.out, &root.join("wrote"), &world.socket(), &binary("HUMATA")?),
         )
         .map_err(io("write the agent"))?;
         let spec = serde_json::json!([{
@@ -260,6 +345,12 @@ impl World {
 
     fn socket(&self) -> PathBuf {
         self.dir.path().join("d.sock")
+    }
+
+    /// Wakes once the agent has written one of its files since the last
+    /// wake: what a wait on [`AgentFiles`] awaits.
+    async fn wrote(&self) {
+        self.wrote.news.notified().await;
     }
 
     fn agent(&self) -> AgentFiles {
@@ -346,13 +437,25 @@ impl World {
 
     /// Ends every permission hook this test's agent runs, as when the person
     /// answers in the agent's own prompt and the agent stops the hook.
+    ///
+    /// Only this test's hooks: every test's hook runs the same `humata hook
+    /// claude permission` (the socket that tells them apart is in its
+    /// environment), so it ends the children of the shells running this
+    /// test's own `out/hook.sh`, and leaves other tests' hooks waiting.
     fn stop_permission_hooks(&self) -> Result<(), WorldError> {
-        let humata = binary("HUMATA")?;
-        Command::new("pkill")
+        let script = self.agent().out.join("hook.sh");
+        let shells = Command::new("pgrep")
             .arg("-f")
-            .arg(format!("{} hook claude permission", humata.display()))
-            .status()
-            .map_err(io("run pkill"))?;
+            .arg(script.display().to_string())
+            .output()
+            .map_err(io("run pgrep"))?;
+        for shell in String::from_utf8_lossy(&shells.stdout).split_whitespace() {
+            Command::new("pkill")
+                .arg("-P")
+                .arg(shell)
+                .status()
+                .map_err(io("run pkill"))?;
+        }
         Ok(())
     }
 
@@ -370,12 +473,17 @@ impl World {
             comments: Arc::new(LiveComments::new(&daemon)),
             history: Arc::new(humata2_clients_live::history::LiveHistory::new(&daemon)),
             marks: Arc::new(humata2_clients_live::marks::LiveMarks::new(&daemon)),
+            views: Arc::new(humata2_clients_live::LiveViews::new(&daemon)),
+            pull_requests: Arc::new(humata2_clients_live::LivePullRequests::new(&daemon)),
+            review_chat: Arc::new(humata2_clients_live::LiveReviewChat::new(&daemon)),
             terminals: Arc::new(daemon),
             clock: Arc::new(SystemClock::new()),
             clipboard: Arc::new(humata2_clients::FakeClipboard::default()),
+            reveal: Arc::new(humata2_clients::FakeReveal::default()),
             files: Arc::new(humata2_clients::FakeFileSystem::default()),
             file_manager: Arc::new(humata2_clients::FakeFileManager::default()),
             keychain: Arc::new(humata2_clients::FakeKeychain::default()),
+            local_daemon: Arc::new(humata2_clients::FakeLocalDaemon::default()),
             machines: Arc::new(humata2_clients::machines::FakeMachines::new()),
             storage: Arc::new(MemoryStorage::new()),
         })
@@ -436,19 +544,7 @@ struct Heard {
 
 impl Heard {
     fn hear(&mut self, event: &Event) {
-        let summary = match event {
-            Event::TerminalData {
-                session,
-                tab,
-                bytes,
-                ..
-            } => format!(
-                "TerminalData {} tab {tab}: {} bytes",
-                session.as_str(),
-                bytes.len()
-            ),
-            other => format!("{other:?}").chars().take(300).collect(),
-        };
+        let summary: String = format!("{event:?}").chars().take(300).collect();
         self.recent.push_back(summary);
         if self.recent.len() > RECENT {
             self.recent.pop_front();
@@ -505,6 +601,9 @@ struct App<'r> {
     daemon: Arc<dyn Daemon>,
     heard: Arc<Mutex<Heard>>,
     agent: AgentFiles,
+    /// The thread that opened the app: the one gpui wakes when work comes
+    /// in from another thread, and the one the waits park (D442).
+    thread: std::thread::ThreadId,
 }
 
 impl<'r> App<'r> {
@@ -514,6 +613,9 @@ impl<'r> App<'r> {
         {
             let daemon = daemon.clone();
             let heard = heard.clone();
+            // Every event from the host wakes a wait: what it looks at may
+            // be the host's, not the app's (D442).
+            let waiter = std::thread::current();
             runtime.spawn(async move {
                 let Ok(mut events) = daemon.events().await else {
                     return;
@@ -522,6 +624,7 @@ impl<'r> App<'r> {
                     if let Ok(mut heard) = heard.lock() {
                         heard.hear(&event);
                     }
+                    waiter.unpark();
                 }
             });
         }
@@ -549,6 +652,7 @@ impl<'r> App<'r> {
             daemon,
             heard,
             agent,
+            thread: std::thread::current().id(),
         };
         app.settle();
         app
@@ -584,6 +688,18 @@ impl<'r> App<'r> {
         self.settle();
     }
 
+    /// Types into the focused field.
+    fn type_text(&mut self, text: &str) {
+        let action = Action::Type(text.to_owned());
+        let done = GpuiDriver::with_frames(&mut self.cx, self.window, FrameMode::Natural)
+            .perform(&action);
+        if let Err(error) = done {
+            let why = self.diagnose();
+            panic!("{action} failed: {error}\n{why}");
+        }
+        self.settle();
+    }
+
     /// What the window shows, as text.
     fn view(&mut self) -> String {
         GpuiDriver::with_frames(&mut self.cx, self.window, FrameMode::Natural)
@@ -603,19 +719,28 @@ impl<'r> App<'r> {
             .read(|state| state.workspace.waiting().cloned().collect())
     }
 
-    /// Settles until `done` holds or the deadline passes.
+    /// Settles until `done` holds or the deadline passes. Between looks the
+    /// thread parks until something wakes it (D442): gpui, when another
+    /// thread hands the app work; an event from the host; a write of the
+    /// agent's. What `done` looks at must come with one of them.
     fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
+        assert_eq!(
+            std::thread::current().id(),
+            self.thread,
+            "waits run on the thread that opened the app, which is the one woken"
+        );
         let until = Instant::now() + DEADLINE;
         loop {
             self.settle();
             if done(self) {
                 return;
             }
-            if Instant::now() >= until {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
                 let why = self.diagnose();
                 panic!("timed out waiting for {what}\n{why}");
             }
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::park_timeout(left);
         }
     }
 
@@ -704,14 +829,14 @@ async fn running_session(world: &World, clients: &Clients) -> (ChannelId, Sessio
         .await
         .expect("create the session");
     let agent = world.agent();
-    let until = Instant::now() + DEADLINE;
+    let until = tokio::time::Instant::now() + DEADLINE;
     while !agent.typed().iter().any(|line| line == FIRST_MESSAGE) {
+        let woke = tokio::time::timeout_at(until, world.wrote()).await;
         assert!(
-            Instant::now() < until,
+            woke.is_ok(),
             "the agent never got its first message\n{}",
             agent.describe()
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
     }
     (channel, session)
 }
@@ -1034,6 +1159,284 @@ fn an_agents_permission_ask_waits_in_the_inbox_and_allow_reaches_its_hook() {
     app.wait_until("the ask to leave the global Inbox", |app| {
         app.inside(Role::ListBoxOption, &request.title).is_none()
     });
+
+    drop(app);
+    drop(world);
+}
+
+/// Macro case 03 step 12 and its branch "I deny with a note": the agent's
+/// permission ask waits in the global Inbox; the person presses Reply…,
+/// types a note into the reply field and presses Send reply. The waiting
+/// hook returns a deny that carries the note, and the card leaves.
+///
+/// Branch "An ask arrives while I am typing": halfway through the note the
+/// agent asks ahead for the database. The Inbox counts it and the rest of
+/// the note still lands in the same field.
+#[test]
+fn a_reply_typed_on_a_permission_card_denies_it_and_the_hook_gets_the_note() {
+    const FIRST: &str = "wrong cluster,";
+    const REST: &str = " use prod-2";
+    let note = format!("{FIRST}{REST}");
+    let runtime = runtime();
+    let (world, clients, channel, session) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let (channel, session) = running_session(&world, &clients).await;
+        (world, clients, channel, session)
+    });
+    world.permission_hook().expect("set up the agent's permission hook");
+    let daemon = clients.daemon.clone();
+    let agent = world.agent();
+    let mut app = App::open(&runtime, clients, agent.clone());
+    app.wait_until("the session to be listed", |app| {
+        app.ui
+            .read(|state| state.workspace.session(&session).is_some())
+    });
+
+    runtime
+        .block_on(daemon.send(&session, PERMISSION_LINE))
+        .expect("type the line that makes the agent ask");
+    app.wait_until("the Inbox to count the agent's ask", |app| {
+        app.waiting().len() == 1
+    });
+    let request = app.waiting().remove(0);
+    app.click(Role::Link, "Inbox");
+    app.wait_until("the global Inbox to list the ask", |app| {
+        app.inside(Role::ListBoxOption, &request.title).is_some()
+    });
+    app.click(Role::ListBoxOption, &request.title);
+    app.wait_until("the ask's card", |app| {
+        app.inside(Role::Group, &request.title).is_some()
+    });
+
+    app.click(Role::Button, "Reply\u{2026}");
+    app.wait_until("the reply field", |app| {
+        app.view().contains(&format!("{:?} {:?}", Role::TextInput, "Reply"))
+    });
+    let draft_is = |app: &mut App<'_>, want: &str| {
+        app.ui.read(|state| {
+            state
+                .inbox
+                .reply
+                .as_ref()
+                .is_some_and(|(id, text)| id == &request.id && text == want)
+        })
+    };
+    app.click(Role::TextInput, "Reply");
+    app.type_text(FIRST);
+    app.wait_until("the first words to reach the draft", |app| draft_is(app, FIRST));
+
+    // Another ask comes in while the note is half typed.
+    runtime
+        .block_on(daemon.set_rule(&channel, &Capability::new(AHEAD_RULE), RuleSetting::Ask))
+        .expect("set the channel's rule for reaching the network to Ask");
+    runtime
+        .block_on(daemon.send(&session, AHEAD_LINE))
+        .expect("type the line that makes the agent ask ahead");
+    app.wait_until("the Inbox to count the second ask", |app| {
+        app.waiting().len() == 2
+    });
+    app.type_text(REST);
+    app.wait_until("the rest of the note to land in the same field", |app| {
+        draft_is(app, &note)
+    });
+    assert_eq!(agent.hook_code(), None, "typing answers nothing");
+
+    app.click(Role::Button, "Send reply");
+    app.wait_until("the waiting hook to return", |app| {
+        app.agent.hook_code().is_some()
+    });
+    assert_eq!(agent.hook_code(), Some(0), "the hook never fails the agent");
+    let printed = agent.read("hook.stdout").unwrap_or_default();
+    let printed: serde_json::Value = serde_json::from_str(&printed)
+        .unwrap_or_else(|error| panic!("the hook prints JSON ({error}): {printed:?}"));
+    let decision = &printed["hookSpecificOutput"]["decision"];
+    assert_eq!(decision["behavior"], "deny", "the agent reads a deny: {printed}");
+    assert!(
+        decision["message"].as_str().is_some_and(|message| message.contains(&note)),
+        "the deny carries the note: {printed}"
+    );
+    app.wait_until("the denied ask to leave the Inbox", |app| {
+        app.waiting().iter().all(|waiting| waiting.id != request.id)
+    });
+    assert_eq!(app.waiting().len(), 1, "the ask ahead still waits");
+
+    drop(app);
+    drop(world);
+}
+
+/// Flow 03 step 7 (Always allow half), macro case 03 step 11: the agent asks
+/// ahead to reach the database; the person ticks "Allow this for the rest of
+/// the session" on the card and allows. The agent's waiting call ends
+/// approved, the channel's rule lists a grant for the session, and the same
+/// ask again is allowed with no new card.
+///
+/// The agent's permission hook cannot do this: the daemon takes only allow
+/// or deny for a tool asked to run once (permission.rs `decide`), so the ask
+/// that offers Always allow is the ask-ahead.
+#[test]
+fn allowing_with_always_ticked_makes_a_grant_and_the_next_ask_for_that_target_does_not_wait() {
+    let runtime = runtime();
+    let (world, clients, channel, session) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let (channel, session) = running_session(&world, &clients).await;
+        (world, clients, channel, session)
+    });
+    let daemon = clients.daemon.clone();
+    let agent = world.agent();
+    let mut app = App::open(&runtime, clients, agent.clone());
+    app.wait_until("the session to be listed", |app| {
+        app.ui
+            .read(|state| state.workspace.session(&session).is_some())
+    });
+    let capability = Capability::new(AHEAD_RULE);
+    let grants = |state: &humata2_app::AppState| {
+        state
+            .workspace
+            .rules
+            .get(&channel)
+            .and_then(|rules| rules.iter().find(|rule| rule.capability == capability))
+            .map(|rule| rule.grants.clone())
+            .unwrap_or_default()
+    };
+
+    // The rule asks, then the agent asks ahead and waits.
+    runtime
+        .block_on(daemon.set_rule(&channel, &capability, RuleSetting::Ask))
+        .expect("set the channel's rule for reaching the network to Ask");
+    runtime
+        .block_on(daemon.send(&session, AHEAD_LINE))
+        .expect("type the line that makes the agent ask ahead");
+    app.wait_until("the Inbox to count the agent's ask", |app| {
+        app.waiting().len() == 1
+    });
+    assert_eq!(agent.ahead_code("first"), None, "the ask waits for the answer");
+    let request = app.waiting().remove(0);
+    assert_eq!(request.session, session, "the requester is the agent's session");
+    assert!(!request.rule.is_empty(), "the card offers Always allow");
+
+    // Open the card, tick Always allow, click Allow.
+    app.click(Role::Link, "Inbox");
+    app.wait_until("the global Inbox to list the ask", |app| {
+        app.inside(Role::ListBoxOption, &request.title).is_some()
+    });
+    app.click(Role::ListBoxOption, &request.title);
+    app.wait_until("the ask's card", |app| {
+        app.inside(Role::Group, &request.title).is_some()
+    });
+    app.click(Role::CheckBox, "Allow this for the rest of the session");
+    assert!(
+        app.ui.read(|state| state.inbox.always.contains(&request.id)),
+        "the box is ticked"
+    );
+    app.click(Role::Button, "Allow");
+
+    // The waiting call ends approved, and the grant is listed in the app and
+    // on the host.
+    app.wait_until("the agent's waiting ask to return", |app| {
+        app.agent.ahead_code("first").is_some()
+    });
+    assert_eq!(
+        agent.ahead_code("first"),
+        Some(0),
+        "the allowed ask ends approved
+{}",
+        agent.describe()
+    );
+    app.wait_until("the app to list the grant", |app| {
+        app.ui.read(|state| grants(state).len() == 1)
+    });
+    let listed = app.ui.read(|state| grants(state));
+    assert_eq!(listed[0].session, session, "the grant is for the asking session");
+    let held = runtime.block_on(daemon.load()).expect("load from the daemon");
+    let on_host = held
+        .rules
+        .get(&channel)
+        .and_then(|rules| rules.iter().find(|rule| rule.capability == capability))
+        .map(|rule| rule.grants.len());
+    assert_eq!(on_host, Some(1), "the host holds the grant");
+    app.wait_until("the answered ask to leave the Inbox count", |app| {
+        app.waiting().is_empty()
+    });
+
+    // The same ask again is covered by the grant: it ends approved without a
+    // new card.
+    runtime
+        .block_on(daemon.send(&session, AHEAD_AGAIN_LINE))
+        .expect("type the line that makes the agent ask again");
+    app.wait_until("the second ask to return", |app| {
+        app.agent.ahead_code("again").is_some()
+    });
+    assert_eq!(
+        agent.ahead_code("again"),
+        Some(0),
+        "the covered ask ends approved
+{}",
+        agent.describe()
+    );
+    assert!(app.waiting().is_empty(), "the covered ask made no new card");
+    assert_eq!(
+        app.ui.read(|state| grants(state).len()),
+        1,
+        "the covered ask made no second grant"
+    );
+
+    drop(app);
+    drop(world);
+}
+
+/// Macro case 03 step 9: while the agent's ask waits, Home lists its session
+/// under Needs you with that request.
+#[test]
+fn a_session_waiting_on_its_own_ask_is_under_needs_you_on_home() {
+    let runtime = runtime();
+    let (world, clients, channel, session) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let (channel, session) = running_session(&world, &clients).await;
+        (world, clients, channel, session)
+    });
+    let daemon = clients.daemon.clone();
+    let agent = world.agent();
+    let mut app = App::open(&runtime, clients, agent.clone());
+    app.wait_until("the session to be listed", |app| {
+        app.ui
+            .read(|state| state.workspace.session(&session).is_some())
+    });
+    runtime
+        .block_on(daemon.set_rule(&channel, &Capability::new(AHEAD_RULE), RuleSetting::Ask))
+        .expect("set the channel's rule for reaching the network to Ask");
+    runtime
+        .block_on(daemon.send(&session, AHEAD_LINE))
+        .expect("type the line that makes the agent ask ahead");
+    app.wait_until("the Inbox to count the agent's ask", |app| {
+        app.waiting().len() == 1
+    });
+    let request = app.waiting().remove(0);
+
+    app.click(Role::Link, "Home");
+    app.wait_until("Home to show", |app| {
+        app.ui.read(|state| state.route == Route::Home)
+    });
+    // The session is in Needs you with the request it waits on.
+    app.wait_until("Home to list the session under Needs you", |app| {
+        app.ui.read(|state| {
+            humata2_app::needs_you(&state.workspace).rows.iter().any(|row| {
+                matches!(
+                    row,
+                    humata2_app::NeedsRow::Session { session: listed, request: Some(asked) }
+                        if listed.id == session && asked.id == request.id
+                )
+            })
+        })
+    });
+    let view = app.view();
+    assert!(
+        inside(&view, Role::Link, SESSION).is_some(),
+        "Home shows the session's row:
+{view}"
+    );
 
     drop(app);
     drop(world);

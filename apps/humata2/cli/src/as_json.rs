@@ -31,6 +31,15 @@ pub fn descriptor(full_name: &str) -> Option<MessageDescriptor> {
     pool()?.get_message_by_name(full_name)
 }
 
+/// The full name of the message a call takes, from its method path
+/// (`/humata.v1.Service/Method`), as the protocol declares it.
+pub fn request_name(path: &str) -> Option<String> {
+    let (service, method) = path.strip_prefix('/')?.split_once('/')?;
+    let service = pool()?.get_service_by_name(service)?;
+    let method = service.methods().find(|candidate| candidate.name() == method)?;
+    Some(method.input().full_name().to_owned())
+}
+
 /// An encoded `full_name` message as JSON. Bytes that don't decode print
 /// as `{"undecoded": "<base64>"}` rather than failing the command.
 pub fn encoded(full_name: &str, bytes: &[u8]) -> Json {

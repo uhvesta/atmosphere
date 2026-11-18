@@ -51,6 +51,10 @@ impl Sidebar {
 enum Line {
     Row(usize, Row),
     NoSessions,
+    /// The Desk row under an open channel (CD-2), with its sessions' count.
+    ChannelDesk(humata2_clients::model::ChannelId, usize),
+    /// One of that channel's open Desk sessions.
+    ChannelDeskSession(Row),
 }
 
 fn label(row: &Row) -> String {
@@ -65,6 +69,9 @@ fn row_id(row: &Row, index: usize) -> ElementId {
     match &row.key {
         Some(RowKey::Channel(id)) => ElementId::Name(format!("sidebar-channel-{}", id.0).into()),
         Some(RowKey::Session(id)) => ElementId::Name(format!("sidebar-session-{}", id.0).into()),
+        Some(RowKey::ChannelDesk(id)) => {
+            ElementId::Name(format!("sidebar-channel-desk-{}", id.0).into())
+        }
         None => ElementId::Name(format!("sidebar-section-{index}").into()),
     }
 }
@@ -90,6 +97,7 @@ fn draw_row(
     let selected = if current { 0xffffff } else { look.text };
     let faint = if current { 0xffffff } else { look.tertiary };
     let mut body = row().gap(px(7.)).flex_1().min_w_0();
+    let mut dimmed = false;
     let indent;
     match &entry.kind {
         RowKind::Channel { name, sessions, .. } => {
@@ -102,6 +110,16 @@ fn draw_row(
                     _ => false,
                 })
             });
+            // An unread channel is bold, its folded count too, as in the design.
+            let weight = if ui.read(|s| {
+                s.workspace.sessions.iter().any(|x| {
+                    Some(RowKey::Channel(x.channel.clone())) == entry.key && x.unread > 0
+                })
+            }) {
+                FontWeight::BOLD
+            } else {
+                FontWeight::MEDIUM
+            };
             let fold_ui = ui.clone();
             let key = key.clone();
             body = body
@@ -133,18 +151,7 @@ fn draw_row(
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
-                        .font_weight(
-                            if ui.read(|s| {
-                                s.workspace.sessions.iter().any(|x| {
-                                    Some(RowKey::Channel(x.channel.clone())) == entry.key
-                                        && x.unread > 0
-                                })
-                            }) {
-                                FontWeight::BOLD
-                            } else {
-                                FontWeight::MEDIUM
-                            },
-                        )
+                        .font_weight(weight)
                         .child(name.clone()),
                 );
             if entry.expanded != Some(true) && *sessions > 0 {
@@ -171,6 +178,7 @@ fn draw_row(
                         // The design puts 5 pt, not the row's 7, between the dot and the count.
                         .ml(px(-2.))
                         .text_size(px(11.))
+                        .font_weight(weight)
                         .text_color(rgb(if current { 0xffffff } else { look.secondary }))
                         .child(sessions.to_string()),
                 );
@@ -200,11 +208,27 @@ fn draw_row(
                         .child(chrome::icon(IconName::GitFork, faint, 12.)),
                 );
             }
+            // A session whose machine's sessions were stopped shows the square,
+            // dimmed, with no inbox count: its requests ended (frame 73).
+            let halted = *status == Status::Stopped
+                || ui.read(|s| match &key {
+                    RowKey::Session(id) => stopped_on_machine(s, id),
+                    _ => false,
+                });
             let count = ui.read(|s| match &key {
-                RowKey::Session(id) => inbox_count(s, id, *vip),
+                RowKey::Session(id) if !halted => inbox_count(s, id, *vip),
                 _ => 0,
             });
-            body = body.child(chrome::status(*status)).child(
+            if halted {
+                dimmed = true;
+            }
+            body = body
+                .child(if halted {
+                    chrome::stopped()
+                } else {
+                    chrome::status(*status)
+                })
+                .child(
                 div()
                     .flex_1()
                     .min_w_0()
@@ -250,6 +274,7 @@ fn draw_row(
         .text_color(rgb(selected))
         .when(current, |x| x.bg(rgb(look.selection)))
         .when(cursor && !current, |x| x.bg(rgb(look.fill)))
+        .when(dimmed, |x| x.opacity(0.5))
         .child(body)
         .on_click(move |_, window, cx| {
             window.focus(&focus, cx);
@@ -427,6 +452,7 @@ impl Render for Sidebar {
             .iter()
             .position(|r| matches!(r.kind, RowKind::Section("Channels")))
             .unwrap_or(0);
+        let channel_desks = self.ui.read(|state| state.sidebar.channel_desks.clone());
         let mut lines = Vec::new();
         for (index, row) in rows.iter().skip(channel_start + 1).enumerate() {
             let bare = matches!(row.kind, RowKind::Channel { sessions: 0, .. })
@@ -435,6 +461,16 @@ impl Render for Sidebar {
             if bare {
                 lines.push(Line::NoSessions);
             }
+            // CD-2: a Desk row above the channel's sessions while it has open
+            // channel Desk sessions, with them under it.
+            if let Some(RowKey::Channel(id)) = &row.key
+                && !folded.contains(id)
+                && let Some(desk) = channel_desks.get(id)
+                && !desk.is_empty()
+            {
+                lines.push(Line::ChannelDesk(id.clone(), desk.len()));
+                lines.extend(desk.iter().cloned().map(Line::ChannelDeskSession));
+            }
         }
         if collapsed {
             return div().id("sidebar").into_any_element();
@@ -442,7 +478,13 @@ impl Render for Sidebar {
         if cursor != self.shown_cursor {
             if let Some(index) = cursor.as_ref().and_then(|key| {
                 lines.iter().position(
-                    |line| matches!(line, Line::Row(_, row) if row.key.as_ref() == Some(key)),
+                    |line| {
+                        matches!(
+                            line,
+                            Line::Row(_, row) | Line::ChannelDeskSession(row)
+                                if row.key.as_ref() == Some(key)
+                        )
+                    },
                 )
             }) {
                 self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
@@ -467,6 +509,14 @@ impl Render for Sidebar {
                                 )
                             }
                             Line::NoSessions => no_sessions(look, width),
+                            Line::ChannelDesk(id, count) => {
+                                let at_cursor =
+                                    cursor.as_ref() == Some(&RowKey::ChannelDesk(id.clone()));
+                                crate::sidebar_desk::channel_row(&ui, id, *count, at_cursor, look)
+                            }
+                            Line::ChannelDeskSession(entry) => ui
+                                .read(|state| crate::sidebar_desk::session(&ui, state, entry, look))
+                                .unwrap_or_else(|| div().into_any_element()),
                         })
                     })
                     .collect()
@@ -515,7 +565,9 @@ impl Render for Sidebar {
         });
         let shown = current.as_ref().map(|key| match key {
             RowKey::Session(id) => humata2_clients::marks::Thing::Session(id.clone()),
-            RowKey::Channel(id) => humata2_clients::marks::Thing::Channel(id.clone()),
+            RowKey::Channel(id) | RowKey::ChannelDesk(id) => {
+                humata2_clients::marks::Thing::Channel(id.clone())
+            }
         });
         let pinned = ui.read(|s| {
             crate::sidebar_pinned::section(&s.pinned, &s.workspace, shown.as_ref(), look, &send_pinned)
@@ -663,6 +715,10 @@ impl Render for Sidebar {
             .child(chrome::section(look, "Hosts"))
             .children(machines.into_iter().enumerate().map(|(index, m)| {
                 let ui = ui.clone();
+                // Its stop reached it: a stop still on its way keeps the offline dot.
+                let halted = m.stop.as_ref().is_some_and(|stop| stop.delivered);
+                let selected = (route == Route::Hosts && selected_host.as_ref() == Some(&m.id))
+                    || route == Route::Machine(m.id.clone());
                 row()
                     .id(("sidebar-machine", index))
                     .role(Role::Link)
@@ -671,35 +727,37 @@ impl Render for Sidebar {
                     .mx(px(10.))
                     .px(px(8.))
                     .gap(px(7.))
-                    .child(chrome::status(if m.online {
-                        Status::Working
+                    .child(if halted {
+                        chrome::stopped()
                     } else {
-                        Status::Offline
-                    }))
+                        chrome::status(if m.online {
+                            Status::Working
+                        } else {
+                            Status::Offline
+                        })
+                    })
                     .child(div().flex_1().child(m.name))
-                    .when(!m.online, |x| {
+                    .when(!m.online && !halted, |x| {
                         x.child(
                             div()
                                 .text_size(px(11.5))
-                                .text_color(rgb(look.secondary))
+                                .text_color(rgb(if selected { 0xffffff } else { look.secondary }))
                                 .child("offline"),
                         )
                     })
-                    .when(
-                        (route == Route::Hosts && selected_host.as_ref() == Some(&m.id))
-                            || route == Route::Machine(m.id.clone()),
-                        |x| {
-                            x.rounded(px(6.))
-                                .bg(rgb(look.selection))
-                                .text_color(rgb(0xffffff))
-                        },
-                    )
+                    .when(selected, |x| {
+                        x.rounded(px(6.))
+                            .bg(rgb(look.selection))
+                            .text_color(rgb(0xffffff))
+                    })
                     .on_click(move |_, _, cx| {
                         ui.send(AppAction::Switch(Route::Machine(m.id.clone())), cx);
                     })
                     .test_support()
             }))
-            .when(only_this_mac, |bar| {
+            // The Hosts page's header offers the same action, so the
+            // sidebar leaves it out there: one "Add a machine…" per window.
+            .when(only_this_mac && route != Route::Hosts, |bar| {
                 bar.child(start(
                     ui,
                     "sidebar-add-machine",
@@ -721,6 +779,17 @@ impl Render for Sidebar {
             )))
             .into_any_element()
     }
+}
+
+/// Whether the machine `id` runs on has its sessions stopped and the stop
+/// delivered.
+fn stopped_on_machine(s: &AppState, id: &humata2_clients::model::SessionId) -> bool {
+    s.workspace
+        .sessions
+        .iter()
+        .find(|session| &session.id == id)
+        .and_then(|session| s.workspace.machine(&session.machine))
+        .is_some_and(|machine| machine.stop.as_ref().is_some_and(|stop| stop.delivered))
 }
 
 /// Only a VIP session shows its inbox count; it covers the pending requests

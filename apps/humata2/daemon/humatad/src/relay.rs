@@ -53,10 +53,13 @@ const HOST_ASSIGNED_ID_HEADER: &str = "humata-host-assigned-id";
 
 /// Headers the relay removes from the host's request: every one the socket
 /// daemon's authentication reads, and its own.
-const STRIPPED: [&str; 3] = [
+const STRIPPED: [&str; 4] = [
     identity::TOKEN_HEADER,
     identity::LOGIN_HEADER,
     identity::SCRIPT_HEADER,
+    // UP-1: the host's caller's release is the host's business; the
+    // machine's daemon would take it for a CLI's.
+    crate::upgrade::build::BUNDLE_HEADER,
 ];
 
 /// The services the host may call whole.
@@ -71,7 +74,7 @@ const WHOLE_SERVICES: [&str; 5] = [
 ];
 
 /// The services the host may call only by these methods.
-const LISTED_METHODS: [(&str, &[&str]); 6] = [
+const LISTED_METHODS: [(&str, &[&str]); 8] = [
     (
         pb::session_service_server::SERVICE_NAME,
         &[
@@ -88,11 +91,23 @@ const LISTED_METHODS: [(&str, &[&str]); 6] = [
             // D187, D208: a context-only fork of a machine's session runs
             // there, in its parent's clones.
             "ForkSession",
+            // D773: giving such a fork its own copy runs there too, where the
+            // parent's clones are.
+            "GiveOwnCopy",
+            // CV-8: continuing a machine's session in another channel runs
+            // there, where its conversation is.
+            "ContinueInChannel",
+            // F3: pushing a machine's session runs on that machine, with its
+            // own git and gh, in its own clones.
+            "PlanPush",
+            "PushAndOpenPullRequests",
         ],
     ),
     (
         pb::channel_service_server::SERVICE_NAME,
-        &["CreateChannel", "GetChannel"],
+        // D314: a channel's rename moves its folder on every machine it
+        // lists; each machine derives the folder from the name.
+        &["CreateChannel", "GetChannel", "RenameChannel"],
     ),
     (
         pb::operation_service_server::SERVICE_NAME,
@@ -107,15 +122,77 @@ const LISTED_METHODS: [(&str, &[&str]); 6] = [
     // The carry service itself refuses every caller but the host.
     (
         pb::session_carry_service_server::SERVICE_NAME,
-        &["Pack", "Unpack", "Release", "Abort", "PreviewFork"],
+        &[
+            "Pack",
+            "Unpack",
+            "Release",
+            "Abort",
+            "PreviewFork",
+            "Target",
+            // PR-4, PR-21: the host reads a review's clones on the machine.
+            "RunReviewGit",
+        ],
     ),
+    // MV-17: a Desk session, plain or a channel's own, starts on a machine
+    // through the host, and the host reads where a moved one landed.
+    (
+        pb::desk_service_server::SERVICE_NAME,
+        &[
+            "StartDeskSession",
+            "ListDeskSessions",
+            // A Desk session that works on a machine is closed and cleaned
+            // up there: its folder is that machine's (MV-17).
+            "CloseDeskSession",
+            "PlanDeskCleanUp",
+            "CleanUpDesk",
+            // DV-2 to DV-8: a Desk folder's versions are kept on the machine
+            // its session works on.
+            "ListDocVersions",
+            "ReadDocVersion",
+            "SaveDocVersion",
+            "RestoreDocVersion",
+            "DiffDocVersion",
+            // D458: each machine's own Desk folders get their repositories
+            // through the host's Migrate item for that machine.
+            "CheckDeskFolders",
+            "MigrateDeskFolders",
+            // DK-15, MV-17: a Desk session that works on a machine moves into
+            // a channel there; the host plans and starts the move.
+            "PlanDeskMove",
+            "MoveDeskSessionToChannel",
+        ],
+    ),
+    // CH-16, D394: viewing a remote session on the host holds the machine's
+    // view of it open, so its read mark clears there too.
+    (pb::mark_service_server::SERVICE_NAME, &["ViewSession"]),
 ];
+
+/// LD-13 to LD-15: the host's Storage page of a machine reads and cleans that
+/// machine's own storage there. Kept apart from `LISTED_METHODS` so the
+/// allowlist's length line stays untouched.
+const MACHINE_METHODS: (&str, &[&str]) = (
+    pb::machine_service_server::SERVICE_NAME,
+    &[
+        "GetStorage",
+        "ClearBuildCache",
+        "TrimLogs",
+        // HO-7, HO-13: a machine's host variables are kept on that machine; the
+        // host sends it a value once and reads back only names.
+        "ListHostVariables",
+        "SetHostVariable",
+        "RemoveHostVariable",
+        // FC-10: the host plans and makes a change of a box's Humata folder
+        // on the box's own daemon, which serves both to the host alone.
+        "PlanChangeRoot",
+        "ChangeRoot",
+    ],
+);
 
 /// Every service the link answers for the host on the relay's behalf: the
 /// eleven with an allowlisted method come first, then the client services
 /// that are never relayed, so a call to one is refused by name rather than
 /// with a bare UNIMPLEMENTED. `Routed<N>` is `ROUTED[N]`.
-const ROUTED: [&str; 30] = [
+const ROUTED: [&str; 31] = [
     pb::terminal_service_server::SERVICE_NAME,
     pb::file_service_server::SERVICE_NAME,
     pb::trash_service_server::SERVICE_NAME,
@@ -127,13 +204,15 @@ const ROUTED: [&str; 30] = [
     pb::event_service_server::SERVICE_NAME,
     pb::history_service_server::SERVICE_NAME,
     pb::session_carry_service_server::SERVICE_NAME,
+    pb::desk_service_server::SERVICE_NAME,
+    pb::mark_service_server::SERVICE_NAME,
+    pb::machine_service_server::SERVICE_NAME,
     pb::access_service_server::SERVICE_NAME,
     pb::cli_auth_service_server::SERVICE_NAME,
     pb::audit_service_server::SERVICE_NAME,
     pb::board_service_server::SERVICE_NAME,
     pb::activity_service_server::SERVICE_NAME,
     pb::transfer_service_server::SERVICE_NAME,
-    pb::machine_service_server::SERVICE_NAME,
     pb::provider_service_server::SERVICE_NAME,
     pb::skills_service_server::SERVICE_NAME,
     pb::bridge_service_server::SERVICE_NAME,
@@ -144,7 +223,6 @@ const ROUTED: [&str; 30] = [
     pb::review_chat_service_server::SERVICE_NAME,
     pb::settings_service_server::SERVICE_NAME,
     pb::agent_service_server::SERVICE_NAME,
-    pb::mark_service_server::SERVICE_NAME,
     pb::view_state_service_server::SERVICE_NAME,
 ];
 
@@ -159,12 +237,21 @@ pub(crate) fn allows(path: &str) -> bool {
     WHOLE_SERVICES.contains(&service)
         || LISTED_METHODS
             .iter()
+            .chain([&MACHINE_METHODS])
             .any(|(listed, methods)| *listed == service && methods.contains(&method))
 }
 
 /// Calls the link process makes itself on its proven socket connection,
 /// which the host can't relay (AWAY): the daemon takes them as the host's.
-const LINK_OWN: [&str; 1] = ["/humata.v1.DaemonService/PeerUplink"];
+const LINK_OWN: [&str; 4] = [
+    "/humata.v1.DaemonService/PeerUplink",
+    // The link hands the host's stop and start on to the machine's daemon
+    // (D262): the link serves DaemonService itself, so they can't be relayed.
+    "/humata.v1.DaemonService/StopSessions",
+    "/humata.v1.DaemonService/StartSessions",
+    // UP-1: likewise the host's upgrade of the machine's daemon (D281 f).
+    "/humata.v1.DaemonService/Upgrade",
+];
 
 /// Whether the proven socket connection may call `path`: what the host may
 /// relay, and the link's own calls.
@@ -218,6 +305,29 @@ pub(crate) enum RelayError {
 
 impl RelayError {
     fn status(&self) -> Status {
+        self.failure(None)
+    }
+
+    /// [`Self::status`] for a call relayed to `machine`'s daemon. When that
+    /// daemon can't be reached or the call breaks on the way, the error is
+    /// MachineOffline: the host then follows the call as one whose answer was
+    /// lost (D150), not as the machine's refusal.
+    fn status_on(&self, machine: &str) -> Status {
+        self.failure(Some(machine))
+    }
+
+    fn failure(&self, machine: Option<&str>) -> Status {
+        let kind = match (self, machine) {
+            (
+                RelayError::Daemon { .. } | RelayError::Connect { .. } | RelayError::Gone | RelayError::Carry { .. },
+                Some(machine),
+            ) => Some(pb::error::Kind::MachineOffline(pb::MachineOffline {
+                machine: None,
+                machine_name: machine.to_owned(),
+                since: None,
+            })),
+            _ => None,
+        };
         let fix = match self {
             RelayError::Off => "this link relays nothing (D146); start `humatad2 serve --stdio` with --socket, or with neither --state nor --socket as the Mac does",
             _ => "reconnect this machine from the Mac, which starts a new link; if this repeats, run `humatad2 serve --role machine` on the machine to see why its daemon doesn't answer, and check that the machine's enrollment key is the one the Mac holds",
@@ -236,7 +346,7 @@ impl RelayError {
                 message: status::chain(self),
                 fix: fix.to_owned(),
                 retry: None,
-                kind: None,
+                kind,
             },
         )
     }
@@ -284,6 +394,8 @@ struct Shared {
     start: Mutex<Option<Starter>>,
     channel: OnceCell<Channel>,
     phase: Mutex<Phase>,
+    /// The socket daemon's build, from BeginRelay (UP-1, D281).
+    build: Mutex<Option<pb::BuildInfo>>,
     /// Notified, once, when the socket connection is gone.
     lost: Arc<Notify>,
 }
@@ -314,6 +426,7 @@ impl Relay {
                 start: Mutex::new(Some(start)),
                 channel: OnceCell::new(),
                 phase: Mutex::new(Phase::Fresh),
+                build: Mutex::new(None),
                 lost: Arc::new(Notify::new()),
             }),
         }
@@ -376,7 +489,9 @@ impl Relay {
             .begin_relay(pb::BeginRelayRequest {})
             .await
             .map_err(|source| RelayError::Begin { source }.status())?;
-        let nonce = reply.into_inner().nonce;
+        let reply = reply.into_inner();
+        *lock(&self.shared.build) = reply.build;
+        let nonce = reply.nonce;
         <[u8; 32]>::try_from(nonce)
             .map_err(|nonce| RelayError::NonceLength { len: nonce.len() }.status())
     }
@@ -423,6 +538,12 @@ impl Relay {
             return None;
         }
         self.shared.channel.get().cloned()
+    }
+
+    /// The socket daemon's build, as BeginRelay gave it (UP-1, D281). None
+    /// until the connection has begun and a daemon answered with one.
+    pub(crate) fn build(&self) -> Option<pb::BuildInfo> {
+        lock(&self.shared.build).clone()
     }
 
     fn unproven(&self) -> Status {
@@ -474,15 +595,16 @@ impl Relay {
             Phase::Failed(failure) => return Err(failure.clone()),
             Phase::Fresh | Phase::Begun => return Err(self.unproven()),
         }
-        let mut channel = self.channel().await.map_err(|error| error.status())?;
+        let machine = &self.shared.machine;
+        let mut channel = self.channel().await.map_err(|error| error.status_on(machine))?;
         strip_credentials(request.headers_mut());
         let ready = channel.ready().await.map_err(|source| {
             self.shared.lost.notify_one();
-            RelayError::Carry { source }.status()
+            RelayError::Carry { source }.status_on(machine)
         })?;
         ready.call(request).await.map_err(|source| {
             self.shared.lost.notify_one();
-            RelayError::Carry { source }.status()
+            RelayError::Carry { source }.status_on(machine)
         })
     }
 }
@@ -585,7 +707,7 @@ pub(crate) fn register<L>(router: Router<L>, relay: &Relay) -> Router<L> {
         router,
         Routed,
         relay,
-        0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29
+        0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30
     )
 }
 
@@ -641,6 +763,10 @@ mod tests {
             "/humata.v1.SessionService/ArchiveSession",
             "/humata.v1.SessionService/RestoreSession",
             "/humata.v1.SessionService/ForkSession",
+            "/humata.v1.SessionService/GiveOwnCopy",
+            "/humata.v1.SessionService/ContinueInChannel",
+            "/humata.v1.SessionService/PlanPush",
+            "/humata.v1.SessionService/PushAndOpenPullRequests",
             "/humata.v1.ChannelService/CreateChannel",
             "/humata.v1.ChannelService/GetChannel",
             "/humata.v1.OperationService/GetOperation",
@@ -653,11 +779,36 @@ mod tests {
             "/humata.v1.SessionCarryService/Release",
             "/humata.v1.SessionCarryService/Abort",
             "/humata.v1.SessionCarryService/PreviewFork",
+            "/humata.v1.SessionCarryService/Target",
+            "/humata.v1.SessionCarryService/RunReviewGit",
+            "/humata.v1.DeskService/ListDocVersions",
+            "/humata.v1.DeskService/ReadDocVersion",
+            "/humata.v1.DeskService/SaveDocVersion",
+            "/humata.v1.DeskService/RestoreDocVersion",
+            "/humata.v1.DeskService/DiffDocVersion",
+            "/humata.v1.DeskService/CheckDeskFolders",
+            "/humata.v1.DeskService/MigrateDeskFolders",
+            "/humata.v1.DeskService/PlanDeskMove",
+            "/humata.v1.DeskService/MoveDeskSessionToChannel",
+            "/humata.v1.MarkService/ViewSession",
+            "/humata.v1.MachineService/GetStorage",
+            "/humata.v1.MachineService/ClearBuildCache",
+            "/humata.v1.MachineService/TrimLogs",
+            "/humata.v1.MachineService/ListHostVariables",
+            "/humata.v1.MachineService/SetHostVariable",
+            "/humata.v1.MachineService/RemoveHostVariable",
+            "/humata.v1.MachineService/PlanChangeRoot",
+            "/humata.v1.MachineService/ChangeRoot",
         ] {
             assert!(allows(allowed), "{allowed}");
         }
         for refused in [
             "/humata.v1.SessionService/DeleteSession",
+            "/humata.v1.MarkService/SetMarks",
+            "/humata.v1.MachineService/ListMachines",
+            "/humata.v1.MachineService/RemoveMachine",
+            "/humata.v1.MachineService/TrustNewHostKey",
+            "/humata.v1.MarkService/ListPinned",
             "/humata.v1.ChannelService/DeleteChannel",
             "/humata.v1.OperationService/RetryOperation",
             "/humata.v1.AccessService/ListRules",
@@ -690,11 +841,24 @@ mod tests {
     }
 
     #[test]
+    fn the_link_may_hand_on_the_hosts_stop_and_start_but_the_host_cant_relay_them() {
+        for path in ["/humata.v1.DaemonService/StopSessions", "/humata.v1.DaemonService/StartSessions"] {
+            assert!(proven_may_call(path), "{path}");
+            assert!(!allows(path), "{path}");
+        }
+    }
+
+    #[test]
     fn the_routed_table_leads_with_every_service_the_allowlist_names() {
         let named: Vec<&str> = WHOLE_SERVICES
             .iter()
             .copied()
-            .chain(LISTED_METHODS.iter().map(|(service, _)| *service))
+            .chain(
+                LISTED_METHODS
+                    .iter()
+                    .chain([&MACHINE_METHODS])
+                    .map(|(service, _)| *service),
+            )
             .collect();
         assert_eq!(&ROUTED[..named.len()], named.as_slice());
     }
@@ -830,6 +994,7 @@ mod tests {
                         Bytes::from(
                             pb::BeginRelayResponse {
                                 nonce: NONCE.to_vec(),
+                                build: None,
                             }
                             .encode_to_vec(),
                         )

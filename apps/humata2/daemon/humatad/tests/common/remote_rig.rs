@@ -20,12 +20,12 @@
 
 #![allow(dead_code)]
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use humata2_fake_machine::FakeMachine;
+use humata2_fake_machine::{FakeMachine, shared_executable};
 use humata2_grpc::humata::v1 as pb;
+use humata2_machines::StackConfig;
 use humata2_store::{Store, TabRecord};
 use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
@@ -43,7 +43,7 @@ use crate::common::{AGENT_NAME, Build, Daemon, World, binary, folder, start_requ
 /// daemon's start (15 s at most). This is more than twice the two together.
 pub const LONG: Duration = Duration::from_secs(120);
 
-const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
 /// `humatad2` as a machine gets it from the tools bundle.
 const WRAPPER: &str = r##"#!/bin/sh
@@ -51,7 +51,8 @@ const WRAPPER: &str = r##"#!/bin/sh
 # state folder and socket of the machine's own daemon, which the test
 # started in the folder `~/.humata2` points at. The folder is named by its
 # short, real path, because a socket's path must be short.
-case " $* " in *" --stdio "*)
+# `humatad2 stop` (D262), which the host runs over SSH, is told the same.
+case " $* " in *" --stdio "*|" stop "*)
   at=$(cd -P "$HOME/.humata2" && pwd -P) || exit 70
   exec '__REAL__' "$@" --state "$at/state" --socket "$at/d.sock" ;;
 esac
@@ -64,16 +65,28 @@ const SSH: &str = r##"#!/bin/sh
 # host name it names. A link command (`serve --stdio`) runs in a process
 # group of its own and leaves the group's id in the machine's control
 # folder, so the test can end that one link and nothing else.
+#
+# The rig's folders are beside the `bin` folder this file is in, and a
+# machine's control folder names its fake ssh, so every rig of a test runs
+# this same file (see `shared_executable`).
+root=${0%/bin/ssh}
+if [ "$root" = "$0" ]; then
+  echo "ssh: this test's ssh ran as $0, not as <rig>/bin/ssh, so its machines are unknown" >&2
+  exit 255
+fi
 name=
 for arg in "$@"; do
   case "$arg" in
-__MACHINES__  esac
+    */*) ;;
+    *.internal) [ -f "$root/links/${arg%.internal}/ssh" ] && name=${arg%.internal} ;;
+  esac
 done
 if [ -z "$name" ]; then
   echo "ssh: none of this test's machines is named in: $*" >&2
   exit 255
 fi
-control='__CONTROL__'/$name
+control=$root/links/$name
+IFS= read -r ssh < "$control/ssh"
 for last in "$@"; do :; done
 case "$last" in
   *'serve --stdio'*)
@@ -102,7 +115,7 @@ while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; do
 }
 
 /// The agents file of an agent whose conversations are in `conv`, written
-/// into `root`; returns the file's path.
+/// into `root`, with [`cli_agents`] beside it; returns the file's path.
 fn agents_file(root: &Path, conv: &Path) -> PathBuf {
     let script = root.join("agent.sh");
     std::fs::write(&script, agent_script(conv)).unwrap();
@@ -115,12 +128,52 @@ fn agents_file(root: &Path, conv: &Path) -> PathBuf {
     }]);
     let file = root.join("agents.json");
     std::fs::write(&file, agents.to_string()).unwrap();
+    with_cli_agents(&file, root);
     file
 }
 
-fn executable(path: &Path, text: &str) {
-    std::fs::write(path, text).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+/// The agent that stands in as Codex on every machine.
+pub const CODEX_AGENT: &str = "codex";
+/// The agent that stands in as Copilot on every machine.
+pub const COPILOT_AGENT: &str = "copilot";
+
+/// What stands in for the Codex and Copilot CLIs: it only answers, and
+/// never writes its conversation, so what a test put there is what a copy
+/// carries.
+const CLI_AGENT: &str = r#"echo "agent up $1"
+while IFS= read -r line; do echo "got: $line"; done
+"#;
+
+/// Adds to the agents file `file` the Codex and Copilot agents, run by a
+/// script written into `root`, each keeping its conversations under the
+/// machine's home where that CLI does. A test writes what they hold.
+fn with_cli_agents(file: &Path, root: &Path) {
+    let script = root.join("cli-agent.sh");
+    std::fs::write(&script, CLI_AGENT).unwrap();
+    let agent = |name: &str, format: &str, conversation_file: &str| {
+        serde_json::json!({
+            "name": name,
+            "program": "/bin/sh",
+            "start_args": [script, "--session-id", "{conversation}"],
+            "resume_args": [script, "--resume", "{conversation}"],
+            "conversation_file": conversation_file,
+            "conversation_format": format,
+            "version_args": [],
+        })
+    };
+    let mut agents: Vec<serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    agents.push(agent(
+        CODEX_AGENT,
+        "codex-rollout",
+        "{home}/.codex/sessions/2026/11/16/rollout-2026-11-16T00-00-00-{conversation}.jsonl",
+    ));
+    agents.push(agent(
+        COPILOT_AGENT,
+        "copilot-session-state",
+        "{home}/.copilot/session-state/{conversation}/events.jsonl",
+    ));
+    std::fs::write(file, serde_json::Value::Array(agents).to_string()).unwrap();
 }
 
 /// A tools bundle for linux-x86_64, the fake machine's platform, whose
@@ -151,6 +204,16 @@ fn tools(dir: &Path) -> PathBuf {
     root
 }
 
+/// The token a shell printed between `TOKEN<` and `>`, if it has. The typed
+/// command spells those markers as octal escapes, so its own echo never
+/// matches them.
+fn printed_token(screen: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(screen);
+    let (_, rest) = text.split_once("TOKEN<")?;
+    let (token, _) = rest.split_once('>')?;
+    Some(token.to_owned())
+}
+
 /// Not offline, not stopped: the session's agent is up in some way.
 pub fn is_live(session: &pb::Session) -> bool {
     use pb::SessionStatus as S;
@@ -170,6 +233,21 @@ pub fn is_offline(session: &pb::Session) -> bool {
     session.status == pb::SessionStatus::Offline as i32
 }
 
+/// `env` with `{dir}`, `{state}` and `{channels}` replaced by the daemon's
+/// folder, its state folder and the folder its channels are in, so a test
+/// can name them in `HUMATA2_POWER_CUT_ROOTS` before the rig has made them.
+fn filled(env: &[(&str, &str)], dir: &Path, channels: &Path) -> Vec<(String, String)> {
+    env.iter()
+        .map(|(name, value)| {
+            let value = value
+                .replace("{dir}", &dir.display().to_string())
+                .replace("{state}", &dir.join("state").display().to_string())
+                .replace("{channels}", &channels.display().to_string());
+            ((*name).to_owned(), value)
+        })
+        .collect()
+}
+
 /// One machine. Fields drop in order: its daemon ends before its folders go.
 pub struct Remote {
     pub name: &'static str,
@@ -183,7 +261,7 @@ pub struct Remote {
 }
 
 impl Remote {
-    async fn start(name: &'static str, links: &Path, template: &str, build: Build) -> Self {
+    async fn start(name: &'static str, links: &Path, template: &str, build: Build, env: &[(&str, &str)]) -> Self {
         let machine = FakeMachine::new();
         // The machine's `~/.humata2` is its daemon's folder: the add writes
         // the enrollment key into the state folder the daemon uses, and the
@@ -198,6 +276,17 @@ impl Remote {
         let agents = agents_file(machine.home(), &conv);
         let control = links.join(name);
         std::fs::create_dir_all(&control).unwrap();
+        // What the rig's `ssh` runs for this machine.
+        std::fs::write(control.join("ssh"), format!("{}\n", machine.ssh_dir().join("ssh").display())).unwrap();
+        // A box asked for a fault build (D243) has its state folder made the
+        // way the daemon wants it before the power-cut roots name it.
+        let mut launch_env = vec![("HOME".to_owned(), machine.home().display().to_string())];
+        if !env.is_empty() {
+            crate::common::state_folder(dir.path());
+            launch_env.extend(filled(env, dir.path(), &channels));
+        }
+        let launch_env: Vec<(&str, &str)> =
+            launch_env.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
         let mut daemon = Daemon::start_with_env(
             build,
             dir,
@@ -205,7 +294,7 @@ impl Remote {
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
-            &[("HOME", machine.home().display().to_string().as_str())],
+            &launch_env,
         )
         .await;
         // `start_with_env` keeps the extra arguments for restarts.
@@ -304,11 +393,47 @@ impl Remote {
         self.down = false;
     }
 
+    /// Holds every dial the host makes to this machine in the fake `ssh`,
+    /// as a machine that is off does, until [`Rig::link_back`]: for a host
+    /// started again while this machine's daemon is down, so its first dial
+    /// reaches the machine once it is back instead of a machine with no
+    /// daemon.
+    #[allow(dead_code)]
+    pub fn hold_dials(&self) {
+        self.machine.set("hang");
+    }
+
+    /// Every dial the host makes to this machine is refused at once, as a
+    /// machine that is gone for good refuses it, until
+    /// [`Self::take_dials`]. A dial held by [`Self::hold_dials`] is let go
+    /// and refused too.
+    #[allow(dead_code)]
+    pub fn refuse_dials(&self) {
+        self.machine.set("down");
+        self.machine.clear("hang");
+    }
+
+    /// Dials reach this machine again after [`Self::refuse_dials`].
+    #[allow(dead_code)]
+    pub fn take_dials(&self) {
+        self.machine.clear("down");
+    }
+
     /// Waits until this machine's daemon ends by itself, at a stop point
     /// its start's environment named.
     pub async fn stopped(&mut self) {
         self.daemon.stopped(LONG).await;
         self.down = true;
+    }
+
+    /// The process group of this machine's link while one is up, as this
+    /// rig's `ssh` left it when the host dialled: what a test pauses
+    /// (SIGSTOP) to make a link that is up stop answering.
+    pub fn link_group(&self) -> Option<Pid> {
+        std::fs::read_to_string(self.control.join("link"))
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .and_then(Pid::from_raw)
     }
 
     /// [`Self::cut`] when a link left its group and the group still runs;
@@ -343,9 +468,14 @@ impl Remote {
                     file.display()
                 )
             });
-        kill_process_group(group, Signal::KILL).unwrap_or_else(|error| {
-            panic!("couldn't end {}'s link (process group {group:?}): {error}", self.name)
-        });
+        // Since D317 a link can end by itself (its machine daemon gone), so a
+        // group that no longer exists is a link already ended. macOS answers
+        // EPERM, not ESRCH, for a group whose processes have all exited but
+        // aren't reaped yet; that group is ended too.
+        match kill_process_group(group, Signal::KILL) {
+            Ok(()) | Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => {}
+            Err(error) => panic!("couldn't end {}'s link (process group {group:?}): {error}", self.name),
+        }
         // The group is gone: the next cut must find the next link's.
         let _ = std::fs::remove_file(&file);
     }
@@ -372,7 +502,7 @@ impl Rig {
     /// A host and one machine per name, added (the host key confirmed) and
     /// linked, with the git remotes `repos` (`owner/name`) made.
     pub async fn start(boxes: &[&'static str], repos: &[(&str, &str)]) -> Self {
-        Self::start_with(boxes, repos, Build::Release).await
+        Self::start_with(boxes, repos, Build::Release, &[], &[]).await
     }
 
     /// As [`Rig::start`], with each machine's daemon the `--admin` test
@@ -380,38 +510,97 @@ impl Rig {
     /// info) as the user, and makes an agent's calls with the session's
     /// token from the test process, which stands in for the tab's shell.
     pub async fn start_seen(boxes: &[&'static str], repos: &[(&str, &str)]) -> Self {
-        Self::start_with(boxes, repos, Build::Admin).await
+        Self::start_with(boxes, repos, Build::Admin, &[], &[]).await
     }
 
-    async fn start_with(boxes: &[&'static str], repos: &[(&str, &str)], build: Build) -> Self {
+    /// As [`Self::start_seen`], with environment variables for the host's
+    /// first start, such as `HUMATA2_GH` for the host's fake `gh`; `{dir}`
+    /// in a value stands for the host's folder. The boxes get none.
+    #[allow(dead_code)]
+    pub async fn start_seen_with_host_env(
+        boxes: &[&'static str],
+        repos: &[(&str, &str)],
+        host_env: &[(&str, &str)],
+    ) -> Self {
+        Self::start_with(boxes, repos, Build::Admin, host_env, &[]).await
+    }
+
+    /// As [`Self::start_seen`], with environment variables for the first start
+    /// of each box's daemon, such as `HUMATA2_GH` for a box's fake `gh`. Each
+    /// daemon gets only what is listed here; no environment of the test
+    /// process changes. The host's daemon gets none.
+    pub async fn start_seen_with_env(
+        boxes: &[&'static str],
+        repos: &[(&str, &str)],
+        box_env: &[(&str, &str)],
+    ) -> Self {
+        Self::start_with(boxes, repos, Build::Admin, &[], box_env).await
+    }
+
+    /// As [`Self::start`], with environment variables for the first start of
+    /// the host and of each box (a start's environment is for that start
+    /// only). With `HUMATA2_STOP_AT`, `HUMATA2_POWER_CUT_ROOTS` or the like
+    /// in `host_env` or `box_env`, that side runs the faults daemon (D240).
+    /// `{dir}`, `{state}` and `{channels}` in a value stand for the side's
+    /// folder, state folder and channels folder (D243).
+    pub async fn start_with_env(
+        boxes: &[&'static str],
+        repos: &[(&str, &str)],
+        host_env: &[(&str, &str)],
+        box_env: &[(&str, &str)],
+    ) -> Self {
+        Self::start_with(boxes, repos, Build::Release, host_env, box_env).await
+    }
+
+    /// As [`Rig::start`], with the host's `config/stack.toml` holding
+    /// `settings` before the host starts, so each box is given it as it is
+    /// added (D411).
+    pub async fn start_with_stack_settings(
+        boxes: &[&'static str],
+        repos: &[(&str, &str)],
+        settings: &str,
+    ) -> Self {
+        Self::start_inner(boxes, repos, Build::Release, &[], &[], Some(settings)).await
+    }
+
+    async fn start_with(
+        boxes: &[&'static str],
+        repos: &[(&str, &str)],
+        build: Build,
+        host_env: &[(&str, &str)],
+        box_env: &[(&str, &str)],
+    ) -> Self {
+        Self::start_inner(boxes, repos, build, host_env, box_env, None).await
+    }
+
+    async fn start_inner(
+        boxes: &[&'static str],
+        repos: &[(&str, &str)],
+        build: Build,
+        host_env: &[(&str, &str)],
+        box_env: &[(&str, &str)],
+        stack_settings: Option<&str>,
+    ) -> Self {
         let dir = folder();
+        if let Some(settings) = stack_settings {
+            // The humata home of the host is the folder its state folder is in.
+            let file = StackConfig::host_path(dir.path());
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, settings).unwrap();
+        }
         let world = World::new(dir.path());
+        // The host starts a session of any agent its machines run.
+        with_cli_agents(&world.agents, &world.root);
         for (owner, name) in repos {
             world.remote(owner, name);
         }
         let template = format!("file://{}/{{owner}}/{{name}}.git", world.remotes.display());
         let links = dir.path().join("links");
-        let mut remotes = Vec::new();
-        for &name in boxes {
-            remotes.push(Remote::start(name, &links, &template, build).await);
-        }
-        let machines: String = remotes
-            .iter()
-            .map(|remote| {
-                format!(
-                    "    '{name}.internal') name='{name}'; ssh='{}/ssh' ;;\n",
-                    remote.machine.ssh_dir().display(),
-                    name = remote.name
-                )
-            })
-            .collect();
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        executable(
+        shared_executable(
             &bin.join("ssh"),
-            &SSH.replace("__MACHINES__", &machines)
-                .replace("__CONTROL__", &links.display().to_string())
-                .replace("__SETSID__", &binary("HUMATA2_SETSID").display().to_string()),
+            &SSH.replace("__SETSID__", &binary("HUMATA2_SETSID").display().to_string()),
         );
         // Nothing of the real home folder: no skills of the person running
         // the tests are read, or sent to a machine.
@@ -430,7 +619,27 @@ impl Rig {
         // The daemon's own PATH, given to it alone: this rig's `ssh` first,
         // and nothing of the test process's environment changes.
         let path = format!("{}:/usr/bin:/bin", bin.display());
-        let host = Daemon::start_with_env(Build::Admin, dir, &extra, &[("PATH", path.as_str())]).await;
+        let mut launch_env = vec![("PATH".to_owned(), path.clone())];
+        if !host_env.is_empty() {
+            crate::common::state_folder(dir.path());
+            std::fs::create_dir_all(&world.channels).unwrap();
+            launch_env.extend(filled(host_env, dir.path(), &world.channels));
+        }
+        let launch_env: Vec<(&str, &str)> =
+            launch_env.iter().map(|(name, value)| (name.as_str(), value.as_str())).collect();
+        let starting_boxes = async {
+            let mut remotes = Vec::new();
+            for &name in boxes {
+                remotes.push(Remote::start(name, &links, &template, build, box_env).await);
+            }
+            remotes
+        };
+        // Neither needs the other until a box is added, so they start side
+        // by side.
+        let (remotes, host) = tokio::join!(
+            starting_boxes,
+            Daemon::start_with_env(Build::Admin, dir, &extra, &launch_env)
+        );
         let feed = Self::open_machine_feed(&host).await;
         let rig = Self {
             host,
@@ -479,6 +688,38 @@ impl Rig {
         pb::machine_service_client::MachineServiceClient::new(self.channel().await)
     }
 
+    /// Where the host's `config/stack.toml` is: in the folder its state
+    /// folder is in (D411).
+    pub fn host_stack_settings(&self) -> PathBuf {
+        StackConfig::host_path(
+            self.host
+                .state
+                .parent()
+                .expect("the host's state folder is in a folder of its own"),
+        )
+    }
+
+    /// Writes the host's `config/stack.toml`, replacing what was there.
+    pub fn set_host_stack_settings(&self, text: &str) {
+        let file = self.host_stack_settings();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+    }
+
+    /// The sha256 the host's tools manifest names for `file` on the boxes'
+    /// platform.
+    pub fn manifest_sha(&self, file: &str) -> String {
+        let path = self.host.dir.path().join("tools/manifest.json");
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&path).unwrap_or_else(|error| panic!("couldn't read {}: {error}", path.display())),
+        )
+        .unwrap();
+        manifest["platforms"]["linux-x86_64"][file]["sha256"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the tools manifest names no {file} for linux-x86_64: {manifest}"))
+            .to_owned()
+    }
+
     /// The host's own machine.
     pub async fn host_id(&self) -> pb::MachineId {
         crate::common::machine_id(&self.host).await
@@ -520,7 +761,7 @@ impl Rig {
             .expect("the add starts")
             .into_inner();
         let asked = self.ended(&first).await;
-        let Some(pb::error::Kind::HostKeyChanged(key)) =
+        let Some(pb::error::Kind::HostKeyUnknown(key)) =
             asked.error.clone().and_then(|error| error.kind)
         else {
             panic!("the first add of {name} should stop at its host key; it ended {asked:?}");
@@ -657,6 +898,18 @@ impl Rig {
     /// up again. The host's PATH, with this rig's `ssh` first, is always
     /// there: a start's environment is for that start only.
     pub async fn restart_host(&mut self, env: &[(&str, &str)]) {
+        self.restart_host_unlinked(env).await;
+        // A machine whose daemon was killed has no link to wait for.
+        let names: Vec<&'static str> = self.boxes.iter().filter(|remote| !remote.down).map(|remote| remote.name).collect();
+        for name in names {
+            self.linked(name).await;
+        }
+    }
+
+    /// As [`Self::restart_host`], returning once the host listens, without
+    /// waiting for any link: for a test that keeps a machine away (its
+    /// dials held by [`Self::link_lost`]) across the restart.
+    pub async fn restart_host_unlinked(&mut self, env: &[(&str, &str)]) {
         let mut all = vec![("PATH", self.path.as_str())];
         all.extend_from_slice(env);
         self.host.kill();
@@ -664,11 +917,6 @@ impl Rig {
         // the host dials, so no machine change falls between.
         self.host.restart_env(&all).await;
         *self.feed.get_mut() = Self::open_machine_feed(&self.host).await;
-        // A machine whose daemon was killed has no link to wait for.
-        let names: Vec<&'static str> = self.boxes.iter().filter(|remote| !remote.down).map(|remote| remote.name).collect();
-        for name in names {
-            self.linked(name).await;
-        }
     }
 
     /// Ends box `name`'s daemon (if it still runs), waits until the host
@@ -769,6 +1017,34 @@ impl Rig {
             ended.error
         );
         response.session.expect("a start names its session")
+    }
+
+    /// The token the machine `name`'s daemon gave a shell tab of `session`,
+    /// which the session's agent holds: the tab is opened on the machine and
+    /// its shell prints the token. Nothing sleeps; the wait ends on the
+    /// tab's output.
+    pub async fn agent_token(&self, name: &str, session: &pb::SessionId) -> String {
+        let daemon = self.the(name).daemon();
+        let tab = daemon
+            .terminals()
+            .await
+            .open_shell_tab(pb::OpenShellTabRequest {
+                idempotency_key: None,
+                session: Some(session.clone()),
+                repo: None,
+                folder: String::new(),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .id
+            .unwrap();
+        let mut attach = crate::common::Attach::start(daemon, crate::common::open(&tab, 0)).await;
+        attach
+            .type_text("printf 'TOKEN\\074%s\\076\\n' \"$HUMATA_SESSION_TOKEN\"\r")
+            .await;
+        attach.wait_until(|attach| printed_token(&attach.screen).is_some()).await;
+        printed_token(&attach.screen).unwrap()
     }
 
     /// The session as the host shows it.

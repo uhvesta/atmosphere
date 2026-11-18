@@ -10,8 +10,9 @@ use tonic::{Code, Status};
 use crate::channel_service::failed;
 use crate::identity::Caller;
 
-/// The machine whose sessions are stopped, set once by a stopped boot.
-static STOPPED: OnceLock<String> = OnceLock::new();
+/// The machine whose sessions are stopped and what a person calls it, set
+/// once by a stopped boot.
+static STOPPED: OnceLock<(String, String)> = OnceLock::new();
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -22,8 +23,9 @@ struct SessionsStopped {
 }
 
 /// Marks this daemon's sessions stopped. Called once, by a stopped boot.
-pub(crate) fn enter(machine: &str) {
-    let _ = STOPPED.set(machine.to_owned());
+/// `name` is what a refusal calls the machine (D500).
+pub(crate) fn enter(machine: &str, name: &str) {
+    let _ = STOPPED.set((machine.to_owned(), name.to_owned()));
 }
 
 /// Whether this daemon's sessions are stopped.
@@ -33,29 +35,29 @@ pub(crate) fn is_stopped() -> bool {
 
 /// The machine whose sessions are stopped, if they are.
 pub(crate) fn stopped_machine() -> Option<&'static str> {
-    STOPPED.get().map(String::as_str)
+    STOPPED.get().map(|(machine, _)| machine.as_str())
 }
 
 /// Refuses a call that would launch, resume, attach or type while the
 /// sessions are stopped. Agents and scripts are refused earlier and more
 /// firmly by the guard, so they pass here.
 pub(crate) fn require_running(caller: &Caller) -> Result<(), Status> {
-    let Some(machine) = STOPPED.get() else {
+    let Some((_, name)) = STOPPED.get() else {
         return Ok(());
     };
     if matches!(caller, Caller::Agent(_) | Caller::Script(_)) {
         return Ok(());
     }
-    Err(refusal(machine))
+    Err(refusal(name))
 }
 
-fn refusal(machine: &str) -> Status {
+fn refusal(name: &str) -> Status {
     failed(
         Code::FailedPrecondition,
         &SessionsStopped {
-            machine: machine.to_owned(),
+            machine: name.to_owned(),
         },
-        &format!("Start sessions on {machine} first, with the Start button or `humata start`, then try again"),
+        &format!("Start sessions on {name} first, with the Start button or `humata start`, then try again"),
         None,
     )
 }
@@ -67,6 +69,13 @@ mod tests {
     #[test]
     fn a_refusal_is_a_failed_precondition() {
         assert_eq!(refusal("ma_1").code(), Code::FailedPrecondition);
+    }
+
+    #[test]
+    fn a_refusal_calls_the_machine_by_the_name_it_was_given() {
+        let refused = refusal("This Mac");
+
+        assert!(refused.message().contains("This Mac"), "{}", refused.message());
     }
 
     #[test]

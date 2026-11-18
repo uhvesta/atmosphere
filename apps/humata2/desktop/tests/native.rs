@@ -113,6 +113,7 @@ impl App {
             quoted: Vec::new(),
             base: None,
             detached: false,
+            outdated: false,
         };
         self.send(AppAction::Comments(C::OpenBox(id.clone(), anchor)));
         self.send(AppAction::Comments(C::Typed(id.clone(), body.into())));
@@ -167,12 +168,23 @@ fn folder() -> Snapshots {
     snapshots!().expect("snapshot folder")
 }
 
+// SEAM: archiving with unsubmitted PR drafts (D513).
+#[path = "native/archive_drafts.rs"]
+mod archive_drafts;
 #[path = "native/board.rs"]
 mod board;
 #[path = "native/channel.rs"]
 mod channel;
+#[path = "native/channel_desk.rs"]
+mod channel_desk;
+#[path = "native/channel_desk_reopen.rs"]
+mod channel_desk_reopen;
 #[path = "native/desk.rs"]
 mod desk;
+#[path = "native/desk_events.rs"]
+mod desk_events;
+#[path = "native/doc_versions.rs"]
+mod doc_versions;
 #[path = "native/document.rs"]
 mod document;
 #[path = "native/editor.rs"]
@@ -181,6 +193,9 @@ mod editor;
 mod editor_comments;
 #[path = "native/fork_move.rs"]
 mod fork_move;
+// AGENTSET (D725): Settings › Agents switches.
+#[path = "native/agent_switches.rs"]
+mod agent_switches;
 #[path = "native/hosts_settings.rs"]
 mod hosts_settings;
 #[path = "native/lists.rs"]
@@ -197,11 +212,32 @@ mod overlays;
 mod queue;
 #[path = "native/review.rs"]
 mod review;
+#[path = "native/review_switches.rs"]
+mod review_switches;
+#[path = "native/pr_review.rs"]
+mod pr_review;
+#[path = "native/pr_session.rs"]
+mod pr_session;
+// SEAM: the review box's Ask, Draft for GitHub and Make it a draft (D631).
+#[path = "native/pr_ask.rs"]
+mod pr_ask;
 #[path = "native/push.rs"]
 mod push;
 #[path = "native/session.rs"]
 mod session;
+#[path = "native/session_menu.rs"]
+mod session_menu;
 #[path = "native/shell.rs"]
 mod shell;
+#[path = "native/stop.rs"]
+mod stop;
+#[path = "native/targets.rs"]
+mod targets;
 #[path = "native/terminal.rs"]
 mod terminal;
+#[path = "native/views.rs"]
+mod views;
+#[path = "native/channel_desk_target.rs"]
+mod channel_desk_target;
+#[path = "native/desk_target.rs"]
+mod desk_target;

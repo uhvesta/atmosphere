@@ -3,7 +3,7 @@ load("//tools/notices:linked.bzl", "humata2_linked_crates")
 load(":app.bzl", "humata2_app")
 
 # Humata 2.app for Apple silicon Macs: the desktop window, with humatad2,
-# the holder and the humata CLI in Contents/Helpers, which the app installs
+# the holder, the humata CLI and the stack CLI in Contents/Helpers, which the app installs
 # into ~/.humata2 on launch, and THIRD_PARTY_NOTICES.txt generated from the
 # crate lock (//tools/notices). Signed ad hoc here; a release signs it with
 # Developer ID (tools/release/release.sh). Build it with
@@ -14,6 +14,8 @@ humata2_app(
     executable = "//apps/humata2/desktop:humata2",
     icon = "//apps/humata2/app/icon:icns",
     infoplist = "Info.plist",
+    # The Linux tools Add machine installs (TS-2); not in the fakes app.
+    machine_tools = "//apps/humata2/daemon/humatad:tools_linux",
     notices = "@humata2_notices//:THIRD_PARTY_NOTICES.txt",
     platform = "darwin-arm64",
     target_compatible_with = [
@@ -28,6 +30,7 @@ humata2_app(
 humata2_linked_crates(
     name = "linked_crates",
     binaries = [
+        "//apps/humata2/daemon/humatad:tools_linux",
         "//apps/humata2/daemon/humatad:tools_mac",
         "//apps/humata2/desktop:humata2",
     ],

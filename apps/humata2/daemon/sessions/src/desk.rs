@@ -1,10 +1,11 @@
 //! Desk sessions (DK-2, D182): the part of starting one that needs no gRPC.
 //! A Desk session is an ordinary session filed under the channel "desk",
-//! with no repositories and no branch. Its folder is either a scratch folder
-//! Humata makes under `<channels>/desk/<name>`, or a folder the person picked
-//! outside Humata's own folders, which Humata never deletes or moves.
+//! with no repositories and no branch. Its folder is a scratch folder Humata
+//! makes under `<channels>/desk/<name>` (D451: no new session starts in a
+//! folder the person picked; an old picked session is only ever read, closed
+//! and moved, never started here).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -14,6 +15,7 @@ use humata2_store::{
     DeskFolderKind, DeskRow, SessionDetail, SessionRecord, StartStep, Store, StoreError,
 };
 
+use crate::doc_repo::{self, DocGit, DocRepoError};
 use crate::error::{GitError, StartError};
 use crate::git::{clone_main, git, remote_url};
 use crate::names::branch_slug;
@@ -33,8 +35,6 @@ const MAX_ATTEMPTS: u32 = 1000;
 pub enum DeskFolder {
     /// A folder Humata makes under `<channels>/desk`, named from the title.
     Scratch,
-    /// A folder the person picked, as they gave its path.
-    Picked(String),
 }
 
 /// A Desk session to start.
@@ -51,8 +51,6 @@ pub struct DeskStart {
     /// The machine the session runs on: this one.
     pub machine: String,
     pub folder: DeskFolder,
-    /// Humata's state folder, which a picked folder may not be inside.
-    pub state: PathBuf,
     /// Repositories cloned into the folder, each as `<name>` (DK-3).
     pub repos: Vec<(String, String)>,
     /// DK-4: the two switches the session starts with.
@@ -68,20 +66,12 @@ pub struct DeskStart {
 /// person who has to fix it.
 #[derive(Debug, thiserror::Error)]
 pub enum DeskError {
-    #[error("the folder {path} is not a full path, so it can't be found; give the folder's full path, starting at /")]
-    NotAbsolute { path: PathBuf },
     #[error("the folder {path} can't be found: {source}; pick a folder that exists")]
     Missing {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("{path} is a file, not a folder; pick a folder")]
-    NotAFolder { path: PathBuf },
-    #[error(
-        "{path} is inside {root}, which Humata keeps for its own channels and data; pick a folder outside it, or start the session in a scratch folder"
-    )]
-    InsideHumata { path: PathBuf, root: PathBuf },
     #[error(
         "{path} is not a folder directly under {root}, so Humata won't delete it; leave it where it is, or remove it by hand"
     )]
@@ -116,6 +106,14 @@ pub enum DeskError {
         doing: &'static str,
         #[source]
         source: StoreError,
+    },
+    #[error(
+        "couldn't set up the versions repository in {path}: {source}; check that git is installed and that the folder can be written to, then start the session again"
+    )]
+    DocRepo {
+        path: PathBuf,
+        #[source]
+        source: DocRepoError,
     },
     #[error("a background task for the Desk failed: {source}; try again, and restart humatad2 if it keeps failing")]
     Background {
@@ -179,6 +177,12 @@ pub fn claim_scratch(root: &Path, slug: &str, taken: &HashSet<String>) -> Result
         match fs::create_dir(&path) {
             Ok(()) => {
                 restrict(&path)?;
+                // The folder's entry in `root` must survive a power cut too.
+                humata2_durable::sync_dir(root).map_err(|source| DeskError::Create {
+                    path: path.clone(),
+                    parent: root.to_owned(),
+                    source,
+                })?;
                 return Ok(path);
             }
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -196,36 +200,6 @@ pub fn claim_scratch(root: &Path, slug: &str, taken: &HashSet<String>) -> Result
         slug: slug.to_owned(),
         attempts: MAX_ATTEMPTS,
     })
-}
-
-/// Checks a folder the person picked: it must be a full path to an existing
-/// folder that is not inside any of `humata` (Humata's own folders: the
-/// channels folder and the state folder). Returns the folder as it really is
-/// (symlinks followed). Humata never changes a picked folder.
-pub fn check_picked(picked: &str, humata: &[&Path]) -> Result<PathBuf, DeskError> {
-    let given = PathBuf::from(picked);
-    if !given.is_absolute() {
-        return Err(DeskError::NotAbsolute { path: given });
-    }
-    let folder = given
-        .canonicalize()
-        .map_err(|source| DeskError::Missing {
-            path: given.clone(),
-            source,
-        })?;
-    if !folder.is_dir() {
-        return Err(DeskError::NotAFolder { path: folder });
-    }
-    for own in humata {
-        let root = own.canonicalize().unwrap_or_else(|_| own.to_path_buf());
-        if folder.starts_with(&root) {
-            return Err(DeskError::InsideHumata {
-                path: folder,
-                root,
-            });
-        }
-    }
-    Ok(folder)
 }
 
 /// The folder of a scratch session, checked before anything is moved out of
@@ -279,13 +253,15 @@ pub fn folder_bytes(path: &Path) -> u64 {
 }
 
 /// The git work under a scratch folder that deleting it would lose (LD-17,
-/// D182.4): the folder itself when it is a repository, and each repository
-/// directly under it, with uncommitted files or commits no remote has. Empty
+/// D182.4): the folder itself when it is a repository Humata didn't make as a
+/// doc's versions (the folder's own repo, DV-1, holds nothing that would be
+/// lost: a commit there keeps the folder another way, DV-4), and each
+/// repository directly under it, with uncommitted files or commits no remote has. Empty
 /// when there is none, in words otherwise. A repository git can't read counts
 /// as work, so nothing is deleted unseen.
 pub fn held_work(folder: &Path) -> String {
     let mut repos: Vec<PathBuf> = Vec::new();
-    if folder.join(".git").exists() {
+    if folder.join(".git").exists() && !doc_repo::is_doc_repo(folder) {
         repos.push(folder.to_owned());
     }
     if let Ok(entries) = fs::read_dir(folder) {
@@ -297,8 +273,21 @@ pub fn held_work(folder: &Path) -> String {
             }
         }
     }
+    repos_work(&repos)
+}
+
+/// The git work in one repository clone that removing it would lose: its
+/// uncommitted files and commits no remote has (DK-3). Empty when there is
+/// none. Unlike [`held_work`], the clone's own `.git` folder is never taken
+/// for a doc's versions repo.
+pub fn clone_work(clone: &Path) -> String {
+    repos_work(&[clone.to_owned()])
+}
+
+/// The work held in each of `repos`, in words.
+fn repos_work(repos: &[PathBuf]) -> String {
     let mut words = Vec::new();
-    for repo in &repos {
+    for repo in repos {
         let name = repo
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -357,37 +346,33 @@ impl Starter {
         env: Env<'_>,
         progress: &mut (dyn FnMut(&str) + Send),
     ) -> Result<Started, DeskError> {
-        self.agents.get(&request.agent).map_err(StartError::from)?;
-        let (store, channels) = (self.store.clone(), self.layout.root.clone());
-        let (choice, slug, state) = (
-            request.folder.clone(),
-            branch_slug(&request.title),
-            request.state.clone(),
-        );
+        let agent_name = self
+            .agents
+            .get(&request.agent)
+            .map_err(StartError::from)?
+            .person_name();
+        let (store, channels) = (self.store.clone(), self.layout.root());
+        let (choice, slug) = (request.folder.clone(), branch_slug(&request.title));
         let (template, repos) = (self.remote_template.clone(), request.repos.clone());
-        let (folder, scratch) = blocking(move || -> Result<(PathBuf, bool), DeskError> {
+        // The folder's versions are authored under the agent's person name.
+        let folder = blocking(move || -> Result<PathBuf, DeskError> {
             for (_, name) in &repos {
                 check_repo_name(name)?;
             }
-            let (folder, scratch) = match choice {
+            let folder = match choice {
                 DeskFolder::Scratch => {
                     let taken = held_desk_names(&store)?;
-                    (claim_scratch(&desk_root(&channels), &slug, &taken)?, true)
+                    claim_scratch(&desk_root(&channels), &slug, &taken)?
                 }
-                DeskFolder::Picked(path) => (
-                    check_picked(&path, &[channels.as_path(), state.as_path()])?,
-                    false,
-                ),
             };
-            // A clone that fails takes back what was made here: a scratch
-            // folder whole, a picked one only its clones (DK-3).
-            if let Err(error) = clone_repos(&template, &repos, &folder) {
-                if scratch {
-                    let _ = remove_folder(&folder);
-                }
+            // A scratch folder is a versions repository of its own, with its
+            // clones left out of it (DV-1). A step that fails takes back the
+            // folder whole.
+            if let Err(error) = prepare_folder(&template, &repos, &folder, &agent_name) {
+                let _ = remove_folder(&folder);
                 return Err(error);
             }
-            Ok((folder, scratch))
+            Ok(folder)
         })
         .await?;
 
@@ -409,21 +394,16 @@ impl Starter {
             operation: request.operation.clone(),
             revision: 1,
         };
-        let kind = if scratch {
-            DeskFolderKind::Scratch { kept: false }
-        } else {
-            DeskFolderKind::Picked
-        };
         let row = new_row(
             &request.id,
-            kind,
+            DeskFolderKind::Scratch { kept: false },
             request.boards,
             request.channels_and_machines,
             unix_ms(),
         );
         if let Err(error) = self.record_desk(&session, &detail, &row).await {
             // Best effort: the start's own error is the one worth reporting.
-            let _ = self.undo_desk(&session, scratch).await;
+            let _ = self.undo_desk(&session).await;
             return Err(error);
         }
         progress("write_record");
@@ -465,23 +445,56 @@ impl Starter {
     }
 
     /// Takes back a Desk start that failed before its launch: the scratch
-    /// folder it made (never a picked one) and the session's records.
-    async fn undo_desk(&self, session: &SessionRecord, scratch: bool) -> Result<(), DeskError> {
+    /// folder it made and the session's records.
+    pub(crate) async fn undo_desk(&self, session: &SessionRecord) -> Result<(), DeskError> {
         let (store, id, folder) = (
             self.store.clone(),
             session.id.clone(),
             session.folder.clone(),
         );
         blocking(move || -> Result<(), DeskError> {
-            if scratch {
-                remove_folder(&folder)?;
-            }
+            remove_folder(&folder)?;
             store
                 .remove_session(&id)
                 .map_err(store_error("remove the session"))
         })
         .await
     }
+}
+
+/// Makes a scratch folder Humata just claimed a versions repository, named
+/// for `agent` (DV-1). A failure removes the folder, so no start leaves one
+/// behind.
+pub(crate) fn init_scratch(folder: &Path, agent: &str) -> Result<(), DeskError> {
+    doc_repo::init(&DocGit::inherit(), folder, agent).map_err(|source| {
+        let _ = remove_folder(folder);
+        DeskError::DocRepo {
+            path: folder.to_owned(),
+            source,
+        }
+    })
+}
+
+/// The folder's start: it becomes a repository, then the clones are made, and
+/// each is left out of the folder's own versions.
+fn prepare_folder(
+    template: &str,
+    repos: &[(String, String)],
+    folder: &Path,
+    agent: &str,
+) -> Result<(), DeskError> {
+    doc_repo::init(&DocGit::inherit(), folder, agent).map_err(|source| DeskError::DocRepo {
+        path: folder.to_owned(),
+        source,
+    })?;
+    clone_repos(template, repos, folder)?;
+    for (_, name) in repos {
+        doc_repo::exclude_clone(&DocGit::inherit(), folder, name).map_err(|source| DeskError::DocRepo {
+            path: folder.to_owned(),
+            source,
+        })?;
+    }
+    Ok(())
 }
 
 /// Checks a repository name is one plain folder name, so its clone goes
@@ -602,7 +615,7 @@ pub fn repos_under(folder: &Path) -> Vec<(String, String)> {
 }
 
 /// The `url` of `[remote "origin"]` in a git config, if it has one.
-fn origin_url(config: &str) -> Option<String> {
+pub(crate) fn origin_url(config: &str) -> Option<String> {
     let mut in_origin = false;
     for line in config.lines().map(str::trim) {
         if line.starts_with('[') {
@@ -624,7 +637,7 @@ fn origin_url(config: &str) -> Option<String> {
 
 /// The owner and name a remote URL names: `…/owner/name(.git)`, for https,
 /// ssh and scp-like addresses alike.
-fn owner_and_name(url: &str) -> Option<(String, String)> {
+pub(crate) fn owner_and_name(url: &str) -> Option<(String, String)> {
     let url = url.trim().trim_end_matches('/');
     let url = url.strip_suffix(".git").unwrap_or(url);
     let path = match url.split_once("://") {
@@ -650,6 +663,48 @@ pub fn documents_under(folder: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// The most bytes read from one Markdown file to count its lines.
+const LINE_COUNT_CAP: u64 = 8 * 1024 * 1024;
+
+/// How many lines each Markdown file directly in `folder` has, by name
+/// (CD-4). A last line with no newline counts. A file that can't be read, or
+/// is over [`LINE_COUNT_CAP`], is left out; the rest are still counted.
+pub fn document_lines_under(folder: &Path) -> BTreeMap<String, u32> {
+    documents_under(folder)
+        .into_iter()
+        .filter_map(|name| {
+            let lines = count_lines(&folder.join(&name))?;
+            Some((name, lines))
+        })
+        .collect()
+}
+
+fn count_lines(path: &Path) -> Option<u32> {
+    use std::io::Read;
+    let file = fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > LINE_COUNT_CAP {
+        return None;
+    }
+    let mut reader = file.take(LINE_COUNT_CAP);
+    let mut buf = [0_u8; 16 * 1024];
+    let mut lines: u32 = 0;
+    // An empty file has no lines, so start as if the last byte ended one.
+    let mut last = b'\n';
+    loop {
+        let read = reader.read(&mut buf).ok()?;
+        if read == 0 {
+            break;
+        }
+        let newlines = buf[..read].iter().filter(|byte| **byte == b'\n').count();
+        lines = lines.saturating_add(u32::try_from(newlines).unwrap_or(u32::MAX));
+        last = buf[read - 1];
+    }
+    if last != b'\n' {
+        lines = lines.saturating_add(1);
+    }
+    Some(lines)
 }
 
 /// Copies the file `relative`, a path inside `folder`, into `shared` under the
@@ -702,7 +757,10 @@ pub fn copy_document(folder: &Path, relative: &str, shared: &Path) -> Result<Str
         }
         Err(error) => return Err(DeskError::CopyFailed { path: dest, source: error }),
     };
-    if let Err(error) = io::copy(&mut from, &mut to) {
+    let copied = io::copy(&mut from, &mut to)
+        .and_then(|_| to.sync_all())
+        .and_then(|()| humata2_durable::sync_dir(shared));
+    if let Err(error) = copied {
         let _ = fs::remove_file(&dest);
         return Err(DeskError::CopyFailed {
             path: dest,
@@ -729,12 +787,12 @@ fn held_desk_names(store: &Store) -> Result<HashSet<String>, DeskError> {
         .collect())
 }
 
-fn store_error(doing: &'static str) -> impl Fn(StoreError) -> DeskError {
+pub(crate) fn store_error(doing: &'static str) -> impl Fn(StoreError) -> DeskError {
     move |source| DeskError::Store { doing, source }
 }
 
 /// Runs `work` on a blocking thread: the Desk's folders and records are on disk.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, DeskError> + Send + 'static,
 ) -> Result<T, DeskError> {
     tokio::task::spawn_blocking(work)
@@ -744,7 +802,7 @@ async fn blocking<T: Send + 'static>(
 
 /// Makes `path` (and any parent missing) readable only by this user.
 fn create_private(path: &Path) -> Result<(), DeskError> {
-    fs::create_dir_all(path).map_err(|source| DeskError::Create {
+    crate::layout::make_dirs(path, 0o700).map_err(|source| DeskError::Create {
         path: path.to_owned(),
         parent: path.parent().map(Path::to_owned).unwrap_or_default(),
         source,
@@ -819,31 +877,38 @@ mod tests {
     }
 
     #[test]
-    fn a_picked_folder_must_be_a_full_path_to_a_folder_outside_the_channels() {
+    fn lines_are_counted_per_markdown_file_with_or_without_a_last_newline() {
         let temp = tempfile::tempdir().unwrap();
-        let channels = temp.path().join("ch");
-        std::fs::create_dir_all(channels.join("payments")).unwrap();
-        let notes = temp.path().join("notes");
-        std::fs::create_dir_all(&notes).unwrap();
-        let file = temp.path().join("a.txt");
-        std::fs::write(&file, "x").unwrap();
+        let folder = temp.path();
+        std::fs::write(folder.join("a.md"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(folder.join("b.md"), "one\ntwo").unwrap();
+        std::fs::write(folder.join("empty.md"), "").unwrap();
+        std::fs::write(folder.join("notes.txt"), "not\nmarkdown\n").unwrap();
+        std::fs::create_dir(folder.join("dir.md")).unwrap();
+        let counts = document_lines_under(folder);
+        let expected: BTreeMap<String, u32> = [("a.md", 3), ("b.md", 2), ("empty.md", 0)]
+            .into_iter()
+            .map(|(name, lines)| (name.to_owned(), lines))
+            .collect();
+        assert_eq!(counts, expected);
+    }
 
-        assert_eq!(
-            check_picked(&notes.display().to_string(), &[channels.as_path()])
-                .unwrap()
-                .canonicalize()
-                .unwrap(),
-            notes.canonicalize().unwrap()
-        );
-        for bad in [
-            "relative/path".to_owned(),
-            temp.path().join("missing").display().to_string(),
-            file.display().to_string(),
-            channels.join("payments").display().to_string(),
-            channels.display().to_string(),
-        ] {
-            assert!(check_picked(&bad, &[channels.as_path()]).is_err(), "{bad}");
-        }
+    #[test]
+    fn a_folder_that_cannot_be_read_has_no_counts() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(document_lines_under(&temp.path().join("missing")).is_empty());
+    }
+
+    #[test]
+    fn a_file_over_the_cap_is_left_out_and_the_others_are_counted() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path();
+        std::fs::write(folder.join("small.md"), "a\n").unwrap();
+        let big = std::fs::File::create(folder.join("big.md")).unwrap();
+        big.set_len(LINE_COUNT_CAP + 1).unwrap();
+        let counts = document_lines_under(folder);
+        assert_eq!(counts.get("small.md"), Some(&1));
+        assert!(!counts.contains_key("big.md"));
     }
 
     #[test]

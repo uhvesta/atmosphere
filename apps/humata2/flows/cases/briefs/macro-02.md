@@ -7,4 +7,4 @@ Steps: New channel setup flow; repo picker sources (used before, GitHub users/or
 
 Branches: gh not logged in or rate limited (message says wait); a repo that doesn't exist; a repo added later to the channel (agent proposes; user approves); PlanRemoveRepo/RemoveRepo for the channel (not built: ChannelService); a push denied; the session's branch name taken.
 
-Pointers: features/app/tests/new_channel*.rs, desktop/tests/native/new_channel.rs, daemon/humatad/tests/channel_add.rs, channels.rs, gh_repos.rs, branch_names.rs, push*.rs, review_per_repo.rs, desktop/tests/live_flows/review.rs (three-repo diff review; real daemon), daemon/humatad/src/channel_service.rs (not_built PlanRemoveRepo/RemoveRepo/GetGrid), workflow/milestones/NEWCH.md, FORK.md.
+Pointers: features/app/tests/new_channel*.rs, desktop/tests/native/new_channel.rs, daemon/humatad/tests/channel_add.rs, channels.rs, gh_repos.rs, branch_names.rs, push*.rs, review_per_repo.rs, desktop/tests/live_flows/review.rs (three-repo diff review; real daemon), daemon/humatad/src/channel_service.rs (not_built PlanRemoveRepo/RemoveRepo; GetGrid built in channel_service/grid.rs), workflow/milestones/NEWCH.md, FORK.md.

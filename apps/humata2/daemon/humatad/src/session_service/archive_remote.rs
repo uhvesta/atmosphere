@@ -26,7 +26,7 @@ mod pending;
 use std::collections::HashMap;
 
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{ArchiveRow, ArchiveState, SessionRecord, StoreError};
+use humata2_store::{AgentState, ArchiveRow, ArchiveState, SessionRecord, StoreError};
 use prost::Message;
 use tonic::{Code, Status};
 
@@ -73,7 +73,7 @@ enum RemoteError {
 
 /// Waits until `links` show `machine` up on a link other than `stale`, and
 /// returns that link's generation; `None` once the machine is forgotten.
-async fn next_link_up(links: &Links, machine: &str, stale: Option<u64>) -> Option<u64> {
+pub(super) async fn next_link_up(links: &Links, machine: &str, stale: Option<u64>) -> Option<u64> {
     let mut state = links.watch(machine);
     let now = *state
         .wait_for(|now| matches!(now, LinkState::Up { generation } if Some(*generation) != stale))
@@ -399,7 +399,7 @@ impl SessionSvc {
         let ended = async {
             let relayed = self.relayed_to(&id, &machine)?;
             let request = assigned(asked, None).map_err(Status::from)?;
-            self.keep(&journal).await;
+            self.keep_journal(&journal).await;
             // A cut here: the follow-up is kept, the machine not asked yet.
             crate::fault::point("archive_remote.journaled");
             asked_machine = true;
@@ -412,7 +412,7 @@ impl SessionSvc {
             // end rather than find the archive still under way.
             if let (Ok(answer), Pending::Reconcile { asked, .. }) = (&first, &mut journal) {
                 *asked = answer.get_ref().id.as_ref().map(|id| id.value.clone());
-                self.keep(&journal).await;
+                self.keep_journal(&journal).await;
             }
             // A cut here: the machine is archiving and the follow-up names
             // its operation.
@@ -534,7 +534,7 @@ impl SessionSvc {
 
     /// Keeps `journal` on disk, so a restart goes on with it. Best effort: a
     /// follow-up that can't be kept still runs, and the log says so.
-    async fn keep(&self, journal: &Pending) {
+    async fn keep_journal(&self, journal: &Pending) {
         let Some(root) = self.carry.get().map(Carry::remote_archive_folder) else {
             return;
         };
@@ -550,7 +550,7 @@ impl SessionSvc {
 
     /// Keeps the conversation a restore here is about to resume, and the
     /// folder it was written for, so a restart goes on with the resume. Best
-    /// effort, as [`Self::keep`].
+    /// effort, as [`Self::keep_journal`].
     async fn keep_resume(&self, session: &str, old_folder: &str, lines: &[u8]) {
         let Some(root) = self.carry.get().map(Carry::remote_archive_folder) else {
             return;
@@ -659,11 +659,20 @@ impl SessionSvc {
         }
         for journal in pending::read_all(&root) {
             let (svc, started) = (self.clone(), started.clone());
+            if let Pending::Restore { session, .. } = &journal {
+                started.operations().record(
+                    session,
+                    "restore",
+                    "take_in",
+                    crate::restart::OperationState::Pending { waits_for: "the start to finish".to_owned() },
+                );
+            }
             tokio::spawn(async move {
                 started.wait().await;
                 match journal {
                     Pending::Reconcile { .. } => svc.reconcile_when_linked(journal).await,
                     Pending::Release { .. } => svc.release_when_linked(journal).await,
+                    Pending::Restore { .. } => svc.finish_restore_here(&started, journal).await,
                 }
             });
         }
@@ -1000,10 +1009,21 @@ impl SessionSvc {
             }
         }
 
+        // Kept before anything is taken in: a restart before the switch is
+        // whole takes back what was, one after it lets the machine's copy go.
+        let restoring = Pending::Restore {
+            session: id.clone(),
+            machine: machine.clone(),
+            channel: loaded.record.channel.clone(),
+            operation: operation.clone(),
+        };
+        self.keep_journal(&restoring).await;
         progress.set_step("import_conversation", pb::StepState::Running, None);
         if let Err(status) = self.take_conversation(&loaded.record, &machine, &operation).await {
+            // Whatever part arrived goes; the session stays on its machine.
+            self.undo_conversation(&loaded.record, &operation).await;
+            self.settled(&restoring).await;
             if status.code() == Code::Unavailable {
-                self.undo_conversation(&loaded.record, &operation).await;
                 return self.restore_here_from_mirror(progress, loaded, machine, by, guard).await;
             }
             progress.set_step(
@@ -1029,6 +1049,7 @@ impl SessionSvc {
                 );
             }
             self.undo_conversation(&loaded.record, &operation).await;
+            self.settled(&restoring).await;
             progress.fail(failure);
             return;
         }
@@ -1049,32 +1070,52 @@ impl SessionSvc {
             store.remove_archive(&key)
         })
         .await;
-        match switched {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                self.rebase_mirror(&id, &machine, None).await;
-                progress.fail(error_of(
-                    &error,
-                    "fix the cause the message names, then restore again",
-                    None,
-                ));
-                return;
+        let failure = match switched {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error_of(&error, "fix the cause the message names, then restore again", None)),
+            Err(refused) => Some(error_from(&refused)),
+        };
+        if let Some(failure) = failure {
+            // Half a switch is taken back: the session stays on its machine.
+            match self.undo_restore_here(&id, &machine, &operation).await {
+                Ok(()) => self.settled(&restoring).await,
+                Err(problem) => crate::log::say!(
+                    "humatad2: {problem}; Humata takes the rest back when it next starts"
+                ),
             }
-            Err(refused) => {
-                self.rebase_mirror(&id, &machine, None).await;
-                progress.fail(error_from(&refused));
-                return;
-            }
+            progress.fail(failure);
+            return;
         }
+        // The machine's copy goes once it is linked, and again after a
+        // restart (D222). The conversation was taken from that copy just now,
+        // so there is nothing in it to compare or carry. Kept before the
+        // restore's own journal goes, so a cut between the two still lets
+        // the copy go.
+        let release = Pending::Release {
+            session: id.clone(),
+            machine: machine.clone(),
+            channel: record.channel.clone(),
+            operation: operation.clone(),
+            restored: None,
+            kept: None,
+            cleared: true,
+        };
+        self.keep_journal(&release).await;
         drop(guard);
         if let Some(remote) = &self.remote {
             remote.forget_session(&machine, &id).await;
         }
-        self.release_old_copy(&machine, &id, &record, &operation).await;
+        tokio::spawn(self.clone().release_when_linked(release));
+        self.unstage_here(&record, &operation).await;
         self.tell.session(&id, pb::Change::Updated, Some(by.clone())).await;
         publish_family(&self.tell, &id, Some(by.clone())).await;
 
+        // The restore's own journal stays until the agent was asked to
+        // resume: a cut before then finds the archive row gone and starts
+        // the agent the restore took in, which no start revives on its own
+        // (it was saved stopped).
         let Ok(loaded) = self.load(&id).await else {
+            self.settled(&restoring).await;
             progress.fail(error_of(
                 &RemoteError::NoDetail {
                     session: id,
@@ -1094,6 +1135,7 @@ impl SessionSvc {
             progress,
         )
         .await;
+        self.settled(&restoring).await;
         watch::agent(self.tell.clone(), id);
     }
 
@@ -1217,7 +1259,7 @@ impl SessionSvc {
             kept: None,
             cleared: false,
         };
-        self.keep(&journal).await;
+        self.keep_journal(&journal).await;
         // A cut here: the release is kept but the record still names the
         // machine, so the release leaves its copy alone.
         crate::fault::point("mirror_restore.journaled");
@@ -1355,7 +1397,7 @@ impl SessionSvc {
                         if let Pending::Release { kept, .. } = &mut journal {
                             *kept = Some(more.to_string());
                         }
-                        self.keep(&journal).await;
+                        self.keep_journal(&journal).await;
                         stale = Some(generation);
                         continue;
                     }
@@ -1368,7 +1410,7 @@ impl SessionSvc {
                 if let Pending::Release { cleared, .. } = &mut journal {
                     *cleared = true;
                 }
-                self.keep(&journal).await;
+                self.keep_journal(&journal).await;
             }
             // A cut here: the copy is compared and carried, not released.
             crate::fault::point("mirror_restore.compared");
@@ -1474,20 +1516,190 @@ impl SessionSvc {
         blocking(move || humata2_mirror::turns_in(&lines)).await.ok()
     }
 
-    /// The machine's copy of the session goes to its trash and its records
-    /// are dropped, now that the session runs here; the staged files here go
-    /// too. A failure leaves the old copy where it is and is logged.
-    async fn release_old_copy(&self, machine: &str, id: &str, record: &SessionRecord, operation: &str) {
-        let Some(carry) = self.carry.get() else {
+    /// Takes back what a restore here from `machine` took in before its
+    /// switch was whole: the record names `machine` again, the agent, tabs,
+    /// conversation and files taken in go, and the mirror reads the
+    /// machine's file again. The archive row was never removed, so the
+    /// session is archived on its machine as it was. Errs, saying what is
+    /// left, when the record can't be read or put back.
+    async fn undo_restore_here(&self, session: &str, machine: &str, operation: &str) -> Result<(), String> {
+        let (store, key) = (self.starter.store.clone(), session.to_owned());
+        let record = match blocking(move || store.session(&key)).await {
+            Ok(Ok(Some(record))) => record,
+            Ok(Ok(None)) => return Ok(()),
+            Ok(Err(error)) => {
+                return Err(format!(
+                    "couldn't read session {session} to take back a restore cut short: {}",
+                    status::chain(&error)
+                ));
+            }
+            Err(refused) => {
+                return Err(format!(
+                    "couldn't read session {session} to take back a restore cut short: {}",
+                    refused.message()
+                ));
+            }
+        };
+        let mut back = record.clone();
+        back.machine = machine.to_owned();
+        if record.machine != machine {
+            let (store, saved) = (self.starter.store.clone(), back.clone());
+            let put = match blocking(move || store.put_session(&saved)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(status::chain(&error)),
+                Err(refused) => Err(refused.message().to_owned()),
+            };
+            if let Err(reason) = put {
+                return Err(format!(
+                    "couldn't name {machine} again as the machine of session {session}, whose restore here was cut short: {reason}"
+                ));
+            }
+        }
+        self.undo_conversation(&back, operation).await;
+        self.rebase_mirror(session, machine, None).await;
+        Ok(())
+    }
+
+    /// Goes on with a restore here from a linked machine that the last run
+    /// cut short (PER-28). Cut before its switch was whole (the archive row
+    /// is still here), what it took in is taken back and the session is
+    /// archived on its machine as it was; cut after, the machine's copy is
+    /// let go as the restore would have, and the start's revive runs the
+    /// agent. The journal stays for the next start when neither can be done.
+    async fn finish_restore_here(&self, started: &crate::restart::Started, journal: Pending) {
+        use crate::restart::OperationState as State;
+        let Pending::Restore {
+            session,
+            machine,
+            channel,
+            operation,
+        } = &journal
+        else {
             return;
         };
-        if let Err(error) = carry.release(machine, operation, id, &record.channel).await {
-            crate::log::say!(
-                "humatad2: session {id} runs here now, but its old copy on {machine} is still there: {}",
-                error.message()
-            );
+        let note = |state: State| started.operations().record(session, "restore", "take_in", state);
+        let guard = self.lifecycle.lock_of(session).lock_owned().await;
+        let (store, key) = (self.starter.store.clone(), session.clone());
+        let row = match blocking(move || store.archive(&key)).await {
+            Ok(Ok(row)) => row,
+            Ok(Err(error)) => {
+                let reason = status::chain(&error);
+                crate::log::say!(
+                    "humatad2: couldn't learn whether session {session}'s restore here was cut before its switch: {reason}; Humata tries again when it next starts"
+                );
+                return note(State::Stuck { reason: format!("its archive row couldn't be read: {reason}") });
+            }
+            Err(refused) => {
+                return note(State::Stuck { reason: format!("its archive row couldn't be read: {}", refused.message()) });
+            }
+        };
+        if row.is_some() {
+            if let Err(problem) = self.undo_restore_here(session, machine, operation).await {
+                crate::log::say!("humatad2: {problem}; Humata tries again when it next starts");
+                return note(State::Stuck { reason: problem });
+            }
+            note(State::Undone { reason: "the restore was cut before the session moved here".to_owned() });
+        } else {
+            let release = Pending::Release {
+                session: session.clone(),
+                machine: machine.clone(),
+                channel: channel.clone(),
+                operation: operation.clone(),
+                restored: None,
+                kept: None,
+                cleared: true,
+            };
+            // A cut after the restore kept its release found that journal
+            // at this start too, and lets the copy go from it: once is enough.
+            if !self.kept(&release).await {
+                self.keep_journal(&release).await;
+                tokio::spawn(self.clone().release_when_linked(release));
+            }
+            if let Ok(Ok(Some(record))) = {
+                let (store, key) = (self.starter.store.clone(), session.clone());
+                blocking(move || store.session(&key)).await
+            } {
+                self.unstage_here(&record, operation).await;
+            }
+            match self.resume_taken_in(session).await {
+                Ok(()) => note(State::Finished),
+                Err(reason) => {
+                    crate::log::say!(
+                        "humatad2: session {session} was restored here, but its agent couldn't be started after the restore was cut short: {reason}; resume it from its menu"
+                    );
+                    note(State::Stuck { reason });
+                    // The session is here and the copy goes; only the
+                    // agent waits for the person, so the journal is done.
+                }
+            }
         }
-        self.unstage_here(record, operation).await;
+        drop(guard);
+        self.settled(&journal).await;
+    }
+
+    /// Whether `journal` is on disk.
+    async fn kept(&self, journal: &Pending) -> bool {
+        let Some(root) = self.carry.get().map(Carry::remote_archive_folder) else {
+            return false;
+        };
+        let kept = journal.clone();
+        blocking(move || pending::exists(&root, &kept)).await.unwrap_or(false)
+    }
+
+    /// Starts the agent a restore here took in, when a cut kept the restore
+    /// from starting it: the take saved it as stopped, which no start
+    /// revives on its own. One the start already brings back (resuming or
+    /// running) is left to it. Errs saying why it couldn't be started.
+    async fn resume_taken_in(&self, session: &str) -> Result<(), String> {
+        let (store, key) = (self.starter.store.clone(), session.to_owned());
+        let agent = match blocking(move || store.agent(&key)).await {
+            Ok(Ok(agent)) => agent,
+            Ok(Err(error)) => return Err(format!("its agent record couldn't be read: {}", status::chain(&error))),
+            Err(refused) => return Err(format!("its agent record couldn't be read: {}", refused.message())),
+        };
+        let Some(mut agent) = agent else {
+            return Err("the restore took in no agent record".to_owned());
+        };
+        if !matches!(agent.state, AgentState::Stopped | AgentState::Exited { .. }) {
+            return Ok(());
+        }
+        agent.state = AgentState::Resuming;
+        agent.updated_unix_ms = now_ms();
+        let (store, agents, home, mut saving) =
+            (self.starter.store.clone(), self.starter.agents.clone(), self.starter.home.clone(), agent);
+        let saved = blocking(move || -> Result<humata2_store::AgentRecord, StoreError> {
+            // D670: the conversation the CLI wrote, once it is known.
+            if agents.learn_conversation(&store, &home, &saving.session)?
+                && let Some(found) = store.agent(&saving.session)?
+            {
+                saving.launch = found.launch;
+            }
+            store.put_agent(&saving)?;
+            Ok(saving)
+        })
+        .await;
+        let agent = match saved {
+            Ok(Ok(saved)) => saved,
+            Ok(Err(error)) => return Err(format!("its agent record couldn't be saved: {}", status::chain(&error))),
+            Err(refused) => return Err(format!("its agent record couldn't be saved: {}", refused.message())),
+        };
+        let tokens = self.tokens.clone();
+        let env = move |tab: &humata2_store::TabRecord| tokens.env(tab);
+        match humata2_revive::resume_agent_asked(&self.starter.store, &self.starter.revive, agent, &env).await {
+            Ok(humata2_revive::Revived::Resumed { .. } | humata2_revive::Revived::Reattached | humata2_revive::Revived::Relaunched) => {
+                super::move_session::restart_session_shells(&self.starter, session, &env).await;
+                watch::agent(self.tell.clone(), session.to_owned());
+                self.tell.session(session, pb::Change::Updated, None).await;
+                Ok(())
+            }
+            Ok(humata2_revive::Revived::ResumeFailed { reason, exit_code }) => {
+                Err(super::resume_failed(session, reason, exit_code).message)
+            }
+            Ok(humata2_revive::Revived::Exited { .. } | humata2_revive::Revived::Left) => {
+                Err("its agent exited as it started".to_owned())
+            }
+            Err(error) => Err(format!("its agent couldn't be started: {}", status::chain(&error))),
+        }
     }
 
     /// Removes the files a restore staged on this machine.
@@ -1718,6 +1930,8 @@ mod tests {
             agent: None,
             summary_source: Default::default(),
             away_left_out: None,
+            review: None,
+            moved: None,
         }
     }
 

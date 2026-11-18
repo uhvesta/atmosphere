@@ -3,7 +3,8 @@
 
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
-    DiffBase, DiffLine, FileDiff, LineKind, PushChoice, PushPlan, PushRepo, RepoDiff, SessionId,
+    DiffBase, DiffLine, FileDiff, LineKind, PushChoice, PushPlan, PushRepo, RepoBase, RepoBases,
+    RepoDiff, RepoDiffSpec, SessionFile, SessionId,
 };
 use humata2_grpc::humata::v1 as pb;
 
@@ -23,8 +24,54 @@ fn wire_base(base: &DiffBase) -> Option<pb::DiffBase> {
         DiffBase::OtherSession(other) => Base::OtherSession(pb::SessionId {
             value: other.as_str().to_owned(),
         }),
+        DiffBase::PullRequestBase => Base::PullRequestBase(pb::PullRequestBase {}),
+        DiffBase::Spec(repos) => Base::Spec(spec_to_wire(repos)?),
     };
     Some(pb::DiffBase { base: Some(base) })
+}
+
+/// Each repository's base as the daemon's presets make it, with everything
+/// on disk on the new side (unstaged and untracked files). `None` when a
+/// repository isn't `owner/name`.
+pub(crate) fn spec_to_wire(repos: &[RepoDiffSpec]) -> Option<pb::DiffSpec> {
+    use pb::diff_spec_compare::{Untracked, Upto};
+    let repos = repos
+        .iter()
+        .map(|each| {
+            Some(pb::RepoDiffSpec {
+                repo: Some(map::parse_repo(&each.repo)?),
+                base: Some(pb::DiffSpecBase {
+                    base: Some(repo_base_to_wire(&each.base)),
+                }),
+                compare: Some(pb::DiffSpecCompare {
+                    upto: Upto::Unstaged as i32,
+                    untracked: Untracked::All as i32,
+                    untracked_paths: Vec::new(),
+                }),
+                ..pb::RepoDiffSpec::default()
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(pb::DiffSpec { repos })
+}
+
+/// The old side of one repository's spec. `DefaultBranch` is `origin/HEAD`,
+/// which git resolves to the remote's default branch; `Uncommitted` is HEAD,
+/// as the daemon's `UncommittedOnly` base is.
+fn repo_base_to_wire(base: &RepoBase) -> pb::diff_spec_base::Base {
+    use pb::diff_spec_base::Base;
+    match base {
+        RepoBase::DefaultBranch => Base::MergeBaseWith("origin/HEAD".to_owned()),
+        RepoBase::Branch(branch) if branch.starts_with("origin/") => {
+            Base::MergeBaseWith(branch.clone())
+        }
+        RepoBase::Branch(branch) => Base::MergeBaseWith(format!("origin/{branch}")),
+        RepoBase::Rev(rev) => Base::Rev(rev.clone()),
+        RepoBase::LastReviewed => Base::ReviewedSnapshot(0),
+        RepoBase::ForkPoint => Base::ForkPoint(pb::ForkPointBase {}),
+        RepoBase::Uncommitted => Base::Rev("HEAD".to_owned()),
+        RepoBase::PullRequestBase => Base::PullRequestBase(pb::PullRequestBaseRef {}),
+    }
 }
 
 fn line(kind: LineKind, old: u32, new: u32, text: &str) -> DiffLine {
@@ -42,13 +89,36 @@ fn line(kind: LineKind, old: u32, new: u32, text: &str) -> DiffLine {
     }
 }
 
-fn readable_base(base: &DiffBase) -> String {
+/// The base's name as the Diff panel shows it. A spec has one base per
+/// repository, so `repo` picks it out; a repository the spec leaves out is
+/// compared with its default branch, as the daemon compares it.
+fn readable_base(base: &DiffBase, repo: &str) -> String {
     match base {
         DiffBase::OriginMain => "origin/main".to_owned(),
         DiffBase::UncommittedOnly => "uncommitted changes".to_owned(),
         DiffBase::SinceLastReviewed => "since last reviewed".to_owned(),
         DiffBase::SinceFork => "since fork".to_owned(),
         DiffBase::OtherSession(other) => format!("session {}", other.as_str()),
+        DiffBase::PullRequestBase => "the pull request's base".to_owned(),
+        DiffBase::Spec(repos) => match repos.iter().find(|each| each.repo == repo) {
+            Some(each) => readable_repo_base(&each.base),
+            None => readable_repo_base(&RepoBase::DefaultBranch),
+        },
+    }
+}
+
+fn readable_repo_base(base: &RepoBase) -> String {
+    match base {
+        RepoBase::DefaultBranch => "default branch".to_owned(),
+        RepoBase::Branch(branch) => branch
+            .strip_prefix("origin/")
+            .unwrap_or(branch.as_str())
+            .to_owned(),
+        RepoBase::Rev(rev) => rev.clone(),
+        RepoBase::LastReviewed => "last reviewed".to_owned(),
+        RepoBase::ForkPoint => "since fork".to_owned(),
+        RepoBase::Uncommitted => "uncommitted changes".to_owned(),
+        RepoBase::PullRequestBase => "the pull request's base".to_owned(),
     }
 }
 
@@ -75,17 +145,26 @@ impl Shared {
     ) -> Result<String, DaemonError> {
         const WHAT: &str = "Reading the file";
         let (owner, name) = repo.split_once('/').unwrap_or(("", repo));
-        let location = pb::FileLocation {
-            machine: None,
-            root: Some(pb::file_location::Root::SessionClone(pb::SessionClone {
-                session: Some(pb::SessionId {
-                    value: session.as_str().to_owned(),
-                }),
+        let session_id = Some(pb::SessionId {
+            value: session.as_str().to_owned(),
+        });
+        // D382: a Desk session has no repository; its document sits in the
+        // session's own folder.
+        let root = match repo.is_empty() {
+            true => pb::file_location::Root::SessionFolder(pb::SessionFolder {
+                session: session_id,
+            }),
+            false => pb::file_location::Root::SessionClone(pb::SessionClone {
+                session: session_id,
                 repo: Some(pb::RepoRef {
                     owner: owner.to_owned(),
                     name: name.to_owned(),
                 }),
-            })),
+            }),
+        };
+        let location = pb::FileLocation {
+            machine: None,
+            root: Some(root),
             path: path.to_owned(),
         };
         let mut chunks = self
@@ -114,6 +193,49 @@ impl Shared {
         })
     }
 
+    /// The files in each of the session's clones, as many as
+    /// [`SESSION_FILES_CAP`], for the palette's Files group.
+    pub(crate) async fn find_session_files(
+        &self,
+        session: &SessionId,
+    ) -> Result<Vec<SessionFile>, DaemonError> {
+        let reply = self
+            .file_service()
+            .find_files(pb::FindFilesRequest {
+                session: Some(pb::SessionId {
+                    value: session.as_str().to_owned(),
+                }),
+                query: String::new(),
+                page: Some(pb::PageRequest {
+                    page_size: u32::try_from(humata2_clients::SESSION_FILES_CAP)
+                        .unwrap_or(u32::MAX),
+                    page_token: String::new(),
+                }),
+            })
+            .await
+            .map_err(|status| self.error(&status, "The session's files"))?
+            .into_inner();
+        Ok(reply
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let location = entry.location.as_ref()?;
+                // D382: a Desk session's own folder is named by the empty
+                // repo, as its documents and comments are.
+                let repo = match &location.root {
+                    Some(pb::file_location::Root::SessionClone(clone)) => map::repo_text(clone.repo.as_ref()?),
+                    Some(pb::file_location::Root::SessionFolder(_)) => String::new(),
+                    _ => return None,
+                };
+                Some(SessionFile {
+                    repo,
+                    path: location.path.clone(),
+                    folder: entry.kind == pb::file_entry::Kind::Folder as i32,
+                })
+            })
+            .collect())
+    }
+
     /// What pushing each of the session's repositories would do, with the
     /// token that spends the plan.
     pub(crate) async fn plan_push(&self, session: &SessionId) -> Result<PushPlan, DaemonError> {
@@ -123,6 +245,7 @@ impl Shared {
                 id: Some(pb::SessionId {
                     value: session.as_str().to_owned(),
                 }),
+                spec: None,
             })
             .await
             .map_err(|status| self.error(&status, "Reading what pushing would do"))?
@@ -148,7 +271,7 @@ impl Shared {
         session: &SessionId,
         token: &str,
         choices: Vec<PushChoice>,
-    ) -> Result<Option<u32>, DaemonError> {
+    ) -> Result<Vec<humata2_clients::model::PushedPullRequest>, DaemonError> {
         let mut repos = Vec::with_capacity(choices.len());
         for choice in choices {
             let repo = map::parse_repo(&choice.repo).ok_or_else(|| DaemonError::Refused {
@@ -164,6 +287,7 @@ impl Shared {
                 open_pull_request: choice.open_pull_request,
                 pr_title: choice.title,
                 pr_body: choice.body,
+                base_branch: choice.base_branch,
             });
         }
         let names = repos
@@ -189,10 +313,19 @@ impl Shared {
             .map_err(|status| self.error(&status, &what))?
             .into_inner();
         let done = self.finish(operation, &what).await?;
-        Ok(match done.result {
-            Some(pb::operation::Result::PullRequest(pull_request)) => Some(pull_request.number),
-            _ => None,
-        })
+        Ok(done
+            .pull_requests
+            .into_iter()
+            .map(|pull_request| humata2_clients::model::PushedPullRequest {
+                repo: pull_request
+                    .repo
+                    .as_ref()
+                    .map(map::repo_text)
+                    .unwrap_or_default(),
+                number: pull_request.number,
+                note: pull_request.note,
+            })
+            .collect())
     }
 
     /// Remembers what the session's changes are now as reviewed.
@@ -210,6 +343,67 @@ impl Shared {
             .await
             .map_err(|status| self.error(&status, "Marking the changes reviewed"))?;
         Ok(())
+    }
+
+    /// The branches one repository of the session can be compared with, the
+    /// default branch first, as the session's clone knows them at its last
+    /// fetch. Nothing is fetched.
+    pub(crate) async fn repo_bases(
+        &self,
+        session: &SessionId,
+        repo: &str,
+    ) -> Result<RepoBases, DaemonError> {
+        let what = format!("The branches of {repo}");
+        let repo_ref = map::parse_repo(repo).ok_or_else(|| DaemonError::Refused {
+            what: what.clone(),
+            reason: format!(
+                "{repo} isn't a repository name in owner/name form. Pick one of the session's repositories from its list"
+            ),
+        })?;
+        let listed = self
+            .diffs()
+            .list_bases(pb::ListBasesRequest {
+                session: Some(pb::SessionId {
+                    value: session.as_str().to_owned(),
+                }),
+                repo: Some(repo_ref),
+            })
+            .await
+            .map_err(|status| self.error(&status, &what))?
+            .into_inner();
+        Ok(RepoBases {
+            branches: listed.branches,
+            default_branch: listed.default_branch,
+        })
+    }
+
+    /// Has the daemon ask `repo`'s remote for its default branch in the
+    /// session's clone (frame 98); the branch origin/HEAD names now.
+    pub(crate) async fn find_default_branch(
+        &self,
+        session: &SessionId,
+        repo: &str,
+    ) -> Result<String, DaemonError> {
+        let what = format!("Finding {repo}'s default branch");
+        // The daemon checks the name; one without an owner is a session
+        // repository the daemon knows no owner for.
+        let repo_ref = map::parse_repo(repo).unwrap_or_else(|| pb::RepoRef {
+            owner: String::new(),
+            name: repo.to_owned(),
+        });
+        let found = self
+            .diffs()
+            .find_default_branch(pb::FindDefaultBranchRequest {
+                idempotency_key: fresh_key(),
+                session: Some(pb::SessionId {
+                    value: session.as_str().to_owned(),
+                }),
+                repo: Some(repo_ref),
+            })
+            .await
+            .map_err(|status| self.error(&status, &what))?
+            .into_inner();
+        Ok(found.default_branch)
     }
 
     /// Every repository's changes in the session's clones, against where
@@ -231,6 +425,7 @@ impl Shared {
         let mut diffs = Vec::new();
         for listed in &listing.repos {
             let repo = listed.repo.clone().unwrap_or_default();
+            let name = map::repo_text(&repo);
             let mut files = Vec::new();
             for summary in &listed.files {
                 let mut lines = Vec::new();
@@ -281,9 +476,9 @@ impl Shared {
             }
             diffs.push(RepoDiff {
                 session: session.clone(),
-                repo: map::repo_text(&repo),
+                repo: name.clone(),
                 base: if listed.label.is_empty() {
-                    readable_base(base)
+                    readable_base(base, &name)
                 } else {
                     listed.label.clone()
                 },
@@ -292,5 +487,145 @@ impl Shared {
             });
         }
         Ok(diffs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use humata2_clients::model::RepoDiffSpec;
+
+    use super::*;
+    use pb::diff_spec_base::Base as SpecBase;
+
+    fn spec(repo: &str, base: RepoBase) -> RepoDiffSpec {
+        RepoDiffSpec {
+            repo: repo.to_owned(),
+            base,
+        }
+    }
+
+    fn repo_specs(base: &DiffBase) -> Option<Vec<pb::RepoDiffSpec>> {
+        match wire_base(base)?.base? {
+            pb::diff_base::Base::Spec(each) => Some(each.repos),
+            _ => None,
+        }
+    }
+
+    fn old_side(repo: &pb::RepoDiffSpec) -> Option<SpecBase> {
+        repo.base.clone()?.base
+    }
+
+    fn repo_ref(owner: &str, name: &str) -> Option<pb::RepoRef> {
+        Some(pb::RepoRef {
+            owner: owner.to_owned(),
+            name: name.to_owned(),
+        })
+    }
+
+    #[test]
+    fn each_repository_keeps_its_own_base() {
+        let base = DiffBase::Spec(vec![
+            spec("acme/api", RepoBase::Branch("release/2.4".to_owned())),
+            spec("acme/web", RepoBase::LastReviewed),
+        ]);
+        let Some(repos) = repo_specs(&base) else {
+            panic!("a spec should map to a wire spec");
+        };
+        assert_eq!(repos.len(), 2);
+        assert_eq!(repos[0].repo, repo_ref("acme", "api"));
+        assert_eq!(
+            old_side(&repos[0]),
+            Some(SpecBase::MergeBaseWith("origin/release/2.4".to_owned()))
+        );
+        assert_eq!(repos[1].repo, repo_ref("acme", "web"));
+        assert_eq!(old_side(&repos[1]), Some(SpecBase::ReviewedSnapshot(0)));
+    }
+
+    #[test]
+    fn a_branch_already_on_origin_is_not_prefixed_twice() {
+        let base = DiffBase::Spec(vec![spec(
+            "acme/api",
+            RepoBase::Branch("origin/x".to_owned()),
+        )]);
+        let Some(repos) = repo_specs(&base) else {
+            panic!("a spec should map to a wire spec");
+        };
+        assert_eq!(
+            old_side(&repos[0]),
+            Some(SpecBase::MergeBaseWith("origin/x".to_owned()))
+        );
+    }
+
+    #[test]
+    fn uncommitted_is_head_and_everything_on_disk() {
+        let base = DiffBase::Spec(vec![spec("acme/api", RepoBase::Uncommitted)]);
+        let Some(repos) = repo_specs(&base) else {
+            panic!("a spec should map to a wire spec");
+        };
+        assert_eq!(old_side(&repos[0]), Some(SpecBase::Rev("HEAD".to_owned())));
+        let Some(compare) = repos[0].compare.as_ref() else {
+            panic!("every repository carries its compare side");
+        };
+        assert_eq!(
+            compare.upto,
+            pb::diff_spec_compare::Upto::Unstaged as i32
+        );
+        assert_eq!(
+            compare.untracked,
+            pb::diff_spec_compare::Untracked::All as i32
+        );
+    }
+
+    #[test]
+    fn a_repository_without_its_own_label_shows_its_own_base() {
+        let base = DiffBase::Spec(vec![
+            spec("acme/api", RepoBase::Branch("release/2.4".to_owned())),
+            spec("acme/web", RepoBase::LastReviewed),
+        ]);
+        assert_eq!(readable_base(&base, "acme/api"), "release/2.4");
+        assert_eq!(readable_base(&base, "acme/web"), "last reviewed");
+    }
+
+    #[test]
+    fn a_branch_named_main_is_compared_with_origin_main() {
+        let base = DiffBase::Spec(vec![spec("acme/web", RepoBase::Branch("main".to_owned()))]);
+        let Some(repos) = repo_specs(&base) else {
+            panic!("a spec should map to a wire spec");
+        };
+        assert_eq!(
+            old_side(&repos[0]),
+            Some(SpecBase::MergeBaseWith("origin/main".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_repository_name_that_is_not_owner_slash_name_sends_no_base() {
+        let base = DiffBase::Spec(vec![spec("api", RepoBase::LastReviewed)]);
+        assert!(wire_base(&base).is_none());
+    }
+
+    #[test]
+    fn each_pull_requests_base_is_asked_of_the_daemon() {
+        assert_eq!(
+            wire_base(&DiffBase::PullRequestBase),
+            Some(pb::DiffBase {
+                base: Some(pb::diff_base::Base::PullRequestBase(pb::PullRequestBase {})),
+            })
+        );
+    }
+
+    #[test]
+    fn a_repository_on_its_pull_requests_base_asks_for_it_in_a_spec() {
+        let base = DiffBase::Spec(vec![spec("acme/api", RepoBase::PullRequestBase)]);
+        let Some(pb::DiffBase {
+            base: Some(pb::diff_base::Base::Spec(wire)),
+        }) = wire_base(&base)
+        else {
+            panic!("a spec should map to a wire spec");
+        };
+        assert_eq!(
+            old_side(&wire.repos[0]),
+            Some(SpecBase::PullRequestBase(pb::PullRequestBaseRef {}))
+        );
     }
 }

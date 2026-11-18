@@ -329,6 +329,8 @@ enum MachineActionKind {
   MACHINE_ACTION_KIND_REMOVE = 7;
   MACHINE_ACTION_KIND_FORGET = 8;
   MACHINE_ACTION_KIND_DELETE = 9;       // a provider's delete
+  MACHINE_ACTION_KIND_STOP_SESSIONS = 10;   // stop all of a machine's sessions
+  MACHINE_ACTION_KIND_START_SESSIONS = 11;  // start them again
 }
 
 message MachineAction {

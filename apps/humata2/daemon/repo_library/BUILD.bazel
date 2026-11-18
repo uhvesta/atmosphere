@@ -1,0 +1,36 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The repo library (RL-1 to RL-4): every repo the user has added, kept on
+# the host in one SQLite file of its own (WAL, every write a transaction).
+# User data: nothing rebuilds it. Also the default search scope read from
+# and written to config/repos.toml (RL-7), and the pure merge of the one
+# repo search (RL-6, RL-9). Knows nothing about gh, gRPC or the network.
+rust_library(
+    name = "repo_library",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_repo_library",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        "@crates//:rusqlite",
+        "@crates//:thiserror",
+        "@crates//:toml",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        deps = [
+            ":repo_library",
+            "@crates//:tempfile",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -49,6 +49,7 @@ fn detail(machine: &str, gh_version: &str) -> MachineDetail {
         folders: vec![],
         sessions: vec![],
         rules: vec![],
+        stop: None,
     }
 }
 

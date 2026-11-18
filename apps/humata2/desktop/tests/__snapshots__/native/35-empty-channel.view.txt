@@ -19,12 +19,14 @@ Splitter "Resize the sidebar"
 Button "New session"
 Button "More channel actions" disabled
 Tab "Sessions" selected
+Tab "Desk"
 Tab "Inbox"
 Tab "Board"
 Tab "Repos and machines"
 Tab "Agent access"
 Tab "Activity"
 #channel-empty
-  Button "Add a GitHub repo…" disabled
+  text "Nothing in # web-revamp yet"
+  Button "Add a GitHub repo…"
   Button "Add a machine…"
   Button "New session"

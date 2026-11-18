@@ -30,6 +30,11 @@ pub(super) async fn login<D: Daemon, C: Console>(
         None => return Err(CliError::LoginNeedsTerminal),
     };
     let rpc = rpc::cli_auth::BEGIN_CLI_SESSION;
+    if ctx.flags.dry_run {
+        return ctx
+            .change_present(rpc, |presence| pb::BeginCliSessionRequest { presence, hours })
+            .await;
+    }
     let bytes = ctx
         .present(rpc, |presence| pb::BeginCliSessionRequest { presence, hours })
         .await?;
@@ -68,6 +73,10 @@ pub(super) async fn logout<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result
         ctx.note("This terminal isn't logged in.");
         return Ok(Done::reply(json!({})));
     };
+    if ctx.flags.dry_run && matches!(ctx.principal, Principal::LoggedIn { .. }) {
+        let request = pb::EndCliSessionRequest { id: String::new() };
+        return ctx.change(rpc::cli_auth::END_CLI_SESSION, &request).await;
+    }
     let ended = match ctx.principal {
         Principal::LoggedIn { .. } => {
             let request = pb::EndCliSessionRequest { id: String::new() };

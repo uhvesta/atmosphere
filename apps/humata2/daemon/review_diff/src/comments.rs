@@ -36,6 +36,9 @@ pub enum CommentStatus {
     Sent,
     Addressed,
     Resolved,
+    /// A draft for a pull request that GitHub took (PR-14). Never edited
+    /// or deleted here.
+    Posted,
 }
 
 impl fmt::Display for CommentStatus {
@@ -46,6 +49,7 @@ impl fmt::Display for CommentStatus {
             Self::Sent => "sent",
             Self::Addressed => "addressed",
             Self::Resolved => "resolved",
+            Self::Posted => "posted",
         })
     }
 }
@@ -103,6 +107,19 @@ pub struct UserComment {
     /// Waiting, and Humata can't tell whether an earlier try reached the
     /// terminal.
     pub unconfirmed: bool,
+    /// Who wrote it. A comment for the agent is the user's.
+    pub author: CommentAuthor,
+    /// D284: the pull request this is a draft for, as its repository key
+    /// (`owner/name`) and number. Such a comment is never typed into a
+    /// terminal; it is posted to GitHub on Submit.
+    pub pull_request: Option<(String, u32)>,
+    /// PR-14: the link to the posted comment; set with `Posted`.
+    pub posted_url: Option<String>,
+    /// PR-16: the lines changed since the draft was written.
+    pub outdated: bool,
+    /// D287: a submit was cut short after GitHub may have taken this draft,
+    /// and GitHub lists no review that holds it. Still a draft.
+    pub post_unconfirmed: bool,
 }
 
 /// How far typing a delivery got, as far as Humata knows.
@@ -195,6 +212,12 @@ pub enum CommentError {
     Archived { id: String },
     #[error("delivery {key} is not waiting on an answer; only an unconfirmed delivery can be sent again")]
     NotUnconfirmed { key: String },
+    #[error("comment {id} is a draft for a pull request, not for the agent; it is posted to GitHub from Submit review")]
+    ForPullRequest { id: String },
+    #[error("comment {id} was already posted to GitHub; change or delete it there")]
+    AlreadyPosted { id: String },
+    #[error("comment {id} was written by someone else; only its author changes it")]
+    NotYours { id: String },
 }
 
 /// A session's comments and the deliveries in flight.
@@ -306,8 +329,115 @@ impl CommentLedger {
             archived: None,
             replies: Vec::new(),
             unconfirmed: false,
+            author: CommentAuthor::User,
+            pull_request: None,
+            posted_url: None,
+            outdated: false,
+            post_unconfirmed: false,
         });
         &self.comments[self.comments.len() - 1]
+    }
+
+    /// A new draft for pull request `number` of `repo` (`owner/name`), by
+    /// `author` (D284). Never typed into a terminal.
+    pub fn add_for_pull_request(
+        &mut self,
+        anchor: CommentAnchor,
+        text: &str,
+        author: CommentAuthor,
+        repo: &str,
+        number: u32,
+        at: i64,
+    ) -> &UserComment {
+        self.add(anchor, text, at);
+        let last = self.comments.len() - 1;
+        let c = &mut self.comments[last];
+        c.author = author;
+        c.pull_request = Some((repo.to_owned(), number));
+        &self.comments[last]
+    }
+
+    /// A review chat note becomes a draft for pull request `pr` (its
+    /// repository key and number), keeping its own `id` (D284: in place,
+    /// never a copy). A comment already holding `id` is returned as it is.
+    pub fn adopt_note(
+        &mut self,
+        id: &str,
+        anchor: CommentAnchor,
+        text: &str,
+        author: CommentAuthor,
+        pr: (&str, u32),
+        at: i64,
+    ) -> &UserComment {
+        if let Some(i) = self.comments.iter().position(|c| c.id == id) {
+            return &self.comments[i];
+        }
+        self.add_for_pull_request(anchor, text, author, pr.0, pr.1, at);
+        let last = self.comments.len() - 1;
+        // `add` took the next `c-<n>`; the note keeps its own name and the
+        // number is not spent.
+        self.last_comment -= 1;
+        id.clone_into(&mut self.comments[last].id);
+        &self.comments[last]
+    }
+
+    /// GitHub took the draft (PR-14, D287).
+    pub fn mark_posted(&mut self, id: &str, url: &str) -> Result<&UserComment, CommentError> {
+        let i = self.index(id)?;
+        let c = &mut self.comments[i];
+        c.status = CommentStatus::Posted;
+        c.posted_url = Some(url.to_owned());
+        c.post_unconfirmed = false;
+        c.revision += 1;
+        Ok(&self.comments[i])
+    }
+
+    /// A submit was cut short and GitHub lists no review holding the draft
+    /// (D287), or the user settled that. Returns whether anything changed.
+    pub fn set_post_unconfirmed(&mut self, id: &str, unconfirmed: bool) -> bool {
+        let Ok(i) = self.index(id) else {
+            return false;
+        };
+        let c = &mut self.comments[i];
+        if c.post_unconfirmed == unconfirmed || c.status != CommentStatus::Draft {
+            return false;
+        }
+        c.post_unconfirmed = unconfirmed;
+        c.revision += 1;
+        true
+    }
+
+    /// The lines of a draft for a pull request changed (PR-16). Returns
+    /// whether anything changed.
+    pub fn set_outdated(&mut self, id: &str, outdated: bool) -> bool {
+        let Ok(i) = self.index(id) else {
+            return false;
+        };
+        let c = &mut self.comments[i];
+        if c.outdated == outdated || c.pull_request.is_none() {
+            return false;
+        }
+        c.outdated = outdated;
+        c.revision += 1;
+        true
+    }
+
+    fn refuse_posted(&self, i: usize) -> Result<(), CommentError> {
+        let c = &self.comments[i];
+        if c.status == CommentStatus::Posted {
+            Err(CommentError::AlreadyPosted { id: c.id.clone() })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn refuse_pull_request(&self, i: usize) -> Result<(), CommentError> {
+        let c = &self.comments[i];
+        if c.pull_request.is_some() {
+            Err(CommentError::ForPullRequest { id: c.id.clone() })
+        } else {
+            Ok(())
+        }
     }
 
     /// Changes a draft's text.
@@ -319,6 +449,7 @@ impl CommentLedger {
     ) -> Result<&UserComment, CommentError> {
         let i = self.index(id)?;
         self.check_revision(i, expected)?;
+        self.refuse_posted(i)?;
         let c = &self.comments[i];
         if c.archived.is_some() {
             return Err(CommentError::Archived { id: c.id.clone() });
@@ -339,6 +470,7 @@ impl CommentLedger {
     pub fn remove(&mut self, id: &str, expected: Option<u64>) -> Result<UserComment, CommentError> {
         let i = self.index(id)?;
         self.check_revision(i, expected)?;
+        self.refuse_posted(i)?;
         self.refuse_in_delivery(i)?;
         Ok(self.comments.remove(i))
     }
@@ -352,12 +484,14 @@ impl CommentLedger {
     ) -> Result<&UserComment, CommentError> {
         let i = self.index(id)?;
         self.check_revision(i, expected)?;
+        self.refuse_posted(i)?;
         self.refuse_in_delivery(i)?;
         let c = &mut self.comments[i];
         c.anchor = CommentAnchor {
             detached: false,
             ..anchor
         };
+        c.outdated = false;
         c.revision += 1;
         Ok(&self.comments[i])
     }
@@ -374,6 +508,7 @@ impl CommentLedger {
             return Err(CommentError::NothingToSend);
         }
         for &i in &out {
+            self.refuse_pull_request(i)?;
             let c = &self.comments[i];
             if c.archived.is_some() {
                 return Err(CommentError::Archived { id: c.id.clone() });
@@ -577,6 +712,7 @@ impl CommentLedger {
     ) -> Result<&UserComment, CommentError> {
         let i = self.index(id)?;
         self.check_revision(i, expected)?;
+        self.refuse_pull_request(i)?;
         let c = &self.comments[i];
         let reply = reply.filter(|r| !blank(r));
         match &by {
@@ -728,6 +864,26 @@ impl CommentLedger {
         true
     }
 
+    /// The user changed the anchored lines themselves: they are now `now`,
+    /// at `first..=last`, and the comment stays as it was, a sent one sent.
+    /// Only a sent comment follows the new text; a draft or waiting one is
+    /// [`changed`](Self::changed). Returns whether anything changed.
+    pub fn rebaseline(&mut self, id: &str, first: u32, last: u32, now: Vec<String>) -> bool {
+        let Ok(i) = self.index(id) else {
+            return false;
+        };
+        let c = &mut self.comments[i];
+        if c.archived.is_some() || c.status != CommentStatus::Sent {
+            return false;
+        }
+        c.anchor.first = first;
+        c.anchor.last = last;
+        c.anchor.quoted = now;
+        c.anchor.detached = false;
+        c.revision += 1;
+        true
+    }
+
     /// The anchored lines changed but are still there, at `first..=last`
     /// (SM-7, SM-16, SM-17). A sent comment becomes addressed at those
     /// lines. Returns whether anything changed.
@@ -752,7 +908,7 @@ impl CommentLedger {
                 }
                 c.anchor.detached = true;
             }
-            CommentStatus::Addressed | CommentStatus::Resolved => return false,
+            CommentStatus::Addressed | CommentStatus::Resolved | CommentStatus::Posted => return false,
         }
         c.revision += 1;
         true
@@ -783,7 +939,7 @@ impl CommentLedger {
                 }
                 c.anchor.detached = true;
             }
-            CommentStatus::Addressed | CommentStatus::Resolved => return false,
+            CommentStatus::Addressed | CommentStatus::Resolved | CommentStatus::Posted => return false,
         }
         c.revision += 1;
         true
@@ -811,14 +967,18 @@ impl CommentLedger {
             .collect()
     }
 
-    /// Drafts that are not archived or detached (SM-15).
+    /// Drafts for the agent that are not archived or detached (SM-15).
+    /// Drafts for a pull request are not counted.
     #[must_use]
     pub fn draft_count(&self) -> u32 {
         let n = self
             .comments
             .iter()
             .filter(|c| {
-                c.status == CommentStatus::Draft && c.archived.is_none() && !c.anchor.detached
+                c.status == CommentStatus::Draft
+                    && c.archived.is_none()
+                    && !c.anchor.detached
+                    && c.pull_request.is_none()
             })
             .count();
         u32::try_from(n).unwrap_or(u32::MAX)

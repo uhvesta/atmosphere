@@ -38,6 +38,9 @@ const LIVE_CHUNKS: usize = 256;
 const HANG_UP_GRACE: Duration = Duration::from_secs(2);
 /// How many keyed inputs the holder remembers having typed.
 const KEYS_KEPT: usize = 256;
+/// How often an `AwaitKeys` looks at the terminal's modes again: nothing
+/// tells the holder when the program changes them.
+const KEYS_LOOK_EVERY: Duration = Duration::from_millis(20);
 
 /// The keys of the keyed inputs typed, the most recent `KEYS_KEPT`. Kept
 /// in memory only: a holder that starts again runs a new program on a new
@@ -112,6 +115,11 @@ struct Shared {
     wrote: Notify,
     /// The program's exit code, once it has exited.
     exit: watch::Sender<Option<i32>>,
+    /// When the program started.
+    started: tokio::time::Instant,
+    /// Test builds only: where each sync says how far it got.
+    #[cfg(feature = "faults")]
+    synced_at: PathBuf,
 }
 
 impl Shared {
@@ -142,9 +150,24 @@ impl Shared {
 
     /// Syncs output written since the last sync.
     fn sync_saved(&self) {
+        // Read first: every byte before it is in the file the take below
+        // syncs.
+        #[cfg(feature = "faults")]
+        let end = {
+            let state = self.lock();
+            state.saved.is_some().then(|| state.kept.end())
+        };
         let file = self.lock().saved.as_mut().and_then(SaveLog::take_unsynced);
-        if let Some(file) = file {
-            let _ = file.sync_data();
+        #[cfg_attr(not(feature = "faults"), allow(unused_variables))]
+        let synced = match file {
+            Some(file) => file.sync_data().is_ok(),
+            None => true,
+        };
+        // Nothing left to sync counts as synced through the end. A save log
+        // that failed does too, and a test then finds its output missing.
+        #[cfg(feature = "faults")]
+        if synced && let Some(end) = end {
+            let _ = fs::write(&self.synced_at, end.to_string());
         }
     }
 
@@ -210,6 +233,37 @@ impl Shared {
         Ok(false)
     }
 
+    /// Whether the program reads keys itself: it turned the terminal's line
+    /// editing off, as a full-screen program does once it's up. Until then
+    /// the terminal echoes and holds what's typed itself.
+    fn reads_keys(&self) -> bool {
+        rustix::termios::tcgetattr(&self.master).is_ok_and(|modes| {
+            !modes
+                .local_modes
+                .contains(rustix::termios::LocalModes::ICANON)
+        })
+    }
+
+    /// Waits until the program reads keys itself, it ends, or it has run
+    /// for `starting`: one that still edits lines by then is taken to keep
+    /// doing so. Returns whether it reads keys.
+    async fn await_keys(&self, starting: Duration) -> bool {
+        let mut exit = self.exit.subscribe();
+        let deadline = self.started + starting;
+        loop {
+            if self.reads_keys() {
+                return true;
+            }
+            if exit.borrow_and_update().is_some() || tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::select! {
+                () = tokio::time::sleep(KEYS_LOOK_EVERY) => {}
+                _ = exit.changed() => {}
+            }
+        }
+    }
+
     fn has_key(&self, key: &str) -> bool {
         self.keys
             .lock()
@@ -246,6 +300,9 @@ pub async fn serve(options: ServeOptions, ready: impl FnOnce()) -> Result<(), Ho
             source,
         });
     }
+    // A marker a holder cut on this socket left says nothing of this one.
+    #[cfg(feature = "faults")]
+    let _ = fs::remove_file(synced_path(&options.socket));
     let started = match &options.saved {
         Some(path) => SaveLog::open(path, options.scrollback_bytes)
             .map(|(log, kept)| (Some(log), kept)),
@@ -264,6 +321,8 @@ pub async fn serve(options: ServeOptions, ready: impl FnOnce()) -> Result<(), Ho
     // the signal's default.
     #[cfg(feature = "faults")]
     power_cut_on_sigusr2();
+    #[cfg(feature = "faults")]
+    let _ = SERVING.set(options.socket.clone());
     ready();
 
     let syncing = shared.clone();
@@ -313,11 +372,36 @@ pub async fn serve(options: ServeOptions, ready: impl FnOnce()) -> Result<(), Ho
         shared.sync_saved();
         shared.lock().saved.take();
     }
+    #[cfg(feature = "faults")]
+    let _ = fs::remove_file(&shared.synced_at);
     let _ = fs::remove_file(&pid_file);
     drop(listener);
     let _ = fs::remove_file(&options.socket);
     shared.end_program().await;
     Ok(())
+}
+
+/// Test builds only: the socket this holder serves, so a fault can be
+/// switched on beside it.
+#[cfg(feature = "faults")]
+static SERVING: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Test builds only: whether the holder ignores its shutdown while still
+/// answering, as a wedged one would. A file `<socket stem>.ignore-shutdown`
+/// beside its socket switches it on.
+#[cfg(feature = "faults")]
+fn ignores_shutdown() -> bool {
+    SERVING
+        .get()
+        .is_some_and(|socket| socket.with_extension("ignore-shutdown").exists())
+}
+
+/// Test builds only: the file beside `socket` where its holder writes the
+/// offset its saved output is synced through, as decimal text, after each
+/// sync. A power-cut test waits for it, not for a guessed time.
+#[cfg(feature = "faults")]
+fn synced_path(socket: &Path) -> PathBuf {
+    socket.with_extension("synced")
 }
 
 /// Test builds only: SIGUSR2 stops the holder as a power cut would, with
@@ -551,6 +635,9 @@ fn start(
         stop: watch::channel(false).0,
         wrote: Notify::new(),
         exit: watch::channel(None).0,
+        started: tokio::time::Instant::now(),
+        #[cfg(feature = "faults")]
+        synced_at: synced_path(&options.socket),
     });
 
     let (exit_read, mut exit_write) = std::io::pipe().map_err(started)?;
@@ -795,11 +882,22 @@ async fn commands(shared: Arc<Shared>, mut read: OwnedReadHalf, replies: mpsc::S
                 arrived: shared.has_key(&key),
                 instance: shared.instance,
             }),
+            Ok(ClientFrame::AwaitKeys { starting_ms }) => Some(ServerFrame::KeysRead {
+                ready: shared
+                    .await_keys(Duration::from_millis(u64::from(starting_ms)))
+                    .await,
+            }),
             Ok(ClientFrame::Resize { cols, rows }) => {
                 shared.resize(cols, rows).err().map(|error| refused(&error))
             }
             Ok(ClientFrame::Shutdown) => {
-                shared.stop.send_replace(true);
+                #[cfg(feature = "faults")]
+                let ignored = ignores_shutdown();
+                #[cfg(not(feature = "faults"))]
+                let ignored = false;
+                if !ignored {
+                    shared.stop.send_replace(true);
+                }
                 None
             }
             Ok(ClientFrame::Hello { .. }) | Err(_) => break,

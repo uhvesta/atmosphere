@@ -19,7 +19,7 @@ How to read this file, and what the tags mean: [README](README.md).
 
 1. **Do:** on the Desk, click **Copy to a channel…** on `spec.md` and pick `#ledger-v2`.
    **Expect:** `#ledger-v2/shared/spec.md` exists, and every session's agent in the channel can read it.
-   **Status: Works** in the daemon: `daemon/humatad/tests/desk.rs::markdown_in_the_folder_is_listed_and_copies_into_a_channels_shared_folder`. The app is **Fakes only** (flow 1, step 7). Moving the spec's Desk session into the channel is **Not built: ROAM** (DK-15–DK-19).
+   **Status: Works** in the daemon: `daemon/humatad/tests/desk.rs::markdown_in_the_folder_is_listed_and_copies_into_a_channels_shared_folder`. The app **Works**: `desktop/tests/live_flows/desk.rs::a_desk_session_starts_from_the_page_gets_a_repo_and_its_document_is_copied_to_a_channel` clicks **Copy to a channel…** and picks the channel (flow 1, step 7). Moving the spec's Desk session into the channel is **Not built: ROAM** (DK-15–DK-19).
 
 ### The milestones
 
@@ -29,7 +29,7 @@ How to read this file, and what the tags mean: [README](README.md).
    - Each item gets the channel's key (for example LV-1).
    - A dependency that would make a loop is refused.
    - Events: BoardItem created ×5; BoardItem updated per dependency.
-   **Status: Works** in the client: `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` and `::a_dependency_is_listed_refuses_a_loop_and_can_be_removed`. The clicks are **Fakes only**: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_answers_the_item_request` and `features/board/tests/drawer.rs`.
+   **Status: Works** in the client: `clients/live/tests/boards.rs::a_channel_item_gets_the_channels_key_and_is_listed_in_to_do` and `::a_dependency_is_listed_refuses_a_loop_and_can_be_removed`. The clicks **Work** against a real daemon: `desktop/tests/live_boards.rs::new_items_get_the_channels_key_and_a_dependency_is_set_from_the_picker` (New item makes items with the channel's key, and the drawer's picker sets a dependency and leaves out the item itself and one that would make a loop). Fake-client versions: `desktop/tests/native/board.rs::board_creates_in_selected_column_and_answers_the_item_request` and `features/board/tests/drawer.rs`.
 
 3. **Do (instead of 2):** in a session, ask the agent: "Read `shared/spec.md` and put the milestones on the board."
    **Expect:**
@@ -40,7 +40,7 @@ How to read this file, and what the tags mean: [README](README.md).
 
 4. **Do:** switch between **Board**, **Table** and **Dashboard**, and set the scope to **By channel**.
    **See:** the same items in each view.
-   **Status: Fakes only.** `desktop/tests/native/board.rs::board_reference_images` and `features/board/tests/scope.rs`. A graph of the dependency edges is **Not built, no milestone**: they show only as the drawer's Depends on list.
+   **Status: Works.** `desktop/tests/live_boards.rs::the_three_views_show_the_same_items_and_a_dashboard_figure_opens_what_it_counts` shows the same items in Board, Table and Dashboard for the channel's scope, and a dashboard figure opens what it counts. Fake-client versions: `desktop/tests/native/board.rs::board_reference_images` and `features/board/tests/scope.rs`. A graph of the dependency edges is **Not built, no milestone**: they show only as the drawer's Depends on list.
 
 ### Working the milestones
 
@@ -49,7 +49,7 @@ How to read this file, and what the tags mean: [README](README.md).
    **Expect:**
    - The session is linked to the item, and the agent is told what the item is.
    - Events: Session created; BoardItem updated (In progress, a session added).
-   **Status: Works** in the client: `clients/live/tests/boards.rs::a_session_started_for_a_to_do_item_works_on_it_and_moves_it_in_progress` and `::a_session_set_on_an_item_is_listed_until_it_is_taken_off`. The button is **Fakes only**: `features/app/tests/board_start.rs::starting_a_session_for_a_to_do_item_adds_it_and_starts_the_item`.
+   **Status: Works** in the client: `clients/live/tests/boards.rs::a_session_started_for_a_to_do_item_works_on_it_and_moves_it_in_progress` and `::a_session_set_on_an_item_is_listed_until_it_is_taken_off`. The button **Works** against a real daemon: `desktop/tests/live_boards.rs::starting_a_session_for_a_to_do_item_opens_it_and_moves_the_item_in_progress` (the filled-in sheet opens the session and the item is In progress with the session listed). Fake-client version: `features/app/tests/board_start.rs::starting_a_session_for_a_to_do_item_adds_it_and_starts_the_item`.
 
 6. **Do:** while the agent works, type two more asks.
    **See:** they wait under **Waiting to send**, each with **Send now** and **Remove**.
@@ -58,7 +58,8 @@ How to read this file, and what the tags mean: [README](README.md).
    - A message that fails to send stays, for retry.
    - Events: Session updated (Working → Idle → Working).
    **Status:**
-   - The queue: **Fakes only**, `desktop/tests/native/queue.rs::queued_messages_can_be_shown_removed_and_sent_and_presence_follows_the_tab`, `::uncertain_turn_end_keeps_the_queue_visible_until_explicit_send` and `::a_failed_queued_message_stays_visible_for_retry`. The queue lives in the app (SE-23), and no live test drives it.
+   - The queue **Works** against a real agent: `desktop/tests/live_flows/queue.rs::messages_typed_mid_turn_wait_can_be_shown_and_removed_and_the_rest_reaches_the_agent` (nothing is typed while the turn's end is uncertain; Remove drops one; Send now types the other). Fake-client versions: `desktop/tests/native/queue.rs::queued_messages_can_be_shown_removed_and_sent_and_presence_follows_the_tab`, `::uncertain_turn_end_keeps_the_queue_visible_until_explicit_send` and `::a_failed_queued_message_stays_visible_for_retry`.
+   - Typing an ask into the queue: **Not built** (D381). No control in `ui/src` sends `SessionAction::Draft` or `Submit`; keys go to the terminal. The tests add the two asks as app actions.
    - Knowing the turn ended: **Works** in the daemon, from the agent's hooks: `daemon/humatad/tests/turns.rs::the_hooks_move_a_session_between_idle_working_and_needing_input`. An agent with no hooks shows "Probably idle": `::an_agent_with_no_hook_that_goes_quiet_is_probably_idle_until_it_writes_again`.
 
 7. **Do:** the agent asks to move Schema to Done. Open the item's drawer, review it, and click **Move to Done**.
@@ -78,7 +79,7 @@ How to read this file, and what the tags mean: [README](README.md).
    - Events: Session created (with a fork origin); Session updated (the parent's forks).
    **Status:**
    - **Works** in the daemon: `daemon/humatad/tests/fork.rs::code_and_context_copies_the_work_and_the_conversation` and `::code_only_copies_the_work_into_a_fresh_conversation`; `daemon/humatad/tests/context_fork.rs::a_context_only_fork_carries_the_conversation_and_works_in_the_parents_code` and `::a_fork_before_a_turn_carries_the_conversation_up_to_it_and_the_code_as_now`.
-   - The dialog is **Fakes only**: `desktop/tests/native/fork_move.rs::the_fork_dialog_matches_frame_62_and_forks_what_it_shows`. No live client or live app test forks.
+   - The dialog **Works** for Code + context from Now: `desktop/tests/live_flows/lifecycle.rs::forking_from_the_fork_dialog_starts_a_child_session_on_the_daemon` (Fork opens the dialog, a child session opens and nests under its parent, and the daemon lists it with the parent). The other choices **Work** too, clicked in the dialog: `desktop/tests/live_flows/fork_kinds.rs``::a_code_only_fork_copies_the_files_into_a_fresh_conversation`, `::a_context_only_fork_carries_the_conversation_and_shares_the_parents_files` and `::a_fork_from_before_a_turn_carries_the_conversation_up_to_it`. Fake-client version: `desktop/tests/native/fork_move.rs::the_fork_dialog_matches_frame_62_and_forks_what_it_shows`.
    - Forking to Codex or Copilot: the daemon can hand over a summary (`fork.rs::a_fork_with_another_agent_is_handed_the_conversation_and_a_summary`). But a real daemon only knows Claude Code and OpenCode unless an agents file adds more. **Not built: ROAM** (batch 3, built-in Codex and Copilot kinds).
 
 ### Across machines
@@ -91,7 +92,7 @@ How to read this file, and what the tags mean: [README](README.md).
    - Events: Operation created, then updated per step, then Succeeded; Machine created.
    **Status:**
    - **Works** in the client and daemon, over a fake `ssh`: `clients/live/tests/machines.rs::a_trusted_add_runs_every_step_and_ends_with_the_machine`, `::a_provider_that_needs_a_login_is_logged_in_by_hand_and_becomes_a_machine` and `::a_first_skills_sync_is_previewed_then_applied_with_its_plan`; `daemon/humatad/tests/providers.rs::a_machine_is_created_through_its_provider_then_run_and_deleted_by_the_provider`.
-   - The dialog is **Fakes only**: `desktop/tests/machines_flow.rs::the_popup_lists_the_hosts_then_the_providers_and_a_provider_adds_with_its_params`, `::a_login_shows_the_terminal_takes_keys_and_leads_to_the_unattended_offer` and `::an_add_over_ssh_fails_at_install_and_try_again_retries_the_same_add`.
+   - The dialog **Works** for an SSH add: `desktop/tests/live_machines.rs::adding_a_machine_over_ssh_shows_its_host_key_and_lists_it_once_confirmed` (real daemon and machines client, a fake machine behind a fake `ssh`; nothing installs until Confirm). Through a provider and its login it **Works** too: `desktop/tests/live_machines.rs::the_popup_lists_a_provider_and_it_adds_a_machine_with_its_params` (the typed param and the default reach the provider), `::a_login_by_hand_in_the_dialog_leads_to_the_unattended_offer_and_the_machine` and `::an_add_over_ssh_fails_at_install_and_try_again_finishes_it` (Try again finishes the add with no new Add). Fake-client versions: `desktop/tests/machines_flow.rs::the_popup_lists_the_hosts_then_the_providers_and_a_provider_adds_with_its_params`, `::a_login_shows_the_terminal_takes_keys_and_leads_to_the_unattended_offer` and `::an_add_over_ssh_fails_at_install_and_try_again_retries_the_same_add`.
    - A real VM over real SSH: **Not built: LINUX** (blocked). Lima is only an example in the provider list (`providers.rs::providers_are_listed_with_their_params_and_names_of_variables_and_the_lima_example`).
    - Host variables: **Not built, no milestone** (a MACH follow-up). The client answers "not served yet" (`clients/live/tests/machines.rs::host_variables_answer_not_served_yet`).
 
@@ -105,6 +106,7 @@ How to read this file, and what the tags mean: [README](README.md).
     - Events: Session updated (Moving), then (Working, machine devbox-1); Operation updated per step.
     **Status:**
     - Adding a machine to a channel that exists: **Not built, no milestone** (like Add a GitHub repo…, flow 2 step 8).
+    - On devbox-1, every repo picker and `humata repos search` already know `acme/ledger` and `acme/api`. Nothing is typed again, because the library is on the host (RL-1, RL-12). Backfill needs `warehouse-co/loader`, which is outside the `acme` scope: **+ Org** `warehouse-co` finds it for that search only (RL-8). The pickers **Work** live: `desktop/tests/live_flows/repo_library.rs::a_repo_added_once_is_listed_first_in_the_next_new_channel_even_with_github_out_of_reach`. A box agent's `repo_search` reaching the host **Works** in the daemon: `daemon/humatad/tests/away_forward.rs::an_agents_repo_search_on_a_machine_goes_up_and_the_hosts_answer_is_the_agents` and `::away_an_agents_repo_search_is_host_unreachable_and_answers_nothing`, with the host side in `daemon/humatad/src/board_service/replay.rs::a_forwarded_library_list_answers_with_the_hosts_library` (D568). **+ Org** for one search is **Fakes only**: `features/app/tests/repo_search.rs::widening_with_an_owner_keeps_the_scope_and_adds_the_owner_to_it`, with the daemon part in `daemon/humatad/tests/repos.rs::a_scope_for_one_search_is_used_once_and_never_saved`. My own `humata repos search` over SSH, outside every session, is **Not built, no milestone**: a machine refuses it with a fix pointing at the host, since AWAY cut MachineUser forwarding.
     - The move **Works** in the daemon: `daemon/humatad/tests/move_session.rs::a_moving_session_s_terminal_is_read_only_until_it_resumes`, `::a_move_whose_copy_fails_leaves_it_running_on_the_source_and_names_the_step` and `::a_moved_conversation_is_mirrored_once`.
     - The dialog is **Fakes only**: `desktop/tests/native/fork_move.rs::the_move_dialog_matches_frame_63_and_moves_to_the_picked_machine`. The palette's Move asks for a machine against a real daemon, but that rig has one machine, so nothing moves (`desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds`).
 
@@ -136,7 +138,7 @@ How to read this file, and what the tags mean: [README](README.md).
     **Expect:**
     - Forks of an archived session move up in the tree and keep running.
     - Restoring the parent puts them back under it.
-    **Status: Works** in the daemon: `daemon/humatad/tests/archive.rs::forks_move_up_while_their_parent_is_archived_and_back_on_restore`. The screen is **Fakes only**, and Undo fails live (flow 2, step 14).
+    **Status: Works** in the daemon: `daemon/humatad/tests/archive.rs::forks_move_up_while_their_parent_is_archived_and_back_on_restore`. The archive menu and Undo **Work** against a real daemon: `desktop/tests/live_flows/lifecycle.rs::archiving_a_session_from_its_menu_and_undoing_brings_it_back` (flow 2, step 14). Forks moving up in the tree is **Fakes only**: no live test archives a session that has forks.
 
 15. **Do:** a month later, the work moves to a new team channel. On the main session, pick **Continue in another channel…**.
     **Expect:** a session in the new channel that carries the conversation.
@@ -148,8 +150,9 @@ How to read this file, and what the tags mean: [README](README.md).
 
 ## Gaps this flow shows
 
-- No app test moves, forks or archives a session against a real daemon, and the live app rig has one machine. These are the steps where losing work hurts most.
+- No app test moves a session against a real daemon, and the live app rig has one machine. Forking (Code + context) and archiving with Undo are now tested live, but not archiving a session that has forks.
 - A channel's repos and machines are fixed when it's made. The app can't add either later.
+- Repos used before are offered in later channels, and a box agent's search reaches the host's library (D568). My own `humata repos search` on a box isn't forwarded (MachineUser forwarding, cut in AWAY; no milestone).
 - **Reconnect now** fails against a real daemon, and nothing tells me when a machine is back.
 - Codex and Copilot appear under **Runs**, but a real daemon refuses them without an agents file (ROAM batch 3).
 - Machines are only ever reached through a fake `ssh` in daemon tests. Real SSH and a real VM are LINUX, which is blocked.

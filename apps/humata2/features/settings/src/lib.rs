@@ -2,9 +2,19 @@
 //! start with, and keys kept in the keychain. Saved between launches.
 
 mod access;
+// AGENTSET (D725): Settings › Agents › Agents.
+mod agents;
 
 pub use access::{AccessAction, AccessState};
+pub use agents::{AgentsAction, AgentsState};
+// REPOS (ST-21): Settings › General › Repositories.
+mod repositories;
 
+pub use repositories::{RepositoriesAction, RepositoriesState};
+
+use humata2_clients::machines::{
+    MachineScripts, SCRIPT_RULES_PATH, SCRIPT_RULES_STARTER, SCRIPTS_FOLDER,
+};
 use humata2_clients::model::Agent;
 use humata2_clients::{Clients, DaemonError, KeychainError};
 use serde::{Deserialize, Serialize};
@@ -40,6 +50,12 @@ pub struct Preferences {
     pub confirm_destructive: bool,
     /// Show extra app alerts when an agent requests permission.
     pub permission_request_alerts: bool,
+    /// A terminal tab that stays hidden for 30 seconds gives its screen
+    /// memory back, and shows a fresh copy when opened again.
+    pub free_hidden_terminals: bool,
+    /// On a Mac keyboard, ⌥ keys send Esc and the key instead of the
+    /// character the layout gives (D420).
+    pub option_as_alt: bool,
 }
 
 impl Default for Preferences {
@@ -52,6 +68,8 @@ impl Default for Preferences {
             confirm_destructive: true,
             show_pinned: true,
             permission_request_alerts: false,
+            free_hidden_terminals: true,
+            option_as_alt: false,
         }
     }
 }
@@ -121,11 +139,15 @@ pub enum Row {
     AsksInInbox,
     /// Extra app alerts for permission requests.
     PermissionRequestAlerts,
+    /// Hidden terminals give their screen memory back.
+    FreeHiddenTerminals,
+    /// ⌥ keys send Esc and the key (D420).
+    OptionAsAlt,
 }
 
 impl Row {
     /// Every row, in the order the page shows them.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Appearance,
         Self::TerminalFont,
         Self::SidebarShowsPinned,
@@ -134,6 +156,8 @@ impl Row {
         Self::DefaultAgent,
         Self::AsksInInbox,
         Self::PermissionRequestAlerts,
+        Self::FreeHiddenTerminals,
+        Self::OptionAsAlt,
     ];
 
     /// Its label on the page.
@@ -148,6 +172,8 @@ impl Row {
             Self::DefaultAgent => "Default agent",
             Self::AsksInInbox => "Ask for permission in the Inbox",
             Self::PermissionRequestAlerts => "Permission request alerts",
+            Self::FreeHiddenTerminals => "Free memory of hidden terminals",
+            Self::OptionAsAlt => "Option acts as Alt",
         }
     }
 
@@ -158,9 +184,10 @@ impl Row {
             Self::Appearance | Self::TerminalFont | Self::SidebarShowsPinned | Self::LongLines => {
                 Section::Layout
             }
-            Self::ConfirmBulkApprovals => Section::General,
+            Self::ConfirmBulkApprovals | Self::FreeHiddenTerminals => Section::General,
             Self::DefaultAgent | Self::AsksInInbox => Section::Agents,
             Self::PermissionRequestAlerts => Section::Notifications,
+            Self::OptionAsAlt => Section::Keyboard,
         }
     }
 }
@@ -180,6 +207,10 @@ pub struct SettingsState {
     pub error: Option<String>,
     /// The channel Agent access tab's in-flight changes.
     pub access: AccessState,
+    /// REPOS (ST-21): the Repositories section of General.
+    pub repos: RepositoriesState,
+    /// AGENTSET (D725): which agents Humata offers.
+    pub agents: AgentsState,
     /// Whether the terminal font size list is open.
     pub font_menu: bool,
     /// The row the palette opened the page at.
@@ -191,6 +222,10 @@ pub struct SettingsState {
     pub asks_saving: bool,
     /// Whether Codex's hooks still need trusting in its /hooks (D202).
     pub codex_needs_trust: bool,
+    /// The owner's machine scripts, as the Machines section last read them (MACHINESCRIPTS).
+    pub scripts: Option<MachineScripts>,
+    /// Why reading the scripts, or opening the rules or folder, failed, as text.
+    pub scripts_error: Option<String>,
 }
 
 /// What happens on the settings page.
@@ -216,6 +251,10 @@ pub enum SettingsAction {
     ToggleConfirm,
     /// Enable or disable extra permission-request alerts.
     TogglePermissionRequestAlerts,
+    /// Free the memory of terminals hidden for 30 seconds, or keep every screen.
+    ToggleFreeHiddenTerminals,
+    /// Make ⌥ act as Alt in terminals, or type the layout's characters.
+    ToggleOptionAsAlt,
     /// Send agents' permission asks to the Inbox, or to their own prompt (D199).
     ToggleAsksInInbox,
     /// The daemon saved the Inbox setting, or refused it. `wanted` is what
@@ -238,6 +277,16 @@ pub enum SettingsAction {
     SaveKey,
     /// The channel Agent access tab.
     Access(AccessAction),
+    /// REPOS (ST-21): Settings › General › Repositories.
+    Repos(RepositoriesAction),
+    /// AGENTSET (D725): Settings › Agents › Agents.
+    Agents(AgentsAction),
+    /// MACHINESCRIPTS: the host answered the read of the rules and script names, or couldn't.
+    ScriptsShown(Result<MachineScripts, DaemonError>),
+    /// Edit rules: open the rules file in the editor, making it first when it isn't there.
+    EditScriptRules,
+    /// Reveal scripts: show the scripts folder in Finder, making it first when it isn't there.
+    RevealScripts,
 }
 
 /// The settings page's reducer.
@@ -249,6 +298,16 @@ pub struct Settings {
 /// The keychain item an OpenCode key is kept in.
 pub const KEY_NAME: &str = "opencode-api-key";
 
+impl SettingsState {
+    /// The built-in agents pickers list, in menu order: the enabled ones, or
+    /// all of them until the daemon has said (AGENTSET). Never the shell:
+    /// a picker adds Terminal itself where it offers one.
+    #[must_use]
+    pub fn offered_agents(&self) -> Vec<Agent> {
+        self.agents.offered()
+    }
+}
+
 impl Settings {
     /// A settings page that keeps keys with `clients`.
     #[must_use]
@@ -256,15 +315,26 @@ impl Settings {
         Self { clients }
     }
 
+    /// Reads the owner's machine scripts (MACHINESCRIPTS), as the Machines section opens.
+    fn read_scripts(&self) -> Effect<SettingsAction> {
+        let call = self.clients.machines.scripts(None);
+        Effect::future(async move { SettingsAction::ScriptsShown(call.await) })
+    }
+
     /// Reads where the daemon sends permission asks, then whether Codex's
-    /// hooks need trusting, as the Agents section opens.
+    /// hooks need trusting, then the agents' switches, as the Agents section
+    /// opens.
     fn read_asks(&self) -> Effect<SettingsAction> {
         let asks = self.clients.daemon.clone();
         let trust = self.clients.daemon.clone();
+        let switches = self.clients.daemon.clone();
         Effect::concat([
             Effect::future(async move { SettingsAction::AsksShown(asks.asks_in_inbox().await) }),
             Effect::future(async move {
                 SettingsAction::CodexTrustShown(trust.codex_needs_trust().await)
+            }),
+            Effect::future(async move {
+                SettingsAction::Agents(AgentsAction::Loaded(switches.agent_switches().await))
             }),
         ])
     }
@@ -279,6 +349,14 @@ impl Reducer for Settings {
             return access::reduce(&self.clients, &mut state.access, action)
                 .map(SettingsAction::Access);
         }
+        if let SettingsAction::Repos(action) = action {
+            return repositories::reduce(&self.clients, &mut state.repos, action)
+                .map(SettingsAction::Repos);
+        }
+        if let SettingsAction::Agents(action) = action {
+            return agents::reduce(&self.clients, &mut state.agents, &mut state.error, action)
+                .map(SettingsAction::Agents);
+        }
         let preferences = &mut state.preferences;
         match action {
             SettingsAction::Restore(restored) => {
@@ -291,6 +369,10 @@ impl Reducer for Settings {
                 state.revealed = None;
                 if section == Section::Agents {
                     return self.read_asks();
+                }
+                // SEAM (MACHINESCRIPTS): the Scripts block of Machines reads the rules.
+                if section == Section::Machines {
+                    return self.read_scripts();
                 }
             }
             SettingsAction::Reveal(row) => {
@@ -347,8 +429,40 @@ impl Reducer for Settings {
             SettingsAction::TogglePermissionRequestAlerts => {
                 preferences.permission_request_alerts = !preferences.permission_request_alerts;
             }
+            SettingsAction::ToggleFreeHiddenTerminals => {
+                preferences.free_hidden_terminals = !preferences.free_hidden_terminals;
+            }
+            SettingsAction::ToggleOptionAsAlt => {
+                preferences.option_as_alt = !preferences.option_as_alt;
+            }
             SettingsAction::SetAgent(agent) => preferences.default_agent = agent,
             SettingsAction::Access(_) => {}
+            SettingsAction::Repos(_) => {}
+            SettingsAction::Agents(_) => {}
+            SettingsAction::ScriptsShown(result) => match result {
+                Ok(scripts) => {
+                    state.scripts = Some(scripts);
+                    state.scripts_error = None;
+                }
+                // Keep what was read: only this read failed.
+                Err(error) => state.scripts_error = Some(error.to_string()),
+            },
+            SettingsAction::EditScriptRules => {
+                state.scripts_error = self
+                    .clients
+                    .reveal
+                    .edit(SCRIPT_RULES_PATH, SCRIPT_RULES_STARTER)
+                    .err()
+                    .map(|error| error.to_string());
+            }
+            SettingsAction::RevealScripts => {
+                state.scripts_error = self
+                    .clients
+                    .reveal
+                    .reveal_folder(SCRIPTS_FOLDER)
+                    .err()
+                    .map(|error| error.to_string());
+            }
             SettingsAction::Key(key) => state.key = key,
             SettingsAction::SaveKey => {
                 let key = std::mem::take(&mut state.key);

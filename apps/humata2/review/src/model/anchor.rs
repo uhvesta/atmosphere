@@ -1,6 +1,8 @@
 //! Where a comment points: a line range on one side of one file at one base,
 //! with the text it quotes, so it can follow the code when the code moves.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::review::{FileKey, Side};
@@ -126,6 +128,46 @@ pub fn place(quoted: &[String], at: LineRange, lines: &[(u32, &str)]) -> Placeme
         },
         None => Placement::Outdated,
     }
+}
+
+/// The words of a line: maximal runs of alphanumeric characters.
+fn words(line: &str) -> impl Iterator<Item = &str> {
+    line.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+}
+
+/// Whether an outdated anchor's passage is gone rather than changed
+/// (SM-16, D190), as the daemon decides it: fewer than half of the quoted
+/// words, counted as a multiset, are left in the best window of the quote's
+/// length (the whole side if it is shorter), or the side has no lines. A
+/// quote with no words is gone when its own lines are no longer there.
+pub(super) fn passage_gone(quoted: &[String], at: LineRange, lines: &[(u32, &str)]) -> bool {
+    if lines.is_empty() {
+        return true;
+    }
+    let mut want: HashMap<&str, usize> = HashMap::new();
+    for word in quoted.iter().flat_map(|line| words(line)) {
+        *want.entry(word).or_default() += 1;
+    }
+    let total: usize = want.values().sum();
+    if total == 0 {
+        return !lines.iter().any(|(number, _)| at.contains(*number));
+    }
+    let width = quoted.len().clamp(1, lines.len());
+    let best = lines
+        .windows(width)
+        .map(|window| {
+            let mut have: HashMap<&str, usize> = HashMap::new();
+            for word in window.iter().flat_map(|(_, text)| words(text)) {
+                *have.entry(word).or_default() += 1;
+            }
+            want.iter()
+                .map(|(word, count)| (*count).min(have.get(word).copied().unwrap_or(0)))
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    2 * best < total
 }
 
 /// The quote for `range` from the `(number, text)` lines of a side.

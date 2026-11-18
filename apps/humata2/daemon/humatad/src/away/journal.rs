@@ -19,6 +19,8 @@ use crate::grant_target;
 pub(crate) const REQUEST: &str = "inbox.request";
 pub(crate) const ANSWER: &str = "inbox.answer";
 pub(crate) const WITHDRAWN: &str = "inbox.withdrawn";
+/// A view the session's agent marked ready, kept whole for the host (VW-12).
+pub(crate) const VIEW_OFFERED: &str = "view.offered";
 
 /// Why the journal couldn't be written or read.
 #[derive(Debug, thiserror::Error)]
@@ -163,6 +165,29 @@ pub(crate) async fn record_board(
     let session = session.to_owned();
     let seq = tokio::task::spawn_blocking(move || {
         append_entry(&store, &session, operation, request, base_revision, approved_request)
+    })
+    .await
+    .map_err(|source| JournalError::Task { source })??;
+    link.journal_written();
+    Ok(seq)
+}
+
+/// Keeps a view `session`'s agent just offered (Draft to Waiting) as it was
+/// saved, and returns where it sits in the journal (VW-12). Like
+/// [`record_board`], this fails when the entry can't be kept: the journal is
+/// then the only way the view reaches the host, so the offer must not be
+/// taken. Drafts and revisions are never journaled: they stay on the machine.
+pub(crate) async fn record_view(
+    store: &Arc<Store>,
+    link: &HostLink,
+    session: &str,
+    view: &pb::PreparedView,
+) -> Result<u64, JournalError> {
+    let store = Arc::clone(store);
+    let session = session.to_owned();
+    let request = view.encode_to_vec();
+    let seq = tokio::task::spawn_blocking(move || {
+        append_entry(&store, &session, VIEW_OFFERED, request, None, None)
     })
     .await
     .map_err(|source| JournalError::Task { source })??;
@@ -328,6 +353,36 @@ mod tests {
             Some(pb::RequestId {
                 value: "rq_1".to_owned()
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn an_offered_view_is_kept_whole_under_its_session_and_tells_the_uplink() {
+        let (_directory, store) = store();
+        let link = HostLink::new(false);
+        let changes = link.journal_writes();
+        let view = pb::PreparedView {
+            id: Some(pb::ViewId {
+                value: "vw_1".to_owned(),
+            }),
+            title: "Plan".to_owned(),
+            state: pb::ViewState::Waiting as i32,
+            ..Default::default()
+        };
+        let seq = record_view(&store, &link, "se_a", &view).await.unwrap();
+        assert!(changes.has_changed().unwrap(), "an open uplink is told there is something to send");
+
+        let entries = entries_after(&store, 0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].seq, entries[0].operation.as_str()), (seq, VIEW_OFFERED));
+        assert_eq!(pb::PreparedView::decode(entries[0].request.as_slice()).unwrap(), view);
+        assert_eq!(
+            entries[0]
+                .principal
+                .as_ref()
+                .and_then(|p| p.session.as_ref())
+                .map(|s| s.value.as_str()),
+            Some("se_a")
         );
     }
 }

@@ -46,12 +46,27 @@ pub trait End: Send + Sync {
     fn free_bytes(&self, folder: &Path) -> Result<u64, EndError>;
     /// A dangling link exists.
     fn exists(&self, path: &Path) -> Result<bool, EndError>;
+    /// Which of `sha256` are held as chunk files, `<folder>/<sha256>`, here
+    /// (MV-17). A name that isn't 64 lowercase hex digits, and a folder that
+    /// isn't there, hold nothing. A remote end answers in one call.
+    fn have_chunks(&self, folder: &Path, sha256: &[String]) -> Result<Vec<String>, EndError> {
+        let mut held = Vec::new();
+        for name in sha256 {
+            let hex = name.len() == 64 && name.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'));
+            if hex && self.exists(&folder.join(name))? {
+                held.push(name.clone());
+            }
+        }
+        Ok(held)
+    }
     fn make_folder(&self, path: &Path, mode: u32) -> Result<(), EndError>;
     fn make_link(&self, path: &Path, target: &Path) -> Result<(), EndError>;
     /// Creates the file if missing, cuts it to `offset` and appends there.
     fn open_write(&self, path: &Path, offset: u64) -> Result<Box<dyn Sink>, EndError>;
     /// SHA-256 of the first `len` bytes, computed where the file is.
     fn hash(&self, path: &Path, len: u64) -> Result<[u8; 32], EndError>;
+    /// Sets the mode and modified time of a file that is complete, or of a
+    /// folder once everything in it is written.
     fn finish_file(&self, path: &Path, mode: u32, modified_unix_ms: i64) -> Result<(), EndError>;
     /// Never replaces: fails if `to` exists.
     fn rename(&self, from: &Path, to: &Path) -> Result<(), EndError>;

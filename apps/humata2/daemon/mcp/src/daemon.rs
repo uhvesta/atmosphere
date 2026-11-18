@@ -48,6 +48,13 @@ pub trait Daemon: Send + Sync + 'static {
     /// Withdraws a request the agent stopped waiting on before it was told
     /// `pending` (TP-15, reason `CALL_ENDED`).
     fn withdraw(&self, request: &RequestId) -> impl Future<Output = Result<(), ToolError>> + Send;
+
+    /// Whether [`Daemon::call`] runs `operation`. `tools/list` offers only
+    /// these, so an agent never sees a tool whose call can only answer
+    /// "not built". A daemon that runs every tool needs no override.
+    fn serves(&self, _operation: Operation) -> bool {
+        true
+    }
 }
 
 /// One tool call, checked against the tool's schema.
@@ -198,6 +205,7 @@ error_kinds! {
     PushRefused => "push_refused",
     SshFailed => "ssh_failed",
     HostKeyChanged => "host_key_changed",
+    HostKeyUnknown => "host_key_unknown",
     ChecksumMismatch => "checksum_mismatch",
     ResumeFailed => "resume_failed",
     AgentLacksFeature => "agent_lacks_feature",
@@ -222,6 +230,9 @@ error_kinds! {
     StepFailed => "step_failed",
     PassphraseLocked => "passphrase_locked",
     DependencyLoop => "dependency_loop",
+    MigrationNeeded => "migration_needed",
+    HostNeedsMigrate => "host_needs_migrate",
+    NoDefaultBranch => "no_default_branch",
     Internal => "internal",
 }
 

@@ -69,6 +69,12 @@ fn archiving_offers_a_working_undo() {
     currency.title = "Currency codes".into();
     currency.channel = humata2_clients::model::ChannelId::new("payments-rewrite");
     workspace.sessions.push(currency);
+    // Golden 32's sidebar shows Pinned: Ledger and acme/api #482.
+    for pinned in ["ledger", "pr-482"] {
+        if let Some(session) = workspace.sessions.iter_mut().find(|s| s.id.as_str() == pinned) {
+            session.pinned = true;
+        }
+    }
     let mut app = App::new(workspace);
     app.fakes
         .daemon

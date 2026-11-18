@@ -1,8 +1,23 @@
 //! The Humata trash: put, list, restore, empty, expire.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 
 use humata2_transfers::{KEEP_MS, NewItem, Trash, TrashError};
+
+/// A umask other than the usual 022, so anything made without its own mode
+/// shows it: a 0666 default comes out 0664 here.
+fn umask_002() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| {
+        rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o002));
+    });
+}
+
+fn mode_of(path: &Path) -> u32 {
+    fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+}
 
 fn new(now: i64) -> NewItem {
     NewItem {
@@ -128,4 +143,48 @@ fn open_removes_an_item_that_never_got_its_content() {
     assert!(trash.list().unwrap().is_empty());
     assert!(!half.exists());
     assert!(!dir.path().join(".trash/def.deleting").exists());
+}
+
+#[test]
+fn a_trashed_file_keeps_its_exact_mode_in_the_trash_and_after_restore() {
+    umask_002();
+    for mode in [0o644, 0o600, 0o755] {
+        let (dir, trash) = setup();
+        let file = dir.path().join(format!("file-{mode:o}"));
+        fs::write(&file, b"hello").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+        let item = trash.put(&file, new(1)).unwrap();
+        let content = dir.path().join(".trash").join(&item.id).join("content");
+        assert_eq!(mode_of(&content), mode, "mode while in the trash");
+        trash.restore(&item.id).unwrap();
+        assert_eq!(mode_of(&file), mode, "mode after restore");
+    }
+}
+
+#[test]
+fn a_trashed_script_restored_to_a_new_place_keeps_its_mode() {
+    umask_002();
+    let (dir, trash) = setup();
+    let file = dir.path().join("run.sh");
+    fs::write(&file, b"#!/bin/sh\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
+    let item = trash.put(&file, new(1)).unwrap();
+    let place = dir.path().join("moved/here/run.sh");
+    trash.restore_to(&item.id, &place).unwrap();
+    assert_eq!(mode_of(&place), 0o755);
+}
+
+#[test]
+fn a_trashed_read_only_folder_keeps_its_mode_after_restore() {
+    umask_002();
+    let (dir, trash) = setup();
+    let folder = dir.path().join("read-only");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("inside"), b"1").unwrap();
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).unwrap();
+    let item = trash.put(&folder, new(1)).unwrap();
+    let back = trash.restore(&item.id).unwrap();
+    assert_eq!(mode_of(&back), 0o555);
+    // Lets the temporary folder be removed when the test ends.
+    fs::set_permissions(&back, fs::Permissions::from_mode(0o755)).unwrap();
 }

@@ -84,6 +84,10 @@ impl World for RealWorld {
     fn answer_to_ping(&self) -> &'static str {
         "got: ping"
     }
+
+    fn paths_exist(&self) -> bool {
+        true
+    }
 }
 
 impl Drop for RealWorld {
@@ -172,6 +176,13 @@ pub async fn start() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn Terminals>) {
     let daemon: Arc<dyn Daemon> = live.clone();
     let terminals: Arc<dyn Terminals> = live;
     (world, daemon, terminals)
+}
+
+/// The daemon client itself, for a case that builds its own client over it
+/// (the review chat, pull requests).
+#[allow(dead_code)]
+pub async fn start_daemon() -> (RealWorld, LiveDaemon) {
+    start_live().await
 }
 
 pub async fn start_comments() -> (RealWorld, Arc<dyn Daemon>, Arc<dyn CommentsClient>) {

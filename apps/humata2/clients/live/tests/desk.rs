@@ -201,6 +201,28 @@ async fn a_repo_not_written_owner_name_is_refused(
     assert_eq!(desk_session(&daemon, &id).await, before);
 }
 
+/// D382: a Desk session has no repository, so its document is read with an
+/// empty repo, from the session's own folder. The real daemon only: the
+/// fake keeps no files on a disk.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_desk_sessions_document_is_read_with_no_repository() {
+    let (world, daemon, client) = real::start_desk().await;
+    let id = start(&world, &daemon, &client, "Draft").await;
+    let Folder::Scratch { path, .. } = desk_session(&daemon, &id).await.folder else {
+        panic!("a scratch folder");
+    };
+    let folder = std::path::Path::new(&path);
+    std::fs::write(folder.join("rfc.md"), "the document").expect("write the document");
+
+    let read = within("read", daemon.read_file(&id, "", "rfc.md")).await;
+    let missing = within("read missing", daemon.read_file(&id, "", "nope.md")).await;
+    let outside = within("read outside", daemon.read_file(&id, "", "../rfc.md")).await;
+
+    assert_eq!(read.expect("the document is read"), "the document");
+    assert!(matches!(missing, Err(DaemonError::NotFound { .. })), "{missing:?}");
+    assert!(matches!(outside, Err(DaemonError::Refused { .. })), "{outside:?}");
+}
+
 macro_rules! parity {
     ($($case:ident => $fake:ident, $real:ident;)*) => {$(
         #[tokio::test(flavor = "multi_thread")]

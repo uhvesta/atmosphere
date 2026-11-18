@@ -1022,11 +1022,18 @@ fn picker(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, kind: PickerKind, look
             .test_support()
     });
     let keys = ui.clone();
+    let dismiss = ui.clone();
     Some(
         col()
             .id(match kind {
                 PickerKind::Sessions => "board-picker-sessions",
                 PickerKind::Dependencies => "board-picker-dependencies",
+            })
+            // Escape is the app's Dismiss everywhere, a text box included,
+            // so the key-down below never sees it: close the picker here, on
+            // the way up, before the Shell's Dismiss.
+            .on_action(move |_: &crate::keys::Dismiss, _, cx| {
+                dismiss.send(AppAction::Board(A::ClosePicker), cx);
             })
             .gap(px(4.))
             .p(px(6.))
@@ -1047,6 +1054,11 @@ fn picker(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, kind: PickerKind, look
             })
             .child(
                 Input::new(&inputs.picker)
+                    // The board's own filter is "Filter" too.
+                    .aria_label(match kind {
+                        PickerKind::Sessions => "Filter sessions",
+                        PickerKind::Dependencies => "Filter dependencies",
+                    })
                     .small()
                     .min_h(px(26.))
                     .rounded(px(6.))
@@ -1128,7 +1140,12 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, item: &Item, look: Loo
             popup(ui, "board-status", item.status.name(), A::StatusMenu, look).into_any_element(),
         ));
     if state.board.status_menu {
-        panel = panel.child(col().gap(px(3.)).children(S::ALL.into_iter().map(|s| {
+        // BD-1: a board has five columns; Blocked and Won't do have none on
+        // the daemon, so the menu does not offer them.
+        let offered = S::ALL
+            .into_iter()
+            .filter(|s| !matches!(s, S::Blocked | S::WontDo));
+        panel = panel.child(col().gap(px(3.)).children(offered.map(|s| {
             act(
                 ui,
                 SharedString::from(format!("board-move-{}", s.name())),
@@ -1170,7 +1187,7 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, item: &Item, look: Loo
             .on_click(move |_, _, cx| ui.send(AppAction::Board(A::OpenPicker(kind)), cx))
             .test_support()
     };
-    let mut sessions = col().relative().flex_1().group("board-sessions-field").gap(px(4.)).children(
+    let mut sessions = col().relative().flex_1().gap(px(4.)).children(
         ids.into_iter()
             .filter_map(|id| state.workspace.session(&id))
             .map(|s| {
@@ -1202,15 +1219,21 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, item: &Item, look: Loo
                     })
             }),
     );
-    sessions = sessions.child(add(ui, "board-add-session", "Add session", "board-sessions-field", PickerKind::Sessions));
     if let Some(open) = picker(ui, state, inputs, PickerKind::Sessions, look) {
         sessions = sessions.child(open);
     }
-    panel = panel.child(field("Sessions", sessions.into_any_element()));
+    // The + sits in the field's row and shows while the pointer is anywhere
+    // on it: with nothing listed the value column has no height, so a + in
+    // it would hang below the row, out of its own hover area.
+    panel = panel.child(
+        field("Sessions", sessions.into_any_element())
+            .relative()
+            .group("board-sessions-field")
+            .child(add(ui, "board-add-session", "Add session", "board-sessions-field", PickerKind::Sessions)),
+    );
     let mut depends = col()
         .relative()
         .flex_1()
-        .group("board-dependencies-field")
         .items_start()
         .gap(px(4.))
         .children(
@@ -1258,11 +1281,15 @@ fn drawer(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, item: &Item, look: Loo
                         .test_support()
                 }),
         );
-    depends = depends.child(add(ui, "board-add-dependency", "Add dependency", "board-dependencies-field", PickerKind::Dependencies));
     if let Some(open) = picker(ui, state, inputs, PickerKind::Dependencies, look) {
         depends = depends.child(open);
     }
-    panel = panel.child(field("Depends on", depends.into_any_element()));
+    panel = panel.child(
+        field("Depends on", depends.into_any_element())
+            .relative()
+            .group("board-dependencies-field")
+            .child(add(ui, "board-add-dependency", "Add dependency", "board-dependencies-field", PickerKind::Dependencies)),
+    );
     panel = panel.child(div().h(px(1.)).flex_shrink_0().bg(rgb(look.line)));
     if let (Some(request), Some(ask)) = (state.board.request(item), state.board.ask(item)) {
         let answer = |answer| AppAction::Inbox(InboxAction::Answer(request.id.clone(), answer));
@@ -1375,6 +1402,22 @@ fn scope_of(item: &Item) -> String {
 
 pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, inputs: &Inputs, look: Look) -> Div {
     let mut page = col().size_full().min_h_0().text_color(rgb(look.text));
+    // A board view being shown has its Showing bar here too (VW-8).
+    let showing = state
+        .views
+        .showing
+        .as_ref()
+        .and_then(|showing| state.views.record(&showing.id))
+        .filter(|record| {
+            matches!(
+                record.content,
+                humata2_clients::views::ViewContent::Board(_)
+                    | humata2_clients::views::ViewContent::SessionBoard { .. }
+            )
+        });
+    if let Some(record) = showing {
+        page = page.child(crate::view_tab::showing_bar(ui, state, record, look));
+    }
     if state.board.scope_menu {
         page = page.child(
             row()

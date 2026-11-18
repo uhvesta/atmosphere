@@ -239,7 +239,9 @@ mod mac {
     }
 
     fn wrap(raw: CFTypeRef) -> Option<Cf> {
-        (!raw.is_null()).then_some(Cf(raw))
+        // Not `then_some(Cf(raw))`: that builds the Cf whatever the test says,
+        // and dropping one around null traps in CFRelease and ends the daemon.
+        if raw.is_null() { None } else { Some(Cf(raw)) }
     }
 
     fn cf_string(text: &str) -> Option<Cf> {

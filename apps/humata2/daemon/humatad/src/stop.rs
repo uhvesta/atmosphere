@@ -4,9 +4,12 @@
 //! so a reboot or a power cut keeps the machine stopped until a Start.
 
 pub(crate) mod boot;
+pub(crate) mod cli;
 pub(crate) mod exec;
 pub(crate) mod gate;
+pub(crate) mod host_copy;
 pub(crate) mod record;
+pub(crate) mod remote;
 pub(crate) mod service;
 pub(crate) mod streams;
 pub(crate) mod sweep;

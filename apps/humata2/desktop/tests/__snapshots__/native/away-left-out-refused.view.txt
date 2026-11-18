@@ -47,11 +47,13 @@ Complementary "Info"
     Button "Try BRIN index"
     Button "Review the schema"
     text "Clones"
-    text "ledger"
-    text "ledger-schema"
-    text "main clone"
-    text "api"
-    text "ledger-schema"
+    #session-info-clone ledger
+      text "ledger"
+      text "ledger-schema"
+      text "main clone"
+    #session-info-clone api
+      text "api"
+      text "ledger-schema"
     text "Survives restarts"
     text "humatad holds this terminal on devbox-1, not the app. After a reboot it runs claude --resume 7f3a… in the same folder. 10,000 lines of scrollback kept on disk there."
     text "What this agent may do"
@@ -79,6 +81,7 @@ Button "New terminal"
   text "1 other can type here"
 Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● Bash(psql -f backfill.sql)\n  ⎿ INSERT 0 48210 … (running)\n\n✻ Backfilling entries… (2m 14s · ↓ 3.1k tokens · esc to interrupt)\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
   text "~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● Bash(psql -f backfill.sql)\n  ⎿ INSERT 0 48210 … (running)\n\n✻ Backfilling entries… (2m 14s · ↓ 3.1k tokens · esc to interrupt)\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
-  #terminal-pane
-    #terminal
+  #terminal-replica
+    #terminal-pane
+      #terminal
   Status "2 board changes this agent made while the host was away weren't applied because the channel's rules now refuse them (kept as lost in PAY-12's history; new item “Fix login” wasn't made); allow them in Agent access, then ask the agent to make them again."

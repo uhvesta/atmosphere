@@ -1,6 +1,6 @@
 # REVIEW: Review what the agent changed, in code and in documents (0.2)
 
-- **Status:** early lane open (lane REVIEW)
+- **Status:** done (48e1c866, 2026-11-16)
 - **Depends on:**
   - DESK: markdown comments and diff comments are one model; the document tab opens from the Desk too
   - FRAMES1: comment states and the comment box in a diff have no frame yet

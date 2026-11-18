@@ -44,7 +44,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tonic::Streaming;
 
-const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 const BOX: &str = "box-1";
 /// The host redials after a backoff of 5 s, then 10 s while dials fail.
 const REDIAL: Duration = Duration::from_secs(60);
@@ -327,7 +327,7 @@ impl Host {
         };
         let first = machines.add_ssh_machine(request("")).await.unwrap().into_inner();
         let ended = self.watch_last(&first).await;
-        let Some(pb::error::Kind::HostKeyChanged(key)) = ended.error.and_then(|error| error.kind) else {
+        let Some(pb::error::Kind::HostKeyUnknown(key)) = ended.error.and_then(|error| error.kind) else {
             panic!("the first add asks for the host key to be confirmed");
         };
         let added = machines.add_ssh_machine(request(&key.presented_fingerprint)).await.unwrap().into_inner();
@@ -419,6 +419,24 @@ impl Host {
                 return hits;
             }
             assert!(Instant::now() < deadline, "the host never found {text:?} of the machine's conversation");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Waits until the host shows `session` as probably idle: its agent's
+    /// output went quiet.
+    async fn quiet(&self, session: &pb::SessionId) {
+        let deadline = Instant::now() + REDIAL;
+        loop {
+            let shown = pb::session_service_client::SessionServiceClient::new(self.channel().await)
+                .get_session(pb::GetSessionRequest { id: Some(session.clone()) })
+                .await
+                .unwrap()
+                .into_inner();
+            if shown.status == pb::SessionStatus::ProbablyIdle as i32 {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the host never showed the session's agent as quiet");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -657,5 +675,40 @@ async fn a_host_restart_keeps_where_the_remote_mirror_stopped() {
     assert_eq!(
         rig.host.texts(&session).await,
         ["reconcile the pangolin invoices", "ship the numbat release", "Tagged the numbat release"]
+    );
+}
+
+/// N1 on another machine: an agent there may write the end of a turn after
+/// the last event of its session. The machine's own daemon sees its file
+/// change and tells the host, which reads it, with no link coming up and
+/// nothing polled.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_an_agent_on_another_machine_writes_after_its_sessions_last_event_reaches_the_host() {
+    let (rig, channel) = Rig::new().await;
+    let (session, file) = rig.session_with(&channel, "reconcile the pangolin invoices").await;
+    assert_eq!(rig.host.found("pangolin").await.len(), 1);
+    // The output went quiet: the session's last event, and the host's read
+    // that it triggered is done.
+    rig.host.quiet(&session).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // The reply lands in the file after that, with no output and no event.
+    append(&file, &[says("Reconciled the axolotl ledger", 1)]);
+
+    let deadline = Instant::now() + WAIT;
+    let hits = loop {
+        let hits = rig.host.search("axolotl").await;
+        if !hits.is_empty() {
+            break hits;
+        }
+        assert!(Instant::now() < deadline, "the host never read what the machine's agent wrote after its last event");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].session, Some(session.clone()));
+    assert_eq!(machine_of(&hits[0]), BOX);
+    assert_eq!(
+        rig.host.texts(&session).await,
+        ["reconcile the pangolin invoices", "Reconciled the axolotl ledger"]
     );
 }

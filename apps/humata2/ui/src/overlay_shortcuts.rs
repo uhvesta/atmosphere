@@ -2,7 +2,7 @@
 
 use super::{Overlays, sheet};
 use crate::bridge::Ui;
-use crate::keys::SHORTCUTS;
+use crate::keys::{SHORTCUTS, label};
 use crate::theme::Look;
 use crate::widgets::{self, col, row};
 use gpui_kit::base::FocusTrapElement as _;
@@ -12,7 +12,8 @@ use std::rc::Rc;
 
 impl Overlays {
     /// The Keyboard shortcuts sheet.
-    pub(super) fn shortcuts(&self, look: Look, ui: &Rc<Ui>) -> AnyElement {
+    pub(super) fn shortcuts(&self, look: Look, ui: &Rc<Ui>, cx: &App) -> AnyElement {
+        let mac = cx.platform_info().is_mac();
         sheet("shortcuts", "Keyboard shortcuts", look)
             .test_support()
             .track_focus(&self.sheet)
@@ -28,6 +29,7 @@ impl Overlays {
                     .gap_3()
                     .overflow_y_scroll()
                     .children(SHORTCUTS.iter().enumerate().map(|(index, (keys, what))| {
+                        let keys = label(keys, mac);
                         row()
                             .id(("shortcut", index))
                             .role(Role::ListItem)
@@ -38,7 +40,7 @@ impl Overlays {
                                 div()
                                     .w(px(120.))
                                     .text_color(rgb(look.accent))
-                                    .child(*keys),
+                                    .child(keys),
                             )
                             .child(div().text_color(rgb(look.text)).child(*what))
                     })),

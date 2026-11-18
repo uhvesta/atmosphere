@@ -13,9 +13,9 @@ Layer: agents. Platforms: macOS, Linux, web (the Inbox card).
 ## Steps
 
 1. **I do:** the agent asks for the machine list with the MCP tool `topology_get`.
-   **I see:** an error that says the tool "isn't built into this humatad2 yet".
+   **I see:** this machine first, then the channel's machines (`box-1` among them), each with `reachability` (`online`, `offline`, or `unknown` when the channel has no repos) and the channel's sessions on it (id, title, agent, status).
    **State and events:** nothing changes.
-   **Status:** Not built, with no milestone. The tool is described in `daemon/mcp/src/tools.rs:672-676`, and `daemon/humatad/src/mcp.rs:1064` answers not_built for it. The agent can still find `box-1`'s id from `channels_list`, which lists each channel's machines (`daemon/humatad/src/mcp.rs:1367-1383`). No test checks the machine list.
+   **Status:** Works (real daemon, D772): `daemon/humatad/tests/mcp.rs::topology_get_names_this_machine_and_the_channels_sessions_on_it`; order and reachability in `daemon/humatad/src/mcp/topology.rs` unit tests. Reachability comes from `ChannelService.GetGrid` (D764). No test yet has a second machine in the channel.
 
 2. **I do:** the agent calls MCP `session_fork` with `machine: "box-1"`, `kind: "code_and_context"`, `title: "Try it"` and a `reason`.
    **I see:** the call returns outcome `pending`, with a request id. Nothing forks yet. The parent's `forks` list is empty.
@@ -122,7 +122,7 @@ Layer: agents. Platforms: macOS, Linux, web (the Inbox card).
 - **I do:** nothing.
 - **I see:** the refusal says the fork "isn't built into this humatad2 yet", and the fix says to update Humata. An update will not fix an unknown machine.
 - **Expected outcome:** a refusal that names the machine as unknown, with nothing made.
-- **Status:** Likely bug. See the gaps.
+- **Status:** Works (real daemon): `daemon/humatad/tests/fork.rs::a_fork_onto_a_machine_this_host_does_not_know_is_refused_as_an_unknown_machine`. The refusal names the machine as unknown and nothing is made. (Was a likely bug: it said "not built"; fixed by BUGS.)
 
 ## Expected outcomes
 
@@ -141,7 +141,7 @@ Layer: agents. Platforms: macOS, Linux, web (the Inbox card).
 
 | Step or branch | Status | Evidence |
 |---|---|---|
-| 1. `topology_get` (machine list) | Not built | `daemon/mcp/src/tools.rs:672-676`; `daemon/humatad/src/mcp.rs:1064` |
+| 1. `topology_get` (machine list) | Works (D772) | `daemon/humatad/tests/mcp.rs::topology_get_names_this_machine_and_the_channels_sessions_on_it` |
 | 2. Agent asks: pending, nothing forks | Works (real daemon) | `daemon/humatad/tests/fork_remote.rs::an_agent_forks_itself_onto_another_machine_once_the_user_approves` |
 | 3. Card: machine, kind, copy, size, usage note | Works (real daemon) | `daemon/humatad/tests/fork_remote.rs::an_agent_forks_itself_onto_another_machine_once_the_user_approves` |
 | 4. Approve: code and context onto box-1 | Works (real daemon) | `daemon/humatad/tests/fork_remote.rs::code_and_context_fork_onto_box_1_has_the_parents_work_on_a_new_branch_and_a_copied_conversation` |
@@ -156,17 +156,16 @@ Layer: agents. Platforms: macOS, Linux, web (the Inbox card).
 | Branch: context-only cut, listed once | Works (real daemon) | `daemon/humatad/tests/fork_remote.rs::a_context_only_fork_on_a_box_cut_short_by_a_host_restart_is_listed_once_the_box_is_linked` |
 | Branch: a different agent on another machine | Not built | `daemon/humatad/src/session_service/fork_remote.rs:270-276` |
 | Branch: I deny the box card | Code, no test | Generic deny only: `daemon/humatad/tests/inbox.rs::a_denied_deferred_call_never_runs` |
-| Branch: unknown machine | Likely bug | `daemon/humatad/src/session_service/fork.rs:355-357` |
+| Branch: unknown machine | Works (real daemon) | `daemon/humatad/tests/fork.rs::a_fork_onto_a_machine_this_host_does_not_know_is_refused_as_an_unknown_machine` |
 
 ## Gaps and likely bugs
 
 Not built:
 
-- `topology_get`, the machine list the agent is told to use (step 1). No milestone. The machine ids come from `channels_list` instead.
 - A typed branch over MCP. The `session_fork` schema has no `branch` field (`daemon/mcp/src/tools.rs:1097-1116`), though `ForkSessionRequest.branch` exists (`api/proto/humata/v1/sessions.proto:356-358`). The CLI has `--branch` (`cli/src/args.rs:372-377`). No milestone.
 - The box card names no branch. `NewSessionPreview.Repo` has the repo, the copy mode and the size, but no branch name (`api/proto/humata/v1/inbox.proto:293-297`). The brief's preview names the branch, so the card falls short here. No milestone.
 - A fork onto another machine that runs a different agent (`daemon/humatad/src/session_service/fork_remote.rs:270-276`). Only a gRPC caller can ask for it.
 
 Likely bugs:
 
-- An unknown or unlinked machine is reported as not built. With no boxes linked, `check_elsewhere` returns nothing (`daemon/humatad/src/session_service/fork_remote.rs:198-200`). Then `check_fork` answers not_built for any other machine (`daemon/humatad/src/session_service/fork.rs:355-357`). The MCP layer maps Unimplemented to "isn't built into this humatad2 yet", with a fix to update Humata (`daemon/humatad/src/mcp.rs:1254-1260`). To confirm: on a host with no boxes, fork onto `box-9`, and check that the answer says "not built" rather than naming the machine as unknown.
+- Fixed (was a likely bug): an unknown or unlinked machine is refused as unknown, not as not built (`daemon/humatad/tests/fork.rs::a_fork_onto_a_machine_this_host_does_not_know_is_refused_as_an_unknown_machine`).

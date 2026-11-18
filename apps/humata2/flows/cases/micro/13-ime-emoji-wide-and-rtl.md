@@ -80,7 +80,7 @@ Micro. Platforms: macOS, with Linux noted where it differs (dead keys). Paths ar
 - **I do:** press Enter to commit, then wait for the link to return and type `x`.
 - **I see:** the banner says the terminal is disconnected. The composition stays under the cursor until Enter. After Enter, nothing reaches `box-1`. When the link returns, `x` is typed, and the Japanese text is not typed later.
 - **Expected outcome:** the composition is either cleared at the drop, or refused at the start. What is typed while offline never arrives late (SE-16, and `pane.rs::while_disconnected_input_is_dropped_and_the_pane_says_so`).
-- **Status:** Likely bug
+- **Status:** Fakes only. The composition is cleared when the link drops, and committing it anyway sends nothing and tells the app once, so a toast says it was not sent (`terminal/pane/tests/pane.rs::a_composition_ends_when_the_link_drops`). What is typed offline never arrives late (`pane.rs::while_disconnected_input_is_dropped_and_the_pane_says_so`).
 
 ### An IME candidate list opens under the cursor
 
@@ -88,7 +88,7 @@ Micro. Platforms: macOS, with Linux noted where it differs (dead keys). Paths ar
 - **I do:** scroll up 20 rows with the wheel, then type `nihon` and wait for the candidate list.
 - **I see:** the candidate list should open at the composing position, on screen.
 - **Expected outcome:** the list opens at the cursor cell, which is on screen when composing.
-- **Status:** Likely bug
+- **Status:** Fakes only. Starting a composition while scrolled back brings the view to the live cursor, where the candidate list opens (`terminal/pane/tests/pane.rs::composing_while_scrolled_back_returns_to_the_cursor`). No test opens a real input method.
 
 ### A right-to-left line is shown in logical order
 
@@ -142,8 +142,8 @@ Micro. Platforms: macOS, with Linux noted where it differs (dead keys). Paths ar
 | 8. Dead key ´ then e | Code, no test | `terminal/view/src/view.rs:1574-1592` |
 | 9. Copy Wide characters | Fakes only | `terminal/vt/tests/selection.rs::a_viewport_selection_copies_wide_characters_across_a_wrap`; `terminal/lab/tests/clipboard_ssh.rs` (Works (real shell), manual) |
 | 10. Copy an emoji selection | Code, no test | `terminal/vt/tests/grid.rs::an_emoji_zwj_sequence_is_one_grapheme` (cells only) |
-| Branch: composing while disconnected | Likely bug | `terminal/pane/src/pane.rs:256-266`, `terminal/pane/src/host.rs:350-355` |
-| Branch: candidate list position | Likely bug | `terminal/view/src/view.rs:1609-1628` |
+| Branch: composing while disconnected | Fakes only | `terminal/pane/tests/pane.rs::a_composition_ends_when_the_link_drops` |
+| Branch: candidate list position | Fakes only | `terminal/pane/tests/pane.rs::composing_while_scrolled_back_returns_to_the_cursor` |
 | Branch: right-to-left logical order | Not built | no milestone (no bidi in `terminal/`) |
 | Branch: dead keys on Linux | Code, no test | `terminal/view/src/view.rs:1574-1592` |
 | Branch: Esc while composing | Code, no test | `terminal/view/src/view.rs:858-861` |
@@ -153,7 +153,7 @@ Micro. Platforms: macOS, with Linux noted where it differs (dead keys). Paths ar
 - **Not built:** real-window IME. OVERVIEW.md, Terminal section (I6): "Test IME in a real window" is open. No milestone number.
 - **Not built:** bidi reordering and letter joining for right-to-left text. No milestone. The brief expects none.
 - **Not built:** no test presses a dead key or uses an OS input method on Linux. Confirm on a Linux machine with a dead-key layout.
-- **Likely bug:** a composition survives a disconnect and its commit is dropped without a word (`terminal/pane/src/pane.rs:256-266` clears only pending paste and clipboard reads; `terminal/pane/src/host.rs:350-355` returns early when disconnected). To confirm: compose, unplug the link, press Enter, and see that the composition stays and the text is gone.
-- **Likely bug:** the candidate list is placed at the live cursor cell in viewport coordinates, even when the view is scrolled back (`terminal/view/src/view.rs:1609-1628`), and composing does not scroll back to the cursor. To confirm: scroll back, compose, and see where the list opens.
+- **Fixed:** a composition ends when the link drops (`terminal/pane/tests/pane.rs::a_composition_ends_when_the_link_drops`, Fakes only).
+- **Fixed:** composing while scrolled back returns the view to the cursor, where the candidate list opens (`terminal/pane/tests/pane.rs::composing_while_scrolled_back_returns_to_the_cursor`, Fakes only).
 - **Code, no test:** `deliver_input` always sends `composing: false` to the key encoder (`terminal/view/src/view.rs:799`). It is harmless while `key_down` drops keys during composition, but no test covers it.
 - **Code, no test:** emoji paste and emoji copy are not tested in any file. The engine tests cover the cells, not the clipboard.

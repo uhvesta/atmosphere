@@ -42,7 +42,7 @@ Layer: micro. Platforms: macOS. (Linux uses Ctrl keys, see `micro/01`.)
 
    **State and events:** `keys.rs:61` returns `Ignore`, so the view does not handle it. Edit > Select All is an OS action (`desktop/src/main.rs:246`, `input::SelectAll`). No handler for it exists in `terminal/view/` or `terminal/client/`.
 
-   **Status:** Likely bug at `desktop/src/main.rs:246`. See Gaps.
+   **Status:** Fakes only. ⌘A is Edit > Select All, and the terminal now handles it: the whole terminal, history included, is selected, and ⌘C copies it (`terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all`, `terminal/pane/tests/pane.rs::select_all_then_copy_takes_the_whole_history`). No test chooses the menu item in the app on a real shell.
 
 5. **I do:** Press ⌘Home.
 
@@ -96,7 +96,7 @@ The first three fail today.
 | 1 ⌘← | Not built (no milestone) | `terminal/view/src/keys.rs:57-63` returns `Ignore` |
 | 2 ⌘→ | Not built (no milestone) | Same path |
 | 3 ⌘⌫ | Not built (no milestone) | Same path; `ui/src/keys.rs` binds none |
-| 4 ⌘A | Likely bug | `desktop/src/main.rs:246` |
+| 4 ⌘A | Fakes only | `terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all`, `terminal/pane/tests/pane.rs::select_all_then_copy_takes_the_whole_history` |
 | 5 ⌘Home | Fakes only | `terminal/view/src/keys.rs::history_keys_scroll_the_view_instead_of_reaching_the_program` |
 | Branch: composer ⌘⌫ | Code, no test | `gpui-kit` keymap, outside this repo |
 | Branch: vim ⌘← | Not built (no milestone) | Same path as step 1 |
@@ -106,6 +106,6 @@ The first three fail today.
 
 - Not built: no Mac line-edit shortcuts exist for the shell line. A search of `SPEC.md`, `DECISIONS.md` and `workflow/milestones/TERM.md` found no entry for ⌘⌫, ⌘← or ⌘→. No milestone owns them.
 - Likely bug: `terminal/view/src/keys.rs:57-63`. On Mac, Cmd with no Ctrl or Alt maps only c, v and the four scroll keys. Every other Cmd key falls into `_ if !m.shift => scroll_key(key).map_or(KeyIntent::Ignore, ...)` and is ignored, so ⌘⌫, ⌘← and ⌘→ do nothing, and nothing else in the app binds them. The doc comment on `Platform::Mac` (line 33) says any other Cmd shortcut is the app's, but the app binds none of these. Confirm with a pane test in the style of `terminal/pane/tests/pane.rs::option_types_its_character_unless_it_is_set_to_act_as_alt` (Mac-only, recording PTY): press `cmd-backspace` and assert the PTY got `[0x15]`. The test fails today. Do the same for `cmd-left` (0x01) and `cmd-right` (0x05).
-- Likely bug: `desktop/src/main.rs:246` shows Edit > Select All, but no handler for `input::SelectAll` exists in the terminal. With a shell tab focused, Select All does nothing. Confirm by choosing Edit > Select All in a shell tab.
+- Fixed: Edit > Select All (⌘A) selects the whole terminal (`terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all`, Fakes only).
 - Design note, not a bug: ⌘Home and ⌘End go to the history, not to the shell (`keys.rs:61`). A user cannot reach the shell's Home key with ⌘. Decide whether that is wanted.
 - Unknown: the composer's ⌘⌫ depends on the external `gpui-kit` keymap. It is not verified here.

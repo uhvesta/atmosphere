@@ -92,6 +92,7 @@ impl Fixture {
             model: String::new(),
             machine: None,
             branch: String::new(),
+            reason: String::new(),
         }
     }
 
@@ -403,6 +404,33 @@ async fn a_fork_with_another_agent_is_handed_the_conversation_and_a_summary() {
     assert!(own.contains(".humata/handover-"), "the message names the file: {own}");
 }
 
+/// A line a Codex rollout holds once a prompt is done.
+fn said_as_rollout(line: &str) -> String {
+    serde_json::json!({"type": "event_msg", "payload": {"type": "item_completed", "turn_id": "t1",
+        "item": {"type": "UserMessage", "content": [{"type": "text", "text": line}]}}})
+    .to_string()
+}
+
+/// Agents-10 step 12: a parent whose conversation holds Codex rollout lines
+/// hands its fork a summary read from them, not its terminal's output.
+#[tokio::test]
+async fn a_fork_of_a_codex_parent_is_handed_a_summary_read_from_its_rollout() {
+    let fixture = Fixture::with_other_agent().await;
+    say(&fixture.daemon, &fixture.parent_id(), &said_as_rollout("split the retry loop")).await;
+    let mut request = fixture.request(pb::ForkKind::CodeAndContext, "Ask the other one");
+    request.agent = Some(pb::AgentId { value: OTHER.to_owned() });
+    let (operation, fork) = fork_of(&fixture.daemon, request).await;
+    assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{operation:?}");
+    let fork = common::wait_running(&fixture.daemon, fork.unwrap().id.as_ref().unwrap()).await;
+    let mut attach = wait_handed_over(&fixture.daemon, fork.id.as_ref().unwrap()).await;
+    attach.wait_for("split the retry loop").await;
+    let own = conversation(&fixture.world, &fork);
+    assert!(
+        !own.contains("item_completed"),
+        "the summary holds the rollout's prompts, not the terminal's output: {own}"
+    );
+}
+
 #[tokio::test]
 async fn a_context_only_fork_with_another_agent_hands_over_in_its_parents_folder() {
     let fixture = Fixture::with_other_agent().await;
@@ -453,6 +481,26 @@ async fn a_fork_with_an_agent_humata_does_not_know_is_refused() {
         .await
         .unwrap_err();
     assert_eq!(common::invalid_field(&refused).0, "agent");
+    assert_eq!(fixture.sessions().await.len(), 1);
+}
+
+/// A machine this host has never linked is an unknown value of `machine`,
+/// not a feature that isn't built, and nothing forks.
+#[tokio::test]
+async fn a_fork_onto_a_machine_this_host_does_not_know_is_refused_as_an_unknown_machine() {
+    let fixture = Fixture::new().await;
+    let mut request = fixture.request(pb::ForkKind::CodeAndContext, "Elsewhere");
+    request.machine = Some(pb::MachineId { value: "ghost-box".to_owned() });
+    let refused = fixture
+        .daemon
+        .session_service()
+        .await
+        .fork_session(request)
+        .await
+        .unwrap_err();
+    let (field, problem) = common::invalid_field(&refused);
+    assert_eq!(field, "machine");
+    assert_eq!(problem, pb::invalid_field::Problem::UnknownValue);
     assert_eq!(fixture.sessions().await.len(), 1);
 }
 

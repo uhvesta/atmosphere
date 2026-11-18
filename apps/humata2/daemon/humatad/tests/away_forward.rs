@@ -12,7 +12,7 @@ mod away;
 mod away_machine;
 
 use away::Host;
-use away_machine::{ASKER, AwayMachine, Link, kind, policy, session};
+use away_machine::{ASKER, AwayMachine, Link, OTHER, files_of, kind, policy, session};
 use common::WAIT;
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{BoardKey, Store};
@@ -404,4 +404,219 @@ async fn an_agents_withdrawal_of_a_request_the_host_holds_goes_up_and_returns_th
         .expect("the host's answer is the withdrawal's")
         .into_inner();
     assert_eq!(got, withdrawn);
+}
+
+// REPOS (RL-12, D568): the library stays on the host, so a machine's agent
+// searches it there.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_repo_search_on_a_machine_goes_up_and_the_hosts_answer_is_the_agents() {
+    let (machine, mut host) = linked().await;
+    let request = pb::SearchReposRequest {
+        query: "ledger".to_owned(),
+        ..Default::default()
+    };
+    let mut repos = pb::repo_service_client::RepoServiceClient::new(machine.daemon.channel().await);
+    let call = machine.as_agent(request.clone());
+    let searching = tokio::spawn(async move { repos.search_repos(call).await });
+
+    let forwarded = next_call(&mut host).await;
+    assert_eq!(forwarded.method, "/humata.v1.RepoService/SearchRepos");
+    let Some(pb::forwarded_call::Principal::Agent(agent)) = &forwarded.principal else {
+        panic!("an agent made the call: {forwarded:?}");
+    };
+    assert_eq!(agent.session, Some(session(ASKER)));
+    assert_eq!(pb::SearchReposRequest::decode(forwarded.request.as_slice()).unwrap(), request);
+
+    let found = pb::SearchReposResponse {
+        library: vec![pb::LibraryRepo {
+            repo: Some(pb::RepoRef {
+                owner: "acme".to_owned(),
+                name: "ledger".to_owned(),
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    host.send(answer(&forwarded, pb::forwarded_result::Outcome::Response(found.encode_to_vec())))
+        .await;
+    let got = tokio::time::timeout(WAIT, searching)
+        .await
+        .expect("the search was answered")
+        .unwrap()
+        .expect("the host's answer is the search's")
+        .into_inner();
+    assert_eq!(got, found);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn away_an_agents_repo_search_is_host_unreachable_and_answers_nothing() {
+    let (machine, host) = linked().await;
+    drop(host);
+    away::host_reachable_becomes(&machine.daemon, false).await;
+
+    let mut repos = pb::repo_service_client::RepoServiceClient::new(machine.daemon.channel().await);
+    let failed = repos
+        .search_repos(machine.as_agent(pb::SearchReposRequest {
+            query: "ledger".to_owned(),
+            ..Default::default()
+        }))
+        .await
+        .expect_err("the library is the host's");
+    assert!(host_unreachable(&failed), "{failed:?}");
+    let failed = repos
+        .list_repo_library(machine.as_agent(pb::ListRepoLibraryRequest::default()))
+        .await
+        .expect_err("the library is the host's");
+    assert!(host_unreachable(&failed), "{failed:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_never_changes_the_library_or_the_scope_itself() {
+    let (machine, _host) = linked().await;
+    let mut repos = pb::repo_service_client::RepoServiceClient::new(machine.daemon.channel().await);
+    let removed = repos
+        .remove_from_repo_library(machine.as_agent(pb::RemoveFromRepoLibraryRequest {
+            repo: Some(pb::RepoRef {
+                owner: "acme".to_owned(),
+                name: "ledger".to_owned(),
+            }),
+        }))
+        .await
+        .expect_err("removing is the host's alone");
+    assert_eq!(removed.code(), Code::FailedPrecondition);
+    let saved = repos
+        .update_repo_scope(machine.as_agent(pb::UpdateRepoScopeRequest::default()))
+        .await
+        .expect_err("saving the scope is the host's alone");
+    assert_eq!(saved.code(), Code::FailedPrecondition);
+}
+
+// D768: only the host keeps machines and links them, so a machine's agent
+// looks machines up, looks at other machines' files and copies between
+// machines through it.
+
+/// The machine's own id, as its daemon names itself.
+async fn own_id(machine: &AwayMachine) -> pb::MachineId {
+    pb::daemon_service_client::DaemonServiceClient::new(machine.daemon.channel().await)
+        .get_server_info(pb::GetServerInfoRequest {})
+        .await
+        .unwrap()
+        .into_inner()
+        .machine
+        .expect("the daemon names its machine")
+}
+
+fn on_the_host(path: &str) -> pb::FileLocation {
+    pb::FileLocation {
+        machine: Some(pb::MachineId { value: "ma_host".to_owned() }),
+        ..files_of(OTHER, path)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_machine_list_on_a_machine_goes_up_and_the_hosts_answer_is_the_agents() {
+    let (machine, mut host) = linked().await;
+    let mut machines = pb::machine_service_client::MachineServiceClient::new(machine.daemon.channel().await);
+    let call = machine.as_agent(pb::ListMachinesRequest::default());
+    let listing = tokio::spawn(async move { machines.list_machines(call).await });
+
+    let forwarded = next_call(&mut host).await;
+    assert_eq!(forwarded.method, "/humata.v1.MachineService/ListMachines");
+    assert!(matches!(forwarded.principal, Some(pb::forwarded_call::Principal::Agent(_))));
+    let listed = pb::ListMachinesResponse {
+        machines: vec![pb::Machine {
+            id: Some(pb::MachineId { value: "ma_host".to_owned() }),
+            name: "This Mac".to_owned(),
+            is_this_mac: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    host.send(answer(&forwarded, pb::forwarded_result::Outcome::Response(listed.encode_to_vec())))
+        .await;
+    let got = tokio::time::timeout(WAIT, listing)
+        .await
+        .expect("the list was answered")
+        .unwrap()
+        .expect("the host's answer is the agent's")
+        .into_inner();
+    assert_eq!(got, listed);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn away_an_agents_machine_list_is_host_unreachable() {
+    let (machine, host) = linked().await;
+    drop(host);
+    away::host_reachable_becomes(&machine.daemon, false).await;
+    let failed = pb::machine_service_client::MachineServiceClient::new(machine.daemon.channel().await)
+        .list_machines(machine.as_agent(pb::ListMachinesRequest::default()))
+        .await
+        .expect_err("the machines are the host's");
+    assert!(host_unreachable(&failed), "{failed:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_look_at_another_machines_file_goes_up() {
+    let (machine, mut host) = linked().await;
+    let mut files = machine.files().await;
+    let call = machine.as_agent(pb::StatRequest {
+        location: Some(on_the_host("note.txt")),
+    });
+    let looking = tokio::spawn(async move { files.stat(call).await });
+
+    let forwarded = next_call(&mut host).await;
+    assert_eq!(forwarded.method, "/humata.v1.FileService/Stat");
+    let entry = pb::FileEntry {
+        location: Some(on_the_host("note.txt")),
+        kind: pb::file_entry::Kind::File as i32,
+        size: 4,
+        ..Default::default()
+    };
+    host.send(answer(&forwarded, pb::forwarded_result::Outcome::Response(entry.encode_to_vec())))
+        .await;
+    let got = tokio::time::timeout(WAIT, looking)
+        .await
+        .expect("the look was answered")
+        .unwrap()
+        .expect("the host's answer is the agent's")
+        .into_inner();
+    assert_eq!(got, entry);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agents_pull_from_the_host_goes_up_with_its_own_side_left_for_the_host_to_name() {
+    let (machine, mut host) = linked().await;
+    let here = own_id(&machine).await;
+    let mut transfers = pb::transfer_service_client::TransferServiceClient::new(machine.daemon.channel().await);
+    let call = machine.as_agent(pb::StartTransferRequest {
+        sources: vec![on_the_host("note.txt")],
+        destination: Some(files_of(ASKER, "")),
+        mode: pb::TransferMode::Copy as i32,
+        on_existing: pb::OnExisting::Fail as i32,
+        ..Default::default()
+    });
+    let pulling = tokio::spawn(async move { transfers.start_transfer(call).await });
+
+    let forwarded = next_call(&mut host).await;
+    assert_eq!(forwarded.method, "/humata.v1.TransferService/StartTransfer");
+    let sent = pb::StartTransferRequest::decode(forwarded.request.as_slice()).unwrap();
+    assert_eq!(sent.sources, vec![on_the_host("note.txt")]);
+    // The host knows this machine by its own id for the link, not by the
+    // id this daemon gives itself, so this side names none (D768).
+    let named = sent.destination.and_then(|place| place.machine).filter(|machine| !machine.value.is_empty());
+    assert_eq!(named, None, "this machine's id is {here:?}");
+    let started = pb::Transfer {
+        id: Some(pb::TransferId { value: "tr_1".to_owned() }),
+        ..Default::default()
+    };
+    host.send(answer(&forwarded, pb::forwarded_result::Outcome::Response(started.encode_to_vec())))
+        .await;
+    let got = tokio::time::timeout(WAIT, pulling)
+        .await
+        .expect("the copy was answered")
+        .unwrap()
+        .expect("the host's answer is the agent's")
+        .into_inner();
+    assert_eq!(got, started);
 }

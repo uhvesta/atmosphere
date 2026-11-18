@@ -4,8 +4,17 @@
 //! handled one at a time, in the order given; the first one that can't be
 //! handled ends the removal, the machine stays in the channel and what was
 //! already done stays done. Then the machine is dropped from the channel.
+//!
+//! A removal is written down before its first session is touched, under
+//! `<channels>/.removing-machine`, and the note goes after the last step.
+//! A start that finds a note finishes the removal: the sessions still live
+//! on the machine are handled as the note says, then the machine is
+//! dropped. If one can't be handled, or a session started on the machine
+//! since, the machine stays in the channel and the note goes.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use humata2_access::{Capability, ChannelId, Target};
 use humata2_grpc::humata::v1 as pb;
@@ -14,10 +23,15 @@ use pb::invalid_field::Problem;
 use tonic::{Code, Status};
 
 use super::{ChannelSvc, Gated, blocking, error_of, failed, tell_channel};
-use crate::identity::{self, Caller};
+use crate::host_relay::LinkState;
+use crate::identity::{self, Caller, UserVia};
 use crate::operations::{Progress, Started};
 use crate::session_service::Removal;
+use crate::restart::OperationState;
 use crate::status;
+
+/// Where removals not finished yet are written, in the channels folder.
+const INTENTS: &str = ".removing-machine";
 
 #[derive(Debug, thiserror::Error)]
 enum ApplyError {
@@ -37,6 +51,13 @@ enum ApplyError {
     },
     #[error("this daemon has no way to move or archive sessions")]
     NoSessions,
+    #[error("couldn't write down that {machine} is leaving channel {channel}, so no session was touched")]
+    Note {
+        machine: String,
+        channel: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("couldn't take {machine} out of channel {channel} after its sessions were handled")]
     Drop {
         machine: String,
@@ -207,12 +228,50 @@ impl ChannelSvc {
         machine: String,
         items: Vec<Item>,
     ) {
+        let note = note_path(&self.starter.layout.root(), &id, &machine);
+        let bytes = note_bytes(&id, &machine, &items);
+        let written = blocking({
+            let note = note.clone();
+            move || write_note(&note, &bytes)
+        })
+        .await;
+        match written {
+            Ok(Ok(())) => {}
+            Ok(Err(source)) => {
+                for item in &items {
+                    progress.set_step(&format!("session:{}", item.session), pb::StepState::Skipped, None);
+                }
+                progress.set_step("remove_machine", pb::StepState::Skipped, None);
+                progress.fail(error_of(
+                    &ApplyError::Note {
+                        machine,
+                        channel: id,
+                        source,
+                    },
+                    "check that the channels folder's disk has room and can be written to, then send the removal again; nothing was changed",
+                    None,
+                ));
+                return;
+            }
+            Err(refused) => {
+                progress.fail(status::error_of(&refused).unwrap_or_default());
+                return;
+            }
+        }
+        // A kill here leaves only the note: the restart handles every session.
+        crate::fault::point("remove_machine.intent");
         for (at, item) in items.iter().enumerate() {
             let key = format!("session:{}", item.session);
             progress.set_step(&key, pb::StepState::Running, None);
             match sessions.dispose_for_removal(&caller, &item.session, item.how.clone()).await {
-                Ok(()) => progress.set_step(&key, pb::StepState::Done, None),
+                Ok(()) => {
+                    progress.set_step(&key, pb::StepState::Done, None);
+                    // A kill here leaves some sessions handled and the machine
+                    // in the channel: the restart handles the rest.
+                    crate::fault::point("remove_machine.session_handled");
+                }
                 Err(error) => {
+                    self.end_note(note).await;
                     progress.set_step(&key, pb::StepState::Failed, Some(error.message.clone()));
                     for later in &items[at + 1..] {
                         progress.set_step(&format!("session:{}", later.session), pb::StepState::Skipped, None);
@@ -236,18 +295,9 @@ impl ChannelSvc {
                 }
             }
         }
+        crate::fault::point("remove_machine.sessions_done");
         progress.set_step("remove_machine", pb::StepState::Running, None);
-        let (store, key, gone) = (self.starter.store.clone(), id.clone(), machine.clone());
-        let dropped = blocking(move || -> Result<(), humata2_store::StoreError> {
-            let Some(mut channel) = store.channel(&key)? else {
-                return Ok(());
-            };
-            channel.machines.retain(|named| *named != gone);
-            channel.revision += 1;
-            store.put_channel(&channel)
-        })
-        .await;
-        match dropped {
+        match self.drop_machine(&id, &machine).await {
             Ok(Ok(())) => {}
             Ok(Err(source)) => {
                 progress.set_step("remove_machine", pb::StepState::Failed, Some(status::chain(&source)));
@@ -267,6 +317,10 @@ impl ChannelSvc {
                 return;
             }
         }
+        // A kill here leaves the machine out of the channel and the note:
+        // the restart finds nothing left to do and removes it.
+        crate::fault::point("remove_machine.dropped");
+        self.end_note(note).await;
         progress.set_step("remove_machine", pb::StepState::Done, None);
         tell_channel(
             &self.operations.feed(),
@@ -277,6 +331,325 @@ impl ChannelSvc {
         );
         progress.succeed(Some(pb::operation::Result::Machine(pb::MachineId { value: machine })));
     }
+}
+
+impl ChannelSvc {
+    /// Takes `machine` out of channel `id`. Safe to repeat.
+    async fn drop_machine(&self, id: &str, machine: &str) -> Result<Result<(), humata2_store::StoreError>, Status> {
+        let (store, key, gone) = (self.starter.store.clone(), id.to_owned(), machine.to_owned());
+        blocking(move || -> Result<(), humata2_store::StoreError> {
+            let Some(mut channel) = store.channel(&key)? else {
+                return Ok(());
+            };
+            if !channel.machines.contains(&gone) {
+                return Ok(());
+            }
+            channel.machines.retain(|named| *named != gone);
+            channel.revision += 1;
+            store.put_channel(&channel)
+        })
+        .await
+    }
+
+    /// The removal is over, finished or ended; its note goes, and the
+    /// removal of the note is on disk before this returns.
+    async fn end_note(&self, note: PathBuf) {
+        let shown = note.clone();
+        if let Ok(Err(error)) = blocking(move || remove_note(&note)).await {
+            crate::log::say!("humatad2: couldn't remove the note {}: {error}", shown.display());
+        }
+    }
+
+    /// Finishes the removals a run left cut short, once the start is done
+    /// and the links of the machines they name are up. Never blocks the start.
+    pub(crate) fn recover_removals_after(&self, started: Arc<crate::restart::Started>) {
+        let me = self.clone();
+        // D241: each owed removal is named pending now, before the report.
+        let owed = owed_removals(&self.starter.layout.root(), started.operations());
+        tokio::spawn(async move {
+            started.wait().await;
+            let Some(sessions) = me.sessions.get().cloned() else {
+                for (_, note) in &owed {
+                    started.operations().record(
+                        &removal_operation(note),
+                        "remove_machine",
+                        "handling sessions",
+                        OperationState::Stuck {
+                            reason: "the session service wasn't set when the start finished; restart humatad2 to finish the removal".to_owned(),
+                        },
+                    );
+                }
+                return;
+            };
+            for (path, note) in owed {
+                me.finish_removal(&sessions, &started, path, note).await;
+            }
+        });
+    }
+
+    /// Waits until the link of each machine in `named` is up; this machine's
+    /// always is. Err names a machine that was forgotten meanwhile.
+    async fn links_up(&self, named: &[&str]) -> Result<(), String> {
+        let Some(known) = &self.known else {
+            return Ok(());
+        };
+        let links = known.links();
+        for machine in named.iter().filter(|machine| **machine != self.machine) {
+            links
+                .watch(machine)
+                .wait_for(|now| matches!(now, LinkState::Up { .. }))
+                .await
+                .map(drop)
+                .map_err(|_| (*machine).to_owned())?;
+        }
+        Ok(())
+    }
+
+    async fn finish_removal(
+        &self,
+        sessions: &crate::session_service::SessionSvc,
+        started: &crate::restart::Started,
+        path: PathBuf,
+        note: Note,
+    ) {
+        let operation = removal_operation(&note);
+        let record = |step: &str, state: OperationState| {
+            started.operations().record(&operation, "remove_machine", step, state);
+        };
+        let (id, machine) = (&note.channel, &note.machine);
+        // Named pending already, by `owed_removals`.
+        let named = machines_named(&note);
+        if let Err(gone) = self.links_up(&named).await {
+            record(
+                "handling sessions",
+                OperationState::Undone {
+                    reason: format!("{gone} was forgotten before the removal could be finished"),
+                },
+            );
+            self.end_note(path).await;
+            return;
+        }
+        let (store, key) = (self.starter.store.clone(), id.clone());
+        let channel = blocking(move || store.channel(&key)).await;
+        let channel = match channel {
+            Ok(Ok(Some(channel))) => channel,
+            Ok(Ok(None)) => {
+                record(
+                    "handling sessions",
+                    OperationState::Undone {
+                        reason: format!("channel {id} is gone"),
+                    },
+                );
+                self.end_note(path).await;
+                return;
+            }
+            _ => {
+                record(
+                    "handling sessions",
+                    OperationState::Stuck {
+                        reason: format!("the channel {id} could not be read"),
+                    },
+                );
+                return;
+            }
+        };
+        let live = match self.live_on(id, machine).await {
+            Ok(live) => live,
+            Err(error) => {
+                record(
+                    "handling sessions",
+                    OperationState::Stuck {
+                        reason: error.message().to_owned(),
+                    },
+                );
+                return;
+            }
+        };
+        let user = Caller::User(UserVia::Host);
+        for item in &note.items {
+            if !live.iter().any(|(session, _)| *session == item.session) {
+                continue;
+            }
+            if let Err(error) = sessions
+                .dispose_for_removal(&user, &item.session, item.how.clone())
+                .await
+            {
+                record(
+                    "handling sessions",
+                    OperationState::Undone {
+                        reason: format!("{}: {}; {machine} stays in the channel", item.shown_failed(), error.message),
+                    },
+                );
+                self.end_note(path).await;
+                return;
+            }
+        }
+        let left = self.live_on(id, machine).await.map(|left| left.len());
+        if !matches!(left, Ok(0)) {
+            record(
+                "handling sessions",
+                OperationState::Undone {
+                    reason: format!("{machine} still has live sessions the removal didn't list; it stays in the channel"),
+                },
+            );
+            self.end_note(path).await;
+            return;
+        }
+        match self.drop_machine(id, machine).await {
+            Ok(Ok(())) => {}
+            other => {
+                let reason = match other {
+                    Ok(Err(error)) => status::chain(&error),
+                    Err(status) => status.message().to_owned(),
+                    Ok(Ok(())) => String::new(),
+                };
+                record("dropping the machine", OperationState::Stuck { reason });
+                return;
+            }
+        }
+        if channel.machines.contains(machine) {
+            tell_channel(&self.operations.feed(), &self.starter.store, id, pb::Change::Updated, None);
+        }
+        self.end_note(path).await;
+        record("dropped the machine", OperationState::Finished);
+    }
+}
+
+/// What a note of a removal in progress says.
+struct Note {
+    channel: String,
+    machine: String,
+    items: Vec<Item>,
+}
+
+/// `<channels>/.removing-machine/<channel>.<machine>.json`.
+fn note_path(root: &Path, channel: &str, machine: &str) -> PathBuf {
+    root.join(INTENTS).join(format!("{channel}.{machine}.json"))
+}
+
+fn note_bytes(channel: &str, machine: &str, items: &[Item]) -> Vec<u8> {
+    let items: Vec<serde_json::Value> = items
+        .iter()
+        .map(|item| {
+            let how = match &item.how {
+                Removal::MoveTo(to) => serde_json::json!({ "move_to": to }),
+                Removal::Archive(choice) => serde_json::json!({ "archive": *choice as i32 }),
+            };
+            serde_json::json!({ "session": item.session, "title": item.title, "how": how })
+        })
+        .collect();
+    serde_json::to_vec_pretty(&serde_json::json!({ "channel": channel, "machine": machine, "items": items }))
+        .unwrap_or_default()
+}
+
+fn note_of(bytes: &[u8]) -> Option<Note> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let text = |value: &serde_json::Value, key: &str| value[key].as_str().map(str::to_owned);
+    let mut items = Vec::new();
+    for item in value["items"].as_array()? {
+        let how = if let Some(to) = item["how"]["move_to"].as_str() {
+            Removal::MoveTo(to.to_owned())
+        } else {
+            let choice = i32::try_from(item["how"]["archive"].as_i64()?).ok()?;
+            Removal::Archive(pb::ArchiveChoice::try_from(choice).ok()?)
+        };
+        let session = text(item, "session")?;
+        items.push(Item {
+            title: text(item, "title").unwrap_or_else(|| session.clone()),
+            session,
+            how,
+            shown: String::new(),
+        });
+    }
+    Some(Note {
+        channel: text(&value, "channel")?,
+        machine: text(&value, "machine")?,
+        items,
+    })
+}
+
+/// Writes the note, with the folder it is in, on disk.
+fn write_note(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(folder) = path.parent() {
+        let missing: Vec<&Path> = folder
+            .ancestors()
+            .take_while(|found| !found.as_os_str().is_empty() && std::fs::symlink_metadata(found).is_err())
+            .collect();
+        humata2_durable::create_dir_all(folder, 0o700)?;
+        for found in missing {
+            match found.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => humata2_durable::sync_dir(parent)?,
+                _ => {}
+            }
+        }
+    }
+    humata2_store::write_atomic(path, bytes).map_err(std::io::Error::other)
+}
+
+/// Removes the note and puts the removal on disk, so a finished removal
+/// can't have its note come back after a power cut and be run again.
+fn remove_note(path: &Path) -> std::io::Result<()> {
+    humata2_durable::remove_file(path)?;
+    match path.parent() {
+        Some(parent) => humata2_durable::sync_dir(parent),
+        None => Ok(()),
+    }
+}
+
+fn removal_operation(note: &Note) -> String {
+    format!("remove_machine:{}:{}", note.channel, note.machine)
+}
+
+/// The machines a removal waits on: the one removed and each one it moves
+/// sessions to.
+fn machines_named(note: &Note) -> Vec<&str> {
+    let mut named: Vec<&str> = vec![note.machine.as_str()];
+    for item in &note.items {
+        if let Removal::MoveTo(to) = &item.how {
+            named.push(to.as_str());
+        }
+    }
+    named
+}
+
+/// The removals a run left (`read_notes`), each named pending in the
+/// restart report at once, which is written after this (D241).
+fn owed_removals(root: &Path, operations: &crate::restart::Operations) -> Vec<(PathBuf, Note)> {
+    let notes = read_notes(root);
+    for (_, note) in &notes {
+        operations.record(
+            &removal_operation(note),
+            "remove_machine",
+            "handling sessions",
+            OperationState::Pending {
+                waits_for: format!("the start to finish, then the links of {}", machines_named(note).join(", ")),
+            },
+        );
+    }
+    notes
+}
+
+/// The notes of the removals a run left, each with its path. A note that
+/// can't be read is logged and left in place.
+fn read_notes(root: &Path) -> Vec<(PathBuf, Note)> {
+    let Ok(entries) = std::fs::read_dir(root.join(INTENTS)) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        match std::fs::read(&path).ok().and_then(|bytes| note_of(&bytes)) {
+            Some(note) => found.push((path, note)),
+            None => crate::log::say!(
+                "humatad2: the note of a machine's removal at {} can't be read; the machine stays in its channel. Remove the machine again, then delete the note",
+                path.display()
+            ),
+        }
+    }
+    found
 }
 
 impl Item {
@@ -405,6 +778,21 @@ mod tests {
 
     const GONE: &str = "ma_gone";
     const OTHER: &str = "ma_other";
+
+    /// A removal the last run left is named pending when its note is read.
+    #[test]
+    fn a_removal_the_last_run_left_is_named_pending_when_read() {
+        let (root, report) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::create_dir_all(root.path().join(INTENTS)).unwrap();
+        std::fs::write(note_path(root.path(), "ch_1", GONE), note_bytes("ch_1", GONE, &[])).unwrap();
+        let operations = crate::restart::Operations::default();
+        operations.set_folder(report.path());
+
+        let owed = owed_removals(root.path(), &operations);
+
+        assert_eq!(owed.len(), 1);
+        assert_eq!(crate::restart::pending_in(report.path()), vec![format!("remove_machine:ch_1:{GONE}")]);
+    }
 
     fn channel(machines: &[&str]) -> ChannelRecord {
         ChannelRecord {

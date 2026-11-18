@@ -20,6 +20,12 @@ fn writable() -> OpenOptions {
     options
 }
 
+fn write_only() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    options.write(true);
+    options
+}
+
 fn creating() -> OpenOptions {
     let mut options = writable();
     options.create(true).truncate(false);
@@ -37,6 +43,7 @@ fn step(root: &Path, name: &str) {
         }
         "sync-a" => File::open(&writable(), &file("a")).unwrap().sync_data().unwrap(),
         "truncate" => File::open(&writable(), &file("a")).unwrap().set_len(1).unwrap(),
+        "truncate-write-only" => File::open(&write_only(), &file("a")).unwrap().set_len(1).unwrap(),
         "new" => {
             let mut b = File::open(&creating(), &file("b")).unwrap();
             b.append(b"made").unwrap();
@@ -117,6 +124,13 @@ fn read(dir: &Path, name: &str) -> Option<String> {
 fn writes_not_synced_are_gone() {
     let dir = folder();
     run_then_cut(dir.path(), "write,truncate");
+    assert_eq!(read(dir.path(), "a").as_deref(), Some("old"));
+}
+
+#[test]
+fn a_cut_after_truncating_through_a_write_only_handle_puts_back_what_was_there() {
+    let dir = folder();
+    run_then_cut(dir.path(), "truncate-write-only");
     assert_eq!(read(dir.path(), "a").as_deref(), Some("old"));
 }
 

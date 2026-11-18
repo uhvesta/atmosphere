@@ -37,12 +37,16 @@ Splitter "Resize the sidebar"
 Heading "Home"
 Button "New session"
 Dialog "New channel" focused
-  #input-4294967308 focused
+  #input focused
     TextInput "Channel name" value="Billing exports" placeholder="web" focused
-  #input-4294967310
+  Button "Add an org or user to this search"
+  Button "Search all of GitHub, this once"
+  Button "Remove Your repos from this search"
+  #input
     TextInput "Search repos" value="acme" placeholder="Search repos"
   CheckBox "acme/ledger" selected
   CheckBox "acme/api" selected
+  text "GitHub · your repos"
   CheckBox "acme/web"
   CheckBox "acme/infra"
   CheckBox "acme/docs"

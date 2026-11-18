@@ -54,7 +54,7 @@ pub async fn main(args: Vec<OsString>) -> i32 {
         }
         Err(error) => {
             let operation = commands::operation(&cli.command);
-            return output::finish(&console, &cli.global, operation, Err(error.into()));
+            return output::finish(&console, &cli.global, operation, Err(error.into()), None);
         }
     };
     run(cli, &daemon, &console, &environment, ctrl_c()).await
@@ -91,7 +91,7 @@ async fn run<D: Daemon, C: Console>(
         result = commands::run(&ctx, cli.command) => result,
         () = interrupt => Err(CliError::Interrupted),
     };
-    output::finish(console, &cli.global, operation, result)
+    output::finish(console, &cli.global, operation, result, daemon.stale_as_of())
 }
 
 /// A command line clap refused, or `--help` and `--version`. With `--json`

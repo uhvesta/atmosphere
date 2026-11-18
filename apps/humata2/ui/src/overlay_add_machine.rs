@@ -17,12 +17,13 @@ use ghostty_vt::{Colors, Rgb, Size, Terminal};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
 use gpui_kit::base::FocusTrapElement as _;
+use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
 use humata2_clients::machines::{LoginReason, StepKind, StepStatus, UnattendedMethod};
 use humata2_hosts::add::{
-    AddMachineAction, AddMachineState, Choice, Step, Unattended, login_intro,
+    AddMachineAction, AddMachineState, Choice, MigrateStage, Step, Unattended, login_intro,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -563,6 +564,50 @@ impl AddMachineDialog {
             }
             body = body.child(card.test_support());
         }
+        if let Some(migrate) = &state.migrate {
+            let mut card = col()
+                .id("add-machine-needs-migrate")
+                .role(Role::Alert)
+                .aria_label("This Mac needs migrating")
+                .gap(px(8.))
+                .p(px(10.))
+                .rounded(px(8.))
+                .bg(rgb(look.attention_bg))
+                .child(
+                    row()
+                        .items_start()
+                        .gap(px(8.))
+                        .child(chrome::icon(IconName::Info, ORANGE, 12.))
+                        .child(div().flex_1().min_w_0().child(migrate.what.clone())),
+                );
+            match &migrate.stage {
+                MigrateStage::Blocked => {}
+                MigrateStage::Migrating(_) => {
+                    card = card.child(
+                        div()
+                            .text_color(rgb(look.secondary))
+                            .child("Migrating This Mac… the add runs again when it is done."),
+                    );
+                }
+                MigrateStage::Failed(failure) => {
+                    card = card.child(
+                        div()
+                            .text_color(rgb(RED))
+                            .child(format!("{} {}", failure.message, failure.fix)),
+                    );
+                }
+            }
+            if state.migrate_offer().is_some() {
+                card = card.child(row().gap(px(8.)).child(widgets::push_primary(
+                    &ui,
+                    "add-machine-migrate",
+                    "Migrate This Mac",
+                    wrap(AddMachineAction::MigrateThisMac),
+                    look,
+                )));
+            }
+            body = body.child(card.test_support());
+        }
         if let Some(fingerprint) = &state.host_key {
             body = body.child(
                 col()
@@ -582,7 +627,9 @@ impl AddMachineDialog {
                                 "This host's key is new to this computer. Confirm only if the fingerprint matches what the host shows.",
                             )),
                     )
-                    .child(mono(look.text, fingerprint.clone()))
+                    // The fingerprint is what the person checks against the
+                    // host, so a screen reader (and the view) reads it too.
+                    .child(mono(look.text, fingerprint.clone()).test_text(fingerprint.clone()))
                     .child(
                         row()
                             .gap(px(8.))
@@ -657,7 +704,7 @@ impl AddMachineDialog {
                 ),
                 Some(action),
             )
-        } else if state.host_key.is_some() || state.login_offer.is_some() {
+        } else if state.host_key.is_some() || state.login_offer.is_some() || state.migrate.is_some() {
             (None, None)
         } else {
             let action = wrap(AddMachineAction::Start);
@@ -704,7 +751,8 @@ impl AddMachineDialog {
                 .id("add-machine-terminal")
                 .role(Role::Log)
                 .aria_label("Login terminal")
-                .h(px(190.))
+                // Five 17 pt rows, as frame 57 draws it (D660).
+                .h(px(107.))
                 .px(px(12.))
                 .py(px(10.))
                 .overflow_hidden()

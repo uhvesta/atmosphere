@@ -27,10 +27,11 @@ Each step and branch was tagged by reading the code and tests, not the spec.
 
 | Layer | Cases | Rows tagged | Works (shell) | Works (daemon) | Fakes only | Code, no test | Not built | Likely bug |
 |---|---|---|---|---|---|---|---|---|
-| Micro: keys and terminal | 26 | 337 | 26 | 51 | 107 | 103 | 28 | 22 |
-| Macro: whole working days | 16 | 378 | 2 | 256 | 56 | 20 | 33 | 11 |
-| Agents: CLI and MCP | 20 | 374 | 0 | 246 | 41 | 40 | 28 | 19 |
-| **All** | **62** | **1,089** | **28** | **553** | **204** | **163** | **89** | **52** |
+| Micro: keys and terminal | 27 | 344 | 26 | 55 | 123 | 101 | 35 | 4 |
+| Macro: whole working days | 16 | 378 | 2 | 287 | 36 | 19 | 33 | 1 |
+| Agents: CLI and MCP | 20 | 374 | 0 | 271 | 34 | 41 | 28 | 0 |
+| Real: app, SSH VM and agent CLIs | 14 | 249 | 16 | 101 | 20 | 45 | 37 | 23 |
+| **All** | **77** | **1,345** | **44** | **714** | **213** | **206** | **133** | **28** |
 
 The counts come from each case's status table. A row with mixed tags counts
 under its first tag. "Works (real daemon, fake box)" and the like count as real
@@ -42,6 +43,12 @@ What the counts say:
   behaviour is proven only on the engine or in a headless window.
 - The daemon and its CLI are well covered by real-daemon tests. The app's
   screens on top of them are mostly proven on fakes.
+- The real layer (`real/`) is the least proven. Real SSH, vim, paste and
+  resize are proven only on terminal components, never through the app's own
+  path to the VM. Six rows are proven only by a manual REALFLOW run with real
+  Copilot and Codex CLIs ("Works (real CLI)", not in the columns above), and one
+  is not run by rule (rebooting the shared VM). Resume and fork with real CLIs
+  fail live (B5, B7, B8, B9, B10), and every machine-script step is Not built.
 - Agent calls are proven on a real daemon, but 38 of the 81 MCP tools that are
   advertised fall through to "not built".
 
@@ -77,6 +84,7 @@ What the counts say:
 | 24 | [Focus follows intent: keys go to the terminal I am in](micro/24-focus-follows-intent.md) |
 | 25 | [A wrong archive is undone from the toast, and a typo is fixed with ⌘Z](micro/25-undo-and-mistakes.md) |
 | 26 | [A Finder drop uploads into the Files page, and other drops are not built](micro/26-drag-and-drop.md) |
+| 27 | [I pick machines, never folders: roots, Copy to a machine, Somewhere specific…](micro/27-roots-and-placement.md) |
 
 ### Macro: whole working days
 
@@ -123,6 +131,74 @@ What the counts say:
 | 18 | [A script with its own token sees and does only what the token lists](agents/18-scripts-with-a-token.md) |
 | 19 | [An agent keeps its tab, its Inbox and its conversation across a daemon restart and a Mac reboot](agents/19-an-agent-across-a-restart.md) |
 | 20 | [An agent on a box keeps working while the host is away, and each call says what happens](agents/20-an-agent-on-a-box-while-the-host-is-away.md) |
+
+### Real: the real app, the SSH VM and real agent CLIs
+
+[`briefs/real.md`](briefs/real.md) holds this layer's extra parts, its shared facts and the REALFLOW results.
+
+| # | Case |
+|---|---|
+| 01 | [The SSH VM is added as a machine in the real app and gets Humata's tools](real/01-the-vm-becomes-a-machine.md) |
+| 02 | [A shell on the VM in the real app takes every key, copy, paste and resize](real/02-a-shell-on-the-vm-in-the-app.md) |
+| 03 | [A dropped SSH link reconnects without replaying input, and an app restart keeps the VM's holders running](real/03-the-vm-link-drops-and-the-app-restarts.md) |
+| 04 | [A test puts pinned Copilot and Codex CLIs on the VM in their own homes, and takes them away after](real/04-agent-clis-on-the-vm-for-a-test.md) |
+| 05 | [A Copilot session on Claude Haiku 5.5 does a tiny task, asks through the Inbox, and resumes after a stop](real/05-copilot-on-the-cheapest-model-on-this-mac.md) |
+| 06 | [The same Copilot conversation moves to the VM, forks back to this Mac, and moves home](real/06-copilot-moves-to-the-vm-and-back.md) |
+| 07 | [A Codex session on GPT-6 Luna does a tiny task, asks through the Inbox, and resumes after a stop](real/07-codex-on-the-cheapest-model-on-this-mac.md) |
+| 08 | [The same Codex conversation moves to the VM, forks back to this Mac, and moves home](real/08-codex-moves-to-the-vm-and-back.md) |
+| 09 | [Claude, Codex and Copilot work in one channel across this Mac and the VM, and each answers, moves and continues correctly](real/09-three-agents-in-one-channel-across-machines.md) |
+| 10 | [A script I wrote runs on a new machine as soon as Humata's tools are on it](real/10-a-script-runs-when-a-machine-is-registered.md) |
+| 11 | [A script runs once per reconnect, and a session that moves gets its scripts without risk to the session](real/11-scripts-on-reconnect-and-session-arrival.md) |
+| 12 | [A dropped link leaves every agent running on the VM, and reconnect re-attaches each with no lost and no replayed input](real/12-the-link-drops-and-every-agent-resumes.md) |
+| 13 | [After the VM powers off and after this Mac reboots, each session resumes on its exact conversation, and a restart report names each outcome](real/13-the-vm-and-this-mac-reboot.md) |
+| 14 | [Every agent kind forks on this Mac and onto the VM, by code and context, code only, context only and from an earlier turn, and the fork resumes in the real CLI while the parent stays as it was](real/14-forking-every-agent-kind.md) |
+
+### Board: a person and agents plan and track work
+
+[`board/README.md`](board/README.md) holds this layer's shared rig and its findings. The cases go with flow [10](../10-the-board.md).
+
+| # | Case |
+|---|---|
+| 01 | [An item is made in a column, gets its key, and moves between statuses](board/01-items-and-statuses.md) |
+| 02 | [Depends-on edges are set, refuse a loop, and block nothing](board/02-depends-on-edges.md) |
+| 03 | [Kanban, Table and Dashboard show the same items, and every figure opens what it counts](board/03-kanban-table-dashboard.md) |
+| 04 | [The Graph view draws the depends-on edges](board/04-graph-view.md) |
+| 05 | [The drawer shows an item whole and edits its sessions and edges](board/05-the-drawer.md) |
+| 06 | [An agent's ask is answered on the item](board/06-approvals-on-the-item.md) |
+| 07 | [Who made an item decides who may change it](board/07-ownership.md) |
+| 08 | [The scope picker and the session panel show the right boards](board/08-scopes-and-session-panel.md) |
+| 09 | [An agent finds out that the Board exists](board/09-agent-learns-the-board-exists.md) |
+| 10 | [An agent reads boards through the CLI and through MCP](board/10-agent-reads.md) |
+| 11 | [An agent creates, edits, moves and deletes through MCP](board/11-agent-writes-through-mcp.md) |
+| 12 | [An agent creates, edits, moves and deletes through the CLI](board/12-agent-writes-through-cli.md) |
+| 13 | [An agent asks for approval and waits for the answer](board/13-agent-asks-for-approval.md) |
+| 14 | [A real Copilot agent on Claude Haiku 5.5 plans a small task on the Board](board/14-real-copilot-plans-a-task.md) |
+
+### Verify: checks carried into the VERIFY milestone
+
+[`verify/README.md`](verify/README.md) says where each case came from. Results of the real-agent runs are in [`results/`](results/).
+
+| # | Case |
+|---|---|
+| 01 | [Each agent kind resumes its exact conversation after a stop and after a daemon restart, and `humata session read` shows its entries](verify/01-resume-after-stop-and-restart.md) |
+| 02 | [Each agent kind forks on this Mac with code and context, code only, context only, and from an earlier turn, and the fork resumes while the parent stays as it was](verify/02-fork-every-kind-on-this-mac.md) |
+| 03 | [`humata attach` picks the agent's tab, and an attach made during a resume waits for it](verify/03-attach-tabs-during-resume.md) |
+| 04 | [`humata session type` submits its text once, including after a retry and right after a resume](verify/04-type-submits-once.md) |
+| 05 | [A rule on added, connected or upgraded runs its steps once per link-up, and a failed step stops its rule](verify/05-machine-rules-added-connected-upgraded.md) |
+| 06 | [A moved session's arrival rule types into it on the new machine, and its leaving rule runs first on the old one without holding the move](verify/06-session-arrived-and-leaving.md) |
+| 07 | [Machine scripts are listed in Settings and on the machine page, and Run now updates the row by push](verify/07-scripts-settings-and-machine-page.md) |
+| 08 | [`humata machine script` checks the rules, runs a rule and reads its log, and an agent can't run one by default](verify/08-machine-script-cli.md) |
+| 09 | [Turning Copilot off in Settings › Agents keeps it out of every new start and leaves the sessions it already runs alone](verify/09-copilot-off.md) |
+| 10 | [With Install when missing off, a start of a missing CLI is refused with a fix; with it on, one start installs once, a found CLI is never replaced, and nothing else installs an agent](verify/10-install-when-missing.md) |
+| 11 | [A Linux add on stale machine tools is refused until This Mac is migrated, and Migrate This Mac fixes it from the Add machine dialog or from the CLI](verify/11-linux-add-refused-until-migrate.md) |
+| 12 | [Adding the real test VM stops at the disk check, 1.3 GiB free against 2 GiB needed, and that is an environment block, not a product bug](verify/12-real-vm-add-disk-low.md) |
+| 13 | [Archiving a review keeps its unsubmitted pull request drafts, and restoring it brings them back](verify/13-archive-keeps-pr-drafts.md) |
+| 14 | [Each commit and each Save version makes a numbered version, and History says who made it](verify/14-commits-and-saves-make-versions.md) |
+| 15 | [Stepping back to an old version reads it as it was, and Restore adds a version and keeps every other one](verify/15-step-back-compare-restore.md) |
+| 16 | [Closing a Desk session that holds files asks first, and Save version and close keeps the folder](verify/16-close-with-files-asks-first.md) |
+| 17 | [A plain shell on devbox-1 runs as its own Terminal session that never reads Working, and a shell tab beside an agent runs on that machine](verify/17-remote-plain-shell.md) |
+| 18 | [Adding a machine through a provider, logging in by hand, and making it unattended leaves a machine that starts without me](verify/18-provider-add-with-login.md) |
+| 19 | [A merged pull request says so in its review session and offers Archive, while the other pull request in the review stays open](verify/19-merged-pr-offers-archive.md) |
 
 ## Gaps: what is not built
 
@@ -202,7 +278,7 @@ ones to decide on.
 |---|---|---|---|
 | 47 | The repo picker has no "used before" source and no GitHub users and orgs source from Settings. | NEWCH, CH-18 | macro-02 |
 | 48 | A repo cannot be removed from a channel, from the app, the CLI or MCP (`channel_service.rs:1121-1142`). | CH-22, DESK batch D4 (MV-9) | macro-02, agents-06 |
-| 49 | The Repos and machines grid (`GetGrid`). | CH-9 | macro-02 |
+| 49 | ~~The Repos and machines grid (`GetGrid`).~~ Built in the daemon and `humata channel grid` (D764); the app's Repos and machines tab is not built yet. | CH-9 | macro-02 |
 | 50 | A repo cannot be added to a running session (`session_service.rs:2366-2372`). | no owner (ROAM waits on it) | agents-06 |
 | 51 | A session cannot be deleted, and a repo cannot be dropped from one (`session_service.rs:2331-2386`). | no milestone | macro-16 |
 | 52 | The app cannot delete a channel. Only the CLI can. | no milestone | macro-16 |
@@ -252,7 +328,7 @@ ones to decide on.
 
 | # | Gap | Milestone or ID | Cases |
 |---|---|---|---|
-| 79 | MCP tools advertised but not dispatched: `session_move`, `topology_get`, `files_find`, `channel_add_repo`, `session_own_copy`, `machine_stop`, `session_start`. 38 of the 81 advertised tools fall to `not_built` (`daemon/humatad/src/mcp.rs:1020-1064`). | MV-1 for move; the rest no milestone | agents-06 to 13 |
+| 79 | MCP tools advertised but not dispatched: `session_move`, `files_find`, `channel_add_repo`, `session_own_copy`, `machine_stop`, `session_start`. `topology_get` is built (D772). The rest fall to `not_built` in `daemon/humatad/src/mcp.rs` (`serves()`). | MV-1 for move; the rest no milestone | agents-06 to 13 |
 | 80 | Typing queued for a turn end: `Type` with `TURN_ENDS`, `ListQueued`, `SendQueuedNow`, `CancelQueuedTyping` (`daemon/humatad/src/terminal.rs:911-914`). | SE-23 (optional, D126) | agents-02, agents-17 |
 | 81 | An agent's fork cannot be made before a turn, with only some repos, with a first message, on a named branch, or with another agent. The daemon supports most of these over gRPC. | no milestone | agents-07, 08, 10 |
 | 82 | A fork's Inbox card names no branch (`inbox.proto:293-297`). | no milestone | agents-07, 08 |

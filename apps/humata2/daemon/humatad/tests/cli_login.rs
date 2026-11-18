@@ -330,6 +330,7 @@ async fn a_sessions_tab_cant_log_in() {
                 value: SESSION.to_owned(),
             }),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()

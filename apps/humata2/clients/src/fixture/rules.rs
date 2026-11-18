@@ -53,9 +53,11 @@ const ROWS: &[(&str, &str, Option<RuleSetting>)] = &[
     ("machine_provision", "Add, create, start or stop machines; sync skills", Some(Ask)),
     ("trash_restore", "Restore from trash", Some(Ask)),
     ("channel_create", "Create a channel", Some(Ask)),
-    ("session_stop_other", "Stop or delete any session but itself", Some(Never)),
+    ("session_stop_other", "Stop or archive any session but itself", Some(Ask)),
+    ("session_delete_other", "Delete any session but itself", Some(Never)),
     ("channel_change", "Change channel settings or repos", Some(Never)),
     ("machine_destroy", "Remove, forget or delete machines", Some(Never)),
+    ("machine_script_run", "Run machine scripts", Some(Never)),
 ];
 
 fn defaults() -> Vec<AccessRule> {

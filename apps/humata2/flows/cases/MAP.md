@@ -2,10 +2,12 @@
 
 This map lays out the use cases in three layers. **Micro** cases are single
 keystrokes and gestures. **Macro** cases are whole working days. **Agents**
-cases cover an agent acting through the `humata` CLI or MCP.
+cases cover an agent acting through the `humata` CLI or MCP. **Real** cases
+run the real desktop app, real SSH to the `h2-terminal-c1` VM, and the real
+Claude, Codex and Copilot CLIs.
 
 Each item names its branch points and what should happen at each one. The
-cases in `micro/`, `macro/` and `agents/` write each item out as a prose test
+cases in `micro/`, `macro/`, `agents/` and `real/` write each item out as a prose test
 case. `README.md` indexes them and lists the gaps.
 
 These branch points recur through the map:
@@ -99,3 +101,22 @@ These branch points recur through the map:
 | 18 | Scripts with a token | **Branch points:** `HUMATA_TOKEN`, a capability missing, a stop refused, and token minting. |
 | 19 | An agent across a restart | **Branch points:** the token is kept, a pending deferred call is withdrawn, an ask-ahead waits, and the hook prints nothing while the daemon is gone. |
 | 20 | An agent on a box while the host is away | **Branch points:** its own files, a question journaled, a push denied or held, reads from the copy, and a replay when the link returns. |
+
+## Real: the real app, SSH VM and agent CLIs
+
+| # | Case | Branch points and expected outcomes |
+|---|---|---|
+| 01 | The SSH VM is added as a machine in the real app and gets Humata's tools | **Branch points:** add over SSH, the host key, tools installed (Linux tools missing from the bundle), and a tools copy that fails. |
+| 02 | A shell on the VM in the real app takes every key, copy, paste and resize | **Branch points:** a shell, vim and less, Esc and ⌃ keys, copy and paste, resize, and a key sent while the link is down. |
+| 03 | A dropped SSH link reconnects without replaying input, and an app restart keeps the VM's holders running | **Branch points:** an SSH outage, reconnect with no replayed input, an app restart that keeps live holders, and a host-key change. |
+| 04 | A test puts pinned Copilot and Codex CLIs on the VM in their own homes, and takes them away after | **Branch points:** pinned CLIs fetched by sha, isolated homes, login copied or Needs the owner, cleanup, and a sha mismatch. |
+| 05 | A Copilot session on Claude Haiku 5.5 does a tiny task, asks through the Inbox, and resumes after a stop | **Branch points:** folder trust, `/model` for this session only, an Inbox ask, turn end, diff, stop, resume and fork. |
+| 06 | The same Copilot conversation moves to the VM, forks back to this Mac, and moves home | **Branch points:** move to the VM, continue, fork back to this Mac, move home, and an offline target. |
+| 07 | A Codex session on GPT-6 Luna does a tiny task, asks through the Inbox, and resumes after a stop | **Branch points:** "Hooks need review", `/model`, an Inbox ask, turn end, diff, stop and resume (B9). |
+| 08 | The same Codex conversation moves to the VM, forks back to this Mac, and moves home | **Branch points:** move to the VM, continue, fork back to this Mac, move home, and Codex resume failing (B9). |
+| 09 | Claude, Codex and Copilot work in one channel across this Mac and the VM, and each answers, moves and continues correctly | **Branch points:** three kinds at once, asks in order, moves and forks across machines, and continue in another agent. |
+| 10 | A script I wrote runs on a new machine as soon as Humata's tools are on it | **Branch points:** the added trigger, steps run, humata, start and send, the run log, a failure ask with Retry, and the capability off. |
+| 11 | A script runs once per reconnect, and a session that moves gets its scripts without risk to the session | **Branch points:** once per reconnect, session-arrived and session-leaving, a timeout, dedup after restart, and a fork. |
+| 12 | A dropped link leaves every agent running on the VM, and reconnect re-attaches each with no lost and no replayed input | **Branch points:** an agent mid-turn, an Ask pending during the cut, an answer refused while offline, reconnect, and no replay. |
+| 13 | After the VM powers off and after this Mac reboots, each session resumes on its exact conversation, and a restart report names each outcome | **Branch points:** a throwaway VM powers off, this Mac reboots, each conversation resumes, the restart report, and compared with Stop for the night. |
+| 14 | Every agent kind forks on this Mac and onto the VM, by code and context, code only, context only and from an earlier turn, and the fork resumes in the real CLI while the parent stays as it was | **Branch points:** Claude, Codex and Copilot; same machine and the VM; code and context, code only, context only, and before a turn. |

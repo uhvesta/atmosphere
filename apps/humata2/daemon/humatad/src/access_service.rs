@@ -27,6 +27,10 @@ use crate::inbox::Inbox;
 use crate::rules_kept::{self, Change, RulesKeptError, Unknown};
 use crate::status;
 
+/// How long a passphrase change waits for linked machines to keep the
+/// policy copy that carries it before naming them pending.
+const COPY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(crate) struct Access {
     guard: Arc<Guard>,
     /// Where revoked grants are told.
@@ -35,6 +39,8 @@ pub(crate) struct Access {
     inbox: Arc<Inbox>,
     /// Where rules are kept across a restart.
     store: Arc<Store>,
+    /// The copy machines judge by, and which of them hold its newest.
+    policy: Arc<crate::away::PolicySource>,
     /// Held while a rule changes, so two changes can't both pass the
     /// revision check.
     changing: tokio::sync::Mutex<()>,
@@ -46,12 +52,14 @@ impl Access {
         feed: Arc<Feed>,
         inbox: Arc<Inbox>,
         store: Arc<Store>,
+        policy: Arc<crate::away::PolicySource>,
     ) -> Self {
         Self {
             guard,
             feed,
             inbox,
             store,
+            policy,
             changing: tokio::sync::Mutex::new(()),
         }
     }
@@ -533,9 +541,21 @@ impl pb::access_service_server::AccessService for Access {
             request.into_inner(),
         )
         .await?;
-        // AW-5: machines get the new hash with the next policy copy.
+        // AW-5: machines get the new hash with the next policy copy; the
+        // linked ones are given a moment to say they keep it.
         self.guard.policy_changed();
-        Ok(Response::new(set))
+        let delivered = self.policy.delivered(COPY_WAIT).await;
+        let ids = |machines: Vec<String>| {
+            machines
+                .into_iter()
+                .map(|value| pb::MachineId { value })
+                .collect()
+        };
+        Ok(Response::new(pb::SetApprovalPassphraseResponse {
+            updated: ids(delivered.updated),
+            pending: ids(delivered.pending),
+            ..set
+        }))
     }
 }
 
@@ -756,7 +776,9 @@ fn capability_info(capability: Capability) -> pb::CapabilityInfo {
         | C::SessionStartOtherMachine
         | C::NetworkReach
         | C::MachineProvision
+        | C::MachineSessionsStop
         | C::MachineDestroy
+        | C::MachineScriptRun
         | C::MachineSettings
         | C::PeerReport
         | C::HostControl => S::Machine,
@@ -777,6 +799,7 @@ fn capability_info(capability: Capability) -> pb::CapabilityInfo {
         | C::OwnSessionEnd
         | C::SessionMove
         | C::SessionStopOther
+        | C::SessionDeleteOther
         | C::PrSubmit
         | C::UserReviewState
         | C::TerminalInput => S::Session,
@@ -787,6 +810,8 @@ fn capability_info(capability: Capability) -> pb::CapabilityInfo {
         | C::SessionStartSameMachine
         | C::PrReviewStart
         | C::GitPush
+        | C::ChannelRepoAdd
+        | C::DeskMoveToChannel
         | C::ChannelChange => S::Channel,
     };
     pb::CapabilityInfo {

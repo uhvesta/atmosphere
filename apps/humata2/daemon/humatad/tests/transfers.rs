@@ -162,6 +162,7 @@ fn start_request(
         mode: mode as i32,
         on_existing: on_existing as i32,
         reason: String::new(),
+        name: String::new(),
     }
 }
 
@@ -491,7 +492,45 @@ async fn keeping_both_keeps_the_old_one_and_numbers_the_new_one() {
 
     assert_eq!(state(&end), pb::TransferState::Done, "{end:?}");
     assert_eq!(std::fs::read_to_string(world.shared.join("note.txt")).unwrap(), "old");
-    assert_eq!(std::fs::read_to_string(world.shared.join("note 2.txt")).unwrap(), "new");
+    assert_eq!(std::fs::read_to_string(world.shared.join("note-2.txt")).unwrap(), "new");
+    assert_eq!(
+        end.outcomes,
+        vec![pb::TransferOutcome {
+            landing: pb::TransferLanding::SavedAs as i32,
+            saved_as: "note-2.txt".to_owned(),
+        }]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keeping_both_a_file_with_the_same_bytes_is_not_copied_again() {
+    let world = world().await;
+    std::fs::write(world.clone.join("note.txt"), "same").unwrap();
+    std::fs::write(world.shared.join("note.txt"), "same").unwrap();
+
+    let started = start(
+        &world.daemon,
+        start_request(
+            &[in_clone("note.txt")],
+            in_shared(""),
+            pb::TransferMode::Copy,
+            pb::OnExisting::KeepBoth,
+            None,
+        ),
+    )
+    .await
+    .unwrap();
+    let end = settled(&world.daemon, &id(&started)).await;
+
+    assert_eq!(state(&end), pb::TransferState::Done, "{end:?}");
+    assert!(!world.shared.join("note-2.txt").exists());
+    assert_eq!(
+        end.outcomes,
+        vec![pb::TransferOutcome {
+            landing: pb::TransferLanding::AlreadyThere as i32,
+            saved_as: String::new(),
+        }]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -815,6 +854,65 @@ async fn send(daemon: &Daemon, messages: Vec<pb::UploadMessage>) -> Result<pb::T
 }
 
 const MIX: &[Codec] = &[Codec::Zstd, Codec::Lz4, Codec::None];
+
+fn in_pastes(path: &str) -> pb::FileLocation {
+    at(
+        pb::file_location::Root::SessionPastes(pb::SessionPastes {
+            session: Some(pb::SessionId {
+                value: SESSION.to_owned(),
+            }),
+        }),
+        path,
+    )
+}
+
+/// The messages of a whole upload of `data` as `name` into `into`.
+fn upload_into(into: pb::FileLocation, name: &str, data: &[u8]) -> Vec<pb::UploadMessage> {
+    let mut messages = upload_messages(name, data, &sha256(data), 0, None, MIX, None);
+    if let Some(pb::upload_message::Message::Header(header)) = messages[0].message.as_mut() {
+        header.destination = Some(into);
+    }
+    messages
+}
+
+/// D335: a file uploaded into a session's pastes says where it is on the
+/// machine's disk, which is what the app types; two pastes of one name land
+/// apart. An upload anywhere else tells no path.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_into_a_sessions_pastes_says_where_it_is_on_disk() {
+    let world = world().await;
+    for folder in ["p1", "p2"] {
+        files(&world.daemon)
+            .await
+            .create_folder(pb::CreateFolderRequest {
+                idempotency_key: None,
+                location: Some(in_pastes(folder)),
+            })
+            .await
+            .expect("a paste's folder is made");
+    }
+    let (first, second) = (noise(11, 4096), noise(12, 4096));
+
+    let one = send(&world.daemon, upload_into(in_pastes("p1"), "notes.txt", &first))
+        .await
+        .unwrap();
+    let two = send(&world.daemon, upload_into(in_pastes("p2"), "notes.txt", &second))
+        .await
+        .unwrap();
+
+    assert_eq!(state(&one), pb::TransferState::Done, "{one:?}");
+    assert_eq!(state(&two), pb::TransferState::Done, "{two:?}");
+    assert!(Path::new(&one.disk_path).is_absolute(), "{one:?}");
+    assert_ne!(one.disk_path, two.disk_path);
+    assert_eq!(std::fs::read(&one.disk_path).unwrap(), first);
+    assert_eq!(std::fs::read(&two.disk_path).unwrap(), second);
+
+    let shared = send(&world.daemon, upload_into(in_shared(""), "notes.txt", &first))
+        .await
+        .unwrap();
+    assert_eq!(state(&shared), pb::TransferState::Done, "{shared:?}");
+    assert!(shared.disk_path.is_empty(), "only pastes tell their path: {shared:?}");
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_upload_in_chunks_arrives_whole_and_the_transfer_is_done() {

@@ -65,27 +65,27 @@ impl SessionSvc {
         let agent = loaded.record.agent.clone();
         Some(BoardAsk {
             preview: pb::request_preview::Preview::NewSession(pb::NewSessionPreview {
-                usage_note: usage_note(&agent),
+                usage_note: usage_note(&self.starter.agents.person_name(&agent), &agent),
                 agent: Some(pb::AgentId { value: agent }),
                 model: String::new(),
                 machine: Some(pb::MachineId { value: machine }),
                 fork_kind: kind as i32,
                 repos,
             }),
-            reason: String::new(),
+            reason: request.reason.clone(),
         })
     }
 }
 
 /// Whose plan a new agent's usage counts against, in words: Humata has no
 /// price feed, so no price is shown (IN-10).
-fn usage_note(agent: &str) -> String {
-    let (who, plan) = match agent {
-        "claude" => ("Claude Code", "your Claude plan"),
-        "codex" => ("Codex CLI", "your Codex plan"),
-        "copilot" => ("GitHub Copilot CLI", "your Copilot plan"),
-        "opencode" => ("OpenCode", "the provider set up in OpenCode"),
-        other => (other, "that agent's own account"),
+fn usage_note(who: &str, agent: &str) -> String {
+    let plan = match agent {
+        "claude" => "your Claude plan",
+        "codex" => "your Codex plan",
+        "copilot" => "your Copilot plan",
+        "opencode" => "the provider set up in OpenCode",
+        _ => "that agent's own account",
     };
     format!("Starts a new {who} agent; its usage counts against {plan}")
 }

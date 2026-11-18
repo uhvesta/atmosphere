@@ -47,13 +47,13 @@ pub enum Told {
     Title(String),
     Bell,
     ClipboardWrite(String),
-    ClipboardRead,
     PasteImage,
     PasteFiles,
     Failed,
     Pwd(String),
     Split,
     Link(String),
+    InputRefused,
 }
 
 pub struct Opened {
@@ -93,11 +93,11 @@ pub fn open(cx: &mut TestAppContext, scrollback: usize) -> Opened {
                 PaneEvent::Bell => Told::Bell,
                 PaneEvent::OpenLink(uri) => Told::Link(uri.clone()),
                 PaneEvent::ClipboardWrite { text, .. } => Told::ClipboardWrite(text.clone()),
-                PaneEvent::ClipboardReadRequested { .. } => Told::ClipboardRead,
                 PaneEvent::PasteImage { .. } => Told::PasteImage,
                 PaneEvent::PasteFiles(_) => Told::PasteFiles,
                 PaneEvent::Failed(_) => Told::Failed,
                 PaneEvent::SplitRequested => Told::Split,
+                PaneEvent::InputRefused => Told::InputRefused,
             });
         })
         .detach();
@@ -133,7 +133,11 @@ impl Opened {
     }
 
     /// Runs `step` in the window and draws after it.
-    pub fn frame<R>(&self, cx: &mut TestAppContext, step: impl FnOnce(&mut Window, &mut App) -> R) -> R {
+    pub fn frame<R>(
+        &self,
+        cx: &mut TestAppContext,
+        step: impl FnOnce(&mut Window, &mut App) -> R,
+    ) -> R {
         let result = cx
             .update_window(self.window, |_, window, cx| {
                 let result = step(window, cx);
@@ -168,9 +172,18 @@ impl Opened {
                             row.cells
                                 .iter()
                                 .filter(|cell| {
-                                    !matches!(cell.width, CellWidth::SpacerTail | CellWidth::SpacerHead)
+                                    !matches!(
+                                        cell.width,
+                                        CellWidth::SpacerTail | CellWidth::SpacerHead
+                                    )
                                 })
-                                .map(|cell| if cell.text.is_empty() { " " } else { cell.text.as_str() })
+                                .map(|cell| {
+                                    if cell.text.is_empty() {
+                                        " "
+                                    } else {
+                                        cell.text.as_str()
+                                    }
+                                })
                                 .collect::<String>()
                         })
                         .unwrap_or_default()

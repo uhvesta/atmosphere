@@ -19,7 +19,7 @@ Agents are running wild on a machine and I want them stopped, now, as a last res
 - A reboot while stopped keeps it stopped. Start (the button, `humata machine start`, `humata start`) runs the normal bring-back and writes a restart report naming the stop.
 - Stop reaches a box whose agents flood the link, and works from the box's own terminal when the host can't reach it.
 - A Stop cut at any point (fault points, power cut) still leaves everything stopped or running and nothing lost (SAFE's rules).
-- Fakes: the Stop button, its confirm, the Stopped state and Start are drawn and match frames that Fable signs off.
+- Fakes: the Stop button, its confirm, the Stopped state and Start are drawn and match frames that an Opus 5.5 high subagent signs off (xhigh if the call needs a lot of input; no Fable, owner rule 2026-11-16).
 
 ## Read these (pointers, nothing else)
 - SPEC: PER-23–PER-31 (restarts), the machine page (MP-*), agent access (AC-*). Grep `\*\*<ID>\*\*` in `apps/humata2/SPEC.md`.
@@ -56,7 +56,7 @@ Manager: minion STOP (Opus 5.5), opened 2026-11-16.
 - [ ] T3 "Stop and Start re-exec the daemon into the sweep or the bring-back" · Sonnet · `src/stop/{exec,service}.rs` + seams (proto, serve, main, restart, report, guard, inbox, access) · after T0–T2
 - [ ] T4 "Stop reaches a box that floods or drops its link, and `humata stop` works on the box" · after T3 (peer.proto, machines `Purpose::StopSessions`, `humatad2 stop`, host copy, Hello field)
 - [ ] T5 "An agent can never stop or start a machine unless its rule allows it" · after T3 (access capability, CLI `humata stop|start`, `host stop|start`)
-- [ ] T6 "The app shows Stop, its confirm, Sessions stopped and Start, on fakes and live" · after T3 (clients model + fake, features/hosts, ui machine page/sidebar/hosts) and frames 72–76 with Fable's sign-off
+- [ ] T6 "The app shows Stop, its confirm, Sessions stopped and Start, on fakes and live" · after T3 (clients model + fake, features/hosts, ui machine page/sidebar/hosts) and frames 72–76 with an Opus 5.5 high sign-off (xhigh for a call that needs a lot of input; no Fable)
 - [ ] T7 "A stop or start cut by power at any point leaves everything stopped or running, nothing lost" · after SAFE T5 (power_cut rig)
 
 ### Claims
@@ -74,5 +74,26 @@ Manager: minion STOP (Opus 5.5), opened 2026-11-16.
 - T4 Opus test writer · `tests/stop_box.rs` (new), peer RPC + SSH script + host copy · scratch `stop/t4/` · running
 
 - Batch 3 green (stop_sessions 11.7 s, was 28.9 s). Batch 4 = T4 + T5 + UPGRADE's asks (D281: `exec_at(path, point)` with `installed_path()` stripping Linux's " (deleted)"; the stop withdraw skips MIGRATE, kind 8). T4 and T5 are implemented; batch 4 is merged and sent (`stop/batches/batch4.py`, --check clean, uncompiled).
-- Waiting on: main to gate batch 4 and log picks (a)–(f) (relay path, hedged SSH, start waits 20 s, last.json, host copies, the agent capability); T6 frames need an Opus high sign-off; T7 waits on SAFE T5.
+- Batch 4 applied; its gate found 5 failures, fixed in batch 5 (`stop/batches/batch5.py`): the relayed start is resent over the next link; `humatad2 stop` runs the real sweep and notes what it ended in `stop/ended_early.json` for the boot to count; streams get 250 ms (`LET_END`) to end themselves before the cut; test 3 expects offline for an unlinked box.
+- Waiting on: main to gate batches 6 through 9, in order (9 needs 8).
+  - 6 fixes stop_box_test: the CLI resolves `--state` the same way the daemon does; a start resends after a lost connection and redials, waiting up to 30 s.
+  - 7: frames 72–76, signed off by Opus high; their goldens still need recording.
+  - 8: the app model, fakes, live map and hosts reducers, with stop_sessions_test and the hosts stop_test.
+  - 9: the ui/src stopped look on the machine page, hosts and sidebar, plus 4 machines_flow tests.
+  - Open picks, left as made for now: the fake's fixed '14:02' time; who-stopped unspecified reads as 'you'; an undelivered stop leaves statuses as they are; dialogs centre on the page area.
+  - T7 waits on SAFE T5.
+- Gate 12 (batch 6 in): stop_box_test 3/6 fail, the session never live again after a start. Cause: the box's link never ends when its daemon restarts. The relay is lost and the link begins a graceful shutdown, but that waits on the host's Uplink, which `carry_uplink` keeps open. The host keeps a link that can relay nothing ("a peer link carries one connection") and shows the last report, MachineStopped, for good. Batch 10 (`stop/batches/batch10.py`, sha-guarded, --check clean, uncompiled): `Handshake::end` on any link end ends the Uplink. Seams: peer.rs, peer_link.rs, and AWAY's `the_link_outlives_its_machines_daemon` is replaced; this amends D213/AWAY T3 and needs a D number. pr_stopped's cause was serve.rs's unguarded `spawn_poll`, already guarded in the tree, not stop/.
+- Batch 11 (`stop/batches/batch11.py`, sha-guarded, --check clean, uncompiled), what remained for the exit criterion. Batch 16 had passed stop_box_test and pr_stopped_test.
+  - T7, tests first: `stop_sessions.rs` now also cuts the power at each of the 7 stop and 4 start points (11 new tests, `Cut::Power`). The daemon runs with `HUMATA2_POWER_CUT_ROOTS` on its state and channels. After it dies at the point, each holder that still answers is SIGUSR2'd (faults holder) and every process under them is killed. The crash cuts are unchanged. Any failure is a production finding, and the fix comes next. The box's power cut is not covered (D364).
+  - T6, the frames: new `desktop/tests/native/stop.rs` captures the real window on fakes in the state of each of frames 72–76, and `look.rs` compares those captures with the goldens. Main records the design goldens 72–76 (`design_test_record`) and the native captures (`native_test_record`). An Opus 5.5 high subagent then compares each pair, and main tunes the budgets in look.rs.
+  - Picks logged as Provisional: D360 (14:02 clock text), D361 (no stopper reads "you"), D362 (an undelivered stop leaves statuses as they are), D363 (dialogs centre on the page), D364 (power cut proven on the host only).
+- Batch 4 (scratch `stopup/batch4.py`, after batches 1–3): an Opus high review of the 72–76 .new.png renders against the native captures found the app off in placement only. D502 reverses D363: the confirms are window-root overlays, and `dialog_card` keeps its width. The Hosts card puts the stop line before the disk warning and keeps "up N". A delivered stop on the fake ends the machine's sessions' pending requests (new clients tests). Frame 76's scene has its last-seen time. Words, the red Stop and the stopped rows already matched.
+  - Main: re-record native 72–76. The owner records design goldens 72–76 in the next wave. Then look.rs budgets.
+  - Separate from STOP: design 59 (and 73–76's backgrounds) lags the app's machine page (variable editors, the Humata row, the real disk bar).
+- STOP2 round (2026-11-16, scratch `stop2/`): Gate 12's cause, a box link that never ended, is fixed in the tree. Batch 10 (D317) is in peer.rs and peer_link.rs, and batch 16 passed stop_box_test. The batch10.py sha check fails only because peer.rs moved on. Open picks: D361 and D362 are kept as logged, and D502 settled D363. Two picks are built in their better form:
+  - `a_stop_time.py` (D503, amends D360): a stop's time reads in this Mac's local time, with its day when it wasn't today. New `clients/live/src/local_time.rs`; `map::machine` and `machine_stop` take a `LocalNow`. Seams: lib.rs, file_manager.rs (`parse_offset` made pub(crate)), map.rs, daemon.rs, events.rs, machines.rs. Fakes and frames keep "14:02".
+  - `b_box_cuts.py` (D504, reverses D364): `stop_box.rs` section 5 has 16 tests. The host is cut at its 3 stop and 2 start points, and `humatad2 stop` at its 3 points, each by crash and by power. The suite gets 4 shards (`RIG_SHARDS` seam in BUILD). New `Rig::start_seen_with_host_env` (remote_rig.rs seam).
+  - `c_decisions.py`: D503 and D504 go after D502.
+  - All three are anchor-only and idempotent, checked on fresh copies, and not compiled. Main runs: `//apps/humata2/clients/live:live_unit_test`, `:parity_test`, a lint of `//apps/humata2/clients/live/...`, and `//apps/humata2/daemon/humatad:stop_box_test`.
+- Exit criterion: everything is built. Left: the STOP2 gate, re-recorded native 72–76 (main), design goldens 72–76 (owner), then look.rs budgets and a gate.
 - Ready to commit: no

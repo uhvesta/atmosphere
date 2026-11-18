@@ -877,3 +877,82 @@ box_release_cuts! {
     a_box_1_cut_after_trashing_its_copy_lets_go_of_it_once_it_links: "carry.trashed",
     a_box_1_cut_after_forgetting_its_copy_lets_go_of_it_once_it_links: "carry.forgotten",
 }
+
+/// What the host's newest restart report says of the operations it found,
+/// and the end of the log of the run before, for a failure's message.
+fn host_restart_story(rig: &Rig) -> String {
+    let restarts = rig.host.state.join("restarts");
+    let mut folders: Vec<std::path::PathBuf> =
+        std::fs::read_dir(&restarts).into_iter().flatten().flatten().map(|entry| entry.path()).collect();
+    folders.sort();
+    let operations = folders
+        .last()
+        .and_then(|folder| std::fs::read_to_string(folder.join("operations.jsonl")).ok())
+        .unwrap_or_default();
+    let log = std::fs::read_to_string(rig.host.state.join("logs").join("humatad2.log")).unwrap_or_default();
+    let tail: Vec<&str> = log.lines().rev().take(40).collect();
+    format!("operations: {operations}\nlog: {}", tail.into_iter().rev().collect::<Vec<_>>().join("\n"))
+}
+
+/// PER-27 for a restore on this Mac while box-1 is linked: the host cut at
+/// `point` of it, once it was asked, and started again. The restore is
+/// either undone (archived on box-1 as it was, with nothing of it taken in
+/// here) or finished (live on this Mac, not archived).
+async fn host_cut_while_restoring_here(point: &str) {
+    let (mut rig, channel, id) = on_box().await;
+    let branch = rig.session(&id).await.repos[0].branch.clone();
+    let clone = rig.the("box-1").path(&channel, CLONE);
+    git(&["-C", &clone.display().to_string(), "push", "-u", "origin", &branch]);
+    let ended = archive(&rig, &id).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+    wait_gone(&clone).await;
+    let was = rig.wait_session(&id, "archived on box-1", |s| s.archive.is_some()).await;
+    assert!(was.conversation_id.is_empty(), "nothing of box-1's agent is here yet: {was:?}");
+
+    let arm = rig.host.dir.path().join("arm-restore");
+    let armed = arm.display().to_string();
+    rig.restart_host(&[("HUMATA2_STOP_AT", point), ("HUMATA2_FAULT_ARM", armed.as_str())]).await;
+    std::fs::write(&arm, b"").unwrap();
+    let host = rig.host_id().await;
+    let _ = sessions(&rig)
+        .await
+        .restore_session(pb::RestoreSessionRequest { idempotency_key: None, id: Some(id.clone()), machine: Some(host.clone()) })
+        .await;
+    rig.host_stopped().await;
+    rig.restart_host(&[]).await;
+
+    let undone = |s: &pb::Session| {
+        s.archive.is_some() && s.machine == Some(Rig::box_id("box-1")) && s.conversation_id.is_empty()
+    };
+    let finished = |s: &pb::Session| s.archive.is_none() && s.machine.as_ref() == Some(&host) && is_live(s);
+    let deadline = tokio::time::Instant::now() + LONG;
+    loop {
+        let shown = rig.session(&id).await;
+        if undone(&shown) || finished(&shown) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the restore cut at {point} is neither undone nor finished: {shown:?}\n{}",
+            host_restart_story(&rig)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+macro_rules! restore_here_cuts {
+    ($($name:ident: $point:literal,)*) => {
+        $(
+            #[tokio::test(flavor = "multi_thread")]
+            async fn $name() {
+                host_cut_while_restoring_here($point).await
+            }
+        )*
+    };
+}
+
+restore_here_cuts! {
+    a_host_cut_while_a_restore_here_takes_the_agent_in_undoes_it: "store.agent.put.committed",
+    a_host_cut_after_a_restore_here_named_this_mac_undoes_or_finishes_it: "store.session.put.committed",
+    a_host_cut_after_a_restore_here_dropped_the_archive_row_finishes_it: "store.archive.remove.committed",
+}

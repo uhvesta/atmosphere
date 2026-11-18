@@ -61,7 +61,7 @@ Layer: macro. Platforms: macOS first; Linux and the web build share the same UI,
 10. **I do:** press ⌘K and type "client.rs".
     **I see:** a **Files** group lists `api/src/client.rs` under the session it lives in, with the session's title as the hint. Enter opens the Files panel of that session with the file selected and open.
     **State and events:** the palette builds its file entries from the workspace the app holds (`session_files`). Picking one navigates to the session, selects the file and opens it.
-    **Status:** Likely bug. In the live app the workspace is built by `clients/live/src/daemon.rs:269-279`, which fills sessions, channels and machines and leaves `session_files` at its default (empty). Nothing in `clients/live/src` fills it, so the palette's Files group is empty on a real host. The palette's logic is proven on the fixture: `features/palette/tests/search.rs::file_search_and_parent_hints_keep_their_session_context`. To confirm: open a session with a clone on a real host and search for a file name; no Files group should appear. The routing on pick is `features/app/src/commands.rs:69-80` (covered by `features/app/tests/every_action.rs`, fakes).
+    **Status:** Works (real daemon): `desktop/tests/live_flows/find.rs::a_file_in_a_sessions_clone_is_found_from_the_palette` types `README` into the palette on a real host and the Files group lists the session clone's README with its session. Opening the palette fetches each session's files once (`features/app/tests/palette_files.rs::opening_the_palette_fetches_each_sessions_files_once`); the palette's ranking is `features/palette/tests/search.rs::file_search_and_parent_hints_keep_their_session_context`. (Was a likely bug: the live workspace held no files; fixed by BUGS.)
 
 11. **I do:** in a shell, run `humata files find "api rate limiter" client` (the session's title, then the query).
     **I see:** one line per matching path, across the session's repos, in the session's order, with its size, kind and where the clone is. Exit code 0.
@@ -91,7 +91,7 @@ Layer: macro. Platforms: macOS first; Linux and the web build share the same UI,
 - **I see:** the entries narrow to nothing, and the Conversations section is gone. There is no line that says nothing matched.
 - **State and events:** the host answers with zero hits and no next page. The app hides the section (no hits, no error, no next page).
 - **Expected outcome:** the palette says that nothing matched, in words, so I know the search ran and found nothing. It does not look like the search did not run.
-- **Status:** Likely bug. `ui/src/palette_hits.rs:41-43` returns nothing when there are no hits, no error and no next page. The `note` helper at `ui/src/palette_hits.rs:121` says "nothing found", but the only call to it is the error line at `ui/src/palette_hits.rs:69`. No test covers the empty answer: `features/find/tests/search.rs` has no zero-hit case. To confirm: run a search with no matches and look for any line in the palette.
+- **Status:** Works (real daemon): `desktop/tests/live_flows/find.rs::a_search_that_finds_nothing_says_so`. A search nothing matches lists nothing and says `Nothing matches “…”. Try fewer letters or fewer words.` (`ui/src/overlay_palette.rs`, the one empty-state line). (Was a likely bug; the line was added by BUGS.)
 
 ### The search fails
 
@@ -127,7 +127,7 @@ Layer: macro. Platforms: macOS first; Linux and the web build share the same UI,
 - **I see:** the expected result is that the pin is gone from both. Today the pin stays, and its row shows the session's id instead of its title, because the title lookup finds nothing.
 - **State and events:** the spec (NV-26) says a deleted or forgotten thing loses its pin and VIP mark; archiving keeps both. Nothing removes the mark.
 - **Expected outcome:** after the delete, the Pinned section and `humata pinned` no longer list the session. After an archive they still do.
-- **Status:** Likely bug. `daemon/marks/src/lib.rs:470` has `Marks::forget`, which clears the pin and the VIP mark, and `daemon/marks/tests/marks.rs::forgetting_clears_the_pin_and_the_vip_mark` proves it. Nothing in `daemon/humatad/src` calls it: a search for `.forget(` finds only the remote-work and history paths. The title fallback that shows the id is `daemon/humatad/src/mark_service.rs:127-146`. To confirm: pin a session, delete it, and run `humata pinned`; the row is still there.
+- **Status:** Works (real daemon): `daemon/humatad/tests/marks.rs::a_deleted_sessions_pin_is_gone_from_the_pinned_list`. Deleting a session forgets its pin and VIP mark (`daemon/humatad/src/mark_service.rs` calls `Marks::forget`). (Was a likely bug; fixed by BUGS.)
 
 ### Archiving a pinned session
 
@@ -178,15 +178,15 @@ Layer: macro. Platforms: macOS first; Linux and the web build share the same UI,
 | 7. `humata session read` | Fakes only (CLI); host Works (real daemon) | `cli/tests/search.rs::read_sends_the_session_and_turn_range`, `daemon/humatad/tests/history.rs::a_read_returns_the_turns_asked_for_in_order` |
 | 8. Pin a session; it shows at the end of Pinned | Fakes only (palette, app); Works (real daemon) for host order | `features/palette/tests/marks.rs::typing_finds_pin_and_running_it_hands_the_change_to_the_app`, `daemon/humatad/tests/marks.rs::a_new_pin_goes_at_the_end` |
 | 9. Restart keeps the pin and order | Works (real daemon) | `daemon/humatad/tests/marks.rs::marks_and_their_order_survive_a_restart`, `clients/live/tests/marks.rs::pins_and_vip_marks_survive_a_restart` |
-| 10. Palette file search opens a file | Likely bug (live workspace empty); Fakes only on fixture | `clients/live/src/daemon.rs:269-279`; `features/palette/tests/search.rs::file_search_and_parent_hints_keep_their_session_context` |
+| 10. Palette file search opens a file | Works (real daemon) | `desktop/tests/live_flows/find.rs::a_file_in_a_sessions_clone_is_found_from_the_palette`; `features/app/tests/palette_files.rs::opening_the_palette_fetches_each_sessions_files_once`; `features/palette/tests/search.rs::file_search_and_parent_hints_keep_their_session_context` |
 | 11. `humata files find` | Code, no test (CLI); host Works (real daemon) | `cli/src/commands/files.rs:34`; `daemon/humatad/tests/find_files.rs::a_query_finds_matching_paths_in_each_repo_in_the_sessions_order` |
 | 12. Agent calls `files_find` over MCP | Not built (no milestone) | `daemon/humatad/src/mcp.rs:1064` |
 | B1. Turn on an offline machine | Works (real daemon) for host; Fakes only for app | `daemon/humatad/tests/remote_history.rs::a_machine_that_was_offline_catches_up_when_its_link_returns`; `features/app/tests/find_conversation.rs::a_hit_on_an_offline_machine_opens_the_same_conversation` |
-| B2. No results | Likely bug | `ui/src/palette_hits.rs:41-43`, `:121` |
+| B2. No results | Works (real daemon) | `desktop/tests/live_flows/find.rs::a_search_that_finds_nothing_says_so` |
 | B3. Search fails | Fakes only (app); Works (real daemon) for host refusal | `features/find/tests/search.rs::a_failed_search_shows_and_the_next_query_clears_it` |
 | B4. Many hits | Works (real daemon) for host; Fakes only for row | `daemon/humatad/tests/history.rs::a_search_pages_through_its_hits`, `features/find/tests/search_more.rs::more_adds_the_next_page_after_the_hits_shown` |
 | B5. Channel or machine filter | Not built | `api/CLI.md:200`; `cli/src/args.rs` around line 333 |
-| B6. Pinned session deleted | Likely bug | `daemon/humatad/src/mark_service.rs:127-146`; `daemon/marks/src/lib.rs:470` (no production caller) |
+| B6. Pinned session deleted | Works (real daemon) | `daemon/humatad/tests/marks.rs::a_deleted_sessions_pin_is_gone_from_the_pinned_list` |
 | B7. Archive keeps the pin | Code, no test | `daemon/humatad/src/mark_service.rs` (no removal on archive) |
 | B8. §26.22 step 1 (⌘K in terminal, KP-6) | Not built (C1 owes it) | FIND.md; no `KP-6` test |
 | B8. §26.22 step 3 (Move from palette) | Fakes only (app); Works (real daemon) for MoveSession | `features/app/tests/move_from_palette.rs`; `daemon/humatad/tests/move_session.rs` |
@@ -202,10 +202,10 @@ Layer: macro. Platforms: macOS first; Linux and the web build share the same UI,
 - §26.22 step 4 (Review this PR with the PR filled in): owed by the PR milestone (PR-1; D197).
 - §26.22 step 3 live: the multi-machine rig is not in `desktop/tests/live_flows/world.rs` (FIND.md). The daemon's MoveSession is built, so the note in FIND.md that it is not built is stale.
 
-**Likely bugs**
-- A search with no matches shows no line at all (`ui/src/palette_hits.rs:41-43`; the "nothing found" helper at `:121` is only used for errors, `:69`).
-- A pinned session that is deleted keeps its pin, and its row shows its id (`daemon/marks/src/lib.rs:470` is never called from `daemon/humatad/src`; NV-26).
-- The palette's Files group is empty on a real host, because the live workspace never fills `session_files` (`clients/live/src/daemon.rs:269-279`; read by `features/palette/src/lib.rs:835`).
+**Likely bugs (all fixed)**
+- Fixed (was a likely bug): a search with no matches says so (`desktop/tests/live_flows/find.rs::a_search_that_finds_nothing_says_so`).
+- Fixed (was a likely bug): a deleted session's pin is gone (`daemon/humatad/tests/marks.rs::a_deleted_sessions_pin_is_gone_from_the_pinned_list`).
+- Fixed (was a likely bug): the palette's Files group lists the clones' files on a real host (`desktop/tests/live_flows/find.rs::a_file_in_a_sessions_clone_is_found_from_the_palette`).
 
 **Corrections to the brief**
 - The brief's list of owed §26.22 steps (1, 3, 4) is right, but FIND.md says the daemon's MoveSession is not built (MV-2). The code has `daemon/humatad/src/session_service/move_session.rs`, so only the live rig is owed for step 3.

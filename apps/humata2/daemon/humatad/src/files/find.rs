@@ -15,6 +15,7 @@
 //! the page token is the index of the next entry in it. A file made or
 //! removed between two pages can move later entries by one place.
 
+use std::collections::HashSet;
 use std::fs::{self, Metadata};
 use std::path::Path;
 use std::process::Command;
@@ -22,6 +23,7 @@ use std::sync::Arc;
 
 use humata2_access::{Call, Entry};
 use humata2_grpc::humata::v1 as pb;
+use humata2_sessions::DESK_CHANNEL;
 use humata2_store::Store;
 use pb::invalid_field::Problem;
 use tonic::{Request, Response, Status};
@@ -43,7 +45,7 @@ const PAGE_MAX: usize = 1000;
 const QUERY_MAX: usize = 256;
 
 /// The most files taken from a folder that isn't a git work tree.
-const WALK_MAX: usize = 50_000;
+pub(in crate::files) const WALK_MAX: usize = 50_000;
 
 /// Variables that would point git at another repository, as the review code
 /// scrubs them.
@@ -99,8 +101,8 @@ impl Find {
             .filter(|id| !id.is_empty())
             .ok_or_else(|| status::missing("session"))?;
         let machine = self.roots.machine();
-        match self.store.session(&session) {
-            Ok(Some(_)) => {}
+        let record = match self.store.session(&session) {
+            Ok(Some(record)) => record,
             Ok(None) => {
                 return Err(status::not_found(
                     pb::EntityKind::Session,
@@ -110,7 +112,7 @@ impl Find {
                 ));
             }
             Err(error) => return Err(status::store(error, machine, "look up the session")),
-        }
+        };
         let repos = self
             .store
             .session_detail(&session)
@@ -127,7 +129,24 @@ impl Find {
         };
         let offset = offset_of(&token)?;
 
-        let mut targets = Vec::with_capacity(repos.len());
+        let mut targets = Vec::with_capacity(repos.len() + 1);
+        // D382: a Desk session's documents sit in its own folder, outside
+        // every clone; they come first, without the clones inside it.
+        if record.channel == DESK_CHANNEL {
+            let location = pb::FileLocation {
+                machine: None,
+                root: Some(pb::file_location::Root::SessionFolder(pb::SessionFolder {
+                    session: Some(pb::SessionId {
+                        value: session.clone(),
+                    }),
+                })),
+                path: String::new(),
+            };
+            let target = self.roots.target(Some(location), "session", Entry::Folder)?;
+            self.guard
+                .require(&caller, &Call::ReadFiles(target.place.clone()))?;
+            targets.push((target, Scope::OwnFolder));
+        }
         for repo in repos {
             let location = pb::FileLocation {
                 machine: None,
@@ -145,7 +164,7 @@ impl Find {
             let target = self.roots.target(Some(location), "session", Entry::Folder)?;
             self.guard
                 .require(&caller, &Call::ReadFiles(target.place.clone()))?;
-            targets.push(target);
+            targets.push((target, Scope::Clone));
         }
 
         let query = request.query;
@@ -174,8 +193,18 @@ fn offset_of(token: &str) -> Result<usize, Status> {
 }
 
 /// One page of matches, and the index to continue from when there are more.
+/// What a target of a search holds.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// A repository's clone.
+    Clone,
+    /// A Desk session's own folder: its files, not those of the clones in
+    /// it, which are searched as clones.
+    OwnFolder,
+}
+
 fn search(
-    targets: &[Target],
+    targets: &[(Target, Scope)],
     query: &str,
     offset: usize,
     size: usize,
@@ -184,14 +213,18 @@ fn search(
     let mut consumed = 0;
     let mut more = false;
     let mut entries = Vec::new();
-    for target in targets {
+    for (target, scope) in targets {
         // A clone that isn't on disk yet has nothing to find (RV-14).
         let root = match target.existing() {
             Ok(root) => root,
             Err(status) if status.code() == tonic::Code::NotFound => continue,
             Err(status) => return Err(status),
         };
-        let matched = ranked(candidates(&root)?, query);
+        let paths = match scope {
+            Scope::Clone => candidates(&root)?,
+            Scope::OwnFolder => own_files(&root)?,
+        };
+        let matched = ranked(paths, query);
         if consumed == size {
             // Only whether anything is left matters now.
             more = !matched.is_empty();
@@ -244,6 +277,24 @@ fn entry_of(location: pb::FileLocation, meta: &Metadata, writable: bool) -> pb::
     }
 }
 
+/// The files of a clone, or `None` when it can't be listed or has more than
+/// [`WALK_MAX`] (a list cut short would tell false removals).
+pub(in crate::files) fn clone_listing(root: &Path, cap: usize) -> Listing {
+    match candidates(root) {
+        Ok(paths) if paths.len() < cap => Listing::Files(paths),
+        Ok(_) => Listing::TooMany,
+        Err(_) => Listing::Failed,
+    }
+}
+
+/// What listing a clone found.
+pub(in crate::files) enum Listing {
+    Files(Vec<String>),
+    /// `cap` files or more.
+    TooMany,
+    Failed,
+}
+
 /// The paths (relative, `/`-separated) of a clone's files.
 fn candidates(root: &Path) -> Result<Vec<String>, Status> {
     if root.join(".git").exists()
@@ -254,22 +305,46 @@ fn candidates(root: &Path) -> Result<Vec<String>, Status> {
     walk(root)
 }
 
+/// The files of a Desk session's folder, leaving out every git work tree
+/// in it: those are its clones, listed on their own.
+fn own_files(root: &Path) -> Result<Vec<String>, Status> {
+    if root.join(".git").exists()
+        && let Some(paths) = git_paths(root)
+    {
+        return Ok(paths);
+    }
+    walk_from(root, "", true)
+}
+
 /// Tracked files and untracked files that aren't ignored, or `None` when git
 /// can't say (not a work tree, not installed, refused): the caller then
 /// walks the folder.
 fn git_paths(root: &Path) -> Option<Vec<String>> {
+    git_list(root, None)
+}
+
+/// A git command for `root`, with the variables that would point it elsewhere removed.
+fn git_in(root: &Path) -> Command {
     let mut command = Command::new("git");
     command.current_dir(root);
     for name in SCRUBBED {
         command.env_remove(name);
     }
-    let output = command
+    command
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"])
-        .output()
-        .ok()?;
+        .env("LC_ALL", "C");
+    command
+}
+
+/// [`git_paths`] limited to `only`, a path in the clone, when given.
+fn git_list(root: &Path, only: Option<&str>) -> Option<Vec<String>> {
+    let mut command = git_in(root);
+    command.args(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]);
+    if let Some(only) = only {
+        command.arg("--").arg(format!(":(literal){only}"));
+    }
+    let output = command.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -284,14 +359,77 @@ fn git_paths(root: &Path) -> Option<Vec<String>> {
     )
 }
 
+/// The files under the folder `start` of a clone (a path in it, `/`-separated),
+/// as [`clone_files`] would list them, without listing the rest of the clone.
+pub(in crate::files) fn subtree_files(root: &Path, start: &str) -> Option<Vec<String>> {
+    if root.join(".git").exists()
+        && let Some(paths) = git_list(root, Some(start))
+    {
+        return Some(paths);
+    }
+    walk_from(root, start, false).ok()
+}
+
+/// Of `paths` (files of a git clone), those git ignores; none when the clone
+/// isn't a git work tree or git can't say.
+pub(in crate::files) fn ignored_among(root: &Path, paths: &[String]) -> HashSet<String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    if paths.is_empty() || !root.join(".git").exists() {
+        return HashSet::new();
+    }
+    let mut command = git_in(root);
+    let Ok(mut child) = command
+        .args(["check-ignore", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return HashSet::new();
+    };
+    let Some(mut stdin) = child.stdin.take() else {
+        return HashSet::new();
+    };
+    let mut input = Vec::new();
+    for path in paths {
+        input.extend_from_slice(path.as_bytes());
+        input.push(0);
+    }
+    // Written on its own thread: git may answer before it has read everything.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let Ok(output) = child.wait_with_output() else {
+        return HashSet::new();
+    };
+    let _ = writer.join();
+    // Exit 0: some ignored; 1: none; anything else: git couldn't say.
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return HashSet::new();
+    }
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .filter_map(|name| String::from_utf8(name.to_vec()).ok())
+        .collect()
+}
+
 /// The files under `root` without following symlinks, skipping `.git`.
 fn walk(root: &Path) -> Result<Vec<String>, Status> {
+    walk_from(root, "", false)
+}
+
+/// The files under the folder `start` of `root` (empty for all of it), as
+/// paths from `root`. With `skip_work_trees`, a folder below `first` that
+/// is a git work tree is left out whole.
+fn walk_from(root: &Path, start: &str, skip_work_trees: bool) -> Result<Vec<String>, Status> {
+    let first = if start.is_empty() { root.to_owned() } else { root.join(start) };
     let mut files = Vec::new();
-    let mut stack = vec![(root.to_owned(), String::new())];
+    let mut stack = vec![(first.clone(), start.to_owned())];
     while let Some((dir, prefix)) = stack.pop() {
         let read = match fs::read_dir(&dir) {
             Ok(read) => read,
-            Err(error) if dir == root => {
+            Err(error) if dir == first => {
                 return Err(io_failure(&error, "read the folder", &dir));
             }
             // A folder that can't be read is left out.
@@ -313,6 +451,9 @@ fn walk(root: &Path) -> Result<Vec<String>, Status> {
                 format!("{prefix}/{name}")
             };
             if kind.is_dir() {
+                if skip_work_trees && entry.path().join(".git").exists() {
+                    continue;
+                }
                 stack.push((entry.path(), relative));
             } else {
                 if files.len() >= WALK_MAX {

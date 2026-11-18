@@ -17,7 +17,7 @@ Layer: micro. Platforms: macOS, Linux.
 1. **I do:** I ⌘-click the plain URL. On Linux I Ctrl-click it.
    **I see:** The URL is underlined when the pointer is over it. The default browser opens the page.
    **State and events:** The pane raises an open-link event for the URL (`terminal/pane/src/host.rs:248-253`). The app should open the URL. Nothing is sent to the shell.
-   **Status:** Likely bug. The pane raises the event, but the app's terminal subscription has no arm for it. `ui/src/terminals.rs:178-211` handles focus, split, clipboard write, failure and input-uncertain events. Everything else falls into `_ => {}` at `ui/src/terminals.rs:211`, which includes `PaneEvent::OpenLink`. So in the app the click opens nothing. Confirm: ⌘-click an https link in a session tab and see that no browser opens. Add a log in the `_ => {}` arm, or in the pane's `open_link`, and see the event fire and get dropped. The pane side is tested: `terminal/pane/tests/links.rs::modifier_click_opens_explicit_and_plain_links_without_mouse_reports` (Fakes only).
+   **Status:** Fakes only. The pane raises the open-link event (`terminal/pane/tests/links.rs::modifier_click_opens_explicit_and_plain_links_without_mouse_reports`), and the app opens web and mail links with the default browser and refuses other schemes with a toast (`ui/src/terminals.rs`, `ui/src/terminals.rs::tests::only_web_and_mail_links_open`). No test clicks a link in the app and sees the open request.
 
 2. **I do:** I plain-click the same URL, with no modifier.
    **I see:** The click places the cursor or starts a selection. No browser opens.
@@ -27,12 +27,12 @@ Layer: micro. Platforms: macOS, Linux.
 3. **I do:** I double-click `parse.rs` in the path `src/parse.rs:42`, then paste.
    **I see:** The paste shows `src/parse.rs`. The `:42` is not copied.
    **State and events:** The word selection stops at `:` because `:` is a boundary character (`terminal/view/src/selection.rs:10`). The selection covers only the word, and the colon and the number are separate words.
-   **Status:** Likely bug. `terminal/view/src/selection.rs:10` lists `:` among the boundary characters, so a path with a line number copies without the line number. The no-colon case is covered by `terminal/pane/tests/pane.rs::a_double_click_copies_a_whole_path` (Fakes only). Confirm: double-click `parse.rs` in the path, paste, and see `src/parse.rs`. Decide whether the line number belongs in the copy. If it does, the boundary rule needs a change for `:` followed by digits.
+   **Status:** Fakes only, as designed (D482). `:` stays a word boundary, so the copy is `src/parse.rs` without `:42`, as above. The path itself is one word: `terminal/pane/tests/pane.rs::a_double_click_copies_a_whole_path`.
 
 4. **I do:** I ⌘-click the OSC 8 link labelled `open the report`.
    **I see:** The browser should open `https://example.com/report/full`, the target, not the label. In the app, nothing opens.
    **State and events:** The link's hidden target is read from the cell (`terminal/view/src/view.rs:981-983`). The pane raises an open-link event with the target. The app drops it, as in step 1.
-   **Status:** Likely bug. The target choice is proven at the pane and emulator level: `terminal/pane/tests/links.rs::modifier_click_opens_explicit_and_plain_links_without_mouse_reports` (first row, `hidden` target, Fakes only) and `terminal/vt/tests/links.rs::osc8_uses_hidden_uri_and_survives_scrolling_and_resize` (real engine, no shell). The app drop at `ui/src/terminals.rs:211` is the same bug as in step 1.
+   **Status:** Fakes only. The hidden target is what opens: `terminal/pane/tests/links.rs::modifier_click_opens_explicit_and_plain_links_without_mouse_reports` (first row, `hidden` target) and `terminal/vt/tests/links.rs::osc8_uses_hidden_uri_and_survives_scrolling_and_resize`. The app opens it as in step 1 (`ui/src/terminals.rs::tests::only_web_and_mail_links_open`).
 
 ## Branches
 
@@ -86,10 +86,10 @@ Layer: micro. Platforms: macOS, Linux.
 
 | Step or branch | Status | Evidence |
 | --- | --- | --- |
-| 1. ⌘-click a plain URL | Likely bug | `ui/src/terminals.rs:211` drops `PaneEvent::OpenLink`; pane side in `terminal/pane/tests/links.rs::modifier_click_opens_explicit_and_plain_links_without_mouse_reports` |
+| 1. ⌘-click a plain URL | Fakes only | `terminal/pane/tests/links.rs::modifier_click_opens_explicit_and_plain_links_without_mouse_reports`, `ui/src/terminals.rs::tests::only_web_and_mail_links_open` |
 | 2. Plain click does not open | Code, no test | `terminal/view/src/view.rs:975-985` |
-| 3. Double-click a path with a line number | Likely bug | `terminal/view/src/selection.rs:10` (`:` is a boundary) |
-| 4. ⌘-click an OSC 8 link | Likely bug | `ui/src/terminals.rs:211`; target proven by `terminal/pane/tests/links.rs` and `terminal/vt/tests/links.rs::osc8_uses_hidden_uri_and_survives_scrolling_and_resize` |
+| 3. Double-click a path with a line number | Fakes only | `terminal/pane/tests/pane.rs::a_double_click_copies_a_whole_path`; D482 |
+| 4. ⌘-click an OSC 8 link | Fakes only | `terminal/pane/tests/links.rs::modifier_click_opens_explicit_and_plain_links_without_mouse_reports`, `ui/src/terminals.rs::tests::only_web_and_mail_links_open` |
 | Branch: file:// or remote path | Code, no test | `terminal/grid/src/links.rs:60-63`, `terminal/lab/src/lib.rs:379-390` |
 | Branch: odd scheme | Code, no test | `terminal/client/src/lib.rs:453`, `terminal/lab/src/lib.rs:380-388` |
 | Branch: link split across a wrap | Fakes only | `terminal/vt/tests/links.rs::plain_urls_support_wrapping_unicode_and_balanced_punctuation` |
@@ -97,8 +97,8 @@ Layer: micro. Platforms: macOS, Linux.
 
 ## Gaps and likely bugs
 
-- Likely bug: the app does not open terminal links at all. `ui/src/terminals.rs:178-211` has no arm for `PaneEvent::OpenLink`, and the catch-all at `ui/src/terminals.rs:211` drops it. The open-link code exists only in the standalone client (`terminal/client/src/lib.rs:453`) and in the lab (`terminal/lab/src/lib.rs:379-390`). `terminal/pane/tests/links.rs` proves only that the pane raises the event. `TERM.md` line 9 promises that links "work as in C1's demo", and the demo is the standalone client, so the app dropped the behaviour when it was rebuilt.
+- Fixed: the app opens web and mail links from the terminal and refuses other schemes with a toast (`ui/src/terminals.rs::tests::only_web_and_mail_links_open`). Coverage gap: no test clicks a link in the app.
 - Likely bug: the same catch-all at `ui/src/terminals.rs:211` drops bells, title changes and working-directory changes too. The pane raises those events (`terminal/pane/tests/pane.rs::titles_bells_and_clipboard_writes_are_told_to_the_app` covers title and bell at the pane level). Confirm by sending a bell (`printf '\a'`) in the app and seeing no sound or badge.
-- Likely bug: `:` is a word boundary (`terminal/view/src/selection.rs:10`), so double-click copies `src/parse.rs` from `src/parse.rs:42`. See step 3.
+- As designed (D482): `:` is a word boundary, so double-click copies `src/parse.rs` from `src/parse.rs:42`. See step 3.
 - Not built: opening a plain file path, or a `file:` link, from the terminal. No milestone covers it. `terminal/grid/src/links.rs:1-2` says link recognition is "deliberately limited to browser/mail URLs".
 - Pointer note: the brief named `TERM` milestone batch 2 `terminal_link`. That batch is about the authority screen and the `clients/terminal_link` mapper crate, not link opening. The link promise is in `workflow/milestones/TERM.md` line 9.

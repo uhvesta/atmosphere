@@ -5,9 +5,8 @@
 //! agent may search and read. Needs FIND T4b's seam (the service
 //! registered); moves up from tests/pending with it.
 //!
-//! Not here: LD-21's scrubbing. The daemon has no way to set a host
-//! variable yet (MachineService.SetHostVariable is not built), so the
-//! mirror crate's own tests cover it until it does.
+//! LD-21's scrubbing is the last test: a host variable the user set is
+//! replaced by its name before its text is kept.
 
 mod common;
 
@@ -723,6 +722,53 @@ async fn what_a_conversation_gained_is_found_after_its_sessions_next_event() {
     assert_eq!(hits[0].turn, 4);
 }
 
+/// D438: the index tells, on the session's feed, when it has caught a
+/// session up, so whoever waits for a search to find something can search
+/// again on that instead of asking until it does. One told before the
+/// test listened (the start's catch-up) may come first; each is searched
+/// on, and the one after the new entries finds them.
+#[tokio::test(flavor = "multi_thread")]
+async fn catching_a_conversation_up_is_told_on_its_sessions_feed() {
+    let daemon = ledger_mirrored().await;
+    let mut events = pb::event_service_client::EventServiceClient::new(daemon.channel().await)
+        .subscribe(pb::SubscribeRequest {
+            sessions: vec![id(LEDGER)],
+            topics: vec![pb::Topic::Sessions as i32],
+            ..pb::SubscribeRequest::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    append(
+        &conversation(&daemon, LEDGER),
+        &[
+            user("ship the numbat release", 8),
+            says("Tagged the numbat release", 9),
+        ],
+    );
+
+    rename(&daemon, LEDGER, "Ledger export, shipped").await;
+
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.message())
+            .await
+            .expect("no HistoryIndexed told of the new entries")
+            .unwrap()
+            .expect("the feed ended");
+        let Some(pb::event::Payload::HistoryIndexed(indexed)) = event.payload else {
+            continue;
+        };
+        assert_eq!(indexed.session, Some(id(LEDGER)));
+        assert!(indexed.added > 0, "an index event adds something: {indexed:?}");
+        let seen = hits(&daemon, &query("numbat")).await;
+        if !seen.is_empty() {
+            assert_eq!(sessions_of(&seen), vec![LEDGER]);
+            return;
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_renamed_sessions_hits_carry_its_new_title() {
     let daemon = ledger_mirrored().await;
@@ -782,6 +828,49 @@ async fn what_a_running_agent_wrote_is_found_once_its_output_goes_quiet() {
     assert_eq!(hit.machine, Some(machine_id(&daemon).await));
     assert_eq!(hit.agent, AGENT_NAME);
     assert_eq!(hit.turn, 1);
+}
+
+/// N1: an agent may write the end of a turn to its conversation file after
+/// the last event of its session (Copilot 1.0.113 writes its reply after its
+/// turn-ended hook has run). What the running agent's file gains is still
+/// mirrored, though nothing more happens to the session.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_running_agent_writes_after_its_sessions_last_event_is_found() {
+    let (daemon, world) = start_world().await;
+    world.remote("acme", "api");
+    let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (session, operation) = start_session(&daemon, &channel, "Fix login").await;
+    assert_eq!(
+        operation.state,
+        pb::OperationState::Succeeded as i32,
+        "{:?}",
+        operation.error
+    );
+    let shown = get_session(&daemon, &session).await;
+    let file = world.conversation(&shown.conversation_id);
+    let tab = agent_tab(&daemon, &session).await;
+    let mut attach = Attach::start(&daemon, open(&tab, 0)).await;
+    attach
+        .type_text(&format!("{}\r", user("reconcile the pangolin invoices", 0)))
+        .await;
+    written(&file, "pangolin").await;
+    found(&daemon, "pangolin").await;
+    // The output went quiet: the session's last event, and the catch-up it
+    // started is done.
+    let deadline = Instant::now() + WAIT;
+    while get_session(&daemon, &session).await.status != pb::SessionStatus::ProbablyIdle as i32 {
+        assert!(Instant::now() < deadline, "the session's agent never went quiet");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // The reply lands in the file after that, with no output and no event.
+    append(&file, &[says("Reconciled the axolotl ledger", 1)]);
+
+    let hits = found(&daemon, "axolotl").await;
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].session, Some(session));
+    assert_eq!(hits[0].turn, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -976,4 +1065,35 @@ async fn what_a_conversation_gained_while_the_daemon_was_down_is_found_after_it_
         gained_texts,
         ["ship the numbat release", "Tagged the numbat release"]
     );
+}
+
+/// LD-21: a host variable's value is replaced by the variable's name before
+/// any of its text is kept in the mirror.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_variable_value_in_a_conversation_is_replaced_by_its_name_before_it_is_kept() {
+    let daemon = ledger_mirrored().await;
+    let secret = "tok-7c1f9d2e-secret";
+    pb::machine_service_client::MachineServiceClient::new(daemon.channel().await)
+        .set_host_variable(pb::SetHostVariableRequest {
+            idempotency_key: None,
+            id: None,
+            name: "BILLING_TOKEN".to_owned(),
+            value: secret.to_owned(),
+            presence: None,
+        })
+        .await
+        .unwrap();
+
+    append(
+        &conversation(&daemon, LEDGER),
+        &[user(&format!("call the marmot service with {secret}"), 8)],
+    );
+    // The mirror reads the conversation again on its session's next event.
+    rename(&daemon, LEDGER, "Ledger export, scrubbed").await;
+    found(&daemon, "marmot").await;
+
+    let read = entries(&daemon, &turns(LEDGER, None, None)).await;
+    let kept = read.iter().find(|entry| entry.text.contains("marmot")).expect("the new turn is kept");
+    assert!(kept.text.contains("BILLING_TOKEN"), "{}", kept.text);
+    assert!(read.iter().all(|entry| !entry.text.contains(secret)));
 }

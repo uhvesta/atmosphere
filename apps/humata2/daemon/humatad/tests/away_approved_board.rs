@@ -60,6 +60,7 @@ async fn box_token(rig: &Rig, session: &pb::SessionId) -> String {
             idempotency_key: None,
             session: Some(session.clone()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()

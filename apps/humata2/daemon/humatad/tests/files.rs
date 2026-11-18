@@ -134,6 +134,7 @@ fn upload(path: &str, data: &[u8], codecs: &[Codec], key: Option<&str>) -> Vec<p
             size: data.len() as u64,
             sha256: sha256(data),
             replace: false,
+            expected_sha256: None,
         })),
     }];
     let mut encoder = Encoder::new(codecs[0]);
@@ -162,6 +163,53 @@ async fn write(daemon: &Daemon, messages: Vec<pb::WriteFileMessage>) -> Result<p
         .write_file(tokio_stream::iter(messages))
         .await
         .map(tonic::Response::into_inner)
+}
+
+/// `messages` as a replace of a file last read with contents `based_on`.
+fn replacing(mut messages: Vec<pb::WriteFileMessage>, based_on: &[u8]) -> Vec<pb::WriteFileMessage> {
+    if let Some(pb::WriteFileMessage {
+        message: Some(pb::write_file_message::Message::Header(header)),
+    }) = messages.first_mut()
+    {
+        header.replace = true;
+        header.expected_sha256 = Some(sha256(based_on));
+    }
+    messages
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replace_made_from_a_stale_read_is_refused_and_writes_nothing() {
+    let (daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("note.rs"), b"base\n").unwrap();
+
+    // The first writer read "base" and replaces it.
+    write(&daemon, replacing(upload("note.rs", b"first\n", &[Codec::None], None), b"base\n"))
+        .await
+        .unwrap();
+    // The second writer read "base" too: the file has moved on since.
+    let refused = write(&daemon, replacing(upload("note.rs", b"second\n", &[Codec::None], None), b"base\n"))
+        .await
+        .unwrap_err();
+
+    assert_eq!(refused.code(), Code::Aborted);
+    assert_eq!(std::fs::read(clone.join("note.rs")).unwrap(), b"first\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replace_with_no_base_named_still_overwrites() {
+    let (daemon, clone) = daemon_with_clone().await;
+    std::fs::write(clone.join("note.rs"), b"base\n").unwrap();
+    let mut messages = upload("note.rs", b"new\n", &[Codec::None], None);
+    if let Some(pb::WriteFileMessage {
+        message: Some(pb::write_file_message::Message::Header(header)),
+    }) = messages.first_mut()
+    {
+        header.replace = true;
+    }
+
+    write(&daemon, messages).await.unwrap();
+
+    assert_eq!(std::fs::read(clone.join("note.rs")).unwrap(), b"new\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]

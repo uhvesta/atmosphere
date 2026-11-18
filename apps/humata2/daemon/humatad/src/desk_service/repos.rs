@@ -4,7 +4,8 @@
 //! doesn't own.
 
 use humata2_grpc::humata::v1 as pb;
-use humata2_sessions::{clone_repo, held_work, repo_clone};
+use humata2_sessions::doc_repo::{self, DocGit};
+use humata2_sessions::{clone_repo, clone_work, repo_clone};
 use humata2_transfers::NewItem;
 use tonic::Status;
 
@@ -35,9 +36,31 @@ impl DeskSvc {
         }
         let (template, folder) = (self.starter.remote_template.clone(), session.folder.clone());
         let (owner, name) = (repo.owner, repo.name);
+        let added = (owner.clone(), name.clone());
+        let (cloned_into, cloned) = (folder.clone(), name.clone());
         blocking(move || clone_repo(&template, &owner, &name, &folder))
             .await?
             .map_err(|error| desk_status(&error))?;
+        // A doc folder's own versions leave the clone out (DV-1).
+        blocking(move || -> Result<(), doc_repo::DocRepoError> {
+            if doc_repo::is_doc_repo(&cloned_into) {
+                doc_repo::exclude_clone(&DocGit::inherit(), &cloned_into, &cloned)?;
+            }
+            Ok(())
+        })
+        .await?
+        .map_err(|error| {
+            failed_precondition(
+                format!(
+                    "the repository was cloned into Desk session {id}'s folder, but couldn't be left out of the folder's versions: {}",
+                    status::chain(&error)
+                ),
+                "check that git is installed and the folder can be written to; remove the repository and add it again",
+            )
+        })?;
+        // REPOS (RL-1): a repo added to a Desk session is used on the Desk.
+        let channels = self.channels.clone();
+        let _ = blocking(move || channels.record_added(&added.0, &added.1, &humata2_repo_library::Place::Desk)).await;
         self.tell
             .session(&id, pb::Change::Updated, Some(identity::actor(caller)))
             .await;
@@ -60,7 +83,7 @@ impl DeskSvc {
             .await?
             .map_err(|error| desk_status(&error))?;
         let checked = clone.clone();
-        let work = blocking(move || held_work(&checked)).await?;
+        let work = blocking(move || clone_work(&checked)).await?;
         if !work.is_empty() {
             return Err(failed_precondition(
                 format!(

@@ -80,6 +80,7 @@ impl Fixture {
                 idempotency_key: None,
                 session: Some(session()),
                 repo: None,
+                folder: String::new(),
             })
             .await
             .unwrap()
@@ -275,6 +276,102 @@ async fn an_agent_types_into_its_own_session_through_mcp() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn session_type_presses_enter_unless_told_not_to() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let first = fixture.daemon.dir.path().join("first");
+    let second = fixture.daemon.dir.path().join("second");
+
+    let sent = mcp
+        .call(1, "session_type", json!({ "session": SESSION, "text": format!("printf ok > {}", first.display()) }))
+        .await;
+    assert_eq!(sent["isError"], false, "{sent}");
+    assert_eq!(sent["structuredContent"]["result"]["typed"], true, "{sent}");
+    assert_eq!(sent["structuredContent"]["result"]["submitted"], true, "{sent}");
+    // No agent mid-turn here, and an MCP caller is told so, as the CLI is.
+    assert_eq!(sent["structuredContent"]["result"]["agent_busy"], false, "{sent}");
+    assert_eq!(read_when_written(&first).await, "ok");
+
+    let left = mcp
+        .call(
+            2,
+            "session_type",
+            json!({ "session": SESSION, "text": format!("printf ok > {}", second.display()), "submit": false }),
+        )
+        .await;
+    assert_eq!(left["isError"], false, "{left}");
+    assert_eq!(left["structuredContent"]["result"]["typed"], true, "{left}");
+    assert_eq!(left["structuredContent"]["result"]["submitted"], false, "{left}");
+    assert!(!second.exists(), "text left unsent ran");
+    // Only in the input: empty text presses Enter alone, which runs it.
+    let enter = mcp.call(3, "session_type", json!({ "session": SESSION, "text": "" })).await;
+    assert_eq!(enter["structuredContent"]["result"]["submitted"], true, "{enter}");
+    assert_eq!(read_when_written(&second).await, "ok");
+}
+
+/// A tool the daemon doesn't dispatch is left out of `tools/list`, and no
+/// tool it lists answers "not built" when it is called.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_list_offers_only_tools_the_daemon_runs() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+
+    // journal_status takes no arguments and the daemon doesn't run it yet.
+    let unbuilt = mcp.call(1, "journal_status", json!({})).await;
+    assert_eq!(unbuilt["isError"], true, "{unbuilt}");
+    assert_eq!(
+        unbuilt["structuredContent"]["error"]["kind"], "peer_version_unsupported",
+        "{unbuilt}"
+    );
+
+    let listed = mcp.request(2, "tools/list", json!({})).await;
+    let tools = listed["tools"].as_array().unwrap();
+    let names: Vec<&str> = tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
+    assert!(!names.contains(&"journal_status"), "{names:?}");
+    assert!(names.contains(&"whoami"), "{names:?}");
+    assert!(names.contains(&"topology_get"), "{names:?}");
+
+    // Every listed tool that only reads and needs no arguments runs; none
+    // of them answers "not built".
+    let mut id = 10;
+    for tool in tools {
+        let reads = tool["annotations"]["readOnlyHint"] == true;
+        let needs_nothing = tool["inputSchema"]["required"]
+            .as_array()
+            .is_none_or(|required| required.is_empty());
+        if !(reads && needs_nothing) {
+            continue;
+        }
+        id += 1;
+        let name = tool["name"].as_str().unwrap();
+        let result = mcp.call(id, name, json!({})).await;
+        assert_ne!(
+            result["structuredContent"]["error"]["kind"], "peer_version_unsupported",
+            "{name} is listed but not built: {result}"
+        );
+    }
+}
+
+/// Typing at the end of the turn is refused as an invalid `when`, not as a
+/// tool that isn't built, so the agent can type now instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn typing_at_turn_end_is_refused_as_an_invalid_when() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+
+    let result = mcp
+        .call(
+            1,
+            "session_type",
+            json!({ "session": SESSION, "text": "later\r", "when": "turn_end" }),
+        )
+        .await;
+
+    assert_eq!(result["isError"], true, "{result}");
+    assert_eq!(result["structuredContent"]["error"]["kind"], "invalid_field", "{result}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn whoami_names_the_session_the_token_belongs_to() {
     let fixture = Fixture::start().await;
     let mut mcp = fixture.mcp(&fixture.token).await;
@@ -285,6 +382,33 @@ async fn whoami_names_the_session_the_token_belongs_to() {
     let me = &result["structuredContent"]["result"];
     assert_eq!(me["session"], SESSION);
     assert_eq!(me["channel"], "ch_test");
+}
+
+/// TP-1: the agent's channel's machines, this one first, each with the
+/// channel's sessions on it.
+#[tokio::test(flavor = "multi_thread")]
+async fn topology_get_names_this_machine_and_the_channels_sessions_on_it() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    let me = mcp.call(1, "whoami", json!({})).await;
+    let here = me["structuredContent"]["result"]["machine"].clone();
+
+    let result = mcp.call(2, "topology_get", json!({})).await;
+
+    assert_eq!(result["isError"], false, "{result}");
+    let topology = &result["structuredContent"]["result"];
+    assert_eq!(topology["this_machine"], here, "{topology}");
+    let machines = topology["machines"].as_array().unwrap();
+    assert_eq!(machines[0]["id"], here, "{topology}");
+    assert_eq!(machines[0]["reachability"], "online", "{topology}");
+    let mut sessions: Vec<&str> = machines[0]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|session| session["id"].as_str())
+        .collect();
+    sessions.sort_unstable();
+    assert_eq!(sessions, [SESSION, OTHER], "{topology}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -318,6 +442,7 @@ async fn opening_a_shell_or_pasting_is_the_users_alone() {
         idempotency_key: None,
         session: Some(session()),
         repo: None,
+        folder: String::new(),
     };
     let paste = || pb::PasteImageRequest {
         idempotency_key: None,
@@ -880,9 +1005,34 @@ async fn an_agent_lists_the_channels_once_the_user_approves() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_cannot_stop_another_session() {
+async fn an_agent_stopping_another_session_asks_the_user_first() {
     let fixture = Fixture::start().await;
     let mut mcp = fixture.mcp(&fixture.token).await;
+
+    // Stopping another session is Ask me by default (D306).
+    let asked = mcp
+        .call(1, "session_stop", json!({ "session": OTHER, "wait_seconds": 0 }))
+        .await;
+
+    assert_eq!(asked["structuredContent"]["outcome"], "pending", "{asked}");
+    assert!(asked["structuredContent"]["request_id"].is_string(), "{asked}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_cannot_stop_another_session_when_the_rule_is_never() {
+    let fixture = Fixture::start().await;
+    let mut mcp = fixture.mcp(&fixture.token).await;
+    pb::access_service_client::AccessServiceClient::new(fixture.daemon.channel().await)
+        .set_channel_rule(pb::SetChannelRuleRequest {
+            channel: Some(pb::ChannelId {
+                value: "ch_test".to_owned(),
+            }),
+            capability: pb::Capability::SessionStopOther as i32,
+            decision: pb::Decision::Never as i32,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
 
     let result = mcp
         .call(1, "session_stop", json!({ "session": OTHER }))

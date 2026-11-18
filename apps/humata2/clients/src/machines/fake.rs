@@ -1,5 +1,9 @@
 //! A scripted [`Machines`]: tests choose what each call does and read back
 //! the calls made. No timers, no real IO.
+//!
+//! A stop of a machine's sessions is kept by the fake itself, or, when it
+//! goes through a [`FakeDaemon`], on that daemon's workspace machine, whose
+//! sessions then read Stopped until Start (D260–D265).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -8,11 +12,17 @@ use tokio::sync::mpsc;
 
 use super::{
     AddEvent, AddOutcome, AddRequest, AddStream, AddTarget, Choices, ClashChoice, LoginEvent, LoginStream,
-    LoginTarget, MachineDetail, Machines, OperationId, SkillsPreview, StepKind, StepStatus, StepUpdate,
-    UnattendedMethod,
+    LoginTarget, MachineDetail, Machines, OperationId, SkillsPreview, Started, StepKind, StepStatus,
+    MachineScripts, ScriptOutcome, ScriptRun, ScriptStepRun, StepUpdate, UnattendedMethod,
 };
-use crate::daemon::{Daemon, DaemonError, Reply};
-use crate::model::MachineId;
+use crate::daemon::{Daemon, DaemonError, FakeDaemon, Reply};
+use crate::model::{MachineId, MachineStop, RootPlan, SessionId, StoppedBy};
+
+/// The clock time a fake stop is made at, as the design frames show it.
+const STOPPED_AT: &str = "14:02";
+
+/// The clock time a fake script run is made at.
+const SCRIPT_RUN_AT: &str = "14:05";
 
 /// A call a test can read back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +59,20 @@ pub enum Call {
     SetVariable(MachineId, String, String),
     /// `remove_variable`.
     RemoveVariable(MachineId, String),
+    /// `stop_sessions`.
+    StopSessions(MachineId),
+    /// `start_sessions`.
+    StartSessions(MachineId),
+    /// `plan_change_root`, with the root asked for.
+    PlanChangeRoot(MachineId, String),
+    /// `change_root`: the machine, the plan's new root, and `move_channels`.
+    ChangeRoot(MachineId, String, bool),
+    /// `scripts`, with the machine asked for.
+    Scripts(Option<MachineId>),
+    /// `run_script`: the machine, the rule and the session.
+    RunScript(MachineId, String, Option<SessionId>),
+    /// `script_runs`: the machine, the rule and the limit.
+    ScriptRuns(MachineId, Option<String>, u32),
 }
 
 /// What the next login does: what it prints on opening, and what comes after
@@ -79,8 +103,25 @@ struct Inner {
     preview: Result<SkillsPreview, DaemonError>,
     failures: HashMap<&'static str, DaemonError>,
     calls: Vec<Call>,
-    /// The fake daemon an unscripted SSH add goes through, if any.
-    through: Option<Arc<dyn Daemon>>,
+    /// The fake daemon an unscripted SSH add and every stop and start go
+    /// through, if any.
+    through: Option<FakeDaemon>,
+    /// Each machine's stop, when no daemon is gone through.
+    stops: HashMap<MachineId, MachineStop>,
+    /// How many stops were made, for their ids.
+    stops_made: u32,
+    /// What `plan_change_root` answers, when a test scripted it.
+    root_plan: Option<Result<RootPlan, DaemonError>>,
+    /// Each machine's Humata folder, when no daemon is gone through.
+    roots: HashMap<MachineId, String>,
+    /// What `scripts` answers.
+    scripts: Result<MachineScripts, DaemonError>,
+    /// How the next runs of a rule end, with the output they leave.
+    script_outcomes: HashMap<String, (ScriptOutcome, Vec<String>)>,
+    /// The runs `run_script` made, oldest first.
+    script_log: Vec<ScriptRun>,
+    /// How many runs were made, for their ids.
+    scripts_run: u32,
 }
 
 /// A machines client that does what a test scripts.
@@ -112,6 +153,14 @@ impl FakeMachines {
                 failures: HashMap::new(),
                 calls: Vec::new(),
                 through: None,
+                stops: HashMap::new(),
+                stops_made: 0,
+                root_plan: None,
+                roots: HashMap::new(),
+                scripts: Ok(MachineScripts::default()),
+                script_outcomes: HashMap::new(),
+                script_log: Vec::new(),
+                scripts_run: 0,
             })),
         }
     }
@@ -120,10 +169,45 @@ impl FakeMachines {
     /// the app's fakes added a machine before the dialog: the machine
     /// appears in the fake workspace and every step reports done. A
     /// scripted add still plays its script.
+    ///
+    /// Stops and starts go through it too: a stop is kept on the
+    /// workspace's machine, delivered when the machine is online, and its
+    /// sessions read Stopped until Start; a machine the workspace doesn't
+    /// have is not found.
     #[must_use]
-    pub fn adding_through(self, daemon: Arc<dyn Daemon>) -> Self {
+    pub fn through(self, daemon: FakeDaemon) -> Self {
         self.inner().through = Some(daemon);
         self
+    }
+
+    /// Sets `machine`'s stop as if it had been made earlier: `None` means
+    /// its sessions run. With a daemon gone through, the workspace's
+    /// machine and sessions change as a stop or start would change them.
+    pub fn set_stop(&self, machine: &MachineId, stop: Option<MachineStop>) {
+        let through = self.inner().through.clone();
+        match through {
+            Some(daemon) => daemon.set_machine_stop(machine, stop),
+            None => {
+                let mut inner = self.inner();
+                match stop {
+                    Some(stop) => inner.stops.insert(machine.clone(), stop),
+                    None => inner.stops.remove(machine),
+                };
+            }
+        }
+    }
+
+    /// `machine`'s stop now, and whether its daemon answers; an error when
+    /// a daemon is gone through and has no such machine.
+    fn stop_of(&self, machine: &MachineId) -> Result<(Option<MachineStop>, bool), DaemonError> {
+        let inner = self.inner();
+        match &inner.through {
+            Some(daemon) => daemon
+                .workspace_machine(machine)
+                .map(|found| (found.stop, found.online))
+                .ok_or_else(|| DaemonError::NotFound { what: format!("Host {machine}") }),
+            None => Ok((inner.stops.get(machine).cloned(), true)),
+        }
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -163,9 +247,29 @@ impl FakeMachines {
         self.inner().detail = detail;
     }
 
+    /// What `plan_change_root` answers from now on, whatever root is asked
+    /// for. Without it the fake plans against the daemon it goes through:
+    /// the channels on the machine and the sessions running there.
+    pub fn set_root_plan(&self, plan: Result<RootPlan, DaemonError>) {
+        self.inner().root_plan = Some(plan);
+    }
+
     /// What `skills_preview` returns from now on.
     pub fn set_preview(&self, preview: Result<SkillsPreview, DaemonError>) {
         self.inner().preview = preview;
+    }
+
+    /// What `scripts` answers from now on. A run made by `run_script` replaces
+    /// its rule's last run in it.
+    pub fn set_scripts(&self, scripts: Result<MachineScripts, DaemonError>) {
+        self.inner().scripts = scripts;
+    }
+
+    /// How the next runs of `rule` end, and the output tail they leave. A rule
+    /// with no outcome set passes. A run that failed or timed out also makes
+    /// `run_script` fail, as the daemon's operation does.
+    pub fn set_script_outcome(&self, rule: &str, outcome: ScriptOutcome, tail: Vec<String>) {
+        self.inner().script_outcomes.insert(rule.to_owned(), (outcome, tail));
     }
 
     /// Makes the named call fail with `error` until cleared. Names are the
@@ -230,7 +334,7 @@ impl Machines for FakeMachines {
         let through = {
             let inner = self.inner();
             if inner.adds.is_empty() && !inner.failures.contains_key("add") {
-                inner.through.clone()
+                inner.through.clone().map(|daemon| Arc::new(daemon) as Arc<dyn Daemon>)
             } else {
                 None
             }
@@ -320,12 +424,19 @@ impl Machines for FakeMachines {
     }
 
     fn detail(&self, machine: &MachineId) -> Reply<MachineDetail> {
-        let mut inner = self.inner();
-        inner.calls.push(Call::Detail(machine.clone()));
-        let result = match inner.failures.get("detail") {
-            Some(error) => Err(error.clone()),
-            None => inner.detail.clone(),
+        let result = {
+            let mut inner = self.inner();
+            inner.calls.push(Call::Detail(machine.clone()));
+            match inner.failures.get("detail") {
+                Some(error) => Err(error.clone()),
+                None => inner.detail.clone(),
+            }
         };
+        // The scripted detail carries the machine's stop as the fake keeps it.
+        let result = result.map(|mut detail| {
+            detail.stop = self.stop_of(&detail.machine).ok().and_then(|(stop, _)| stop);
+            detail
+        });
         Box::pin(std::future::ready(result))
     }
 
@@ -357,5 +468,196 @@ impl Machines for FakeMachines {
 
     fn remove_variable(&self, machine: &MachineId, name: &str) -> Reply<()> {
         self.call("remove_variable", Call::RemoveVariable(machine.clone(), name.to_owned()), ())
+    }
+
+    fn scripts(&self, machine: Option<&MachineId>) -> Reply<MachineScripts> {
+        let mut inner = self.inner();
+        inner.calls.push(Call::Scripts(machine.cloned()));
+        let result = match inner.failures.get("scripts") {
+            Some(error) => Err(error.clone()),
+            None => inner.scripts.clone().map(|mut scripts| {
+                if let Some(machine) = machine {
+                    scripts.last_runs.retain(|run| &run.machine == machine);
+                }
+                scripts
+            }),
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn run_script(&self, machine: &MachineId, rule: &str, session: Option<&SessionId>) -> Reply<()> {
+        let mut inner = self.inner();
+        inner.calls.push(Call::RunScript(machine.clone(), rule.to_owned(), session.cloned()));
+        if let Some(error) = inner.failures.get("run_script") {
+            return Box::pin(std::future::ready(Err(error.clone())));
+        }
+        let (outcome, tail) = inner
+            .script_outcomes
+            .get(rule)
+            .cloned()
+            .unwrap_or((ScriptOutcome::Passed, Vec::new()));
+        inner.scripts_run += 1;
+        let run = ScriptRun {
+            id: format!("run-{}", inner.scripts_run),
+            machine: machine.clone(),
+            rule: rule.to_owned(),
+            trigger: "manual".to_owned(),
+            session: session.cloned(),
+            at: SCRIPT_RUN_AT.to_owned(),
+            took_ms: 1200,
+            outcome,
+            steps: vec![ScriptStepRun {
+                index: 0,
+                kind: "run".to_owned(),
+                label: rule.to_owned(),
+                outcome,
+                exit: Some(i32::from(outcome.is_problem())),
+                tail: tail.clone(),
+                error: String::new(),
+            }],
+        };
+        if let Ok(scripts) = &mut inner.scripts {
+            scripts.last_runs.retain(|last| !(last.rule == run.rule && last.machine == run.machine));
+            scripts.last_runs.push(run.clone());
+        }
+        inner.script_log.push(run);
+        let result = if outcome.is_problem() {
+            Err(DaemonError::Refused {
+                what: format!("Running {rule} on {machine}"),
+                reason: tail.join("\n"),
+            })
+        } else {
+            Ok(())
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn script_runs(&self, machine: &MachineId, rule: Option<&str>, limit: u32) -> Reply<Vec<ScriptRun>> {
+        let mut inner = self.inner();
+        inner.calls.push(Call::ScriptRuns(machine.clone(), rule.map(str::to_owned), limit));
+        let result = match inner.failures.get("script_runs") {
+            Some(error) => Err(error.clone()),
+            None => {
+                let mut runs: Vec<ScriptRun> = inner
+                    .script_log
+                    .iter()
+                    .rev()
+                    .filter(|run| &run.machine == machine && rule.is_none_or(|rule| run.rule == rule))
+                    .cloned()
+                    .collect();
+                if limit > 0 {
+                    runs.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+                }
+                Ok(runs)
+            }
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn stop_sessions(&self, machine: &MachineId) -> Reply<MachineStop> {
+        let failed = {
+            let mut inner = self.inner();
+            inner.calls.push(Call::StopSessions(machine.clone()));
+            inner.failures.get("stop_sessions").cloned()
+        };
+        let result = match failed {
+            Some(error) => Err(error),
+            None => self.stop_of(machine).and_then(|(stop, online)| {
+                if stop.is_some() {
+                    return Err(DaemonError::Refused {
+                        what: format!("Stopping the sessions on {machine}"),
+                        reason: "they are already stopped; Start sessions first to stop them again".to_owned(),
+                    });
+                }
+                let stop = {
+                    let mut inner = self.inner();
+                    inner.stops_made += 1;
+                    MachineStop {
+                        stop_id: format!("stop-{}", inner.stops_made),
+                        at: STOPPED_AT.to_owned(),
+                        by: StoppedBy::You,
+                        delivered: online,
+                    }
+                };
+                self.set_stop(machine, Some(stop.clone()));
+                Ok(stop)
+            }),
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn start_sessions(&self, machine: &MachineId) -> Reply<Started> {
+        let failed = {
+            let mut inner = self.inner();
+            inner.calls.push(Call::StartSessions(machine.clone()));
+            inner.failures.get("start_sessions").cloned()
+        };
+        let result = match failed {
+            Some(error) => Err(error),
+            None => self.stop_of(machine).and_then(|(stop, _)| {
+                let Some(stop) = stop else {
+                    return Err(DaemonError::Refused {
+                        what: format!("Starting the sessions on {machine}"),
+                        reason: "they aren't stopped, so there is nothing to start".to_owned(),
+                    });
+                };
+                self.set_stop(machine, None);
+                Ok(Started { cancelled: !stop.delivered })
+            }),
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn plan_change_root(&self, machine: &MachineId, root: &str) -> Reply<RootPlan> {
+        let (failed, scripted, through, kept) = {
+            let mut inner = self.inner();
+            inner.calls.push(Call::PlanChangeRoot(machine.clone(), root.to_owned()));
+            (
+                inner.failures.get("plan_change_root").cloned(),
+                inner.root_plan.clone(),
+                inner.through.clone(),
+                inner.roots.get(machine).cloned(),
+            )
+        };
+        let result = match (failed, scripted, through) {
+            (Some(error), _, _) => Err(error),
+            (None, Some(plan), _) => plan,
+            (None, None, Some(daemon)) => daemon.plan_root(machine, root),
+            (None, None, None) => Ok(RootPlan {
+                machine: machine.clone(),
+                token: format!("plan-{machine}-{root}"),
+                old_root: kept.unwrap_or_else(|| crate::desk::DEFAULT_ROOT.to_owned()),
+                new_root: root.to_owned(),
+                channels: Vec::new(),
+                running: Vec::new(),
+            }),
+        };
+        Box::pin(std::future::ready(result))
+    }
+
+    fn change_root(&self, plan: &RootPlan, move_channels: bool) -> Reply<()> {
+        let (failed, through) = {
+            let mut inner = self.inner();
+            inner.calls.push(Call::ChangeRoot(plan.machine.clone(), plan.new_root.clone(), move_channels));
+            (inner.failures.get("change_root").cloned(), inner.through.clone())
+        };
+        let result = match failed {
+            Some(error) => Err(error),
+            None if move_channels && !plan.running.is_empty() => Err(DaemonError::Refused {
+                what: format!("Moving the channels in {}'s Humata folder", plan.machine),
+                reason: format!(
+                    "{} session(s) are running there, so the channels can't be moved now. Stop them and try again, or use the new folder for new channels only",
+                    plan.running.len()
+                ),
+            }),
+            None => match through {
+                Some(daemon) => daemon.apply_root(&plan.machine, &plan.new_root),
+                None => {
+                    self.inner().roots.insert(plan.machine.clone(), plan.new_root.clone());
+                    Ok(())
+                }
+            },
+        };
+        Box::pin(std::future::ready(result))
     }
 }

@@ -81,10 +81,6 @@ impl App {
             ),
             self.child(
                 state,
-                AppAction::Views(ViewsAction::Show(state.workspace.clone())),
-            ),
-            self.child(
-                state,
                 AppAction::Desk(humata2_desk::DeskAction::Show(state.workspace.clone())),
             ),
         ])
@@ -98,20 +94,43 @@ impl App {
                 state.trail.remove(0);
             }
         }
-        self.arrive(state)
+        let arrived = self.arrive(state);
+        self.desk_fresh(state, arrived)
     }
 
     pub(super) fn switch(&self, state: &mut AppState, route: Route) -> Effect<AppAction> {
         state.route = route;
         state.navigation_overlay = false;
         state.trail.clear();
-        self.arrive(state)
+        let arrived = self.arrive(state);
+        self.desk_fresh(state, arrived)
+    }
+
+    /// Opening the Desk page reads the Desk again: the daemon sends no Desk
+    /// events, and its scratch folders change under it (an agent writes a
+    /// document). Not in `arrive`, which a load itself runs.
+    fn desk_fresh(&self, state: &AppState, arrived: Effect<AppAction>) -> Effect<AppAction> {
+        if state.route == Route::Desk {
+            Effect::merge([arrived, self.load()])
+        } else {
+            arrived
+        }
     }
 
     /// Tells the features what the route now shows.
     pub(super) fn arrive(&self, state: &mut AppState) -> Effect<AppAction> {
         // The sidebar's keyboard cursor walks the Desk rows only while they show.
         state.sidebar.desk_shown = state.desk_in_sidebar();
+        // NV-37, SE-13: the side panel's collapsed state belongs to each
+        // session. `session.open` is still the session being left here.
+        if let Some(left) = &state.session.open {
+            state
+                .panel_collapsed
+                .insert(left.clone(), state.layout.panel.collapsed);
+        }
+        if let Route::Session(id) = &state.route {
+            state.layout.panel.collapsed = state.panel_collapsed.get(id).copied().unwrap_or(false);
+        }
         let current = match &state.route {
             Route::Session(id) => Some(RowKey::Session(id.clone())),
             Route::Channel(id) => Some(RowKey::Channel(id.clone())),
@@ -124,12 +143,16 @@ impl App {
         match state.route.clone() {
             Route::Session(id) => {
                 effects.push(self.child(state, AppAction::Views(ViewsAction::Return(id.clone()))));
+                effects.push(self.follow_review(state, &id));
                 effects
                     .push(self.child(state, AppAction::Session(SessionAction::Open(id.clone()))));
                 effects.push(
                     self.child(state, AppAction::Comments(CommentsAction::Open(id.clone()))),
                 );
-                effects.push(self.child(state, AppAction::Review(ReviewAction::Open(id))));
+                effects.push(self.child(state, AppAction::Review(ReviewAction::Open(id.clone()))));
+                // The page's Files tree and the files it opens come from the
+                // session's file list, fetched the first time it is shown.
+                effects.push(self.ask_files(state, id));
             }
             Route::Channel(id) => {
                 state.session.open = None;
@@ -170,6 +193,17 @@ impl App {
             }
             _ => state.session.open = None,
         }
+        // CH-16, CH-17 (D392): the daemon keeps the session shown read, and
+        // only that one. Nothing comes back: a failure shows nowhere, and the
+        // next arrival tells it again.
+        let viewed = match &state.route {
+            Route::Session(id) => Some(id.clone()),
+            _ => None,
+        };
+        let daemon = self.clients.daemon.clone();
+        effects.push(Effect::run(move |_send| async move {
+            let _ = humata2_clients::Daemon::view(&*daemon, viewed.as_ref()).await;
+        }));
         Effect::merge(effects)
     }
 
@@ -181,5 +215,18 @@ impl App {
             }
             None => Effect::none(),
         }
+    }
+
+    /// Leaves `gone`, a session that was archived, for `to`. The session
+    /// leaves the trail too, and so does a `to` at its end, so Back never
+    /// reopens it or lands where the page already is (frame 32).
+    pub(super) fn leave(&self, state: &mut AppState, gone: &Route, to: Route) -> Effect<AppAction> {
+        state.trail.retain(|route| route != gone);
+        while state.trail.last() == Some(&to) {
+            state.trail.pop();
+        }
+        state.route = to;
+        let arrived = self.arrive(state);
+        self.desk_fresh(state, arrived)
     }
 }

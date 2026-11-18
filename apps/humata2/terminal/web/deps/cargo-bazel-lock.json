@@ -1,5 +1,5 @@
 {
-  "checksum": "a963ddd296a6067ff8067887e0007ac1156fa094a98d0a73586fd30e968a17c7",
+  "checksum": "fc454173c983393a1e2ec49592f5fd9ed3121a7174cd3b4846e774ecef0b6916",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -13153,6 +13153,12 @@
       "package_url": "https://github.com/zed-industries/zed",
       "repository": {
         "Http": {
+          "patch_args": [
+            "-p1"
+          ],
+          "patches": [
+            "@@//apps/humata2/engine/patches:gpui-scheduler-lock-order.patch"
+          ],
           "sha256": "b1d3fa97eeb4ea233635b756684affe96db9e29fc2af8cdc269268bd7ff649fc",
           "url": "https://static.crates.io/crates/gpui-pre-scheduler/0.3.12/download"
         }
@@ -28617,7 +28623,10 @@
             ]
           }
         },
-        "edition": "2018"
+        "edition": "2018",
+        "rustc_flags": [
+          "-Copt-level=3"
+        ]
       },
       "library_target_name": "sha2",
       "license": "MIT OR Apache-2.0",
@@ -28671,7 +28680,10 @@
             ]
           }
         },
-        "edition": "2024"
+        "edition": "2024",
+        "rustc_flags": [
+          "-Copt-level=3"
+        ]
       },
       "library_target_name": "sha2",
       "license": "MIT OR Apache-2.0",

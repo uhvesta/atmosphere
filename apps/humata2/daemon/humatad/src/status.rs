@@ -1,7 +1,7 @@
 //! Failures as gRPC statuses: a code for generic handling and one
 //! `humata.v1.Error` in the details, which clients branch on (GRPC.md §10).
 
-use humata2_access::{Capability, Fix, PresenceMethod, Refusal, SessionId};
+use humata2_access::{Capability, Fix, PresenceMethod, Refusal, RepoRef, SessionId};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::StoreError;
 use prost::Message;
@@ -132,7 +132,10 @@ pub(crate) fn not_built(method: &str) -> Status {
     let message = format!("{method} isn't built into this humatad2 yet");
     let details = pb::Error {
         message: message.clone(),
-        fix: "update Humata on this machine; until then, do this from the app".to_owned(),
+        // D768: said by the daemon that lacks it, so it is about this build,
+        // whatever the caller runs: updating helps only once a release
+        // builds it, and the CLI and daemon may already be the same one.
+        fix: "do this from the Humata app on the host Mac; this release of humatad2 doesn't do it here, so updating helps only once a newer release builds it".to_owned(),
         retry: None,
         kind: None,
     };
@@ -180,8 +183,14 @@ pub(crate) fn chain(error: &dyn std::error::Error) -> String {
     let mut text = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
+        // Most messages already name their cause (`could not fork …:
+        // {source}`); add a cause only when it isn't said yet, so no reason
+        // is printed twice.
+        let said = cause.to_string();
+        if !text.contains(&said) {
+            text.push_str(": ");
+            text.push_str(&said);
+        }
         source = cause.source();
     }
     text
@@ -215,6 +224,7 @@ pub(crate) fn unauthenticated() -> Status {
             pb::error::Kind::PresenceRequired(pb::PresenceRequired {
                 accepted: vec![pb::presence_required::Method::CliLogin as i32],
                 caller_in_session_terminal: false,
+                tries_left: 0,
             }),
         ),
     )
@@ -241,6 +251,7 @@ pub(crate) fn login_unusable(unusable: &LoginUnusable) -> Status {
             pb::error::Kind::PresenceRequired(pb::PresenceRequired {
                 accepted: vec![pb::presence_required::Method::CliLogin as i32],
                 caller_in_session_terminal: false,
+                tries_left: 0,
             }),
         ),
     )
@@ -292,6 +303,7 @@ pub(crate) fn in_session_terminal() -> Status {
             pb::error::Kind::PresenceRequired(pb::PresenceRequired {
                 accepted: Vec::new(),
                 caller_in_session_terminal: true,
+                tries_left: 0,
             }),
         ),
     )
@@ -356,8 +368,37 @@ pub(crate) fn login_no_passphrase() -> Status {
     )
 }
 
+/// A wrong approval passphrase (SEC-13): refused as any missing presence
+/// is, with how many more wrong tries the machine allows before it locks.
+pub(crate) fn passphrase_wrong(tries_left: u32) -> Status {
+    failure(
+        Code::PermissionDenied,
+        error(
+            format!(
+                "that approval passphrase is wrong; {tries_left} more wrong tries and this machine's passphrase prompt locks for 15 minutes"
+            ),
+            "type the approval passphrase from Settings › Security on the Mac exactly as it shows there, or answer from the app on the Mac. Every wrong try counts toward the lock, so don't guess",
+            pb::error::Kind::PresenceRequired(pb::PresenceRequired {
+                accepted: vec![pb::presence_required::Method::ApprovalPassphrase as i32],
+                caller_in_session_terminal: false,
+                tries_left,
+            }),
+        ),
+    )
+}
+
 /// Five wrong passphrase tries locked the prompt until `until`.
 pub(crate) fn passphrase_locked(machine: &str, until: std::time::SystemTime) -> Status {
+    passphrase_locked_at(machine, until, std::time::SystemTime::now())
+}
+
+/// [`passphrase_locked`] at the time `now`, which is named so the fix's
+/// "in N minutes" can be tested.
+fn passphrase_locked_at(
+    machine: &str,
+    until: std::time::SystemTime,
+    now: std::time::SystemTime,
+) -> Status {
     let since = until
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -370,11 +411,10 @@ pub(crate) fn passphrase_locked(machine: &str, until: std::time::SystemTime) -> 
         error(
             "too many wrong approval passphrase tries: this machine's passphrase prompt is locked",
             format!(
-                "wait until {} seconds past the Unix epoch ({} seconds from now), or answer from the app on the Mac. Trying again early does not shorten the lock",
-                at.seconds,
-                until
-                    .duration_since(std::time::SystemTime::now())
-                    .map_or(0, |left| left.as_secs())
+                "wait {} (until {:02}:{:02} UTC), or answer from the app on the Mac. Trying again early does not shorten the lock",
+                lock_wait(until.duration_since(now).map_or(0, |left| left.as_secs())),
+                (since.as_secs() % 86_400) / 3_600,
+                (since.as_secs() % 3_600) / 60,
             ),
             pb::error::Kind::PassphraseLocked(pb::PassphraseLocked {
                 machine: Some(pb::MachineId {
@@ -384,6 +424,15 @@ pub(crate) fn passphrase_locked(machine: &str, until: std::time::SystemTime) -> 
             }),
         ),
     )
+}
+
+/// How long a lock has left, in words: whole minutes, rounded up, or
+/// "about a minute" for anything under it.
+fn lock_wait(seconds: u64) -> String {
+    match seconds.div_ceil(60) {
+        0 | 1 => "about a minute".to_owned(),
+        minutes => format!("about {minutes} minutes"),
+    }
 }
 
 /// No one answered a login in the app in time.
@@ -396,6 +445,7 @@ pub(crate) fn login_unanswered(minutes: u64) -> Status {
             pb::error::Kind::PresenceRequired(pb::PresenceRequired {
                 accepted: vec![pb::presence_required::Method::ConfirmInApp as i32],
                 caller_in_session_terminal: false,
+                tries_left: 0,
             }),
         ),
     )
@@ -503,8 +553,19 @@ pub(crate) fn refused(refusal: &Refusal) -> Status {
             }),
             false,
         ),
+        // PR-7: the repo and branch are filled in by the call that knows them
+        // (`with_push_target`).
+        Refusal::ReviewSessionPush { .. } => (
+            Code::PermissionDenied,
+            pb::error::Kind::PushRefused(pb::PushRefused {
+                reason: pb::push_refused::Reason::ReviewReadOnly as i32,
+                repo: None,
+                branch: String::new(),
+            }),
+            false,
+        ),
         Refusal::NotItsFolder { .. }
-        | Refusal::ReviewSessionPush { .. }
+        | Refusal::SharedOnOtherMachine { .. }
         | Refusal::MachineStopped { .. } => (
             Code::PermissionDenied,
             denied(Denied::HardLimit, None),
@@ -533,6 +594,7 @@ pub(crate) fn refused(refusal: &Refusal) -> Status {
                     .map(|method| presence_method(*method) as i32)
                     .collect(),
                 caller_in_session_terminal: false,
+                tries_left: 0,
             }),
             false,
         ),
@@ -573,20 +635,49 @@ pub(crate) fn refused(refusal: &Refusal) -> Status {
     )
 }
 
+/// A review session's push refusal, with the repository and branch it was
+/// refused for; any other failure as it was.
+pub(crate) fn with_push_target(refused: Status, repo: &RepoRef, branch: &str) -> Status {
+    let Some(mut error) = error_of(&refused) else {
+        return refused;
+    };
+    let Some(pb::error::Kind::PushRefused(push)) = &mut error.kind else {
+        return refused;
+    };
+    if push.reason != pb::push_refused::Reason::ReviewReadOnly as i32 {
+        return refused;
+    }
+    let (owner, name) = repo.as_str().split_once('/').unwrap_or(("", repo.as_str()));
+    push.repo = Some(pb::RepoRef {
+        owner: owner.to_owned(),
+        name: name.to_owned(),
+    });
+    push.branch = branch.to_owned();
+    failure(refused.code(), error)
+}
+
 /// A call the channel's rules send to the Inbox, which this daemon can't
 /// make for it yet.
+///
+/// It is `denied`, not a missing method (D768): an Unimplemented status
+/// with no kind reads as `peer_version_unsupported` to an agent, which sent
+/// agents to update a machine that was current.
 pub(crate) fn needs_approval(capability: Capability) -> Status {
     let message = format!(
-        "\"{capability}\" needs the user's approval here, and asking for it on this call isn't built into this humatad2 yet"
+        "\"{capability}\" needs the user's approval here, and this call can't wait for it in the Inbox, so nothing was done"
     );
     failure(
-        Code::Unimplemented,
-        pb::Error {
+        Code::PermissionDenied,
+        error(
             message,
-            fix: "ask the user with inbox_ask to do it themselves in the app; don't retry the call, since it is asked again each time".to_owned(),
-            retry: None,
-            kind: None,
-        },
+            "ask the user with inbox_ask to do it themselves in the app, or to let agents do it in the channel's rules; don't retry the call, since it is asked again each time",
+            pb::error::Kind::Denied(pb::Denied {
+                source: pb::denied::Source::Unspecified as i32,
+                capability: guard::capability(capability) as i32,
+                request: None,
+                user_note: String::new(),
+            }),
+        ),
     )
 }
 
@@ -656,6 +747,9 @@ fn fix_text(fix: &Fix) -> String {
         Fix::UseOwnFolders => {
             "work in the session's own clone or the channel's shared/ folder".to_owned()
         }
+        Fix::PutInSharedHereForPull { machine } => format!(
+            "put the file in shared/ here; a session on {machine} can copy it in from there, or the user can send it with `humata cp`"
+        ),
         Fix::SessionCloneOrRemoveRepo { repo } => format!(
             "make the change in a session's clone of {repo}; if the main clone itself should go, remove {repo} from the channel, which deletes its main clones"
         ),
@@ -678,6 +772,81 @@ fn fix_text(fix: &Fix) -> String {
         }
         Fix::NotFromAScript => "do it from the app or an agent session instead".to_owned(),
         Fix::MakeTheCall => "make the call itself; the user is asked then".to_owned(),
+        Fix::UserStartsMachine { machine } => format!(
+            "ask the user to start the sessions on {machine} from the app or with `humata start`, then make the call again; while they are stopped no agent or script is answered, so an agent can't ask with inbox_ask until then"
+        ),
         Fix::Nothing => "nothing the caller can change makes this work".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+
+    fn error_of(status: &Status) -> pb::Error {
+        let rpc = RpcStatus::decode(status.details()).unwrap_or_else(|e| panic!("details: {e}"));
+        let any = rpc
+            .details
+            .first()
+            .unwrap_or_else(|| panic!("the status carries no details"));
+        pb::Error::decode(any.value.as_slice()).unwrap_or_else(|e| panic!("error: {e}"))
+    }
+
+    /// The lock names how long is left and when it ends, not seconds since
+    /// 1970, and still reports the exact end for clients.
+    #[test]
+    fn a_passphrase_lock_says_how_long_is_left_and_not_unix_seconds() {
+        let until = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let now = until - Duration::from_secs(15 * 60);
+
+        let error = error_of(&passphrase_locked_at("mac", until, now));
+
+        assert!(error.fix.contains("15 minutes"), "{}", error.fix);
+        assert!(!error.fix.contains("1700000000"), "{}", error.fix);
+        assert!(!error.fix.contains("epoch"), "{}", error.fix);
+        match error.kind {
+            Some(pb::error::Kind::PassphraseLocked(locked)) => {
+                assert_eq!(locked.until.map(|at| at.seconds), Some(1_700_000_000));
+            }
+            other => panic!("expected passphrase_locked, got {other:?}"),
+        }
+    }
+
+    /// A cause the message already names, and one it doesn't.
+    #[derive(Debug, thiserror::Error)]
+    enum Told {
+        #[error("could not fork the conversation: {source}; fork with the code only")]
+        Names {
+            #[source]
+            source: std::io::Error,
+        },
+        #[error("could not fork the conversation")]
+        Silent {
+            #[source]
+            source: std::io::Error,
+        },
+    }
+
+    /// Each cause reads once in the chain, whether the message names it or not.
+    #[test]
+    fn a_chain_says_each_cause_once() {
+        let cause = || std::io::Error::other("the disk is full");
+
+        for told in [Told::Names { source: cause() }, Told::Silent { source: cause() }] {
+            let text = chain(&told);
+            assert_eq!(text.matches("the disk is full").count(), 1, "{text}");
+        }
+    }
+
+    /// A lock that has just ended is not "0 minutes".
+    #[test]
+    fn a_passphrase_lock_that_has_ended_does_not_say_zero_minutes() {
+        let until = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+        let error = error_of(&passphrase_locked_at("mac", until, until + Duration::from_secs(5)));
+
+        assert!(!error.fix.contains(" 0 "), "{}", error.fix);
     }
 }

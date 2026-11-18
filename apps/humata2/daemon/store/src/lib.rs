@@ -15,10 +15,13 @@ mod atomic;
 mod away_left_out;
 mod blob;
 mod boards;
+mod channel_desk;
 mod channel_snapshot;
 mod channels;
 mod comments;
 mod desk;
+mod desk_move;
+mod doc_comments;
 mod error;
 mod fresh_seeds;
 pub mod fault;
@@ -28,9 +31,13 @@ mod last_copy;
 mod last_good;
 mod lifecycle;
 mod machine_journal;
+mod pr_commits;
 mod previous;
 mod records;
 mod remote_reports;
+mod replies;
+mod tab_program;
+mod review_sessions;
 mod reviews;
 mod rules;
 mod settings;
@@ -38,6 +45,7 @@ mod schema;
 mod script_tokens;
 mod session_snapshot;
 mod store;
+mod typed_keys;
 mod views;
 
 use humata2_store_proto::humata::store::v1 as proto;
@@ -51,20 +59,27 @@ pub use boards::{
 pub use comments::{
     CommentChange, CommentDeliveryRecord, CommentDeliveryState, CommentNumbers, CommentRecord, SessionComments,
 };
+pub use channel_desk::ChannelDeskRow;
 pub use desk::{DeskFolderKind, DeskRow};
 pub use error::StoreError;
 pub use fresh_seeds::FreshSeed;
 pub use journal::{Journal, JournalEntry};
 pub use last_copy::LastCopy;
-pub use last_good::{Change, LastGood, Restored, RowChange};
+pub use last_good::{Change, LastGood, Restored, RowChange, UpgradeCopy, UpgradeRestored};
 pub use lifecycle::{ArchiveRow, ArchiveState, ForkOrigin};
+pub use pr_commits::{
+    CommitMark, KeptAnswer, MarkedBy, PrCommitMarks, ReviewEntry, ReviewEvent,
+};
 pub use previous::PreviousConversation;
 pub use records::{
     AgentLaunch, AgentRecord, AgentState, ChannelRecord, ChannelRepo, InboxRecord, Interruption,
-    MainClone, Pointers, RepoPointer, ResumeFailure, ReviewRecord, SessionDetail, SessionRecord,
-    SessionRepo, StartStep, TabKind, TabRecord, Told, ViewRecord,
+    MainClone, MigrateRecord, Pointers, RepoPointer, ResumeFailure, ReviewRecord, SessionDetail,
+    SessionRecord, SessionRepo, StartStep, TabKind, TabRecord, Told, ViewRecord,
 };
 pub use remote_reports::RemoteReportRow;
+pub use review_sessions::{ReviewPr, ReviewSessionRecord};
+pub use replies::TabReplies;
+pub use tab_program::{TabProgram, pwd_path};
 pub use rules::SavedRules;
 pub use settings::SavedSetting;
 pub use away_left_out::{AwayLeftOut, LeftOut};
@@ -72,3 +87,4 @@ pub use schema::SCHEMA_VERSION;
 pub use script_tokens::SavedScriptToken;
 pub use session_snapshot::Take;
 pub use store::Store;
+pub use typed_keys::TypedKey;

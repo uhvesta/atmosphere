@@ -5,8 +5,17 @@
 // naming the Desk one. What only the Desk knows (its folder, the two access
 // switches, when it closed) is a DeskSession, served here. This machine only.
 //
+// A channel's own Desk (CD-1..CD-6, D306) is served here too: a
+// StartDeskSession naming a channel starts a short-lived session in
+// `<channel folder>/desk/<name>` that looks after the channel or one of its
+// sessions, under the channel's rules plus its six management switches.
+// ListDeskSessions by channel or by target lists them; SetDeskAccess with
+// `switches` changes them. They are on no plain Desk list.
+//
 // Every call is the user's (the app, or the CLI with presence) except
-// KeepDeskFolder on the caller's own session (D182.6). Moving to another
+// KeepDeskFolder on the caller's own session (D182.6) and
+// MoveDeskSessionToChannel, which a session's own agent may call for its own
+// session under the target channel's rule (DK-15, D305). Moving to another
 // machine is added here when sessions can move (MV-1, D182.2).
 syntax = "proto3";
 
@@ -16,6 +25,7 @@ import "google/protobuf/timestamp.proto";
 import "humata/v1/common.proto";
 import "humata/v1/files.proto";
 import "humata/v1/operations.proto";
+import "humata/v1/review.proto";
 
 service DeskService {
   // DK-14. Claims the folder, clones the repos into it, records the
@@ -35,9 +45,34 @@ service DeskService {
   // DK-2: the scratch folder stays after its session closes. Nothing
   // changes for a picked folder, which always stays. Can't be undone.
   rpc KeepDeskFolder(KeepDeskFolderRequest) returns (DeskSession);
+  // DV-2: the versions of a file in the session's folder, newest first,
+  // with whether the folder has unsaved changes. Empty before the first
+  // version. A session whose folder is no versions repository (a picked
+  // folder, or one made before D451 and not migrated) is
+  // FAILED_PRECONDITION naming the Migrate Desk folders item.
+  rpc ListDocVersions(ListDocVersionsRequest) returns (ListDocVersionsResponse);
+  // DV-6, DV-12: one version's text and the comments recorded with it.
+  rpc ReadDocVersion(ReadDocVersionRequest) returns (DocVersionText);
+  // DV-5: the user's Save version. FAILED_PRECONDITION when nothing
+  // changed. The user's only; an agent saves with git.
+  rpc SaveDocVersion(SaveDocVersionRequest) returns (DocVersion);
+  // DV-8: the user's Restore as new version; unsaved changes are saved
+  // first. FAILED_PRECONDITION when the file already has that text.
+  rpc RestoreDocVersion(RestoreDocVersionRequest) returns (RestoreDocVersionResponse);
+  // DV-7: one version of a file against the file as it is now, unsaved
+  // changes included, as hunks of the same line model the Changes panel
+  // draws. No hunks when they read the same. NOT_FOUND for a version the
+  // file doesn't have, and for a file that isn't in that version.
+  rpc DiffDocVersion(DiffDocVersionRequest) returns (DocVersionDiff);
   // DK-4: the session's two Agent access switches, from the agent's next
   // call (IN-21).
   rpc SetDeskAccess(SetDeskAccessRequest) returns (DeskSession);
+  // CD-5: changes which session a channel Desk session looks after, or with
+  // no target has it look after the whole channel. Refused while it is
+  // closed, and for a session that is not one of the channel's, is archived
+  // or is itself a Desk session. It ends "Target gone", and a session the
+  // daemon stopped for that runs again.
+  rpc SetDeskTarget(SetDeskTargetRequest) returns (DeskSession);
   // DK-11 Clean up…: the closed sessions, least recently used first, with
   // what deleting each frees and the work it would lose (MV-9).
   rpc PlanDeskCleanUp(PlanDeskCleanUpRequest) returns (DeskCleanUpPlan);
@@ -58,6 +93,53 @@ service DeskService {
   // `shared/` folder on this machine. The Desk's copy stays. Refused when
   // the channel already has a file of that name, which is left as it is.
   rpc CopyDeskDocument(CopyDeskDocumentRequest) returns (CopyDeskDocumentResponse);
+
+  // DK-15..DK-19, D305: what moving a Desk session into a channel would do,
+  // and the token the move must carry. Changes nothing. A closed session is
+  // FAILED_PRECONDITION (reopen it first).
+  rpc PlanDeskMove(PlanDeskMoveRequest) returns (DeskMovePlan);
+
+  // DK-15..DK-19, D305, MV-16: moves a Desk session into a channel by the
+  // carry a move between machines uses (MV-4). The session is MOVING and its
+  // terminal read-only while its folder and conversation go to a session
+  // folder of the channel on the machine it runs on; one copy of it is live
+  // throughout, and a power cut before the switch is undone at the next
+  // start, one after it finished. Each repo is put on the plan's branch from
+  // the commit it was at, uncommitted files and all; repos the channel lacks
+  // are added to it. The session keeps its id, title, pin and VIP; its Desk
+  // row and grants go, and its other pending requests are withdrawn
+  // (WITHDRAW_REASON_SESSION_MOVED). Nothing stays at its old folder or its
+  // old conversation key but the trash item. A folder picked before D451 is
+  // copied the same way and the original stays where it was; nothing asks
+  // (D461). A failure leaves it a Desk session, still running.
+  //
+  // A user's move of a session in a turn is FAILED_PRECONDITION with
+  // SessionBusy unless `confirm_running`. An agent whose conversation can't
+  // be carried (Copilot) is FAILED_PRECONDITION with AgentLacksFeature
+  // FEATURE_CONVERSATION_MOVE before anything changes.
+  //
+  // The user's call carries `plan`; one that no longer matches is
+  // FAILED_PRECONDITION with PlanStale. The session's own agent may call it
+  // with no session (its own): it asks the user under the target channel's
+  // rule for CAPABILITY_DESK_MOVE_TO_CHANNEL, never "Always allow", never
+  // while away; a newer request withdraws the older (WITHDRAW_REASON_SUPERSEDED).
+  // An agent's call is refused at once when the move adds repos and the
+  // target's CAPABILITY_CHANNEL_REPO_ADD rule is Never, and is
+  // FAILED_PRECONDITION for a plain terminal, which only the user moves.
+  rpc MoveDeskSessionToChannel(MoveDeskSessionToChannelRequest) returns (Operation);
+
+  // D458, SAFE: how many of this machine's Desk folders that Humata made
+  // (a plain Desk scratch folder, or a channel's Desk folder) have no
+  // versions repository yet. A picked folder and a clone are never counted.
+  // Runs no git that changes anything. The host asks it of each machine, over
+  // the link, to post that machine's "Migrate the Desk folders" item.
+  rpc CheckDeskFolders(CheckDeskFoldersRequest) returns (CheckDeskFoldersResponse);
+  // D458, SAFE: what clicking that item does: `git init` in each of those
+  // folders, with the clones inside left out of its versions. No commit, no
+  // file changed, nothing deleted; a picked folder is never touched.
+  // FAILED_PRECONDITION naming each folder that could not be set up (the
+  // others were done); calling it again retries the rest. The user's only.
+  rpc MigrateDeskFolders(MigrateDeskFoldersRequest) returns (MigrateDeskFoldersResponse);
 }
 
 // DK-4, DK-10.
@@ -103,6 +185,26 @@ message DeskSession {
   repeated RepoRef repos = 8;
   // DK-5: the Markdown files directly in the folder, by name; sorted.
   repeated string documents = 9;
+  // CD-1..CD-5: set for a channel's own Desk session, unset for any other.
+  ChannelDesk channel_desk = 10;
+  // DV-5: the newest commit of the folder's own repository; empty before
+  // the first version or when the folder has none. A change comes as
+  // Updated, so the app re-lists the open file's versions.
+  string doc_head = 11;
+  // DV-1: the folder is a versions repository (D451). False for a picked
+  // folder and for one made before D451 until it is migrated (D458).
+  bool has_versions = 12;
+  // DV-5: how many versions (commits) the folder's own repository holds.
+  // 0 when has_versions is false or nothing is saved yet.
+  uint32 version_count = 13;
+  // DV-4: the folder holds a file outside its clones and outside .git,
+  // hidden files and files in plain subfolders included. The close
+  // confirmation asks only when this is true.
+  bool holds_files = 14;
+  // CD-4: how many lines each of `documents` has, by file name, for the
+  // channel Desk close confirmation. A file the daemon could not read, or
+  // one too large to count, has no entry.
+  map<string, uint32> document_lines = 15;
 }
 
 message StartDeskSessionRequest {
@@ -116,13 +218,26 @@ message StartDeskSessionRequest {
   string model = 4;
   // Unset or this machine.
   MachineId machine = 5;
-  // An existing directory outside Humata's folders; unset for a scratch
-  // folder.
+  // Deprecated (D451, D460): nobody picks a folder, so a new session is
+  // always placed by Humata under its Desk folder. A start that sets this is
+  // refused (InvalidField picked_path, NOT_ALLOWED_HERE); leave it unset. It
+  // stays so an older app is told why instead of the field being dropped.
+  // Sessions started in a picked folder before keep working there (D458).
   string picked_path = 6;
   // Cloned into the folder, each as `<name>` (DK-3).
   repeated RepoRef repos = 7;
   DeskAccess access = 8;
   string first_message = 9;
+  // CD-1, CD-6: set to start a channel's own Desk session in
+  // `<channel folder>/desk/<name>`; `picked_path` and `repos` must then be
+  // unset and `access` is ignored. Unset for a plain Desk session.
+  ChannelId channel = 10;
+  // The session it looks after, a session of `channel`; unset for the
+  // whole channel.
+  SessionId target = 11;
+  // Unset takes the New desk session dialog's defaults: read files and
+  // send notes on, the rest off.
+  ChannelDeskSwitches switches = 12;
 }
 
 message StartDeskSessionResponse {
@@ -131,15 +246,42 @@ message StartDeskSessionResponse {
   DeskSession desk = 3;
 }
 
-message ListDeskSessionsRequest {}
+message ListDeskSessionsRequest {
+  // CD-2: set to list the open Desk sessions of this channel instead of the
+  // plain Desk.
+  ChannelId channel = 1;
+  // CD-2: set to list the open channel Desk sessions looking after this
+  // session.
+  SessionId target = 2;
+}
 
 message ListDeskSessionsResponse {
   repeated DeskSession sessions = 1;
 }
 
+message CheckDeskFoldersRequest {}
+
+message CheckDeskFoldersResponse {
+  // Humata-made Desk folders here with no versions repository.
+  uint32 without_versions = 1;
+}
+
+message MigrateDeskFoldersRequest {}
+
+message MigrateDeskFoldersResponse {
+  // How many folders this call set up.
+  uint32 migrated = 1;
+}
+
 message CloseDeskSessionRequest {
   IdempotencyKey idempotency_key = 1;
   SessionId session = 2;
+  // A channel's Desk session only: a folder that holds a version goes to the
+  // trash like any other, where a plain close (false, the default) leaves it
+  // in place (DV-4, D452). A channel delete sets it, as the folder's life ends
+  // with the channel; the host sets it on the machine a session works on, so
+  // that machine does as this one would. A plain Desk session ignores it.
+  bool trash_versioned = 3;
 }
 
 message ReopenDeskSessionRequest {
@@ -154,6 +296,54 @@ message KeepDeskFolderRequest {
 message SetDeskAccessRequest {
   SessionId session = 1;
   DeskAccess access = 2;
+  // CD-3: set to change a channel Desk session's switches; `access` is then
+  // ignored. From the agent's next call.
+  ChannelDeskSwitches switches = 3;
+}
+
+message SetDeskTargetRequest {
+  SessionId session = 1;
+  // Unset: the whole channel.
+  SessionId target = 2;
+}
+
+// CD-3: what a channel Desk session's agent may do beyond the channel's
+// rules, on its target (and the target's forks) or, with the whole channel
+// as its target, across the channel. A rule set to Never still refuses.
+message ChannelDeskSwitches {
+  bool read_files = 1;
+  bool send_notes = 2;
+  bool type_into_terminal = 3;
+  bool start_and_fork = 4;
+  bool stop_and_archive = 5;
+  bool change_board_items = 6;
+}
+
+enum ChannelDeskSwitch {
+  CHANNEL_DESK_SWITCH_UNSPECIFIED = 0;
+  CHANNEL_DESK_SWITCH_READ_FILES = 1;
+  CHANNEL_DESK_SWITCH_SEND_NOTES = 2;
+  CHANNEL_DESK_SWITCH_TYPE_INTO_TERMINAL = 3;
+  CHANNEL_DESK_SWITCH_START_AND_FORK = 4;
+  CHANNEL_DESK_SWITCH_STOP_AND_ARCHIVE = 5;
+  CHANNEL_DESK_SWITCH_CHANGE_BOARD_ITEMS = 6;
+}
+
+// The part of a DeskSession only a channel's own Desk session has.
+message ChannelDesk {
+  ChannelId channel = 1;
+  // Unset for the whole channel.
+  SessionId target = 2;
+  ChannelDeskSwitches switches = 3;
+  // The switches the channel's rules set to Never: shown as "Blocked by
+  // the channel rule: Never", on or off.
+  repeated ChannelDeskSwitch blocked = 4;
+  // CD-5: the target was deleted or archived past its undo window while
+  // the folder held Markdown files, so the session stopped instead of
+  // closing.
+  bool target_gone = 5;
+  // CD-4: the trash item the closed session's folder is in.
+  TrashItemId trash_item = 6;
 }
 
 message PlanDeskCleanUpRequest {}
@@ -215,4 +405,155 @@ message CopyDeskDocumentRequest {
 message CopyDeskDocumentResponse {
   // Where the copy is.
   FileLocation copy = 1;
+}
+
+message PlanDeskMoveRequest {
+  SessionId session = 1;
+  ChannelId channel = 2;
+  // The branch to put the work on; empty picks one from the session's title
+  // (FC-11..FC-14).
+  string branch = 3;
+}
+
+// What a move would do (DK-15).
+message DeskMovePlan {
+  ChannelId channel = 1;
+  // The session folder it moves to, absolute, on this machine.
+  string folder = 2;
+  // The Desk folder's repos, sorted by owner and name.
+  repeated DeskMoveRepo repos = 3;
+  // The repos the channel lacks, which the move adds to it.
+  repeated RepoRef adds = 4;
+  // Changes when anything above, or the channel, changes (DK-19).
+  PlanToken token = 5;
+  // The branch each repo is put on.
+  string branch = 6;
+}
+
+message DeskMoveRepo {
+  RepoRef repo = 1;
+  // The new branch, which starts at start_commit.
+  string branch = 2;
+  string start_commit = 3;
+  // The branch the Desk clone is on; empty when detached.
+  string start_branch = 4;
+  // Changed, staged and untracked files, which the move carries.
+  uint32 uncommitted_files = 5;
+}
+
+message MoveDeskSessionToChannelRequest {
+  IdempotencyKey idempotency_key = 1;
+  // The Desk session; an agent leaves it empty for its own.
+  SessionId session = 2;
+  ChannelId channel = 3;
+  // From PlanDeskMove; the user's call must carry it. An agent's call
+  // leaves it empty, and the move is planned when it is asked.
+  PlanToken plan = 4;
+  // As PlanDeskMoveRequest.branch.
+  string branch = 5;
+  // An agent's reason, shown on the Inbox card.
+  string reason = 6;
+  // Deprecated (D461): no tick is asked any more. A folder picked before
+  // D451 is copied like a scratch folder and the original stays where it
+  // was. Until the daemon does that it still refuses a picked folder's move
+  // when this is unset (D315); send true.
+  bool move_picked_folder = 7;
+  // The user saw that the session is in a turn and moves it anyway. An
+  // agent's own call leaves it unset: the user's approval in the Inbox is
+  // the ask.
+  bool confirm_running = 8;
+}
+
+// DV-2. Who made it: the user (Save version or restore) or the agent.
+enum DocVersionBy {
+  DOC_VERSION_BY_UNSPECIFIED = 0;
+  DOC_VERSION_BY_YOU = 1;
+  DOC_VERSION_BY_AGENT = 2;
+}
+
+// DV-2: one version of one file, a commit that changed it.
+message DocVersion {
+  // The commit.
+  string id = 1;
+  // 1 for the file's oldest version. Unset in SaveDocVersion's answer,
+  // which is per folder, not per file.
+  uint32 number = 2;
+  google.protobuf.Timestamp at = 3;
+  DocVersionBy by = 4;
+  // What to show for `by`: "You", or the agent's display name
+  // ("Claude Code"), never its id.
+  string who = 5;
+  string message = 6;
+  // Lines of the file this version added and removed.
+  uint32 added = 7;
+  uint32 removed = 8;
+  // DV-12: comments were recorded with it.
+  bool has_comments = 9;
+}
+
+message ListDocVersionsRequest {
+  SessionId session = 1;
+  // Relative to the session's folder.
+  string path = 2;
+}
+
+message ListDocVersionsResponse {
+  // Newest first.
+  repeated DocVersion versions = 1;
+  // DV-3, DV-5: something in the folder outside its clones differs from
+  // its newest version.
+  bool unsaved_changes = 2;
+}
+
+message ReadDocVersionRequest {
+  SessionId session = 1;
+  string path = 2;
+  // A DocVersion id of that file.
+  string version = 3;
+}
+
+message DocVersionText {
+  DocVersion version = 1;
+  string text = 2;
+  // DV-12: false when the version has no comment record ("Comments
+  // weren't recorded for this version"); `comments` is then empty.
+  bool comments_recorded = 3;
+  // DV-6: the file's comments as they were, read-only.
+  repeated Comment comments = 4;
+}
+
+message SaveDocVersionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // Empty: "Saved by you".
+  string message = 3;
+}
+
+message RestoreDocVersionRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  string path = 3;
+  string version = 4;
+}
+
+message RestoreDocVersionResponse {
+  // The version that saved unsaved changes first, when there were any.
+  DocVersion saved_first = 1;
+  // The new version holding the restored text.
+  DocVersion restored = 2;
+}
+
+message DiffDocVersionRequest {
+  SessionId session = 1;
+  string path = 2;
+  // A DocVersion id of that file.
+  string version = 3;
+}
+
+message DocVersionDiff {
+  // The change from the version to the file now, three lines of context
+  // around each change; `continued` is never set.
+  repeated Hunk hunks = 1;
+  uint32 added = 2;
+  uint32 removed = 3;
 }

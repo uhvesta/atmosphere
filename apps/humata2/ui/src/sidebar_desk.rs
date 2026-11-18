@@ -38,9 +38,55 @@ pub(crate) fn rows(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
     list
 }
 
+/// The Desk row under an open channel while it has open Desk sessions
+/// (CD-2, frame 95): a click, or Enter with the keyboard cursor on it, opens
+/// the channel on its Desk tab.
+pub(crate) fn channel_row(
+    ui: &Rc<Ui>,
+    channel: &humata2_clients::model::ChannelId,
+    count: usize,
+    at_cursor: bool,
+    look: Look,
+) -> AnyElement {
+    let ui = ui.clone();
+    let open = AppAction::Sidebar(SidebarAction::Activate(RowKey::ChannelDesk(channel.clone())));
+    div()
+        .id(SharedString::from(format!(
+            "sidebar-channel-desk-{}",
+            channel.0
+        )))
+        .role(Role::TreeItem)
+        .aria_label("Desk")
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .h(px(crate::theme::ROW))
+        .mx(px(10.))
+        .pl(px(18.))
+        .pr(px(8.))
+        .rounded(px(6.))
+        .when(at_cursor, |x| x.bg(rgb(look.fill)))
+        .child(chrome::icon(IconName::SquareTerminal, look.tertiary, 12.))
+        .child(div().flex_1().min_w_0().child("Desk"))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(rgb(look.secondary))
+                .child(count.to_string()),
+        )
+        .on_click(move |_, _, cx| ui.send(open.clone(), cx))
+        .test_support()
+        .into_any_element()
+}
+
 /// One open Desk session, drawn as the frame draws it: a status dot and the
 /// title, indented 18 under the Desk row.
-fn session(ui: &Rc<Ui>, state: &AppState, entry: &Row, look: Look) -> Option<AnyElement> {
+pub(crate) fn session(
+    ui: &Rc<Ui>,
+    state: &AppState,
+    entry: &Row,
+    look: Look,
+) -> Option<AnyElement> {
     let key = entry.key.clone()?;
     let RowKey::Session(id) = &key else {
         return None;
@@ -49,6 +95,7 @@ fn session(ui: &Rc<Ui>, state: &AppState, entry: &Row, look: Look) -> Option<Any
         return None;
     };
     let on = state.route == Route::Session(id.clone());
+    let at_cursor = state.sidebar.cursor.as_ref() == Some(&key);
     let ui = ui.clone();
     let unread = *unread > 0;
     Some(
@@ -66,6 +113,7 @@ fn session(ui: &Rc<Ui>, state: &AppState, entry: &Row, look: Look) -> Option<Any
             .pr(px(8.))
             .rounded(px(6.))
             .text_color(rgb(if on { 0xffffff } else { look.text }))
+            .when(at_cursor && !on, |x| x.bg(rgb(look.fill)))
             .when(on, |x| x.bg(rgb(look.selection)))
             .child(chrome::status(*status))
             .child(
@@ -74,7 +122,7 @@ fn session(ui: &Rc<Ui>, state: &AppState, entry: &Row, look: Look) -> Option<Any
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .when(unread || on, |x| x.font_weight(FontWeight::SEMIBOLD))
+                    .when(unread, |x| x.font_weight(FontWeight::SEMIBOLD))
                     .child(title.clone()),
             )
             .on_click(move |_, _, cx| {

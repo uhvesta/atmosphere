@@ -5,6 +5,9 @@
 //! the gRPC face: who may call, where the paths may point, and how a
 //! failure is told.
 //!
+//! It also says where a file in a session's pastes is on this disk, so the
+//! host can tell the app the path to type (D335); no other path is told.
+//!
 //! For the user and the host's relayed calls (taken as the user's); an
 //! agent, a script or a peer is refused. Every location is still judged by
 //! the guard like any `FileService` call, and resolved through [`Roots`] so
@@ -101,6 +104,16 @@ impl TransferEndSvc {
         })
         .await?
     }
+}
+
+/// `path` as text to type into a terminal.
+pub(crate) fn path_text(path: &Path) -> Result<String, Status> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        status::internal(
+            format!("the path {} isn't UTF-8, so it can't be typed", path.display()),
+            "",
+        )
+    })
 }
 
 /// The path of an entry that may or may not be there: a link or file that
@@ -323,6 +336,30 @@ impl pb::transfer_end_service_server::TransferEndService for TransferEndSvc {
             })
             .await?;
         Ok(Response::new(pb::ExistsResponse { exists }))
+    }
+
+    /// Which of the named chunks a chunk folder holds (MV-17); a folder
+    /// that isn't there holds none.
+    async fn have_chunks(
+        &self,
+        request: Request<pb::HaveChunksRequest>,
+    ) -> Result<Response<pb::HaveChunksResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::user_only(&caller)?;
+        let request = request.into_inner();
+        let target = self.target(&caller, request.location, "location", Entry::Folder, true)?;
+        let machine = self.machine.clone();
+        let names = request.sha256;
+        let sha256 = self
+            .on_disk(move |disk| match target.unfollowed() {
+                Ok(path) => disk
+                    .have_chunks(&path, &names)
+                    .map_err(|error| end_failure(error, &machine, "location", &target.shown)),
+                Err(error) if error.code() == Code::NotFound => Ok(Vec::new()),
+                Err(error) => Err(error),
+            })
+            .await?;
+        Ok(Response::new(pb::HaveChunksResponse { sha256 }))
     }
 
     async fn make_folder(
@@ -609,5 +646,25 @@ impl pb::transfer_end_service_server::TransferEndService for TransferEndSvc {
         })
         .await?;
         Ok(Response::new(pb::EndAck {}))
+    }
+
+    async fn locate(
+        &self,
+        request: Request<pb::EndPathRequest>,
+    ) -> Result<Response<pb::LocateResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::user_only(&caller)?;
+        let request = request.into_inner();
+        let target = self.target(&caller, request.location, "location", Entry::File, false)?;
+        if !matches!(target.place.root, humata2_access::Root::Pastes(_)) {
+            return Err(status::invalid_field(
+                "location",
+                Problem::NotAllowedHere,
+                format!("{} isn't in a session's pastes", target.shown),
+                "this call only says where pasted files are; name a file in a session's pastes",
+            ));
+        }
+        let path = blocking(move || target.existing().and_then(|path| path_text(&path))).await??;
+        Ok(Response::new(pb::LocateResponse { path }))
     }
 }

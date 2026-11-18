@@ -4,7 +4,8 @@
 //! prints what the daemon says the hook prints. Always exits 0, and prints
 //! nothing when there's no answer: no daemon, a refusal, a dropped stream
 //! or the cap below. Empty output is "no decision" to every agent, so its
-//! own prompt asks.
+//! own prompt asks. `humata hook <agent> question` is the same for the
+//! agent's own ask-user form: the card is an Inbox question (D761).
 
 use std::time::Duration;
 
@@ -29,8 +30,14 @@ pub(super) async fn hook<D: Daemon, C: Console>(
     agent: &str,
     event: HookEventArg,
 ) -> Result<Done, CliError> {
+    // A permission hook raises an Inbox card and answers the agent live, so
+    // `--dry-run` is refused as usage before anything is read or sent.
+    if ctx.flags.dry_run {
+        return Err(CliError::HookDryRun);
+    }
     let event = match event {
         HookEventArg::Permission => "permission",
+        HookEventArg::Question => "question",
     };
     let Ok(payload) = ctx.console.stdin() else {
         return Ok(Done::printed());

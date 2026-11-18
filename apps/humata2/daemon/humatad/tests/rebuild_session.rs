@@ -172,6 +172,9 @@ async fn rebuild_on_box_2_clones_last_pushed_sha_resumes_mirrored_conversation_a
     assert!(talk.contains("before the loss"), "resumed from the mirror: {talk}");
     let mut agent = attach(&rig, &id).await;
     agent.wait_for("README.md").await;
+    // D743: the rebuild note names the repo but not its branch.
+    let branch = &back.repos[0].branch;
+    assert!(!agent.shows(branch), "the agent's terminal names the branch {branch}");
 }
 
 /// A host killed while the rebuild clones leaves the session archived; a

@@ -130,6 +130,7 @@ fn wrapper(dir: &Path, program: PathBuf) -> Wrapper {
         folder: dir.to_path_buf(),
         retry: Duration::from_millis(100),
         wait_for_url: Duration::from_secs(10),
+        model: None,
     }
 }
 
@@ -185,6 +186,25 @@ async fn the_tui_attaches_to_its_own_server_and_the_server_ends_with_it() {
     let lines = seen.lock().map(|lines| lines.clone()).unwrap_or_default();
     assert!(lines.iter().any(|line| line.starts_with("POST /api/session ")), "{lines:?}");
     assert!(!alive(&read(dir.path(), "serve-pid")), "serve outlived the TUI");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tui_runs_on_the_sessions_model_when_one_was_chosen() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let (url, _seen) = fake_server().await;
+    let program = fake_opencode(dir.path(), "opencode v2.3.0", &url, "sleep 600", "exit 0");
+    let wrapper = Wrapper {
+        model: Some("anthropic/claude-haiku-5.5".to_owned()),
+        ..wrapper(dir.path(), program)
+    };
+    run_wrapper(wrapper, Arc::new(Quiet::default())).await.expect("the TUI ran");
+
+    let id = session_id(CONVERSATION);
+    let tui: Vec<String> = read(dir.path(), "tui-args").lines().map(str::to_owned).collect();
+    assert_eq!(
+        tui,
+        ["--server", url.as_str(), "-s", id.as_str(), "--model", "anthropic/claude-haiku-5.5"]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

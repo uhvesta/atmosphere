@@ -237,12 +237,30 @@ pub(crate) fn changing<T>(
     let len = current_len()?;
     let end = offset.saturating_add(replaced).min(len);
     let old = if end > offset {
-        read(offset, usize::try_from(end - offset).unwrap_or(usize::MAX))?
+        let want = usize::try_from(end - offset).unwrap_or(usize::MAX);
+        match read(offset, want) {
+            Ok(old) => old,
+            // A handle opened write-only can't read what it replaces (EBADF);
+            // the file's own path, while it still names this file, can.
+            Err(error) => match ledger.paths.get(&id) {
+                Some(path) => read_by_path(path, id, offset, want).map_err(|_| error)?,
+                None => return Err(error),
+            },
+        }
     } else {
         Vec::new()
     };
     ledger.ops.push(Op::Data { id, offset, old, len });
     write()
+}
+
+/// Reads `len` bytes at `at` of the file at `path`, when that is still file `id`.
+fn read_by_path(path: &Path, id: Id, at: u64, len: usize) -> io::Result<Vec<u8>> {
+    let file = fs::File::open(path)?;
+    if id_of(&file.metadata()?) != id {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "the path names another file now"));
+    }
+    read_at(&file, at, len)
 }
 
 pub(crate) fn write(file: &fs::File, id: Id, bytes: &[u8], offset: u64) -> io::Result<()> {

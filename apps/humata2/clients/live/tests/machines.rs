@@ -29,7 +29,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
 
-const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 const WAIT: Duration = Duration::from_secs(15);
 const FOLLOW: Duration = Duration::from_secs(90);
 
@@ -579,17 +579,23 @@ async fn a_first_skills_sync_is_previewed_then_applied_with_its_plan() {
     assert!(next.added.is_empty());
 }
 
+/// HO-13: a box's variable goes over its link to the box's own daemon and
+/// is never kept on the host. This rig's link relays nothing (its humatad2
+/// has its own --state, D146), so the box can't be reached and answers at
+/// once (HO-5). humatad's host_variables_remote test covers a box that keeps
+/// the value.
 #[tokio::test(flavor = "multi_thread")]
-async fn host_variables_answer_not_served_yet() {
+async fn a_host_variable_for_a_box_goes_over_its_link() {
     let machine = FakeMachine::new();
     let host = Host::start(&machine).await;
     host.add_box().await;
 
+    let started = Instant::now();
     let set = host.machines.set_variable(&box_1(), "TOKEN", "secret").await;
+    assert!(matches!(set, Err(DaemonError::Offline { .. })), "{set:?}");
     let removed = host.machines.remove_variable(&box_1(), "TOKEN").await;
-
-    assert!(matches!(set, Err(DaemonError::NotServedYet { .. })), "{set:?}");
-    assert!(matches!(removed, Err(DaemonError::NotServedYet { .. })), "{removed:?}");
+    assert!(matches!(removed, Err(DaemonError::Offline { .. })), "{removed:?}");
+    assert!(started.elapsed() < WAIT, "an unreachable box was waited for");
 }
 
 /// What the daemon says of box-1's reachability, once it says the machine
@@ -648,4 +654,39 @@ async fn an_app_that_starts_later_lists_the_machines_the_daemon_has() {
         .collect();
     assert_eq!(this.len(), 1, "this machine is listed once: {names:?}");
     assert_eq!(workspace.machines.len(), 2, "{names:?}");
+}
+
+/// What the daemon says This Mac's Humata folder is.
+async fn this_mac_root(host: &Host) -> String {
+    pb::machine_service_client::MachineServiceClient::new(host.raw().await)
+        .get_machine(pb::GetMachineRequest {
+            id: Some(pb::MachineId { value: "this-mac".to_owned() }),
+        })
+        .await
+        .expect("This Mac is a machine whose root can be read")
+        .into_inner()
+        .machine
+        .expect("the daemon names the machine")
+        .root
+}
+
+/// FC-10, ST-5: a plan changes nothing; applying it with its token makes
+/// the new root the machine's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_planned_root_change_on_this_mac_is_applied_with_its_plan() {
+    let machine = FakeMachine::new();
+    let host = Host::start(&machine).await;
+    let this = MachineId::new("this-mac");
+    let before = this_mac_root(&host).await;
+
+    let plan = host.machines.plan_change_root(&this, "~/Work").await.expect("the change is planned");
+    assert_eq!(plan.new_root, "~/Work");
+    assert_eq!(plan.old_root, before);
+    assert_eq!(this_mac_root(&host).await, before, "a plan changes nothing");
+
+    host.machines.change_root(&plan, false).await.expect("the change is applied");
+    assert_eq!(this_mac_root(&host).await, "~/Work");
+
+    let used = host.machines.change_root(&plan, false).await;
+    assert!(used.is_err(), "a plan serves one change: {used:?}");
 }

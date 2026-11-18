@@ -1,5 +1,45 @@
 # Humata 2 native UI handoff (minion C1)
 
+## Takeover state (2026-11-16)
+
+Codex C1 stopped on 2026-11-16. At the owner's request a takeover agent finished what other lanes needed from C1, as anchored scripts that main applies, builds and commits.
+
+Done in this pass:
+
+- C1's work in progress builds lint-clean again. The engine replaced `frame::type_text` with `frame::type_character` (one key per update, the frame drawn in the next; FL's typing seam), so ui-prototype's natural-frames test now types that way. Two unused imports are gone, in `terminal/pane/tests/inband.rs` and `terminal/view/benches/frame.rs`.
+- TERM's requests are answered in `workflow/milestones/TERM.md` under "C1's answers". `terminal/wire` and `terminal_replica` are visible to the packages TERM named. `ReplicaConfig` gained `fit: FitPolicy` and `default_colors`, plus `TerminalReplica::set_default_colors`. A component test proves that a controlling replica draws the same pixels as a bare pane.
+- The holder protocol stays at `VERSION` 1, and `daemon/holder` is unchanged.
+
+Ownership: **VIEWS now owns the prepared-view Keep/Revert/Showing/walkthrough work** (step 4 below). Leave it to that lane.
+
+Still open in C1's packages:
+
+- The reply-watermark library (TERM's optional request) is not extracted; `daemon/vt_authority` is its only user.
+- The terminal experiment's continuation state in [terminal/lab/HANDOFF.md](terminal/lab/HANDOFF.md) was not verified again in this pass. No live runs were made, and the Lima VM and leftover holder processes were left alone.
+- The review Send steps and the frame audit below are untouched.
+
+Owner update, 2026-11-15: C1 is actively building the reusable terminal experiment and a live browser mirror; LOOK1 continues the prior app/frame work. **Current state is in OVERVIEW’s C1 terminal-experiment pickup**, [Terminal Lab](terminal/lab/README.md), and [acceptance matrix](terminal/lab/ACCEPTANCE.md). The same local server must expose its local and SSH terminals to both native GPUI and browser GPUI clients. Native tests, host local+SSH restart/mirror tests, and the compact Wasm bundle pass. Mac browser acceptance passes real local/SSH input, reload, simultaneous mirrors and control transfer after font/theme fixes. The verified protocol1 baseline is now promoted and its URL sent to the user; protocol2 hardening and inactive-view memory saver are being tested before the next coordinated upgrade. A private local server is running; OVERVIEW records state paths and current test ownership. Mac headless Chrome must retain mock-keychain flags to avoid OS dialogs. This is substantial uncommitted work in a shared checkout; preserve unrelated edits. Root owns integration, three subagents own client/web, VT/Wasm and host respectively.
+
+Current detailed continuation: [terminal experiment handoff](terminal/lab/HANDOFF.md). It records the live protocol-version split, agent ownership, verified gates and exact next actions.
+
+The historical checkpoint below concerns the earlier app/frame scope and is **not the current next-step list**. Owner subsequently authorized Bazel dependency repins, dedicated Lima testing, and all verified publishing. Build/test/bench/lint remain Bazel-only and UI verification remains headless.
+
+## Open items that block TERM or V1 (2026-11-16)
+
+Written by the takeover agent after the header menu landed. Each is open unless marked.
+
+- Done in this pass: the header's ⋯ menu (Rename, Move, Stop, Push and open a pull request, Archive or Close) and the Rename dialog, on both clients (D295).
+- Per-frame audit: `look_test` covers frames 01–09, 12, 15–32, 34–44 and 55. Frames 10, 11, 13, 14 and 45–54 have no look test; 33 is retired. Frames 44–55 belong to other design owners; check approval first.
+- Review comments: Send one comment, and explicit Send without the turn-end hold (D126). `comments.rs` has only Send all. The PR and REVIEW lanes own this now.
+- Inbox answer state is not shown after an answer leaves.
+- Comments anchor only on new-side lines; old-side and range anchors are missing.
+- OSC title, working directory and clipboard-read requests have no app action.
+- The fake's raw terminal history has no bound.
+- The palette has no Rename or Stop commands yet. Adding them means extending KP-1's command list in `every_action.rs`.
+- The menu has reducer and app tests but no native headless flow yet.
+- From [terminal/lab/HANDOFF.md](terminal/lab/HANDOFF.md): main-daemon and prototype adoption (TERM's), personal provider trust, IME, accessibility, context menu and font fallback coverage, the deferred Neovim clipboard, the Fast SSH app golden mismatch, and the stress and ENOSPC matrix.
+- `host_test`'s agent-resume tests timed out waiting for the fixture agent's first launch in gate_b9. The waits now report the holder logs; an isolated rerun decides between load and a real fault.
+
 ## Current State Summary
 
 Wrapped at the owner's explicit request on 2026-11-15. The original native-app/frame-matching goal is **unfinished**. The checkpoint preserves review comments in Humata's outbound buffer, with repository/base/quoted-line metadata, retry, removal back to drafts and restart compatibility. The UI now says **Waiting to send**, referring only to Humata-owned input that has not reached the terminal. It cannot observe the CLI's own queue.
@@ -22,7 +62,7 @@ Checkpoint commit: `9e185a5b`; the accompanying hash-fill commit names it in GAP
 1. Read this file, OVERVIEW's **Pick up here (minion C1)** and latest C1 GAPS_REVIEW entries. Inspect status/log before editing; do not rerun old temporary commit scripts.
 2. Add an individual-comment Send action/control. Retain unsent newer drafts when transferring only the chosen comment. Keep **Send N comments** as the batch choice. Implement explicit Send as terminal delivery without requiring a turn-end hook; optional wait mode must be an explicit choice. Remove the checkpoint's mandatory hold assumptions from reducer/UI/tests while preserving payload retention and recovery.
 3. Prove individual and batch behavior, focused keyboard routing, error/retry without loss, origin-session/repository scoping, navigation during send and restart compatibility. Keep the app buffer separate from CLI processing claims. Record headless native/panels/shell references, inspect light/dark and run the full Bazel gate below.
-4. Continue prepared-view Keep/Revert/Showing/walkthrough work, header actions and the per-frame audit. New D100 Desk/empty/markdown screens34–43 are not implemented in the real app. Check current approved scope: concurrent design owners added44–55; C1 has not established those approvals and must not alter their files.
+4. Prepared-view Keep/Revert/Showing/walkthrough now belongs to VIEWS (2026-11-16). Continue header actions and the per-frame audit. New D100 Desk/empty/markdown screens34–43 are not implemented in the real app. Check current approved scope: concurrent design owners added44–55; C1 has not established those approvals and must not alter their files.
 5. Publish verified C1 work in the required code/log pair and update OVERVIEW immediately. Do not mark the larger goal done merely because the gate passes.
 
 ## Architecture Overview
@@ -89,7 +129,7 @@ Inspect actual captures in desktop/tests/__snapshots__/native alongside approved
 ## Remaining Work and Boundaries
 
 - First reconcile individual/batch direct Send per the latest owner direction. Current native captures visibly retain “after this turn”; that is checkpoint behavior, not the final requirement.
-- Prepared views currently show a plain body tab. Keep/Revert/Showing/walkthrough are missing; titles are used globally as identity, risking cross-session collisions. Use scoped stable identity and restore saved presentation without replacing new queues/work.
+- Prepared views currently show a plain body tab (VIEWS owns this now). Keep/Revert/Showing/walkthrough are missing; titles are used globally as identity, risking cross-session collisions. Use scoped stable identity and restore saved presentation without replacing new queues/work.
 - Inbox answer state cannot distinguish still-waiting agent calls from already-pending calls; do not invent always-queued approval lines.
 - Header ellipsis currently opens the palette. Actual Rename/Move/Stop/PR/Archive menu is missing.
 - Full review/composer, old-side/range anchors, editor/markdown/PR comment producers, general re-anchoring and broader Desk/markdown UI remain.

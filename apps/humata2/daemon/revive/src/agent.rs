@@ -11,31 +11,96 @@ use humata2_holder::{Event, HolderSpec, Spawned, Welcome};
 use humata2_store::fault::point;
 use humata2_store::{
     AgentLaunch, AgentRecord, AgentState, Interruption, ResumeFailure, SessionRecord, Store,
-    StoreError, TabKind, TabRecord, Told,
+    StoreError, TabKind, TabRecord, TabReplies, Told,
 };
-use rustix::process::{Pid, Signal};
 use tokio::time::Instant;
 
 use crate::reconcile::Revived;
 use crate::watch::FileWatch;
-use crate::{Env, ReviveConfig, ReviveError};
+use crate::{Env, GateRefusal, ReviveConfig, ReviveError};
 
 /// Told to an agent once it has resumed (PER-14).
 const INTERRUPTED: &str = "Humata: this session was interrupted (its machine restarted or its terminal was killed) and you were resumed. Run `git status` and check your work before continuing.";
 /// How long a holder asked to stop gets before it's killed.
 const STOP_GRACE: Duration = Duration::from_secs(5);
 /// Between typing the note and pressing return, so an agent that reads a
-/// paste whole doesn't take the return as part of it.
-const TYPE_PAUSE: Duration = Duration::from_millis(100);
+/// paste whole doesn't take the return as part of it. D671 (Provisional):
+/// 400ms, up from 100ms: Ink-style terminals (Copilot's) took a return 100ms
+/// after the text as part of the paste. The return is its own write.
+const TYPE_PAUSE: Duration = Duration::from_millis(400);
+/// How often a note the gate holds back looks again (D763).
+const GATE_EVERY: Duration = Duration::from_millis(500);
 
-/// Why an agent is resumed: after an interruption, or because the person
-/// moved it (its folder changed), which is no interruption.
+/// Why an agent is resumed: after an interruption, because the person
+/// asked for it after stopping it, or because the person moved it (its
+/// folder changed). The last two are no interruption.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Why<'a> {
     Interrupted,
+    /// D671 (Provisional): the person resumed an agent they had stopped, or
+    /// one that exited. Recorded as no interruption, told nothing, and
+    /// checked only for coming up, staying up and starting no other
+    /// conversation: an agent that writes nothing until it is prompted
+    /// resumes cleanly.
+    Asked,
     /// Resumed with this line shown first in its terminal, not recorded as an
     /// interruption, and not told it was interrupted.
+    Restarted(&'a str),
+    /// As [`Why::Restarted`], after a move that carried every file the agent
+    /// wrote and checked them here: a conversation file missing after it is
+    /// one the agent never wrote, so it starts fresh (D757).
     Moved(&'a str),
+}
+
+/// The sessions whose agent this daemon is launching, or relaunching from a
+/// launching record, right now. A record saved as launching with no entry
+/// here was left by a daemon that stopped, so nothing is starting it.
+static LAUNCHING_NOW: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Whether this daemon is launching `session`'s agent right now.
+pub fn launch_in_flight(session: &str) -> bool {
+    LAUNCHING_NOW
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(session)
+}
+
+/// Marks a session's launch as in flight until dropped, however it ends.
+pub(crate) struct LaunchInFlight(String);
+
+impl LaunchInFlight {
+    pub(crate) fn enter(session: &str) -> Self {
+        LAUNCHING_NOW
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session.to_owned());
+        Self(session.to_owned())
+    }
+}
+
+impl Drop for LaunchInFlight {
+    fn drop(&mut self) {
+        LAUNCHING_NOW
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod launch_flight_tests {
+    use super::{LaunchInFlight, launch_in_flight};
+
+    #[test]
+    fn a_launch_is_in_flight_from_its_guard_until_the_guard_drops() {
+        assert!(!launch_in_flight("se_flight"));
+        let guard = LaunchInFlight::enter("se_flight");
+        assert!(launch_in_flight("se_flight"));
+        assert!(!launch_in_flight("se_other"), "only the session the guard names");
+        drop(guard);
+        assert!(!launch_in_flight("se_flight"));
+    }
 }
 
 /// Saves `session`'s agent as launching, and fsyncs it (PER-11), then
@@ -52,6 +117,7 @@ pub async fn launch_agent(
     line: Option<&str>,
     env: Env<'_>,
 ) -> Result<AgentRecord, ReviveError> {
+    let _in_flight = LaunchInFlight::enter(&session.id);
     let mut record = AgentRecord {
         session: session.id.clone(),
         tab: tab.to_owned(),
@@ -93,18 +159,68 @@ pub(crate) async fn running(
         holder_pid: spawned.pid,
     };
     record.updated_unix_ms = unix_ms();
-    let tab = agent_tab(&record, spawned.pid, created);
+    let mut tab = agent_tab(&record, spawned.pid, created);
+    let (generation, new_holder) = match holder_generation(store, &record, spawned.pid).await {
+        Ok(found) => found,
+        Err(error) => {
+            // The same as a save that fails: nothing could find the holder.
+            stop_holder(&tab.holder_socket, Some(spawned.pid)).await;
+            return Err(error);
+        }
+    };
+    tab.holder_generation = generation;
+    // A holder new to the tab has answered nothing: its record starts empty,
+    // in the same commit as the tab, so no link finds the tab without it.
+    let fresh = new_holder.then(|| fresh_replies(generation));
     let (saving, saved_tab) = (record.clone(), tab.clone());
     let saved = blocking({
         let store = store.clone();
-        move || store.put_agent_and_tab(&saving, &saved_tab)
+        move || store.put_agent_and_tab_with_replies(&saving, &saved_tab, fresh.as_ref())
     })
-    .await?;
+    .await;
+    let saved = match saved {
+        Ok(saved) => saved,
+        Err(error) => {
+            stop_holder(&tab.holder_socket, Some(spawned.pid)).await;
+            return Err(error);
+        }
+    };
     if let Err(source) = saved {
         stop_holder(&tab.holder_socket, Some(spawned.pid)).await;
         return Err(store_error(&record.session, "save the running agent and its tab", source));
     }
     Ok(record)
+}
+
+/// The generation the agent's tab has for the holder `pid`, and whether
+/// that holder is new to the tab: the saved tab's own when it already names
+/// `pid`, one more when it names another process (a new holder, so clients
+/// see a new terminal), and 0 for a tab never saved.
+async fn holder_generation(
+    store: &Arc<Store>,
+    record: &AgentRecord,
+    pid: u32,
+) -> Result<(u64, bool), ReviveError> {
+    let (reader, id) = (store.clone(), record.tab.clone());
+    let saved = blocking(move || reader.tab(&id))
+        .await?
+        .map_err(|source| store_error(&record.session, "read the agent's tab", source))?;
+    Ok(match saved {
+        Some(tab) if tab.holder_pid == pid => (tab.holder_generation, false),
+        Some(tab) => (tab.holder_generation.saturating_add(1), true),
+        None => (0, true),
+    })
+}
+
+/// The reply record of a holder that has answered nothing yet, so its first
+/// queries are answered from the start of its output.
+pub(crate) fn fresh_replies(generation: u64) -> TabReplies {
+    TabReplies {
+        generation,
+        answered_through: 0,
+        pending: Vec::new(),
+        uncertain: false,
+    }
 }
 
 /// Resumes `record`'s agent with its pinned conversation in a new holder
@@ -130,8 +246,13 @@ pub(crate) async fn resume(
     let saved = read_saved(&socket, &record.session).await?;
     let already_told = match why {
         Why::Interrupted => already_told(&record).await?,
-        Why::Moved(_) => None,
+        Why::Asked | Why::Restarted(_) | Why::Moved(_) => None,
     };
+    // CV-3: the CLI may have been upgraded since the launch; what it says
+    // now is kept, so the adapter's check is given the current version.
+    if let Some(versions) = &config.versions {
+        record.launch.cli_version = versions.current(&record.launch.agent).await;
+    }
     record.generation += 1;
     let mut interruption = Interruption {
         at_unix_ms: unix_ms(),
@@ -148,8 +269,17 @@ pub(crate) async fn resume(
     save(store, &record, "save that the agent is resuming").await?;
     point("revive.resume.recorded");
 
-    if let Some(reason) = cannot_resume(&record.launch) {
-        return failed(store, record, reason, None).await;
+    match cannot_resume(&record.launch) {
+        // A move carries every file the agent wrote and checks them on the
+        // new machine before it starts here, so a conversation file missing
+        // after a move is one the agent never wrote: it had no turns yet,
+        // and starts here fresh in its new folder. Any other restart had a
+        // conversation to resume, and its loss is a failed resume (D757).
+        Some(ResumeFailure::ConversationFileMissing) if matches!(why, Why::Moved(_)) => {
+            return start_moved(store, config, record, created, env).await;
+        }
+        Some(reason) => return failed(store, record, reason, None).await,
+        None => {}
     }
     let before = Conversation::look(&record.launch.conversation_file);
     let mut line = match why {
@@ -157,7 +287,11 @@ pub(crate) async fn resume(
             "[Humata] This terminal stopped: its machine restarted or its holder was killed. Output after this point wasn't saved. Resuming the {} conversation {}.",
             record.launch.agent, record.launch.conversation_id
         ),
-        Why::Moved(text) => format!("[Humata] {text}"),
+        Why::Asked => format!(
+            "[Humata] Resuming the {} conversation {}.",
+            record.launch.agent, record.launch.conversation_id
+        ),
+        Why::Restarted(text) | Why::Moved(text) => format!("[Humata] {text}"),
     };
     if interruption.saved_tail_damaged {
         line.push_str(" The end of the saved output was damaged and dropped.");
@@ -171,7 +305,15 @@ pub(crate) async fn resume(
     // conversation's first message, and says what the session is about: the
     // agent isn't told it was interrupted ahead of it (D153). A move tells
     // it nothing.
-    let seeded = seed_pending(store, &record).await?;
+    let seeded = match seed_pending(store, &record).await {
+        Ok(seeded) => seeded,
+        Err(error) => {
+            // The holder is running and the record still says resuming: the
+            // next reconcile resumes again, so this one doesn't leak.
+            stop_holder(&socket, Some(spawned.pid)).await;
+            return Err(error);
+        }
+    };
     let tell = matches!(why, Why::Interrupted) && already_told.is_none() && !seeded;
     match verify(store, config, &mut record, interruption.output_resumes_at, before, tell).await {
         Ok(Ok(())) => {
@@ -258,9 +400,51 @@ pub(crate) async fn relaunch(
     );
     let variables = env(&agent_tab(&record, 0, created));
     let argv = record.launch.argv.clone();
+    let spawned = match start_holder(config, &record, &argv, variables, Some(&line)).await {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            stopped_unstarted(store, record).await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = running(store, record.clone(), spawned, created).await {
+        stopped_unstarted(store, record).await;
+        return Err(error);
+    }
+    Ok(Revived::Relaunched)
+}
+
+/// Starts a moved agent that had written no conversation yet with its
+/// first command, in its new folder: there is nothing to resume, and its
+/// session id is still the one it was launched with.
+async fn start_moved(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    record: AgentRecord,
+    created: i64,
+    env: Env<'_>,
+) -> Result<Revived, ReviveError> {
+    let line = format!(
+        "[Humata] Starting {} here with a new conversation: it hadn't written one yet.",
+        record.launch.agent
+    );
+    let variables = env(&agent_tab(&record, 0, created));
+    let argv = record.launch.argv.clone();
     let spawned = start_holder(config, &record, &argv, variables, Some(&line)).await?;
     running(store, record, spawned, created).await?;
     Ok(Revived::Relaunched)
+}
+
+/// Saves an agent a relaunch couldn't start as stopped, as `launch_agent`
+/// does for a first launch that fails. Left as launching, every handler
+/// answered "still starting" for good and the person could neither resume
+/// nor start it fresh (Provisional: stopped, not a launching take-over;
+/// recommend keeping it). The save is best effort: if it fails too, the
+/// next restart tries the relaunch again.
+async fn stopped_unstarted(store: &Arc<Store>, mut record: AgentRecord) {
+    record.state = AgentState::Stopped;
+    record.updated_unix_ms = unix_ms();
+    let _ = save(store, &record, "save that the agent didn't start again").await;
 }
 
 async fn failed(
@@ -325,12 +509,31 @@ impl Conversation {
         stamp(&self.file) != self.seen
     }
 
-    /// Whether a conversation other than this one was started or written.
-    fn another_grew(&self) -> bool {
+    /// The conversations other than this one that were started or written.
+    fn others_grown(&self) -> Vec<OsString> {
         siblings(&self.file)
-            .iter()
-            .any(|(name, now)| self.siblings.get(name) != Some(now))
+            .into_iter()
+            .filter(|(name, now)| self.siblings.get(name) != Some(now))
+            .map(|(name, _)| name)
+            .collect()
     }
+}
+
+/// The file names of the conversations `store`'s other sessions' agents
+/// keep beside `file`. A machine that restarts resumes all its agents at
+/// once, and agents of one CLI can share a conversation folder: another
+/// session's agent writing its own conversation is no sign that this one
+/// started a new one.
+fn known_others(store: &Store, session: &str, file: &Path) -> Result<Vec<OsString>, StoreError> {
+    let folder = file.parent();
+    Ok(store
+        .agents()?
+        .into_iter()
+        .filter(|agent| agent.session != session)
+        .map(|agent| agent.launch.conversation_file)
+        .filter(|other| other.parent() == folder)
+        .filter_map(|other| other.file_name().map(OsString::from))
+        .collect())
 }
 
 fn stamp(file: &Path) -> Option<(u64, SystemTime)> {
@@ -372,7 +575,7 @@ async fn verify(
     before: Conversation,
     tell: bool,
 ) -> Result<Result<(), (ResumeFailure, Option<i32>)>, ReviveError> {
-    let deadline = Instant::now() + config.resume_timeout;
+    let mut deadline = Instant::now() + config.resume_timeout;
     let Ok(attached) = humata2_holder::attach(&record.launch.holder_socket, from).await else {
         return Ok(Err((ResumeFailure::AgentExited, None)));
     };
@@ -382,14 +585,22 @@ async fn verify(
     {
         return Ok(Err((ResumeFailure::AgentExited, Some(code))));
     }
-    let (mut control, mut events) = (attached.control, attached.events);
+    // Kept open: the holder stops sending output once a client's side
+    // closes.
+    let (_control, mut events) = (attached.control, attached.events);
     let before = Arc::new(before);
     let mut watch = FileWatch::new(&before.file);
     let mut last_output = None;
     let mut told = false;
+    // When a note the gate held back looks again.
+    let mut recheck: Option<Instant> = None;
     loop {
-        // Told once its output has been quiet for `settle`.
-        let settled = last_output.filter(|_| !told).map(|at: Instant| at + config.settle);
+        // Told once its output has been quiet for `settle`, and the gate
+        // lets it.
+        let settled = last_output.filter(|_| !told).map(|at: Instant| {
+            let at = at + config.settle;
+            recheck.map_or(at, |again| again.max(at))
+        });
         let timed_out = tokio::select! {
             event = events.next() => {
                 match event {
@@ -404,6 +615,15 @@ async fn verify(
             }
             () = until(settled) => {
                 if tell {
+                    // D763: never typed into a question the agent asks of
+                    // its own; the resume waits while the person answers.
+                    if let Err(refused) = gate_says(config, &record.launch.holder_socket).await {
+                        if refused == GateRefusal::Question {
+                            deadline = Instant::now() + config.resume_timeout;
+                        }
+                        recheck = Some(Instant::now() + GATE_EVERY);
+                        continue;
+                    }
                     let conversation_len = stamp(&before.file).map_or(0, |(len, _)| len);
                     if let Some(last) = record.interruptions.last_mut() {
                         last.told = Some(Told {
@@ -416,10 +636,24 @@ async fn verify(
                     point("revive.resume.telling");
                     // Its conversation is only written once it's told
                     // something, so telling it is also the check.
-                    let typed = control.input(1, INTERRUPTED.as_bytes()).await;
-                    tokio::time::sleep(TYPE_PAUSE).await;
-                    if typed.is_err() || control.input(2, b"\r").await.is_err() {
+                    // Its return is pressed once it shows the note, and a
+                    // note it dropped is typed again once, never twice.
+                    let typed = humata2_holder::deliver(
+                        &record.launch.holder_socket,
+                        INTERRUPTED.as_bytes(),
+                        TYPE_PAUSE,
+                        None,
+                        ready(config, &record.launch.holder_socket),
+                        config.resume_timeout,
+                    )
+                    .await;
+                    if typed.is_err() {
                         return Ok(Err((ResumeFailure::AgentExited, None)));
+                    }
+                    if recheck.is_some() {
+                        // It waited on the person: its time to write the
+                        // conversation starts once it's told.
+                        deadline = Instant::now() + config.resume_timeout;
                     }
                     point("revive.resume.told");
                 }
@@ -430,9 +664,20 @@ async fn verify(
             () = tokio::time::sleep_until(deadline) => true,
         };
         let looked = before.clone();
-        let (grew, another_grew) = blocking(move || (looked.grew(), looked.another_grew()))
-            .await
-            .unwrap_or((false, false));
+        let (reader, session) = (store.clone(), record.session.clone());
+        let (grew, another_grew) = blocking(move || {
+            let grew = looked.grew();
+            let mut grown = looked.others_grown();
+            if !grew && !grown.is_empty() {
+                // A store that can't be read leaves every grown file
+                // counted, as before the other sessions were known.
+                let known = known_others(&reader, &session, &looked.file).unwrap_or_default();
+                grown.retain(|name| !known.contains(name));
+            }
+            (grew, !grown.is_empty())
+        })
+        .await
+        .unwrap_or((false, false));
         if another_grew && !grew {
             return Ok(Err((ResumeFailure::AgentStartedAnotherConversation, None)));
         }
@@ -449,6 +694,24 @@ async fn verify(
             return Ok(Err((ResumeFailure::AgentStartedAnotherConversation, None)));
         }
     }
+}
+
+/// What the gate says of the agent tab on `socket`; clear without one.
+async fn gate_says(config: &ReviveConfig, socket: &Path) -> Result<(), GateRefusal> {
+    match &config.gate {
+        Some(gate) => gate.guard(socket).await,
+        None => Ok(()),
+    }
+}
+
+/// The gate as the holder asks it while it sees a typed note through.
+fn ready(config: &ReviveConfig, socket: &Path) -> Option<humata2_holder::Ready> {
+    let gate = config.gate.clone()?;
+    let socket = socket.to_owned();
+    Some(Arc::new(move || {
+        let asked = gate.guard(&socket);
+        Box::pin(async move { asked.await.is_ok() })
+    }))
 }
 
 /// Returns at `at`, or never without one.
@@ -468,6 +731,11 @@ pub(crate) async fn start_holder(
     env: Vec<(OsString, OsString)>,
     line: Option<&str>,
 ) -> Result<Spawned, ReviveError> {
+    // A fault build can be told to fail here (HUMATA2_FAIL_AT); in any other
+    // build this is false and compiled away.
+    if humata2_store::fault::fails("revive.start_holder") {
+        return Err(ReviveError::Injected { point: "revive.start_holder" });
+    }
     let argv = match &config.contain {
         Some(contain) => contain
             .wrap(record, argv)
@@ -494,6 +762,13 @@ pub(crate) async fn start_holder(
         scrollback_bytes: config.scrollback_bytes,
         log: config.logs.join(format!("{}.log", record.tab)),
     };
+    if let Some(builds) = &config.builds {
+        let (builds, session) = (builds.clone(), record.session.clone());
+        // Kept before the holder starts, so a record is never older than
+        // the holder it describes. A task that couldn't run is no reason
+        // not to start the agent.
+        let _ = blocking(move || builds.agent_spawned(&session)).await;
+    }
     spawn(spec, line, format!("session {}'s agent", record.session)).await
 }
 
@@ -519,25 +794,29 @@ pub(crate) async fn probe(socket: &Path) -> Option<Welcome> {
     Some(attached.welcome)
 }
 
-/// Stops the holder answering on `socket` with SIGTERM, which keeps its
-/// saved output, and kills it if it's still there after a grace period.
+/// Stops the holder answering on `socket` (process `pid`, or the one its
+/// pid file names) by its pid: SIGTERM, which keeps its saved output, then
+/// SIGKILL if it's still there after a grace period. Waits until it is gone.
+/// Only a live process named as a holder is signalled, so a pid reused by
+/// another program is left alone.
 pub(crate) async fn stop_holder(socket: &Path, pid: Option<u32>) {
-    let Some(pid) = pid
-        .or_else(|| humata2_holder::holder_pid(socket))
-        .and_then(|pid| i32::try_from(pid).ok())
-        .and_then(Pid::from_raw)
-    else {
-        return;
+    let pid = match pid {
+        Some(pid) => pid,
+        // Found by its pid file, or by the socket it serves if that is gone.
+        None => match humata2_holder::find_holder(socket).await {
+            Ok(Some(pid)) => pid,
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("humata2 revive: {error}");
+                return;
+            }
+        },
     };
-    // Attached first: its feed ends when the holder is gone.
-    let attached = humata2_holder::attach(socket, u64::MAX).await.ok();
-    let _ = rustix::process::kill_process(pid, Signal::TERM);
-    let Some(attached) = attached else { return };
-    // Kept, so the holder doesn't end the feed for a client that left.
-    let (_control, mut events) = (attached.control, attached.events);
-    let gone = async { while let Ok(Some(_)) = events.next().await {} };
-    if tokio::time::timeout(STOP_GRACE, gone).await.is_err() {
-        let _ = rustix::process::kill_process(pid, Signal::KILL);
+    if let Err(error) = humata2_holder::end_by_pid(socket, pid, STOP_GRACE).await {
+        eprintln!(
+            "humata2 revive: stopping the holder at {}: {error}",
+            socket.display()
+        );
     }
 }
 
@@ -563,6 +842,7 @@ pub(crate) fn agent_tab(record: &AgentRecord, holder_pid: u32, created_unix_ms: 
         holder_socket: record.launch.holder_socket.clone(),
         holder_pid,
         created_unix_ms,
+        holder_generation: 0,
     }
 }
 

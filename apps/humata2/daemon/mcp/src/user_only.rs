@@ -48,6 +48,10 @@ const NAMES: &[(&str, Option<Capability>)] = &[
     ("bridge_close", None),
     ("events_subscribe", None),
     ("audit_list", None),
+    // REPOS: RL-4, RL-11, D479.
+    ("repo_remove", None),
+    ("repo_forget", None),
+    ("repo_scope_update", None),
 ];
 
 /// Whole families: the user's file manager and the app's own state.

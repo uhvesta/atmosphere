@@ -2,8 +2,11 @@
 //! through the Inbox whether its TUI may run a tool. The card lives only
 //! while a hook holds it: the last [`PermissionWait`] dropping withdraws it,
 //! and an answer that comes after no hook is holding is refused as
-//! withdrawn. It isn't saved when raised, since a restart ends every hook
-//! that held it; its answer or withdrawal is, for history.
+//! withdrawn. On the host it isn't saved when raised, since a restart ends
+//! every hook that held it; its answer or withdrawal is, for history. On a
+//! machine it is saved and journaled when raised (D225, D744), so the host's
+//! Inbox shows it and its answer comes back down the link; the machine's
+//! next start withdraws it, and the journal tells the host.
 
 use std::sync::Arc;
 
@@ -74,8 +77,21 @@ pub(crate) struct Ask {
     /// All of what it runs: a command, a patch, or the tool's input.
     pub(crate) command: String,
     pub(crate) description: Option<String>,
+    /// The tool changes files, so its card is an edit, not a command.
+    pub(crate) edits_files: bool,
     /// The same ask gives the same key, so a rerun holds the same card.
     pub(crate) key: String,
+}
+
+/// What an agent's own ask-user form asks (D761), as its payload said.
+pub(crate) struct Question {
+    pub(crate) question: String,
+    pub(crate) choices: Vec<String>,
+    /// The same question gives the same key, so a rerun holds the same card.
+    pub(crate) key: String,
+    /// Only a reply naming one of `choices` (its words or its number) is
+    /// taken, and it is kept as that choice's words (D767).
+    pub(crate) only_choices: bool,
 }
 
 /// How a card was settled, as the hook tells its agent.
@@ -83,6 +99,8 @@ pub(crate) struct Ask {
 pub(crate) enum Decision {
     Allow,
     Deny { message: String },
+    /// A question card's answer (D761).
+    Reply { text: String },
     /// Withdrawn, or no one answered: the agent's own prompt asks.
     Undecided,
 }
@@ -144,6 +162,13 @@ fn decision_of(request: &pb::InboxRequest) -> Option<Decision> {
             };
             Some(Decision::Deny { message })
         }
+        Ok(pb::RequestState::Answered) => {
+            let text = match request.answer.as_ref().and_then(|answer| answer.answer.as_ref()) {
+                Some(pb::request_answer::Answer::Reply(reply)) => reply.text.clone(),
+                _ => String::new(),
+            };
+            Some(Decision::Reply { text })
+        }
         _ => Some(Decision::Undecided),
     }
 }
@@ -158,10 +183,46 @@ impl Inbox {
         agent_name: &str,
         ask: Ask,
     ) -> Result<PermissionWait, Status> {
+        let key = ask.key.clone();
+        self.raise_held(caller, agent, &key, false, |id| card(id, agent, agent_name, &self.machine, ask))
+            .await
+    }
+
+    /// Raises a question card for the agent's own ask-user form (D761),
+    /// held by its hook as a permission card is: Reply or Deny, left out of
+    /// Answer all, withdrawn once no hook holds it.
+    pub(crate) async fn raise_question(
+        self: &Arc<Self>,
+        caller: &Caller,
+        agent: &AgentCaller,
+        asked: Question,
+    ) -> Result<PermissionWait, Status> {
+        let Question {
+            question,
+            choices,
+            key,
+            only_choices,
+        } = asked;
+        self.raise_held(caller, agent, &key, only_choices, |id| {
+            super::question(id, agent, question, choices)
+        })
+        .await
+    }
+
+    /// Raises the card `make` builds, or holds the pending one of the same
+    /// `ask_key` in the agent's session.
+    async fn raise_held(
+        self: &Arc<Self>,
+        caller: &Caller,
+        agent: &AgentCaller,
+        ask_key: &str,
+        only_choices: bool,
+        make: impl FnOnce(&str) -> pb::InboxRequest,
+    ) -> Result<PermissionWait, Status> {
         // An Ask verdict is fine: the card is the ask.
         self.guard.check_inbox_ask(caller, &inbox_ask(agent))?;
         let session = agent.session.id.to_string();
-        let key = format!("{session}/{}", ask.key);
+        let key = format!("{session}/{ask_key}");
         let mut state = self.state.lock().await;
         let pending = state.id_with(Some(key.as_str())).and_then(|id| {
             state.requests.iter().find(|entry| {
@@ -178,9 +239,15 @@ impl Inbox {
             });
         }
         let id = new_id();
-        let card = card(&id, agent, agent_name, &self.machine, ask);
-        let mut entry = Entry::new(id.clone(), session, None, None, Some(key), Held::new(card));
+        let card = make(&id);
+        let held = Held::new(card);
+        let mut entry = Entry::new(id.clone(), session, None, None, Some(key), held.clone());
         entry.permission = true;
+        entry.only_choices = only_choices;
+        if !self.guard.host_link().on_host() {
+            // The host's Inbox is where the person answers (D744).
+            self.commit(&entry, held, None, "save the permission ask").await?;
+        }
         let answers = entry.request.subscribe();
         self.tell(
             pb::Change::Created,
@@ -228,13 +295,46 @@ impl Inbox {
     }
 }
 
-/// What answering a permission card does: it takes Approve or Deny, as the
-/// agent's own prompt would.
-pub(super) fn decide(id: &str, answer: pb::request_answer::Answer) -> Result<Decided, Status> {
+/// What answering a card a hook holds does: a permission card takes
+/// Approve or Deny, as the agent's own prompt would; a question card from
+/// the agent's own form (D761) takes a reply or Deny.
+pub(super) fn decide(
+    current: &pb::InboxRequest,
+    id: &str,
+    mut answer: pb::request_answer::Answer,
+    only_choices: bool,
+) -> Result<Decided, Status> {
     use pb::request_answer::Answer as A;
-    let state = match &answer {
-        A::Approve(_) => pb::RequestState::Approved,
+    let question = current.kind == pb::RequestKind::Question as i32;
+    let state = match &mut answer {
         A::Deny(_) => pb::RequestState::Denied,
+        A::Reply(reply) if question => {
+            if reply.text.trim().is_empty() {
+                return Err(status::missing("answer.reply.text"));
+            }
+            if only_choices {
+                let choices = choices_of(current);
+                let Some(choice) = choice_named(&choices, &reply.text) else {
+                    return Err(status::invalid_field(
+                        "answer.reply.text",
+                        Problem::NotAllowedHere,
+                        format!("request {id} takes one of its choices, and \"{}\" is none of them", reply.text.trim()),
+                        format!("reply with one of: {} (its words or its number), or deny it to leave the question to the agent's screen", choices.join("; ")),
+                    ));
+                };
+                reply.text = choice;
+            }
+            pb::RequestState::Answered
+        }
+        A::Approve(_) | A::Always(_) if question => {
+            return Err(status::invalid_field(
+                "answer",
+                Problem::NotAllowedHere,
+                format!("request {id} is a question: it takes a reply, not an approval"),
+                "reply with text (one of its choices, or your own), or deny it",
+            ));
+        }
+        A::Approve(_) => pb::RequestState::Approved,
         A::Always(_) | A::Reply(_) => {
             return Err(status::invalid_field(
                 "answer",
@@ -249,6 +349,27 @@ pub(super) fn decide(id: &str, answer: pb::request_answer::Answer) -> Result<Dec
         answer,
         grant: None,
     })
+}
+
+/// The choices a question card offers.
+fn choices_of(request: &pb::InboxRequest) -> Vec<String> {
+    match request.preview.as_ref().and_then(|preview| preview.preview.as_ref()) {
+        Some(pb::request_preview::Preview::Question(question)) => question.choices.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// The choice `reply` names: its words, ignoring case and the space around
+/// them, or its number counting from 1.
+fn choice_named(choices: &[String], reply: &str) -> Option<String> {
+    let reply = reply.trim();
+    if let Ok(number) = reply.parse::<usize>() {
+        return number.checked_sub(1).and_then(|at| choices.get(at)).cloned();
+    }
+    choices
+        .iter()
+        .find(|choice| choice.trim().eq_ignore_ascii_case(reply))
+        .cloned()
 }
 
 /// The card: what the agent wants to run, all of it (D191).
@@ -271,7 +392,8 @@ fn card(
         channel: Some(pb::ChannelId {
             value: agent.session.channel.to_string(),
         }),
-        kind: pb::RequestKind::Session as i32,
+        // A file edit is a Files card; any other tool is a command.
+        kind: (if ask.edits_files { pb::RequestKind::Files } else { pb::RequestKind::Session }) as i32,
         state: pb::RequestState::Pending as i32,
         requester: Some(agent.actor()),
         operation: agent.operation(),

@@ -37,6 +37,13 @@ pub trait Daemon {
         requests: mpsc::Receiver<Vec<u8>>,
     ) -> impl Future<Output = Result<Replies, DaemonError>>;
 
+    /// When the host answered the last read this machine served from its
+    /// copy (AW-7), as the daemon's `humata-stale-as-of` header gave it;
+    /// None when every reply so far was live.
+    fn stale_as_of(&self) -> Option<String> {
+        None
+    }
+
     /// I9 bug reports (D31, D133): asked of the running app over its own
     /// socket, not of humatad.
     fn report(&self, request: ReportRequest) -> impl Future<Output = Result<ReportReply, DaemonError>>;
@@ -77,7 +84,7 @@ pub enum DaemonError {
         code: i32,
         message: String,
     },
-    #[error("couldn't connect to humatad at {}", .socket.display())]
+    #[error("couldn't connect to humatad at {}: {}", .socket.display(), innermost(.source))]
     Connect {
         socket: PathBuf,
         #[source]
@@ -114,6 +121,16 @@ pub enum DaemonError {
     },
 }
 
+/// The deepest cause in `error`'s chain: for a connection, the system's
+/// own reason (refused, not found, ...), which "transport error" hides.
+fn innermost(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut deepest = error;
+    while let Some(next) = deepest.source() {
+        deepest = next;
+    }
+    deepest.to_string()
+}
+
 fn list(paths: &[PathBuf]) -> String {
     paths
         .iter()
@@ -144,6 +161,8 @@ pub mod rpc {
         GET_SERVER_INFO = "GetServerInfo" -> "ServerInfo",
         WHO_AM_I = "WhoAmI" -> "WhoAmIResponse",
         REPAIR_RESTART = "RepairRestart" -> "RepairRestartResponse",
+        STOP_SESSIONS = "StopSessions" -> "StopSessionsResponse",
+        START_SESSIONS = "StartSessions" -> "StartSessionsResponse",
     });
 
     service!(access, "AccessService" {
@@ -204,6 +223,7 @@ pub mod rpc {
 
     service!(files, "FileService" {
         LIST_DIRECTORY = "ListDirectory" -> "ListDirectoryResponse",
+        STAT = "Stat" -> "FileEntry",
         READ_FILE = "ReadFile" -> "FileChunk",
         WRITE_FILE = "WriteFile" -> "FileEntry",
         CREATE_FOLDER = "CreateFolder" -> "FileEntry",
@@ -246,6 +266,12 @@ pub mod rpc {
         SET_HOST_VARIABLE = "SetHostVariable" -> "SetHostVariableResponse",
         REMOVE_HOST_VARIABLE = "RemoveHostVariable" -> "SetHostVariableResponse",
         TRUST_NEW_HOST_KEY = "TrustNewHostKey" -> "Machine",
+        STOP_MACHINE_SESSIONS = "StopMachineSessions" -> "StopMachineSessionsResponse",
+        START_MACHINE_SESSIONS = "StartMachineSessions" -> "StartMachineSessionsResponse",
+        LIST_MACHINE_SCRIPTS = "ListMachineScripts" -> "ListMachineScriptsResponse",
+        CHECK_MACHINE_SCRIPTS = "CheckMachineScripts" -> "CheckMachineScriptsResponse",
+        RUN_MACHINE_SCRIPT = "RunMachineScript" -> "Operation",
+        LIST_MACHINE_SCRIPT_RUNS = "ListMachineScriptRuns" -> "ListMachineScriptRunsResponse",
     });
 
     service!(provider, "ProviderService" {
@@ -314,12 +340,14 @@ pub mod rpc {
     service!(session, "SessionService" {
         START_SESSION = "StartSession" -> "StartSessionResponse",
         LIST_SESSIONS = "ListSessions" -> "ListSessionsResponse",
+        GET_SESSION = "GetSession" -> "Session",
         RENAME_SESSION = "RenameSession" -> "Session",
         STOP_SESSION = "StopSession" -> "Session",
         RESUME_SESSION = "ResumeSession" -> "Operation",
         PREVIEW_FORK = "PreviewFork" -> "ForkPreview",
         FORK_SESSION = "ForkSession" -> "Operation",
         GIVE_OWN_COPY = "GiveOwnCopy" -> "Operation",
+        CONTINUE_IN_CHANNEL = "ContinueInChannel" -> "StartSessionResponse",
         MOVE_SESSION = "MoveSession" -> "Operation",
         PLAN_ARCHIVE = "PlanArchive" -> "ArchivePlan",
         ARCHIVE_SESSION = "ArchiveSession" -> "Operation",
@@ -335,6 +363,7 @@ pub mod rpc {
         READ_CONVERSATION = "ReadConversation" -> "ReadConversationResponse",
         SEND_NOTE = "SendNote" -> "SendNoteResponse",
         ASK_SESSION = "AskSession" -> "AskSessionResponse",
+        ANSWER_QUESTION = "AnswerQuestion" -> "AnswerQuestionResponse",
         REPORT_TURN = "ReportTurn" -> "ReportTurnResponse",
         HOOK = "Hook" -> "HookReply",
     });
@@ -363,6 +392,16 @@ pub mod rpc {
         READ_TURNS = "ReadTurns" -> "ReadTurnsResponse",
     });
 
+    // REPOS
+    service!(repos, "RepoService" {
+        SEARCH_REPOS = "SearchRepos" -> "SearchReposResponse",
+        LIST_REPO_LIBRARY = "ListRepoLibrary" -> "ListRepoLibraryResponse",
+        REMOVE_FROM_REPO_LIBRARY = "RemoveFromRepoLibrary" -> "ListRepoLibraryResponse",
+        FORGET_REPO_LIBRARY = "ForgetRepoLibrary" -> "ForgetRepoLibraryResponse",
+        GET_REPO_SCOPE = "GetRepoScope" -> "RepoScope",
+        UPDATE_REPO_SCOPE = "UpdateRepoScope" -> "RepoScope",
+    });
+
     service!(desk, "DeskService" {
         KEEP_DESK_FOLDER = "KeepDeskFolder" -> "DeskSession",
     });
@@ -373,6 +412,7 @@ pub mod rpc {
         TYPE = "Type" -> "TypeResponse",
         LIST_QUEUED = "ListQueued" -> "ListQueuedResponse",
         SEND_QUEUED_NOW = "SendQueuedNow" -> "SendQueuedNowResponse",
+        LIST_TABS = "ListTabs" -> "ListTabsResponse",
     });
 
     /// Every call above, so a test can check each has a descriptor.
@@ -380,6 +420,8 @@ pub mod rpc {
         daemon::GET_SERVER_INFO,
         daemon::WHO_AM_I,
         daemon::REPAIR_RESTART,
+        daemon::STOP_SESSIONS,
+        daemon::START_SESSIONS,
         access::GET_CHANNEL_RULES,
         access::SET_CHANNEL_RULE,
         access::SET_AWAY_RULE,
@@ -416,6 +458,7 @@ pub mod rpc {
         activity::LIST_ACTIVITY,
         events::SUBSCRIBE,
         files::LIST_DIRECTORY,
+        files::STAT,
         files::READ_FILE,
         files::WRITE_FILE,
         files::CREATE_FOLDER,
@@ -493,6 +536,7 @@ pub mod rpc {
         session::PREVIEW_FORK,
         session::FORK_SESSION,
         session::GIVE_OWN_COPY,
+        session::CONTINUE_IN_CHANNEL,
         session::MOVE_SESSION,
         session::PLAN_ARCHIVE,
         session::ARCHIVE_SESSION,
@@ -508,6 +552,7 @@ pub mod rpc {
         session::READ_CONVERSATION,
         session::SEND_NOTE,
         session::ASK_SESSION,
+        session::ANSWER_QUESTION,
         session::REPORT_TURN,
         session::HOOK,
         settings::GET_SETTINGS,
@@ -523,10 +568,18 @@ pub mod rpc {
         history::SEARCH_SESSIONS,
         history::READ_TURNS,
         desk::KEEP_DESK_FOLDER,
+        // REPOS
+        repos::SEARCH_REPOS,
+        repos::LIST_REPO_LIBRARY,
+        repos::REMOVE_FROM_REPO_LIBRARY,
+        repos::FORGET_REPO_LIBRARY,
+        repos::GET_REPO_SCOPE,
+        repos::UPDATE_REPO_SCOPE,
         terminal::OPEN_MACHINE_SHELL,
         terminal::ATTACH,
         terminal::TYPE,
         terminal::LIST_QUEUED,
         terminal::SEND_QUEUED_NOW,
+        terminal::LIST_TABS,
     ];
 }

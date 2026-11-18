@@ -332,15 +332,17 @@ impl CliAuth {
             crate::away::CheckError::NoVerifier => status::login_no_passphrase(),
             error => status::internal(status::chain(&error), ""),
         })?;
-        match checked {
-            crate::away::Checked::Accepted => Ok(()),
-            crate::away::Checked::Wrong { .. } => {
-                Err(status::refused(&Refusal::PresenceRequired { accepted }))
-            }
-            crate::away::Checked::Locked { until } => {
-                Err(status::passphrase_locked(&self.machine, until))
-            }
-        }
+        judged(checked, &self.machine)
+    }
+}
+
+/// What a checked try comes to: in, or refused with what the person needs
+/// to know to try again (the tries left, or when the lock ends).
+fn judged(checked: crate::away::Checked, machine: &str) -> Result<(), Status> {
+    match checked {
+        crate::away::Checked::Accepted => Ok(()),
+        crate::away::Checked::Wrong { tries_left } => Err(status::passphrase_wrong(tries_left)),
+        crate::away::Checked::Locked { until } => Err(status::passphrase_locked(machine, until)),
     }
 }
 
@@ -795,6 +797,38 @@ mod tests {
         assert!(answered.await.unwrap());
         assert!(logins.pending().is_empty());
         assert!(!logins.answer(&id, true));
+    }
+
+    fn kind_of(refused: &Status) -> Option<pb::error::Kind> {
+        status::error_of(refused).and_then(|error| error.kind)
+    }
+
+    #[test]
+    fn a_wrong_passphrase_is_refused_with_its_tries_left() {
+        use crate::away::Checked;
+        let refused = judged(Checked::Wrong { tries_left: 3 }, "ma_test").unwrap_err();
+        match kind_of(&refused) {
+            Some(pb::error::Kind::PresenceRequired(needed)) => {
+                assert_eq!(needed.tries_left, 3);
+                assert_eq!(
+                    needed.accepted,
+                    vec![pb::presence_required::Method::ApprovalPassphrase as i32]
+                );
+            }
+            other => panic!("expected presence_required, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_right_passphrase_is_let_in_and_a_locked_prompt_says_so() {
+        use crate::away::Checked;
+        assert!(judged(Checked::Accepted, "ma_test").is_ok());
+        let until = SystemTime::now() + Duration::from_secs(900);
+        let refused = judged(Checked::Locked { until }, "ma_test").unwrap_err();
+        assert!(matches!(
+            kind_of(&refused),
+            Some(pb::error::Kind::PassphraseLocked(_))
+        ));
     }
 
     #[test]

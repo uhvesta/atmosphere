@@ -22,6 +22,8 @@ fn machine(id: &str, online: bool) -> Machine {
         detail: String::new(),
         last_seen: String::new(),
         lost_at: None,
+        root: "~/Humata".to_owned(),
+        stop: None,
     }
 }
 

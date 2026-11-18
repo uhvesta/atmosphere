@@ -47,8 +47,9 @@ Button "Expand terminal"
 Button "Toggle side panel"
 Button "Session actions"
 Toolbar "Desk folder"
+  Status "Kept"
+  Button "Copy path"
   Button "Machine: devbox-1"
-  text "~/Humata/desk/brin-rfc"
   Button "Remove acme/ledger"
   Button "Remove acme/api"
   Button "Add repo"
@@ -64,8 +65,18 @@ RadioGroup "Show the file as"
   RadioButton "Side by side" selected
 Log "Terminal output" description="Claude started · BRIN rollout RFC\nPlease work on: BRIN rollout RFC\nI'll read the relevant files first.\nRead src/lib.rs (212 lines)\nRead src/client.rs (98 lines)\nThe retry happens before the token is refre\nshed, so the second request reuses the expi\nred token.\nEdit src/client.rs (+12 −3)\nDone. The tests pass: 48 passed, 0 failed.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
   text "Claude started · BRIN rollout RFC\nPlease work on: BRIN rollout RFC\nI'll read the relevant files first.\nRead src/lib.rs (212 lines)\nRead src/client.rs (98 lines)\nThe retry happens before the token is refre\nshed, so the second request reuses the expi\nred token.\nEdit src/client.rs (+12 −3)\nDone. The tests pass: 48 passed, 0 failed.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
-  #terminal-pane
-    #terminal
+  #terminal-replica
+    #terminal-pane
+      #terminal
+Region "Versions"
+  Button "Older version" disabled
+  Button "Newer version" disabled
+  Button "History ▾" disabled
+  #doc-version-message
+    #input
+      TextInput "What changed? (optional)" value="" placeholder="What changed? (optional)"
+  Button "Save version"
+  Region "No versions yet"
 CheckBox "Link scrolling" selected
 text "Scrolling is linked"
 Document "rfc-brin.md source"
@@ -103,15 +114,13 @@ Document "rfc-brin.md source"
   #doc-comment-box
     text "You · lines 13–14"
     text "Draft"
-    #input-4294967345
+    #input
       MultilineTextInput "Comment" value="Keep both until range p95 holds for a week on devbox-1, not just until the backfill ends." placeholder="Write a comment"
     text "Saved as a draft; Send types it into claude straight away"
     Button "Cancel"
     Button "Comment"
   Button "Comment on line 15"
   text "- Watch p95 for range reads on the metrics board (PAY-14)."
-  Button "Comment on line 16"
-  text ""
 Document "rfc-brin.md preview"
   Document "rfc-brin.md"
     Heading "Heading 1, level 1"

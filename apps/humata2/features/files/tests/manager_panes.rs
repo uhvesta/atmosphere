@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use humata2_clients::model::{Machine, MachineId, MachineKind, SessionId};
 use humata2_clients::{
-    Clients, FakeFileManager, Fakes, Folder, StorageAction, StorageKind, StorageRow, TransferPhase, Workspace,
+    Clients, FakeFileManager, FileRoot, Fakes, Folder, ItemLanding, Landing, StorageAction, StorageKind, StorageRow, TransferPhase, TransferRow, Workspace,
     fixture,
 };
 use humata2_files::{Delegate, Files, FilesAction as A, FilesState, Side};
@@ -25,6 +25,8 @@ fn machine(id: &str, online: bool) -> Machine {
         detail: String::new(),
         last_seen: String::new(),
         lost_at: None,
+        root: "~/Humata".to_owned(),
+        stop: None,
     }
 }
 
@@ -182,6 +184,44 @@ fn a_copy_shows_in_the_tray_and_the_name_appears_on_the_other_side_when_done() {
     page.settle();
     assert_eq!(page.state().transfers[0].phase, TransferPhase::Done);
     assert_eq!(page.names(Side::Right), names(&["notes.txt"]));
+}
+
+fn finished_row(outcomes: Vec<ItemLanding>) -> TransferRow {
+    TransferRow {
+        id: humata2_clients::model::TransferId::new("t-1"),
+        what: "notes.md".to_owned(),
+        from: mac(),
+        to: gpu(),
+        via_host: false,
+        done_bytes: 10,
+        total_bytes: 10,
+        phase: TransferPhase::Done,
+        outcomes,
+    }
+}
+
+#[test]
+fn a_finished_row_says_the_name_it_was_saved_as() {
+    let page = page();
+    let row = finished_row(vec![ItemLanding {
+        name: "notes.md".to_owned(),
+        landing: Landing::SavedAs("notes-2.md".to_owned()),
+    }]);
+    assert!(page.state().detail_line(&row).contains("saved as notes-2.md"));
+}
+
+#[test]
+fn a_finished_row_says_a_file_was_already_there() {
+    let page = page();
+    let row = finished_row(vec![ItemLanding { name: "notes.md".to_owned(), landing: Landing::AlreadyThere }]);
+    assert!(page.state().detail_line(&row).contains("already there"));
+}
+
+#[test]
+fn a_finished_row_whose_names_all_landed_as_asked_keeps_the_checksum_line() {
+    let page = page();
+    let row = finished_row(vec![ItemLanding { name: "notes.md".to_owned(), landing: Landing::AsAsked }]);
+    assert_eq!(page.state().detail_line(&row), "Checksum ok");
 }
 
 #[test]
@@ -373,4 +413,25 @@ fn clearing_a_running_sessions_build_cache_asks_first() {
     page.send(A::ConfirmClear);
     assert_eq!(bytes(&page), Some(0));
     assert!(page.state().pending_clear.is_none());
+}
+
+/// D382: a Desk session's folder is a root of its own; a pane opened on it
+/// lists what is in it and goes into a sub-folder and back out.
+#[test]
+fn a_pane_opens_a_desk_sessions_own_folder_and_goes_into_it() {
+    let mut page = page();
+    let root = Folder::root(mac(), FileRoot::SessionFolder { session: SessionId::new("desk-rfc") });
+    page.fake.put_file(&root, "rfc.md", 12);
+    page.fake.put_folder(&root.child("drafts"));
+    page.fake.put_file(&root.child("drafts"), "one.md", 7);
+
+    page.send(A::Navigate(Side::Left, root.clone()));
+    assert_eq!(page.state().left.folder, Some(root.clone()));
+    let mut listed = page.names(Side::Left);
+    listed.sort();
+    assert_eq!(listed, names(&["drafts", "rfc.md"]));
+
+    page.send(A::OpenFolder(Side::Left, "drafts".to_owned()));
+    assert_eq!(page.names(Side::Left), names(&["one.md"]));
+    assert_eq!(page.state().left.folder, Some(root.child("drafts")));
 }

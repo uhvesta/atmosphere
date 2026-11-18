@@ -8,6 +8,7 @@ use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use humata2_clients::desk::{Access, DeskClient, FolderChoice, NewDeskSession};
 use humata2_clients::model::{Agent, ChannelId, MachineId, SessionId, SessionOptions, TransferId};
 use humata2_clients::{
     Daemon, FakeFileManager, FileManager, FileManagerError, FileRoot, Folder, TransferMode, TransferPhase, TransferRow,
@@ -181,7 +182,8 @@ while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; do
     )
 }
 
-async fn real_setup() -> Setup {
+/// A real daemon in a temp folder, and a client connected to it.
+async fn start_real() -> (RealWorld, LiveDaemon) {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::Builder::new()
         .prefix("h2f")
@@ -241,6 +243,12 @@ async fn real_setup() -> Setup {
     let live = LiveDaemon::connect(LiveOptions::new(socket).with_agent(Agent::Claude, AGENT_NAME))
         .await
         .expect("connect to humatad2");
+    (world, live)
+}
+
+async fn real_setup() -> Setup {
+    let (world, live) = start_real().await;
+    let root = world.dir.path().to_owned();
     let workspace = within("load", live.load()).await.expect("load");
     let mac = workspace.machines.first().expect("the workspace has a machine").id.clone();
     let repo = format!("{REPO_OWNER}/{REPO_NAME}");
@@ -452,6 +460,70 @@ async fn emptying_the_trash_frees_what_the_plan_said(setup: Setup) {
     assert!(trash.items.is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_drop_with_one_name_already_taken_uploads_nothing() {
+    let setup = real_setup().await;
+    let shared = setup.shared();
+    within("create_folder", setup.fm.create_folder(&shared, "b.txt"))
+        .await
+        .expect("make the name taken");
+    let local = tempfile::tempdir().expect("make a local folder");
+    let dropped: Vec<PathBuf> = ["a.txt", "b.txt", "c.txt"]
+        .iter()
+        .map(|name| {
+            let path = local.path().join(name);
+            std::fs::write(&path, b"contents").expect("write a local file");
+            path
+        })
+        .collect();
+
+    let refused = within("upload", setup.fm.upload(dropped, &shared)).await;
+
+    assert!(refused.is_err(), "a drop with a taken name is refused");
+    assert_eq!(setup.names_in(&shared).await, ["b.txt"], "nothing else was uploaded");
+}
+
+/// D335: files pasted into a session's terminal from another computer are
+/// uploaded into the session's pastes, each paste in a folder of its own,
+/// and the paths that come back are where the files are on the session's
+/// machine, in order.
+#[tokio::test(flavor = "multi_thread")]
+async fn pasted_files_land_in_the_sessions_paste_folder() {
+    let setup = real_setup().await;
+    let local = tempfile::tempdir().expect("make a local folder");
+    let write = |name: &str, bytes: &[u8]| {
+        let path = local.path().join(name);
+        std::fs::write(&path, bytes).expect("write a local file");
+        path
+    };
+    let first = vec![write("notes.txt", b"first notes"), write("a b.png", b"image")];
+
+    let pasted = within(
+        "paste_files",
+        setup.fm.paste_files(first, &setup.mac, &setup.session),
+    )
+    .await
+    .expect("the files are pasted");
+
+    assert_eq!(pasted.len(), 2, "{pasted:?}");
+    assert!(pasted[0].ends_with("notes.txt"), "{pasted:?}");
+    assert!(pasted[1].ends_with("a b.png"), "{pasted:?}");
+    assert_eq!(std::fs::read(&pasted[0]).expect("the first file is there"), b"first notes");
+    assert_eq!(std::fs::read(&pasted[1]).expect("the second file is there"), b"image");
+
+    let again = vec![write("notes.txt", b"second notes")];
+    let repasted = within(
+        "paste_files again",
+        setup.fm.paste_files(again, &setup.mac, &setup.session),
+    )
+    .await
+    .expect("a name pasted before is pasted again");
+
+    assert_ne!(repasted[0], pasted[0]);
+    assert_eq!(std::fs::read(&repasted[0]).expect("the new file is there"), b"second notes");
+    assert_eq!(std::fs::read(&pasted[0]).expect("the old file stays"), b"first notes");
+}
+
 macro_rules! parity {
     ($($case:ident => $fake:ident, $real:ident;)*) => {$(
         #[tokio::test(flavor = "multi_thread")]
@@ -473,4 +545,96 @@ parity! {
     upload_of_3_mib_is_listed_with_its_size => upload_3_mib_on_fake, upload_3_mib_on_real;
     a_name_already_taken_is_refused => name_taken_on_fake, name_taken_on_real;
     emptying_the_trash_frees_what_the_plan_said => empty_trash_on_fake, empty_trash_on_real;
+}
+
+/// D382: a Desk session has no repository; its folder is a root of its own.
+/// The fake lists what it was given; the real daemon lists the session's
+/// folder on disk and reads a document in it as the session's own.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_desk_sessions_folder_is_listed_and_read_on_the_real_daemon() {
+    let (_world, live) = start_real().await;
+    let workspace = within("load", live.load()).await.expect("load");
+    let mac = workspace.machines.first().expect("the workspace has a machine").id.clone();
+    let id = within(
+        "desk start",
+        live.start(NewDeskSession {
+            title: "Draft".to_owned(),
+            agent: Agent::Claude,
+            machine: mac.clone(),
+            folder: FolderChoice::Scratch {
+                name: humata2_clients::desk::folder_name("Draft"),
+            },
+            repos: Vec::new(),
+            access: Access::default(),
+        }),
+    )
+    .await
+    .expect("start a desk session");
+    let workspace = within("load", live.load()).await.expect("load");
+    let humata2_clients::desk::Folder::Scratch { path, .. } = workspace.desk.sessions[&id].folder.clone() else {
+        panic!("a scratch folder");
+    };
+    std::fs::write(Path::new(&path).join("rfc.md"), "the document").expect("write the document");
+    let fm = LiveFileManager::new(&live);
+    let folder = Folder::root(mac, FileRoot::SessionFolder { session: id.clone() });
+
+    within("create_folder", fm.create_folder(&folder, "drafts")).await.expect("make a sub-folder");
+    let listing = within("list", fm.list(&folder)).await.expect("list the session's folder");
+    let read = within("read", live.read_file(&id, "", "rfc.md")).await;
+
+    let names: Vec<String> = listing.entries.iter().map(|entry| entry.name.clone()).collect();
+    assert!(names.contains(&"rfc.md".to_owned()), "{names:?}");
+    assert!(names.contains(&"drafts".to_owned()), "{names:?}");
+    assert!(Path::new(&path).join("drafts").is_dir());
+    assert_eq!(read.expect("the document is read"), "the document");
+}
+
+/// The fake takes the same root, so a pane on a Desk session's folder
+/// lists what was put in it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_desk_sessions_folder_is_listed_on_the_fake() {
+    let mac = MachineId::new("this-mac");
+    let fake = FakeFileManager::new(mac.clone());
+    let folder = Folder::root(mac, FileRoot::SessionFolder { session: SessionId::new("se_desk") });
+    fake.put_file(&folder, "rfc.md", 12);
+
+    let listing = within("list", fake.list(&folder)).await.expect("list");
+
+    let names: Vec<String> = listing.entries.iter().map(|entry| entry.name.clone()).collect();
+    assert_eq!(names, ["rfc.md"]);
+}
+
+/// PL-3, PL-4: a copy into another machine's received place lands in
+/// `<channels>/received/<machine>/` and that place lists what landed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_into_a_received_place_lands_there_and_lists_on_the_real_daemon() {
+    let setup = real_setup().await;
+    (setup.seed)("data.bin", &[7u8; 2000]);
+    let received = Folder::root(setup.mac.clone(), FileRoot::Received { from: MachineId::new("gpu-box") });
+    let mut events = setup.fm.transfer_events();
+
+    let id = within(
+        "start_transfer",
+        setup.fm.start_transfer(&setup.clone_root(), vec!["data.bin".to_owned()], &received, TransferMode::Copy),
+    )
+    .await
+    .expect("a copy into the received place starts");
+    setup.wait_done(&mut events, &id).await;
+
+    let listing = within("list", setup.fm.list(&received)).await.expect("list the received place");
+    let landed = listing.entries.iter().find(|entry| entry.name == "data.bin").expect("the copy is listed");
+    assert_eq!(landed.size, Some(2000));
+    let world = setup._world.as_ref().expect("a real world");
+    assert!(world.dir.path().join("ch/received/gpu-box/data.bin").is_file());
+}
+
+/// A received place nothing has landed in yet lists empty, not as an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_received_place_with_nothing_in_it_lists_empty_on_the_real_daemon() {
+    let setup = real_setup().await;
+    let received = Folder::root(setup.mac.clone(), FileRoot::Received { from: MachineId::new("never-sent") });
+
+    let names = setup.names_in(&received).await;
+
+    assert!(names.is_empty(), "{names:?}");
 }

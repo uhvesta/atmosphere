@@ -10,8 +10,8 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    AppContext, Bounds, Platform, Point, TestAppContext, TestDispatcher, WindowBounds,
-    WindowOptions, px, size,
+    AppContext, Bounds, Point, TestAppContext, TestDispatcher, WindowBounds, WindowOptions, px,
+    size,
 };
 use gpui_kit::test::TestWindowExt;
 use terminal_grid::{Cell, Color, FakeGrid, Grid, KeyEvent, Row};

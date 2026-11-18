@@ -7,7 +7,8 @@ use gpui_kit::{
     Render, SharedString, Subscription, Window, div, prelude::*, px, rgb,
 };
 use replica::{
-    ReplicaConfig, ReplicaEvent, ReplicaPhase, ReplicaSink, ShortcutPolicy, TerminalReplica,
+    FitPolicy, ReplicaConfig, ReplicaEvent, ReplicaPhase, ReplicaSink, ShortcutPolicy,
+    TerminalReplica,
 };
 use std::{
     cell::RefCell,
@@ -427,6 +428,8 @@ impl RemoteWorkspace {
                         },
                         memory_saver: self.memory_saver.then_some(self.memory_idle),
                         shortcuts: ShortcutPolicy::default(),
+                        fit: FitPolicy::default(),
+                        default_colors: None,
                     };
                     let sink = Rc::new(WorkspaceSink(self.outbox.clone()));
                     let result = cx.update_window(self.window, |_, window, cx| {

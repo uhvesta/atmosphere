@@ -6,18 +6,18 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use humata2_revive::{Env, ReviveConfig};
 use humata2_store::fault::point;
 use humata2_store::{
-    AgentLaunch, AgentRecord, ChannelRecord, MainClone, SessionDetail, SessionRecord, SessionRepo,
-    StartStep, Store, StoreError, TabKind, TabRecord,
+    AgentLaunch, AgentRecord, ChannelRecord, MainClone, ReviewPr, ReviewSessionRecord, SessionDetail,
+    SessionRecord, SessionRepo, StartStep, Store, StoreError, TabKind, TabRecord,
 };
 
 use crate::agents::Agents;
-use crate::error::StartError;
-use crate::git::{clone_session, local_branches, remote_branches, remote_url};
+use crate::error::{GitError, StartError};
+use crate::first_message::FirstMessage;
+use crate::git::{clone_pull_head, clone_session, git, local_branches, remote_branches, remote_url};
 use crate::layout::Layout;
 use crate::names::{Branch, branch_slug, pick_branch, valid_branch_name};
 use crate::prefix::effective_prefix;
@@ -26,9 +26,8 @@ use crate::setup::unix_ms;
 /// `(owner, name)` of a repository.
 pub type RepoName = (String, String);
 
-/// Between typing the first message and pressing return, so an agent
-/// that reads a paste whole doesn't take the return as part of it.
-const TYPE_PAUSE: Duration = Duration::from_millis(100);
+/// Between the agent showing the first message and pressing return, so an
+/// agent that reads a paste whole doesn't take the return as part of it.
 
 /// What a start needs from this machine.
 #[derive(Clone)]
@@ -41,6 +40,8 @@ pub struct Starter {
     pub revive: ReviveConfig,
     /// Where each terminal's holder keeps its socket, as `<tab>.sock`.
     pub holders: PathBuf,
+    /// How a start's first message reaches its agent (D763).
+    pub first_message: FirstMessage,
 }
 
 /// A session to start.
@@ -64,6 +65,15 @@ pub struct StartRequest {
     pub operation: Option<String>,
     pub cols: u16,
     pub rows: u16,
+}
+
+/// A review session's pull requests (PR-6): each is cloned on its `head_branch`
+/// at `refs/pull/<number>/head`; `head_sha` and `checked_sha` are replaced by
+/// what the clone got.
+#[derive(Clone, Debug)]
+pub struct ReviewStart {
+    pub prs: Vec<ReviewPr>,
+    pub push_allowed: bool,
 }
 
 /// A session that started.
@@ -220,7 +230,7 @@ impl Starter {
         Ok(Branch { name: typed.to_owned(), folder })
     }
 
-    fn choose(
+    pub(crate) fn choose(
         &self,
         channel: &ChannelRecord,
         wanted: Option<&[RepoName]>,
@@ -344,6 +354,138 @@ impl Starter {
             detail,
             agent,
         })
+    }
+
+    /// Starts a pull request review's session (PR-6): one clone per pull
+    /// request on its own head branch, and the review's binding recorded
+    /// before the agent launches.
+    pub async fn start_review(
+        &self,
+        request: StartRequest,
+        review: ReviewStart,
+        env: Env<'_>,
+        progress: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<Started, StartError> {
+        let this = self.clone();
+        let channel_id = request.channel.clone();
+        let channel = blocking(move || this.channel_record(&channel_id)).await??;
+        let agent_name = request
+            .agent
+            .clone()
+            .unwrap_or_else(|| channel.default_agent.clone());
+        self.agents.get(&agent_name)?;
+        let repos: Vec<RepoName> = review
+            .prs
+            .iter()
+            .map(|pr| (pr.owner.clone(), pr.name.clone()))
+            .collect();
+        self.choose(&channel, Some(&repos))?;
+        let folder_name = pick_branch("", &branch_slug(&request.title), |name| {
+            self.layout.session(&channel.folder, name).exists()
+        })
+        .name;
+        let folder = self.layout.session(&channel.folder, &folder_name);
+        let session = SessionRecord {
+            id: request
+                .id
+                .clone()
+                .unwrap_or_else(|| format!("se_{}", uuid::Uuid::new_v4().simple())),
+            channel: channel.id.clone(),
+            machine: request.machine.clone(),
+            title: request.title.clone(),
+            agent: agent_name,
+            folder: folder.clone(),
+            created_unix_ms: unix_ms(),
+        };
+        let mut detail = SessionDetail {
+            session: session.id.clone(),
+            repos: review
+                .prs
+                .iter()
+                .map(|pr| SessionRepo {
+                    owner: pr.owner.clone(),
+                    name: pr.name.clone(),
+                    branch: pr.head_branch.clone(),
+                    path: folder.join(&pr.name),
+                })
+                .collect(),
+            model: request.model.clone(),
+            first_message: request.first_message.clone(),
+            start: StartStep::Recorded,
+            operation: request.operation.clone(),
+            revision: 1,
+        };
+        if let Err(error) = self
+            .record_and_clone_review(&channel, &session, &mut detail, review, progress)
+            .await
+        {
+            // Best effort: the start's own error is the one worth reporting.
+            let _ = self.undo(&session).await;
+            return Err(error);
+        }
+        let (detail, agent) = self
+            .launch_session(&session, detail, request.cols, request.rows, env, progress)
+            .await?;
+        Ok(Started {
+            session,
+            detail,
+            agent,
+        })
+    }
+
+    async fn record_and_clone_review(
+        &self,
+        channel: &ChannelRecord,
+        session: &SessionRecord,
+        detail: &mut SessionDetail,
+        review: ReviewStart,
+        progress: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<(), StartError> {
+        let (store, saved, saved_detail) = (self.store.clone(), session.clone(), detail.clone());
+        blocking(move || -> Result<(), StartError> {
+            store
+                .put_session(&saved)
+                .map_err(store_err("save the session"))?;
+            store
+                .put_session_detail(&saved_detail)
+                .map_err(store_err("save the session's start"))
+        })
+        .await??;
+        point("sessions.start.recorded");
+        progress("write_record");
+        let mut record = ReviewSessionRecord {
+            session: session.id.clone(),
+            push_allowed: review.push_allowed,
+            prs: Vec::new(),
+        };
+        for (pr, repo) in review.prs.into_iter().zip(&detail.repos) {
+            let git_err = |source| StartError::Git {
+                owner: repo.owner.clone(),
+                name: repo.name.clone(),
+                source,
+            };
+            let main = self.layout.main_clone(&channel.folder, &repo.name);
+            let url = remote_url(&self.remote_template, &repo.owner, &repo.name).map_err(git_err)?;
+            let (path, branch, number) = (repo.path.clone(), repo.branch.clone(), pr.number);
+            let at = blocking(move || -> Result<String, GitError> {
+                clone_pull_head(&main, &url, &path, &branch, number)?;
+                Ok(git(Some(&path), &["rev-parse", "HEAD"])?.trim().to_owned())
+            })
+            .await?
+            .map_err(git_err)?;
+            point("sessions.start.cloned");
+            progress(&format!("clone:{}", repo.name));
+            record.prs.push(ReviewPr {
+                head_sha: at.clone(),
+                checked_sha: at,
+                ..pr
+            });
+        }
+        let store = self.store.clone();
+        blocking(move || store.put_review_session(&record))
+            .await?
+            .map_err(store_err("save the review's pull requests"))?;
+        self.set_step(detail, StartStep::Cloned).await
     }
 
     /// Writes the row and start of a session that lives on another machine
@@ -575,7 +717,15 @@ impl Starter {
         point("sessions.start.launching");
         progress("launch");
         let kind = self.agents.get(&session.agent)?;
-        let plan = kind.launch(&self.home, &session.folder, &conversation);
+        let plan = kind.launch_with_model(
+            &self.home,
+            &session.folder,
+            &conversation,
+            detail.model.as_deref(),
+        );
+        // CV-3: the version of the CLI this conversation is launched with,
+        // which its adapter's check is given.
+        let cli_version = kind.cli_version().await;
         let tab = format!("tb_{}", uuid::Uuid::new_v4().simple());
         let socket = self.holders.join(format!("{tab}.sock"));
         let probe = TabRecord {
@@ -586,6 +736,7 @@ impl Starter {
             holder_socket: socket.clone(),
             holder_pid: 0,
             created_unix_ms: unix_ms(),
+            holder_generation: 0,
         };
         let variable_names = env(&probe)
             .iter()
@@ -606,13 +757,17 @@ impl Starter {
             holder_socket: socket.clone(),
             cols,
             rows,
+            cli_version,
         };
         let agent =
             humata2_revive::launch_agent(&self.store, &self.revive, session, &tab, launch, None, env)
                 .await
                 .map_err(|source| StartError::Revive { source })?;
         if let Some(message) = detail.first_message.clone() {
-            type_message(&socket, &message).await?;
+            self.first_message
+                .send(&session.id, &socket, &message)
+                .await
+                .map_err(|source| StartError::FirstMessage { source })?;
         }
         self.set_step(&mut detail, StartStep::Done).await?;
         progress("verify");
@@ -658,17 +813,3 @@ fn remove_folder(path: &Path) -> Result<(), StartError> {
     }
 }
 
-/// Types `message` into the terminal on `socket` and presses return.
-async fn type_message(socket: &Path, message: &str) -> Result<(), StartError> {
-    let first = |source| StartError::FirstMessage { source };
-    let mut attached = humata2_holder::attach(socket, u64::MAX)
-        .await
-        .map_err(first)?;
-    attached
-        .control
-        .input(1, message.as_bytes())
-        .await
-        .map_err(first)?;
-    tokio::time::sleep(TYPE_PAUSE).await;
-    attached.control.input(2, b"\r").await.map_err(first)
-}

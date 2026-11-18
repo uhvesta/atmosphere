@@ -54,13 +54,10 @@ fn answer(request: &http::Request<Body>) -> http::Response<Body> {
 not_built! {
     AuditService => audit_service_server,
     ActivityService => activity_service_server,
-    MachineService => machine_service_server,
     ProviderService => provider_service_server,
     SkillsService => skills_service_server,
     BridgeService => bridge_service_server,
-    AgentService => agent_service_server,
     ViewStateService => view_state_service_server,
-    PullRequestReviewService => pull_request_review_service_server,
 }
 
 /// Adds to the socket's `router` every client service not built yet.
@@ -69,9 +66,7 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
         .add_service(AuditService)
         .add_service(ActivityService)
         .add_service(BridgeService)
-        .add_service(AgentService)
         .add_service(ViewStateService)
-        .add_service(PullRequestReviewService)
 }
 
 /// Adds MachineService and ProviderService to a machine's `router`: only
@@ -79,7 +74,6 @@ pub(crate) fn register<L>(router: Router<L>) -> Router<L> {
 /// doesn't forward to them yet.
 pub(crate) fn register_host_only<L>(router: Router<L>) -> Router<L> {
     router
-        .add_service(MachineService)
         .add_service(ProviderService)
         .add_service(SkillsService)
 }

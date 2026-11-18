@@ -8,8 +8,6 @@
 //! and the file's last identity, never a path. Values are replaced here, on
 //! the machine that holds them, before the bytes reach the link (SEC-1).
 
-use std::path::{Path, PathBuf};
-
 use humata2_chunk::{Encoder, Link};
 use humata2_grpc::humata::v1 as pb;
 use humata2_mirror::{Lines, Scrubber, read_lines};
@@ -17,6 +15,7 @@ use tonic::{Code, Request, Status};
 
 use super::Shared;
 use crate::channel_service::blocking;
+use crate::host_vars::{HostVars, HostVarsError};
 use crate::identity::{self, Caller, UserVia};
 use crate::status;
 
@@ -29,26 +28,26 @@ pub(super) const REMOTE: Link = Link::Remote {
 /// would have nothing to scrub with.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum ScrubberError {
-    /// SEAM: nothing builds this until MachineService.SetHostVariable keeps
-    /// values on the machine; then a failure to read them is this one, and
-    /// the read fails instead of going on with a scrubber that replaces nothing.
-    #[allow(dead_code)]
     #[error(
-        "couldn't read this machine's host variable values from {}, so no conversation was sent: sending them unscrubbed could leak a value. Check that the file is readable by this user and try again",
-        path.display()
+        "couldn't read this machine's host variable values, so no conversation was kept or sent: using it unscrubbed could leak a value. Fix the file named below (readable by this user, not damaged), then try again"
     )]
     Unreadable {
-        path: PathBuf,
         #[source]
-        source: std::io::Error,
+        source: HostVarsError,
     },
 }
 
 /// The scrubber for this machine's host variables. It fails when the values
-/// can't be read and never falls back to an empty one (D189.3). Until
-/// SetHostVariable is built the machine has none and this is an empty one.
-pub(super) fn scrubber(_state: &Path) -> Result<Scrubber, ScrubberError> {
-    Ok(Scrubber::new(Vec::new()))
+/// can't be read and never falls back to an empty one (D189.3).
+pub(super) fn scrubber() -> Result<Scrubber, ScrubberError> {
+    scrubber_of(HostVars::installed())
+}
+
+fn scrubber_of(variables: Result<HostVars, HostVarsError>) -> Result<Scrubber, ScrubberError> {
+    let values = variables
+        .and_then(|variables| variables.values())
+        .map_err(|source| ScrubberError::Unreadable { source })?;
+    Ok(Scrubber::new(values))
 }
 
 /// Only the host reads conversations for its mirror (D189.1): the app, a CLI
@@ -115,6 +114,9 @@ fn read(
     max_bytes: u32,
     source: &str,
 ) -> Result<Lines, Status> {
+    shared
+        .learn(session)
+        .map_err(|error| status::internal(status::chain(&error), ""))?;
     let agent = shared
         .store
         .agent(session)
@@ -130,7 +132,7 @@ fn read(
     else {
         return Ok(nothing());
     };
-    let scrubber = scrubber(&shared.state).map_err(|error| status::internal(status::chain(&error), ""))?;
+    let scrubber = scrubber().map_err(|error| status::internal(status::chain(&error), ""))?;
     let lines = read_lines(&file, &shared.here(), offset, max_bytes, source, &scrubber)
         .map_err(|error| status::internal(status::chain(&error), &file.display().to_string()))?;
     for size in &lines.left_out {
@@ -146,6 +148,7 @@ mod tests {
     use humata2_store::SessionRecord;
 
     use super::*;
+    use std::path::PathBuf;
     use crate::identity::AgentCaller;
     use crate::script_tokens::ScriptCaller;
 
@@ -191,5 +194,24 @@ mod tests {
             assert_eq!(denied.code(), Code::PermissionDenied, "{who}");
         }
         assert!(require_host(&Caller::User(UserVia::Host)).is_ok());
+    }
+
+    #[test]
+    fn the_scrubber_has_this_machines_values_and_is_refused_when_they_cant_be_read() {
+        let vars = crate::host_vars::MemoryStore::vars();
+        vars.set("API_TOKEN", "s3cr3t-value").unwrap();
+
+        let kept = scrubber_of(Ok(vars)).unwrap().scrub("curl -H s3cr3t-value");
+        assert!(!kept.contains("s3cr3t-value"));
+        assert!(kept.contains("API_TOKEN"));
+
+        // Nothing readable: no scrubber, never an empty one.
+        assert!(scrubber_of(Err(HostVarsError::NotInstalled)).is_err());
+    }
+
+    #[test]
+    fn a_machine_with_no_host_variables_scrubs_nothing() {
+        let kept = scrubber_of(Ok(crate::host_vars::MemoryStore::vars())).unwrap().scrub("plain text");
+        assert_eq!(kept, "plain text");
     }
 }

@@ -17,6 +17,7 @@ use crate::git::{git, in_partial, io as git_io};
 use crate::names::Branch;
 use crate::setup::unix_ms;
 use crate::start::{RepoName, Started, Starter, blocking, store_err};
+use crate::tree_copy::{Dirs, copy_tree};
 
 /// What a fork carries over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,6 +201,7 @@ impl Starter {
             .filter(|agent| !agent.is_empty())
             .unwrap_or_else(|| parent.agent.clone());
         let handover = self.hands_over(&parent.agent, &agent_name, request.copy)?;
+        let parent_conversation = parent_agent.as_ref().map(|agent| agent.launch.conversation_id.clone());
         let source_conversation = if handover {
             // A parent with no conversation file hands over none: its first
             // message falls back to its terminal output.
@@ -268,6 +270,37 @@ impl Starter {
         } else {
             kind.launch(&self.home, &folder, &conversation).conversation_file
         };
+        // A handover before a turn hands over the parent's bytes before that
+        // turn's start, found as the parent's own format says (a Codex or
+        // Copilot rollout through its adapter).
+        let handed_start = match (&source_conversation, &parent_conversation) {
+            (Some(file), Some(from_id)) if handover && request.before_turn != 0 => {
+                let kind = self.agents.get(&parent.agent).ok().cloned();
+                let (home, folder) = (self.home.clone(), parent.folder.clone());
+                let (file, from_id) = (file.clone(), from_id.clone());
+                let turn = request.before_turn;
+                blocking(move || kind?.turn_start(&home, &folder, &from_id, &file, turn)).await?
+            }
+            _ => None,
+        };
+        // A conversation in a format an adapter knows is forked through it,
+        // so the copy is named for its new id and folder (MV-16).
+        let through = match parent_conversation {
+            Some(from_id) if !handover && with_context => {
+                let parent_kind = self.agents.get(&parent.agent)?;
+                match (parent_kind.placement(&self.home, &parent.folder), kind.placement(&self.home, &folder)) {
+                    (Some(from), Some(to)) => Some(Through {
+                        format: kind.conversation_format,
+                        from,
+                        from_id,
+                        to,
+                        to_id: conversation.clone(),
+                    }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
         let session = SessionRecord {
             id,
             channel: channel.id.clone(),
@@ -304,6 +337,8 @@ impl Starter {
                 &parent_detail,
                 &origin,
                 source_conversation.as_deref().map(|s| (s, &*new_conversation)),
+                through,
+                handed_start,
                 branch.is_some(),
                 progress,
             )
@@ -353,7 +388,8 @@ impl Starter {
 
     /// Saves the fork's records and copies what it carries: the clones when
     /// `clones` (a context-only fork has none of its own), then the
-    /// conversation when there is one.
+    /// conversation when there is one: a handover before a turn up to
+    /// `handed_start`, that turn's start, when its parent's format found it.
     #[allow(clippy::too_many_arguments)]
     async fn record_and_copy(
         &self,
@@ -362,6 +398,8 @@ impl Starter {
         parent_detail: &SessionDetail,
         origin: &ForkOrigin,
         conversation: Option<(&Path, &Path)>,
+        through: Option<Through>,
+        handed_start: Option<u64>,
         clones: bool,
         progress: &mut (dyn FnMut(&str) + Send),
     ) -> Result<(), StartError> {
@@ -404,13 +442,9 @@ impl Starter {
         if let Some((from, to)) = conversation {
             let (from, to, before_turn) = (from.to_owned(), to.to_owned(), origin.before_turn);
             let (folder, id) = (session.folder.clone(), session.id.clone());
-            blocking(move || {
-                // Named before the copy exists, so a cut can't leave it unfound.
-                note_copy_at(&copy_note(&folder, &id), &to).map_err(|source| StartError::Copy {
-                    path: copy_note(&folder, &id),
-                    source,
-                })?;
-                copy_conversation(&from, &to, before_turn)
+            blocking(move || match handed_start {
+                Some(start) => hand_over_conversation(&folder, &id, &from, &to, start),
+                None => carry_conversation(&folder, &id, &from, &to, through, before_turn),
             })
             .await??;
             progress("copy_conversation");
@@ -424,7 +458,7 @@ impl Starter {
 /// can remove a copy outside the folder (an agent keeps its conversations
 /// elsewhere) however the fork was cut short. A context-only fork shares
 /// its parent's folder, so the name carries the fork's id.
-fn copy_note(folder: &Path, fork: &str) -> PathBuf {
+pub(crate) fn copy_note(folder: &Path, fork: &str) -> PathBuf {
     folder.join(".humata").join(format!("fork-copy-{fork}"))
 }
 
@@ -435,7 +469,7 @@ fn copy_note(folder: &Path, fork: &str) -> PathBuf {
 pub(crate) fn note_copy_at(note: &Path, to: &Path) -> io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     let dir = note.parent().unwrap_or(Path::new("."));
-    humata2_durable::create_dir_all(dir, 0o755)?;
+    create_dir_all_durably(dir)?;
     let temp = temp_note(note);
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -445,6 +479,24 @@ pub(crate) fn note_copy_at(note: &Path, to: &Path) -> io::Result<()> {
     drop(file);
     humata2_durable::rename(&temp, note)?;
     humata2_durable::sync_dir(dir)
+}
+
+/// Makes `dir` and every missing folder above it, and puts each new
+/// folder's name in its parent on disk, so a power cut afterwards keeps
+/// them and what is synced inside them.
+fn create_dir_all_durably(dir: &Path) -> io::Result<()> {
+    let missing: Vec<PathBuf> = dir
+        .ancestors()
+        .take_while(|up| !up.as_os_str().is_empty() && fs::symlink_metadata(up).is_err())
+        .map(Path::to_owned)
+        .collect();
+    humata2_durable::create_dir_all(dir, 0o755)?;
+    for made in &missing {
+        if let Some(parent) = made.parent().filter(|up| !up.as_os_str().is_empty()) {
+            humata2_durable::sync_dir(parent)?;
+        }
+    }
+    Ok(())
 }
 
 fn temp_note(note: &Path) -> PathBuf {
@@ -500,6 +552,55 @@ pub(crate) fn remove_fork_copy(folder: &Path, fork: &str) -> Result<(), StartErr
     remove_noted_copy(&copy_note(folder, fork))
 }
 
+/// Copies the conversation at `from` to `to`, up to turn `before_turn` when
+/// it is above 0: through its format's adapter when `through` finds it there
+/// (MV-16), else byte for byte. The copy is noted in `folder` for the session
+/// `id` before it exists, so a cut can't leave it unfound. A fork and a
+/// session continued in another channel (CV-8) both copy through here.
+pub(crate) fn carry_conversation(
+    folder: &Path,
+    id: &str,
+    from: &Path,
+    to: &Path,
+    through: Option<Through>,
+    before_turn: u32,
+) -> Result<(), StartError> {
+    note_copy_at(&copy_note(folder, id), to).map_err(|source| StartError::Copy {
+        path: copy_note(folder, id),
+        source,
+    })?;
+    match through.filter(|through| through.keeps(from)) {
+        Some(through) => fork_conversation(
+            through.format,
+            &through.from,
+            &through.from_id,
+            &through.to,
+            &through.to_id,
+            before_turn,
+        )
+        .map(drop),
+        None => copy_conversation(from, to, before_turn),
+    }
+}
+
+/// Copies the first `start` bytes of the conversation at `from` to `to`,
+/// the handover of a fork before the turn that starts there, noted in
+/// `folder` for the session `id` before it exists as
+/// [`carry_conversation`] notes its copy.
+fn hand_over_conversation(
+    folder: &Path,
+    id: &str,
+    from: &Path,
+    to: &Path,
+    start: u64,
+) -> Result<(), StartError> {
+    note_copy_at(&copy_note(folder, id), to).map_err(|source| StartError::Copy {
+        path: copy_note(folder, id),
+        source,
+    })?;
+    copy_bytes(from, to, start)
+}
+
 /// Copies the conversation at `from` to `to`: all of it when `before_turn`
 /// is 0, else only the bytes before turn `before_turn`'s line (FK-3, D181).
 pub(crate) fn copy_conversation(from: &Path, to: &Path, before_turn: u32) -> Result<(), StartError> {
@@ -507,8 +608,14 @@ pub(crate) fn copy_conversation(from: &Path, to: &Path, before_turn: u32) -> Res
         0 => u64::MAX,
         turn => turn_offset(from, turn)?,
     };
+    copy_bytes(from, to, limit)
+}
+
+/// Copies the first `limit` bytes of the file at `from` to a new file at
+/// `to`, durably.
+pub(crate) fn copy_bytes(from: &Path, to: &Path, limit: u64) -> Result<(), StartError> {
     if let Some(dir) = to.parent() {
-        fs::create_dir_all(dir).map_err(|source| StartError::Copy {
+        humata2_durable::create_dir_all(dir, 0o755).map_err(|source| StartError::Copy {
             path: dir.to_owned(),
             source,
         })?;
@@ -517,16 +624,90 @@ pub(crate) fn copy_conversation(from: &Path, to: &Path, before_turn: u32) -> Res
         path: from.to_owned(),
         source,
     })?;
-    let mut copy = fs::File::create(to).map_err(|source| StartError::Copy {
+    copy_durably(source.take(limit), to).map_err(|source| StartError::Copy {
         path: to.to_owned(),
         source,
-    })?;
-    io::copy(&mut source.take(limit), &mut copy)
-        .map(drop)
-        .map_err(|source| StartError::Copy {
-            path: to.to_owned(),
-            source,
+    })
+}
+
+/// Writes everything `from` yields to a new file at `to`, and puts its bytes
+/// and its name in its folder on disk before returning, so a power cut
+/// afterwards leaves the whole copy.
+pub(crate) fn copy_durably(mut from: impl Read, to: &Path) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true).mode(0o600);
+    let file = humata2_durable::File::open(&options, to)?;
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut at = 0u64;
+    loop {
+        let read = match from.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        file.write_all_at(&buffer[..read], at)?;
+        at += read as u64;
+    }
+    file.sync_all()?;
+    match to.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => humata2_durable::sync_dir(dir),
+        _ => Ok(()),
+    }
+}
+
+/// Forks conversation `from_id` at `from` into `to_id` at `to` through the
+/// adapter for `format` (`humata2_conversation::adapter(..).fork`), keeping
+/// the turns before `before_turn` (all of them when 0), so the copy is named
+/// for its new id and folder and reads strictly (FK-3, MV-16); returns the
+/// new transcript's path. `copy_conversation` stays for kinds with no
+/// format.
+pub(crate) fn fork_conversation(
+    format: crate::agents::ConversationFormat,
+    from: &humata2_conversation::Placement,
+    from_id: &str,
+    to: &humata2_conversation::Placement,
+    to_id: &str,
+    before_turn: u32,
+) -> Result<PathBuf, StartError> {
+    let format = format.adapter_format().ok_or(StartError::NoConversationFormat)?;
+    let adapter = humata2_conversation::adapter(format);
+    let refused = |source| StartError::Conversation { id: from_id.to_owned(), source };
+    let parent = adapter.locate(from, from_id).map_err(refused)?;
+    let before = (before_turn != 0).then_some(before_turn);
+    let forked = adapter.fork(&parent, before, to_id, to).map_err(refused)?;
+    forked
+        .files
+        .into_iter()
+        .find(|file| file.role == humata2_conversation::FileRole::Transcript)
+        .map(|file| file.path)
+        .ok_or_else(|| {
+            refused(humata2_conversation::ConversationError::NotFound { path: to.folder.clone() })
         })
+}
+
+/// A conversation copied through its format's adapter (MV-16) rather than
+/// byte for byte: where the parent's and the fork's are, and their ids.
+pub(crate) struct Through {
+    pub(crate) format: crate::agents::ConversationFormat,
+    pub(crate) from: humata2_conversation::Placement,
+    pub(crate) from_id: String,
+    pub(crate) to: humata2_conversation::Placement,
+    pub(crate) to_id: String,
+}
+
+impl Through {
+    /// Whether the adapter finds the parent's conversation at `file`, the
+    /// path its agent record names. An agent set up to keep its conversations
+    /// elsewhere than its CLI does is copied as a file, as before.
+    pub(crate) fn keeps(&self, file: &Path) -> bool {
+        self.format.adapter_format().is_some_and(|format| {
+            humata2_conversation::adapter(format)
+                .locate(&self.from, &self.from_id)
+                .is_ok_and(|found| found.files.first().is_some_and(|transcript| transcript.path == file))
+        })
+    }
 }
 
 /// Where turn `turn` of the conversation at `from` starts.
@@ -552,32 +733,13 @@ fn turn_offset(from: &Path, turn: u32) -> Result<u64, StartError> {
 /// then starts `branch` there; the working changes stay.
 pub(crate) fn copy_clone(src: &Path, dest: &Path, branch: &str) -> Result<(), GitError> {
     in_partial(dest, |tmp| {
-        copy_tree(src, tmp).map_err(git_io(src))?;
+        // `tmp` is renamed to `dest`: a link into the clone points into `dest`.
+        // The error names the file that failed, not just the clone.
+        copy_tree(src, tmp, dest, Dirs::KeepModes)
+            .map_err(|error| git_io(&error.path)(error.source))?;
         git(Some(tmp), &["checkout", "-b", branch])?;
         Ok(())
     })
-}
-
-/// Copies a folder with its files' modes and symlinks as they are.
-fn copy_tree(src: &Path, dest: &Path) -> io::Result<()> {
-    let meta = fs::symlink_metadata(src)?;
-    if meta.is_dir() {
-        match fs::create_dir(dest) {
-            Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
-            _ => {}
-        }
-        for entry in fs::read_dir(src)? {
-            let entry = entry?;
-            copy_tree(&entry.path(), &dest.join(entry.file_name()))?;
-        }
-        fs::set_permissions(dest, meta.permissions())
-    } else if meta.file_type().is_symlink() {
-        std::os::unix::fs::symlink(fs::read_link(src)?, dest)
-    } else if meta.is_file() {
-        fs::copy(src, dest).map(drop)
-    } else {
-        Ok(())
-    }
 }
 
 /// The bytes of the files under `path`.
@@ -598,6 +760,46 @@ fn tree_bytes(path: &Path) -> io::Result<u64> {
 mod tests {
     use super::*;
     use crate::work::tests::{origin_and_clone, run};
+
+    /// The worker of the power-cut test below: this test binary run again
+    /// with this test selected; it does nothing otherwise.
+    #[cfg(faults_build)]
+    #[test]
+    fn power_cut_child() {
+        let (Ok(from), Ok(to)) = (
+            std::env::var("HUMATA2_COPY_FROM"),
+            std::env::var("HUMATA2_COPY_TO"),
+        ) else {
+            return;
+        };
+        copy_conversation(Path::new(&from), Path::new(&to), 0).unwrap();
+        humata2_durable::cut("after the conversation copy");
+    }
+
+    #[cfg(faults_build)]
+    #[test]
+    fn a_fork_conversation_copy_is_whole_after_a_power_cut() {
+        use std::os::unix::process::ExitStatusExt;
+        let dir = tempfile::Builder::new().prefix("h2pc").tempdir_in("/tmp").unwrap();
+        let from = dir.path().join("parent.jsonl");
+        fs::write(&from, "{\"turn\":1}\n{\"turn\":2}\n").unwrap();
+        let home = dir.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let to = home.join("conversations/fork.jsonl");
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["fork::tests::power_cut_child", "--exact", "--nocapture", "--test-threads=1"])
+            .env("HUMATA2_COPY_FROM", &from)
+            .env("HUMATA2_COPY_TO", &to)
+            .env("HUMATA2_POWER_CUT_ROOTS", &home)
+            .env("HUMATA2_POWER_CUT_SPARE", dir.path().join("spare"))
+            .env_remove("TESTBRIDGE_TEST_ONLY")
+            .status()
+            .unwrap();
+
+        assert_eq!(status.signal(), Some(9), "the worker didn't stop at the cut: {status}");
+        assert_eq!(fs::read(&to).unwrap(), fs::read(&from).unwrap());
+    }
 
     #[test]
     fn copy_keeps_every_kind_of_change_and_ends_on_the_new_branch() {
@@ -634,6 +836,33 @@ mod tests {
     }
 
     #[test]
+    fn copy_keeps_links_as_links_and_points_those_into_the_folder_into_the_fork() {
+        use std::os::unix::fs::symlink;
+        let t = tempfile::tempdir().unwrap();
+        let (_origin, clone) = origin_and_clone(t.path(), "me/x");
+        let elsewhere = t.path().join("elsewhere.md");
+        fs::write(&elsewhere, "x\n").unwrap();
+        fs::create_dir_all(clone.join("docs")).unwrap();
+        fs::write(clone.join("docs/plan.md"), "plan\n").unwrap();
+        symlink("docs/plan.md", clone.join("relative")).unwrap();
+        symlink(clone.join("docs/plan.md"), clone.join("inside")).unwrap();
+        symlink(&elsewhere, clone.join("outside")).unwrap();
+        symlink("missing.md", clone.join("dangling")).unwrap();
+        let dest = t.path().join("sessions/fork/api");
+
+        copy_clone(&clone, &dest, "me/y").unwrap();
+
+        let link = |name: &str| fs::read_link(dest.join(name)).expect("a link, neither followed nor left out");
+        assert_eq!(link("relative"), Path::new("docs/plan.md"));
+        assert_eq!(link("inside"), dest.join("docs/plan.md"), "a link into the folder points into the fork");
+        assert_eq!(link("outside"), elsewhere, "a link out of the folder points where it did");
+        assert_eq!(link("dangling"), Path::new("missing.md"));
+        assert_eq!(fs::read_to_string(dest.join("inside")).unwrap(), "plan\n");
+        // The parent keeps its own.
+        assert_eq!(fs::read_link(clone.join("inside")).unwrap(), clone.join("docs/plan.md"));
+    }
+
+    #[test]
     fn copy_keeps_file_modes() {
         use std::os::unix::fs::PermissionsExt;
         let t = tempfile::tempdir().unwrap();
@@ -662,6 +891,55 @@ mod tests {
         fs::write(t.path().join("a"), "123").unwrap();
         fs::write(t.path().join("d/b"), "45").unwrap();
         assert_eq!(tree_bytes(t.path()).unwrap(), 5);
+    }
+
+    /// Two turns of a Claude conversation as `{id}` in `{folder}`.
+    const CLAUDE_TWO_TURNS: &str = concat!(
+        r#"{"parentUuid":null,"isSidechain":false,"userType":"external","cwd":"{folder}","sessionId":"{id}","version":"2.1.325","gitBranch":"humata/fix","type":"user","message":{"role":"user","content":"Fix the login redirect"},"uuid":"7c0e5a10-0001-4a8e-9b1d-3f2a6c8d0001","timestamp":"2026-11-16T09:01:00.000Z"}"#,
+        "\n",
+        r#"{"parentUuid":"7c0e5a10-0001-4a8e-9b1d-3f2a6c8d0001","isSidechain":false,"userType":"external","cwd":"{folder}","sessionId":"{id}","version":"2.1.325","gitBranch":"humata/fix","message":{"id":"msg_01A","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"Fixed {folder}/api/src/login.rs."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":812,"output_tokens":64}},"requestId":"req_01A","type":"assistant","uuid":"7c0e5a10-0011-4a8e-9b1d-3f2a6c8d0011","timestamp":"2026-11-16T09:02:00.000Z"}"#,
+        "\n",
+        r#"{"parentUuid":"7c0e5a10-0011-4a8e-9b1d-3f2a6c8d0011","isSidechain":false,"userType":"external","cwd":"{folder}","sessionId":"{id}","version":"2.1.325","gitBranch":"humata/fix","type":"user","message":{"role":"user","content":"Now add a test for it"},"uuid":"7c0e5a10-0002-4a8e-9b1d-3f2a6c8d0002","timestamp":"2026-11-16T09:05:00.000Z"}"#,
+        "\n",
+        r#"{"parentUuid":"7c0e5a10-0002-4a8e-9b1d-3f2a6c8d0002","isSidechain":false,"userType":"external","cwd":"{folder}","sessionId":"{id}","version":"2.1.325","gitBranch":"humata/fix","message":{"id":"msg_01B","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[{"type":"text","text":"Added a test."}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":812,"output_tokens":64}},"requestId":"req_01B","type":"assistant","uuid":"7c0e5a10-0012-4a8e-9b1d-3f2a6c8d0012","timestamp":"2026-11-16T09:06:00.000Z"}"#,
+        "\n",
+    );
+
+    #[test]
+    fn a_forked_conversation_holds_the_turns_before_and_is_named_for_its_new_id_and_folder() {
+        const ID: &str = "4f6d2c1e-8a3b-4c5d-9e7f-1a2b3c4d5e6f";
+        const NEW_ID: &str = "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d";
+        let t = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(t.path()).unwrap();
+        let from = humata2_conversation::Placement {
+            home: root.join("home"),
+            cli_home: None,
+            folder: root.join("payments/sessions/fix"),
+        };
+        let to = humata2_conversation::Placement { folder: root.join("payments/sessions/fix-2"), ..from.clone() };
+        let transcript = |at: &humata2_conversation::Placement, id: &str| {
+            let project = humata2_conversation::claude_project_name(&at.folder);
+            at.home.join(".claude/projects").join(project).join(format!("{id}.jsonl"))
+        };
+        let parent = transcript(&from, ID);
+        let text = CLAUDE_TWO_TURNS.replace("{folder}", &from.folder.to_string_lossy()).replace("{id}", ID);
+        fs::create_dir_all(parent.parent().unwrap()).unwrap();
+        fs::write(&parent, &text).unwrap();
+
+        let path =
+            fork_conversation(crate::agents::ConversationFormat::ClaudeJsonl, &from, ID, &to, NEW_ID, 2).unwrap();
+
+        assert_eq!(path, transcript(&to, NEW_ID));
+        let claude = humata2_conversation::adapter(humata2_conversation::Format::ClaudeJsonl);
+        let forked = claude.locate(&to, NEW_ID).unwrap();
+        assert_eq!(claude.turns(&forked).unwrap().len(), 1);
+        let new_folder = serde_json::Value::from(to.folder.to_string_lossy().into_owned());
+        for line in fs::read_to_string(&path).unwrap().lines() {
+            let record: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(record["sessionId"], serde_json::Value::from(NEW_ID));
+            assert_eq!(record["cwd"], new_folder);
+        }
+        assert_eq!(fs::read_to_string(&parent).unwrap(), text, "the parent is as it was");
     }
 
     #[test]

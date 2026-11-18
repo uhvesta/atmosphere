@@ -29,6 +29,7 @@ fn anchor(path: &str, line: u32) -> Anchor {
         quoted: vec![format!("line {line}")],
         base: None,
         detached: false,
+        outdated: false,
     }
 }
 
@@ -169,6 +170,21 @@ fn opening_a_box_on_the_same_file_stretches_the_open_one_and_another_file_waits(
     assert_eq!(lines(&rig), Some(("a.md".to_owned(), 3, 5)));
     rig.act(A::OpenBox(session(), anchor("b.md", 1)));
     assert_eq!(lines(&rig), Some(("a.md".to_owned(), 3, 5)));
+}
+
+#[test]
+fn another_line_keeps_a_written_box_as_a_draft_and_opens_an_empty_one_there() {
+    let mut rig = rig();
+    rig.act(A::OpenBox(session(), anchor("a.md", 2)));
+    rig.store.send(A::Typed(session(), "Name this error.".to_owned()), |_| {});
+    // Clicked while the first text's save is still in flight.
+    rig.store.send(A::OpenBox(session(), anchor("a.md", 4)), |_| {});
+    rig.pump();
+    let held = rig.held();
+    let open = held.editing.as_ref().map(|b| (b.anchor.first, b.anchor.last, b.text.clone(), b.comment.clone()));
+    assert_eq!(open, Some((4, 4, String::new(), None)));
+    let kept: Vec<_> = rig.fake.comments(&session()).into_iter().map(|c| (c.anchor.first, c.text, c.status)).collect();
+    assert_eq!(kept, [(2, "Name this error.".to_owned(), Status::Draft)]);
 }
 
 #[test]

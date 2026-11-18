@@ -286,12 +286,18 @@ impl Mirror {
         let state = session::load_state(&dir)?;
         let generation = state.raw.generation + 1;
         raw::start(&dir, generation, b"")?;
-        let skip = skip.unwrap_or(state.source_entries);
+        // The old file's entries: those read from it, plus any it was
+        // still to skip (a rebase done again before a read).
+        let skip = skip.unwrap_or(state.source_entries + state.skip);
         let state = State {
             offset: 0,
             source: String::new(),
             raw: Raw { kept: false, generation, committed_len: 0, backfill: None },
-            source_entries: skip,
+            // Counts entries read from the new file, which starts over: the
+            // read adds the skipped ones as it passes them, so starting at
+            // `skip` would count them twice and the next move would skip
+            // turns that were never carried.
+            source_entries: 0,
             skip,
             bound: Some(machine.to_owned()),
             ..state

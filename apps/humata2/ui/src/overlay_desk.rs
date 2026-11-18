@@ -19,8 +19,12 @@ use std::rc::Rc;
 
 #[path = "overlay_desk_add_repo.rs"]
 mod add_repo;
+#[path = "overlay_desk_channel.rs"]
+mod channel;
 #[path = "overlay_desk_clean_up.rs"]
 mod clean_up;
+#[path = "overlay_desk_close.rs"]
+mod close;
 #[path = "overlay_desk_copy.rs"]
 mod copy;
 #[path = "overlay_desk_new.rs"]
@@ -37,24 +41,35 @@ fn adding_repo_to(desk: &DeskState) -> Option<SessionId> {
     }
 }
 
+/// What a keystroke in the title field sends: the form that is open takes it.
+fn title_action(channel: bool, action: NewAction) -> DeskAction {
+    if !channel {
+        return DeskAction::New(action);
+    }
+    match action {
+        NewAction::Title(text) => {
+            DeskAction::ChannelNew(humata2_desk::ChannelNewAction::Title(text))
+        }
+        _ => DeskAction::ChannelNew(humata2_desk::ChannelNewAction::Start),
+    }
+}
+
 /// The Desk dialogs' text fields.
 pub(super) struct Inputs {
     title: Entity<InputState>,
-    path: Entity<InputState>,
     repo: Entity<InputState>,
 }
 
 impl Inputs {
-    /// Makes the fields and subscribes them: typing sends `NewAction::Title`
-    /// and `NewAction::Path`, Enter in the title starts the session, and
-    /// Enter in the repo field adds the repo.
+    /// Makes the fields and subscribes them: typing sends `NewAction::Title`,
+    /// Enter in the title starts the session, and Enter in the repo field
+    /// adds the repo.
     pub(super) fn new(
         window: &mut Window,
         cx: &mut Context<Overlays>,
         subscriptions: &mut Vec<Subscription>,
     ) -> Self {
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("What is it for?"));
-        let path = cx.new(|cx| InputState::new(window, cx).placeholder("~/notes"));
         let repo = cx.new(|cx| InputState::new(window, cx).placeholder("org/repo"));
         for (input, change, enter) in [
             (
@@ -62,7 +77,6 @@ impl Inputs {
                 (|text: String| Some(NewAction::Title(text))) as fn(String) -> Option<NewAction>,
                 Some(NewAction::Start),
             ),
-            (&path, |text| Some(NewAction::Path(text)), None),
         ] {
             subscriptions.push(cx.subscribe(
                 input,
@@ -70,14 +84,16 @@ impl Inputs {
                     InputEvent::Change => {
                         let text = input.read(cx).value().to_string();
                         if let Some(action) = change(text) {
+                            let channel = this.ui.read(|state| state.desk.channel_new.is_some());
                             this.ui
-                                .send(AppAction::Desk(DeskAction::New(action)), cx);
+                                .send(AppAction::Desk(title_action(channel, action)), cx);
                         }
                     }
                     InputEvent::PressEnter { .. } => {
                         if let Some(action) = enter.clone() {
+                            let channel = this.ui.read(|state| state.desk.channel_new.is_some());
                             this.ui
-                                .send(AppAction::Desk(DeskAction::New(action)), cx);
+                                .send(AppAction::Desk(title_action(channel, action)), cx);
                         }
                     }
                     InputEvent::Focus | InputEvent::Blur => {}
@@ -100,7 +116,46 @@ impl Inputs {
                 }
             },
         ));
-        Self { title, path, repo }
+        // REPOS (RL-5): typing in a session's Add repo searches the library
+        // and GitHub.
+        subscriptions.push(cx.subscribe(
+            &repo,
+            |this: &mut Overlays, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change)
+                    && this.ui.read(|state| adding_repo_to(&state.desk).is_some())
+                {
+                    let text = input.read(cx).value().to_string();
+                    this.ui.send(
+                        AppAction::RepoSearch(
+                            humata2_app::RepoPicker::DeskAddRepo,
+                            humata2_app::RepoSearchAction::QueryChanged(text),
+                        ),
+                        cx,
+                    );
+                }
+            },
+        ));
+        // REPOS (RL-5, DK-14): typing in New desk session's repo field searches.
+        subscriptions.push(cx.subscribe(
+            &repo,
+            |this: &mut Overlays, input, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change)
+                    && this
+                        .ui
+                        .read(|state| state.desk.new.as_ref().is_some_and(|form| form.adding_repo))
+                {
+                    let text = input.read(cx).value().to_string();
+                    this.ui.send(
+                        AppAction::RepoSearch(
+                            humata2_app::RepoPicker::NewDeskSession,
+                            humata2_app::RepoSearchAction::QueryChanged(text),
+                        ),
+                        cx,
+                    );
+                }
+            },
+        ));
+        Self { title, repo }
     }
 }
 
@@ -115,7 +170,10 @@ impl Overlays {
     /// Puts focus in the open Desk dialog: the title field for New desk
     /// session, the sheet itself otherwise.
     pub(super) fn desk_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ui.read(|state| state.desk.new.is_some()) {
+        if self
+            .ui
+            .read(|state| state.desk.new.is_some() || state.desk.channel_new.is_some())
+        {
             self.desk
                 .title
                 .update(cx, |input, cx| input.focus(window, cx));
@@ -137,28 +195,33 @@ impl Overlays {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let (new, clean_up, copy, workspace) = self.ui.read(|state| {
+        if let Some(view) = self.ui.read(|state| channel::new_view(&state.desk)) {
+            return Some(self.desk_channel_new(&view, look, ui, window, cx));
+        }
+        if let Some(view) = self.ui.read(|state| channel::close_view(&state.desk)) {
+            return Some(self.desk_channel_close(&view, look, ui));
+        }
+        let (new, clean_up, copy, close, workspace) = self.ui.read(|state| {
             (
                 state.desk.new.clone(),
                 state.desk.clean_up.clone(),
                 state.desk.copy.clone(),
+                state.desk.close.clone(),
                 state.desk.workspace.clone(),
             )
         });
         if let Some(form) = new {
-            // The path the folder will get, with a suffix when it is taken.
-            let preview = self
-                .ui
-                .read(|state| state.desk.scratch_preview())
-                .unwrap_or_else(|| form.scratch_path());
-            return Some(self.desk_new(&form, &preview, &workspace, look, ui, window, cx));
+            return Some(self.desk_new(&form, &workspace, look, ui, window, cx));
         }
         if let Some(dialog) = clean_up {
             return Some(self.desk_clean_up(&dialog, &workspace, look, ui));
         }
+        if let Some(dialog) = close {
+            return Some(self.desk_close(&dialog, &workspace, look, ui));
+        }
         let Some(dialog) = copy else {
             let session = self.ui.read(|state| adding_repo_to(&state.desk))?;
-            return Some(self.desk_add_repo(&session, &workspace, look, ui, cx));
+            return Some(self.desk_add_repo(&session, &workspace, look, ui, window, cx));
         };
         let machines: Vec<_> = self.ui.read(|state| {
             state
@@ -357,51 +420,4 @@ fn check(
             x.cursor_pointer()
                 .on_click(move |_, _, cx| ui.send(action.clone(), cx))
         })
-}
-
-/// A radio with its words and the note under them.
-fn radio(
-    ui: &Rc<Ui>,
-    look: Look,
-    id: &'static str,
-    on: bool,
-    text: &'static str,
-    note: String,
-    action: AppAction,
-) -> ObservedElement<Stateful<Div>> {
-    let ui = ui.clone();
-    div()
-        .id(id)
-        .role(Role::RadioButton)
-        .aria_label(text)
-        .aria_selected(on)
-        .test_support()
-        .flex()
-        .items_start()
-        .gap(px(8.))
-        .cursor_pointer()
-        .child(
-            row()
-                .mt(px(2.))
-                .size(px(14.))
-                .flex_shrink_0()
-                .rounded_full()
-                .justify_center()
-                .when(on, |x| {
-                    x.bg(rgb(look.accent))
-                        .child(div().size(px(5.)).rounded_full().bg(rgb(0xffffff)))
-                })
-                .when(!on, |x| {
-                    x.border_1()
-                        .border_color(rgb(look.tertiary))
-                        .bg(rgb(look.card))
-                }),
-        )
-        .child(
-            col()
-                .min_w_0()
-                .child(div().child(text))
-                .child(secondary(look, note)),
-        )
-        .on_click(move |_, _, cx| ui.send(action.clone(), cx))
 }

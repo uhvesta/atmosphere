@@ -1,18 +1,74 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 # Design work only; the production application does not depend on this package.
-rust_library(
-    name = "ui",
-    srcs = glob(
-        ["src/*.rs"],
-        exclude = ["src/main.rs"],
-    ),
-    compile_data = glob(["assets/*.ttf"]),
-    crate_name = "humata2_ui_prototype",
-    crate_root = "src/lib.rs",
-    target_compatible_with = ["@platforms//os:macos"],
-    deps = ["@crates//:gpui-kit"],
-)
+# The desktop build draws with GPUI Fast (`ui`); `ui_gpui` builds the same
+# source on ordinary GPUI so both engines keep compiling (D57).
+ENGINES = {
+    "ui": {
+        "engine": "_fast",
+        "features": ["fast"],
+        "gpui_kit": "@crates_gpui_fast//:gpui-kit",
+    },
+    "ui_gpui": {
+        "engine": "",
+        "features": [],
+        "gpui_kit": "@crates//:gpui-kit",
+    },
+}
+
+[
+    rust_library(
+        name = name,
+        srcs = glob(
+            ["src/*.rs"],
+            exclude = ["src/main.rs"],
+        ),
+        compile_data = glob(["assets/*.ttf"]),
+        crate_features = config["features"],
+        crate_name = "humata2_ui_prototype",
+        crate_root = "src/lib.rs",
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            "//apps/humata2/engine:engine" + config["engine"],
+            "//apps/humata2/terminal/grid:terminal_grid",
+            "//apps/humata2/terminal/view:terminal_view" + config["engine"],
+            config["gpui_kit"],
+            "@crates//:markdown",
+            "@crates//:mermaid-rs-renderer",
+        ],
+    )
+    for name, config in ENGINES.items()
+]
+
+# The headless automation tests in src/ui.rs (the `automation` feature), on
+# each engine: `ui_test` on GPUI Fast, `ui_gpui_test` on ordinary GPUI. They
+# draw off screen and open no window. `markdown_frame_costs` is ignored, a
+# measurement to run in an optimised build:
+#   bazel run -c opt //apps/humata2/ui-prototype:ui_test -- --ignored markdown_frame_costs --nocapture
+[
+    rust_test(
+        name = name + "_test",
+        size = "large",
+        srcs = glob(
+            ["src/*.rs"],
+            exclude = ["src/main.rs"],
+        ),
+        compile_data = glob(["assets/*.ttf"]),
+        crate_features = config["features"] + ["automation"],
+        crate_name = "humata2_ui_prototype",
+        crate_root = "src/lib.rs",
+        target_compatible_with = ["@platforms//os:macos"],
+        deps = [
+            "//apps/humata2/engine:engine" + config["engine"] + "_test_support",
+            "//apps/humata2/terminal/grid:terminal_grid",
+            "//apps/humata2/terminal/view:terminal_view" + config["engine"],
+            config["gpui_kit"],
+            "@crates//:markdown",
+            "@crates//:mermaid-rs-renderer",
+        ],
+    )
+    for name, config in ENGINES.items()
+]
 
 rust_binary(
     name = "desktop",

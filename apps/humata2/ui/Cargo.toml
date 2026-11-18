@@ -22,6 +22,7 @@ humata2-hosts = { path = "../features/hosts" }
 humata2-inbox = { path = "../features/inbox" }
 humata2-markdown = { path = "../markdown" }
 humata2-palette = { path = "../features/palette" }
+humata2-pr-review = { path = "../features/pr_review" }
 humata2-report = { path = "../report" }
 humata2-review = { path = "../features/review" }
 humata2-session = { path = "../features/session" }

@@ -1,6 +1,6 @@
 use humata2_clients::model::{MachineId, Scope, SessionId};
 use humata2_find::PinnedAction;
-use humata2_palette::{Command, PullRef};
+use humata2_palette::Command;
 use humata2_settings::SettingsAction;
 use humata2_session::SessionAction;
 use humata2_sidebar::SidebarAction;
@@ -34,6 +34,13 @@ impl App {
                 self.fork_unless_desk(state, humata2_clients::model::ForkKind::Worktree)
             }
             Command::Archive => self.archive_or_close(state),
+            Command::RenameSession => {
+                self.child(state, AppAction::Session(SessionAction::StartRename))
+            }
+            Command::StopAgent => self.child(state, AppAction::Session(SessionAction::StopAgent)),
+            Command::ContinueInChannel => {
+                self.child(state, AppAction::Session(SessionAction::StartContinue))
+            }
             Command::Channel(id) => self.navigate(state, Route::Channel(id)),
             Command::Session(id) => self.navigate(state, Route::Session(id)),
             Command::Pull(number) => {
@@ -83,9 +90,26 @@ impl App {
             Command::Views => self.navigate(state, Route::Views),
             Command::Machine(id) => self.navigate(state, Route::Machine(id)),
             Command::ChannelBoard(id) => self.navigate(state, Route::Board(Scope::Channel(id))),
-            // The palette asks for the machine itself and sends MoveTo.
-            Command::MoveSession => Effect::none(),
+            // The palette asks for the machine itself and sends MoveTo, so
+            // this is ⌥⌘M with no session open.
+            Command::MoveSession => {
+                let clock = self.clients.clock.clone();
+                state.toast(
+                    "Nothing to move: open a session, then press ⌥⌘M to move it to another machine."
+                        .to_owned(),
+                    &clock,
+                )
+            }
             Command::MoveTo { session, machine } => self.move_session(state, session, machine),
+            // REPOS (RL-5, KP-4): the channel's Add a GitHub repo sheet, prefilled.
+            // The sheet is the app's own, not a child feature's.
+            Command::AddRepoToChannel { channel, repo } => {
+                let open =
+                    self.change_channel_add_repo(state, crate::ChannelAddRepoAction::Open(channel));
+                let fill =
+                    self.change_channel_add_repo(state, crate::ChannelAddRepoAction::Query(repo));
+                open.and(fill)
+            }
             Command::ReviewPull(pull) => self.review_pull(state, &pull),
             Command::SettingsSection(section) => {
                 let go = self.navigate(state, Route::Settings);
@@ -140,21 +164,6 @@ impl App {
         let pick = self.child(state, AppAction::Session(SessionAction::MovePick(machine)));
         let confirm = self.child(state, AppAction::Session(SessionAction::ConfirmMove));
         Effect::merge([go, start, pick, confirm])
-    }
-
-    fn review_pull(&self, state: &mut AppState, pull: &PullRef) -> Effect<AppAction> {
-        // SEAM: PR-1/PR-4's Review a pull request dialog isn't built; until it is, open the
-        // session already reviewing this PR, as Pull does, else say what to do.
-        let found = state.workspace.pulls.iter()
-            .find(|p| p.number == pull.number && p.repo == format!("{}/{}", pull.owner, pull.repo))
-            .and_then(|p| p.session.clone());
-        match found {
-            Some(session) => self.navigate(state, Route::Session(session)),
-            None => {
-                let clock = self.clients.clock.clone();
-                state.toast(format!("No session here reviews {}/{}#{}. Start a session to review it.", pull.owner, pull.repo, pull.number), &clock)
-            }
-        }
     }
 }
 

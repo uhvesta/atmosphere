@@ -131,7 +131,17 @@ Layer: agents. Platforms: macOS, Linux.
 
 **Expected:** Refused at once. IN-22 has no write row.
 
-**Status:** Code, no test. `daemon/access/src/policy.rs:728-729` returns `NotItsFolder`. No test covers this refusal.
+**Status:** Fakes only. `daemon/access/tests/refusals.rs::an_agent_writes_only_its_own_folders`. A pure engine test, not a live daemon.
+
+### A write into another machine's shared/
+
+**When:** I write a file into the channel's `shared/` on another machine of the channel with `file_write`, or copy one there.
+
+**I see:** Refused, with kind `denied` (hard limit). The message names my machine and the other one; the fix says to put the file in `shared/` on my machine, where a session on the other machine can copy it in, or the user can send it with `humata cp`. No card is raised, and nothing is written there.
+
+**Expected:** Refused at once, before the copy's source is looked at (D755). Copying from another machine into my own `shared/` still works, as a copy-in (TP-4).
+
+**Status:** Fakes only. `daemon/access/tests/refusals.rs::an_agent_writes_shared_only_on_its_own_machine`, `daemon/access/tests/refusals.rs::a_copy_into_a_remote_shared_is_refused_before_its_source_is_judged` and `daemon/access/tests/refusals.rs::an_agent_pulls_another_machines_file_into_its_own_shared`. The live push refusal is `daemon/humatad/tests/agent_send_machine.rs::an_agent_names_its_channels_machine_by_name_and_sees_no_other` (kind `denied` only).
 
 ### A reply to an access ask
 
@@ -149,7 +159,7 @@ Layer: agents. Platforms: macOS, Linux.
 
 **Expected:** The grant is the one the card offered (IN-14).
 
-**Status:** Likely bug for the Reply editor: `ui/src/request_card.rs:339-350` draws the draft as plain text, and nothing in `ui/src` sends `InboxAction::ReplyText`. The tick is tested at the reducer by `features/inbox/tests/answers.rs::a_ticked_allow_sends_always_with_the_rule`. The Reply button is wired at `ui/src/request_card.rs:420` and `features/inbox/src/lib.rs:148-154`. No reducer test sends `StartReply` or `SendReply`.
+**Status:** Works (real daemon): `clients/live/tests/inbox.rs::always_allow_makes_a_grant_the_app_lists_and_can_remove` makes the grant from the app's client, and `clients/live/tests/inbox.rs::deny_with_a_reply_ends_the_agents_wait_as_denied` sends the typed reply with a denial. The tick is `features/inbox/tests/answers.rs::a_ticked_allow_sends_always_with_the_rule` and typing the reply is `features/inbox/tests/answers.rs::a_typed_reply_is_what_send_reply_sends` (fakes). (Was a likely bug: the Reply box took no typing; fixed by BUGS.)
 
 ## Expected outcomes
 
@@ -182,12 +192,12 @@ Layer: agents. Platforms: macOS, Linux.
 | Branch: engine scope (forks, moves, end, Never) | Fakes only | `daemon/access/tests/grants.rs::grants_end_with_their_session` |
 | Branch: write into another clone | Code, no test | `daemon/access/src/policy.rs:728-729` |
 | Branch: reply to an access ask | Code, no test | `daemon/humatad/src/inbox.rs:509-513` |
-| Branch: Always tick and Reply editor | Likely bug (Reply box takes no typing) | `ui/src/request_card.rs:420`, `features/inbox/src/lib.rs:148-154` |
+| Branch: Always tick and Reply editor | Works (real daemon) | `clients/live/tests/inbox.rs::always_allow_makes_a_grant_the_app_lists_and_can_remove`; `clients/live/tests/inbox.rs::deny_with_a_reply_ends_the_agents_wait_as_denied`; `features/inbox/tests/answers.rs::a_typed_reply_is_what_send_reply_sends` |
 
 ## Gaps and likely bugs
 
 - Not built, no milestone: an ask-ahead for a write into a folder. IN-22 has no write row, and `daemon/access/src/policy.rs:728-729` refuses another session's writes outright. A write ask-ahead was the first idea for this case, so steps 4 and 6 use a read and an own-clone write instead.
 - Code, no test: the write refusal into another clone and the reply to an access ask.
-- Likely bug: the Reply box takes no typing. `ui/src/request_card.rs:339-350` draws the draft as text, and `ReplyText` (`features/inbox/src/lib.rs:150`) has no sender in `ui/src`. Confirm by pressing Reply… and typing.
+- Fixed (was a likely bug): the Reply box takes typing (`features/inbox/tests/answers.rs::a_typed_reply_is_what_send_reply_sends`).
 - Documentation, not behaviour: `OVERVIEW.md:458` says session-only grants and the Reply editor are disabled. The code wires the Reply button and sends `StartReply` and `SendReply` (`features/inbox/src/lib.rs:148-154`). The Always tick is labelled for the rest of the session (`ui/src/request_card.rs:151`), and the grant is made for the requesting session (IN-14, step 2). The Reply button is wired, but the box cannot be typed into, so the OVERVIEW entry is half right.
 - No MCP tool lists grants or revokes. Agents use `humata access grants` (CLI.md). Revoke stays out of agent reach by design (`api/MCP.md:337`).

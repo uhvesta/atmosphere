@@ -55,7 +55,7 @@ pub use chat::{
     AgentSwitches, Change, ChangeKind, ChangeTool, ChatError, ChatTool, Context, Highlight, Lines,
     Place, Replaced, ReviewChat, Switch, Undoable, UserNote, ViewState, ViewedFile,
 };
-pub use checkout::{Checkout, Stamp, WatchSet};
+pub use checkout::{Checkout, Stamp, WatchSet, origin_head};
 pub use comment_message::{DiffContext, MessagePart, bracketed_paste, compose};
 pub use comments::{
     Addressed, CommentAnchor, CommentAuthor, CommentError, CommentFilter, CommentLedger,
@@ -186,6 +186,16 @@ impl Checkout {
         blocking(move || checkout.fetch_session_head_blocking(&from, &session)).await
     }
 
+    /// [`Self::default_base_blocking`] on the blocking pool.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::default_base_blocking`].
+    pub async fn default_base(&self) -> Result<String, DiffError> {
+        let checkout = self.clone();
+        blocking(move || checkout.default_base_blocking()).await
+    }
+
     /// [`Self::pin_blocking`] on the blocking pool.
     ///
     /// # Errors
@@ -263,6 +273,22 @@ impl Clones {
             repo: repo.to_owned(),
             known: self.by_repo.keys().cloned().collect(),
         })
+    }
+
+    /// The default branch of each of `repos` (see [`Checkout::default_base`]),
+    /// keyed by repo.
+    ///
+    /// # Errors
+    ///
+    /// [`DiffError::UnknownRepo`] for a repo there is no clone of, or the
+    /// first repo's [`DiffError`].
+    pub async fn default_bases(&self, repos: &[String]) -> Result<BTreeMap<String, String>, DiffError> {
+        let mut bases = BTreeMap::new();
+        for repo in repos {
+            let base = self.get(repo)?.default_base().await?;
+            bases.insert(repo.clone(), base);
+        }
+        Ok(bases)
     }
 
     /// Every repo of `spec`, computed at once, in the spec's order.

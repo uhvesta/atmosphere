@@ -261,3 +261,30 @@ fn the_sidebar_lists_desk_sessions_only_on_the_desk() {
         assert!(app.contains(&format!("sidebar-session-{id}")), "{id}");
     }
 }
+
+#[test]
+fn closing_an_unkept_folder_with_files_asks_and_save_version_closes_it() {
+    let mut app = desk_app();
+    let id = SessionId::new("desk-plan-q4");
+    app.open("desk-plan-q4", Panel::Info);
+    app.send(AppAction::Desk(DeskAction::AskClose(id.clone())));
+    assert!(app.contains("desk-close-dialog"));
+    assert!(app.fakes.daemon.workspace().desk.sessions[&id].closed.is_none());
+    app.click("desk-close-save");
+    assert!(!app.contains("desk-close-dialog"));
+    let record = app.fakes.daemon.workspace().desk.sessions[&id].clone();
+    assert!(record.closed.is_some());
+    assert!(!record.doc_head.is_empty());
+}
+
+#[test]
+fn close_in_the_question_closes_without_saving() {
+    let mut app = desk_app();
+    let id = SessionId::new("desk-plan-q4");
+    app.open("desk-plan-q4", Panel::Info);
+    app.send(AppAction::Desk(DeskAction::AskClose(id.clone())));
+    app.click("desk-close-anyway");
+    let record = app.fakes.daemon.workspace().desk.sessions[&id].clone();
+    assert!(record.closed.is_some());
+    assert!(record.doc_head.is_empty());
+}

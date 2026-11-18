@@ -123,6 +123,13 @@ pub enum Refusal {
     )]
     NotItsFolder { machine: MachineId },
 
+    /// D755: an agent writes `shared/` only on the machine it runs on; a
+    /// session on the other machine pulls the file instead (TP-4).
+    #[error(
+        "an agent writes only on the machine it runs on ({here}), so nothing was written on {machine}"
+    )]
+    SharedOnOtherMachine { machine: MachineId, here: MachineId },
+
     #[error(
         "review session {session} does not push through Humata (PR-7); the user can turn on \"Let the agent push to the PR branch\" in the session's Info panel"
     )]
@@ -251,6 +258,9 @@ pub enum Fix {
     },
     /// Work in the caller's own clone or `shared/`.
     UseOwnFolders,
+    /// Put the file in `shared/` on the caller's own machine, for a session
+    /// on `machine` to copy in, or for the user to send.
+    PutInSharedHereForPull { machine: MachineId },
     /// Make the change in a session's clone of the repository, or remove
     /// the repository from the channel (CH-22) if its main clone should go.
     SessionCloneOrRemoveRepo { repo: RepoRef },
@@ -270,6 +280,9 @@ pub enum Fix {
     NotFromAScript,
     /// Make the call itself.
     MakeTheCall,
+    /// The user starts the machine's sessions again, from the app or with
+    /// `humata start`.
+    UserStartsMachine { machine: MachineId },
     /// Nothing the caller can do.
     Nothing,
 }
@@ -282,7 +295,9 @@ impl Refusal {
             Self::ParentReadOnly { .. } => ErrorKind::ParentReadOnly,
             Self::MainCloneReadOnly { .. } => ErrorKind::MainCloneReadOnly,
             Self::OutsideHumataFolders { .. } => ErrorKind::OutsideHumataFolders,
-            Self::NotItsFolder { .. } | Self::ReviewSessionPush { .. } => {
+            Self::NotItsFolder { .. }
+            | Self::SharedOnOtherMachine { .. }
+            | Self::ReviewSessionPush { .. } => {
                 ErrorKind::Denied(DeniedSource::HardLimit)
             }
             Self::OtherChannel { .. } => ErrorKind::Denied(DeniedSource::OtherChannel),
@@ -317,6 +332,9 @@ impl Refusal {
             Self::ParentReadOnly { .. }
             | Self::OutsideHumataFolders { .. }
             | Self::NotItsFolder { .. } => Fix::UseOwnFolders,
+            Self::SharedOnOtherMachine { machine, .. } => Fix::PutInSharedHereForPull {
+                machine: machine.clone(),
+            },
             Self::ReviewSessionPush { session } => Fix::UserAllowsReviewPush {
                 session: session.clone(),
             },
@@ -335,9 +353,10 @@ impl Refusal {
                 Fix::NotFromAScript
             }
             Self::NothingToAskAhead { .. } => Fix::MakeTheCall,
-            Self::PeerOnly { .. } | Self::PeerCannotCall | Self::MachineStopped { .. } => {
-                Fix::Nothing
-            }
+            Self::MachineStopped { machine } => Fix::UserStartsMachine {
+                machine: machine.clone(),
+            },
+            Self::PeerOnly { .. } | Self::PeerCannotCall => Fix::Nothing,
         }
     }
 }

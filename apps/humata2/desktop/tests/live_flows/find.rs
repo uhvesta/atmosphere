@@ -61,7 +61,7 @@ fn palette_open(app: &App) -> bool {
 
 /// ⌘K, then waits until the palette shows with nothing typed.
 fn open_palette(app: &mut App) {
-    app.play(&Action::Key("secondary-k".to_owned()));
+    app.play(&Action::Key(super::app_key("k")));
     app.wait_until("the palette to open", |app| {
         palette_open(app) && app.ui.read(|state| state.palette.query.is_empty())
     });
@@ -165,6 +165,7 @@ fn from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_a
 
     // 2. A word from the agent's conversation: the host's search finds
     // it, and its hit opens the Conversation tab on that turn.
+    // The host tells when its index catches the session up (D438).
     app.wait_until("the host to index the conversation", |app| {
         app.runtime
             .block_on(other.history.search(WORD, ""))
@@ -228,18 +229,19 @@ fn from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_a
         "the tab shows the host's entries for the turns it read"
     );
 
-    // 3. A pasted PR URL. D197: until the Review a pull request dialog exists,
-    // Review this PR is offered only for a PR a session here reviews, and the
-    // live host has none, so this one offers no dead-end Review entry.
+    // 3. A pasted PR URL. D288 (reversing D197): Review this PR shows at
+    // once from the parsed URL, even for a PR no session here reviews; the
+    // dialog resolves it with gh after.
     open_palette(&mut app);
     let url = "https://github.com/o/r/pull/123";
     // Typed, not pasted: on the headless window ⌘V doesn't reach the
     // palette's input, and the palette sees the same query either way.
     type_query(&mut app, url);
-    assert!(
-        commands(&app).iter().all(|c| !c.starts_with("ReviewPull")),
-        "an unreviewed PR offers no Review this PR: {:?}",
-        commands(&app)
+    let offered = commands(&app);
+    assert_eq!(
+        offered.first().map(String::as_str),
+        Some("ReviewPull(PullRef { owner: \"o\", repo: \"r\", number: 123 })"),
+        "a pasted PR URL offers Review this PR first: {offered:?}"
     );
     close_palette(&mut app);
 
@@ -283,6 +285,54 @@ fn from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_a
     app.wait_until("the app to follow the unpin", |app| !pinned(app, &thing));
     assert!(!host_pins(&app, &other, &thing));
 
+    drop(app);
+    drop(world);
+}
+
+/// Macro-13 step 10: the palette's Files group lists a file from a running
+/// session's clone on the host, with the session it is in.
+#[test]
+fn a_file_in_a_sessions_clone_is_found_from_the_palette() {
+    let runtime = runtime();
+    let (world, clients, id) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let id = running_session(&world, &clients, "Fix the ledger", &prompt("read the notes")).await;
+        (world, clients, id)
+    });
+    let mut app = App::open(&runtime, clients);
+    app.wait_until("the session to load", |app| {
+        app.ui.read(|state| state.workspace.session(&id).is_some())
+    });
+    let session = format!("{id:?}");
+    open_palette(&mut app);
+    type_query(&mut app, "README");
+    app.wait_until("the clone's README to be listed as a file", |app| {
+        commands(app)
+            .iter()
+            .any(|entry| entry.starts_with("File") && entry.contains("README.md") && entry.contains(&session))
+    });
+    drop(app);
+    drop(world);
+}
+
+/// Macro-13 B2: a search nothing matches says so, in one line.
+#[test]
+fn a_search_that_finds_nothing_says_so() {
+    const NOTHING: &str = "zzqqxxjj";
+    let runtime = runtime();
+    let (world, clients) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        (world, clients)
+    });
+    let mut app = App::open(&runtime, clients);
+    open_palette(&mut app);
+    type_query(&mut app, NOTHING);
+    app.wait_until("the palette to say nothing matches", |app| {
+        app.view().contains(&format!("“{NOTHING}”"))
+    });
+    assert!(commands(&app).is_empty(), "nothing is listed: {:?}", commands(&app));
     drop(app);
     drop(world);
 }

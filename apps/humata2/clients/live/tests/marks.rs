@@ -389,10 +389,10 @@ async fn a_reorder_from_a_stale_revision_is_refused_and_changes_nothing() {
     let host_list = set(&cli, &a, None, Some(true)).await;
 
     let result = within("reorder", app.reorder(&[c, b, a], seen.revision)).await;
-    // A refusal the app can act on by reading the pins again, not the host
+    // A conflict the app can act on by reading the pins again, not the host
     // being offline or the thing being gone.
     assert!(
-        matches!(result, Err(DaemonError::Refused { .. })),
+        matches!(result, Err(DaemonError::Conflict { .. })),
         "expected a refusal, got {result:?}"
     );
     let now = pinned(&app).await;
@@ -497,4 +497,65 @@ async fn pins_and_vip_marks_survive_a_restart() {
     assert_eq!(things(&list).last(), Some(&vip_only));
     assert!(list.items.last().is_some_and(|item| item.vip));
     assert!(list.revision > before.revision);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_pinned_and_marked_vip_through_the_daemon_client_shows_in_pinned() {
+    let host = Host::start().await;
+    let daemon = host.connect().await;
+    let id = host.session(&daemon, "Fix the ledger").await;
+    let session = Thing::Session(id.clone());
+    let marks = marks(&daemon);
+
+    within("set_pinned", daemon.set_pinned(&id, true))
+        .await
+        .expect("pin through the daemon client");
+    within("set_vip", daemon.set_vip(&id, true))
+        .await
+        .expect("mark VIP through the daemon client");
+    assert_eq!(flags(&pinned(&marks).await), [(session.clone(), true)]);
+
+    within("unpin", daemon.set_pinned(&id, false))
+        .await
+        .expect("unpin through the daemon client");
+    assert!(things(&pinned(&marks).await).is_empty());
+}
+
+/// D387: the workspace the client loads carries each session's pin and VIP
+/// mark, and a restart of the host keeps them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loaded_session_carries_its_pin_and_vip_mark() {
+    let mut host = Host::start().await;
+    let daemon = host.connect().await;
+    let id = host.session(&daemon, "Fix the ledger").await;
+
+    let workspace = within("load", daemon.load()).await.expect("load the workspace");
+    let session = workspace.session(&id).expect("the session loads");
+    assert!(!session.pinned && !session.vip);
+
+    within("set_pinned", daemon.set_pinned(&id, true))
+        .await
+        .expect("pin");
+    within("set_vip", daemon.set_vip(&id, true))
+        .await
+        .expect("mark VIP");
+    let workspace = within("load", daemon.load()).await.expect("load the workspace");
+    let session = workspace.session(&id).expect("the session loads");
+    assert!(session.pinned && session.vip);
+
+    host.restart().await;
+    let daemon = host.connect().await;
+    let workspace = within("load", daemon.load()).await.expect("load the workspace");
+    let session = workspace.session(&id).expect("the session loads");
+    assert!(session.pinned && session.vip, "the restart kept the marks");
+
+    within("unpin", daemon.set_pinned(&id, false))
+        .await
+        .expect("unpin");
+    within("clear VIP", daemon.set_vip(&id, false))
+        .await
+        .expect("clear VIP");
+    let workspace = within("load", daemon.load()).await.expect("load the workspace");
+    let session = workspace.session(&id).expect("the session loads");
+    assert!(!session.pinned && !session.vip);
 }

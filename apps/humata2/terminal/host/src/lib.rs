@@ -29,7 +29,7 @@ mod spawn;
 pub use error::Error;
 pub use agent_resume::{AgentResumeConfig, AgentResumeError, AgentResumeObservation, AgentResumeObserver, AgentResumeLaunch};
 pub use gateway::serve;
-use ghostty_vt::{Event as VtEvent, Terminal, clipboard_read_reply};
+use ghostty_vt::{Event as VtEvent, Terminal};
 pub use native::{
     ControlPolicy, HandleError, QueuedInjection, QueuedStop, TerminalHandle, WriteUncertainty,
 };
@@ -2111,12 +2111,10 @@ fn new_terminal(spec: &SessionSpec, lines: usize) -> Result<Terminal, Error> {
 fn engine_replies(events: Vec<VtEvent>) -> Vec<u8> {
     let mut replies = Vec::new();
     for event in events {
-        match event {
-            VtEvent::Reply(bytes) => replies.extend(bytes),
-            VtEvent::ClipboardReadRequested { target } => {
-                replies.extend(clipboard_read_reply(target, None))
-            }
-            _ => {}
+        // A clipboard read (OSC 52 `?`) is never answered here: the view
+        // the user is looking at asks them first (D30).
+        if let VtEvent::Reply(bytes) = event {
+            replies.extend(bytes);
         }
     }
     replies
@@ -2198,6 +2196,17 @@ fn history_limits(policy: &HistoryPolicy) -> (usize, usize) {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// D30: the host answers a program's queries itself, but never its
+    /// clipboard reads, which wait for the user in the view.
+    #[test]
+    fn the_host_answers_queries_but_never_a_clipboard_read() {
+        let mut vt = Terminal::new(80, 24, 100).unwrap();
+        vt.feed(b"\x1b]52;c;?\x07");
+        assert!(engine_replies(vt.drain_events()).is_empty());
+        vt.feed(b"\x1b[6n");
+        assert!(!engine_replies(vt.drain_events()).is_empty());
+    }
     fn holder() -> PathBuf {
         std::fs::canonicalize(std::env::var_os("HUMATA2_HOLDER").unwrap()).unwrap()
     }

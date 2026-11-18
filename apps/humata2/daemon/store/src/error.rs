@@ -140,6 +140,18 @@ pub enum StoreError {
     DamagedWithoutCopy { path: PathBuf, damage: String },
 
     #[error(
+        "there's no pre-upgrade copy at {} to put back: it was dropped once the upgrade settled, or never taken. Don't start the older build on this state; start the newer one, which reads it, and look at its log for why the upgrade failed",
+        path.display()
+    )]
+    NoUpgradeCopy { path: PathBuf },
+
+    #[error(
+        "couldn't keep a copy of the state at {} before the upgrade changes its schema: the copy failed its check ({problem}), so the upgrade must not go on. The database itself may be damaged: run `PRAGMA integrity_check` on it, and keep running the older build until it's fixed",
+        path.display()
+    )]
+    UpgradeCopyCheck { path: PathBuf, problem: String },
+
+    #[error(
         "{id:?} can't be used as an id: ids are 1 to 128 letters, digits, '-', '_' or '.', and don't start with '.'"
     )]
     InvalidId { id: String },
@@ -176,11 +188,18 @@ pub enum StoreError {
     )]
     NoDeletedChannel { path: PathBuf },
 
-    #[error("no board item {key} is saved on this machine; it was never made here, or the key is mistyped")]
+    #[error(
+        "no board item {key} is saved on this machine; it was never made here, or the key is mistyped"
+    )]
     NoBoardItem { key: String },
 
     #[error("{owner} has no board prefix yet; choose and claim one before making its first item")]
     NoBoardPrefix { owner: String },
+
+    #[error(
+        "{machine} already has a pending Migrate item for thing {thing}, and only one may be pending per thing and machine; nothing was changed. Restart humatad2 so it reads the Inbox again, then try again"
+    )]
+    MigrateTaken { thing: i32, machine: String },
 
     #[error("{column} is not a board column; columns are numbered 1 (Backlog) to 5 (Done)")]
     InvalidBoardColumn { column: i32 },

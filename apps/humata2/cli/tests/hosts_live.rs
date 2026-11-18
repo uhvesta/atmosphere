@@ -14,6 +14,7 @@
 #[path = "../../daemon/humatad/tests/common/mod.rs"]
 mod common;
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -38,9 +39,10 @@ const OK: i32 = 0;
 const USAGE: i32 = 2;
 const DENIED: i32 = 4;
 const PRECONDITION: i32 = 7;
+const UNREACHABLE: i32 = 8;
 const PENDING: i32 = 12;
 
-const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
 /// A tools bundle for linux-x86_64, the fake machine's default platform.
 /// Its humatad2 runs the real one, so the peer link really comes up.
@@ -99,7 +101,7 @@ impl Run {
 /// The admin daemon with the fake machine's `ssh` first on its PATH, its
 /// skills read from `<dir>/home`, and a home folder of its own.
 struct Host {
-    child: Child,
+    child: RefCell<Child>,
     socket: PathBuf,
     dir: TempDir,
 }
@@ -133,7 +135,7 @@ impl Host {
             assert!(Instant::now() < deadline, "humatad2 never started listening");
             std::thread::sleep(Duration::from_millis(20));
         }
-        Self { child, socket, dir }
+        Self { child: RefCell::new(child), socket, dir }
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -166,12 +168,34 @@ impl Host {
         child.stdin.take().unwrap().write_all(stdin).unwrap();
         let output = child.wait_with_output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        if stdout.contains("daemon_not_running") {
+            panic!("{}", self.gone(args, &stdout));
+        }
         Run {
             code: output.status.code().unwrap_or(-1),
             json: serde_json::from_str(&stdout).unwrap_or(Json::Null),
             stdout,
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         }
+    }
+
+    /// Why `humata <args>` couldn't reach the daemon: whether humatad2 had
+    /// exited, how, and the end of its log, so a lost daemon says why.
+    fn gone(&self, args: &[&str], stdout: &str) -> String {
+        let status = match self.child.borrow_mut().try_wait() {
+            Ok(Some(status)) => format!("humatad2 had exited: {status}"),
+            Ok(None) => "humatad2 was still running".to_owned(),
+            Err(error) => format!("humatad2's state is unknown: {error}"),
+        };
+        let log = std::fs::read_to_string(self.dir.path().join("state/logs/humatad2.log")).unwrap_or_default();
+        let tail: Vec<&str> = log.lines().rev().take(40).collect();
+        let tail: Vec<&str> = tail.into_iter().rev().collect();
+        format!(
+            "humata {} couldn't reach the daemon ({status}; socket there: {}):\n{stdout}\nthe end of its log:\n{}",
+            args.join(" "),
+            self.socket.exists(),
+            tail.join("\n")
+        )
     }
 
     /// The machines `humata host ls` lists.
@@ -223,15 +247,16 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let child = self.child.get_mut();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
 /// The fingerprint a first, unconfirmed `host add` reports.
 fn presented_fingerprint(first: &Run) -> String {
     assert_eq!(first.code, PRECONDITION, "{}", first.stdout);
-    assert_eq!(first.kind(), "host_key_changed");
+    assert_eq!(first.kind(), "host_key_unknown");
     let fingerprint = first.json["error"]["details"]["presented_fingerprint"]
         .as_str()
         .unwrap_or_default();
@@ -334,15 +359,19 @@ fn an_unconfirmed_removal_goes_ahead_with_yes() {
 }
 
 #[test]
-fn a_host_variable_is_not_served_yet_and_its_value_is_never_on_a_command_line_or_printed() {
+fn a_host_variable_is_set_listed_by_name_and_removed_and_its_value_is_never_on_a_command_line_or_printed() {
     let machine = FakeMachine::new();
     let host = Host::start(&machine);
     host.add_box();
 
+    // The value goes to the box over its link, to the box's own daemon
+    // (HO-13). This rig's box link has its own --state and no --socket, so
+    // it relays nothing (D146): the box can't take the value, and says so at
+    // once (HO-5). humatad's host_variables_remote test sets one on a box
+    // that has a daemon.
     let secret = "s3cr3t-value-0f-the-variable";
     let set = host.run_with(&["host", "var", "set", "box-1", "API_TOKEN"], format!("{secret}\n").as_bytes());
-    assert_eq!(set.code, PRECONDITION, "{}", set.stdout);
-    assert_eq!(set.json["ok"], false);
+    assert_eq!(set.code, UNREACHABLE, "{}", set.stdout);
     assert!(!set.stdout.contains(secret));
     assert!(!set.stderr.contains(secret));
 
@@ -350,17 +379,15 @@ fn a_host_variable_is_not_served_yet_and_its_value_is_never_on_a_command_line_or
     let in_argv = host.run(&["host", "var", "set", "box-1", "API_TOKEN", secret]);
     assert_eq!(in_argv.code, USAGE);
     assert!(!in_argv.stdout.contains(secret));
+    assert!(!in_argv.stderr.contains(secret));
 
-    // The other calls the daemon hasn't built answer the same way.
-    for args in [
-        &["host", "vars", "box-1"][..],
-        &["host", "var", "rm", "box-1", "API_TOKEN"][..],
-        &["host", "storage", "box-1"][..],
-    ] {
-        let run = host.run(args);
-        assert_eq!(run.code, PRECONDITION, "{args:?}: {}", run.stdout);
-        assert_eq!(run.json["ok"], false);
-    }
+    // Nothing was kept on the host in the box's place: its names come from
+    // the box, which can't be reached, and nothing prints the value.
+    let listed = host.run(&["host", "vars", "box-1"]);
+    assert_eq!(listed.code, UNREACHABLE, "{}", listed.stdout);
+    assert!(!listed.stdout.contains(secret));
+    let removed = host.run(&["host", "var", "rm", "box-1", "API_TOKEN"]);
+    assert_eq!(removed.code, UNREACHABLE, "{}", removed.stdout);
 }
 
 /// Two providers, as the daemon's own provider tests have them: `fake` makes
@@ -518,6 +545,7 @@ async fn an_agent_cannot_add_or_remove_a_machine_and_sees_none() {
                 value: "se_hosts".to_owned(),
             }),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()
@@ -555,10 +583,13 @@ async fn an_agent_cannot_add_or_remove_a_machine_and_sees_none() {
     assert_eq!(code, DENIED, "{printed}");
     assert_eq!(printed["error"]["kind"], "denied");
 
-    // An agent sees no machines, and neither does the user: nothing was added.
+    // An agent sees only this machine (D672), and so does the user:
+    // nothing was added.
     let (code, printed) = common::humata_as_agent(&daemon, &token, &["host", "ls"]).await;
     assert_eq!(code, OK, "{printed}");
-    assert_eq!(printed["result"]["machines"].as_array().map(Vec::len), Some(0), "{printed}");
+    let listed = printed["result"]["machines"].as_array().cloned().unwrap_or_default();
+    assert_eq!(listed.len(), 1, "{printed}");
+    assert_eq!(listed[0]["is_this_mac"], true, "{printed}");
     let (code, printed) = common::humata(&daemon, &["host", "ls"]);
     assert_eq!(code, OK, "{printed}");
     assert!(

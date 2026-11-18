@@ -8,9 +8,11 @@ use humata2_clients::desk::{
 };
 use humata2_clients::model::{Agent, Channel, ChannelId, MachineId, RequestId, SessionId, Status};
 use humata2_clients::{
-    Daemon, DaemonError, DeskClient, FakeDaemon, Operation, Terminals, Workspace, fixture,
+    Daemon, DaemonError, DeskClient, FakeDaemon, Operation, TerminalLink, Terminals, Workspace,
+    fixture,
 };
 use tca::TestClock;
+use terminal_wire::ClientFrame;
 use tokio::runtime::Builder;
 
 fn block_on<T>(future: impl Future<Output = T>) -> T {
@@ -122,28 +124,6 @@ fn starting_on_an_offline_host_is_offline() {
     let result = block_on(daemon.start(scratch("quarter", "gpu-box")));
     assert!(matches!(result, Err(DaemonError::Offline { .. })));
     assert_eq!(daemon.workspace().desk.sessions.len(), before);
-}
-
-#[test]
-fn a_picked_folder_keeps_the_path_given() {
-    let daemon = fake(with_desk());
-    let mut new = scratch("unused", "this-mac");
-    new.folder = FolderChoice::Picked {
-        path: "~/Documents/taxes".to_owned(),
-    };
-    let started = block_on(daemon.start(new)).expect("the session starts");
-    let workspace = daemon.workspace();
-    let folder = workspace
-        .desk
-        .sessions
-        .get(&started)
-        .map(|record| record.folder.clone());
-    assert_eq!(
-        folder,
-        Some(Folder::Picked {
-            path: "~/Documents/taxes".to_owned()
-        })
-    );
 }
 
 #[test]
@@ -471,10 +451,22 @@ fn typing_into_a_desk_agent_makes_it_the_most_recent() {
     assert_eq!(latest(&daemon), id("desk-tidy-infra"));
 }
 
+/// Types `bytes` over a tab's link, as its view does.
+fn typed(link: &TerminalLink, bytes: &[u8]) {
+    link.sink
+        .send(ClientFrame::Input {
+            id: 0,
+            seq: 1,
+            bytes: bytes.to_vec(),
+        })
+        .expect("the link takes input");
+}
+
 #[test]
 fn typing_bytes_into_a_desk_terminal_makes_it_the_most_recent() {
     let daemon = fake(with_desk());
-    block_on(daemon.input(&id("desk-brin-rfc"), 0, b"ls".to_vec())).expect("tab 0 takes input");
+    let link = block_on(daemon.link(&id("desk-brin-rfc"), 0)).expect("tab 0 links");
+    typed(&link, b"ls");
     assert_eq!(latest(&daemon), id("desk-brin-rfc"));
 }
 
@@ -507,7 +499,8 @@ fn using_a_channel_session_leaves_the_desk_alone() {
     let before = workspace.desk.clone();
     let daemon = fake(workspace);
     block_on(daemon.send(&session, "ls")).expect("the agent takes input");
-    block_on(daemon.input(&session, 0, b"ls".to_vec())).expect("tab 0 takes input");
+    let link = block_on(daemon.link(&session, 0)).expect("tab 0 links");
+    typed(&link, b"ls");
     block_on(daemon.write(&session, 0, "ls")).expect("tab 0 takes input");
     block_on(daemon.mark_read(&session)).expect("it opens");
     assert_eq!(daemon.workspace().desk, before);

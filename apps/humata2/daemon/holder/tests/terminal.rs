@@ -78,7 +78,9 @@ impl Holder {
 
 impl Drop for Holder {
     fn drop(&mut self) {
-        let _ = rustix::process::kill_process(self.pid(), Signal::TERM);
+        if still_holder(self.pid, &self.socket) {
+            let _ = rustix::process::kill_process(self.pid(), Signal::TERM);
+        }
     }
 }
 
@@ -130,7 +132,11 @@ impl Transcript {
     }
 
     async fn until(&mut self, done: impl Fn(&Self) -> bool) {
-        tokio::time::timeout(WAIT, async {
+        self.until_within(WAIT, done).await;
+    }
+
+    async fn until_within(&mut self, wait: Duration, done: impl Fn(&Self) -> bool) {
+        tokio::time::timeout(wait, async {
             while !done(self) {
                 self.next().await;
             }
@@ -372,6 +378,53 @@ async fn a_killed_holder_leaves_a_socket_the_next_one_takes_over() {
     assert_eq!(attached.welcome.exited, None);
 }
 
+#[tokio::test]
+async fn a_reader_that_fell_behind_catches_up_from_the_scrollback_and_keeps_going() {
+    // Room for the whole flood, so catching up loses nothing.
+    let holder = Holder::start(64 << 20);
+    let typist = attach(&holder.socket, 0).await.unwrap();
+    let mut control = typist.control;
+    let mut busy = Transcript::new(typist.events);
+    // Attached, and not read from while the flood prints: far more chunks
+    // than the holder queues for one connection.
+    let slow = attach(&holder.socket, 0).await.unwrap();
+    let mut slow_control = slow.control;
+    let mut behind = Transcript::new(slow.events);
+
+    control
+        .input(
+            1,
+            b"yes 0123456789abcdefghijklmnopqrstuvwxyz | head -n 600000; echo flood-e''nd\n",
+        )
+        .await
+        .unwrap();
+    // Only the tail is searched: the whole flood is tens of MiB.
+    let ended = |seen: &Transcript, needle: &str| {
+        contains(&seen.bytes[seen.bytes.len().saturating_sub(64)..], needle)
+    };
+    // Tens of MiB through a terminal take far longer than one line does,
+    // most of all in an unoptimised build on a loaded machine.
+    const FLOOD_WAIT: Duration = Duration::from_secs(180);
+    busy.until_within(FLOOD_WAIT, |seen| ended(seen, "flood-end")).await;
+
+    let wanted = busy.cursor;
+    behind.until_within(FLOOD_WAIT, |seen| seen.cursor >= wanted).await;
+    assert!(
+        behind.trimmed.is_empty(),
+        "what the holder kept was skipped: {:?}",
+        behind.trimmed
+    );
+    let end = usize::try_from(wanted).unwrap();
+    assert!(
+        behind.bytes[..end] == busy.bytes[..end],
+        "the reader that fell behind got different output than the one that kept up"
+    );
+
+    // It goes on from there.
+    slow_control.input(2, b"echo after-$((20+22))\n").await.unwrap();
+    behind.until(|seen| ended(seen, "after-42")).await;
+}
+
 #[test]
 fn a_socket_path_too_long_for_unix_sockets_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -381,4 +434,14 @@ fn a_socket_path_too_long_for_unix_sockets_is_refused() {
         spawn(&spec),
         Err(HolderError::SocketPathTooLong { .. })
     ));
+}
+
+/// Whether `pid` is still the holder on `socket`. A holder runs in a
+/// session of its own, so once it ends its pid is free for any process on
+/// the machine: a signal sent to it then could end another test's daemon.
+fn still_holder(pid: u32, socket: &std::path::Path) -> bool {
+    std::process::Command::new("/bin/ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains(&*socket.to_string_lossy()))
 }

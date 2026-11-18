@@ -201,7 +201,7 @@ fn note_of(session: &pb::ArchiveSummary, lost_machine: &str, on: &str) -> String
             lost.push(format!("commits that were never pushed: {}", listed(&subjects)));
         }
         if !lost.is_empty() {
-            parts.push(format!("{}/{}, branch {}, lost {}.", named.owner, named.name, repo.branch, lost.join(" and ")));
+            parts.push(format!("{}/{} lost {}.", named.owner, named.name, lost.join(" and ")));
         }
     }
     if parts.len() == 1 {
@@ -324,6 +324,7 @@ impl SessionSvc {
             holder_socket: socket.clone(),
             holder_pid: 0,
             created_unix_ms: now_ms(),
+            holder_generation: 0,
         };
         let env = |tab: &TabRecord| self.tokens.env(tab);
         let variable_names = env(&probe)
@@ -341,6 +342,7 @@ impl SessionSvc {
             holder_socket: socket,
             cols: COLS,
             rows: ROWS,
+            cli_version: kind.cli_version().await,
         };
         humata2_revive::launch_agent(&starter.store, &starter.revive, record, &tab, launch, None, &env)
             .await
@@ -384,6 +386,7 @@ impl SessionSvc {
                 channel: ChannelId::new(channel.id.as_str()),
                 machine: humata2_access::MachineId::new(target.as_str()),
                 agent: AgentId::new(agent.as_str()),
+                fork_of: None,
             },
             approved,
         )? {
@@ -607,6 +610,7 @@ impl SessionSvc {
             board_item: None,
             branch: String::new(),
             rebuild: Some(rebuild),
+            review: None,
         };
         // Nothing is moved yet: a host killed here leaves the session archived.
         crate::fault::point("rebuild-clone-api");
@@ -1064,6 +1068,7 @@ impl SessionSvc {
             holder_socket: socket.clone(),
             holder_pid: 0,
             created_unix_ms: now_ms(),
+            holder_generation: 0,
         };
         let env = |tab: &TabRecord| self.tokens.env(tab);
         let variable_names = env(&probe)
@@ -1081,6 +1086,7 @@ impl SessionSvc {
             holder_socket: socket.clone(),
             cols: COLS,
             rows: ROWS,
+            cli_version: kind.cli_version().await,
         };
         humata2_revive::launch_agent(&starter.store, &starter.revive, record, &tab, launch, None, &env)
             .await
@@ -1091,14 +1097,18 @@ impl SessionSvc {
         crate::fault::point("rebuild.launched");
         progress.set_step(current, pb::StepState::Done, None);
         *current = "verify".to_owned();
-        if let Some(note) = note
-            && let Err(error) = type_note(&socket, &note).await
-        {
-            crate::log::say!(
-                "humatad2: couldn't tell rebuilt session {} what was lost: {}",
-                record.id,
-                status::chain(&error)
-            );
+        if let Some(note) = note {
+            // D762: the note waits for the agent's own questions (its
+            // folder trust, in a folder it has never seen) to be answered.
+            let session = record.id.clone();
+            tokio::spawn(async move {
+                if let Err(error) = type_note(&socket, &note).await {
+                    crate::log::say!(
+                        "humatad2: couldn't tell rebuilt session {session} what was lost: {}",
+                        status::chain(&error)
+                    );
+                }
+            });
         }
         Ok(())
     }
@@ -1133,12 +1143,35 @@ fn write_lines(path: &std::path::Path, lines: &[u8]) -> Result<(), RebuildError>
     std::fs::rename(&partial, path).map_err(fail)
 }
 
-/// Types `note` into the agent's terminal and presses return.
-async fn type_note(socket: &std::path::Path, note: &str) -> Result<(), humata2_holder::HolderError> {
-    let mut attached = humata2_holder::attach(socket, u64::MAX).await?;
-    attached.control.input(1, note.as_bytes()).await?;
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    attached.control.input(2, b"\r").await
+/// How long a rebuilt session's note waits for the agent's input.
+const NOTE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Why a rebuilt session's note wasn't typed.
+#[derive(Debug, thiserror::Error)]
+enum NoteFailed {
+    #[error("the agent's input wasn't ready within {} minutes, so the note wasn't typed", NOTE_WAIT.as_secs() / 60)]
+    NotReady(#[source] crate::input_gate::InputRefused),
+    #[error("the agent's terminal didn't take the note")]
+    Holder(#[source] humata2_holder::HolderError),
+}
+
+/// Types `note` into the agent's terminal and presses return, once the
+/// input gate lets text in (D762).
+async fn type_note(socket: &std::path::Path, note: &str) -> Result<(), NoteFailed> {
+    let deadline = tokio::time::Instant::now() + NOTE_WAIT;
+    while let Err(refused) = crate::input_gate::guard(socket).await {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(NoteFailed::NotReady(refused));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    let pause = std::time::Duration::from_millis(400); // D671 (Provisional)
+    // A note the agent doesn't show gets no return: the person sees it in
+    // the agent's input (BUG-T1b).
+    humata2_holder::type_then_return(socket, note.as_bytes(), pause)
+        .await
+        .map(drop)
+        .map_err(NoteFailed::Holder)
 }
 
 async fn blocking_git<T: Send + 'static>(
@@ -1172,11 +1205,31 @@ fn write_marker(
     let file = marker_file(channel_dir, session);
     let fail = |source| RebuildError::Marker { path: file.clone(), source };
     if let Some(markers) = file.parent() {
-        std::fs::create_dir_all(markers).map_err(fail)?;
+        make_dirs(markers).map_err(fail)?;
     }
-    let partial = channel_dir.join(MARKERS).join(format!("{session}.partial"));
-    std::fs::write(&partial, format!("{}\n{staged_dir}\n", folder.display())).map_err(fail)?;
-    std::fs::rename(&partial, &file).map_err(fail)
+    // Whole or not at all, and on disk: a power cut can't leave a rebuild
+    // with no marker for the restart to take it back by.
+    let text = format!("{}\n{staged_dir}\n", folder.display());
+    humata2_store::write_atomic(&file, text.as_bytes())
+        .map_err(std::io::Error::other)
+        .map_err(fail)
+}
+
+/// Makes `folder` and its missing parents, and puts each new folder's entry
+/// in its parent on disk, so a power cut can't take the folder back.
+fn make_dirs(folder: &std::path::Path) -> std::io::Result<()> {
+    let missing: Vec<&std::path::Path> = folder
+        .ancestors()
+        .take_while(|found| !found.as_os_str().is_empty() && std::fs::symlink_metadata(found).is_err())
+        .collect();
+    humata2_durable::create_dir_all(folder, 0o700)?;
+    for found in missing {
+        match found.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => humata2_durable::sync_dir(parent)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// A rebuild the last run began on this machine and didn't end.
@@ -1185,6 +1238,19 @@ pub(crate) struct CutRebuild {
     session: String,
     folder: PathBuf,
     staged: Option<PathBuf>,
+}
+
+impl CutRebuild {
+    /// Says in the restart report that this rebuild is owed its take-back.
+    /// Called when the rebuild is read, before the report is written (D241).
+    pub(crate) fn note(&self, operations: &crate::restart::Operations) {
+        operations.record(
+            &format!("rebuild:{}", self.session),
+            "rebuild",
+            "cloning",
+            crate::restart::OperationState::Pending { waits_for: "the start to take it back".to_owned() },
+        );
+    }
 }
 
 /// The rebuilds the last run left, read before anything is served so a
@@ -1233,20 +1299,46 @@ pub(crate) fn cut_rebuilds(starter: &Starter) -> Vec<CutRebuild> {
 /// whose agent was launched is left to the restart's own recovery, which
 /// keeps it. Safe to repeat; runs before the restart finishes the starts
 /// it finds, which would start such a session with no conversation.
-pub(crate) async fn undo_cut_rebuilds(starter: &Starter, cut: Vec<CutRebuild>) {
+pub(crate) async fn undo_cut_rebuilds(
+    starter: &Starter,
+    cut: Vec<CutRebuild>,
+    operations: &crate::restart::Operations,
+) {
+    use crate::restart::OperationState as State;
     for rebuild in cut {
         let (store, id) = (starter.store.clone(), rebuild.session.clone());
+        let operation = format!("rebuild:{id}");
+        let record = |state: State| operations.record(&operation, "rebuild", "cloning", state);
         let undone = tokio::task::spawn_blocking(move || undo_cut(&store, &rebuild))
             .await
             .map_err(RebuildError::Task)
             .and_then(|undone| undone);
-        if let Err(error) = undone {
-            crate::log::say!("humatad2: couldn't take back the cut rebuild of session {id}: {}", status::chain(&error));
+        match undone {
+            Ok(CutEnd::TakenBack) => record(State::Undone {
+                reason: "its agent had not been launched, so its folder and records were removed; rebuild the session again".to_owned(),
+            }),
+            Ok(CutEnd::Kept) => record(State::Finished),
+            Err(error) => {
+                let reason = format!(
+                    "{}; delete its folder by hand if it is still there, then restart humatad2 to try again",
+                    status::chain(&error)
+                );
+                crate::log::say!("humatad2: couldn't take back the cut rebuild of session {id}: {reason}");
+                record(State::Stuck { reason });
+            }
         }
     }
 }
 
-fn undo_cut(store: &humata2_store::Store, rebuild: &CutRebuild) -> Result<(), RebuildError> {
+/// How a cut rebuild ended.
+enum CutEnd {
+    /// Never launched its agent: its folder and records were removed.
+    TakenBack,
+    /// Its agent was launched: the session stays.
+    Kept,
+}
+
+fn undo_cut(store: &humata2_store::Store, rebuild: &CutRebuild) -> Result<CutEnd, RebuildError> {
     let session = &rebuild.session;
     let store_error = |source| RebuildError::Store { session: session.clone(), source };
     let launched = store.agent(session).map_err(store_error)?.is_some()
@@ -1262,7 +1354,7 @@ fn undo_cut(store: &humata2_store::Store, rebuild: &CutRebuild) -> Result<(), Re
         Err(source) if source.kind() != io::ErrorKind::NotFound => {
             Err(RebuildError::Remove { path: rebuild.marker.clone(), source })
         }
-        _ => Ok(()),
+        _ => Ok(if launched { CutEnd::Kept } else { CutEnd::TakenBack }),
     }
 }
 
@@ -1307,7 +1399,24 @@ async fn undo(store: Arc<humata2_store::Store>, record: &SessionRecord) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::{staged_folder, staged_shape};
+    use super::{CutRebuild, staged_folder, staged_shape};
+
+    /// A rebuild the last run left is named pending the moment it is noted:
+    /// the report that is written after names it, with nothing running yet.
+    #[test]
+    fn a_cut_rebuild_is_named_pending_when_noted() {
+        let report = tempfile::tempdir().unwrap();
+        let operations = crate::restart::Operations::default();
+        operations.set_folder(report.path());
+        let rebuild = CutRebuild {
+            marker: "/nowhere/marker".into(),
+            session: "se_1".to_owned(),
+            folder: "/nowhere/folder".into(),
+            staged: None,
+        };
+        rebuild.note(&operations);
+        assert_eq!(crate::restart::pending_in(report.path()), vec!["rebuild:se_1".to_owned()]);
+    }
 
     #[test]
     fn a_staged_conversation_is_in_its_own_folder_under_the_channels_carry() {

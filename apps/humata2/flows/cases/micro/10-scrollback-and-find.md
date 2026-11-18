@@ -88,7 +88,7 @@ Layer: micro. Platforms: macOS, Linux.
 - **I see:** Nothing changes on the screen. The program does not react to the key.
 - **State and events:** The key becomes a scroll request even on the alternate screen (`terminal/view/src/keys.rs:61`). The pane calls `scroll_viewport`, which has no history to move on the alternate screen (`terminal/pane/src/host.rs:336-349`). The program gets no `PageUp`.
 - **Expected outcome:** If history keys are meant to be consumed here, the person sees why nothing happened. If they are meant to reach the program, `PageUp` arrives at it.
-- **Status:** Likely bug. `terminal/view/src/keys.rs:61` consumes ⌘PgUp before the program sees it, and `terminal/pane/src/host.rs:336-349` does nothing on the alternate screen. Confirm: open `htop`, press ⌘PgUp, and check whether `htop` receives a key. If it does not, the key is consumed here.
+- **Status:** Fakes only. On the alternate screen the history keys are the program's: ⌘PgUp (⇧PgUp off a Mac) sends PageUp to it, and back at the shell they scroll the history and send nothing (`terminal/pane/tests/pane.rs::history_keys_reach_a_full_screen_program`).
 
 ## Expected outcomes
 
@@ -116,12 +116,12 @@ Layer: micro. Platforms: macOS, Linux.
 | Branch: find in an agent terminal | Code, no test | `terminal/pane/src/pane.rs:596-625` |
 | Branch: history after restart | Fakes only | `daemon/humatad/tests/terminal.rs::a_tab_outlives_its_daemon` (visible text only) |
 | Branch: output past the limit | Fakes only | `terminal/vt/tests/checkpoint.rs::reducing_history_limits_reclaims_existing_history` |
-| Branch: ⌘PgUp in a full-screen program | Likely bug | `terminal/view/src/keys.rs:61`, `terminal/pane/src/host.rs:336-349` |
+| Branch: ⌘PgUp in a full-screen program | Fakes only | `terminal/pane/tests/pane.rs::history_keys_reach_a_full_screen_program` |
 
 ## Gaps and likely bugs
 
 - Not built: a clear-screen command. Humata has none. A person can run the shell's `clear` or press ⌃L, which sends Ctrl-L to the program. No milestone covers a separate clear. ⌘K stays the palette (`SPEC.md` KP-6).
 - Not built: a notice when old output is dropped at the history limit. I found no UI text for it and no milestone for it.
 - Likely bug: `terminal/lab/tests/interactive.rs:476` asserts at least 12,000 rows are kept, but the default live cap is 10,000 (`terminal/host/src/lib.rs:2183-2195`, `terminal/wire/src/lib.rs:42`). Either the engine keeps more by page (`terminal/vt/src/terminal.rs:177-179` says it may), or that test uses another policy. Confirm by running the manual test and printing `scrollbar.total` after the 12,000 lines.
-- Likely bug: `terminal/view/src/keys.rs:61` and `terminal/pane/src/host.rs:336-349`. History keys on the alternate screen are consumed and do nothing. Confirm as in the branch above.
+- Fixed: on the alternate screen the history keys reach the program (`terminal/pane/tests/pane.rs::history_keys_reach_a_full_screen_program`, Fakes only).
 - Test gap: `terminal/pane/src/pane.rs:640-649` shows "N+" when the match count reaches `MATCH_LIMIT` (10,000, `terminal/pane/src/find.rs:30`). No test covers that label.

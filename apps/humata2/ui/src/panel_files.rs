@@ -252,9 +252,24 @@ pub(super) fn files(
             rows.extend(children);
         }
     }
+    // REPOS (CH-21): Add repo to this session, in the header so the footer's
+    // buttons keep the panel's padding. A clone can't be made on a machine
+    // that is offline, so it waits like Open in editor and Upload… do.
+    let offline = matches!(session.status, Status::Offline);
+    let add_repo = row().child(
+        action(
+            ui,
+            "files-add-repo",
+            "Add repo…",
+            AppAction::SessionAddRepo(humata2_app::SessionAddRepoAction::Open(session.id.clone())),
+            look,
+            false,
+        )
+        .disabled(offline),
+    );
     col()
         .size_full()
-        .child(header(ui, Panel::Files, full, None, look))
+        .child(header(ui, Panel::Files, full, Some(add_repo), look))
         .child(
             div()
                 .id("session-file-filter")
@@ -316,6 +331,6 @@ pub(super) fn files(
                         .text_color(rgb(look.text))
                         .opacity(1.)
                         .disabled(true),
-                ),
+                )
         )
 }

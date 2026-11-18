@@ -1,10 +1,16 @@
 //! The stop record on disk (D261, D265).
 //!
 //! Two files live in `<state>/stop`: `this.json` while the machine is
-//! stopped, and `this.starting.json` while a Start brings it back. Each
+//! stopped, and `this.starting.json` while a Start brings it back; a
+//! finished Start leaves it as `last.json`, so a stop that comes late (an
+//! SSH that lost the race to the link) is known for the one already
+//! applied (D262). Each
 //! change is durable: a file is written with `write_atomic`, and a rename or
 //! removal is followed by a sync of the folder, so a power cut leaves one of
 //! the states whole. Where both files exist, the machine is stopped.
+//!
+//! `ended_early.json` names the holders `humatad2 stop` ended itself, for
+//! a daemon that didn't answer, so the next start's sweep counts them too.
 
 use std::fs;
 use std::io::{self, ErrorKind};
@@ -13,10 +19,14 @@ use std::path::{Path, PathBuf};
 use humata2_store::StoreError;
 use serde_json::{Value, json};
 
+use super::sweep::{HolderEnd, How};
+
 /// The only record format this Humata writes and reads.
 const FORMAT: u64 = 1;
 const STOPPED_FILE: &str = "this.json";
 const STARTING_FILE: &str = "this.starting.json";
+const LAST_FILE: &str = "last.json";
+const ENDED_EARLY_FILE: &str = "ended_early.json";
 
 /// The `<state>/stop` folder and the record files in it.
 #[derive(Clone, Debug)]
@@ -86,15 +96,18 @@ impl StopFolder {
         Ok(record)
     }
 
-    /// Removes the start record once the machine is up. Absent is fine.
+    /// Ends the start once the machine is up: the start record becomes
+    /// `last.json`, the last stop applied. Absent is fine.
     pub(crate) fn finish_start(&self) -> Result<(), RecordError> {
         let starting = self.starting_path();
-        match humata2_durable::remove_file(&starting) {
+        let last = self.last_path();
+        match humata2_durable::rename(&starting, &last) {
             Ok(()) => {}
             Err(source) if source.kind() == ErrorKind::NotFound => {}
             Err(source) => {
-                return Err(RecordError::Remove {
-                    path: starting,
+                return Err(RecordError::Rename {
+                    from: starting,
+                    to: last,
                     source,
                 });
             }
@@ -104,6 +117,96 @@ impl StopFolder {
         }
         crate::fault::point("start.record.removed");
         Ok(())
+    }
+
+    /// Fails with `AlreadyApplied` when `stop_id` is the stop this machine
+    /// was last started from: it was applied and undone, and a copy of it
+    /// arriving late must not stop the machine again. A `last.json` that
+    /// can't be read says nothing, so the stop goes ahead.
+    pub(crate) fn refuse_applied(&self, stop_id: &str) -> Result<(), RecordError> {
+        match self.read_at(&self.last_path()) {
+            Ok(Some(last)) if last.stop_id == stop_id => Err(RecordError::AlreadyApplied {
+                stop_id: stop_id.to_owned(),
+            }),
+            Ok(_) | Err(_) => Ok(()),
+        }
+    }
+
+    /// Notes `holders`, which `humatad2 stop` ended before the daemon's
+    /// next start, on top of any noted already, for that start's sweep to
+    /// count.
+    pub(crate) fn note_ended_early(&self, holders: &[HolderEnd]) -> Result<(), RecordError> {
+        if holders.is_empty() {
+            return Ok(());
+        }
+        self.ensure_folder()?;
+        let mut all = self.ended_early();
+        all.extend_from_slice(holders);
+        let listed: Vec<Value> = all
+            .iter()
+            .map(|holder| {
+                json!({
+                    "socket": holder.socket.to_string_lossy(),
+                    "pid": holder.pid,
+                    "killed": holder.how == How::Killed,
+                })
+            })
+            .collect();
+        let value = json!({ "format": FORMAT, "holders": listed });
+        write_file(&self.ended_early_path(), format!("{value:#}").as_bytes())
+    }
+
+    /// The holders `humatad2 stop` ended before this start. A note that is
+    /// missing or can't be read names none: the stop holds either way, and
+    /// only its count is short.
+    pub(crate) fn ended_early(&self) -> Vec<HolderEnd> {
+        let Ok(bytes) = fs::read(self.ended_early_path()) else {
+            return Vec::new();
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+            return Vec::new();
+        };
+        if value["format"].as_u64() != Some(FORMAT) {
+            return Vec::new();
+        }
+        value["holders"]
+            .as_array()
+            .map(|holders| {
+                holders
+                    .iter()
+                    .filter_map(|holder| {
+                        Some(HolderEnd {
+                            socket: PathBuf::from(holder["socket"].as_str()?),
+                            pid: u32::try_from(holder["pid"].as_u64()?).ok()?,
+                            how: if holder["killed"].as_bool()? {
+                                How::Killed
+                            } else {
+                                How::Ended
+                            },
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Removes the note of holders ended early, once a sweep has counted
+    /// them into the record. Absent is fine.
+    pub(crate) fn clear_ended_early(&self) -> Result<(), RecordError> {
+        let path = self.ended_early_path();
+        match fs::remove_file(&path) {
+            Ok(()) => self.sync_folder(),
+            Err(source) if source.kind() == ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(RecordError::Remove { path, source }),
+        }
+    }
+
+    fn ended_early_path(&self) -> PathBuf {
+        self.folder.join(ENDED_EARLY_FILE)
+    }
+
+    fn last_path(&self) -> PathBuf {
+        self.folder.join(LAST_FILE)
     }
 
     fn stopped_path(&self) -> PathBuf {
@@ -191,6 +294,8 @@ pub(crate) enum ByKind {
     User,
     Agent,
     Terminal,
+    /// A script whose token lists the capability.
+    Script,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -277,7 +382,7 @@ pub(crate) enum RecordError {
     },
 
     #[error(
-        "couldn't remove {}; check that the folder belongs to you, then run `humata start` again",
+        "couldn't remove {}; check that the folder belongs to you. The machine is stopped either way; until the file is removed, each start of the daemon counts the holders it names again in what the stop ended",
         path.display()
     )]
     Remove {
@@ -285,6 +390,11 @@ pub(crate) enum RecordError {
         #[source]
         source: io::Error,
     },
+
+    #[error(
+        "the stop {stop_id} was applied and then started again on this machine, so it isn't applied a second time. To stop its sessions now, run `humata stop` for a new stop"
+    )]
+    AlreadyApplied { stop_id: String },
 
     #[error(
         "there is no stop record at {}, so the machine isn't stopped and there is nothing to change. To stop its sessions, run `humata stop`",
@@ -386,6 +496,7 @@ impl ByKind {
             ByKind::User => "user",
             ByKind::Agent => "agent",
             ByKind::Terminal => "terminal",
+            ByKind::Script => "script",
         }
     }
 
@@ -394,6 +505,7 @@ impl ByKind {
             "user" => Some(ByKind::User),
             "agent" => Some(ByKind::Agent),
             "terminal" => Some(ByKind::Terminal),
+            "script" => Some(ByKind::Script),
             _ => None,
         }
     }
@@ -468,7 +580,7 @@ fn parse_by(path: &Path, value: &Value) -> Result<StoppedBy, RecordError> {
         .ok_or_else(|| {
             unreadable(
                 path,
-                "the field `by.kind` is missing or not one of user, agent, terminal",
+                "the field `by.kind` is missing or not one of user, agent, terminal, script",
                 None,
             )
         })?;
@@ -657,6 +769,26 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_the_machine_was_started_from_is_refused_when_it_comes_again() {
+        let (_dir, folder) = folder();
+        let record = full_record();
+        folder.refuse_applied(&record.stop_id).expect("none applied yet");
+        folder.write_stopped(&record).expect("written");
+        folder.begin_start().expect("started");
+        folder
+            .refuse_applied(&record.stop_id)
+            .expect("a start still under way doesn't refuse it");
+        folder.finish_start().expect("finished");
+        assert!(matches!(
+            folder.refuse_applied(&record.stop_id),
+            Err(RecordError::AlreadyApplied { .. })
+        ));
+        folder
+            .refuse_applied("another-stop")
+            .expect("a different stop is taken");
+    }
+
+    #[test]
     fn starting_a_machine_that_is_not_stopped_is_refused() {
         let (_dir, folder) = folder();
         assert!(matches!(
@@ -704,5 +836,38 @@ mod tests {
             br#"{"format":1,"stop_id":"x","stopped_at_unix_ms":0,"by":{"kind":"robot","via":"app","machine":"m"}}"#,
         );
         assert!(matches!(folder.read(), Err(RecordError::Unreadable { .. })));
+    }
+
+    fn holder(socket: &str, how: How) -> HolderEnd {
+        HolderEnd {
+            socket: PathBuf::from(socket),
+            pid: 7,
+            how,
+        }
+    }
+
+    #[test]
+    fn holders_ended_early_read_back_and_add_up_across_notes() {
+        let dir = TempDir::new().expect("a temp dir");
+        let folder = StopFolder::new(dir.path());
+        assert!(folder.ended_early().is_empty());
+        folder.note_ended_early(&[holder("/h/a.sock", How::Ended)]).expect("noted");
+        folder.note_ended_early(&[holder("/h/b.sock", How::Killed)]).expect("noted");
+        assert_eq!(
+            folder.ended_early(),
+            vec![holder("/h/a.sock", How::Ended), holder("/h/b.sock", How::Killed)]
+        );
+        folder.clear_ended_early().expect("cleared");
+        assert!(folder.ended_early().is_empty());
+        folder.clear_ended_early().expect("clearing nothing is fine");
+    }
+
+    #[test]
+    fn a_damaged_note_of_holders_ended_early_names_none() {
+        let dir = TempDir::new().expect("a temp dir");
+        let folder = StopFolder::new(dir.path());
+        folder.note_ended_early(&[holder("/h/a.sock", How::Ended)]).expect("noted");
+        fs::write(dir.path().join("stop").join(ENDED_EARLY_FILE), b"{not json").expect("damaged");
+        assert!(folder.ended_early().is_empty());
     }
 }

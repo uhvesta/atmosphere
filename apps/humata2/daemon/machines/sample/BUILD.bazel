@@ -1,0 +1,16 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+# The commented sample machine-scripts.toml (D680): one text for the
+# daemon's rules parser (its test proves it parses) and the app's
+# Settings > Machines > Edit rules starter. No deps, so clients can use it
+# without depending on the machines crate.
+rust_library(
+    name = "sample",
+    srcs = ["src/lib.rs"],
+    compile_data = ["machine-scripts.toml"],
+    crate_name = "humata2_script_sample",
+    visibility = [
+        "//apps/humata2/clients:__pkg__",
+        "//apps/humata2/daemon/machines:__pkg__",
+    ],
+)

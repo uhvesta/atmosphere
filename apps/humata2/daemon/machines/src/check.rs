@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::install::{InstalledFile, HOLDERS_FN};
+use crate::install::InstalledFile;
 use crate::link::BIN_DIR;
 use crate::platform::{Arch, Os, Platform};
 use crate::service::{self, ServiceKind};
@@ -29,14 +29,10 @@ pub struct Facts {
     pub linger: bool,
     pub crontab: bool,
     pub setsid: bool,
-    /// A `humata2_holder` of the user runs, so files that wait for holders
-    /// are staged rather than swapped.
-    pub holders: bool,
     /// How humatad2 runs now from what setup put in place; none when it
     /// doesn't, or not that way.
     pub running: Option<ServiceKind>,
     installed: BTreeMap<InstalledFile, String>,
-    staged: BTreeMap<InstalledFile, String>,
 }
 
 impl Facts {
@@ -57,11 +53,6 @@ impl Facts {
         self.installed.get(&file).map(String::as_str)
     }
 
-    /// The SHA-256 of the copy of `file` waiting for no holder to run; none
-    /// when none waits.
-    pub fn staged(&self, file: InstalledFile) -> Option<&str> {
-        self.staged.get(&file).map(String::as_str)
-    }
 }
 
 /// The check script. It changes nothing on the machine.
@@ -91,17 +82,11 @@ fact crontab "$(has crontab)"
 fact setsid "$(has setsid)"
 "#,
     );
-    script.push_str(HOLDERS_FN);
-    script.push_str("if holders; then fact holders yes; else fact holders no; fi\n");
     script.push_str(&service::running_script());
     for file in InstalledFile::ALL {
         let name = file.file_name();
         script.push_str(&format!(
             "if [ -f \"$HOME/{BIN_DIR}/{name}\" ]; then fact sha.{name} \"$(sha \"$HOME/{BIN_DIR}/{name}\")\"; else fact sha.{name} none; fi\n"
-        ));
-        let staged = file.staged_name();
-        script.push_str(&format!(
-            "if [ -f \"$HOME/{BIN_DIR}/{staged}\" ]; then fact staged.{name} \"$(sha \"$HOME/{BIN_DIR}/{staged}\")\"; fi\n"
         ));
     }
     script
@@ -140,7 +125,6 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
             .map_or_else(String::new, |number| (*number).to_owned())
     };
     let installed = shas("sha");
-    let staged = shas("staged");
     Some(Facts {
         platform: Platform {
             os: Os::parse(facts.get("os")?)?,
@@ -157,14 +141,12 @@ pub(crate) fn parse(stdout: &[u8]) -> Option<Facts> {
         linger: yes("linger"),
         crontab: yes("crontab"),
         setsid: yes("setsid"),
-        holders: yes("holders"),
         running: match facts.get("running") {
             Some(&"systemd") => Some(ServiceKind::SystemdUser),
             Some(&"setsid") => Some(ServiceKind::Setsid),
             _ => None,
         },
         installed,
-        staged,
     })
 }
 

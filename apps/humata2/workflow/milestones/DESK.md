@@ -1,6 +1,6 @@
 # DESK: A place to work without a channel
 
-- **Status:** open (LOOK2 closed 2026-11-16; waits only on REVIEW (frame 39) and the release on fakes)
+- **Status:** done (48e1c866, 2026-11-16)
 - **Depends on:**
   - LOOK2: the Desk page reuses the channel page, lists and empty states
   - FRAMES1: Clean up… has no frame yet

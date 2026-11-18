@@ -124,7 +124,8 @@ by whatever drives that terminal), and the error says so
   (GRPC.md §8); until it does the link serves only the handshake and
   `WhoAmI`, and a wrong proof closes the link.
   The SSH host key is pinned; a changed key stops the link with
-  `host_key_changed` until the user checks and trusts it (user-only).
+  `host_key_changed` until the user checks and trusts it (user-only); a key
+  never seen before is `host_key_unknown`, to confirm.
 - PeerService is served only on that link, never on a socket. A local
   process could still start `humatad serve --stdio` itself, so the host's
   proof is what keeps a contained agent out. An uncontained agent (SPEC D1)
@@ -143,9 +144,9 @@ exactly one capability against one target. Tiers:
 | --- | --- | --- |
 | No rule (owned) | IN-16's set only: its own session (title, status, repos, branches), reading and writing its own clones, its own views and its own requests, comments sent to it (D21), its own port forwards. Not a rule; no setting turns it off. A context-only fork reads and writes its parent's clones here as its own (FK-7, D185) | none: checked as "the target is the caller's own" |
 | Default Allow | A rule, Allow for new channels (IN-17). The user may set Ask me or Never | OWN_BOARD_WRITE, CHANNEL_READ, CHANNEL_BOARD_ADD, CHANNEL_BOARD_EDIT_OWN, SHARED_WRITE, FILES_FETCH_LOCAL, VIEWS_PREPARE, REVIEW_DRAFT, INBOX_ASK, GLOBAL_READ (D127.4: reads are allowed by default) |
-| Ask me | A rule, Ask me for new channels; "Always allow …" may add an IN-22 grant | CHANNEL_BOARD_EDIT_OTHERS, FILES_READ_OTHER_SESSION, FILES_READ_OTHER_MACHINE, FILES_COPY_IN, SESSION_NOTE, SESSION_TYPE, SESSION_START_SAME_MACHINE, SESSION_START_OTHER_MACHINE, PR_REVIEW_START, OWN_SESSION_MANAGE, OWN_SESSION_END, SESSION_MOVE, GIT_PUSH, MACHINE_PROVISION, TRASH_RESTORE, CHANNEL_CREATE |
+| Ask me | A rule, Ask me for new channels; "Always allow …" may add an IN-22 grant | CHANNEL_BOARD_EDIT_OTHERS, FILES_READ_OTHER_SESSION, FILES_READ_OTHER_MACHINE, FILES_COPY_IN, SESSION_NOTE, SESSION_TYPE, SESSION_START_SAME_MACHINE, SESSION_START_OTHER_MACHINE, PR_REVIEW_START, OWN_SESSION_MANAGE, OWN_SESSION_END, SESSION_MOVE, GIT_PUSH, MACHINE_PROVISION, TRASH_RESTORE, CHANNEL_CREATE, SESSION_STOP_OTHER (D306) |
 | Ask me, no Allow | As Ask me, but the rule offers only Ask me and Never (D20); never low-risk, never approved on a machine while the Mac is away (HO-11) | NETWORK_REACH |
-| Never by default | A rule, Never for new channels: denied at once with the rule named (IN-18) until the user changes it | SESSION_STOP_OTHER, CHANNEL_CHANGE, MACHINE_DESTROY |
+| Never by default | A rule, Never for new channels: denied at once with the rule named (IN-18) until the user changes it | SESSION_DELETE_OTHER, CHANNEL_CHANGE, MACHINE_DESTROY, MACHINE_SESSIONS_STOP (D282), MACHINE_SCRIPT_RUN (D688) |
 | User-only | No rule, no grant, no MCP tool, no Inbox request (SEC-7, IN-23); from the CLI, presence | INBOX_ANSWER, ACCESS_CHANGE, SETTINGS_CHANGE, MARKS_CHANGE, PR_SUBMIT, USER_REVIEW_STATE, TRASH_EMPTY, HOST_SECRETS, CHANNEL_DELETE, MACHINE_SETTINGS, TERMINAL_INPUT |
 | Peer | Only on the peer link | PEER_REPORT, HOST_CONTROL |
 

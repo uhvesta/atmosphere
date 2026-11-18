@@ -12,15 +12,23 @@ mod clipboard;
 pub mod comments;
 mod daemon;
 pub mod desk;
+pub mod docs;
 mod file_manager;
 mod files;
 pub mod fixture;
 pub mod github;
 pub mod history;
 mod keychain;
+mod local_daemon;
 pub mod marks;
 pub mod model;
+// REPOS (RL-1): the repo library and the one repo search.
+pub mod repos;
 pub mod machines;
+mod reveal;
+pub mod views;
+pub mod pull_requests;
+pub mod review_chat;
 mod workspace;
 
 use std::sync::Arc;
@@ -28,18 +36,22 @@ use std::time::Duration;
 
 pub use clipboard::{Clipboard, FakeClipboard};
 pub use daemon::{
-    ArchivePlan, Daemon, DaemonError, EVENT_QUEUE, Event, Events, FakeDaemon, ForkOptions,
-    Operation, PastTurn, Reply, Terminals, UnpushedWork,
+    AgentSwitch, ArchivePlan, Daemon, DaemonError, EVENT_QUEUE, Event, Events, FakeDaemon, FileChange,
+    ForkOptions, ImageKind, LinkSink, Operation, PastTurn, Reply, SESSION_FILES_CAP, SendError,
+    SwitchChange, TerminalLink, TerminalNotice, Terminals, UnpushedWork,
 };
 pub use comments::{CommentsClient, FakeComments};
 pub use desk::DeskClient;
 pub use file_manager::{
     EmptyPlan, Entry, EntryKind, FakeFileManager, FileManager, FileManagerError, FileReply, FileRoot, Folder,
-    Listing, RetentionSkip, StorageAction, StorageKind, StorageReport, StorageRow, TransferMode, TransferPhase,
+    ItemLanding, Landing, Listing, RetentionSkip, StorageAction, StorageKind, StorageReport, StorageRow, TransferMode,
+    TransferPhase,
     TransferRow, TrashEntry, TrashListing,
 };
 pub use files::{FakeFileSystem, FileError, FileSystem};
 pub use keychain::{FakeKeychain, Keychain, KeychainError};
+pub use local_daemon::{FakeLocalDaemon, LocalDaemon};
+pub use reveal::{FakeReveal, FinderReveal, Reveal, RevealError, is_this_mac};
 pub use tca::{Clock, MemoryStorage, Storage};
 pub use workspace::Workspace;
 
@@ -62,14 +74,24 @@ pub struct Clients {
     pub clock: Arc<dyn Clock>,
     /// Where Copy puts text.
     pub clipboard: Arc<dyn Clipboard>,
+    /// Reveal in Finder, for places on This Mac (PL-10).
+    pub reveal: Arc<dyn Reveal>,
     /// Files the app writes itself.
     pub files: Arc<dyn FileSystem>,
     /// Files on machines: the file manager, transfers, trash and Storage.
     pub file_manager: Arc<dyn FileManager>,
     /// Secrets.
     pub keychain: Arc<dyn Keychain>,
+    /// This Mac's own daemon, for migrating one too old to do it itself (D374).
+    pub local_daemon: Arc<dyn LocalDaemon>,
     /// Adding machines and a machine's page (HO-1 to HO-7, MP-12 to MP-17, SK-2, SK-5).
     pub machines: Arc<dyn machines::Machines>,
+    /// Views the agents prepared, and the person's answers to them.
+    pub views: Arc<dyn views::ViewsClient>,
+    /// Pull request reviews: a pasted pull request, its review and what it posts (PR-1 to PR-17).
+    pub pull_requests: Arc<dyn pull_requests::PullRequestsClient>,
+    /// The review chat: what the agent sees and changes in a review's view (PR-22 to PR-26).
+    pub review_chat: Arc<dyn review_chat::ReviewChatClient>,
     /// Where the app's own state is saved between launches.
     pub storage: Arc<dyn Storage>,
 }
@@ -87,14 +109,24 @@ pub struct Fakes {
     pub marks: marks::FakeMarks,
     /// The clipboard.
     pub clipboard: FakeClipboard,
+    /// Finder.
+    pub reveal: FakeReveal,
     /// The file system.
     pub files: FakeFileSystem,
     /// The file manager.
     pub file_manager: FakeFileManager,
     /// The keychain.
     pub keychain: FakeKeychain,
+    /// This Mac's own daemon.
+    pub local_daemon: FakeLocalDaemon,
     /// The machines client.
     pub machines: machines::FakeMachines,
+    /// The views agents offered.
+    pub views: views::FakeViews,
+    /// Pull request reviews.
+    pub pull_requests: pull_requests::FakePullRequests,
+    /// The review chat.
+    pub review_chat: review_chat::FakeReviewChat,
     /// Saved app state. Hand the same one to the next launch to restart.
     pub storage: Arc<MemoryStorage>,
 }
@@ -104,19 +136,25 @@ impl Clients {
     #[must_use]
     pub fn fake(workspace: Workspace, clock: Arc<dyn Clock>) -> (Self, Fakes) {
         let marks = marks::FakeMarks::seeded_from(&workspace);
+        let views = views::FakeViews::seeded(&workspace);
         let daemon = FakeDaemon::new(workspace, clock.clone());
         // An add in the dialog makes the machine in the fake workspace.
-        let fake_machines = machines::FakeMachines::new().adding_through(Arc::new(daemon.clone()));
+        let fake_machines = machines::FakeMachines::new().through(daemon.clone());
         Self::with_fakes(Fakes {
             daemon,
             comments: FakeComments::new(),
             history: history::FakeHistory::new(),
             marks,
             clipboard: FakeClipboard::default(),
+            reveal: FakeReveal::default(),
             files: FakeFileSystem::default(),
             file_manager: FakeFileManager::default(),
             keychain: FakeKeychain::default(),
+            local_daemon: FakeLocalDaemon::default(),
             machines: fake_machines,
+            views,
+            pull_requests: pull_requests::FakePullRequests::new(),
+            review_chat: review_chat::FakeReviewChat::new(),
             storage: Arc::new(MemoryStorage::new()),
         }, clock)
     }
@@ -134,10 +172,15 @@ impl Clients {
             marks: Arc::new(fakes.marks.clone()),
             clock,
             clipboard: Arc::new(fakes.clipboard.clone()),
+            reveal: Arc::new(fakes.reveal.clone()),
             files: Arc::new(fakes.files.clone()),
             file_manager: Arc::new(fakes.file_manager.clone()),
             keychain: Arc::new(fakes.keychain.clone()),
+            local_daemon: Arc::new(fakes.local_daemon.clone()),
             machines: Arc::new(fakes.machines.clone()),
+            views: Arc::new(fakes.views.clone()),
+            pull_requests: Arc::new(fakes.pull_requests.clone()),
+            review_chat: Arc::new(fakes.review_chat.clone()),
             storage: fakes.storage.clone(),
         };
         (clients, fakes)
@@ -152,6 +195,7 @@ impl Clients {
         let mut workspace = fixture::design();
         fixture::desk(&mut workspace);
         let marks = marks::FakeMarks::seeded_from(&workspace);
+        let views = views::FakeViews::seeded(&workspace);
         let daemon = FakeDaemon::new(workspace, clock.clone())
             .with_latency(Duration::from_millis(120))
             .with_step(Duration::from_millis(350));
@@ -164,10 +208,15 @@ impl Clients {
             marks: Arc::new(marks),
             clock,
             clipboard: Arc::new(FakeClipboard::default()),
+            reveal: Arc::new(FakeReveal::default()),
             files: Arc::new(FakeFileSystem::default()),
             file_manager: Arc::new(FakeFileManager::default()),
             keychain: Arc::new(FakeKeychain::default()),
-            machines: Arc::new(machines::FakeMachines::new().adding_through(Arc::new(daemon.clone()))),
+            local_daemon: Arc::new(FakeLocalDaemon::default()),
+            machines: Arc::new(machines::FakeMachines::new().through(daemon.clone())),
+            views: Arc::new(views),
+            pull_requests: Arc::new(pull_requests::FakePullRequests::new()),
+            review_chat: Arc::new(review_chat::FakeReviewChat::new()),
             storage,
         };
         (clients, daemon)

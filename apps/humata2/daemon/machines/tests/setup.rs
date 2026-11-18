@@ -63,6 +63,7 @@ fn answer_up_to_service(runner: &FakeRunner, facts: &CheckFacts) {
         .ok(Purpose::Check, &facts.stdout())
         .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
+        .ok(Purpose::Install, "")
         .ok(Purpose::Install, "");
 }
 
@@ -152,6 +153,7 @@ fn connect_retries_with_growing_waits_while_the_machine_boots() {
         .answer(Purpose::Probe, Exit::Code(255), "", "Connection refused")
         .ok(Purpose::Probe, "Linux x86_64\n")
         .ok(Purpose::Check, &CheckFacts::default().stdout())
+        .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
@@ -246,11 +248,46 @@ fn a_failed_create_offers_to_fix_the_provider_and_delete_what_was_made() {
         panic!("{progress:?}");
     };
     assert_eq!(failure.step, Step::Create);
-    assert!(matches!(failure.error, SetupError::CommandFailed { .. }));
+    assert!(matches!(failure.error, SetupError::CommandFailed { printed: true, .. }));
     assert!(failure.output_tail.contains("quota exceeded"));
     assert!(failure.remedies.contains(&Remedy::FixProvider));
     assert!(failure.remedies.contains(&Remedy::DeleteWhatWasMade));
     assert_eq!(setup.current(), Step::Create);
+}
+
+#[test]
+fn a_failed_step_that_printed_nothing_carries_no_output_and_does_not_promise_any() {
+    let runner = FakeRunner::new();
+    runner.answer(Purpose::Create, Exit::Code(255), "", "");
+    let mut setup = lima("box-1");
+
+    let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::files());
+
+    let Progress::Failed(failure) = progress else {
+        panic!("{progress:?}");
+    };
+    assert!(failure.output_tail.is_empty(), "{:?}", failure.output_tail);
+    assert!(matches!(failure.error, SetupError::CommandFailed { printed: false, .. }));
+    assert!(!failure.error.to_string().contains("below"), "{}", failure.error);
+}
+
+#[test]
+fn an_install_that_stops_quietly_promises_no_output() {
+    let runner = FakeRunner::new();
+    runner
+        .ok(Purpose::Create, "")
+        .ok(Purpose::Probe, "Linux x86_64\n")
+        .ok(Purpose::Check, &CheckFacts::default().stdout());
+    runner.answer(Purpose::Install, Exit::Code(9), "", "");
+    let mut setup = lima("box-1");
+
+    let (progress, _) = drive(&mut setup, &runner, &FakeBuilds::files());
+
+    let Progress::Failed(failure) = progress else {
+        panic!("{progress:?}");
+    };
+    assert!(failure.output_tail.is_empty(), "{:?}", failure.output_tail);
+    assert!(!failure.error.to_string().contains("below"), "{}", failure.error);
 }
 
 #[test]
@@ -288,7 +325,7 @@ fn a_try_again_after_a_failure_runs_the_same_step() {
 
     assert!(matches!(first, Progress::Failed(ref failure) if failure.step == Step::Service));
     assert!(matches!(second, Progress::Ready(_)), "{second:?}");
-    assert_eq!(runner.ran(Purpose::Install).len(), 3);
+    assert_eq!(runner.ran(Purpose::Install).len(), 4);
 }
 
 #[test]
@@ -302,6 +339,7 @@ fn an_identity_machine_is_reached_over_ssh_with_humatas_host_keys() {
         )
         .ok(Purpose::Probe, "Linux x86_64\n")
         .ok(Purpose::Check, &CheckFacts::default().stdout())
+        .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")
         .ok(Purpose::Install, "")

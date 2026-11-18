@@ -54,8 +54,11 @@ pub(crate) enum Arrived {
     Unknown,
 }
 
-/// The pause between a batch's paste and the return that sends it.
-const RETURN_PAUSE: Duration = Duration::from_millis(100);
+/// The pause between a batch's paste showing and the return that sends
+/// it. D671 (Provisional): 100ms was too short for Copilot's terminal.
+const RETURN_PAUSE: Duration = Duration::from_millis(400);
+/// How long the paste gets to show before return is pressed anyway.
+const SHOWN_WAIT: Duration = Duration::from_secs(2);
 
 /// The real sink: the terminals' shared state.
 pub(crate) struct TerminalSink {
@@ -87,10 +90,20 @@ impl CommentSink for TerminalSink {
     /// leaves the batch in doubt: sending it again presses only return.
     async fn paste(&self, target: &Target, key: &str, paste: &[u8]) -> Pasted {
         let target = core_target(target);
+        let mut watch = match self.core.watch_for_comments(&target).await {
+            Ok(watch) => watch,
+            Err(refused) => return Pasted::NotTyped(refused),
+        };
         match self.core.type_comments(&target, key, paste).await {
             CommentsTyped::Yes => {}
             CommentsTyped::No(status) => return Pasted::NotTyped(status),
             CommentsTyped::Unknown(status) => return Pasted::Unknown(status),
+        }
+        // BUG-T1: a return that reaches the agent before it has taken the
+        // paste is part of it. A long paste shown as a summary is never
+        // seen, so the wait is short.
+        if let Some(watch) = watch.as_mut() {
+            let _ = watch.shown(paste, SHOWN_WAIT).await;
         }
         // An agent CLI reads a return right behind a paste as part of it.
         tokio::time::sleep(RETURN_PAUSE).await;

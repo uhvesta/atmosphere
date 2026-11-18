@@ -10,8 +10,15 @@ rust_library(
     srcs = glob(["src/*.rs"]),
     compile_data = ["providers/lima.toml"],
     crate_name = "humata2_machines",
-    visibility = ["//apps/humata2/daemon:__subpackages__"],
+    visibility = [
+        "//apps/humata2/daemon:__subpackages__",
+        # The desktop's install writes bundle.json and stages releases the
+        # same way a machine's install does (UP-1).
+        "//apps/humata2/desktop/install:__pkg__",
+    ],
     deps = [
+        # SEAM (MACHINESCRIPTS): the shared sample rules.
+        "//apps/humata2/daemon/machines/sample",
         "@crates//:rand",
         "@crates//:rustix",
         "@crates//:serde",
@@ -62,6 +69,7 @@ rust_library(
         "//apps/humata2/cli:__pkg__",
         "//apps/humata2/clients/live:__pkg__",
         "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/desktop:__pkg__",
     ],
     deps = [
         ":machines",

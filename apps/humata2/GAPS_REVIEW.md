@@ -679,3 +679,245 @@ What was done against `OVERVIEW.md › Known gaps (2026-11-15)`, in order, so a 
 - Verified: the AWAY close gate (`close_gate.sh`): every away_* test, flow §26.10, contain boundary, store, revive, mcp, clients live, ui_unit, native, cli and lint.
 - Known gaps: the AW-9 line's "and N more" counts only the 8 kept keys, a second link-up replaces it, a viewer on the machine doesn't see it, no dismiss; a host-held request can't be answered on the machine and a withdraw while away can't reach it; an away-approved edit's card has no title or before values; the host trusts a machine's approval on the item, not the field values; `Session.contained` and the Info card wording (D266); flow §26.10 still polls a release box's login and store.
 - Look at: `daemon/humatad/src/away/`, `daemon/humatad/src/board_service/{replay,journaled}.rs`, `daemon/humatad/src/inbox/{forwarded,relay,replay}.rs`, `daemon/store/src/away_left_out.rs`, `ui/src/away_left_out.rs`, `daemon/humatad/tests/away_*.rs`, `daemon/humatad/tests/common/{away,remote_rig}.rs`.
+
+### VIEWS+PR round 25: reviews on a machine, frame 68, Ask on hunks, moving a review (minion VIEWS+PR)
+- Verified: scripts applied in order on a copy of the tree; no builds run by the minion.
+- Known gaps: frame 68 needs re-recording; notes on a moved review are untested; the stack ignores RepoStack (D636).
+- Look at: `daemon/humatad/tests/pr_review_remote.rs`, `daemon/humatad/tests/pr_review_move.rs`, `desktop/tests/native/pr_ask.rs`.
+
+### Gate 31 fixes: the app check, holder start and saved-output syncs (uncommitted)
+
+- Changed: `daemon/app_peer/src/sys.rs` `wrap()` returns None for a NULL Core Foundation object. Asking about a peer that has already exited gave NULL, which was released and crashed humatad2. Now that peer is simply not the app.
+- Changed: a holder prints `started` as soon as it parses its arguments, and `ready` once it serves. `holder/src/client.rs` waits up to 30 s for the first (new `HolderError::LaunchTimeout`: the holder never ran) and then 10 s for the second (`StartTimeout`: it ran but wasn't ready). A slow launch on a loaded machine no longer counts against the ready wait.
+- Changed: `holder/src/saved.rs`: a new save log is synced at its first space reservation and not when it is made. While output keeps coming faster than the sync interval, each reservation grows, doubling from 1 MiB up to 16 MiB, so a flood syncs less often. After a pause it starts from 1 MiB again.
+- Changed (tests only): holder `terminal`/`end` and revive `kill_matrix` kill a test pid only if it is still that holder (`still_holder`). `cli:hosts_live_test` reports why the daemon went away. `humatad:continue_in_test` waits for the conversation file.
+- Changed: `humatad/src/inbox.rs` `hold_through_gap` takes the ask gap's end before the task is spawned, so the 30 s count starts when the wait ends. Before, it started at the task's first poll, so a paused-time test never reached the end. `tests/inbox.rs` skips the asker's Session events, which the feed now carries, when it reads requests and grants. `holder/src/process.rs`: the Linux-only `REPLACED`/`file_name_of` are cfg'd to Linux and tests, so they are no longer dead code on macOS.
+- Verified: `daemon/app_peer:app_peer_test` (`a_peer_that_has_exited_is_not_the_app`), `cli:hosts_live_test`, `holder:terminal_test` (flood), `holder:holder_unit_test` (`a_flood_reserves_further_each_time_up_to_a_limit`, `output_after_a_pause_reserves_the_least_again`), `humatad:upgrade_holders_test`, `humatad:continue_in_test` in batch runs 20 and 22; `humatad:humatad2_unit_test` and `humatad:inbox_test` re-queued.
+- Look at: the 30 s launch wait (it is generous, chosen for loaded CI machines), and whether 16 MiB is too far to reserve ahead on small disks.
+
+### (commit: pending): Diff panel base chip, quiet Add repo…, Journal drawing, stopped-session menu (D739, OWNERFIX)
+- Changed: while every repo shares the header's base, each repo line shows only the base menu's chevron; Add repo… is quiet accent text; RV-2 says Push & PR; design 08 follows VW-10; a stopped session's ⋯ menu has no Stop and the card is 256 pt wide.
+- Verified: re-recorded design and native frames listed in D739 (`desktop:design_test`, `desktop:native_test`, `desktop:panels_test`); Fable approved each.
+- Known gaps: the native Journal's order and "Kept" wording go to VERIFY's fixture work.
+- Look at: `ui/src/panel_changes.rs`, the session menu, the frame list in D739.
+
+### (commit: pending): Diff panel hover, the chevron button, menu rows, machine page frames (D740, OWNERFIX)
+- Changed: Push & PR and Add repo… keep their accent on hover; the lone chevron is a 24×20 button with a tooltip and focus state; the session menu draws borderless 26 pt rows (`ui/src/action_menu.rs` `item`); the head row's second line is inset 8 pt; design 79 and 80 dim a read-only machine's variable links.
+- Verified: native and design frames listed in D740 re-recorded (`desktop:native_test`, `desktop:panels_test`, `desktop:design_test`); Fable approved each.
+- Known gaps: the chevron-only chip reports no aria-expanded; Fable's other non-blocking follow-ups are listed in D740.
+- Look at: `ui/src/panel_changes.rs`, `ui/src/action_menu.rs`, `ui/src/machine_page.rs`.
+
+### (commit: pending): copies skip what vanishes mid-copy; shell tabs push their session (D741)
+- Changed: a fork or move copy leaves out an entry gone since its folder was listed and never copies git's `*.lock` files; opening or closing a shell tab publishes the session's Updated event, and the client keeps its last tab list when re-listing fails.
+- Verified: `daemon/sessions` unit tests `an_entry_gone_since_its_folder_was_listed_is_left_out` and `gits_lock_files_are_not_copied_and_the_rest_is`.
+- Look at: `daemon/sessions/src/tree_copy.rs`, `daemon/humatad/src/terminal.rs`, `clients/live/src/terminals.rs`.
+
+### (commit: pending): panel header buttons, rail Inbox badge, sidebar weights (D742, OWNERFIX)
+- Changed: the panel header's expand and close buttons sit where `design/session.rs` draws them; the rail badge matches `kit::badge`; selection alone never bolds a sidebar row (L17.2 narrowed).
+- Verified: native 36, 37, 38, 40, 55 and design 55 re-recorded (`native_test_record -- desk::`), look scores in D742; Fable approved.
+- Look at: `ui/src/panels.rs`, `ui/src/sidebar.rs`, `ui/src/sidebar_desk.rs`.
+
+### (commit: pending): Humata never tells an agent where its repos are (D743, owner)
+- Changed: no message, MCP instruction, tool description, variable or first-message line names a clone's path or branch; adding a repo says nothing to the agent. FEEDBACK VF-1 and VF-42 reworded to match.
+- Verified: through D748's and D751's tests (below); D743 names no test of its own.
+- Look at: any message to an agent that still names a path; a worker searched for repo add or drop messages.
+
+### (commit: pending): a machine session's permission card reaches the host's Inbox (D744, VERIFY)
+- Changed: on a machine daemon `raise_permission` saves and journals the card; the host mirrors it and the answer goes back to the waiting hook. `InboxEntry.permission` (field 6) lets a restart withdraw a pending card.
+- Verified: `daemon/humatad/tests/hooks_remote.rs` `a_machine_sessions_permission_ask_waits_in_the_hosts_inbox_and_its_approval_releases_the_hook`; `inbox/kept.rs` `a_pending_request_kept_before_permission_cards_were_saved_restores_as_before`.
+- Look at: the force-upgrade note: an older machine daemon still never journals the card.
+
+### (commit: pending): synced skills reach a machine's agents (D745, VF-5)
+- Changed: after each sync the machine links every synced skill into `~/.copilot/skills`, `~/.claude/skills` or `~/.codex/skills`; the machine's own entries are never replaced.
+- Verified: `daemon/humatad/src/peer_skills.rs` tests (`a_synced_skill_shows_in_the_agents_own_folder_and_the_machines_own_is_untouched`, `a_later_sync_without_a_skill_removes_only_its_link`, `a_real_folder_or_someone_elses_link_named_like_a_synced_skill_is_never_replaced`, `an_agent_with_no_folder_yet_gets_one_holding_the_links`).
+- Known gaps: clash picks aren't sent with the set; the live sync rerun (VF-5) is pending on the 0.2 build.
+
+### (commit: pending): Copilot 1.0.113-1 records and background shells are known (D746, VF-60)
+- Changed: `instruction.update_delivery`, the `model.*` records, workspace.yaml's new keys and `system.notification` for finished shells are known with exactly the fields captured; a landing runs the strict read before it adds any repo.
+- Verified: `daemon/conversation/tests/copilot_captured.rs` (`a_conversation_with_model_and_instruction_delivery_records_lists_its_prompts_and_is_known`, the fork and carry cases after it, and the five `system.notification` cases from `a_background_shells_notification_is_no_turn_and_its_conversation_lists_its_two_prompts`).
+- Known gaps: other notification kinds stay refused; the fork lane rerun is pending.
+
+### (commit: pending): Markdown gallery pixel goldens in the mono face (D747)
+- Changed: the three Metal tests moved to `markdown/headless/tests/pixels.rs` (target `:pixels`); gallery.png and gallery-annotated.png re-recorded in Menlo.
+- Verified: `markdown/headless:pixels`, `markdown/headless:snapshots`.
+
+### (commit: pending): every agent gets Humata's MCP server and tools on PATH (D748, VF-1, VF-2, VF-42)
+- Changed: the daemon writes per-kind MCP config files with no token; Claude Code, Copilot and Codex start and resume with flags that add the `humata` server and pre-allow its tools; every tab's PATH starts with the `humata` folder; instructions name no path, clone or branch.
+- Verified: `daemon/sessions/src/agents.rs` unit tests `every_builtin_cli_starts_and_resumes_with_humatas_mcp_server_and_its_tools_allowed`, `the_plain_shell_and_an_agents_file_kind_with_no_slot_get_no_mcp_server` and `an_agents_file_kind_gets_the_mcp_server_where_it_names_the_slot`; the live Copilot check is part of the reruns.
+- Known gaps: Copilot hides the server's instructions without `--allow-all-mcp-server-instructions`; Codex has no per-command allow for `humata`.
+- Look at: `with_humata_tools`, `install_mcp_configs` in `serve.rs`, `identity::tab_env`.
+
+### (commit: pending): versions bar placeholder, step buttons, mock cursor (D749, OWNERFIX)
+- Changed: the Save version placeholder ends in "…"; the step buttons are 26 pt; the mock agent's cursor sits after "> ".
+- Verified: native 37, 39, 41, 42, 43 and design 41 re-recorded; look scores in D749; Fable approved.
+- Look at: `ui/src/doc_history.rs`, `clients/src/fixture/terminal.rs`.
+
+### (commit: pending): an unfocused terminal fits its own new size (D750, Provisional)
+- Changed: under `FitPolicy::Shown` the replica remembers the size it last sent; unfocused, it resizes only when its own bounds need a different size, and never takes back a size another view set.
+- Verified: `terminal/client/tests/component.rs` `an_unfocused_shown_replica_refits_when_its_own_bounds_change` (red before) and `an_unfocused_shown_replica_never_takes_back_a_size_another_view_set`.
+- Known gaps: native 07, 08, 37 and 68 need re-recording; the `FIT` comment in `ui/src/terminals.rs` is stale.
+
+### (commit: pending): the review chat and rebuild note name no branches (D751)
+- Changed: the review chat's first message lists each PR's URL, title, author and size; the rebuild note drops the branch.
+- Verified: `daemon/humatad/tests/pr_review.rs` `the_review_chat_is_told_each_pr_and_the_users_context`; `daemon/humatad/tests/rebuild_session.rs` `rebuild_on_box_2_clones_last_pushed_sha_resumes_mirrored_conversation_and_names_lost_work`.
+
+### (commit: pending): Add machine waits behind This Mac's daemon Migrate (D752)
+- Changed: the Add machine dialog runs nothing while This Mac's daemon Migrate item is unanswered; it shows Migrate This Mac, then runs the add once migrated.
+- Verified: `features/hosts/tests/migrate.rs` (three tests red before the fix, plus `an_add_after_this_mac_was_migrated_runs_at_once` and `a_store_item_waiting_does_not_hold_an_add`).
+- Known gaps: an app built before this change, opened after a newer daemon, still shows the daemon's words as a failure (a downgrade).
+
+### (commit: pending): older holders are refused as Outdated, never typed into blind (D753, BUG-T1)
+- Changed: a holder from before the keys wait or before keyed input fails with `HolderError::Outdated`; Type, review comments, the submit step and start fresh are refused with "Migrate the holders" named, and the holder keeps running.
+- Verified: `daemon/holder/tests/return_after_text.rs` `a_holder_from_an_older_build_is_an_error_to_migrate_not_a_skipped_wait` (red before); `daemon/holder/tests/keyed_input.rs` `a_holder_from_before_keyed_input_is_refused_as_outdated`.
+
+### (commit: pending): `session type` submits by default (D754, BUG-T1)
+- Changed: `humata session type` and MCP `session_type` press Enter unless `--no-submit` / `submit: false`; the reply says `submitted` (terminal.proto `TypeResponse.submitted`).
+- Verified: `cli/tests/sessions.rs` (`type_presses_enter_after_the_text_by_default`, `type_never_presses_enter_twice`, `type_with_no_submit_types_the_text_as_it_is`, `type_says_whether_the_daemon_submitted_it`); `daemon/humatad/tests/terminal.rs` `typing_says_it_submitted_only_text_that_ends_in_a_newline`; `daemon/humatad/tests/mcp.rs` `session_type_presses_enter_unless_told_not_to`.
+- Known gaps: the live proof is the rerun lane without `say.sh`.
+
+### (commit: pending): an agent writes shared/ only on its own machine (D755)
+- Changed: a write to another machine's `shared/` is `Refusal::SharedOnOtherMachine`, whose fix is the pull; a copy with a refused landing is refused before its source is judged. SPEC FC-8 and TP-4 updated by main.
+- Verified: `daemon/access/tests/refusals.rs` (`an_agent_writes_shared_only_on_its_own_machine`, `an_agent_pulls_another_machines_file_into_its_own_shared`, `a_copy_into_a_remote_shared_is_refused_before_its_source_is_judged`); `daemon/humatad/tests/agent_send_machine.rs`.
+- Known gaps: files flow 5 rerun as a pull is pending.
+
+### (commit: pending): an agent's unknown bare destination is refused (D756)
+- Changed: for an agent, the last word of `humata cp|mv` with no `:` or `/` is a visible machine, else a path if it has a `.`, else `NotAMachineHere` (exit 2, nothing starts). `./name` and `name/` always mean the clone.
+- Verified: `cli/tests/files.rs`, the six `an_agent…` cases after `a_send_to_a_machine_nobody_has_starts_nothing`.
+
+### (commit: pending): only a move starts a missing conversation fresh (D757)
+- Changed: `Why::Restarted` is strict (a missing conversation is `ResumeFailed(ConversationFileMissing)`); `Why::Moved` is used only by the move's own resume, and the host honours AfterMove only from itself. A resume check ignores other sessions' conversation files in the same folder.
+- Verified: `daemon/revive/tests/kill_matrix.rs` (`a_restart_whose_conversation_is_gone_fails_and_only_a_move_starts_it_fresh`, `another_session_writing_its_conversation_beside_it_does_not_fail_a_resume`); `daemon/humatad/tests/sessions.rs` `an_after_move_resume_of_a_session_that_never_moved_does_not_start_it_fresh`; `humatad:context_fork_test`, `humatad:power_cut_both_test`, `humatad:move_session_test`.
+
+### (commit: pending): a remote follow asks again on the same link (D758)
+- Changed: when a machine answers unreachable while its link stays up, the host's follow of a start, Desk start or resume pauses (1 s doubling to 30 s) and asks again; a refused lookup ends the operation with the machine's words.
+- Verified: `remote_work.rs` tests `a_start_the_box_answers_unreachable_while_its_link_stays_up_is_asked_again_until_answered` and `a_start_the_box_lost_is_asked_again_when_its_first_answers_on_the_new_link_are_unreachable`; `humatad:power_cut_machine_test` (slow tier).
+
+### (commit: pending): Add machine no longer kills its own setup script (VERIFY sync lane)
+- Changed: the systemd setup's `pkill` matches the whole command line, so it no longer matches the `sh -c` script holding the unit's ExecStart.
+- Verified: `daemon/machines:machines_unit_test` `no_script_takes_itself_for_the_daemon`; live: the sync rerun's Add machine worked with no workaround.
+- Look at: `daemon/machines/src/service.rs`.
+
+### (commit: pending): copies, moves and the trash keep exact modes (VF-58, VF-59)
+- Changed: copied, trashed and moved folders keep their exact mode, applied once their children are written; a read-only folder can be trashed.
+- Verified: `daemon/transfers/tests/transfers.rs` (`a_copy_keeps_each_files_exact_mode_under_another_umask`, `a_moved_file_keeps_its_mode_at_the_destination_and_after_restore_from_trash`, `a_copy_keeps_each_folders_exact_mode_under_another_umask`, `read_only_folders_moved_on_one_disk_or_across_keep_their_modes`, the two read-only cancel cases), `daemon/transfers/tests/trash.rs`; run 66.
+- Known gaps: VF-58 wasn't reproduced on current code; the flow 4 rerun with `stat` confirms it.
+- Look at: `daemon/transfers/src/{disk,engine,fsutil,trash}.rs`.
+
+### (commit: pending): a session with no turn yet moves and starts fresh (VERIFY remote lane)
+- Changed: `start_moved` starts a moved agent that never had a turn fresh in its new folder.
+- Verified: batch run 66 passed it; the VERIFY lane log names no test, so find it with `git show` once committed. No decision number.
+- Look at: `daemon/revive/src/agent.rs` `start_moved`.
+
+### (commit: pending): an agent's `humata cp` reaches its own and its channel's machines (VERIFY files lane)
+- Changed: the "no destination.session_clone.session" failure is gone; an agent names its channel's machines and sees no others.
+- Verified: `daemon/humatad/tests/agent_send_machine.rs` `an_agent_names_its_channels_machine_by_name_and_sees_no_other` (run 67).
+
+### (commit: pending): `--dry-run` never changes anything (VF-29)
+- Changed: a command with no plan refuses `--dry-run` as a usage error, enforced once in `cli/src/call.rs`; attach under dry-run is a usage refusal.
+- Verified: `cli/tests/dry_run.rs` (`access_set_dry_run_changes_no_rule`, `review_start_dry_run_starts_no_review`, `channel_repo_add_dry_run_adds_nothing`, `session_move_dry_run_moves_nothing`, `cp_to_a_machine_dry_run_starts_no_transfer` and the rest); all cli targets in run 72.
+- Known gaps: `hook --dry-run` as a usage refusal is queued, not landed.
+
+### (commit: pending): a running agent's reply written after its last event is still read, on this Mac and on a remote (N1, VERIFY fork lane)
+- Cause: the host's mirror (`session read`, search) only read a conversation file when a Session event came. Copilot 1.0.113 writes a turn's `assistant.message` to `events.jsonl` after its turn-ended hook has run. In the lane, the hook's catch-up read up to the line before the reply, and no later event came. A stop, a fork or a status change used to hide this; after a resume, hooks set the session idle at once and nothing came after. On a remote the host reads only when the machine reports (D189), and nothing reported the late write.
+- Changed: `daemon/humatad/src/history_service/follow.rs` watches the folder of each launching, running or resuming agent's conversation file (notify, no polling), on every daemon for its own agents. A change catches the session up after 50 ms. A stopped, gone or remote session is unfollowed. `daemon/humatad/src/peer.rs` `report_sessions`: a machine's `HistoryIndexed` (its own catch-up added lines, D438) now pushes that session's status report up the uplink, so the host's `remote::dispatch` reads it there.
+- Verified: `daemon/humatad/tests/history.rs` `what_a_running_agent_writes_after_its_sessions_last_event_is_found` (`humatad:history_test`, green run 109); `daemon/humatad/tests/remote_history.rs` `what_an_agent_on_another_machine_writes_after_its_sessions_last_event_reaches_the_host` (`humatad:remote_history_test`, green run 110; history_test and remote_test green there too).
+- Red: the remote test was written and run before its fix: red in run 109. The local test was shown red in run 102 against a temporary edit in the shared tree, which is now banned; that edit went into the 19:05 VERIFY bins and caused the live miss there (in the tree about 18:39 to 19:17). Count the local test as not seen red under the current rule.
+- Known gaps: no live VERIFY rerun on bins built after 19:17 yet. A machine whose uplink is down when the late write lands is caught up when its link comes back (existing link-up read).
+- Look at: `history_service.rs` `catch_up` / `caught_up_touched`, `history_service/follow.rs`, `peer.rs` `report_sessions`.
+
+### (commit: pending): typing into a mid-turn agent says it was busy (`agent_busy`)
+- Cause: `session type` while the agent was mid-turn wrote the text at once. Copilot queues it in its own UI, but the reply said `queued: null`, `typed: true`, `submitted: true`, which read as "not queued".
+- Changed: `TypeResponse.agent_busy = 5` (terminal.proto). `daemon/humatad/src/terminal.rs` reads the agent's turn before writing (the `running_turn` status the desk move and channel rename guards call busy, anything but Idle) and sets it. The CLI's plain output adds "Sent while the agent was busy; it may run after the current turn"; `--json` prints the field. `queued` stays Humata's own queue only. `api/CLI.md` and `api/GRPC.md` describe it.
+- Verified: `daemon/humatad/tests/terminal.rs` `typing_now_says_whether_the_agent_was_mid_turn`; `cli/tests/sessions.rs` `type_says_whether_the_daemon_submitted_it`.
+- Look at: the MCP `session_type` reply (`daemon/humatad/src/mcp.rs`) does not carry `agent_busy` yet, so MCP agents can't see it.
+
+### (commit: pending): a removed machine added again asks before its first skills sync, and leaves every channel once it is removed; an add during a removal says so (D760)
+- Changed: remove and forget delete the machine's `skills/<machine>.json`, and so does an add afresh. A removal takes the machine out of every channel's machine list only once it has committed (`Work::removed`: in RemoveMachine's job after `Machines::remove` returns Ok, after `recover` finishes a cut-short removal, and after a reconnect finishes one). A removal that fails leaves the machine listed and in its channels. An add of a name still being removed gets `BeingRemoved` (`aborted`, exit 6), not `name_taken`.
+- Verified: `daemon/humatad:skills_test` `a_machine_removed_and_added_again_has_a_first_sync_that_asks_again`, `daemon/humatad:humatad2_unit_test` `a_forgotten_machine_starts_over_with_a_first_sync_and_no_picks`, `daemon/machines:fake_ssh_test` (the two `an_add_while_a_removal…` cases), `daemon/humatad:machines_test` `an_add_while_the_machine_is_being_removed_is_refused_until_the_removal_ends` (AddSshMachine, the call `host add` makes), `daemon/humatad:forget_machine_test` `removing_a_machine_takes_it_out_of_every_channel` and `a_removal_that_fails_leaves_the_machine_listed_and_in_its_channels`. Green on the real code: run 110 (forget_machine, machines, skills, fake_ssh; in humatad2_unit, the D760 case passed and only another lane's `screen_ask` case failed), and before it runs 99 and 100.
+- Red: run 102 showed skills_test, the humatad2_unit case, both fake_ssh cases and `removing_a_machine_takes_it_out_of_every_channel` red, but against edits made in the shared tree. That practice is now banned: those edits went into the 19:05 VERIFY bins and gave the live rerun `name_taken` and a removed machine kept in its channel. Run 109 likewise showed `a_removal_that_fails_leaves_the_machine_listed_and_in_its_channels` red against a tree edit that took the machine out of its channels when the removal was asked for (19:17-19:31). The machines_test case is not seen red: it was written after its fix.
+- Known gaps: no live VERIFY rerun on bins built after 19:31 yet. A channel update that fails after a removal is only logged.
+- Look at: `daemon/machines/src/manage.rs` `name_free`/`removing`, `daemon/humatad/src/skills_service.rs` `forget`, `daemon/humatad/src/machine_service.rs` `forget_journal`, `remove_machine`, `Work::removed`, `recover_in_background`, `reconnect`; `machine_service/forget.rs` `take_out_of_channels`; `tests/common/remote_rig.rs` `refuse_dials`.
+
+### (commit: pending): Copilot's ask-user form raises an Inbox question with every choice, the session waits on you, and the reply reaches Copilot (D761)
+- Changed: Copilot's hooks plugin holds `ask_user` with a `preToolUse` hook (`humata hook copilot question`). The daemon raises the existing QUESTION card (question text, choices from the form's schema), holds `Asking` so status is NEEDS_INPUT, and prints a `deny` whose reason carries the reply; Deny declines; no answer lets the form open. Approve on such a card is refused with a fix to reply.
+- Verified: `daemon/agent_hooks:questions_test`, `daemon/agent_hooks:config_test`, `daemon/agent_hooks:payloads_test`, `cli:hook_test` `an_ask_user_form_goes_to_the_daemon_as_a_question`, `daemon/humatad:hooks_test` (three question cases), `daemon/humatad:humatad2_unit_test`; run 92.
+- Known gaps: live Copilot 1.0.113 check owed: the `matcher` on `preToolUse` and that the model goes on with the answer in the deny reason. Sessions started before the daemon upgrade keep the old plugin until restarted.
+- Look at: `daemon/agent_hooks/src/question.rs`, `agent_hooks/src/lib.rs` `copilot_plugin`, `daemon/humatad/src/session_service/hooks.rs` `Hooked::Question`, `inbox/permission.rs` `raise_question`/`decide`.
+
+### (commit: pending): every write into an agent tab passes one input gate that refuses while the agent asks folder trust on its screen or when the screen can't be read; never reported submitted nor used to answer the question (D762, copilot-remote rerun finding 1)
+- Cause: `ready_for_text` (`await_keys`) only checks raw mode, and Copilot's "Confirm folder trust" list reads keys in raw mode; `type_in` then reported `submitted` and its Enter answered the dialog.
+- Changed: new `daemon/humatad/src/input_gate.rs` (`guard(socket) -> Result<(), InputRefused>`, `refusal`, `StartGate`); `holders::screen_at` and `ScreenUnread` (reads the screen fresh from the holder's kept output); `vt_authority` `Authority::screen_text`; `screen_question.rs`. Routed: `terminal.rs` `type_in` and `type_comments` (keyed and plain), `rebuild.rs` `type_note` (waits in the background up to 10 min), `start_fresh.rs` `type_seed` (waits up to 10 min, then `SeedNotReady`, seed kept). An unreadable screen refuses (Unavailable) and types nothing.
+- Verified: `daemon/humatad:terminal_test` `text_typed_while_the_agent_asks_folder_trust_is_refused_and_never_answers_it`, `daemon/humatad:humatad2_unit_test` (`input_gate::tests`, `screen_question::tests`), `daemon/vt_authority:authority_test`; runs 102 (terminal_test, authority_test) and 108 (humatad2_unit_test).
+- Known gaps: a question drawn in the milliseconds between the gate's read and the write isn't caught. Only Copilot 1.0.113's recorded question is listed; Codex and Claude Code first-run prompts wait for recorded screens (D762 follow-up). Live Copilot recheck owed (move to a remote, then type).
+- Look at: `daemon/humatad/src/input_gate.rs`, `daemon/humatad/src/holders.rs` `screen_at`, `daemon/humatad/src/terminal.rs` `type_in` / `type_comments`.
+
+### (commit: pending): a remote start's first message waits for Copilot's folder-trust answer and is then sent once; one unsent after 30 min is an Inbox request with its text (D763)
+- Cause: `type_then_return` pressed return after 15 s whether or not the agent showed the text. On a remote machine Copilot first asks to trust the folder, so the return answered that and the message stayed typed (BUG-T1b).
+- Changed: `daemon/holder/src/client.rs` (`Typed`, `HeldReturn`, `deliver`), `daemon/holder/src/shown.rs` (paste summary), `daemon/sessions/src/first_message.rs` (`FirstMessage`, `WriteGate`, `HeldMessages`), `daemon/sessions/src/start.rs`, `daemon/humatad/src/start_message.rs`, `input_gate.rs` (`StartGate`, appended), `serve.rs` wiring, `restart.rs`, `rebuild.rs` `type_note`, the fake agent's `asks`/`eats`/`summary` modes, a `first_message` field in each `Starter` literal; `daemon/revive/src/gate.rs` (`WriteGate`, moved from sessions), `ReviveConfig.gate` in every literal, and `daemon/revive/src/agent.rs` `verify`.
+- Verified: `daemon/holder:return_after_text_test`, `daemon/holder:holder_unit_test`, `daemon/sessions:sessions_unit_test`, `daemon/sessions:kill_matrix_test`, `daemon/revive:revive_unit_test`, `daemon/humatad:humatad2_unit_test`; plus `daemon/revive:kill_matrix_test`. Holder passed in batch run 98. Sessions and revive_unit_test passed in run 105. The revive question-wait test failed in runs 103 and 105 (the resume gave up while the question was on screen) and passed in run 107. humatad2_unit_test, including the remote ask replayed into a host Inbox, passed in run 108.
+- Known gaps: no live VERIFY rerun on the VM yet. A screen unreadable for a whole resume timeout fails the resume as another conversation. The remote ask is checked by replaying the machine's journal into a host Inbox, not over a live link.
+- Look at: `daemon/holder/src/client.rs` `deliver`, `daemon/sessions/src/first_message.rs` `FirstMessage::send`, `daemon/humatad/src/start_message.rs`.
+
+### (commit: pending): the Repos and machines grid answers (`GetGrid`, CH-9, TP-1, D764)
+- Cause: `ChannelService.GetGrid` was a missed wire-up. `humata channel grid` was wired in the CLI, but the daemon answered "isn't built into this humatad2 yet".
+- Changed: `daemon/humatad/src/channel_service/grid.rs` builds the grid from the host's store. There is one cell per channel repo × channel machine. Each cell counts live sessions on that machine with that repo's clone; archived sessions and deleted Desk sessions are skipped. Its state is the repo's main clone, or MACHINE_OFFLINE when the host last saw that machine other than ONLINE. The call is CHANNEL_READ and asks like GetChannel. `get_grid` in `channel_service.rs` calls it. Docs: `api/GRPC.md` ChannelService row; flows README gap 49, macro-02, briefs/macro-02 and agents-08 updated.
+- Verified: `daemon/humatad:channel_grid_test` (counts before and after a session, an unknown channel is NOT_FOUND, `humata channel grid` exits 0); `daemon/humatad:humatad2_unit_test` (`channel_service::grid` cases); run 100 (failed against the stub in run 92).
+- Known gaps: the app's Repos and machines tab isn't built. MCP `topology_get` (TP-1) is still unserved (gap 79). A remote machine's cell shows the host's main-clone state, not that machine's own (D764).
+- Look at: `channel_service/grid.rs` `offline` reads `machine_service::Work` reachability without probing.
+
+### (commit: pending): folder trust on an agent's screen raises an Inbox question with its choices, the session waits on you, and only your reply picks one (D767)
+- Changed: each quiet spell of an agent's output, its watch reads the tab's screen with D762's `screen_question::asked_on`; a question there raises a held QUESTION card (question, folder, every numbered choice), NEEDS_INPUT while it shows. A reply (a choice's words or number only) moves the highlight and presses Enter if the screen still asks; Deny types nothing; the question leaving the screen or the agent exiting withdraws the card.
+- Verified: `daemon/humatad:screen_questions_test`, `daemon/humatad:humatad2_unit_test`, `daemon/humatad:hooks_test`, `daemon/humatad:inbox_test`; run 100.
+- Known gaps: live check owed that Copilot's trust list takes arrow keys and Enter, on a fresh remote session and after a move.
+- Look at: `daemon/humatad/src/screen_ask.rs`, `session_service/watch.rs` (`screen_ask::quiet`/`gone`), `inbox/permission.rs` `decide` (`only_choices`, `choice_named`), `serve.rs` `screen_ask::start`.
+
+### (commit: pending): an agent on a remote machine lists its channel's machines and pulls from This Mac through the host; `humata cp a b` to a new name makes the file b (D768, D769)
+- Cause A: on a machine's own daemon, `MachineService.ListMachines`/`GetMachine` were `not_built` (`machine_service/box_storage.rs`), so `humata host ls` and every `this-mac:` location failed with exit 7. The machine has no machine list or links, and its file guard's `Checked::Ask` turned into `status::needs_approval`, a bare UNIMPLEMENTED that MCP (`mcp.rs` ~1461) reads as `peer_version_unsupported`. The `not_built` fix (`status.rs`) and the CLI's UNIMPLEMENTED text (`cli/src/error.rs`) always said to update, which no release fixes.
+- Cause B: `transfer_service.rs` `destination_folder` → `existing_folder` takes only an existing folder, so `cp note.txt vm-b.txt` answered "there is no vm-b.txt there".
+- Changed: new `daemon/humatad/src/away/up.rs` (`ask_host`, `UpError`); `away/registry.rs` rows for ListMachines, GetMachine, ListDirectory, Stat, StartTransfer; `box_storage.rs`, `files/forward.rs`, `transfer_service.rs` (`up_to_host`) forward an agent's call up; `board_service.rs` `HostCalls` and `replay.rs` `run_forwarded` answer them on the host as that agent; `machine_service.rs` `list_for_machine_agent` puts This Mac first; `serve.rs` wiring. `status.rs` `needs_approval` is now PERMISSION_DENIED kind `denied` with the capability; `not_built` and the CLI's UNIMPLEMENTED text point at the host Mac and migrate. `files.proto` `StartTransferRequest.name` (7); `daemon/transfers` `start_as`, `plain_name`, `NameNeedsOneSource`; CLI `commands/files.rs` `landing_name` (stat, then folder + name); `cli/src/resolve.rs` `this_mac` on a machine; `commands/hosts.rs` lists This Mac once. Docs: api/GRPC.md, api/CLI.md §5.5/§5.6.
+- Live rerun fix: a machine's daemon names itself by its own id (ma_…), but the host knows it by the link's id (vm-a), so a forwarded pull's destination failed on the host with "session … is on machine vm-a, not ma_…". The machine now sends its own side unnamed (`away::unnamed_here`), and the host fills it in with the link's id (`away::on_link`, in `replay.rs` `run_forwarded`). A machine-only send into another machine's `received/` now gets D755's pull hint (`access/src/policy.rs` `write_place`), not "leads outside Humata's folders".
+- Verified: cli:files_test run 104; transfers:transfers_test, cli:this_machine_test, cli:cli_unit_test run 102; humatad away_forward_test, agent_send_machine_test, humatad2_unit_test run 108 (before the link-id fix); the link-id and received fixes: see the hand-back. The red proof is from tests run before their fixes (runs 102/104). The link-id and received tests were written before their fixes but not run red first: not seen red.
+- Known gaps: an agent's FileService read that the channel's rule Asks about is refused at once (`guard.require` → `needs_approval`) and raises no Inbox card, on the host and on a machine alike; reads would have to defer to the Inbox to wait. MCP tools pass a "This Mac" machine name through literally (not mapped like the CLI's `this-mac`). Both ends need the upgrade (a host on an older release answers the forwarded rows as unknown). No live VM rerun yet.
+- Look at: `away/up.rs`, `board_service/replay.rs` `run_forwarded`, `transfer_service.rs` `up_to_host`/`landing_name`, `cli/src/commands/files.rs` `landing_name`.
+
+### (commit: pending): MCP `topology_get` answers (TP-1, gap 79, D772)
+- Cause: the tool was advertised in `daemon/mcp/src/tools.rs` but left out of `serves()` in `daemon/humatad/src/mcp.rs`, so it answered "isn't built into this humatad2 yet".
+- Changed: `daemon/humatad/src/mcp/topology.rs` calls WhoAmI, GetChannel, GetGrid and ListSessions (all CHANNEL_READ on the agent's channel) and returns `{this_machine, machines:[{id, name, reachability, sessions:[{id, title, agent, status}]}]}`. Reachability comes from the grid: `online`, `offline`, or `unknown` when a machine has no cell. `mcp.rs` serves and dispatches it. Docs: `api/MCP.md` row, flows README gap 79, agents-08.
+- Verified: `daemon/humatad:mcp_test` (`topology_get_names_this_machine_and_the_channels_sessions_on_it`; `tools_list_offers_only_tools_the_daemon_runs` now uses `journal_status` as its unbuilt example and expects `topology_get` listed); `daemon/humatad:humatad2_unit_test` (`mcp::topology`); red in run 102 (test before fix), green: `humatad2_unit_test` run 108, `mcp_test` run 110.
+- Known gaps: in a channel with no repos, other machines show `unknown`. No test has a second machine in the channel.
+- Look at: `mcp/topology.rs` `reachability`.
+
+### (commit: pending): notes and questions between sessions are typed into the other agent after its turn, and an ask returns the asked session's answer (D774)
+- Cause: SessionService SendNote, AskSession and AnswerQuestion answered `not_built`, so `humata session note|ask` and MCP `session_note`/`session_ask`/`session_answer` failed (TP-5).
+- Changed: new `daemon/humatad/src/session_service/notes.rs` (gate SESSION_NOTE, wait for the turn, `await_keys` + `input_gate::guard`, keyed typing, in-memory questions); `session_service.rs` serves the three RPCs; `mcp.rs` wires the three tools; CLI `humata session answer <qu_id> [answer] [--decline]` (`args.rs`, `commands/sessions.rs`, `commands/mod.rs`, `daemon.rs`).
+- Verified: batch run 108 `daemon/humatad:session_notes_test` PASSED (6 tests); run 106 `cli:dry_run_test`, `cli:sessions_test` PASSED. No red run: runs 103-107 couldn't build humatad2 (another lane's half-edit in `settings_service/sections.rs`); run 103 compiled the new test binary against the `not_built` stubs.
+- Known gaps: no relay to a session on another machine (refused, nothing typed); questions end with a daemon restart; a note to a session mid-turn past 45 s is refused rather than queued; MCP `session_answer` can't decline.
+- Look at: `notes.rs` `turn_over`, `type_message`, `answer_question_of`.
+
+### (commit: pending): every Settings section is saved and read, a channel keeps its own default agent and retention, and a provider file is previewed before it is imported (D770, D771)
+- Cause: `SettingsService.UpdateSettings` answered `not_built` for default_agent, terminal, retention_defaults, long_lines, skills and notifications. `UpdateChannelSettings` did the same for default_agent and retention, and GetSettings left those sections empty, so `humata settings get <key>` failed on them. `ProviderService.PreviewProviderImport`/`ImportProvider` (MP-23) were `not_built`, though `humata provider import` was wired.
+- Changed: new `daemon/humatad/src/settings_service/sections.rs` (`Places`, `SectionsError`, `default_agent_for`) keeps the portable sections in the humata home's `config/settings.toml` and skills in `skills-settings.json`. `settings_service.rs` checks every section before saving, adds the sections' revision and fills the defaults, and saves a channel's default agent and retention. `session_service.rs` `agent_for` falls back to the channel's, then Settings'. `serve.rs` passes the state folder, agents and default agent to `SettingsSvc::new`. New `daemon/humatad/src/provider_service/import.rs` (plan, merge, stale) and `provider_service.rs` preview/import with one-use ten-minute plans. Docs: api/GRPC.md, api/CLI.md, OVERVIEW.md.
+- Verified: `daemon/humatad:settings_sections_test`, `daemon/humatad:provider_import_test`, plus `branch_settings_test`, `providers_test` and `skills_test` for regressions; all passed in run 109. Not seen red: the tests were queued before the fix, but the fix landed before a run picked them up.
+- Known gaps: retention isn't carried out; the terminal settings aren't read by the app or holders; the default agent's model is never passed (SE-2); there is no `clear_retention` for a channel; the import's idempotency key isn't replayed, and a table merge drops the old file's comments (D770, D771 follow-ups).
+- Look at: `settings_service/sections.rs` `Places::check`/`save`, `provider_service/import.rs` `merge`, `session_service.rs` `agent_for`.
+
+## 2026-11-17 VERIFY: `session type` agent_busy true for an agent idle at its prompt (D775)
+- Cause: `terminal.rs` `agent_busy` counted every status but IDLE as busy; Copilot gives no idle hook, so its idle prompt reads PROBABLY_IDLE (hook-less quiet, or a working hook plus 10 s quiet), reported busy.
+- Changed: `daemon/humatad/src/terminal.rs` (`agent_busy`: WORKING or NEEDS_INPUT only); `daemon/humatad/tests/terminal.rs` new `typing_to_an_agent_at_its_prompt_with_no_idle_hook_is_not_busy` (mid-turn true kept).
+- Verified: red seen in batch run 110 (`terminal_test`, new test failed at `!typed.agent_busy`, written and run before the fix). Green: see the run noted below. In run 110 `screen_questions_test` and `humatad2_unit_test` also failed (trust-box screen_ask tests), not from this change; another lane's.
+- Known gaps: RunningUnknownTurn (agent with no turns) is now not busy too.
+
+### (commit: pending): the trust card offers every choice the box shows, an Inbox reply picks it on the box (No included), and a start message left in the input gets one more Enter (D767, D763 amendments)
+- Cause (bugs 1 and 2): `screen_ask` raised the card from the first quiet spell's read of the screen, which listed fewer rows than the finished box (cards `["Yes"]` and `["Yes", "Yes, and remember…"]` against screens with three rows; the raw output of that moment wasn't kept, so the partial read is inferred). A later look at the same question was skipped (`look` compared only holder and question), so the card never caught up. On the reply, `pick` re-read the screen, found three choices where the card had one or two (`shown.choices != asked.choices`), and returned without typing or logging. So the card was marked answered while the box stayed up. Also, the folder was searched only 4 rows above the question (Copilot puts 9 there), and `No (Esc)` couldn't be replied as `No`.
+- Changed: `daemon/humatad/src/screen_ask.rs`: `Open.asked`; a look with other words or choices withdraws and raises the card again (key carries the choices); `keys_for` finds the chosen choice's row on the screen now and moves from the highlight now, then Enter; `NotPicked` logged; folder is the nearest path above the question; `without_key` drops a `(Esc)`-style key hint. `daemon/humatad/tests/screen_questions.rs`: agent that draws the box in two steps; `CHOICES` is `No`. Bug 3: `daemon/revive/src/gate.rs` `WriteGate::unsent` (default false); `daemon/humatad/src/input_gate.rs` `StartGate::unsent`/`input_shows` (the last prompt row and below still show the message's last line); `daemon/sessions/src/first_message.rs` `confirm`: 3 s after a first message's return, if the input still shows it and the gate says clear, return is pressed once more.
+- Verified: red in run 110 (old `screen_ask`: the captured-box parser test and the drawn-in-steps reply test failed), green in runs 111 (`humatad2_unit_test`, `screen_questions_test`, `sessions_unit_test`, `revive_unit_test`) and 112 (`screen_questions_test` with the withdrawn-card check).
+- Red proof: the screen_ask parser test on the captured boxes and `a_trust_box_drawn_in_steps_offers_every_choice_and_no_picks_the_no_row` were written and run against the old code first. `keys_for`, `without_key`, `input_shows` and `confirm` tests are new functions: not seen red.
+- Known gaps: the pick and the second Enter are still owed a live check on Copilot. `input_shows` reads the last `❯`/`>` row: an agent that hides its input while working and echoes the message with that mark could get a second Enter during the turn (harmless on an empty input, and never while D762's gate sees a question). A box cut off by the screen's own height would still be offered with only the rows it shows.
+- Look at: `screen_ask.rs` `look`, `pick`, `keys_for`; `first_message.rs` `confirm`; `input_gate.rs` `input_shows`.
+
+### (commit: pending): a context-only fork on another machine gets its own copy there, through the host (D773)
+- Cause: `session_service/own_copy.rs` answered `not_built` for a fork whose record names another machine. The machine's peer link didn't list GiveOwnCopy either, so the host couldn't relay it.
+- Changed: `daemon/humatad/src/session_service/own_copy.rs` (`own_copy_remote`, `run_own_copy_remote`, `take_up_own_copy`, `RemoteCopyError`). The host checks first, relays to the machine under `host-own-copy-<key>`, mirrors its steps under the fork's lock, then records the new branch and the folder on its own root. `daemon/humatad/src/relay.rs`: GiveOwnCopy is in LISTED_METHODS and in the allowlist test. New `daemon/humatad/tests/own_copy_remote.rs` (success, and an offline machine refused with nothing changed), with `RIG_TESTS.append("own_copy_remote")` in `daemon/humatad/BUILD.bazel`. Docs: api/GRPC.md (GIVE_OWN_COPY row), OVERVIEW.md, DECISIONS.md D773.
+- Verified: red in run 108 (the test was written and run before the fix; both cases got Unimplemented "not built"). Green in run 111: `own_copy_remote_test`, `context_fork_test` and `humatad2_unit_test`. In run 109 only the success case failed, refused off the peer list, which led to the `relay.rs` change.
+- Known gaps: if the link is lost mid-copy, the host fails its operation while the machine may still finish. The host's record then keeps the old branch, and asking again is refused because the fork has its own copy. A machine on an older humatad2 refuses with a bare PermissionDenied, not a Migrate error (D773 follow-ups).
+- Look at: `own_copy.rs` `take_up_own_copy` (folder from the first repo's path on the machine), `run_own_copy_remote`.

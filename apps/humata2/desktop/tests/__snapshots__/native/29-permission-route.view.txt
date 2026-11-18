@@ -32,17 +32,24 @@ Navigation "Sidebar"
   Link "gpu-box"
   Link "Settings" selected
 Splitter "Resize the sidebar"
+#settings-content
+  Button "On" selected
+  Button "Off"
+  Button "On" selected
+  Button "Off"
+  Button "On" selected
+  Button "Off"
+  Button "Claude"
+  Button "Codex"
+  Button "Copilot"
+  Button "OpenCode"
+  Button "Shell"
+  Button "Off"
 Tab "General"
 Tab "Agents" selected
-Button "Claude"
 Tab "Machines"
 Tab "Layout"
-Button "Codex"
 Tab "Agent access"
-Button "Copilot"
 Tab "Storage"
-Button "OpenCode"
 Tab "Notifications"
-Button "Shell"
 Tab "Keyboard"
-Button "Off"

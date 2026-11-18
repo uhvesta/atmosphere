@@ -103,6 +103,7 @@ fn hello() -> pb::HelloRequest {
         nonce: vec![7; 32],
         sync_marker: String::new(),
         chunk_codecs: Vec::new(),
+        host_build: None,
     }
 }
 
@@ -551,6 +552,11 @@ async fn a_proven_link_answers_a_probe_from_the_machine_it_runs_on() {
     script(&bin, "claude", "echo '2.4.1 (Claude Code)'");
     // An agent that prints no version still counts as installed.
     script(&bin, "codex", "exit 0");
+    // Run each fake once first so macOS has scanned the new scripts; a first
+    // exec under load can take seconds, longer than the probe's 5 s timeout.
+    for name in ["git", "gh", "claude", "codex"] {
+        let _ = std::process::Command::new(bin.join(name)).arg("--version").output();
+    }
     let mut child = serve_stdio("HUMATAD2_RELEASE", dir.path())
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
         .env("HOME", dir.path())
@@ -565,16 +571,22 @@ async fn a_proven_link_answers_a_probe_from_the_machine_it_runs_on() {
         .await
         .unwrap();
 
+    let asked = std::time::Instant::now();
     let probed = peer(&channel)
         .probe(pb::ProbeRequest { measure_storage: false })
         .await
         .unwrap()
         .into_inner();
+    let took = asked.elapsed();
     assert!(!probed.os.is_empty());
     assert!(!probed.arch.is_empty());
     assert!(probed.disk_total_bytes > 0);
     assert!(probed.disk_free_bytes <= probed.disk_total_bytes);
-    assert_eq!(probed.git_version, "9.8.7");
+    let git_here = std::process::Command::new(bin.join("git")).arg("--version").output();
+    assert_eq!(
+        probed.git_version, "9.8.7",
+        "the probe took {took:?} (5 s per tool) and answered {probed:?}; the fake git run here gave {git_here:?}"
+    );
     assert_eq!(probed.gh_user, "fakeuser");
     assert_eq!(probed.gh_scopes, ["repo", "read:org"]);
     assert!(probed.agents_installed.iter().any(|agent| agent.value == "claude"));

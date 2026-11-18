@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use humata2_access::{AccessRequest, Call, MachineAction, MachineActionKind, MachineId, Refusal, Target};
+use humata2_access::{AccessRequest, Call, Capability, MachineAction, MachineActionKind, MachineId, Refusal, Target};
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{
     Action, ConfigError, IdentityError, Provider, SetupError,
@@ -33,20 +33,37 @@ use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
 use tonic::{Code, Request, Response, Status};
 
-use crate::channel_service::{self, Gated, answer_gated};
+use crate::channel_service::{self, Gated, answer_gated, failed};
 use crate::events::Feed;
 use crate::guard::{self, Guard};
 use crate::host_relay::Links;
+use crate::host_vars::HostVars;
 use crate::identity::{self, Caller};
 use crate::inbox::Inbox;
 use crate::operations::{Operations, Progress, Started};
 use crate::peer_client::{self, CommandDial, Dial, LinkError, LinkEvent};
 use crate::peer_reports::PeerReports;
 use crate::status;
+use crate::stop::Via;
+use crate::stop::remote::{self, Ask};
 use crate::storage::Storage;
 
+mod box_root;
+mod box_storage;
+mod change_root;
 mod forget;
+mod script_rpc;
+mod scripts;
+mod stack_settings;
+pub(crate) use box_storage::BoxMachineSvc;
+pub(crate) use change_root::start_layout;
 pub(crate) use forget::{Forgetting, finish_forgets};
+
+/// What stopping or starting the host's own sessions through the machine
+/// list is refused as.
+#[derive(Debug, thiserror::Error)]
+#[error("this is the machine the host runs on, not one of its boxes, so its sessions aren't stopped or started here")]
+struct ThisMachine;
 
 /// How long a removal plan stays good.
 const PLAN_LIFETIME: Duration = Duration::from_secs(10 * 60);
@@ -101,6 +118,9 @@ pub(crate) struct Work {
     /// The boards each link runs a machine's forwarded board calls in and replays its
     /// journaled board writes into (D227); set once by `serve` before any link starts.
     pub(crate) boards: std::sync::OnceLock<crate::board_service::BoardSvc>,
+    /// The views each link keeps the offers of a machine's agents in, replayed
+    /// from its journal (VW-12); set once by `serve` before any link starts.
+    pub(crate) views: std::sync::OnceLock<crate::review::Review>,
     /// Each machine's live link, for the services that relay calls to it
     /// (D139). Told at the same hook as `skills`.
     relay_links: Links,
@@ -112,6 +132,15 @@ pub(crate) struct Work {
     probes: Mutex<HashMap<String, (pb::MachineHealth, Vec<pb::MachineFolder>)>>,
     /// Forget machine's plans and its part of the sessions (LD-11).
     pub(crate) forgetting: forget::Forgetful,
+    /// The stops kept for other machines (D262); set once by `serve` before
+    /// any link starts.
+    pub(crate) stops: std::sync::OnceLock<crate::stop::remote::HostStops>,
+    /// Posts or withdraws each machine's Migrate item at link-up (UP-1); set
+    /// once by `serve` before any link starts.
+    pub(crate) upgrade: std::sync::OnceLock<crate::upgrade::items::Watch>,
+    /// MACHINESCRIPTS (D681): the run engine, set once by `serve` before any link starts, and which
+    /// machines were just added.
+    scripts: scripts::Hook,
 }
 
 /// How long GetMachine waits for a machine's probe before it shows the last
@@ -168,21 +197,59 @@ impl Work {
         self.relay_links.forget(machine);
         self.reports.forget(machine);
         lock(&self.probes).remove(machine);
+        self.forget_stop(machine);
     }
 
-    /// `machine` was forgotten or is enrolled afresh: the host's mark of how
-    /// far its Inbox journal was applied goes, since the machine's journal
-    /// starts over (D226).
+    /// `machine` is gone or enrolled afresh: the stop kept for it goes too
+    /// (D262), so a machine of the same name starts out running.
+    fn forget_stop(&self, machine: &str) {
+        if let Some(stops) = self.stops.get()
+            && let Err(error) = stops.remove(machine)
+        {
+            crate::log::say!(
+                "humatad2: couldn't drop the stop kept for {machine}: {}",
+                status::chain(&error)
+            );
+        }
+    }
+
+    /// `machine` was removed or forgotten: the host's mark of how far its
+    /// Inbox journal was applied goes, since the machine's journal starts
+    /// over (D226), and so does its skills sync state, so a machine added
+    /// again under the name gets a first sync that asks (SK-5, D760).
     pub(crate) async fn forget_journal(&self, machine: &str) {
         if let Some(inbox) = self.inbox.get() {
             inbox.forget_journal(machine).await;
         }
+        if let Some(skills) = self.skills.get()
+            && let Err(error) = skills.forget(machine).await
+        {
+            crate::log::say!("humatad2: {}", status::chain(&error));
+        }
     }
 
-    /// As [`Self::forget_journal`], from a thread that may block.
+    /// As [`Self::forget_journal`], from a thread that may block, for a
+    /// machine enrolled afresh (no link up yet).
     pub(crate) fn forget_journal_now(&self, machine: &str) {
+        self.forget_stop(machine);
         if let Some(inbox) = self.inbox.get() {
             inbox.forget_journal_now(machine);
+        }
+        if let Some(skills) = self.skills.get()
+            && let Err(error) = skills.forget_now(machine)
+        {
+            crate::log::say!("humatad2: {}", status::chain(&error));
+        }
+    }
+
+    /// `machine`'s removal is done: no channel lists it any more (D760).
+    /// From a thread that may block, never a runtime worker.
+    pub(crate) fn removed(&self, machine: &str, runtime: &Handle) {
+        if let Err(error) = runtime.block_on(self.take_out_of_channels(machine)) {
+            crate::log::say!(
+                "humatad2: {machine} was removed, but couldn't be taken out of its channels: {}. Take it out of each channel that still lists it",
+                error.message()
+            );
         }
     }
 
@@ -296,10 +363,14 @@ impl Work {
             policy: std::sync::OnceLock::new(),
             inbox: std::sync::OnceLock::new(),
             boards: std::sync::OnceLock::new(),
+            views: std::sync::OnceLock::new(),
             relay_links: Links::default(),
             reports: PeerReports::default(),
             probes: Mutex::new(HashMap::new()),
             forgetting: forget::Forgetful::default(),
+            stops: std::sync::OnceLock::new(),
+            upgrade: std::sync::OnceLock::new(),
+            scripts: scripts::Hook::default(),
         };
         *lock(&work.shown) = work.listed().unwrap_or_default();
         work
@@ -426,7 +497,14 @@ impl Work {
             .cloned()
             .zip(self.inbox.get().cloned())
             .zip(self.boards.get().cloned())
-            .map(|((policy, inbox), boards)| peer_client::HostSide { policy, inbox, boards });
+            .zip(self.views.get().cloned())
+            .map(|(((policy, inbox), boards), views)| peer_client::HostSide {
+                policy,
+                inbox,
+                boards,
+                views,
+                upgrade: self.upgrade.get().cloned(),
+            });
         let task = runtime.spawn(peer_client::supervise(dial, key_file, machine.to_owned(), report, sink, host));
         if let Some(before) = lock(&self.links).insert(machine.to_owned(), task.abort_handle()) {
             before.abort();
@@ -470,6 +548,7 @@ impl Work {
         // A machine reached only by a login the person gives shows that it
         // needs them when its link is down (MP-16).
         let reachability = crate::login_service::needs_login(self, entry, reachability);
+        let stop = self.stops.get().and_then(|stops| stops.get(&entry.name));
         pb::Machine {
             id: Some(machine_id(&entry.name)),
             name: entry.name.clone(),
@@ -484,6 +563,8 @@ impl Work {
             provider: entry.provider.as_ref().map(|record| pb::ProviderId {
                 value: record.id.clone(),
             }),
+            sessions_stopped: stop.as_ref().map(|copy| crate::stop::boot::to_pb(&copy.record)),
+            stop_delivered: stop.is_some_and(|copy| copy.delivered),
             ..pb::Machine::default()
         }
     }
@@ -514,6 +595,15 @@ fn tell_link(work: &Weak<Work>, machine: &str, event: LinkEvent<'_>) {
     match &event {
         LinkEvent::Up { channel, .. } => work.peer_up(machine, channel),
         LinkEvent::Down { .. } => work.peer_down(machine),
+    }
+    // The host's copy of the machine's stop agrees with the machine's own
+    // before it shows online, and a stop it never got is sent (D262).
+    if let LinkEvent::Up { channel, stopped, .. } = &event {
+        crate::stop::remote::link_up(&work, machine, *stopped, channel);
+        // The host's stack settings, when the machine's copy differs (D411).
+        stack_settings::link_up(&work, machine);
+        // MACHINESCRIPTS (D681): `added` for the first link-up after an add, else `connected`.
+        work.fire_link_up(machine);
     }
     work.link_changed(machine, &event);
 }
@@ -549,6 +639,12 @@ pub(crate) fn recover_in_background(work: Arc<Work>) {
         match work.drive(&mut ignore, &|| false, |machines, drive| machines.recover(drive)) {
             Ok(recovered) => {
                 for machine in recovered {
+                    if machine.found == EntryState::Removing
+                        && machine.outcome.is_ok()
+                        && let Some(runtime) = &runtime
+                    {
+                        work.removed(&machine.machine, runtime);
+                    }
                     if let Err(error) = machine.outcome {
                         crate::log::say!(
                             "humatad2: {} was left {:?} by the last run and couldn't be finished yet: {}",
@@ -580,18 +676,111 @@ impl MachineSvc {
         inbox: Arc<Inbox>,
         storage: Arc<Storage>,
     ) -> Self {
-        Self {
+        let svc = Self {
             guard,
             work,
             operations,
             inbox,
             storage,
-        }
+        };
+        // A change of a box's folder the last run began and didn't end is asked again.
+        svc.recover_box_roots();
+        svc
     }
 
-    /// Storage is the user's page: agents and scripts are refused, and so is
-    /// another machine's storage, whose relay isn't built yet.
-    fn storage_call(&self, caller: &Caller, machine: Option<&pb::MachineId>) -> Result<(), Status> {
+    /// The machines an agent's channel lists (TP-1), when its rules let it
+    /// read that channel as GetChannel does; none for a session with no
+    /// channel, or one whose rule would ask first.
+    fn channel_machines(&self, caller: &Caller) -> Result<Vec<String>, Status> {
+        let Caller::Agent(agent) = caller else {
+            return Ok(Vec::new());
+        };
+        let channel = agent.session.channel.as_str();
+        if channel.is_empty() {
+            return Ok(Vec::new());
+        }
+        let here = self.guard.machine().to_owned();
+        let Some(record) = self
+            .storage
+            .store()
+            .channel(channel)
+            .map_err(|error| status::store(error, &here, "read the channel's machines"))?
+        else {
+            return Ok(Vec::new());
+        };
+        let call = Call::Use {
+            capability: Capability::ChannelRead,
+            target: Target::Channel(humata2_access::ChannelId::new(channel)),
+        };
+        if !matches!(self.guard.check(caller, &call)?, guard::Checked::Allowed) {
+            return Ok(Vec::new());
+        }
+        Ok(record.machines)
+    }
+
+    /// An agent's ListMachines that its machine forwarded here (D768): its
+    /// channel's machines, as here, with This Mac first when the channel
+    /// has it. An agent on another machine can't name This Mac by its own
+    /// daemon's "this machine", so the host names itself.
+    pub(crate) async fn list_for_machine_agent(
+        &self,
+        request: Request<pb::ListMachinesRequest>,
+    ) -> Result<Response<pb::ListMachinesResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let here = self.guard.machine().to_owned();
+        let has_this = self
+            .channel_machines(&caller)?
+            .iter()
+            .any(|machine| machine.is_empty() || *machine == here || machine.as_str() == change_root::THIS_MAC_ALIAS);
+        let mut listed =
+            <Self as pb::machine_service_server::MachineService>::list_machines(self, request).await?.into_inner();
+        if has_this {
+            listed.machines.insert(
+                0,
+                pb::Machine {
+                    id: Some(machine_id(&here)),
+                    name: "This Mac".to_owned(),
+                    is_this_mac: true,
+                    reachability: pb::Reachability::Online as i32,
+                    ..pb::Machine::default()
+                },
+            );
+        }
+        Ok(Response::new(listed))
+    }
+
+    /// Whether `name` is this machine, by its id or as the CLI and app call it.
+    fn is_this(&self, name: &str) -> bool {
+        name == self.guard.machine() || name == change_root::THIS_MAC_ALIAS
+    }
+
+    /// The machine a root call is about, under the name its records use.
+    fn root_machine(&self, name: String) -> String {
+        if self.is_this(&name) { self.guard.machine().to_owned() } else { name }
+    }
+
+    /// A machine's root now, and what changing it reaches: its channels and
+    /// their running sessions. This Mac's root is the one saved for it, else
+    /// the folder the daemon keeps channels in; a box's is its registry entry's.
+    async fn root_facts(&self, name: &str) -> Result<(String, change_root::Affected), Status> {
+        let here = self.guard.machine().to_owned();
+        if name == here {
+            return self.storage_blocking(move |storage| change_root::own_facts(storage, &here)).await;
+        }
+        let box_root = self.work.machines.get(name).map_err(|error| status_of(&error))?.root;
+        let machine = name.to_owned();
+        self.storage_blocking(move |storage| {
+            let found = change_root::affected(storage.store(), &machine, &here)
+                .map_err(|error| status::store(error, &here, "list the channels under the Humata folder"))?;
+            Ok((box_root, found))
+        })
+        .await
+    }
+
+    /// Storage is the user's page: agents and scripts are refused. Returns
+    /// the other machine the call names, which the caller relays to; none
+    /// for this machine.
+    fn storage_call(&self, caller: &Caller, machine: Option<&pb::MachineId>) -> Result<Option<String>, Status> {
         match caller {
             Caller::User(_) => {}
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
@@ -600,13 +789,75 @@ impl MachineSvc {
             }
         }
         match machine.map(|id| id.value.as_str()).filter(|name| !name.is_empty()) {
-            // Reading another machine's storage needs a relay to it, which
-            // isn't built yet: say so rather than claim the machine is missing.
-            Some(name) if name != self.guard.machine() => {
-                Err(status::not_built("humata.v1.MachineService storage of another machine"))
-            }
-            _ => Ok(()),
+            Some(name) if name != self.guard.machine() => Ok(Some(name.to_owned())),
+            _ => Ok(None),
         }
+    }
+
+    /// The machine service on `machine`'s live link: a machine the host
+    /// doesn't know is not found, one it can't reach is offline at once
+    /// (TR-6). Requests made with it are built from their message alone.
+    fn storage_client(
+        &self,
+        machine: &str,
+    ) -> Result<pb::machine_service_client::MachineServiceClient<tonic::transport::Channel>, Status> {
+        self.work.machines.get(machine).map_err(|error| status_of(&error))?;
+        let channel = self.work.relay_links.channel(machine).map_err(Status::from)?;
+        Ok(pb::machine_service_client::MachineServiceClient::new(channel))
+    }
+
+    /// The plan to change a box's Humata folder, made by the box's own
+    /// daemon, which knows its channels and running sessions; its token is
+    /// the box's. The folder shown as the old one is the one the host keeps
+    /// for the box, which is what the machine's page shows. A box that can't
+    /// be reached answers offline at once (TR-6).
+    async fn plan_box_root(&self, name: &str, new_root: String) -> Result<pb::ChangeRootPlan, Status> {
+        let mut client = self.storage_client(name)?;
+        let shown = self.work.machines.get(name).map_err(|error| status_of(&error))?.root;
+        let mut plan = client
+            .plan_change_root(Request::new(pb::PlanChangeRootRequest { id: None, root: new_root }))
+            .await?
+            .into_inner();
+        plan.machine = Some(machine_id(name));
+        plan.old_root = shown;
+        Ok(plan)
+    }
+
+    // Changing a box's Humata folder (ChangeRoot relayed) is in box_root.rs.
+
+    /// The checks every host-variable call makes: the user's alone (an agent
+    /// or script is refused, and so is a peer), and the machine is this one
+    /// (`None`) or a known box, whose name is returned (HO-7, HO-13).
+    fn variables_call(&self, caller: &Caller, id: Option<pb::MachineId>) -> Result<Option<String>, Status> {
+        user_only(caller)?;
+        match id.map(|id| id.value).filter(|name| !name.is_empty()) {
+            Some(name) if name != self.guard.machine() => {
+                self.work.machines.get(&name).map_err(|error| status_of(&error))?;
+                Ok(Some(name))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Runs `work` on this machine's variables on a blocking thread.
+    async fn on_variables<R: Send + 'static>(
+        &self,
+        work: impl FnOnce(&HostVars) -> Result<R, crate::host_vars::HostVarsError> + Send + 'static,
+    ) -> Result<R, Status> {
+        tokio::task::spawn_blocking(move || work(&HostVars::installed()?))
+            .await
+            .map_err(|error| status::internal(format!("the host variable work stopped: {error}"), ""))?
+            .map_err(|error| error.status())
+    }
+
+    /// A client of `machine`'s own MachineService over its live link. A
+    /// machine whose link is down is offline at once, never waited for (HO-5).
+    fn box_client(
+        &self,
+        machine: &str,
+    ) -> Result<pb::machine_service_client::MachineServiceClient<tonic::transport::Channel>, Status> {
+        let channel = self.work.links().channel(machine).map_err(Status::from)?;
+        Ok(pb::machine_service_client::MachineServiceClient::new(channel))
     }
 
     /// Runs `work` on a blocking thread, as `Storage` does file work.
@@ -663,6 +914,35 @@ impl MachineSvc {
         )
     }
 
+    /// The checks for stopping or starting a box's sessions: the machine is
+    /// a known box, the caller may (an agent only when its rule allows it),
+    /// and a user is present (D263).
+    fn sessions_call(&self, caller: &Caller, machine: &str, action: MachineActionKind) -> Result<(), Status> {
+        self.require(caller, machine, action)?;
+        if matches!(caller, Caller::User(_)) {
+            let principal = guard::principal(caller);
+            if self
+                .guard
+                .with_policy(|_, context| principal.present_user(context))
+                .is_none()
+            {
+                return Err(status::refused(&Refusal::UserOnly {
+                    capability: Some(action.capability()),
+                }));
+            }
+        }
+        if machine == self.guard.machine() {
+            return Err(failed(
+                Code::FailedPrecondition,
+                &ThisMachine,
+                "run `humata stop` or `humata start` on this machine itself",
+                None,
+            ));
+        }
+        self.work.machines.get(machine).map_err(|error| status_of(&error))?;
+        Ok(())
+    }
+
     /// The body of AddSshMachine; `approved` once the user said yes to it
     /// in the Inbox (D38.6, TP-13).
     async fn add_ssh(
@@ -712,6 +992,8 @@ impl MachineSvc {
                     work.saw(&entry.name, pb::Reachability::Online);
                     // A machine added afresh starts its journal over.
                     work.forget_journal_now(&entry.name);
+                    // MACHINESCRIPTS (D681): its first link-up is the `added` trigger.
+                    work.note_added(&entry.name);
                     work.link_up(&entry.name, &Handle::current());
                 }
                 Err(error) => work.saw(&name, reach_after(error)),
@@ -742,7 +1024,10 @@ impl MachineSvc {
                     work.saw(&entry.name, pb::Reachability::Online);
                     work.link_up(&entry.name, &Handle::current());
                 }
-                Err(ManageError::Busy { .. } | ManageError::NotFound { .. }) => {}
+                Err(ManageError::Busy { .. }) => {}
+                // A reconnect finishes a removal left `Removing` and then
+                // finds no machine (D760).
+                Err(ManageError::NotFound { .. }) => work.removed(&name, &Handle::current()),
                 Err(error) => work.saw(&name, reach_after(error)),
             }
             result.map(|entry| work.machine(&entry))
@@ -838,6 +1123,41 @@ pub(crate) fn machine_id(name: &str) -> pb::MachineId {
     pb::MachineId { value: name.to_owned() }
 }
 
+/// A Humata folder the user typed: an absolute path or one under `~/`, with
+/// no trailing slash.
+fn root_of(root: &str) -> Result<String, Status> {
+    let root = root.trim();
+    if root.is_empty() {
+        return Err(status::missing("root"));
+    }
+    let root = root.trim_end_matches('/');
+    let under_home = root.strip_prefix("~/").is_some_and(|rest| !rest.is_empty());
+    if (!root.starts_with('/') && !under_home) || root == "/" || root.chars().any(char::is_control) {
+        return Err(status::invalid_field(
+            "root",
+            pb::invalid_field::Problem::BadFormat,
+            format!("`{root}` can't be a Humata folder: it must be a full path or start with ~/"),
+            "type a path such as ~/Humata or /srv/humata",
+        ));
+    }
+    Ok(root.to_owned())
+}
+
+/// Changing a machine's root is the user's call alone.
+fn user_only(caller: &Caller) -> Result<(), Status> {
+    match caller {
+        Caller::User(_) => Ok(()),
+        Caller::Peer => Err(status::refused(&Refusal::PeerCannotCall)),
+        Caller::Agent(_) | Caller::Script(_) => Err(status::refused(&Refusal::UserOnly { capability: None })),
+    }
+}
+
+/// What a change-root plan is filed under: the machine and the root it
+/// was made for. A machine name has no colon, so this is no machine's name.
+fn root_plan_key(machine: &str, root: &str) -> String {
+    format!("root:{machine}:{root}")
+}
+
 pub(crate) fn machine_of(id: Option<pb::MachineId>) -> Result<String, Status> {
     id.map(|id| id.value)
         .filter(|value| !value.is_empty())
@@ -851,7 +1171,8 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// The reachability a failed connect leaves.
 pub(crate) fn reach_after(error: &ManageError) -> pb::Reachability {
     match error {
-        ManageError::HostKeyMismatch { .. } => pb::Reachability::HostKeyChanged,
+        ManageError::HostKeyMismatch { .. }
+        | ManageError::Step { source: SetupError::HostKeyChanged { .. }, .. } => pb::Reachability::HostKeyChanged,
         ManageError::LoginNeeded { .. } => pb::Reachability::NeedsLogin,
         _ => pb::Reachability::Offline,
     }
@@ -884,6 +1205,10 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
                 suggestion: format!("{machine}-2"),
             })),
         ),
+        ManageError::BeingRemoved { .. } => (
+            "wait for the removal to finish (the machine leaves Hosts when it does), then add it again. A removal waiting for its machine finishes once the machine is back or Humata restarts",
+            None,
+        ),
         ManageError::NotFound { machine } => (
             "list the machines to see their names",
             Some(Kind::NotFound(pb::NotFound {
@@ -895,11 +1220,15 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
         ManageError::Busy { .. } | ManageError::NotReady { .. } => {
             ("wait for the running add, reconnect or remove to finish, then try again", None)
         }
-        ManageError::HostKeyUnconfirmed { machine, fingerprint } => (
+        ManageError::HostKeyUnconfirmed {
+            machine,
+            algorithm,
+            fingerprint,
+        } => (
             "compare the fingerprint with the one the machine itself shows (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub on it), then add it again with that fingerprint",
-            Some(Kind::HostKeyChanged(pb::HostKeyChanged {
+            Some(Kind::HostKeyUnknown(pb::HostKeyUnknown {
                 machine: Some(machine_id(machine)),
-                expected_fingerprint: String::new(),
+                algorithm: algorithm.clone(),
                 presented_fingerprint: fingerprint.clone(),
             })),
         ),
@@ -955,6 +1284,31 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
                 output_tail: output_tail.clone(),
             })),
         ),
+        ManageError::Step {
+            source: SetupError::Builds(humata2_machines::BuildsError::HostNeedsMigrate { .. }),
+            ..
+        } => (
+            "Migrate the daemon on This Mac first (the Inbox item), then add the machine again; nothing was installed on the machine",
+            None,
+        ),
+        // A pinned key that differs from the one the machine presents at connect:
+        // both fingerprints, as for a mismatch.
+        ManageError::Step {
+            source:
+                SetupError::HostKeyChanged {
+                    machine,
+                    expected_fingerprint,
+                    presented_fingerprint,
+                },
+            ..
+        } => (
+            "if the machine wasn't rebuilt, someone may be intercepting the connection: check the key on the machine itself before trusting another one",
+            Some(Kind::HostKeyChanged(pb::HostKeyChanged {
+                machine: Some(machine_id(machine.as_str())),
+                expected_fingerprint: expected_fingerprint.clone().unwrap_or_default(),
+                presented_fingerprint: presented_fingerprint.clone().unwrap_or_default(),
+            })),
+        ),
         ManageError::Step { step, .. } => (
             "the steps above say what failed; humatad2 was removed from the machine again, but anything a provider made is still there. Fix the cause and add the machine again",
             operation.map(|operation| step_failed(operation, *step, &message, "humatad2 and its files were removed from the machine again")),
@@ -1006,15 +1360,69 @@ pub(crate) fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Erro
             None,
         ),
         ManageError::ProviderLinkLost { .. } => ("remove the machine and add it again", None),
+        ManageError::BadEnvName { .. } => (
+            "name script variables with capital letters, digits and `_`, not starting with a digit",
+            None,
+        ),
         ManageError::Hosts(_) | ManageError::KnownHosts(_) => {
             ("fix the file the message names, then try again", None)
         }
     };
+    // MACHINESCRIPTS w4c: a host behind the app has its own kind, which the
+    // app turns into the inline Migrate This Mac action.
+    let kind = kind.or_else(|| match error {
+        ManageError::Step {
+            source: SetupError::Builds(humata2_machines::BuildsError::HostNeedsMigrate { platform }),
+            ..
+        } => Some(Kind::HostNeedsMigrate(pb::HostNeedsMigrate { platform: platform.to_string() })),
+        _ => None,
+    });
     pb::Error {
         message,
         fix: fix.to_owned(),
         retry: None,
         kind,
+    }
+}
+
+#[cfg(test)]
+mod host_needs_migrate_tests {
+    use super::*;
+    use humata2_machines::{BuildsError, Platform};
+
+    fn step_error(source: SetupError) -> ManageError {
+        ManageError::Step {
+            machine: "devbox".to_owned(),
+            step: OpStep::Install,
+            output_tail: String::new(),
+            remedies: Vec::new(),
+            source,
+        }
+    }
+
+    #[test]
+    fn a_host_behind_the_app_names_its_own_kind_and_platform() {
+        let platform = Platform::SHIPPED[3];
+        let error = error_of(
+            &step_error(SetupError::Builds(BuildsError::HostNeedsMigrate { platform })),
+            Some("op-1"),
+        );
+        match error.kind {
+            Some(pb::error::Kind::HostNeedsMigrate(needs)) => assert_eq!(needs.platform, platform.to_string()),
+            other => panic!("expected host_needs_migrate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_build_is_not_a_host_that_needs_migrating() {
+        let error = error_of(
+            &step_error(SetupError::Builds(BuildsError::NoBuild {
+                platform: Platform::SHIPPED[3],
+                shipped: String::new(),
+            })),
+            Some("op-1"),
+        );
+        assert!(!matches!(error.kind, Some(pb::error::Kind::HostNeedsMigrate(_))));
     }
 }
 
@@ -1045,7 +1453,7 @@ pub(crate) fn status_of(error: &ManageError) -> Status {
         | ManageError::NotProviderMachine { .. } => Code::InvalidArgument,
         ManageError::NameTaken { .. } => Code::AlreadyExists,
         ManageError::NotFound { .. } => Code::NotFound,
-        ManageError::Busy { .. } => Code::Aborted,
+        ManageError::Busy { .. } | ManageError::BeingRemoved { .. } => Code::Aborted,
         ManageError::NotReady { .. }
         | ManageError::ProviderLoginNeeded { .. }
         | ManageError::HostKeyUnconfirmed { .. }
@@ -1059,28 +1467,33 @@ pub(crate) fn status_of(error: &ManageError) -> Status {
 
 #[tonic::async_trait]
 impl pb::machine_service_server::MachineService for MachineSvc {
-    /// The user sees every machine. An agent sees none yet: it may see
-    /// its channel's, and channels don't list their machines yet.
+    /// The user sees every machine. An agent sees its channel's (TP-1),
+    /// so `humata cp … <machine>` and `humata host show` find them; a
+    /// script sees none.
     async fn list_machines(
         &self,
         request: Request<pb::ListMachinesRequest>,
     ) -> Result<Response<pb::ListMachinesResponse>, Status> {
         let caller = identity::caller(&request)?;
-        let machines = match caller {
+        let seen = match &caller {
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
-            Caller::Agent(_) | Caller::Script(_) => Vec::new(),
-            Caller::User(_) => {
-                let work = self.work.clone();
-                let entries = tokio::task::spawn_blocking(move || {
-                    work.machines
-                        .list()
-                        .map(|entries| entries.iter().map(|entry| work.machine(entry)).collect())
-                })
-                .await
-                .map_err(|error| status::internal(format!("listing the machines stopped: {error}"), ""))?;
-                entries.map_err(|error| status_of(&error))?
-            }
+            Caller::Script(_) => return Ok(Response::new(pb::ListMachinesResponse::default())),
+            Caller::Agent(_) => Some(self.channel_machines(&caller)?),
+            Caller::User(_) => None,
         };
+        let work = self.work.clone();
+        let entries = tokio::task::spawn_blocking(move || {
+            work.machines.list().map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| seen.as_ref().is_none_or(|seen| seen.contains(&entry.name)))
+                    .map(|entry| work.machine(entry))
+                    .collect()
+            })
+        })
+        .await
+        .map_err(|error| status::internal(format!("listing the machines stopped: {error}"), ""))?;
+        let machines = entries.map_err(|error| status_of(&error))?;
         Ok(Response::new(pb::ListMachinesResponse { machines, page: None }))
     }
 
@@ -1091,10 +1504,36 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let caller = identity::caller(&request)?;
         let name = machine_of(request.into_inner().id)?;
         let not_found = || status_of(&ManageError::NotFound { machine: name.clone() });
-        match caller {
+        match &caller {
             Caller::Peer => return Err(status::refused(&Refusal::PeerCannotCall)),
-            Caller::Agent(_) | Caller::Script(_) => return Err(not_found()),
+            Caller::Script(_) => return Err(not_found()),
+            // TP-1: an agent may look at its channel's machines, and at
+            // this one, which it may be on.
+            Caller::Agent(_) => {
+                if !self.is_this(&name) && !self.channel_machines(&caller)?.contains(&name) {
+                    return Err(not_found());
+                }
+            }
             Caller::User(_) => {}
+        }
+        if self.is_this(&name) {
+            let name = self.guard.machine().to_owned();
+            let (root, _) = self.root_facts(&name).await?;
+            // D261: This Mac's own stop is in force once it is recorded.
+            let sessions_stopped = self.work.stops.get().and_then(|stops| stops.this_machine());
+            return Ok(Response::new(pb::MachineDetail {
+                machine: Some(pb::Machine {
+                    id: Some(machine_id(&name)),
+                    name: "This Mac".to_owned(),
+                    is_this_mac: true,
+                    reachability: pb::Reachability::Online as i32,
+                    root,
+                    stop_delivered: sessions_stopped.is_some(),
+                    sessions_stopped,
+                    ..pb::Machine::default()
+                }),
+                ..pb::MachineDetail::default()
+            }));
         }
         let entry = self.work.machines.get(&name).map_err(|error| status_of(&error))?;
         let (health, folders) = self.work.health(&name).await;
@@ -1219,11 +1658,19 @@ impl pb::machine_service_server::MachineService for MachineSvc {
             Started::New(progress) => progress,
             Started::Existing(operation) => return Ok(Response::new(operation)),
         };
+        // An add of the name until the removal ends is told it is being
+        // removed, not that the name is taken (D760).
+        self.work.machines.removing(&name);
         self.work.link_down(&name);
         self.work.forget_peer(&name);
         self.work.forget_journal(&name).await;
+        let work = self.work.clone();
         let operation = self.run(progress, Arc::new(move |machines, drive| {
-            machines.remove(&name, drive).map(|()| None)
+            machines.remove(&name, drive)?;
+            // Only once the removal is done: one that fails leaves the
+            // machine listed and in its channels (D760).
+            work.removed(&name, &Handle::current());
+            Ok(None)
         }));
         Ok(Response::new(operation))
     }
@@ -1246,18 +1693,84 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         self.forget_of(request).await
     }
 
+    /// The old and new root, the channels living on the machine, the
+    /// sessions running in them, and the token ChangeRoot takes (FC-10).
     async fn plan_change_root(
         &self,
-        _request: Request<pb::PlanChangeRootRequest>,
+        request: Request<pb::PlanChangeRootRequest>,
     ) -> Result<Response<pb::ChangeRootPlan>, Status> {
-        Err(status::not_built("humata.v1.MachineService.PlanChangeRoot"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let name = self.root_machine(machine_of(request.id)?);
+        let new_root = root_of(&request.root)?;
+        user_only(&caller)?;
+        if name != self.guard.machine() {
+            return self.plan_box_root(&name, new_root).await.map(Response::new);
+        }
+        let (old_root, found) = self.root_facts(&name).await?;
+        let ids = |ids: Vec<String>| ids.into_iter().map(|value| pb::ChannelId { value }).collect::<Vec<_>>();
+        let token = change_root::issue_plan(&self.work.plans, &name, &new_root);
+        Ok(Response::new(pb::ChangeRootPlan {
+            machine: Some(machine_id(&name)),
+            old_root,
+            new_root,
+            channels: ids(found.channels),
+            running: found
+                .running
+                .into_iter()
+                .map(|value| pb::SessionId { value })
+                .collect(),
+            token: Some(pb::PlanToken { value: token }),
+        }))
     }
 
+    /// Makes the plan's root the one new channels use on the machine. With
+    /// `move_channels`, the channels already there move into it too, refused
+    /// while any of their sessions runs. This Mac does it here; a box's own
+    /// daemon does it, and the host relays the call.
     async fn change_root(
         &self,
-        _request: Request<pb::ChangeRootRequest>,
+        request: Request<pb::ChangeRootRequest>,
     ) -> Result<Response<pb::Operation>, Status> {
-        Err(status::not_built("humata.v1.MachineService.ChangeRoot"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let name = self.root_machine(machine_of(request.id)?);
+        let new_root = root_of(&request.root)?;
+        user_only(&caller)?;
+        if name != self.guard.machine() {
+            return self
+                .change_box_root(&caller, &name, new_root, request.plan, request.move_channels, request.idempotency_key)
+                .await
+                .map(Response::new);
+        }
+        if request.move_channels {
+            let (_, found) = self.root_facts(&name).await?;
+            if let Some(refusal) = change_root::busy_refusal(&name, &found.running) {
+                return Err(refusal);
+            }
+        }
+        if let Some(operation) = self.operations.existing(&caller, request.idempotency_key.as_ref())? {
+            return Ok(Response::new(operation));
+        }
+        let token = request
+            .plan
+            .map(|plan| plan.value)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| status::missing("plan"))?;
+        change_root::take_plan(&self.work.plans, &token, &name, &new_root)?;
+        let progress = match change_root::start_operation(
+            &self.operations,
+            &caller,
+            &name,
+            request.move_channels,
+            request.idempotency_key,
+        )? {
+            Started::New(progress) => progress,
+            Started::Existing(operation) => return Ok(Response::new(operation)),
+        };
+        let started =
+            change_root::apply_here(progress, self.storage.clone(), name, new_root, request.move_channels).await?;
+        Ok(Response::new(started))
     }
 
     async fn set_vm_tier(
@@ -1272,7 +1785,17 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         request: Request<pb::GetStorageRequest>,
     ) -> Result<Response<pb::StorageReport>, Status> {
         let caller = identity::caller(&request)?;
-        self.storage_call(&caller, request.get_ref().id.as_ref())?;
+        if let Some(machine) = self.storage_call(&caller, request.get_ref().id.as_ref())? {
+            // The machine measures its own storage; its report is named by
+            // the id the caller used.
+            let mut client = self.storage_client(&machine)?;
+            let mut report = client
+                .get_storage(Request::new(pb::GetStorageRequest { id: None }))
+                .await?
+                .into_inner();
+            report.machine = Some(pb::MachineId { value: machine });
+            return Ok(Response::new(report));
+        }
         let report = self.storage_blocking(|storage| storage.report(Vec::new())).await?;
         Ok(Response::new(report))
     }
@@ -1284,6 +1807,13 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         let caller = identity::caller(&request)?;
         self.storage_call(&caller, None)?;
         let request = request.into_inner();
+        // A session on another machine has its caches there.
+        let session = request.session.as_ref().map(|session| session.value.clone()).unwrap_or_default();
+        let elsewhere = self.storage_blocking(move |storage| storage.machine_of_session(&session)).await?;
+        if let Some(machine) = elsewhere {
+            let mut client = self.storage_client(&machine)?;
+            return client.clear_build_cache(Request::new(request)).await;
+        }
         let freed = self.storage_blocking(move |storage| storage.clear_build_cache(&request)).await?;
         Ok(Response::new(freed))
     }
@@ -1293,37 +1823,209 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         request: Request<pb::TrimLogsRequest>,
     ) -> Result<Response<pb::TrimLogsResponse>, Status> {
         let caller = identity::caller(&request)?;
-        self.storage_call(&caller, request.get_ref().id.as_ref())?;
-        let request = request.into_inner();
+        let other = self.storage_call(&caller, request.get_ref().id.as_ref())?;
+        let mut request = request.into_inner();
+        if let Some(machine) = other {
+            let mut client = self.storage_client(&machine)?;
+            request.id = None;
+            return client.trim_logs(Request::new(request)).await;
+        }
         let freed = self.storage_blocking(move |storage| storage.trim_logs(&request)).await?;
         Ok(Response::new(freed))
     }
 
+    /// HO-7: the names only. Another machine answers for itself over its link.
     async fn list_host_variables(
         &self,
-        _request: Request<pb::ListHostVariablesRequest>,
+        request: Request<pb::ListHostVariablesRequest>,
     ) -> Result<Response<pb::ListHostVariablesResponse>, Status> {
-        Err(status::not_built("humata.v1.MachineService.ListHostVariables"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let Some(machine) = self.variables_call(&caller, request.id.clone())? else {
+            let names = self.on_variables(|variables| variables.names()).await?;
+            return Ok(Response::new(pb::ListHostVariablesResponse { names }));
+        };
+        let mut client = self.box_client(&machine)?;
+        let call = client.list_host_variables(Request::new(request));
+        match tokio::time::timeout(PROBE_DEADLINE, call).await {
+            Ok(answer) => answer.map(|answer| {
+                let mut names = answer.into_inner().names;
+                names.sort();
+                Response::new(pb::ListHostVariablesResponse { names })
+            }),
+            Err(_) => Err(crate::host_relay::RelayError::Offline { machine }.into()),
+        }
     }
 
+    /// HO-13: the value goes to the machine it belongs to and nowhere else.
     async fn set_host_variable(
         &self,
-        _request: Request<pb::SetHostVariableRequest>,
+        request: Request<pb::SetHostVariableRequest>,
     ) -> Result<Response<pb::SetHostVariableResponse>, Status> {
-        Err(status::not_built("humata.v1.MachineService.SetHostVariable"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let target = self.variables_call(&caller, request.id.clone())?;
+        // Refused here too, so a value that can't be kept never leaves the host.
+        HostVars::check(&request.name, &request.value).map_err(|error| error.status())?;
+        match target {
+            None => {
+                self.on_variables(move |variables| variables.set(&request.name, &request.value))
+                    .await?;
+                let running = self.storage_blocking(|storage| storage.running_agents()).await?;
+                Ok(Response::new(pb::SetHostVariableResponse {
+                    running_sessions_keep_old_value: running,
+                }))
+            }
+            Some(machine) => self.box_client(&machine)?.set_host_variable(Request::new(request)).await,
+        }
     }
 
     async fn remove_host_variable(
         &self,
-        _request: Request<pb::RemoveHostVariableRequest>,
+        request: Request<pb::RemoveHostVariableRequest>,
     ) -> Result<Response<pb::SetHostVariableResponse>, Status> {
-        Err(status::not_built("humata.v1.MachineService.RemoveHostVariable"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        match self.variables_call(&caller, request.id.clone())? {
+            None => {
+                self.on_variables(move |variables| variables.remove(&request.name).map(|_| ()))
+                    .await?;
+                let running = self.storage_blocking(|storage| storage.running_agents()).await?;
+                Ok(Response::new(pb::SetHostVariableResponse {
+                    running_sessions_keep_old_value: running,
+                }))
+            }
+            Some(machine) => self.box_client(&machine)?.remove_host_variable(Request::new(request)).await,
+        }
     }
 
+    /// MP-9: pins the key `new_fingerprint` names, only when it is the one the
+    /// machine presents now. Anything else is `host_key_changed` and nothing
+    /// is pinned.
     async fn trust_new_host_key(
         &self,
-        _request: Request<pb::TrustNewHostKeyRequest>,
+        request: Request<pb::TrustNewHostKeyRequest>,
     ) -> Result<Response<pb::Machine>, Status> {
-        Err(status::not_built("humata.v1.MachineService.TrustNewHostKey"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let name = machine_of(request.id)?;
+        user_only(&caller)?;
+        if matches!(caller, Caller::User(_)) {
+            let principal = guard::principal(&caller);
+            if self
+                .guard
+                .with_policy(|_, context| principal.present_user(context))
+                .is_none()
+            {
+                return Err(status::refused(&Refusal::UserOnly {
+                    capability: Some(Capability::MachineSettings),
+                }));
+            }
+        }
+        let fingerprint = request.new_fingerprint.trim().to_owned();
+        if fingerprint.is_empty() {
+            return Err(status::missing("new_fingerprint"));
+        }
+        let (work, machine) = (self.work.clone(), name.clone());
+        tokio::task::spawn_blocking(move || {
+            work.machines
+                .trust_new_host_key(&machine, &fingerprint, &SystemRunner::new(&()))
+        })
+        .await
+        .map_err(|error| status::internal(format!("trusting the host key stopped: {error}"), ""))?
+        .map_err(|error| status_of(&error))?;
+        // The machine no longer shows a changed key; its next connect says what it is now.
+        let was_changed = lock(&self.work.seen)
+            .get(&name)
+            .is_some_and(|seen| seen.reach == pb::Reachability::HostKeyChanged);
+        if was_changed {
+            self.work.saw(&name, pb::Reachability::Unspecified);
+        }
+        let entry = self.work.machines.get(&name).map_err(|error| status_of(&error))?;
+        Ok(Response::new(self.work.machine(&entry)))
+    }
+
+    /// D262: stops every session on a box. Kept first, then sent over the
+    /// link and a one-off SSH at once; a box neither reaches gets it when it
+    /// links.
+    async fn stop_machine_sessions(
+        &self,
+        request: Request<pb::StopMachineSessionsRequest>,
+    ) -> Result<Response<pb::StopMachineSessionsResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let name = machine_of(request.machine)?;
+        self.sessions_call(&caller, &name, MachineActionKind::StopSessions)?;
+        let via = match pb::StopVia::try_from(request.via).unwrap_or(pb::StopVia::Unspecified) {
+            pb::StopVia::Unspecified | pb::StopVia::App => Via::App,
+            pb::StopVia::Cli | pb::StopVia::Ssh | pb::StopVia::Direct => Via::Cli,
+        };
+        let ask = Ask {
+            stop_id: request.stop_id,
+            reason: request.reason,
+            via,
+            by: self.guard.machine().to_owned(),
+        };
+        let reach = remote::stop(&self.work, &name, ask).await.map_err(|error| error.status())?;
+        Ok(Response::new(pb::StopMachineSessionsResponse {
+            stopped: Some(crate::stop::boot::to_pb(&reach.record)),
+            delivered: reach.delivered,
+        }))
+    }
+
+    /// D265: starts a box's sessions again, or cancels a stop it never got.
+    async fn start_machine_sessions(
+        &self,
+        request: Request<pb::StartMachineSessionsRequest>,
+    ) -> Result<Response<pb::StartMachineSessionsResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let name = machine_of(request.into_inner().machine)?;
+        self.sessions_call(&caller, &name, MachineActionKind::StartSessions)?;
+        // A stop the user made is started only by the user.
+        let by_user = self
+            .work
+            .stops
+            .get()
+            .and_then(|stops| stops.get(&name))
+            .is_some_and(|copy| copy.record.by.kind == crate::stop::ByKind::User);
+        if by_user && !matches!(caller, Caller::User(_)) {
+            return Err(status::refused(&Refusal::UserOnly {
+                capability: Some(MachineActionKind::StartSessions.capability()),
+            }));
+        }
+        let started = remote::start(&self.work, &name).await.map_err(|error| error.status())?;
+        Ok(Response::new(pb::StartMachineSessionsResponse {
+            cancelled: matches!(started, remote::Started::Cancelled),
+        }))
+    }
+
+    // SEAM (MACHINESCRIPTS T3a): stubs until the run engine is wired (T2).
+
+    async fn list_machine_scripts(
+        &self,
+        request: Request<pb::ListMachineScriptsRequest>,
+    ) -> Result<Response<pb::ListMachineScriptsResponse>, Status> {
+        self.rpc_list_machine_scripts(request).await
+    }
+
+    async fn check_machine_scripts(
+        &self,
+        request: Request<pb::CheckMachineScriptsRequest>,
+    ) -> Result<Response<pb::CheckMachineScriptsResponse>, Status> {
+        self.rpc_check_machine_scripts(request).await
+    }
+
+    async fn run_machine_script(
+        &self,
+        request: Request<pb::RunMachineScriptRequest>,
+    ) -> Result<Response<pb::Operation>, Status> {
+        self.rpc_run_machine_script(request).await
+    }
+
+    async fn list_machine_script_runs(
+        &self,
+        request: Request<pb::ListMachineScriptRunsRequest>,
+    ) -> Result<Response<pb::ListMachineScriptRunsResponse>, Status> {
+        self.rpc_list_machine_script_runs(request).await
     }
 }

@@ -66,6 +66,7 @@ fn anchor(first: u32, last: u32) -> Anchor {
         quoted: Vec::new(),
         base: None,
         detached: false,
+        outdated: false,
     }
 }
 
@@ -328,6 +329,29 @@ fn link_scrolling_unticks_and_ticks_again() {
     assert!(!shown(&app).1);
     app.click("doc-link-scrolling");
     assert!(shown(&app).1);
+}
+
+/// Flow 04 step 4: the page follows the source while scrolling is linked;
+/// scrolling the page by hand unticks Link scrolling, and in Preview alone
+/// (nothing to link) the wheel changes nothing.
+#[test]
+fn scrolling_the_page_by_hand_unticks_link_scrolling() {
+    let mut app = doc_app();
+    open_document(&mut app, None);
+    show(&mut app, DocumentMode::SideBySide);
+    assert!(shown(&app).1);
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.scroll(
+                "doc-preview",
+                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-120.))),
+                cx,
+            );
+        })
+        .expect("the page is drawn");
+    app.settle();
+    assert_eq!(shown(&app), (DocumentMode::SideBySide, false));
 }
 
 /// The page lights a draft and the box being written, never a sent comment:

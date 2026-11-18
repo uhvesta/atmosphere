@@ -18,8 +18,8 @@ How to read this file, and what the tags mean: [README](README.md).
    **See:** the `#oncall` page on **Sessions**.
    **Expect:** nothing changes on the daemon.
    **Status:**
-   - Opening a channel from the palette: **Fakes only**, `features/palette/tests/hits_cursor.rs::running_a_hit_closes_the_palette_and_hands_its_place_to_the_app`. The live palette flow opens a session, not a channel (`desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds`).
-   - The pin **Works**: `clients/live/tests/marks.rs::pins_and_vip_marks_survive_a_restart`, and the live find flow checks a pin holds. The page's **Pin** is **Fakes only**: `desktop/tests/native/marks.rs::the_channel_pages_pin_pins_and_unpins_its_channel`.
+   - Opening a channel from the palette **Works**: `desktop/tests/live_flows/channel_page.rs::the_palette_opens_a_channel_and_its_pin_is_kept_on_the_host` (⌘K, the name, Return opens the page on Sessions). Fake-client version: `features/palette/tests/hits_cursor.rs::running_a_hit_closes_the_palette_and_hands_its_place_to_the_app`.
+   - The pin **Works**: the page's **Pin** is kept on the host, lists the channel under Pinned, and its Pinned row opens it again, all in `desktop/tests/live_flows/channel_page.rs::the_palette_opens_a_channel_and_its_pin_is_kept_on_the_host`; also `clients/live/tests/marks.rs::pins_and_vip_marks_survive_a_restart`, and the live find flow checks a pin holds (`desktop/tests/live_flows/find.rs::from_the_palette_a_session_moves_a_turn_is_found_a_pr_reviews_settings_open_and_a_pin_holds`). Fake-client version: `desktop/tests/native/marks.rs::the_channel_pages_pin_pins_and_unpins_its_channel`.
 
 2. **Do:** click the **Desk · 0** tab, after Sessions.
    **See:** an empty state with **New desk session**.
@@ -66,15 +66,16 @@ How to read this file, and what the tags mean: [README](README.md).
    - Agents in `#oncall` can start sessions on their machine without asking.
    - Events: Grant created; ChannelRules updated.
    **Status:**
-   - Always allow **Works** in the client: `clients/live/tests/inbox.rs::always_allow_makes_a_grant_the_app_lists_and_can_remove`. No app test ticks it against a real daemon.
+   - Always allow **Works**: the app ticks it on the card and clicks Allow against a real daemon, a grant is made, and the same ask again doesn't wait: `desktop/tests/live_inbox.rs::allowing_with_always_ticked_makes_a_grant_and_the_next_ask_for_that_target_does_not_wait`. Always allow is offered on an ask-ahead (`humata access ask-ahead`), not on a one-off tool permission (`daemon/humatad/src/inbox/permission.rs`). The client listing and removing the grant: `clients/live/tests/inbox.rs::always_allow_makes_a_grant_the_app_lists_and_can_remove`. Removing a grant from the app isn't driven live.
    - Agent access **Works**: `desktop/tests/live_inbox.rs::the_agent_access_tab_sets_the_channels_rule_on_the_daemon` clicks the tab and the radio, and the daemon keeps the rule. Also `clients/live/tests/inbox.rs::an_agents_call_under_an_allow_rule_runs_without_asking`.
 
 8. **Do:** mark the fix session VIP from the palette.
    **See:** it stays at the top of Home while it runs.
    **Expect:** Event: Marks updated. The mark survives a restart.
    **Status:**
-   - **Works** in the marks client: `clients/live/tests/marks.rs::vip_is_set_apart_from_the_pin_and_reads_back`. The palette entry is **Fakes only**: `features/palette/tests/marks.rs::an_unpinned_session_offers_pin_and_vip`.
-   - The older daemon client still answers "not in this release" for pin, VIP and mark-read (`clients/live/src/daemon.rs`). Any screen that uses it instead of the marks client would fail live.
+   - **Works** in the marks client: `clients/live/tests/marks.rs::vip_is_set_apart_from_the_pin_and_reads_back`. The palette entries **Work** against a real daemon: `desktop/tests/live_flows/channel_marks.rs::the_palette_marks_a_session_vip_and_pins_it_and_the_host_keeps_both` picks VIP and Pin and finds both kept through a daemon restart. Fake-client version: `features/palette/tests/marks.rs::an_unpinned_session_offers_pin_and_vip`.
+   - Each session carries its pin and VIP mark from the daemon (D387): **Works** in the daemon, `daemon/humatad/tests/marks.rs::a_session_shows_its_pin_and_vip_mark` and `::a_pin_or_vip_change_is_told_as_a_session_event`, and in the live client, `clients/live/tests/marks.rs::a_loaded_session_carries_its_pin_and_vip_mark`.
+   - The older daemon client's pin and VIP now **Work** too: `clients/live/tests/marks.rs::a_session_pinned_and_marked_vip_through_the_daemon_client_shows_in_pinned`.
 
 9. **Do:** before the hand-off, the Desk agent writes `handoff.md`. Pick **Close session** on its Desk session.
    **See:** a confirmation saying the folder goes to the trash now, listing `handoff.md` with **Copy to shared/**.
@@ -87,7 +88,7 @@ How to read this file, and what the tags mean: [README](README.md).
 10. **Do:** the next person on call opens `#oncall` › **Sessions**.
     **See:** "Retry budget for checkout" with its state (Working, Needs input or Idle) and whether it has an unread turn.
     **Status:**
-    - **Fakes only**: `desktop/tests/native/channel.rs::channel_sessions_filter_fold_and_open_their_own_inbox`. The state from hooks **Works** in the daemon: `daemon/humatad/tests/turns.rs::the_hooks_move_a_session_between_idle_working_and_needing_input`.
+    - The list and each session's state **Work** against a real daemon: `desktop/tests/live_flows/channel_page.rs::a_channels_sessions_tab_lists_its_session_with_its_state`. The fold and the filter **Work** too, with unread turns from real turn ends: `desktop/tests/live_flows/channel_marks.rs::a_channels_sessions_tab_shows_unread_turns_and_filters_and_folds_forks` (the filter is typed by app action; its box has no label the driver can find). The unread-turn marker on a row: **Not built: WIRE.** The rows don't draw one (`ui/src/channel.rs`); the sidebar shows it in bold. Fake-client version: `desktop/tests/native/channel.rs::channel_sessions_filter_fold_and_open_their_own_inbox`. The state from hooks **Works** in the daemon: `daemon/humatad/tests/turns.rs::the_hooks_move_a_session_between_idle_working_and_needing_input`.
     - Handing the channel to another person: **Not built, no milestone.** Humata is one person's app, so the next on-call only sees what I push or copy out.
 
 ## Expected outcome
@@ -98,5 +99,5 @@ The alert was triaged in a short-lived channel Desk session that's now in the tr
 
 - The channel's Desk is the heart of this flow, and none of it is built (ROAM CD-1–CD-6). Without it, triage happens either in the global Desk, which can't see the channel, or in a full session with a branch I don't need.
 - Pasting text into a session tab has no app test. Pasting an image has no app wiring at all.
-- Pin, VIP and mark-read go through two clients. The marks client works live; the older daemon calls don't.
+- Pin, VIP and mark-read go through two clients. Both work live; mark-read on the older daemon client isn't covered by a test.
 - There's no team hand-off. That's by design, but on call is where it will be felt.

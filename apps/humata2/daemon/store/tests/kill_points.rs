@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use humata2_store::{
-    AgentLaunch, AgentRecord, AgentState, SessionRecord, Store, TabKind, TabRecord,
+    AgentLaunch, AgentRecord, AgentState, SessionRecord, Store, TabKind, TabRecord, TabReplies,
 };
 
 const CHILD: &str = "HUMATA2_STORE_KILL_CHILD";
@@ -40,6 +40,7 @@ fn tab(id: &str) -> TabRecord {
         holder_socket: PathBuf::from("/tmp/tb.sock"),
         holder_pid: 1,
         created_unix_ms: 1,
+        holder_generation: 0,
     }
 }
 
@@ -58,6 +59,15 @@ fn agent() -> AgentRecord {
         generation: 1,
         interruptions: Vec::new(),
         updated_unix_ms: 1,
+    }
+}
+
+fn replies(answered_through: u64, pending: &[u64]) -> TabReplies {
+    TabReplies {
+        generation: 0,
+        answered_through,
+        pending: pending.to_vec(),
+        uncertain: false,
     }
 }
 
@@ -106,6 +116,7 @@ fn kill_child() {
         "last_good" => {
             store.save_last_good().unwrap();
         }
+        "replies" => store.put_tab_replies("tb_shell", &replies(900, &[])).unwrap(),
         other => panic!("no kill mode {other}"),
     }
 }
@@ -218,6 +229,28 @@ fn an_agent_and_its_tab_are_saved_together_or_not_at_all() {
         let store = Store::open(dir.path()).unwrap();
         assert_eq!(store.agent("se_a").unwrap().is_some(), saved, "{stop_at}");
         assert_eq!(store.tab("tb_agent").unwrap().is_some(), saved, "{stop_at}");
+    }
+}
+
+#[test]
+fn a_reply_record_killed_mid_write_reads_as_the_old_one_or_the_new_one_never_a_mix() {
+    for (stop_at, answered_through, pending) in [
+        ("store.tab.replies.committing", 100, vec![1, 2]),
+        ("store.tab.replies.committed", 900, vec![]),
+    ] {
+        let dir = base();
+        Store::open(dir.path())
+            .unwrap()
+            .put_tab_replies("tb_shell", &replies(100, &[1, 2]))
+            .unwrap();
+        kill_at(dir.path(), "replies", stop_at);
+        let store = Store::open(dir.path()).unwrap();
+        assert_eq!(
+            store.tab_replies("tb_shell").unwrap(),
+            Some(replies(answered_through, &pending)),
+            "{stop_at}"
+        );
+        assert_eq!(store.tabs().unwrap().len(), 1, "{stop_at}");
     }
 }
 

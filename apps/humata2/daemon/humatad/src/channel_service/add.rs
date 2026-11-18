@@ -25,6 +25,17 @@ use crate::operations::Started;
 use crate::remote_work::{HostOp, MachineOutcome, channel_steps};
 use crate::status;
 
+/// The step an AddRepo ends with when an agent's repo was in the channel
+/// already: it names the outcome, so a reader doesn't match on a title.
+const ALREADY_IN_CHANNEL: (&str, &str) = ("already_in_channel", "Already in the channel");
+const ALREADY_ADDED: (&str, &str) = ("already_added", "Already added");
+
+/// True when `part` names a place on this machine's disk rather than a
+/// GitHub owner or repository name.
+fn looks_like_path(part: &str) -> bool {
+    part.contains(['/', '\\']) || part.starts_with('~')
+}
+
 /// The channel id a request names.
 fn channel_id(channel: Option<&pb::ChannelId>) -> Result<String, Status> {
     channel
@@ -35,7 +46,7 @@ fn channel_id(channel: Option<&pb::ChannelId>) -> Result<String, Status> {
 
 impl ChannelSvc {
     /// The body of AddRepo; `approved` once the user said yes to it.
-    pub(super) async fn add_repo_to_channel(
+    pub(crate) async fn add_repo_to_channel(
         &self,
         caller: &Caller,
         request: pb::AddRepoRequest,
@@ -44,6 +55,14 @@ impl ChannelSvc {
         let id = channel_id(request.channel.as_ref())?;
         let repo = request.repo.ok_or_else(|| status::missing("repo"))?;
         for (field, value) in [("owner", &repo.owner), ("name", &repo.name)] {
+            if matches!(caller, Caller::Agent(_)) && looks_like_path(value) {
+                return Err(status::invalid_field(
+                    &format!("repo.{field}"),
+                    Problem::BadFormat,
+                    format!("repo has {field} {value:?}, which looks like a path on this machine, and an agent can't propose one"),
+                    "propose a GitHub repository by its owner and name (for example acme/api); to use a folder on this machine, ask the user to add it from Humata",
+                ));
+            }
             if !github_part(value) {
                 return Err(status::invalid_field(
                     &format!("repo.{field}"),
@@ -53,7 +72,32 @@ impl ChannelSvc {
                 ));
             }
         }
-        if let Some(asked) = self.gate_change(caller, &id, approved)? {
+        // The user's own call is never gated; an agent's is checked against
+        // the channel's "Add a repo to a channel" rule (CH-26, D304). A repo
+        // the channel already has, once ready, is not cloned again below, so
+        // an approval that comes after the user added it succeeds as it was.
+        let asked = self.gate_repo_add(caller, &id, approved)?;
+        // An agent's proposal for a repo the channel has needs no card: the
+        // call is answered at once, or as "Already added" when the card was
+        // answered after the repo came in some other way (CH-26).
+        if matches!(caller, Caller::Agent(_)) {
+            let record = self.find(&id).await?;
+            if record
+                .repos
+                .iter()
+                .any(|have| have.owner == repo.owner && have.name == repo.name)
+            {
+                let outcome = if approved {
+                    ALREADY_ADDED
+                } else {
+                    ALREADY_IN_CHANNEL
+                };
+                return self
+                    .answer_repo_present(caller, &record.id, outcome, request.idempotency_key)
+                    .map(Gated::Done);
+            }
+        }
+        if let Some(asked) = asked {
             return Ok(Gated::Ask(asked));
         }
         if let Some(op) = self
@@ -147,6 +191,53 @@ impl ChannelSvc {
             request.idempotency_key,
         )
         .await
+    }
+
+    /// An AddRepo that succeeded with nothing to do: one step, `outcome`.
+    fn answer_repo_present(
+        &self,
+        caller: &Caller,
+        channel: &str,
+        outcome: (&str, &str),
+        key: Option<pb::IdempotencyKey>,
+    ) -> Result<pb::Operation, Status> {
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
+                value: channel.to_owned(),
+            })),
+        };
+        let steps = [(outcome.0.to_owned(), outcome.1.to_owned())];
+        match self.operations.start_steps(
+            caller,
+            pb::OperationKind::AddRepo,
+            target,
+            &steps,
+            false,
+            key,
+        )? {
+            Started::Existing(operation) => Ok(operation),
+            Started::New(progress) => {
+                progress.set_step(outcome.0, pb::StepState::Done, None);
+                let shown = progress.watch();
+                progress.succeed(None);
+                let operation = shown.borrow().clone();
+                Ok(operation)
+            }
+        }
+    }
+
+    fn gate_repo_add(
+        &self,
+        caller: &Caller,
+        id: &str,
+        approved: bool,
+    ) -> Result<Option<Box<humata2_access::AccessRequest>>, Status> {
+        self.gate(
+            caller,
+            Capability::ChannelRepoAdd,
+            Target::Channel(ChannelId::new(id)),
+            approved,
+        )
     }
 
     fn gate_change(
@@ -259,6 +350,8 @@ impl ChannelSvc {
         .await;
 
         let fix = "restart humatad2 and add it to the channel again";
+        // REPOS (RL-1): the repos this call made ready go to the repo library.
+        let adds = (self.library.clone(), self.starter.clone(), super::library_adds::ready_keys(&channel));
         let (starter, record, local, locks) = (
             self.starter.clone(),
             channel.clone(),
@@ -301,6 +394,10 @@ impl ChannelSvc {
             let mut outcome = cloning
                 .await
                 .unwrap_or_else(|error| Err(error_of(&error, fix, None)));
+            // REPOS (RL-1): what the local clones made ready is recorded, whatever the other machines do.
+            let (library, starter, was_ready) = adds;
+            let channel_id = id.clone();
+            let _ = blocking(move || super::library_adds::record_new_ready(&library, &starter, &channel_id, &was_ready)).await;
             for remote in remotes {
                 let ended = match remote.await {
                     Ok(MachineOutcome::Failed(error)) => Err(error),

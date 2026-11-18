@@ -10,8 +10,9 @@
 //! host tools it carries (from a bundle), waits for This Mac's daemon and
 //! runs on it; its state is kept in `~/Library/Application Support/Humata
 //! 2`. Otherwise it runs on the demo workspace's fakes and keeps its state in
-//! `~/Library/Application Support/Humata 2 (fakes)`. `--data` overrides
-//! either folder; `--socket` the daemon's socket, `~/.humata2/humatad.sock`.
+//! `~/Library/Application Support/Humata 2 (fakes)`. Off a Mac both live in
+//! the XDG data folder instead, as `humata2` and `humata2-fakes` (D400).
+//! `--data` overrides either folder; `--socket` the daemon's socket, `~/.humata2/humatad.sock`.
 //! `--version` prints the bundle's version and touches nothing else, so a
 //! release check can run the signed app without installing anything.
 
@@ -28,8 +29,12 @@ use gpui_kit::{
     App, Bounds, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, WindowBounds, WindowOptions,
     px, size,
 };
+use humata2_app::AppAction;
 use humata2_clients::Clients;
+use humata2_clients::model::{MachineId, Release};
+use humata2_clients_live::DaemonFacts;
 use humata2_engine::Resources;
+use humata2_inbox::{InboxAction, OldLocalDaemon};
 use humata2_install::Installed;
 use humata2_ui::bridge::Ui;
 use humata2_ui::keys;
@@ -154,11 +159,12 @@ impl Args {
             return Err(ArgsError::NoHome { source });
         }
         let data = data.unwrap_or_else(|| {
-            let folder = match backend {
-                live::Backend::Fakes => "Humata 2 (fakes)",
-                live::Backend::Live { .. } => "Humata 2",
-            };
-            home.join("Library/Application Support").join(folder)
+            default_data_dir(
+                &home,
+                backend == live::Backend::Fakes,
+                cfg!(target_os = "macos"),
+                std::env::var_os("XDG_DATA_HOME").as_deref(),
+            )
         });
         Ok(Self {
             data,
@@ -166,6 +172,42 @@ impl Args {
             home,
         })
     }
+}
+
+/// The app's own "Migrate the daemon on This Mac" item (D374): held when
+/// the local daemon predates UPGRADE (its ServerInfo names no build, so it
+/// can't hold a Migrate item) and the install staged the app's release
+/// beside it. A daemon that names its build posts the item itself.
+fn old_local_daemon(facts: &DaemonFacts, staged: Option<&str>) -> Option<OldLocalDaemon> {
+    let staged = staged.filter(|staged| !staged.is_empty())?;
+    (!facts.reports_build).then(|| OldLocalDaemon {
+        machine: MachineId::new(facts.machine.as_str()),
+        running: facts.version.clone(),
+        // The manifest names no version, only the bundle id (D370).
+        staged: Release { version: String::new(), bundle: staged.to_owned() },
+    })
+}
+
+/// The folder the app keeps its state in when `--data` isn't given. On
+/// macOS it's in Application Support. Elsewhere it's in `$XDG_DATA_HOME`, or
+/// `~/.local/share` when that is unset, empty or relative, as the XDG Base
+/// Directory spec says (D400). The fakes never share the live folder.
+fn default_data_dir(
+    home: &Path,
+    fakes: bool,
+    macos: bool,
+    xdg_data_home: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    if macos {
+        let folder = if fakes { "Humata 2 (fakes)" } else { "Humata 2" };
+        return home.join("Library/Application Support").join(folder);
+    }
+    let folder = if fakes { "humata2-fakes" } else { "humata2" };
+    xdg_data_home
+        .map(Path::new)
+        .filter(|dir| dir.is_absolute())
+        .map_or_else(|| home.join(".local/share"), Path::to_path_buf)
+        .join(folder)
 }
 
 /// Tells the person, once per launch, what the install left them to do
@@ -306,7 +348,7 @@ fn run() -> Result<(), StartError> {
         match &args.backend {
             live::Backend::Fakes => {
                 let (clients, _daemon) = Clients::demo(Arc::new(SystemClock::new()), storage);
-                open_main(cx, &handle, clients, recorder);
+                open_main(cx, &handle, clients, recorder, None);
             }
             live::Backend::Live { socket } => {
                 // Installing the tools and waiting for the daemon can take
@@ -336,11 +378,14 @@ fn run() -> Result<(), StartError> {
                         )
                         .await
                     },
-                    move |cx, (clients, installed)| {
-                        if let Some(installed) = installed {
+                    move |cx, (clients, installed, facts)| {
+                        let old = installed
+                            .as_ref()
+                            .and_then(|(_, staged)| old_local_daemon(&facts, staged.as_deref()));
+                        if let Some((installed, _)) = installed {
                             tell_about_install(installed);
                         }
-                        open_main(cx, &handle, clients, recorder);
+                        open_main(cx, &handle, clients, recorder, old);
                     },
                 );
             }
@@ -351,8 +396,15 @@ fn run() -> Result<(), StartError> {
 }
 
 /// Opens the main window on `clients`, wires `humata report` to it and quits
-/// the app when a window closes. On failure it says why and quits.
-fn open_main(cx: &mut App, handle: &tokio::runtime::Handle, clients: Clients, recorder: Recorder) {
+/// the app when a window closes. On failure it says why and quits. With an
+/// `old` local daemon the Inbox holds the app's own Migrate item for it.
+fn open_main(
+    cx: &mut App,
+    handle: &tokio::runtime::Handle,
+    clients: Clients,
+    recorder: Recorder,
+    old: Option<OldLocalDaemon>,
+) {
     let ui = Ui::new(handle, clients, recorder);
     let bounds = Bounds::centered(None, size(px(humata2_ui::WINDOW.0), px(humata2_ui::WINDOW.1)), cx);
     let options = WindowOptions {
@@ -374,6 +426,9 @@ fn open_main(cx: &mut App, handle: &tokio::runtime::Handle, clients: Clients, re
         eprintln!("{error}");
     }
     cx.on_window_closed(|cx, _| cx.quit()).detach();
+    if old.is_some() {
+        ui.send(AppAction::Inbox(InboxAction::OldLocalDaemon(old)), cx);
+    }
     cx.activate(true);
 }
 
@@ -397,6 +452,57 @@ fn main() -> ExitCode {
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod data_dir_tests {
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
+    use super::default_data_dir;
+
+    const HOME: &str = "/home/someone";
+
+    #[test]
+    fn macos_keeps_state_in_application_support() {
+        let live = default_data_dir(Path::new(HOME), false, true, None);
+        let fakes = default_data_dir(Path::new(HOME), true, true, None);
+        let support = Path::new("/home/someone/Library/Application Support");
+        assert_eq!(live, support.join("Humata 2"));
+        assert_eq!(fakes, support.join("Humata 2 (fakes)"));
+    }
+
+    #[test]
+    fn elsewhere_state_follows_xdg_data_home() {
+        let xdg = Some(OsStr::new("/data/xdg"));
+        let live = default_data_dir(Path::new(HOME), false, false, xdg);
+        assert_eq!(live, PathBuf::from("/data/xdg/humata2"));
+    }
+
+    #[test]
+    fn elsewhere_without_xdg_data_home_state_is_in_local_share() {
+        let live = default_data_dir(Path::new(HOME), false, false, None);
+        assert_eq!(live, PathBuf::from("/home/someone/.local/share/humata2"));
+    }
+
+    #[test]
+    fn a_relative_or_empty_xdg_data_home_is_ignored() {
+        // The XDG spec says relative values are invalid and must be ignored.
+        for value in ["relative/dir", ""] {
+            let xdg = Some(OsStr::new(value));
+            let live = default_data_dir(Path::new(HOME), false, false, xdg);
+            assert_eq!(live, PathBuf::from("/home/someone/.local/share/humata2"));
+        }
+    }
+
+    #[test]
+    fn fakes_never_share_the_live_folder() {
+        for macos in [true, false] {
+            let live = default_data_dir(Path::new(HOME), false, macos, None);
+            let fakes = default_data_dir(Path::new(HOME), true, macos, None);
+            assert_ne!(live, fakes);
         }
     }
 }

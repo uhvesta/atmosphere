@@ -10,6 +10,7 @@ import "humata/v1/common.proto";
 import "humata/v1/operations.proto";
 import "humata/v1/channels.proto";
 import "humata/v1/errors.proto";
+import "humata/v1/review.proto";
 
 service SessionService {
   // SE-1..4. Returns at once; the operation writes and fsyncs the record
@@ -32,6 +33,10 @@ service SessionService {
   rpc ForkSession(ForkSessionRequest) returns (Operation);
   // FK-9.
   rpc GiveOwnCopy(GiveOwnCopyRequest) returns (Operation);
+  // CV-8 (D307): a new top-level session in another channel, set up as
+  // that channel's New session, whose agent resumes a copy of this
+  // session's conversation under a new id. The session is untouched.
+  rpc ContinueInChannel(ContinueInChannelRequest) returns (StartSessionResponse);
   // MV-1..6.
   rpc MoveSession(MoveSessionRequest) returns (Operation);
   // MV-8, MV-9: forks that keep running and unpushed work per repo.
@@ -173,6 +178,8 @@ message Session {
   google.protobuf.Timestamp last_output_at = 19;
   int32 exit_code = 20;
   uint32 pending_requests = 21;
+  // CH-16 (D392): the agent printed something while no client viewed the
+  // session (MarkService.ViewSession). Kept across restarts.
   bool unread = 22;
   // NV-20, this user's marks.
   bool pinned = 23;
@@ -198,6 +205,14 @@ message Session {
   // its machine reconnected. The app draws one line under the agent's
   // terminal output from it; unset when nothing was left out.
   AwayWritesLeftOut away_left_out = 32;
+  // MV-4: set only while status is MOVING: the machine the session
+  // moves to. The move's operation is running_operation; its steps
+  // drive "Moving to <machine>…" and the step card (frame 64).
+  // Unset otherwise.
+  MachineId moving_to = 33;
+  // The session's own folder on its machine, absolute (PL-10). Empty for a
+  // session that has none yet. Its repos' `path` are the clones inside it.
+  string folder = 34;
 
   enum SummarySource {
     SUMMARY_SOURCE_UNSPECIFIED = 0;
@@ -236,6 +251,29 @@ message StartSessionRequest {
   // SL-4: set only by the host, to place a session it rebuilds from its own
   // records on this machine. Any other caller is refused.
   RebuildFrom rebuild = 12;
+  // SEAM: PR-4, PR-21. Set only by the host, to start a pull request review
+  // on this machine: the session's clones are made on each pull request's own
+  // head branch from `refs/pull/<n>/head` (no token), and the review's
+  // binding is recorded here as the host recorded it. Any other caller, and
+  // a start with no host-assigned id, is refused.
+  ReviewFrom review = 13;
+}
+
+// A pull request review the host starts on a machine. GitHub is asked on the
+// host alone; this carries what it answered.
+message ReviewFrom {
+  message Pr {
+    RepoRef repo = 1;
+    uint32 number = 2;
+    string base_branch = 3;
+    // The branch name the clone is checked out on.
+    string head_branch = 4;
+    // The head GitHub had when the review was asked for.
+    string head_sha = 5;
+    PullRequestState state = 6;
+  }
+  repeated Pr prs = 1;
+  bool push_allowed = 2;
 }
 
 // What the host gives a machine to rebuild a lost session on it: each repo
@@ -320,6 +358,7 @@ message ResumeSessionRequest {
     MODE_UNSPECIFIED = 0;
     MODE_RESUME = 1;                     // pinned conversation id
     MODE_START_FRESH_WITH_SUMMARY = 2;   // PER-15
+    MODE_AFTER_MOVE = 3;                 // a move landed it here: not an interruption, so it isn't told it was
   }
   IdempotencyKey idempotency_key = 1;
   SessionId id = 2;
@@ -355,6 +394,9 @@ message ForkSessionRequest {
   // FC-15: used as typed for every repo of the fork, as StartSessionRequest.branch;
   // empty: Humata picks one from the title. Context-only forks have no branch to name.
   string branch = 9;
+  // The agent's reason, shown on the Inbox card when the fork waits on Ask me.
+  // Empty for a fork the user starts.
+  string reason = 10;
 }
 
 message ForkPreview {
@@ -370,6 +412,19 @@ message GiveOwnCopyRequest {
   SessionId fork = 2;
 }
 
+// CV-8 (D307).
+message ContinueInChannelRequest {
+  IdempotencyKey idempotency_key = 1;
+  // The session whose conversation goes on; it stays as it is.
+  SessionId session = 2;
+  // Where the new session starts: not the session's own channel, nor
+  // the Desk.
+  ChannelId channel = 3;
+  // 0: the whole conversation, from now. n: up to turn n (CV-2); turn 1
+  // is the first prompt, so nothing comes before it.
+  uint32 before_turn = 4;
+}
+
 message MoveSessionRequest {
   IdempotencyKey idempotency_key = 1;
   SessionId id = 2;
@@ -383,7 +438,8 @@ message ArchivePlan {
   uint32 forks_keep_running = 2;
   repeated UnpushedRepo unpushed = 3;
   repeated ArchiveChoice choices = 4;
-  // PR-17: undrafted review comments that would be dropped.
+  // PR-17: pull request drafts never submitted. Archiving keeps them
+  // with the archived review; only deleting the review removes them (D513).
   uint32 unsubmitted_drafts = 5;
   PlanToken token = 6;
 }
@@ -457,7 +513,12 @@ message DropRepoRequest {
   PlanToken plan = 4;
 }
 
-message PlanPushRequest { SessionId id = 1; }
+message PlanPushRequest {
+  SessionId id = 1;
+  // Each repository's added and removed counts are against its own base in
+  // this spec. Unset means each repository's default base.
+  DiffSpec spec = 2;
+}
 
 message PushPlan {
   message Repo {
@@ -482,6 +543,9 @@ message PushChoice {
   bool open_pull_request = 3;
   string pr_title = 4;
   string pr_body = 5;
+  // The branch the pull request targets, such as `release/2.4`. Empty means
+  // the repository's default branch. An open pull request is not retargeted.
+  string base_branch = 6;
 }
 
 message PushAndOpenPullRequestsRequest {
@@ -587,7 +651,7 @@ message ReportTurnResponse {}
 message HookRequest {
   // The agent as the hook command names it: claude, codex or copilot.
   string agent = 1;
-  // The hook: permission.
+  // The hook: permission, or question for Copilot's ask-user form (D761).
   string event = 2;
   // What the agent wrote to the hook's stdin, as it is (at most 1 MiB).
   bytes payload = 3;
@@ -625,6 +689,33 @@ service SessionCarryService {
   // branch the fork's clones would get there and the bytes they would copy
   // (FK-4). It stages nothing.
   rpc PreviewFork(CarryPreviewForkRequest) returns (CarryPreviewForkResponse);
+  // On the new machine, before the session is packed: where the session's
+  // folder will be there, as its CLI will record it (a symlinked parent
+  // resolved). The old machine writes the conversation for that folder, so
+  // chunks the new machine holds of an earlier copy match (MV-17).
+  rpc Target(CarryTargetRequest) returns (CarryTargetResponse);
+  // SEAM: PR-4, PR-21. On the machine a pull request review runs on: runs
+  // `git` in one of the review's clones and answers what it printed. The host
+  // keeps the review's records and `gh`; its heads check, Update the clone and
+  // Submit review's line checks look at the clones through this. Only a clone
+  // of a review session of this machine, named by session and repo.
+  rpc RunReviewGit(RunReviewGitRequest) returns (RunReviewGitResponse);
+}
+
+message RunReviewGitRequest {
+  SessionId session = 1;
+  // The clone's folder name in the session's folder.
+  string repo = 2;
+  repeated string args = 3;
+  // Fed to git's standard input.
+  bytes stdin = 4;
+}
+
+message RunReviewGitResponse {
+  // git's exit code; -1 when it ended on a signal.
+  int32 exit_code = 1;
+  bytes stdout = 2;
+  bytes stderr = 3;
 }
 
 message CarryPackRequest {
@@ -632,6 +723,10 @@ message CarryPackRequest {
   SessionId session = 2;
   // Set: stage a fork of `session` for another machine (FK-8) instead of the session itself.
   CarryFork fork = 3;
+  // The folder the session will have on the machine it goes to, as
+  // CarryTargetResponse gave it. Set: the conversation is staged written for
+  // it. Empty: the conversation is staged as it is.
+  string target_folder = 4;
 }
 
 message CarryFork {
@@ -694,6 +789,18 @@ message CarryAbortRequest {
 }
 
 message CarryAbortResponse {}
+
+message CarryTargetRequest {
+  // The channel the session is carried under (the channels folder itself for a Desk session).
+  ChannelId channel = 1;
+  // The session's folder under the channel's, `sessions/<name>`, `desk/<name>` or `<channel folder>/desk/<name>`.
+  string folder = 2;
+}
+
+message CarryTargetResponse {
+  // The absolute folder on this machine.
+  string folder = 1;
+}
 
 message CarryPreviewForkRequest {
   // The parent.

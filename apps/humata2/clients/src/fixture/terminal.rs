@@ -118,7 +118,7 @@ fn agent_input_box() -> Vec<u8> {
         "\x1b[?7l\x1b[999;1H\x1b[3A\x1b[90m\x1b[2K╭{rule}╮\r\n\
          \x1b[2K│\x1b[0m > \x1b[90m\x1b[999G│\r\n\
          \x1b[2K╰{rule}╯\r\n\
-         \x1b[2K  ⏵⏵ accept edits on (shift+tab to cycle)\x1b[0m\x1b[?7h\x1b[2A\x1b[4G"
+         \x1b[2K  ⏵⏵ accept edits on (shift+tab to cycle)\x1b[0m\x1b[?7h\x1b[2A\x1b[5G"
     )
     .into_bytes()
 }

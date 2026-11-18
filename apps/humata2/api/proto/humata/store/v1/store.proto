@@ -19,6 +19,8 @@ message AgentLaunch {
   bytes holder_socket = 8;
   uint32 cols = 9;
   uint32 rows = 10;
+  // The agent CLI's version at launch (CV-3); empty when none was recorded.
+  string cli_version = 11;
 }
 
 // A session's review, so a restart keeps its review chat (PR-26). `chat`
@@ -56,6 +58,10 @@ message InboxEntry {
   // True for a request made by Inbox::defer: an ordinary call held for
   // the person's answer.
   bool deferred = 5;
+  // True for an agent hook's permission card (D191). One a machine saved
+  // while pending is withdrawn at the next start: the restart ended the
+  // hook that held it (D744).
+  bool permission = 6;
 }
 
 // The grant an answer made, with what the policy keeps beside it.

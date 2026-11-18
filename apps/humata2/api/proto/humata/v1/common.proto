@@ -46,6 +46,9 @@ message RepoRef {
 message PullRequestRef {
   RepoRef repo = 1;
   uint32 number = 2;
+  // What a push found about an open pull request it left as it is, such as
+  // "PR #3 targets main"; empty otherwise.
+  string note = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,4 +268,40 @@ enum ChunkCodec {
 message Timestamped {
   google.protobuf.Timestamp at = 1;
   Actor by = 2;
+}
+
+// D261: a stop of one machine's sessions, as the machine, the host and the
+// peer link's Hello tell it.
+enum StopVia {
+  STOP_VIA_UNSPECIFIED = 0;
+  STOP_VIA_APP = 1;
+  STOP_VIA_CLI = 2;
+  STOP_VIA_SSH = 3;
+  STOP_VIA_DIRECT = 4;
+}
+enum StoppedByKind {
+  STOPPED_BY_KIND_UNSPECIFIED = 0;
+  STOPPED_BY_KIND_USER = 1;
+  STOPPED_BY_KIND_AGENT = 2;
+  STOPPED_BY_KIND_TERMINAL = 3;
+  STOPPED_BY_KIND_SCRIPT = 4;  // a script token that lists the capability
+}
+message StoppedBy {
+  StoppedByKind kind = 1;
+  StopVia via = 2;
+  string machine = 3;
+  string session = 4;   // the agent's session, when an agent stopped it
+}
+message StopEnded {
+  uint32 agents = 1;
+  uint32 shells = 2;
+  uint32 killed = 3;    // ended only by SIGKILL after the grace period
+  uint32 left = 4;      // processes still alive after the sweep (should be 0)
+}
+message SessionsStopped {
+  string stop_id = 1;
+  int64 stopped_at_unix_ms = 2;
+  StoppedBy by = 3;
+  string reason = 4;
+  StopEnded ended = 5;  // unset until the sweep has run
 }

@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use humata2_holder::{
-    Event, Events, HolderSpec, KeyState, KeyedInput, attach, key_arrived, keyed_input, spawn,
+    Event, Events, HolderError, HolderSpec, KeyState, KeyedInput, attach, key_arrived, keyed_input,
+    spawn,
 };
 use rustix::process::{Pid, Signal};
 use tempfile::TempDir;
@@ -231,7 +232,7 @@ async fn a_large_keyed_input_in_many_chunks_is_typed_whole() {
 }
 
 #[tokio::test]
-async fn a_holder_that_closes_on_new_frames_reads_as_unsupported() {
+async fn a_holder_from_before_keyed_input_is_refused_as_outdated() {
     // Speaks the old protocol: welcomes, then hangs up on the next frame,
     // which it doesn't know.
     let dir = short_dir();
@@ -259,19 +260,20 @@ async fn a_holder_that_closes_on_new_frames_reads_as_unsupported() {
             let _ = stream.read_exact(&mut len).await;
         }
     });
-    assert_eq!(
-        keyed_input(&socket, "k", b"echo hi\n").await.unwrap(),
-        KeyedInput::Unsupported
-    );
-    assert_eq!(
-        key_arrived(&socket, "k").await.unwrap(),
-        KeyState::Unsupported
-    );
+    // Refused, not typed plainly: its session moves onto the current
+    // holder through the "Migrate the holders" item (D753).
+    let typed = keyed_input(&socket, "k", b"echo hi\n").await;
+    assert!(matches!(typed, Err(HolderError::Outdated { .. })), "{typed:?}");
+    let asked = key_arrived(&socket, "k").await;
+    assert!(matches!(asked, Err(HolderError::Outdated { .. })), "{asked:?}");
+    // The refusals leave it running: it still answers an attach.
+    assert!(attach(&socket, 0).await.is_ok(), "the old holder stopped answering");
+    assert!(!old.is_finished(), "the old holder was stopped");
     old.abort();
 }
 
 #[tokio::test]
-async fn a_holder_that_is_gone_is_an_error_not_unsupported() {
+async fn a_holder_that_is_gone_is_an_error_not_outdated() {
     let dir = short_dir();
     assert!(keyed_input(&dir.path().join("none.sock"), "k", b"x").await.is_err());
     assert!(key_arrived(&dir.path().join("none.sock"), "k").await.is_err());
@@ -280,7 +282,6 @@ async fn a_holder_that_is_gone_is_an_error_not_unsupported() {
 fn instance_of(state: KeyState) -> u64 {
     match state {
         KeyState::Arrived { holder } | KeyState::NotArrived { holder } => holder,
-        KeyState::Unsupported => panic!("the holder could not answer"),
     }
 }
 

@@ -41,6 +41,10 @@ pub(crate) trait Forgetting: Send + Sync + 'static {
     /// out of every channel and lets go of what the host kept of its
     /// reports. The sessions archived.
     async fn archive_lost(&self, machine: &str) -> Result<Vec<pb::SessionId>, Status>;
+
+    /// Takes `machine` out of every channel that has it, and nothing else:
+    /// what Remove machine does to the channels (D760).
+    async fn take_out_of_channels(&self, machine: &str) -> Result<(), Status>;
 }
 
 /// The forget plans handed out, the answers already given and the sessions'
@@ -288,12 +292,17 @@ impl MachineSvc {
             // restart finishes it.
             crate::fault::point("forget.begun");
         }
-        let archived = self.work.finish_forget(hosts_file, kept_as, &name, planned).await?;
+        let archived = self.work.finish_forget(hosts_file, kept_as, &name, planned, || {}).await?;
         Ok(Response::new(pb::ForgetMachineResponse { archived }))
     }
 }
 
 impl Work {
+    /// `machine` is being removed: no channel lists it any more (D760).
+    pub(super) async fn take_out_of_channels(&self, machine: &str) -> Result<(), Status> {
+        self.forgetting.hook()?.take_out_of_channels(machine).await
+    }
+
     /// The steps of a forget once its plan is spent and it is kept: archive
     /// the machine's sessions, take it out of the host's list and let go of
     /// its link, then keep the answer. Every step can run again, so a
@@ -304,6 +313,7 @@ impl Work {
         key: String,
         name: &str,
         planned: Vec<String>,
+        settled: impl FnOnce(),
     ) -> Result<Vec<pb::SessionId>, Status> {
         let forgetting = &self.forgetting;
         let _one_at_a_time = forgetting.finishing.lock().await;
@@ -329,6 +339,9 @@ impl Work {
         self.link_down(name);
         self.forget_peer(name);
         self.forget_journal(name).await;
+        // Before the answer is kept: whoever sees the answer then finds this
+        // noted already.
+        settled();
         forgetting.remember(hosts_file, key, name, &archived);
         Ok(archived)
     }
@@ -338,15 +351,50 @@ impl Work {
 /// a retry with its key would, without the plan token that died with it.
 /// Safe to repeat. Needs the SessionService's hook, so it runs once that
 /// is set.
-pub(crate) async fn finish_forgets(work: Arc<Work>) {
+/// Each forget it will finish is named pending in the restart report when
+/// this is called, before the future it returns runs (D241); spawn the
+/// future before anything is served.
+pub(crate) fn finish_forgets(
+    work: Arc<Work>,
+    started: Arc<crate::restart::Started>,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
     let hosts_file = work.machines.hosts_file().to_owned();
-    for begun in work.forgetting.unanswered(&hosts_file) {
-        if let Err(error) = work.finish_forget(&hosts_file, begun.key, &begun.machine, begun.archived).await {
-            crate::log::say!(
-                "humatad2: couldn't finish forgetting {}: {}; forget it again to finish",
-                begun.machine,
+    let begun = work.forgetting.unanswered(&hosts_file);
+    for forget in &begun {
+        started.operations().record(
+            &forget_operation(&forget.machine),
+            "forget",
+            "archiving its sessions",
+            crate::restart::OperationState::Pending { waits_for: "the sessions' side of the host".to_owned() },
+        );
+    }
+    settle_forgets(work, started, hosts_file, begun)
+}
+
+fn forget_operation(machine: &str) -> String {
+    format!("forget:{machine}")
+}
+
+async fn settle_forgets(
+    work: Arc<Work>,
+    started: Arc<crate::restart::Started>,
+    hosts_file: std::path::PathBuf,
+    begun: Vec<Answer>,
+) {
+    use crate::restart::OperationState as State;
+    let operations = started.operations();
+    let operation_of = |machine: &str| forget_operation(machine);
+    for forget in begun {
+        let operation = operation_of(&forget.machine);
+        let settled = || operations.record(&operation, "forget", "archiving its sessions", State::Finished);
+        let finished = work.finish_forget(&hosts_file, forget.key, &forget.machine, forget.archived, settled).await;
+        if let Err(error) = finished {
+            let reason = format!(
+                "{}; forget the machine again to finish",
                 status::chain(&error)
             );
+            crate::log::say!("humatad2: couldn't finish forgetting {}: {reason}", forget.machine);
+            operations.record(&operation, "forget", "archiving its sessions", State::Stuck { reason });
         }
     }
 }

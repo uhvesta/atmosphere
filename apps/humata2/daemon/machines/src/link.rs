@@ -284,6 +284,22 @@ impl Link {
         )
     }
 
+    /// `humatad2 stop` on the machine, as a one-off beside the peer link
+    /// (STOP, D262): it stops every session there even when the link
+    /// doesn't answer. `by` is the machine that asks; `reason` may be empty.
+    pub(crate) fn stop_sessions(&self, stop_id: &str, by: &str, reason: &str) -> Result<Invocation, QuoteError> {
+        let mut script = format!(
+            "exec \"$HOME/{BIN_DIR}/humatad2\" stop --id {} --by {}",
+            quote::quote("the stop id", stop_id)?,
+            quote::quote("the asking machine", by)?
+        );
+        if !reason.is_empty() {
+            script.push_str(" --reason ");
+            script.push_str(&quote::quote("the reason", reason)?);
+        }
+        self.script(&script, Purpose::StopSessions, Some(Duration::from_secs(20)), None)
+    }
+
     /// Adds a public key to the machine's `authorized_keys`, once, so later
     /// connects need no login (MP-17).
     pub fn authorize_key(&self, public_key: &str) -> Result<Invocation, QuoteError> {

@@ -1,6 +1,9 @@
 //! The calls a machine forwards to its host for its agents (AWAY, D227).
-//! One table lists the board methods that go up: the reads, and the writes
-//! with the name each has in the journal. Beside it are the machine's end of
+//! One table lists the methods that go up: the board reads, the board
+//! writes with the name each has in the journal, two Inbox calls and the
+//! repo library's reads (RL-12), the machine lookups only the host can
+//! answer, and the file reads and transfers that reach other machines
+//! (D768). Beside it are the machine's end of
 //! the exchange (`Forwarder`: send a `ForwardedCall` on the Uplink, wait for
 //! the `ForwardedResult` with the same call id) and the host's check that
 //! a call or journal entry comes from a session it places on that machine.
@@ -32,6 +35,24 @@ pub(crate) enum Method {
     WaitForAnswer,
     /// An agent's withdrawal of one (D268).
     WithdrawRequest,
+    /// REPOS (RL-12, D568): the library stays on the host, so a machine's
+    /// agents search it there.
+    SearchRepos,
+    /// REPOS (RL-12, D568): and list it there.
+    ListRepoLibrary,
+    /// Only the host keeps machines (GRPC.md §4), so a machine's agents
+    /// list their channel's machines there (D768).
+    ListMachines,
+    /// And look at one of them there (D768).
+    GetMachine,
+    /// A machine's agents reach another machine's files through the host,
+    /// which holds the links (TP-8, D768): a folder's listing,
+    ListDirectory,
+    /// one entry,
+    Stat,
+    /// and a copy or move between machines, such as a pull into its own
+    /// `shared/` (D755).
+    StartTransfer,
 }
 
 /// One row of the table.
@@ -92,7 +113,45 @@ static WITHDRAW_REQUEST: Row = Row {
     journal: None,
 };
 
-static ROWS: [&Row; 9] = [
+static SEARCH_REPOS: Row = Row {
+    method: Method::SearchRepos,
+    name: "/humata.v1.RepoService/SearchRepos",
+    journal: None,
+};
+static LIST_REPO_LIBRARY: Row = Row {
+    method: Method::ListRepoLibrary,
+    name: "/humata.v1.RepoService/ListRepoLibrary",
+    journal: None,
+};
+
+static LIST_MACHINES: Row = Row {
+    method: Method::ListMachines,
+    name: "/humata.v1.MachineService/ListMachines",
+    journal: None,
+};
+static GET_MACHINE: Row = Row {
+    method: Method::GetMachine,
+    name: "/humata.v1.MachineService/GetMachine",
+    journal: None,
+};
+
+static LIST_DIRECTORY: Row = Row {
+    method: Method::ListDirectory,
+    name: "/humata.v1.FileService/ListDirectory",
+    journal: None,
+};
+static STAT: Row = Row {
+    method: Method::Stat,
+    name: "/humata.v1.FileService/Stat",
+    journal: None,
+};
+static START_TRANSFER: Row = Row {
+    method: Method::StartTransfer,
+    name: "/humata.v1.TransferService/StartTransfer",
+    journal: None,
+};
+
+static ROWS: [&Row; 16] = [
     &LIST_ITEMS,
     &GET_ITEM,
     &GET_ITEM_HISTORY,
@@ -102,6 +161,13 @@ static ROWS: [&Row; 9] = [
     &DELETE_ITEM,
     &WAIT_FOR_ANSWER,
     &WITHDRAW_REQUEST,
+    &SEARCH_REPOS,
+    &LIST_REPO_LIBRARY,
+    &LIST_MACHINES,
+    &GET_MACHINE,
+    &LIST_DIRECTORY,
+    &STAT,
+    &START_TRANSFER,
 ];
 
 impl Row {
@@ -128,6 +194,13 @@ impl Method {
             Self::DeleteItem => &DELETE_ITEM,
             Self::WaitForAnswer => &WAIT_FOR_ANSWER,
             Self::WithdrawRequest => &WITHDRAW_REQUEST,
+            Self::SearchRepos => &SEARCH_REPOS,
+            Self::ListRepoLibrary => &LIST_REPO_LIBRARY,
+            Self::ListMachines => &LIST_MACHINES,
+            Self::GetMachine => &GET_MACHINE,
+            Self::ListDirectory => &LIST_DIRECTORY,
+            Self::Stat => &STAT,
+            Self::StartTransfer => &START_TRANSFER,
         }
     }
 }
@@ -543,6 +616,13 @@ mod tests {
             Method::DeleteItem,
             Method::WaitForAnswer,
             Method::WithdrawRequest,
+            Method::SearchRepos,
+            Method::ListRepoLibrary,
+            Method::ListMachines,
+            Method::GetMachine,
+            Method::ListDirectory,
+            Method::Stat,
+            Method::StartTransfer,
         ] {
             assert_eq!(by_name(method.row().name).map(|row| row.method), Some(method));
         }

@@ -153,14 +153,14 @@ struct DeskSession {
 const OPEN: &[DeskSession] = &[
     DeskSession { state: St::Working, title: "Plan Q4 board", runs: "Claude Code · This Mac", folder: "scratch folder", repos: &[], when: "now" },
     DeskSession { state: St::Idle, title: "BRIN rollout RFC", runs: "Claude Code · devbox-1", folder: "scratch folder · kept", repos: &["acme/ledger", "acme/api"], when: "Today 12:05" },
-    DeskSession { state: St::Idle, title: "Tidy infra items", runs: "Terminal · This Mac", folder: "~/notes", repos: &[], when: "Nov 2" },
+    DeskSession { state: St::Idle, title: "Tidy infra items", runs: "Terminal · This Mac", folder: "your folder", repos: &[], when: "Nov 2" },
 ];
 
 /// The closed Desk sessions, most recently used first (D173 ruling 4): each
 /// says what becomes of its folder, and only a folder with days left has Keep.
 const CLOSED: &[(DeskSession, bool)] = &[
     (DeskSession { state: St::Exited, title: "Sketch the release checklist", runs: "Codex · This Mac", folder: "deleted in 6 days", repos: &[], when: "Nov 14" }, true),
-    (DeskSession { state: St::Exited, title: "Notes cleanup", runs: "Terminal · This Mac", folder: "~/notes", repos: &[], when: "Nov 9" }, false),
+    (DeskSession { state: St::Exited, title: "Notes cleanup", runs: "Terminal · This Mac", folder: "your folder", repos: &[], when: "Nov 9" }, false),
     (
         DeskSession {
             state: St::Exited,
@@ -172,7 +172,7 @@ const CLOSED: &[(DeskSession, bool)] = &[
         },
         false,
     ),
-    (DeskSession { state: St::Exited, title: "Draft the onboarding doc", runs: "Claude Code · This Mac", folder: "scratch folder · kept", repos: &[], when: "Nov 3" }, false),
+    (DeskSession { state: St::Exited, title: "Draft the onboarding doc", runs: "Claude Code · This Mac", folder: "Kept", repos: &[], when: "Nov 3" }, false),
 ];
 
 /// A closed row's actions: Keep then Reopen in a slot as wide as both, so a
@@ -270,50 +270,61 @@ pub fn desk(look: Look) -> Div {
 
 /// Where a desk session works: its folder, its machine and its
 /// repos, each changeable from here or with `humata desk`.
-fn place(look: Look, folder: &'static str, scratch: bool, machine: &'static str, repos: &[&'static str]) -> Div {
+/// The Desk folder bar (D460/D466): the path stays hidden behind Copy path,
+/// and a chip says whether the folder is kept after the session closes; a
+/// folder nobody kept offers Keep folder, and with no repos the plus reads
+/// Add repo.
+fn folder_bar(look: Look, kept: &'static str, machine: &'static str, repos: &[&'static str]) -> Div {
     let repo = |name: &'static str| {
-        div()
-            .flex()
-            .items_center()
-            .gap(px(4.))
-            .px(px(7.))
-            .h(px(20.))
-            .rounded(px(5.))
-            .bg(c(look.fill))
-            .child(small_icon(IconName::FolderGit2, look.secondary))
-            .child(name)
-            .child(small_icon(IconName::X, look.tertiary))
+        div().flex().items_center().gap(px(4.)).px(px(7.)).h(px(20.)).rounded(px(5.)).bg(c(look.fill))
+            .child(small_icon(IconName::FolderGit2, look.secondary)).child(name).child(small_icon(IconName::X, look.tertiary))
     };
-    div()
-        .flex()
-        .items_center()
-        .gap(px(10.))
-        .h(px(34.))
-        .px(px(14.))
-        .flex_shrink_0()
-        .bg(c(look.content))
-        .border_b_1()
-        .border_color(c(look.line))
-        .text_size(px(12.))
+    div().flex().items_center().gap(px(10.)).h(px(34.)).px(px(14.)).flex_shrink_0().bg(c(look.content)).border_b_1().border_color(c(look.line)).text_size(px(12.))
         .child(small_icon(IconName::Folder, look.secondary))
-        .child(div().font_family(MONO).text_size(px(11.5)).child(folder))
-        .when(scratch, |bar| bar.child(chip(look, "scratch", look.secondary)))
+        .child(div().flex_shrink_0().whitespace_nowrap().child("Desk folder"))
+        .child(div().flex_shrink_0().whitespace_nowrap().text_color(c(look.accent)).child("Copy path"))
+        // The chip gives way first, so Keep folder stays whole at the bar's
+        // right end (frame 37).
+        .child(chip(look, kept, look.secondary).flex_shrink(1.).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis())
         .child(div().w(px(1.)).h(px(16.)).bg(c(look.line)))
         .child(small_icon(IconName::Server, look.secondary))
-        .child(div().flex().items_center().gap(px(3.)).child(machine).child(small_icon(IconName::ChevronDown, look.secondary)))
+        .child(div().flex().flex_shrink_0().items_center().gap(px(3.)).child(machine).child(small_icon(IconName::ChevronDown, look.secondary)))
         .child(div().w(px(1.)).h(px(16.)).bg(c(look.line)))
         .children(repos.iter().map(|name| repo(*name)))
         .child(
             div()
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .gap(px(4.))
                 .text_color(c(look.accent))
                 .child(small_icon(IconName::Plus, look.accent))
-                .when(repos.is_empty(), |add| add.child("Add repo")),
+                .when(repos.is_empty(), |add| add.whitespace_nowrap().child("Add repo")),
         )
         .child(div().flex_1())
-        .when(scratch, |bar| bar.child(div().text_color(c(look.accent)).child("Keep folder")))
+        // Only a folder nobody kept offers Keep folder.
+        .when(!kept.starts_with("Kept"), |bar| bar.child(div().flex_shrink_0().whitespace_nowrap().text_color(c(look.accent)).child("Keep folder")))
+}
+
+/// The versions strip under a markdown tab (DOCV, D450): step through
+/// saved versions, open the History list, or save the current file.
+fn versions_bar(look: Look) -> Div {
+    let step = |glyph: IconName| {
+        div().flex().items_center().justify_center().w(px(26.)).flex_shrink_0().h(px(24.)).rounded(px(6.)).bg(c(look.fill)).border_1().border_color(c(look.line))
+            .child(small_icon(glyph, look.secondary))
+    };
+    div().flex().items_center().gap(px(6.)).h(px(30.)).px(px(12.)).flex_shrink_0().bg(c(look.panel)).border_b_1().border_color(c(look.line))
+        .text_size(px(11.5)).text_color(c(look.secondary))
+        .child(step(IconName::ChevronLeft))
+        .child("No versions yet")
+        .child(step(IconName::ChevronRight))
+        .child(button(look, Kind::Secondary, "History ▾").flex_shrink_0())
+        .child(div().flex_1())
+        // In a narrow pane the note field gives way and its placeholder ends
+        // in an ellipsis; the steps and buttons keep their size (frame 41).
+        .child(field(look, "", true).w(px(210.)).min_w_0().flex_shrink(1.).h(px(24.)).text_size(px(12.))
+            .child(div().min_w_0().truncate().child("What changed? (optional)")))
+        .child(button(look, Kind::Primary, "Save version").flex_shrink_0())
 }
 
 fn desk_header(look: Look, state: St, title: &'static str, runs: &'static str, panel: bool) -> Div {
@@ -393,7 +404,7 @@ fn desk_screen(look: Look, side: Side, middle: Div, right: Div, panel: Panel, in
 /// channels and asks before it makes a channel.
 pub fn board_session(look: Look) -> Div {
     let lines = vec![
-        tl(look.term_dim, "~/Humata/desk/plan-q4 $ claude"),
+        tl(look.term_dim, "plan-q4 $ claude"),
         tl(look.term_text, "> Plan Q4 for payments: add the backfill follow-ups, and make a"),
         tl(look.term_text, "  channel for the web revamp."),
         tl(look.term_text, ""),
@@ -418,7 +429,7 @@ pub fn board_session(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Working, "Plan Q4 board", "Claude Code · This Mac", true))
-        .child(place(look, "~/Humata/desk/plan-q4", true, "This Mac", &[]))
+        .child(folder_bar(look, "Goes 7 days after close", "This Mac", &[]))
         .child(desk_tabs(look, St::Working, 0, Some(("q4-plan.md", IconName::FileText))))
         .child(term(look, lines).child(div().flex_1()).child(session::input_box(look, true)));
     desk_screen(
@@ -548,7 +559,7 @@ pub fn move_session(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", true))
-        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(folder_bar(look, "Kept", "devbox-1", &["acme/ledger", "acme/api"]))
         .child(desk_tabs(look, St::Idle, 1, Some(("rfc-brin.md", IconName::FileText))))
         .child(term(look, lines));
     desk_screen(look, desk_side("BRIN rollout RFC"), middle, desk_files(look, "devbox-1"), Panel::Files, None)
@@ -622,10 +633,32 @@ pub fn doc_session(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", true))
-        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
-        .child(desk_tabs(look, St::Idle, 2, Some(("rfc-brin.md", IconName::FileText))))
+        .child(folder_bar(look, "Kept", "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(desk_tabs(look, St::Idle, 2, Some(("rfc-brin.md", IconName::FileText))).child(div().flex_1()).child(md_modes(look, 0)))
+        .child(versions_bar(look))
         .child(doc);
     desk_screen(look, desk_side("BRIN rollout RFC"), middle, desk_files(look, "devbox-1"), Panel::Files, None)
+}
+
+/// A checkbox whose box never gives way to a long label (native's `check`).
+fn check(look: Look, on: bool, text: &'static str) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(7.))
+        .text_size(px(12.5))
+        .child(
+            div()
+                .size(px(14.))
+                .flex_shrink_0()
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(on, |b| b.bg(c(look.accent)).child(gpui_kit::component::Icon::new(IconName::Check).size(px(10.)).text_color(c(0xffffff))))
+                .when(!on, |b| b.border_1().border_color(c(look.tertiary)).bg(c(look.card))),
+        )
+        .child(div().whitespace_nowrap().child(text))
 }
 
 /// New desk session, over the Desk.
@@ -635,8 +668,10 @@ pub fn new_desk(look: Look) -> Div {
             .flex()
             .items_start()
             .gap(px(12.))
-            .child(div().w(px(110.)).pt(px(3.)).flex().justify_end().text_color(c(look.secondary)).child(key))
-            .child(value.flex_1())
+            .child(div().w(px(110.)).flex_shrink_0().pt(px(3.)).flex().justify_end().text_color(c(look.secondary)).child(key))
+            // min_w_0 lets a long value (the Folder sentence) wrap inside the
+            // field column instead of widening the row past the dialog.
+            .child(value.flex_1().min_w_0())
     };
     let scrim = div().absolute().top_0().left_0().size_full().bg(if look.dark { rgba(0x0000_0080) } else { rgba(0x0000_0030) });
     desk(look).relative().child(scrim).child(
@@ -659,21 +694,35 @@ pub fn new_desk(look: Look) -> Div {
                 .child(row("Machine", div().flex().gap(px(8.)).child(popup(look, "This Mac")).child(secondary(look, "Move it later with humata desk move")).child(div().flex_1())))
                 .child(row(
                     "Folder",
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.))
-                        .child(radio(look, true, "A new scratch folder", "~/Humata/desk/plan-q4-board · deleted 7 days after you close it unless kept"))
-                        .child(radio(look, false, "A folder on the machine", "Pick one. Humata never deletes it.")),
+                    div().pt(px(3.)).child(secondary(
+                        look,
+                        "Humata makes a folder for it · deleted 7 days after you close it unless it holds a saved version or you keep it",
+                    )),
                 ))
                 .child(row(
                     "Repos",
                     div().flex().items_center().gap(px(8.)).child(button(look, Kind::Secondary, "Add a repo…")).child(secondary(look, "Optional. Cloned into the folder.")).child(div().flex_1()),
                 ))
-                .child(row(
-                    "Agent access",
-                    div().flex().flex_col().gap(px(4.)).child(checkbox(look, true, "Read and change every channel's board")).child(checkbox(look, false, "Make channels and add machines (asks you each time when off)")),
-                ))
+                .child(
+                    // As in native, the long switch keeps its boxes whole and
+                    // the key column gives way 2 px, so both boxes and both
+                    // labels line up.
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap(px(12.))
+                        .child(div().w(px(108.)).flex_shrink_0().pt(px(3.)).flex().justify_end().text_color(c(look.secondary)).child("Agent access"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap(px(4.))
+                                .child(check(look, true, "Read and change every channel's board"))
+                                .child(check(look, false, "Make channels and add machines (asks you each time when off)")),
+                        ),
+                )
                 .child(
                     div()
                         .flex()
@@ -749,6 +798,7 @@ pub fn split_review(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(group_row(look, vec![md_tab(look, true).text_color(c(look.secondary))], Some(md_modes(look, 0))))
+        .child(versions_bar(look))
         .child(brin_doc(look, None, false));
     let middle = div()
         .flex_1()
@@ -757,7 +807,7 @@ pub fn split_review(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
-        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(folder_bar(look, "Kept", "devbox-1", &["acme/ledger", "acme/api"]))
         .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right));
     div()
         .size_full()
@@ -904,7 +954,7 @@ pub fn source_review(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
-        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(folder_bar(look, "Kept", "devbox-1", &["acme/ledger", "acme/api"]))
         .child(group_row(
             look,
             vec![
@@ -914,6 +964,7 @@ pub fn source_review(look: Look) -> Div {
             ],
             Some(md_modes(look, 2)),
         ))
+        .child(versions_bar(look))
         .child(side_by_side(look, true));
     div()
         .size_full()
@@ -966,6 +1017,7 @@ pub fn terminal_source_page(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(group_row(look, vec![md_tab(look, true)], Some(md_modes(look, 2))))
+        .child(versions_bar(look))
         .child(side_by_side(look, false));
     let middle = div()
         .flex_1()
@@ -974,7 +1026,7 @@ pub fn terminal_source_page(look: Look) -> Div {
         .flex()
         .flex_col()
         .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
-        .child(place(look, "~/Humata/desk/brin-rfc", false, "devbox-1", &["acme/ledger", "acme/api"]))
+        .child(folder_bar(look, "Kept", "devbox-1", &["acme/ledger", "acme/api"]))
         .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right));
     div()
         .size_full()

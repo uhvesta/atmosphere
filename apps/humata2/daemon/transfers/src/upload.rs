@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::end::{Entry, Kind, Sink};
 use crate::engine::{
-    Halt, Mode, OnExisting, Problem, Snapshot, Transfers, UploadRequest, digest_of, hex,
+    Halt, Landing, Mode, OnExisting, Problem, Snapshot, Transfers, UploadRequest, digest_of, hex,
     staging_path,
 };
 use crate::error::{EndError, TransferError};
@@ -42,7 +42,7 @@ impl Transfers {
     /// confirmed offset.
     pub fn begin_upload(self: &Arc<Self>, request: UploadRequest) -> Result<Upload, TransferError> {
         let name = request.name.clone();
-        if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0') {
+        if !crate::engine::plain_name(&name) {
             return Err(TransferError::BadName { name });
         }
         match request.resume.clone() {
@@ -95,6 +95,7 @@ impl Transfers {
                 name: request.name.clone(),
                 source: None,
                 shown: request.name.clone(),
+                landed: Landing::AsAsked,
             }],
             destination: folder.clone(),
             destination_shown: request.destination.shown.clone(),

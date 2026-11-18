@@ -192,6 +192,10 @@ impl Forgetting for SessionSvc {
         Ok(self.gone_on(machine).await?.iter().map(Gone::lost).collect())
     }
 
+    async fn take_out_of_channels(&self, machine: &str) -> Result<(), Status> {
+        self.leave_channels(machine).await
+    }
+
     async fn archive_lost(&self, machine: &str) -> Result<Vec<pb::SessionId>, Status> {
         let gone = self.gone_on(machine).await?;
         let archived_at = now_ms();

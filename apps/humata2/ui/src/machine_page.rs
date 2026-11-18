@@ -8,6 +8,7 @@
 
 use crate::bridge::Ui;
 use crate::chrome;
+use crate::request_card::release_label;
 use crate::theme::Look;
 use crate::widgets::{self, col, row};
 use gpui_kit::assets::IconName;
@@ -16,9 +17,12 @@ use gpui_kit::base::ObservedElement;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
-use humata2_clients::machines::{ClashChoice, MachineDetail, Reach, SkillsPreview, tool_label};
-use humata2_clients::model::{Channel, MachineId, RuleSetting, Session, Status};
-use humata2_hosts::page::{MachinePageAction, MachinePageState, SkillsDialog, Tab};
+use humata2_clients::machines::{ClashChoice, MachineDetail, Reach, ScriptOutcome, SkillsPreview, tool_label};
+use humata2_clients::model::{Channel, MachineId, MachineStop, RuleSetting, Session, Status};
+use humata2_hosts::page::{
+    MachinePageAction, MachinePageState, MenuPick, Refused, SessionsChange, SkillsDialog,
+    Tab, Upgrade,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -28,6 +32,9 @@ const RED: u32 = 0xff453a;
 const MONO: &str = "Menlo";
 /// A disk is low above this share used (HO-4).
 const LOW_DISK_PERCENT: u64 = 85;
+/// The Disk bar's fill scale, as the design draws it: the right column (400)
+/// less the card's padding, the key and the gap after it.
+const DISK_BAR: f32 = 400. - 24. - 84. - 8.;
 
 /// How the page's actions become the app's.
 pub(crate) type Wrap = fn(MachinePageAction) -> AppAction;
@@ -42,6 +49,11 @@ pub(crate) struct PageContext {
     pub(crate) sessions: Vec<Session>,
     /// Channels, to name folders and sessions.
     pub(crate) channels: Vec<Channel>,
+    /// Who stopped its sessions, as the banner says it after "by": "you",
+    /// "a terminal on devbox-1". `None` while they run.
+    pub(crate) stopped_by: Option<String>,
+    /// The clock time the app's link to it was lost.
+    pub(crate) lost_at: Option<String>,
 }
 
 /// The page's two inputs: the variable's name and its masked value.
@@ -161,18 +173,35 @@ fn link(
     action: AppAction,
     look: Look,
 ) -> ObservedElement<Stateful<Div>> {
+    link_when(true, ui, id, text, action, look)
+}
+
+/// [`link`], or when `enabled` is false the same words dimmed in the
+/// tertiary color that do nothing on a click (a read-only machine).
+fn link_when(
+    enabled: bool,
+    ui: &Rc<Ui>,
+    id: impl Into<ElementId>,
+    text: &str,
+    action: AppAction,
+    look: Look,
+) -> ObservedElement<Stateful<Div>> {
     let ui = ui.clone();
-    div()
+    let link = div()
         .id(id)
         .role(Role::Button)
         .aria_label(text.to_owned())
         .flex_shrink_0()
         .whitespace_nowrap()
-        .text_color(rgb(look.accent))
-        .cursor_pointer()
-        .child(text.to_owned())
-        .on_click(move |_, _, cx| ui.send(action.clone(), cx))
-        .test_support()
+        .child(text.to_owned());
+    if enabled {
+        link.text_color(rgb(look.accent))
+            .cursor_pointer()
+            .on_click(move |_, _, cx| ui.send(action.clone(), cx))
+            .test_support()
+    } else {
+        link.text_color(rgb(look.tertiary)).test_support()
+    }
 }
 
 fn gigabytes(bytes: u64) -> String {
@@ -181,6 +210,12 @@ fn gigabytes(bytes: u64) -> String {
 
 fn whole_gigabytes(bytes: u64) -> u64 {
     bytes / 1_000_000_000
+}
+
+/// The machine's stop that reached it: its sessions are stopped, not only
+/// waiting to be.
+fn delivered(state: &MachinePageState) -> Option<&MachineStop> {
+    state.stop().filter(|stop| stop.delivered)
 }
 
 fn reach_name(reach: &Reach) -> String {
@@ -214,6 +249,11 @@ pub(crate) fn route(
             .cloned()
             .collect(),
         channels: state.workspace.channels.clone(),
+        stopped_by: state
+            .machine_page
+            .stop()
+            .map(|stop| stop.by.phrase(&state.workspace)),
+        lost_at: found.and_then(|found| found.lost_at.clone()),
     };
     machine_page(
         ui,
@@ -267,6 +307,7 @@ pub(crate) fn machine_page(
     if let Some(dialog) = &state.skills {
         page = page.child(skills_sheet(ui, wrap, dialog, context, look));
     }
+    // The Stop and Start confirms are drawn over the whole window by the overlays.
     page.test_support().into_any_element()
 }
 
@@ -277,6 +318,9 @@ fn header(
     context: &PageContext,
     look: Look,
 ) -> Div {
+    // Read-only until migrated: both stay clickable so the page can say why
+    // they don't work, but read as off (frames 79 and 80).
+    let read_only = state.upgrade().read_only();
     let system = state.detail.as_ref().map(|detail| {
         format!(
             "{} · {} · {} ({}) · humatad {}",
@@ -301,11 +345,15 @@ fn header(
                         .child("Hosts"),
                 )
                 .child(chrome::icon(IconName::ChevronRight, look.tertiary, 12.))
-                .child(chrome::status(if context.online {
-                    Status::Working
+                .child(if delivered(state).is_some() {
+                    chrome::stopped()
                 } else {
-                    Status::Offline
-                }))
+                    chrome::status(if context.online {
+                        Status::Working
+                    } else {
+                        Status::Offline
+                    })
+                })
                 .child(
                     div()
                         .id("machine-title")
@@ -317,21 +365,53 @@ fn header(
                         .test_support(),
                 )
                 .child(div().flex_1())
-                // The frame's ⋯ menu holds Sync skills and Reconnect now.
+                // While stopped, both stay clickable so the page can say why
+                // they don't work, but read as off (frames 73 and 76).
+                .children((delivered(state).is_some() || state.refused == Some(Refused::SessionsStopped)).then(|| {
+                    div()
+                        .id("machine-start-first")
+                        .role(Role::Status)
+                        .aria_label("Start sessions first")
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.tertiary))
+                        .child("Start sessions first")
+                        .test_support()
+                }))
+                .child(
+                    widgets::push_quiet(
+                        ui,
+                        "machine-open-shell",
+                        "Open a shell",
+                        wrap(MachinePageAction::OpenShell),
+                        look,
+                    )
+                    .disabled(!context.online)
+                    .when(state.stop().is_some() || read_only, |button| button.opacity(0.5)),
+                )
+                .child(
+                    widgets::push_primary(
+                        ui,
+                        "machine-new-session",
+                        format!("New session on {}", context.name),
+                        wrap(MachinePageAction::NewSession),
+                        look,
+                    )
+                    .disabled(!context.online)
+                    .when(state.stop().is_some() || read_only, |button| button.opacity(0.5)),
+                )
+                // The frame's ⋯ menu sits last and holds Sync skills and Reconnect now.
                 .child(
                     div()
                         .relative()
-                        .child(
-                            widgets::ghost_in(
-                                look,
-                                ui,
-                                "machine-menu",
-                                "",
-                                wrap(MachinePageAction::OpenMenu),
-                            )
-                            .icon(IconName::Ellipsis)
-                            .accessibility_label("More"),
-                        )
+                        // A bare 15 pt glyph after the actions, as in frame 59.
+                        .child(chrome::action(
+                            ui,
+                            "machine-menu",
+                            "More",
+                            IconName::Ellipsis,
+                            wrap(MachinePageAction::OpenMenu),
+                            look.secondary,
+                        ))
                         .when(state.menu_open, |menu| {
                             menu.child(crate::action_menu::scrim(
                                 ui,
@@ -340,7 +420,7 @@ fn header(
                             ))
                             .child(
                                 crate::action_menu::card("machine-menu-card", 180., look)
-                                    .top(px(34.))
+                                    .top(px(26.))
                                     .right(px(0.))
                                     .child(
                                         widgets::ghost_in(
@@ -355,6 +435,22 @@ fn header(
                                         .w_full(),
                                     )
                                     // While the link-down row shows, Reconnect now lives here (HO-5).
+                                    // Offered while the sessions run (D260).
+                                    .children(
+                                        (state.detail.is_some() && state.stop().is_none()).then(|| {
+                                            widgets::ghost_in(
+                                                look,
+                                                ui,
+                                                "machine-stop-sessions",
+                                                "Stop all sessions\u{2026}",
+                                                wrap(MachinePageAction::PickMenu(
+                                                    MenuPick::StopSessions,
+                                                )),
+                                            )
+                                            .w_full()
+                                            .disabled(state.changing.is_some())
+                                        }),
+                                    )
                                     .children((context.online || state.detail.is_none()).then(
                                         || {
                                             widgets::ghost_in(
@@ -371,26 +467,6 @@ fn header(
                                     )),
                             )
                         }),
-                )
-                .child(
-                    widgets::push_quiet(
-                        ui,
-                        "machine-open-shell",
-                        "Open a shell",
-                        wrap(MachinePageAction::OpenShell),
-                        look,
-                    )
-                    .disabled(!context.online),
-                )
-                .child(
-                    widgets::push_primary(
-                        ui,
-                        "machine-new-session",
-                        format!("New session on {}", context.name),
-                        wrap(MachinePageAction::NewSession),
-                        look,
-                    )
-                    .disabled(!context.online),
                 ),
         )
         .child(
@@ -455,7 +531,37 @@ fn overview(
         .gap(px(12.))
         .p(px(20.))
         .text_size(px(12.5));
-    if !context.online && state.detail.is_some() {
+    let upgrade = state.upgrade();
+    page = page
+        .children(upgrade_banner(ui, wrap, &upgrade, look))
+        .children(migration_refusal(ui, wrap, state, context, look));
+    if let Some(stop) = state.stop() {
+        page = page.child(stop_banner(ui, wrap, state, stop, context, look));
+    } else if let Some(change) = state.changing {
+        page = page.child(
+            div()
+                .id("machine-changing")
+                .role(Role::Status)
+                .aria_label(match change {
+                    SessionsChange::Stop => "Stopping sessions",
+                    SessionsChange::Start => "Starting sessions",
+                    SessionsChange::CancelStop => "Cancelling the stop",
+                })
+                .text_color(rgb(look.secondary))
+                .child(match change {
+                    SessionsChange::Stop => format!("Stopping the sessions on {}\u{2026}", context.name),
+                    SessionsChange::Start => format!("Starting the sessions on {}\u{2026}", context.name),
+                    SessionsChange::CancelStop => "Cancelling the stop\u{2026}".to_owned(),
+                })
+                .test_support(),
+        );
+    }
+    // A stop still on its way says the machine can't be reached, with its own
+    // Reconnect now, so the link-down row would say it twice (frame 76).
+    if !context.online
+        && state.detail.is_some()
+        && !state.stop().is_some_and(|stop| !stop.delivered)
+    {
         page = page.child(
             row()
                 .id("machine-link-down")
@@ -516,14 +622,15 @@ fn overview(
         row()
             .items_start()
             .gap(px(16.))
-            .child(left(ui, wrap, detail, context, look))
-            .child(right(ui, wrap, state, detail, inputs, look)),
+            .child(left(ui, wrap, state, detail, context, look))
+            .child(right(ui, wrap, state, detail, &upgrade, inputs, look)),
     )
 }
 
 fn left(
     ui: &Rc<Ui>,
     wrap: Wrap,
+    state: &MachinePageState,
     detail: &MachineDetail,
     context: &PageContext,
     look: Look,
@@ -538,6 +645,7 @@ fn left(
                 |channel| format!("# {}", channel.name),
             )
     };
+    let stopped = delivered(state).is_some();
     let mut sessions = card(look).overflow_hidden();
     let listed = detail
         .sessions
@@ -546,6 +654,7 @@ fn left(
     for (index, session) in listed.enumerate() {
         let ui = ui.clone();
         let action = wrap(MachinePageAction::OpenSession(session.id.clone()));
+        let halted = stopped || session.status == Status::Stopped;
         sessions = sessions.child(
             row()
                 .id(("machine-session", index))
@@ -557,13 +666,18 @@ fn left(
                 .border_b_1()
                 .border_color(rgb(look.line))
                 .cursor_pointer()
-                .child(chrome::status(session.status))
+                .child(if halted {
+                    chrome::stopped()
+                } else {
+                    chrome::status(session.status)
+                })
                 .child(
                     div()
                         .w(px(190.))
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .font_weight(FontWeight::MEDIUM)
+                        .when(halted, |name| name.text_color(rgb(look.secondary)))
                         .child(session.title.clone()),
                 )
                 .child(
@@ -585,6 +699,13 @@ fn left(
                             session.agent.name()
                         }),
                 )
+                .children(halted.then(|| {
+                    div()
+                        .flex_shrink_0()
+                        .whitespace_nowrap()
+                        .text_color(rgb(look.tertiary))
+                        .child(Status::Stopped.label())
+                }))
                 .on_click(move |_, _, cx| ui.send(action.clone(), cx))
                 .test_support(),
         );
@@ -596,11 +717,12 @@ fn left(
             1 => "1 session".to_owned(),
             n => format!("{n} sessions"),
         };
+        let channel = channel_name(&folder.channel);
         folders = folders.child(
             row()
                 .id(("machine-folder", index))
                 .role(Role::ListItem)
-                .aria_label(folder.path.clone())
+                .aria_label(channel.clone())
                 .gap(px(10.))
                 .px(px(12.))
                 .h(px(36.))
@@ -611,9 +733,7 @@ fn left(
                     div()
                         .w(px(220.))
                         .whitespace_nowrap()
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .child(folder.path.clone()),
+                        .child(channel),
                 )
                 .child(div().flex_1().whitespace_nowrap().child(dim(
                     look,
@@ -638,7 +758,13 @@ fn left(
                 .gap(px(6.))
                 .child(label(
                     look,
-                    format!("Sessions on it · {}", detail.sessions.len()),
+                    match (&context.lost_at, state.stop().is_some_and(|stop| !stop.delivered)) {
+                        (Some(at), true) => format!(
+                            "Sessions on it · {} · as last seen at {at}",
+                            detail.sessions.len()
+                        ),
+                        _ => format!("Sessions on it · {}", detail.sessions.len()),
+                    },
                 ))
                 .child(sessions),
         )
@@ -648,6 +774,184 @@ fn left(
                 .child(label(look, "Humata folders by channel"))
                 .child(folders),
         )
+        // MACHINESCRIPTS (D686): drawn only when the machine has rules or a problem to say.
+        .children(scripts_section(ui, wrap, state, context, look))
+}
+
+/// A run's colour: green passed, red failed, orange going.
+fn script_outcome_color(look: Look, outcome: ScriptOutcome) -> u32 {
+    match outcome {
+        ScriptOutcome::Passed => GREEN,
+        ScriptOutcome::Failed | ScriptOutcome::TimedOut => RED,
+        ScriptOutcome::Running => ORANGE,
+        ScriptOutcome::Skipped => look.secondary,
+    }
+}
+
+/// The last lines of a step's output, in the page's mono face.
+fn script_tail(look: Look, tail: &[String], color: u32) -> Div {
+    col()
+        .gap(px(1.))
+        .px(px(12.))
+        .pb(px(8.))
+        .font_family(MONO)
+        .text_size(px(11.))
+        .text_color(rgb(color))
+        .children(tail.iter().map(|line| div().whitespace_nowrap().overflow_hidden().child(line.clone())))
+        .when(tail.is_empty(), |x| x.child(dim(look, "No output.")))
+}
+
+/// Scripts (MACHINESCRIPTS, D686): the owner's rules that apply here, each
+/// with its last run and Run now. A failed run shows the end of the failed
+/// step's output; a click on a rule opens every step. Nothing is drawn for a
+/// machine with no rules, so a quiet page stays quiet.
+fn scripts_section(
+    ui: &Rc<Ui>,
+    wrap: Wrap,
+    state: &MachinePageState,
+    context: &PageContext,
+    look: Look,
+) -> Option<Div> {
+    let scripts = &state.scripts;
+    if !scripts.visible() {
+        return None;
+    }
+    let mut list = card(look).overflow_hidden();
+    for (index, line) in scripts.rows().into_iter().enumerate() {
+        let name = line.rule.name.clone();
+        let outcome_text = if line.running {
+            "Running\u{2026}".to_owned()
+        } else {
+            line.last.map_or_else(
+                || "Never run".to_owned(),
+                |run| format!("{} \u{b7} {}", run.outcome.label(), run.at),
+            )
+        };
+        let color = if line.running {
+            ORANGE
+        } else {
+            line.last.map_or(look.secondary, |run| script_outcome_color(look, run.outcome))
+        };
+        let ui_toggle = ui.clone();
+        let toggle = wrap(MachinePageAction::ToggleScript(name.clone()));
+        let header = row()
+            .id(("machine-script", index))
+            .role(Role::Button)
+            .aria_label(name.clone())
+            .gap(px(10.))
+            .px(px(12.))
+            .h(px(36.))
+            .cursor_pointer()
+            .child(
+                div()
+                    .w(px(190.))
+                    .whitespace_nowrap()
+                    .overflow_hidden()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(name.clone()),
+            )
+            .child(div().flex_1().whitespace_nowrap().overflow_hidden().child(dim(
+                look,
+                line.rule.triggers.join(" \u{b7} "),
+            )))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .whitespace_nowrap()
+                    .text_color(rgb(color))
+                    .child(outcome_text),
+            )
+            .child(
+                widgets::push_quiet(
+                    ui,
+                    ("machine-script-run", index),
+                    if line.running { "Running\u{2026}" } else { "Run now" },
+                    wrap(MachinePageAction::RunScript(name.clone())),
+                    look,
+                )
+                .disabled(line.running || !context.online),
+            )
+            .on_click(move |_, _, cx| ui_toggle.send(toggle.clone(), cx))
+            .test_support();
+        let mut block = col().border_b_1().border_color(rgb(look.line)).child(header);
+        if let Some(run) = line.last.filter(|run| run.outcome.is_problem())
+            && let Some((step, tail)) = run.failure_tail()
+        {
+            let exit = step.exit.map_or_else(String::new, |exit| format!(" (exit {exit})"));
+            block = block
+                .child(
+                    div()
+                        .px(px(12.))
+                        .pb(px(4.))
+                        .text_color(rgb(RED))
+                        .child(format!("Step {}: {}{exit}", step.index + 1, step.label)),
+                )
+                .child(script_tail(look, tail, RED));
+        }
+        if let Some(reason) = line.refused {
+            block = block.child(
+                div()
+                    .id(("machine-script-refused", index))
+                    .role(Role::Alert)
+                    .aria_label(reason.to_owned())
+                    .px(px(12.))
+                    .pb(px(8.))
+                    .text_color(rgb(RED))
+                    .child(reason.to_owned())
+                    .test_support(),
+            );
+        }
+        if line.open {
+            for step in &line.rule.steps {
+                block = block.child(
+                    row()
+                        .gap(px(8.))
+                        .px(px(12.))
+                        .pb(px(4.))
+                        .child(chip(look, step.kind.clone()))
+                        .child(dim(look, step.label.clone())),
+                );
+            }
+            if let Some(run) = line.last {
+                for step in &run.steps {
+                    block = block
+                        .child(
+                            div()
+                                .px(px(12.))
+                                .pb(px(2.))
+                                .text_color(rgb(script_outcome_color(look, step.outcome)))
+                                .child(format!("Step {}: {} \u{b7} {}", step.index + 1, step.label, step.outcome.label())),
+                        )
+                        .when(!step.tail.is_empty(), |x| x.child(script_tail(look, &step.tail, look.secondary)));
+                }
+            }
+        }
+        list = list.child(block);
+    }
+    let mut section = col().gap(px(6.)).child(label(look, "Scripts"));
+    if let Some(problem) = scripts.problem() {
+        section = section.child(
+            div()
+                .id("machine-scripts-problem")
+                .role(Role::Alert)
+                .aria_label(problem.to_owned())
+                .text_color(rgb(RED))
+                .child(problem.to_owned())
+                .test_support(),
+        );
+    }
+    if let Some(error) = &scripts.error {
+        section = section.child(
+            div()
+                .id("machine-scripts-error")
+                .role(Role::Alert)
+                .aria_label(error.clone())
+                .text_color(rgb(RED))
+                .child(error.clone())
+                .test_support(),
+        );
+    }
+    Some(section.child(list))
 }
 
 fn right(
@@ -655,6 +959,7 @@ fn right(
     wrap: Wrap,
     state: &MachinePageState,
     detail: &MachineDetail,
+    upgrade: &Upgrade,
     inputs: &MachinePageInputs,
     look: Look,
 ) -> Div {
@@ -705,7 +1010,7 @@ fn right(
                 .bg(rgb(look.fill))
                 .child(
                     div()
-                        .w(relative(used_percent.min(100) as f32 / 100.))
+                        .w(px(DISK_BAR * used_percent.min(100) as f32 / 100.))
                         .h_full()
                         .rounded_full()
                         .bg(rgb(if low { RED } else { look.accent })),
@@ -724,32 +1029,38 @@ fn right(
                 .text_color(rgb(ORANGE))
                 .child("New clones stop at 5 GB.")
         }));
+    // A read-only machine takes no variable changes: its links are dimmed.
+    let editable = !upgrade.read_only();
     let mut variables = row().flex_wrap().gap(px(6.));
     for (index, name) in health.variables.iter().enumerate() {
         variables = variables.child(
             col()
                 .gap(px(2.))
-                .p(px(4.))
-                .rounded(px(6.))
+                .px(px(4.))
+                .py(px(3.))
+                .rounded(px(5.))
                 .border_1()
                 .border_color(rgb(look.line))
                 .child(
                     div()
+                        .whitespace_nowrap()
                         .font_family(MONO)
-                        .text_size(px(11.))
+                        .text_size(px(11.5))
                         .child(name.clone()),
                 )
                 .child(
                     row()
                         .gap(px(8.))
-                        .child(link(
+                        .child(link_when(
+                            editable,
                             ui,
                             ("machine-variable-set", index),
                             "Set value…",
                             wrap(MachinePageAction::BeginVariable(Some(name.clone()))),
                             look,
                         ))
-                        .child(link(
+                        .child(link_when(
+                            editable,
                             ui,
                             ("machine-variable-remove", index),
                             "Remove",
@@ -760,7 +1071,7 @@ fn right(
         );
     }
     let mut variable_cell = col()
-        .gap(px(6.))
+        .gap(px(8.))
         .child(variables)
         .child(dim(look, "Names only; values stay on the host."));
     if let Some(edit) = &state.variable {
@@ -818,7 +1129,8 @@ fn right(
                 .test_support(),
         );
     } else {
-        variable_cell = variable_cell.child(link(
+        variable_cell = variable_cell.child(link_when(
+            editable,
             ui,
             "machine-variable-new",
             "New variable…",
@@ -844,7 +1156,8 @@ fn right(
             ),
         ))
         .child(kv("Disk", disk))
-        .child(kv("Variables", variable_cell));
+        .child(kv("Variables", variable_cell))
+        .child(kv("Humata", humata_cell(detail, upgrade, look)));
     if let Some(problem) = &health.skills_problem {
         health_card = health_card.child(kv(
             "Skills",
@@ -1002,8 +1315,19 @@ fn skills_sheet(
                 .disabled(blocked || dialog.syncing),
             ),
     );
+    // The sheet sits over a scrim that covers the page.
+    layer("machine-skills", 96., look, sheet)
+}
+
+/// `sheet` over a scrim that covers the page, `top` from the page's top.
+fn layer(
+    id: &'static str,
+    top: f32,
+    look: Look,
+    sheet: Stateful<Div>,
+) -> Stateful<Div> {
     let scrim = div()
-        .id("machine-skills-scrim")
+        .id(SharedString::from(format!("{id}-scrim")))
         .absolute()
         .top_0()
         .left_0()
@@ -1014,9 +1338,8 @@ fn skills_sheet(
             rgba(0x0000_0080)
         })
         .occlude();
-    // The sheet sits over a scrim that covers the page.
     div()
-        .id("machine-skills-layer")
+        .id(SharedString::from(format!("{id}-layer")))
         .absolute()
         .top_0()
         .left_0()
@@ -1030,9 +1353,373 @@ fn skills_sheet(
                 .size_full()
                 .flex()
                 .justify_center()
-                .pt(px(96.))
+                .pt(px(top))
                 .child(div().occlude().child(sheet.test_support())),
         )
+}
+
+/// A dialog's card, `width` wide.
+fn dialog_card(id: &'static str, label: &'static str, width: f32, look: Look) -> Stateful<Div> {
+    col()
+        .id(id)
+        .role(Role::Dialog)
+        .aria_label(label)
+        .w(px(width))
+        .max_w_full()
+        .gap(px(8.))
+        .p(px(20.))
+        .rounded(px(12.))
+        .bg(rgb(look.card))
+        .text_color(rgb(look.text))
+        .border_1()
+        .border_color(rgb(look.line))
+        .shadow_lg()
+        .text_size(px(12.5))
+}
+
+fn dialog_title(text: String) -> Div {
+    div()
+        .text_size(px(15.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(text)
+}
+
+/// The Stop confirm's card (frame 72): what ends, what is kept; `cancel`
+/// and `go` are what its two buttons send.
+pub(crate) fn stop_confirm(
+    ui: &Rc<Ui>,
+    name: &str,
+    sessions: usize,
+    cancel: AppAction,
+    go: AppAction,
+    look: Look,
+) -> Stateful<Div> {
+    let part = |head: &'static str, text: &'static str| {
+        col()
+            .gap(px(2.))
+            .pt(px(4.))
+            .child(label(look, head))
+            .child(div().child(text))
+    };
+    dialog_card("machine-stop-dialog", "Stop all sessions", 520., look)
+        .child(dialog_title(format!("Stop all sessions on {name}?")))
+        .child(
+            div()
+                .text_color(rgb(look.secondary))
+                .child(format!(
+                    "Every agent and shell in {name}'s {sessions} sessions gets 2 seconds to quit, then is killed."
+                )),
+        )
+        .child(part(
+            "Kept",
+            "Scrollback, conversations, todos, rewind points and open tabs.",
+        ))
+        .child(part(
+            "While stopped",
+            "Agents can't type, call Humata or be answered. Their open requests end.",
+        ))
+        .child(
+            div()
+                .mt(px(4.))
+                .p(px(10.))
+                .rounded(px(7.))
+                .bg(rgb(look.fill))
+                .text_color(rgb(look.secondary))
+                .child(format!(
+                    "{name}'s sessions stay stopped, even after it restarts, until you choose Start sessions."
+                )),
+        )
+        .child(
+            row()
+                .justify_end()
+                .gap(px(8.))
+                .pt(px(8.))
+                .child(widgets::push_quiet(
+                    ui,
+                    "machine-stop-cancel",
+                    "Cancel",
+                    cancel,
+                    look,
+                ))
+                .child(
+                    widgets::push_quiet(
+                        ui,
+                        "machine-stop-confirm",
+                        "Stop all sessions",
+                        go,
+                        look,
+                    )
+                    .border_color(rgb(RED))
+                    .text_color(rgb(RED)),
+                ),
+        )
+}
+
+/// The Start confirm (frame 75), for the machine's page and the Hosts page:
+/// `count` sessions, stopped at `at`; `cancel` and `go` are what its two
+/// buttons send.
+pub(crate) fn start_confirm(
+    ui: &Rc<Ui>,
+    name: &str,
+    count: usize,
+    at: Option<&str>,
+    cancel: AppAction,
+    go: AppAction,
+    look: Look,
+) -> Stateful<Div> {
+    let when = at.map_or_else(String::new, |at| format!(" stopped at {at}"));
+    dialog_card("machine-start-dialog", "Start sessions", 440., look)
+        .child(dialog_title(format!("Start sessions on {name}?")))
+        .child(div().text_color(rgb(look.secondary)).child(format!(
+            "Humata brings back the {count} sessions{when} as after a restart: agents resume their conversations, idle, and shells open fresh in the same folders. A report shows what came back."
+        )))
+        .child(
+            row()
+                .justify_end()
+                .gap(px(8.))
+                .pt(px(8.))
+                .child(widgets::push_quiet(
+                    ui,
+                    "machine-start-cancel",
+                    "Cancel",
+                    cancel,
+                    look,
+                ))
+                .child(
+                    widgets::push_primary(ui, "machine-start-confirm", "Start sessions", go, look)
+                        // The banner's button reads "Start sessions" too; the
+                        // confirm's name says how many it brings back.
+                        .accessibility_label(start_name(count)),
+                ),
+        )
+}
+
+/// The start confirm's accessible name: "Start 3 sessions", "Start 1 session".
+fn start_name(count: usize) -> String {
+    if count == 1 {
+        "Start 1 session".to_owned()
+    } else {
+        format!("Start {count} sessions")
+    }
+}
+
+/// An "Open in Inbox" text link to the machine's Migrate item.
+fn open_in_inbox(ui: &Rc<Ui>, wrap: Wrap, look: Look) -> ObservedElement<Stateful<Div>> {
+    link(
+        ui,
+        "machine-open-in-inbox",
+        "Open in Inbox",
+        wrap(MachinePageAction::OpenInInbox),
+        look,
+    )
+}
+
+/// The banner while a Migrate item holds the page read-only, is migrating or
+/// failed (frames 79 and 80). Migrated and current pages have none.
+fn upgrade_banner(
+    ui: &Rc<Ui>,
+    wrap: Wrap,
+    upgrade: &Upgrade,
+    look: Look,
+) -> Option<ObservedElement<Stateful<Div>>> {
+    let (glyph, hex, bg, label, text) = match upgrade {
+        Upgrade::Current | Upgrade::Migrated { .. } => return None,
+        Upgrade::ReadOnly { to, .. } => (
+            IconName::Info,
+            look.secondary,
+            look.fill,
+            "Read-only until migrated",
+            format!(
+                "Read-only until migrated to {}: new sessions, typing and moves wait. Sessions keep running.",
+                release_label(to)
+            ),
+        ),
+        Upgrade::Migrating { to, .. } => (
+            IconName::Info,
+            ORANGE,
+            look.attention_bg,
+            "Migrating",
+            format!(
+                "Migrating to {}… Sessions keep running; the link drops for a few seconds.",
+                release_label(to)
+            ),
+        ),
+        Upgrade::Failed { to, failure, .. } => (
+            IconName::CircleX,
+            RED,
+            look.attention_bg,
+            "Couldn't migrate",
+            format!(
+                "Read-only until migrated to {}: new sessions, typing and moves wait. The last try failed: {} {}",
+                release_label(to),
+                failure.message,
+                failure.fix
+            ),
+        ),
+    };
+    Some(
+        row()
+            .id("machine-upgrade-banner")
+            .role(Role::Status)
+            .aria_label(label)
+            .gap(px(8.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .bg(rgb(bg))
+            .child(div().flex_shrink_0().child(chrome::icon(glyph, hex, 12.)))
+            .child(div().flex_1().min_w_0().child(text))
+            .child(open_in_inbox(ui, wrap, look))
+            .test_support(),
+    )
+}
+
+/// What a click refused for a migration says, with the way to the item when
+/// one is known (NV-10): inline, never a toast.
+fn migration_refusal(
+    ui: &Rc<Ui>,
+    wrap: Wrap,
+    state: &MachinePageState,
+    context: &PageContext,
+    look: Look,
+) -> Option<ObservedElement<Stateful<Div>>> {
+    let Some(Refused::MigrationNeeded(request)) = &state.refused else {
+        return None;
+    };
+    let text = format!(
+        "Migrate the daemon on {} first. Nothing was started or sent; its sessions keep running.",
+        context.name
+    );
+    Some(
+        row()
+            .id("machine-migration-refusal")
+            .role(Role::Alert)
+            .aria_label(text.clone())
+            .gap(px(8.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .bg(rgb(look.attention_bg))
+            .child(div().flex_shrink_0().child(chrome::icon(IconName::Inbox, ORANGE, 12.)))
+            .child(div().flex_1().min_w_0().child(text))
+            .children(request.is_some().then(|| open_in_inbox(ui, wrap, look)))
+            .test_support(),
+    )
+}
+
+/// The Health "Humata" row: the daemon's release, and where its migration is.
+fn humata_cell(detail: &MachineDetail, upgrade: &Upgrade, look: Look) -> Div {
+    let version = detail.daemon_version.clone();
+    match upgrade {
+        Upgrade::Current => div().child(version),
+        Upgrade::ReadOnly { to, .. } => div()
+            .text_color(rgb(ORANGE))
+            .child(format!("{version} · migrate to {} waits in the Inbox", release_label(to))),
+        Upgrade::Migrating { to, .. } => div()
+            .text_color(rgb(ORANGE))
+            .child(format!("{version} · migrating to {}…", release_label(to))),
+        Upgrade::Failed { to, .. } => div()
+            .text_color(rgb(RED))
+            .child(format!("{version} · couldn't migrate to {}", release_label(to))),
+        Upgrade::Migrated { to, at } => col()
+            .child(
+                row()
+                    .gap(px(6.))
+                    .child(chrome::icon(IconName::Check, GREEN, 12.))
+                    .child(format!("Migrated to {} · {at}", release_label(to))),
+            )
+            .child(dim(look, version)),
+    }
+}
+
+/// The banner at the top of the page while the sessions are stopped
+/// (frame 73), or the stop is still on its way (frame 76).
+fn stop_banner(
+    ui: &Rc<Ui>,
+    wrap: Wrap,
+    state: &MachinePageState,
+    stop: &MachineStop,
+    context: &PageContext,
+    look: Look,
+) -> ObservedElement<Stateful<Div>> {
+    let who = context.stopped_by.clone().unwrap_or_default();
+    let (glyph, hex, bg, text) = if stop.delivered {
+        (
+            IconName::Info,
+            look.secondary,
+            look.fill,
+            format!(
+                "Sessions stopped by {who} at {}: agents and shells ended, everything else is kept, and they stay stopped after restarts.",
+                stop.at
+            ),
+        )
+    } else {
+        (
+            IconName::WifiOff,
+            ORANGE,
+            look.attention_bg,
+            format!(
+                "Stop not delivered yet: {} can't be reached, so its sessions may still be running. Humata stops them as soon as it connects again.",
+                context.name
+            ),
+        )
+    };
+    let busy = state.changing.is_some();
+    let banner = row()
+        .id("machine-stop-banner")
+        .role(Role::Status)
+        .aria_label(if stop.delivered {
+            "Sessions stopped"
+        } else {
+            "Stop not delivered"
+        })
+        .gap(px(8.))
+        .px(px(12.))
+        .py(px(8.))
+        .rounded(px(8.))
+        .bg(rgb(bg))
+        .child(div().flex_shrink_0().child(chrome::icon(glyph, hex, 12.)))
+        .child(div().flex_1().min_w_0().child(text));
+    let banner = if stop.delivered {
+        banner.child(
+            widgets::push_primary(
+                ui,
+                "machine-start-sessions",
+                if state.changing == Some(SessionsChange::Start) {
+                    "Starting\u{2026}"
+                } else {
+                    "Start sessions"
+                },
+                wrap(MachinePageAction::StartSessions),
+                look,
+            )
+            .disabled(busy),
+        )
+    } else {
+        banner
+            .child(widgets::push_quiet(
+                ui,
+                "machine-reconnect",
+                "Reconnect now",
+                wrap(MachinePageAction::ReconnectNow),
+                look,
+            ))
+            .child(
+                widgets::push_quiet(
+                    ui,
+                    "machine-cancel-stop",
+                    if state.changing == Some(SessionsChange::CancelStop) {
+                        "Cancelling\u{2026}"
+                    } else {
+                        "Cancel stop"
+                    },
+                    wrap(MachinePageAction::CancelStop),
+                    look,
+                )
+                .disabled(busy),
+            )
+    };
+    banner.test_support()
 }
 
 fn preview_body(

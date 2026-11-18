@@ -38,14 +38,17 @@ use crate::identity;
 use crate::status;
 use crate::trash_service::Bin;
 
+mod changes;
 mod find;
 mod forward;
 mod ops;
 mod roots;
 
+pub(crate) use changes::FileChanges;
+use changes::Spot;
 use find::Find;
 use forward::Forward;
-pub(crate) use forward::TrashForward;
+pub(crate) use forward::{TrashForward, qualified};
 use ops::Ops;
 pub(crate) use roots::{Placed, Roots, Target};
 use roots::io_failure;
@@ -67,6 +70,10 @@ pub(crate) struct Files {
     /// The link the callers are on: the socket's or the peer link's.
     link: Link,
     uploads: Mutex<Uploads>,
+    /// Told of the user's writes to a session's clone.
+    user_writes: std::sync::OnceLock<Arc<dyn UserWrites>>,
+    /// Told when a call adds, removes or renames files in a session's clone.
+    changes: std::sync::OnceLock<Arc<FileChanges>>,
     /// Calls that name another machine (FM-9, FM-12).
     forward: Forward,
 }
@@ -112,6 +119,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Who is told when the user's WriteFile puts a file into a session's clone,
+/// so the review service can tell the user's edit from the agent's.
+pub(crate) trait UserWrites: Send + Sync {
+    /// A user write in `session` is about to move its file into place.
+    /// `None` when nobody is told of that session. Held until the write is
+    /// over; while held, the review does not look at the session's comments.
+    fn writing(&self, session: &str) -> Option<Box<dyn UserWrite>>;
+}
+
+/// One user write under way, from [`UserWrites::writing`].
+#[tonic::async_trait]
+pub(crate) trait UserWrite: Send {
+    /// The file is in place: `path` of the session's clone of `repo`.
+    /// Returns once the review has taken the new text as the baseline.
+    async fn wrote(self: Box<Self>, repo: &pb::RepoRef, path: &str);
+}
+
 impl Files {
     pub(crate) fn new(
         roots: Arc<Roots>,
@@ -129,13 +153,90 @@ impl Files {
             compression,
             link,
             uploads: Mutex::new(Uploads::default()),
+            user_writes: std::sync::OnceLock::new(),
+            changes: std::sync::OnceLock::new(),
         }
+    }
+
+    /// The list of session clones' files, told on the feed as these calls
+    /// change it (bug 23).
+    pub(crate) fn use_changes(&self, changes: Arc<FileChanges>) {
+        let _ = self.changes.set(changes);
+    }
+
+    /// The session clones `locations` are in, each once; none unless the
+    /// changes are told.
+    fn spots<'a>(&self, locations: impl IntoIterator<Item = Option<&'a pb::FileLocation>>) -> Vec<Spot> {
+        let mut spots: Vec<Spot> = Vec::new();
+        if self.changes.get().is_none() {
+            return spots;
+        }
+        for location in locations {
+            if let Some(spot) = Spot::of(&self.roots, location) {
+                match spots.iter_mut().find(|known| known.same_clone(&spot)) {
+                    Some(known) => known.also(spot),
+                    None => spots.push(spot),
+                }
+            }
+        }
+        spots
+    }
+
+    /// Remembers the files of `spots` before a call changes them, so the
+    /// change is a difference; says nothing.
+    async fn before(&self, spots: &[Spot]) {
+        let Some(changes) = self.changes.get().filter(|_| !spots.is_empty()).cloned() else {
+            return;
+        };
+        let spots = spots.to_vec();
+        // Best effort: a worker that failed leaves the list to the next look.
+        let _ = blocking(move || spots.iter().for_each(|spot| spot.remember(&changes))).await;
+    }
+
+    /// Tells what a finished call changed in the files of `spots`.
+    async fn after(&self, spots: &[Spot]) {
+        let Some(changes) = self.changes.get().filter(|_| !spots.is_empty()).cloned() else {
+            return;
+        };
+        let spots = spots.to_vec();
+        let _ = blocking(move || spots.iter().for_each(|spot| spot.look(&changes))).await;
     }
 
     /// The machines' links (the host only; without them every other
     /// machine is offline), for calls that name one.
     pub(crate) fn use_links(&self, links: Links) {
         self.forward.use_links(links);
+    }
+
+    /// On a machine: its agents' reads of another machine's files go up
+    /// `host`, the Uplink (D768).
+    pub(crate) fn ask_host_for_agents(&self, host: Arc<crate::away::Forwarder>) {
+        self.forward.ask_host_for_agents(host);
+    }
+
+    /// The review service, told when the user writes a file in a session's
+    /// clone, so the comments on it answer only to the agent's changes.
+    pub(crate) fn use_user_writes(&self, writes: Arc<dyn UserWrites>) {
+        let _ = self.user_writes.set(writes);
+    }
+
+    /// The write to tell of, if the user is writing a file in a session's clone.
+    fn user_write(&self, caller: &identity::Caller, location: &pb::FileLocation) -> Option<(Box<dyn UserWrite>, pb::RepoRef)> {
+        if !matches!(caller, identity::Caller::User(_)) {
+            return None;
+        }
+        let Some(pb::file_location::Root::SessionClone(clone)) = &location.root else {
+            return None;
+        };
+        let session = clone.session.as_ref().filter(|session| !session.value.is_empty())?;
+        let held = self.user_writes.get()?.writing(&session.value)?;
+        Some((held, clone.repo.clone()?))
+    }
+
+    /// The host's Migrate items, so a change to a machine at another
+    /// release is refused (UP-1).
+    pub(crate) fn use_migrations(&self, migrations: crate::upgrade::items::Migrations) {
+        self.forward.use_migrations(migrations);
     }
 
     /// Claims `key` for an upload to `target`. `Ok(Err(entry))` is the
@@ -270,10 +371,11 @@ impl pb::file_service_server::FileService for Files {
             Err(entry) => return Ok(Response::new(entry)),
         };
         let replace = header.replace;
+        let expected = header.expected_sha256.clone().filter(|hash| !hash.is_empty());
         let target = Arc::new(target);
         let mut upload = blocking({
             let target = target.clone();
-            move || Upload::start(&target, replace)
+            move || Upload::start(&target, replace, expected)
         })
         .await??;
         let mut started = None;
@@ -346,11 +448,19 @@ impl pb::file_service_server::FileService for Files {
         let size = header.size;
         let sha256 = header.sha256;
         let elapsed = started.map(|started| started.elapsed()).unwrap_or_default();
+        // Taken before the file is moved into place, so the review never sees the new text unannounced.
+        let held = self.user_write(&caller, &target.location);
+        let spots = self.spots([Some(&target.location)]);
+        self.before(&spots).await;
         let entry = blocking({
             let target = target.clone();
             move || upload.finish(&target, size, &sha256)
         })
         .await??;
+        self.after(&spots).await;
+        if let Some((held, repo)) = held {
+            held.wrote(&repo, &target.location.path).await;
+        }
         running.finish(&entry);
         self.compression.record(
             self.link,
@@ -380,7 +490,19 @@ impl pb::file_service_server::FileService for Files {
         if self.forward.elsewhere(request.get_ref().location.as_ref()).is_some() {
             return self.forward.rename(request).await;
         }
-        self.ops.rename(request).await
+        let mut spots = self.spots([request.get_ref().location.as_ref()]);
+        if let Some(location) = request.get_ref().location.as_ref() {
+            // The new name is beside the old one: both paths are told, nothing is listed.
+            for spot in &mut spots {
+                spot.renamed(&location.path, &request.get_ref().new_name);
+            }
+        }
+        self.before(&spots).await;
+        let renamed = self.ops.rename(request).await;
+        if renamed.is_ok() {
+            self.after(&spots).await;
+        }
+        renamed
     }
 
     async fn move_to_trash(
@@ -390,7 +512,13 @@ impl pb::file_service_server::FileService for Files {
         if self.forward.elsewhere_any(&request.get_ref().locations).is_some() {
             return self.forward.move_to_trash(request).await;
         }
-        self.ops.move_to_trash(request).await
+        let spots = self.spots(request.get_ref().locations.iter().map(Some));
+        self.before(&spots).await;
+        let trashed = self.ops.move_to_trash(request).await;
+        if trashed.is_ok() {
+            self.after(&spots).await;
+        }
+        trashed
     }
 
     async fn find_files(
@@ -524,10 +652,13 @@ struct Upload {
     decoder: Decoder,
     written: u64,
     replace: bool,
+    /// With `replace`: the SHA-256 the file must still have at the moment it
+    /// is replaced.
+    expected: Option<String>,
 }
 
 impl Upload {
-    fn start(target: &Target, replace: bool) -> Result<Self, Status> {
+    fn start(target: &Target, replace: bool, expected: Option<String>) -> Result<Self, Status> {
         let destination = target.resolve(false)?;
         if !replace && fs::symlink_metadata(&destination).is_ok() {
             return Err(exists(&target.shown));
@@ -553,6 +684,7 @@ impl Upload {
             decoder: Decoder::new(),
             written: 0,
             replace,
+            expected,
         })
     }
 
@@ -610,8 +742,21 @@ impl Upload {
         if !self.replace && fs::symlink_metadata(&self.destination).is_ok() {
             return Err(exists(&target.shown));
         }
+        if self.replace
+            && let Some(expected) = &self.expected
+        {
+            let now = current_sha256(&self.destination)
+                .map_err(|error| io_failure(&error, "read", &self.destination))?;
+            if !now.as_deref().is_some_and(|now| now.eq_ignore_ascii_case(expected)) {
+                return Err(changed_underneath(&target.shown, now.is_some()));
+            }
+        }
         fs::rename(&self.partial, &self.destination)
             .map_err(|error| io_failure(&error, "write", &self.destination))?;
+        if let Some(parent) = self.destination.parent() {
+            // Best effort past this point: the file is in place and complete.
+            let _ = fs::File::open(parent).and_then(|folder| folder.sync_all());
+        }
         let modified = fs::metadata(&self.destination)
             .and_then(|meta| meta.modified())
             .ok()
@@ -641,6 +786,41 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(work)
         .await
         .map_err(|error| status::internal(format!("a file worker stopped: {error}"), ""))
+}
+
+/// The SHA-256 of the file at `path`, or `None` when there is no file.
+fn current_sha256(path: &std::path::Path) -> io::Result<Option<String>> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(Some(hex(&hasher.finalize())))
+}
+
+/// A write that named the version it was made from, refused because the
+/// file is no longer that version.
+fn changed_underneath(path: &str, still_there: bool) -> Status {
+    let what = if still_there { "was changed by someone else" } else { "was removed" };
+    status::failure(
+        Code::Aborted,
+        status::error(
+            format!("{path} {what} since it was read, so this write was refused and nothing was written"),
+            "reload the file, apply your change to what is there now, and save again. Saving over it without reloading would lose the other change",
+            pb::error::Kind::PlanStale(pb::PlanStale {
+                changes: vec![format!("{path} {what}")],
+            }),
+        ),
+    )
 }
 
 fn exists(path: &str) -> Status {

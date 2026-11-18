@@ -27,7 +27,7 @@ Which part is which: the shipped app is the desktop app and `humata attach`, bot
 3. **I do:** Look at the terminal bar of viewer A while B is attached.
    - **I see (code as written):** Nothing. The bar should read "1 other can type here" while the session is working (the LOOK1 decision, `OVERVIEW.md:378`, says peers show only while Working).
    - **State and events:** The daemon counts the writers and sends the count in each state (`daemon/humatad/src/attach.rs:504`, `other_writers`). The app link does not read that field (`clients/terminal_link/src/lib.rs`), and the live client never fills the map the bar reads (`clients/src/workspace.rs:35` `terminal_peers` has no producer in `clients/live`).
-   - **Status:** Likely bug. The daemon side is Works (real daemon): `daemon/humatad/tests/terminal.rs::writers_hear_about_each_other` checks that A sees `other_writers == 1` when B attaches, and 0 when B leaves. The app side never shows the count. The bar code is `ui/src/session_tabs.rs:200-212`.
+   - **Status:** Fakes only (app); Works (real daemon) (daemon). The daemon counts the writers (`daemon/humatad/tests/terminal.rs::writers_hear_about_each_other`); the app's link now reads `other_writers` from each state (`clients/live/src/link.rs::tests::a_state_message_says_how_many_others_can_type`) and the bar shows "1 other can type here" from it while the session works (`desktop/tests/native/queue.rs::queued_messages_can_be_shown_removed_and_sent_and_presence_follows_the_tab`, from a fixture). No test attaches two real viewers and reads the bar.
 
 4. **I do:** Resize viewer B to about 80 columns, then type `stty size` in B.
    - **I see:** The shell reports the size of the last viewer that sent a size. After B's resize, `stty size` shows B's rows and columns. Viewer A shows the same screen at that size.
@@ -110,7 +110,7 @@ Which part is which: the shipped app is the desktop app and `humata attach`, bot
 | --- | --- | --- |
 | 1. Both viewers show the same output | Works (real daemon) | `daemon/humatad/tests/terminal.rs::a_read_only_attach_watches_but_cannot_type` |
 | 2. Both may type at once | Code, no test | `daemon/humatad/tests/terminal.rs::writers_hear_about_each_other` (counts only) |
-| 3. Each writer hears another is present | Likely bug (app); Works (real daemon) (daemon) | `daemon/humatad/tests/terminal.rs::writers_hear_about_each_other`; `ui/src/session_tabs.rs:200-212` |
+| 3. Each writer hears another is present | Fakes only (app); Works (real daemon) (daemon) | `daemon/humatad/tests/terminal.rs::writers_hear_about_each_other`; `clients/live/src/link.rs::tests::a_state_message_says_how_many_others_can_type`; `desktop/tests/native/queue.rs::queued_messages_can_be_shown_removed_and_sent_and_presence_follows_the_tab` |
 | 4. Size follows a rule | Works (real daemon) (daemon rule); Likely bug (app fit policy) | `daemon/humatad/tests/terminal.rs::the_size_a_writer_attaches_with_reaches_the_shell`; `ui/src/terminals.rs:43` |
 | 5. Desktop refresh keeps the holder | Works (real daemon) | `clients/live/tests/term_restart.rs::a_shell_tab_catches_up_after_the_app_restarts_and_types_only_once_synced` |
 | 6. Browser refresh keeps the shell (lab) | Works (real shell), lab only | `terminal/web/browser_smoke.mjs` (manual, external target) |
@@ -125,7 +125,7 @@ Tag count, branches: Works (real shell, lab only) 1 (B1), Works (real daemon) 1 
 
 ## Gaps and likely bugs
 
-- Likely bug: the writer count never reaches the app. `clients/terminal_link/src/lib.rs` does not map `other_writers` from the state, and `terminal_peers` (`clients/src/workspace.rs:35`) has no producer in `clients/live`, so `ui/src/session_tabs.rs:200-212` always reads 0. The daemon sends the count (`daemon/humatad/src/attach.rs:504`). To confirm: attach a second writer and look at the terminal bar.
+- Fixed in code: the app's link reads the writer count (`clients/live/src/link.rs::tests::a_state_message_says_how_many_others_can_type`). Coverage gap: no test attaches two real viewers and reads the bar.
 - Likely bug, against D271 point 3: every writable replica asks for a resize when it fits. `ui/src/terminals.rs:43` sets `FitPolicy::Controlling` for all tabs, and `terminal/client/src/replica.rs:326-330` sends a resize whenever the replica is enabled and the policy fits. The daemon applies the last resize (`daemon/humatad/src/attach.rs:336-345`). Two windows of different sizes therefore take turns setting the shell's size. The `ui/src/terminals.rs` comment argues for Controlling; it does not match D271. To confirm: resize one window, then run `stty size` in the other.
 - Not built: the browser viewer in the shipped app (D34, `OVERVIEW.md:114`). The lab's browser mirror is an experiment, not the shipped app, and its gateway is not the shipped web listener.
 - Not built in the shipped path: Take control. `clients/terminal_link/src/lib.rs:103` ignores `TakeControl`. Only the lab host and viewer implement it.

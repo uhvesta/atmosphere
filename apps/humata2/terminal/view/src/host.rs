@@ -108,14 +108,28 @@ pub trait TerminalHost<G: Grid> {
         self.select(grid, Some((start, end)));
     }
 
+    /// The user chose Select All. A host whose grid keeps history selects
+    /// that too; by default this selects every cell in view.
+    fn select_all(&mut self, grid: &mut G) {
+        let size = grid.size();
+        if size.cols > 0 && size.rows > 0 {
+            let end = ViewportPoint {
+                x: size.cols - 1,
+                y: size.rows - 1,
+            };
+            self.select(grid, Some((ViewportPoint { x: 0, y: 0 }, end)));
+        }
+    }
+
     /// The user moved through the history with a key or the scrollbar.
     fn scroll_to(&mut self, grid: &mut G, to: ScrollTo) {
         let _ = (grid, to);
     }
 
     /// Text the input method committed, such as a composed Chinese or
-    /// Japanese word, or an accented letter typed with a dead key. Send it
-    /// as typed; it never carries control characters.
+    /// Japanese word, or an accented letter typed with a dead key, or the
+    /// fixed bytes a key stands for, such as Esc b for ⌥← on a Mac. Send
+    /// it as typed.
     fn text(&mut self, grid: &mut G, text: &str) {
         let _ = (grid, text);
     }

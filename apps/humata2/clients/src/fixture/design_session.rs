@@ -25,6 +25,8 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             detail: "Ubuntu 24.04".into(),
             last_seen: "now".into(),
             lost_at: (ledger_status == Status::Offline).then(|| "14:02".into()),
+            stop: None,
+            root: crate::desk::DEFAULT_ROOT.into(),
         },
         Machine {
             id: MachineId::new("gpu-box"),
@@ -36,6 +38,8 @@ pub fn design_session(ledger_status: Status) -> Workspace {
             detail: "Ubuntu 24.04 · RTX 4090 · 64 GB".into(),
             last_seen: "14:02".into(),
             lost_at: None,
+            stop: None,
+            root: crate::desk::DEFAULT_ROOT.into(),
         },
     ];
     workspace.machines.push(Machine {
@@ -48,6 +52,8 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         detail: "Ubuntu 24.04 · provider".into(),
         last_seen: "stopped".into(),
         lost_at: None,
+        stop: None,
+        root: crate::desk::DEFAULT_ROOT.into(),
     });
     for (id, system, used, free, latency, stopped) in [
         ("this-mac", "macOS 26.7 · arm64", 42, 210, None, false),
@@ -649,6 +655,7 @@ pub fn design_session(ledger_status: Status) -> Workspace {
         depends_on: Vec::new(),
         session: session.map(SessionId::new),
         parent: None,
+        revision: 0,
     })
     .collect();
     if let Some(item) = workspace

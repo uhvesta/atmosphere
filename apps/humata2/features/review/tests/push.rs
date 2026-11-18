@@ -66,7 +66,7 @@ fn pushing_one_repo_pushes_it_and_opens_its_pull_request_only() {
     assert_eq!(choice.title, "Ledger schema migration");
     assert!(matches!(
         rig.push_state("api"),
-        Some(PushState::Pushed { pull_request: Some(_) })
+        Some(PushState::Pushed { pull_request: Some(_), .. })
     ));
     assert_eq!(rig.push_state("ledger"), None, "the other repo is left alone");
 }
@@ -80,10 +80,10 @@ fn a_repo_that_already_has_a_pull_request_is_only_pushed() {
     let pushes = rig.daemon.pushes();
     assert_eq!(pushes.len(), 1);
     assert!(!pushes[0].1.open_pull_request);
-    assert_eq!(
+    assert!(matches!(
         rig.push_state("api"),
-        Some(PushState::Pushed { pull_request: Some(3) })
-    );
+        Some(PushState::Pushed { pull_request: Some(3), .. })
+    ));
 }
 
 #[test]

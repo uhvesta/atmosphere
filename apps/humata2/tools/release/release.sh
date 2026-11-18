@@ -117,7 +117,7 @@ xcrun stapler staple "$app"
 assets="$scratch/assets"
 mkdir "$assets"
 (cd "$scratch" && ditto -c -k --keepParent "Humata 2.app" "$assets/Humata2-$version.zip")
-for name in humata humatad2 humata2_holder; do
+for name in humata humatad2 humata2_holder stack; do
   cp "$app/Contents/Helpers/$name" "$assets/$name-darwin-arm64"
 done
 (cd "$assets" && shasum -a 256 -- * >SHA256SUMS)
@@ -125,8 +125,8 @@ done
 echo "Uploading a draft release ${tag}…"
 notes="Humata 2 $version, built from $commit. Signed with Developer ID and notarized by Apple.
 
-- Humata2-$version.zip: the Mac app (Apple silicon), with humatad2, humata2_holder and humata inside. Move Humata 2.app into Applications and open it; it installs its tools into ~/.humata2 and starts the daemon as a login agent.
-- humata-darwin-arm64, humatad2-darwin-arm64, humata2_holder-darwin-arm64: the command line, the daemon and the terminal holder on their own, the same files as in the app.
+- Humata2-$version.zip: the Mac app (Apple silicon), with humatad2, humata2_holder, humata and stack inside. Move Humata 2.app into Applications and open it; it installs its tools into ~/.humata2 and starts the daemon as a login agent.
+- humata-darwin-arm64, humatad2-darwin-arm64, humata2_holder-darwin-arm64, stack-darwin-arm64: the command line, the daemon, the terminal holder and the stacked-PR command line on their own, the same files as in the app.
 - SHA256SUMS: \`shasum -a 256 -c SHA256SUMS\` checks the downloads."
 gh release create "$tag" "$assets"/* --draft --target "$commit" --title "Humata 2 $version" --notes "$notes"
 

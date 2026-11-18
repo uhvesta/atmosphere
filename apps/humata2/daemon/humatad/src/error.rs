@@ -132,6 +132,24 @@ pub(crate) enum DaemonError {
         source: crate::stop::exec::ExecError,
     },
 
+    #[error("humatad2 couldn't take the pipe it reports readiness on")]
+    Ready {
+        #[source]
+        source: crate::ready::ReadyError,
+    },
+
+    #[error("humatad2 didn't start because the upgrade it came from couldn't be made safe; the cause below says what to fix, and starting humatad2 again after that is safe")]
+    Upgrade {
+        #[source]
+        source: crate::upgrade::rollback::RollbackError,
+    },
+
+    #[error("`humatad2 stop` couldn't stop this machine's sessions")]
+    StopCli {
+        #[source]
+        source: crate::stop::cli::StopCliError,
+    },
+
     #[error("the gRPC server stopped")]
     Serve {
         #[source]
@@ -257,6 +275,14 @@ pub(crate) enum DaemonError {
 
     #[error("couldn't set up the turn hooks Claude Code starts with")]
     Hooks {
+        #[source]
+        source: crate::session_service::HooksError,
+    },
+
+    #[error(
+        "couldn't write the MCP config files that give agents Humata's tools into humatad2's state folder; make sure that folder is on a disk with free space and writable by this user, then start humatad2 again"
+    )]
+    McpConfigs {
         #[source]
         source: crate::session_service::HooksError,
     },

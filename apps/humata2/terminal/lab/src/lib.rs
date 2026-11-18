@@ -306,7 +306,7 @@ impl Lab {
                             let pane = terminal.read(cx).pane().clone();
                             cx.subscribe(
                                 &pane,
-                                move |this, pane, event: &terminal_pane::PaneEvent, cx| {
+                                move |this, _, event: &terminal_pane::PaneEvent, cx| {
                                     if let terminal_pane::PaneEvent::TitleChanged(title) = event {
                                         this.titles.insert(
                                             id,
@@ -318,7 +318,7 @@ impl Lab {
                                         );
                                         cx.notify();
                                     }
-                                    this.pane_event(pane, event, cx)
+                                    this.pane_event(event, cx)
                                 },
                             )
                             .detach();
@@ -365,7 +365,6 @@ impl Lab {
     }
     fn pane_event(
         &mut self,
-        pane: Entity<terminal_pane::TerminalPane>,
         event: &terminal_pane::PaneEvent,
         cx: &mut Context<Self>,
     ) {
@@ -391,11 +390,6 @@ impl Lab {
             }
             PaneEvent::ClipboardWrite { text, .. } => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
-            }
-            PaneEvent::ClipboardReadRequested { target } => {
-                pane.update(cx, |pane, _| pane.answer_clipboard_read(*target, None));
-                self.error=Some("The program's clipboard read was denied. Use explicit copy/paste; this experiment does not grant clipboard reads.".into());
-                cx.notify();
             }
             PaneEvent::PasteFiles(_) | PaneEvent::PasteImage { .. } => {
                 self.error=Some("File/image upload is not implemented in this experiment. Use a path already present on the terminal's machine.".into());

@@ -35,6 +35,33 @@ fn this_test_binary_is_not_another_team_s_app() {
     assert!(check(&token, &requirement).is_err());
 }
 
+/// A peer that has gone by the time it is checked is turned away, and the
+/// check doesn't take the daemon down with it.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_peer_that_has_exited_is_not_the_app() {
+    use humata2_app_peer::{check, AuditToken};
+    use std::os::fd::AsFd;
+    use std::process::{Command, Stdio};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("sock");
+    let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+    let mut peer = Command::new("/usr/bin/nc")
+        .arg("-U")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("nc");
+    let (stream, _) = listener.accept().expect("accept");
+    let token = AuditToken::of_peer(stream.as_fd()).expect("peer token");
+    assert_eq!(token.pid(), peer.id() as i32);
+    peer.kill().expect("kill nc");
+    peer.wait().expect("reap nc");
+    let requirement = Requirement::app("ABCDE12345", "com.example.humata2").expect("requirement");
+    assert!(check(&token, &requirement).is_err());
+}
+
 async fn accept_one(requirement: Option<Requirement>) -> humata2_app_peer::PeerInfo {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("sock");

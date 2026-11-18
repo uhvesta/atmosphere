@@ -79,9 +79,9 @@ Micro. Platforms: macOS and Linux. Linux is noted where it differs. Web is not c
 
 - **When:** the channel has no online machine other than the one the session runs on. For example, `gpu-box` is offline.
 - **I do:** press ⌘K, type `move`, press Enter.
-- **I see:** the palette is asking for a machine, but the list is empty. The query is cleared, so the empty-state line reads `Nothing matches. Try fewer letters.` (`ui/src/overlay_palette.rs:191`). Nothing says that no other machine is online, and nothing says what to do about it.
+- **I see:** the palette asks `Move to which machine?`, and the empty list says that no other machine this session can move to is online, and to start one or link one to the channel from Machines.
 - **Expected outcome:** the palette says that no other machine of this channel is online, and says how to fix it (bring a machine online, or move from a machine that is online). Escape still steps back and closes.
-- **Status:** Likely bug
+- **Status:** Fakes only (fixed): `features/palette/tests/act.rs::move_with_no_other_machine_online_says_none_can_take_it`. The palette stays on one side: the online machines come from the workspace it already holds.
 
 ### Gibberish matches nothing
 
@@ -114,10 +114,10 @@ Micro. Platforms: macOS and Linux. Linux is noted where it differs. Web is not c
 
 - **When:** the app runs on Linux, and the person presses Ctrl+K.
 - **I do:** focus the terminal, press Ctrl+K.
-- **I see:** the palette does not open. Ctrl+K reaches the shell, where it deletes to the end of the line in bash.
+- **I see:** the palette opens. Off a Mac every ⌘ chord is bound with Ctrl (D318), so Ctrl+K opens the palette and does not reach the shell.
 - **Expected outcome:** the palette opens, as the Linux hint says it should.
-- **Status:** Likely bug
-  `ui/src/keys.rs:94` binds `cmd-k`. In gpui, `cmd` is the platform modifier, which is Super on Linux (`parse_internal` in the gpui `platform/keystroke.rs` in the Bazel cache: `cmd`, `super` and `win` set `platform`). Only `secondary` maps to Ctrl off macOS. On Linux the terminal sends Ctrl+K to the shell (`terminal/view/src/keys.rs`, the non-Mac branch). Confirm on a Linux build: press Ctrl+K with the terminal focused, and see that the palette does not open. The live test `desktop/tests/live_flows/find.rs:64` presses `secondary-k`, which is Ctrl+K on Linux, so it would fail there too.
+- **Status:** Fakes only (fixed): `ui/src/keys.rs::off_a_mac_no_shortcut_needs_the_super_key_and_each_command_chord_uses_ctrl`
+  Fixed by BUGS: `ui/src/keys.rs` moves each ⌘ chord to Ctrl off a Mac (`ui/src/keys.rs::off_a_mac_no_shortcut_needs_the_super_key_and_each_command_chord_uses_ctrl`; `ui/src/keys.rs::off_a_mac_every_command_part_of_the_shortcuts_sheet_is_a_bound_chord`). Not run on a Linux build yet (the Linux batch).
 
 ## Expected outcomes
 
@@ -149,21 +149,21 @@ Micro. Platforms: macOS and Linux. Linux is noted where it differs. Web is not c
 | 8. A pasted reviewed PR offers Review this PR | Fakes only | `features/palette/tests/review_pull_gate.rs::a_pull_request_a_session_reviews_is_offered_first`; `features/palette/tests/act.rs::a_pasted_pull_request_url_offers_review_this_pr_first` |
 | 9. `long` opens Settings at Long lines | Works (real daemon) | `desktop/tests/live_flows/find.rs::from_the_palette_...` (clicks the row) |
 | 10. A file result opens in the session's clone | Fakes only | `desktop/tests/native/overlays.rs::palette_file_results_open_the_current_sessions_clone` |
-| Branch: no other machine online for Move | Likely bug | `ui/src/overlay_palette.rs:191` |
+| Branch: no other machine online for Move | Fakes only (fixed) | `features/palette/tests/act.rs::move_with_no_other_machine_online_says_none_can_take_it`; `ui/src/overlay_palette.rs` |
 | Branch: gibberish matches nothing | Code, no test | `ui/src/overlay_palette.rs:182-191` |
 | Branch: palette over another overlay | Code, no test | `features/app/src/overlay.rs:110-118` |
 | Branch: ⌘K expected to clear the terminal | Code, no test | `terminal/view/src/keys.rs:65` |
-| Branch: Linux Ctrl+K | Likely bug | `ui/src/keys.rs:94` |
+| Branch: Linux Ctrl+K | Fakes only (fixed) | `ui/src/keys.rs::off_a_mac_no_shortcut_needs_the_super_key_and_each_command_chord_uses_ctrl`; `ui/src/keys.rs::off_a_mac_every_command_part_of_the_shortcuts_sheet_is_a_bound_chord` |
 
 Steps: 5 Works (real daemon), 5 Fakes only, 0 Code no test, 0 Not built, 0 Likely bug.
-Branches: 1 Likely bug (no machine), 1 Likely bug (Linux), 3 Code no test (gibberish, stacked overlay, clear).
+Branches: 2 Fakes only (no machine, Linux), 3 Code no test (gibberish, stacked overlay, clear).
 
 ## Gaps and likely bugs
 
-- Likely bug: `ui/src/keys.rs:94` binds `cmd-k` on every platform. On Linux that is Super+K, so the palette has no Ctrl+K key. The live test `desktop/tests/live_flows/find.rs:64` uses `secondary-k` and would not open the palette on Linux either. Confirm on a Linux build.
-- Likely bug: `ui/src/overlay_palette.rs:191` shows `Nothing matches. Try fewer letters.` when Move has no other online machine. The message does not say why, and it does not say what to do.
-- Likely bug: while Move asks for a machine, `ui/src/overlay_palette.rs` shows only the list, with no label that says the palette is asking for a machine. Confirm by opening Move in a session with two machines and looking at the palette.
-- Likely bug: `features/palette/src/lib.rs:673-674` shows the hints `⌘4` for Go to Hosts and `⌘5` for Go to Files. `ui/src/keys.rs` binds only `⌘1` to `⌘3`, and `grep` finds no `cmd-4` or `cmd-5` binding. The SPEC does not mention ⌘4 or ⌘5. Confirm by pressing ⌘4 and ⌘5 in the app.
+- Fixed (was a likely bug): off a Mac Ctrl+K opens the palette (`ui/src/keys.rs::off_a_mac_no_shortcut_needs_the_super_key_and_each_command_chord_uses_ctrl`). Confirm on the Linux batch.
+- Fixed (was a likely bug): Move with no other online machine says why and what to do (`features/palette/tests/act.rs::move_with_no_other_machine_online_says_none_can_take_it`).
+- Fixed (was a likely bug): while Move asks for a machine the palette reads `Move to which machine?` (`features/palette/tests/act.rs::running_move_asks_inline_for_another_online_machine_of_the_channel`).
+- Fixed (was a likely bug): `ui/src/keys.rs` binds `cmd-4` (Go to Hosts) and `cmd-5` (Go to Files), the hints the palette shows. No test presses them yet.
 - Gap: no test presses a key to open the palette with the terminal focused. The native test sends `AppAction::OpenPalette`.
 - Gap: no test types `mov`. The live test types `move`.
 - Gap: no live test pastes a URL into the palette. The live test says ⌘V does not reach the palette input on the headless window.

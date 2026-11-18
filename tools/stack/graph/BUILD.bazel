@@ -1,0 +1,22 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The stack model with no I/O: pull requests chained by base branch, ordered
+# as a tree, and the linear chains GitHub can link as native stacks. Shared
+# by //tools/stack and, later, the Humata 2 PR review view.
+rust_library(
+    name = "graph",
+    srcs = ["src/lib.rs"],
+    crate_name = "stack_graph",
+    visibility = ["//tools/stack:__pkg__"],
+)
+
+rust_test(
+    name = "graph_test",
+    crate = ":graph",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

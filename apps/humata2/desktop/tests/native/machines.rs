@@ -135,6 +135,8 @@ fn login_app() -> App {
 fn add_machine_login_reference_image() {
     let mut app = login_app();
     assert!(app.contains("add-machine-terminal"));
+    // Golden 57 is dark.
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
     app.snapshot("57-add-machine-login");
 }
 
@@ -200,6 +202,7 @@ fn machine_page() -> App {
             rule("board_read", "Read the global board or other channels", RuleSetting::Allow),
             rule("board_change", "Change the global board or other channels", RuleSetting::Ask),
         ],
+        stop: None,
     }));
     app.fold_quiet_channels();
     app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));

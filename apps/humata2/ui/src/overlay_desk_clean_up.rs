@@ -151,8 +151,7 @@ fn clean_up_row(
         None => entry.size_bytes.is_none(),
     };
     let folder = if picked {
-        let path = record.map_or("", |r| r.folder.path());
-        format!("folder {path}")
+        "your folder".to_owned()
     } else {
         match (entry.size_bytes, &entry.unpushed) {
             (Some(bytes), None) => format!("scratch folder {}", size(bytes)),

@@ -172,8 +172,8 @@ fn since_i_last_reviewed_shows_only_what_changed_after_mark_reviewed() {
     rig.act(A::MarkReviewed);
     rig.act(A::PickBase(DiffBase::SinceLastReviewed));
     assert_eq!(
-        rig.store.state().base.get(&session()),
-        Some(&DiffBase::SinceLastReviewed)
+        rig.store.state().targets_of(&session()).preset,
+        DiffBase::SinceLastReviewed
     );
     assert!(
         rig.shown().iter().all(|(_, files)| files.is_empty()),

@@ -181,7 +181,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 - **I do:** Nothing a person can do from the app. The app never sends an empty destination.
 - **I see:** Nothing in the app. A client gets the error "CommentService.CreateComment for a pull request is not built".
 - **Expected outcome:** The error should say what is wrong with the request, and should not name a pull request.
-- **Status:** Likely bug. `daemon/humatad/src/review.rs:849` to `:855` only accepts Terminal, PullRequest or Note destinations. Any other value, including an unset one, reaches the `not_built` at `review.rs:851`, and the message says "for a pull request". A pull request draft does not reach it: `daemon/humatad/tests/pr_review.rs::the_user_drafts_for_github_beside_the_agents_drafts` sends a PullRequest destination and succeeds. `clients/live/src/comments.rs:147` treats an unset destination as a terminal comment, so the two sides disagree. Confirm by sending a `CreateCommentRequest` with no destination.
+- **Status:** Works (real daemon): `daemon/humatad/tests/comments.rs::a_comment_with_no_destination_is_refused_as_missing_one`. A comment with no destination is refused as missing one, and the message says to pick the terminal, the pull request or a note. (Was a likely bug: it said "not built for a pull request"; fixed by BUGS.)
 
 ## Expected outcomes
 
@@ -227,7 +227,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 | Branch: draft for a PR outside the review | Works (real daemon) | `daemon/humatad/tests/pr_review.rs::a_draft_for_a_pr_outside_the_review_is_refused` |
 | Branch: undo a chat view change | Works (real daemon) | `daemon/humatad/tests/review.rs::the_review_chat_moves_the_view_and_the_user_can_undo_or_turn_it_off` (app Undo not built) |
 | Branch: note's lines change | Works (real daemon) | `daemon/humatad/tests/review.rs::a_later_diff_marks_notes_whose_lines_changed_outdated_and_moves_the_rest` |
-| Branch: comment with no destination | Likely bug | `daemon/humatad/src/review.rs:851` |
+| Branch: comment with no destination | Works (real daemon) | `daemon/humatad/tests/comments.rs::a_comment_with_no_destination_is_refused_as_missing_one` |
 
 ## Gaps and likely bugs
 
@@ -238,7 +238,7 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
 - **Not built (PR milestone C4, D2):** the Refresh button, the head-change notice, the Update the clone button, and the PR commit list in the review session (frame 68).
 - **Not built (PR milestone C6):** the "Draft for GitHub" and "Make it a draft" buttons. The daemon accepts both (see steps 7 and 8).
 - **Not built (PR milestone E1):** the live flow test `desktop/tests/live_flows/pr_review.rs`. It does not exist yet. The existing `desktop/tests/live_flows/review.rs` covers a local three-repo diff, not a PR.
-- **Likely bug:** `daemon/humatad/src/review.rs:849` to `:855` and `:851`. A comment with no destination gets the message "for a pull request". See the branch above.
+- **Fixed (was a likely bug):** a comment with no destination is refused as missing one (`daemon/humatad/tests/comments.rs::a_comment_with_no_destination_is_refused_as_missing_one`).
 - **Correction to PR.md:** it says the PR review service is not built and that the identity never yields a review session. Both are out of date. `daemon/humatad/src/serve.rs:936` and `:937` serve `ReviewChatService` and `PullRequestReviewService`, and `daemon/humatad/src/identity.rs:154` gives the review kind. The push refusal in `daemon/access/src/policy.rs:882` to `:883` is live.
 - **Correction to REVIEW.md:** it says the MCP PR tools (`review_draft`, `review_draft_edit`, and others) are not built. `daemon/humatad/src/mcp/pull_requests.rs` has them.
 - **Correction to the brief:** the brief names `desktop/tests/live_flows/review.rs` as the PR review pointer. That file tests a local diff, not a PR. The PR daemon tests run against a fake `gh`, so the GitHub side is unproven live.

@@ -60,7 +60,7 @@ pub enum MarksError {
     /// The file couldn't be opened, read or written, or isn't a marks
     /// file. It is left as it was.
     #[error(
-        "couldn't read or write Humata's pins and VIP marks in {}; check that the file belongs to you and that the disk is mounted and has free space, then try again. Don't delete the file: it holds every pin and VIP mark",
+        "couldn't read or write Humata's pins, VIP marks and read marks in {}; check that the file belongs to you and that the disk is mounted and has free space, then try again. Don't delete the file: it holds every pin and VIP mark",
         path.display()
     )]
     Database {
@@ -119,6 +119,9 @@ const SCHEMA: &str = "
         value INTEGER NOT NULL
     ) WITHOUT ROWID;
     INSERT OR IGNORE INTO meta (key, value) VALUES ('revision', 0);
+    CREATE TABLE IF NOT EXISTS unread (
+        session TEXT PRIMARY KEY
+    ) WITHOUT ROWID;
 ";
 
 fn split(thing: &Thing) -> (&'static str, &str) {
@@ -474,7 +477,35 @@ impl Marks {
             if removed > 0 {
                 bump(tx)?;
             }
+            if kind == "session" {
+                tx.execute("DELETE FROM unread WHERE session = ?1", params![id])?;
+            }
             Ok(Ok(()))
         })
+    }
+
+    /// Marks `session` unread (CH-16) or read (CH-17), and says whether
+    /// that changed it. Read marks aren't part of the pinned list, so the
+    /// revision stays.
+    pub fn set_unread(&self, session: &str, unread: bool) -> Result<bool, MarksError> {
+        self.write(|tx| {
+            let changed = if unread {
+                tx.execute("INSERT OR IGNORE INTO unread (session) VALUES (?1)", params![session])?
+            } else {
+                tx.execute("DELETE FROM unread WHERE session = ?1", params![session])?
+            };
+            Ok(Ok(changed > 0))
+        })
+    }
+
+    /// The sessions marked unread, by id.
+    pub fn unread(&self) -> Result<Vec<String>, MarksError> {
+        let conn = self.lock();
+        let read = || -> Result<Vec<String>, rusqlite::Error> {
+            let mut stmt = conn.prepare("SELECT session FROM unread ORDER BY session")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect()
+        };
+        read().map_err(|e| self.fail(e))
     }
 }

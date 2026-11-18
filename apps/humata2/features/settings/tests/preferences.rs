@@ -1,11 +1,12 @@
 //! Settings clamp usable sizes and retain choices independently of sections.
 use humata2_clients::{Clients, fixture};
-use humata2_settings::{Section, Settings, SettingsAction as A, SettingsState, Theme};
+use humata2_settings::{AgentsAction, Section, Settings, SettingsAction as A, SettingsState, Theme};
 use std::sync::Arc;
 use tca::{TestClock, TestStore};
 #[test]
 fn preferences_change_without_losing_other_choices() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    fakes.daemon.set_agent_switches(all_on());
     let mut store = TestStore::new(SettingsState::default(), Settings::new(clients));
     store.send(A::SetTheme(Theme::Light), |s| {
         s.preferences.theme = Theme::Light
@@ -17,6 +18,9 @@ fn preferences_change_without_losing_other_choices() {
     // Opening Agents reads where permission asks go (D199).
     store.receive(A::AsksShown(Ok(true)), |s| s.asks_in_inbox = Some(true));
     store.receive(A::CodexTrustShown(Ok(false)), |_| {});
+    store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
+        s.agents.switches = Some(all_on());
+    });
     store.send(A::ToggleWrap, |s| s.preferences.wrap_diffs = false);
     store.finish();
 }
@@ -41,4 +45,17 @@ fn switching_section_closes_an_open_font_list() {
         s.font_menu = false;
     });
     store.finish();
+}
+
+fn all_on() -> Vec<humata2_clients::AgentSwitch> {
+    use humata2_clients::model::Agent;
+    [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
+        .map(|agent| humata2_clients::AgentSwitch {
+            agent,
+            enabled: true,
+            install_when_missing: false,
+            can_install: true,
+            install_command: None,
+        })
+        .to_vec()
 }

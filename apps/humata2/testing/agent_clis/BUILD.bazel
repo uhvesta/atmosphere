@@ -1,0 +1,97 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Agent CLIs for Humata 2's Linux VM rig, pinned in agent_clis.bzl. All
+# test-only and visible only inside apps/humata2.
+
+[
+    alias(
+        name = "{}_{}".format(cli, platform),
+        testonly = True,
+        actual = "@h2_{}_{}//:bin".format(cli, platform),
+        tags = ["manual"],
+        visibility = ["//apps/humata2:__subpackages__"],
+    )
+    for cli in ("copilot", "codex")
+    for platform in ("darwin_arm64", "linux_arm64", "linux_x64")
+]
+
+# Everything that pulls a download is tagged manual, so `bazel build
+# //apps/humata2/...` fetches nothing; name a target to fetch it.
+
+# The CLIs for the platform being built for.
+[
+    alias(
+        name = cli,
+        testonly = True,
+        actual = select({
+            ":darwin_arm64": ":{}_darwin_arm64".format(cli),
+            ":linux_arm64": ":{}_linux_arm64".format(cli),
+            ":linux_x64": ":{}_linux_x64".format(cli),
+        }),
+        tags = ["manual"],
+        visibility = ["//apps/humata2:__subpackages__"],
+    )
+    for cli in ("copilot", "codex")
+]
+
+[
+    config_setting(
+        name = "{}_{}".format(os, cpu_name),
+        constraint_values = [
+            "@platforms//os:" + ("macos" if os == "darwin" else "linux"),
+            "@platforms//cpu:" + cpu,
+        ],
+    )
+    for os, cpu_name, cpu in (
+        ("darwin", "arm64", "aarch64"),
+        ("linux", "arm64", "aarch64"),
+        ("linux", "x64", "x86_64"),
+    )
+]
+
+# Copies the Linux Copilot and Codex binaries into a Lima VM's
+# ~/.humata2/test-bin/. `bazel run //apps/humata2/testing/agent_clis:install_in_vm
+# -- [VM [arm64|x64]]`; VM defaults to h2-terminal-c1.
+sh_binary(
+    name = "install_in_vm",
+    testonly = True,
+    srcs = ["install_in_vm.sh"],
+    args = [
+        "$(rootpath :copilot_linux_arm64)",
+        "$(rootpath :copilot_linux_x64)",
+        "$(rootpath :codex_linux_arm64)",
+        "$(rootpath :codex_linux_x64)",
+    ],
+    data = [
+        ":codex_linux_arm64",
+        ":codex_linux_x64",
+        ":copilot_linux_arm64",
+        ":copilot_linux_x64",
+    ],
+    tags = ["manual"],
+    visibility = ["//apps/humata2:__subpackages__"],
+)
+
+# Drives install_in_vm.sh against a fake limactl and tiny stand-in binaries, so
+# it needs no VM and downloads nothing.
+sh_test(
+    name = "install_in_vm_test",
+    srcs = ["install_in_vm_test.sh"],
+    args = ["$(rootpath :install_in_vm.sh)"],
+    data = [":install_in_vm.sh"],
+)
+
+exports_files(
+    ["install_in_vm.sh"],
+    visibility = ["//apps/humata2:__subpackages__"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "agent_clis.bzl",
+    ],
+    tags = ["starlark"],
+)

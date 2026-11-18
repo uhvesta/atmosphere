@@ -69,8 +69,8 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 
 12. **I do:** fork a Codex session (if the agents file defines one) with "code and context" to Claude.
     **I see:** the summary is taken from the Codex rollout.
-    **State and events:** expected: the transcript is read. Actual: the summary falls back to the terminal's saved output, not the conversation.
-    **Status:** Likely bug at `daemon/humatad/src/session_service/start_fresh.rs:891-892`. The summary reader `digest_of` reads only top-level `type` and `message.content` records, which is Claude's JSONL shape. Codex rollout lines hold `type: response_item` with the message under `payload`. `handover_digest` (`start_fresh.rs:765`) has no branch by conversation format, and `handover_from` (`fork.rs:494`) passes the Codex file to it. The bug is latent: no built-in Codex kind exists. To confirm, run `digest_of` on a Codex rollout from `daemon/conversation/testdata/codex/three_turns.jsonl` and expect `None`.
+    **State and events:** the transcript is read. The summary holds the rollout's prompts and replies and leaves out what Codex injected as the user (`AGENTS.md`, the environment).
+    **Status:** Works (real daemon): `daemon/humatad/tests/fork.rs::a_fork_of_a_codex_parent_is_handed_a_summary_read_from_its_rollout` forks a parent whose conversation holds Codex rollout lines, and the fork's summary is read from them. The reader is `daemon/humatad/src/session_service/start_fresh.rs::a_codex_rollout_keeps_its_prompts_and_replies_and_not_what_codex_injected`. No built-in Codex kind exists yet, so the parent is the test agent writing rollout lines. Forking before a turn of a Codex parent still uses the terminal's output, because turn offsets are read from Claude's shape (D520). (Was a likely bug, fixed by E2E-BUGS.)
 
 ## Branches
 
@@ -138,7 +138,7 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 
 **When:** step 12 happens.
 **Expected:** the handover carries the transcript.
-**Status:** Likely bug at `daemon/humatad/src/session_service/start_fresh.rs:891-892` (see step 12). Latent, since no built-in Codex kind exists.
+**Status:** Works (real daemon): `daemon/humatad/tests/fork.rs::a_fork_of_a_codex_parent_is_handed_a_summary_read_from_its_rollout` (see step 12).
 
 ## Expected outcomes
 
@@ -152,7 +152,7 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 - [ ] An agent's own MCP or CLI fork can name another agent. (Not built.)
 - [ ] A Codex conversation is read with its own layout. (Fakes only.)
 - [ ] A Copilot conversation is refused until its fixtures pass.
-- [ ] A Codex parent's summary is read from its transcript. (Likely bug.)
+- [x] A Codex parent's summary is read from its transcript (`daemon/humatad/tests/fork.rs::a_fork_of_a_codex_parent_is_handed_a_summary_read_from_its_rollout`).
 
 ## Status summary
 
@@ -169,7 +169,7 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 | 9. Move the Codex fork with its conversation | Not built | `daemon/conversation` has no caller outside its tests |
 | 10. Handover typed once after restart | Works (real daemon) | `fork.rs::a_handover_cut_after_the_launch_is_typed_once_after_a_restart` |
 | 11. Freeing a context-only fork removes its handover | Works (real daemon) | `fork.rs::freeing_a_context_only_fork_removes_its_handover_file_and_keeps_its_parents_folder` |
-| 12. Codex parent's summary from its transcript | Likely bug | `start_fresh.rs:891-892`; `start_fresh.rs:765`; `fork.rs:494` |
+| 12. Codex parent's summary from its transcript | Works (real daemon) | `daemon/humatad/tests/fork.rs::a_fork_of_a_codex_parent_is_handed_a_summary_read_from_its_rollout`; `daemon/humatad/src/session_service/start_fresh.rs::a_codex_rollout_keeps_its_prompts_and_replies_and_not_what_codex_injected` |
 | B1. Unknown agent refused | Works (real daemon) | `fork.rs::a_fork_with_an_agent_humata_does_not_know_is_refused` |
 | B2. Codex layout discovered | Fakes only | `daemon/conversation/tests/codex.rs::locate_finds_the_rollout_under_its_date_folder_in_the_home`; manual `codex_layout_test` not run |
 | B3. Copilot layout | Not built | ROAM C4, X2; `daemon/conversation/tests/claude.rs::copilot_is_unsupported_until_its_fixtures_pass` |
@@ -178,7 +178,7 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 | B6. Handed-over fork cut after copy | Works (real daemon) | `fork.rs::a_handed_over_fork_cut_after_its_conversation_is_copied_is_undone_at_restart` |
 | B7. Conversation recovered exactly | Works (real daemon) | `daemon/humatad/tests/sessions.rs::a_lost_holder_is_resumed_in_its_conversation_after_a_restart` |
 | B8. Conversation lost before restart | Works (real daemon) | `sessions.rs::a_reboot_that_lost_the_conversation_says_the_resume_failed` |
-| B9. Codex parent summary | Likely bug | Same as step 12 |
+| B9. Codex parent summary | Works (real daemon) | `daemon/humatad/tests/fork.rs::a_fork_of_a_codex_parent_is_handed_a_summary_read_from_its_rollout` |
 
 ## Gaps and likely bugs
 
@@ -186,7 +186,7 @@ Layer: agents. Platforms: macOS and Linux. Web is not covered.
 - Not built: built-in Codex and Copilot kinds. Only `claude` and `opencode` are built in (`daemon/sessions/src/agents.rs:139-166`). ROAM batch 3 adds them.
 - Not built: the conversation adapters are not called from fork or carry. `daemon/conversation` is used only by its own tests (ROAM batch 3, the SEAM on `carry.rs`).
 - Not built: Copilot's conversation adapter (ROAM C4, X2). `copilot.rs` refuses every call.
-- Likely bug: the handover summary reader reads Claude's JSONL shape for every conversation file (`start_fresh.rs:891-892`), so a Codex parent's summary falls back to scrollback. Latent until a Codex kind exists.
+- Fixed (was a likely bug): the handover summary reader reads Codex rollout lines as well as Claude's JSONL. A fork before a given turn of a Codex parent still falls back to the terminal's output (D520).
 - Test gap: the fork tests use a fake agent named `OTHER`, copied from the test agent. They prove the handover mechanism, not a real Codex or Copilot CLI reading it.
 - Test gap: the ROAM fixtures `codex_layout_test`, `claude_layout_test` and `copilot_layout_test` are manual real-CLI targets. They are not in the normal gate.
 

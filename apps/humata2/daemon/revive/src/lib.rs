@@ -14,8 +14,14 @@
 
 mod agent;
 mod error;
+mod gate;
 mod reconcile;
+#[cfg(test)]
+mod relaunch_tests;
+#[cfg(test)]
+mod resume_version_tests;
 mod report;
+mod shell_start;
 mod watch;
 
 use std::ffi::OsString;
@@ -24,10 +30,12 @@ use std::time::Duration;
 
 use humata2_store::TabRecord;
 
-pub use agent::launch_agent;
+pub use agent::{launch_agent, launch_in_flight};
 pub use error::{ContainRefused, ReviveError};
+pub use gate::{GateRefusal, WriteGate};
 pub use reconcile::{
-    Reconciled, Revived, ShellRevived, reconcile, restart_agent, restart_shell, restart_shells, resume_agent,
+    Reconciled, Revived, ShellRevived, reconcile, reconcile_then, restart_agent, restart_shell, restart_shells,
+    resume_agent, resume_agent_asked, resume_moved_agent,
 };
 pub use report::RestartReports;
 
@@ -54,6 +62,40 @@ pub struct ReviveConfig {
     /// SEC-6: runs agents contained when their session's setting says so.
     /// `None` runs every agent as launched.
     pub contain: Option<std::sync::Arc<dyn Contain>>,
+    /// D373: told of each holder this starts, so the daemon can say which
+    /// holder file each one was spawned from. `None` records nothing.
+    pub builds: Option<std::sync::Arc<dyn HolderBuilds>>,
+    /// CV-3: asked for each agent's CLI version when the agent is
+    /// resumed, which is kept in its launch record. `None` keeps the
+    /// version the launch recorded.
+    pub versions: Option<std::sync::Arc<dyn CliVersions>>,
+    /// D763: asked before a resumed agent is told it was interrupted. The
+    /// note waits while the agent asks a question of its own, and the
+    /// resume's timeout waits with it. `None` tells it once it settles.
+    pub gate: Option<std::sync::Arc<dyn WriteGate>>,
+}
+
+/// D373: what the daemon keeps of the holder file each holder was spawned
+/// from. Called just before a holder is started, never when one is only
+/// reattached, so what it kept says what is running. It can't fail the
+/// start: an implementation that can't keep the record says so itself.
+pub trait HolderBuilds: std::fmt::Debug + Send + Sync {
+    /// A holder is about to start for `session`'s agent.
+    fn agent_spawned(&self, session: &str);
+    /// A holder is about to start for the shell tab `tab`.
+    fn shell_spawned(&self, tab: &str);
+}
+
+/// What a [`CliVersions::current`] answer is, as a future.
+pub type VersionAsked<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>>;
+
+/// CV-3: what a resume asks for the version of an agent's CLI, which may
+/// have been upgraded since the agent was launched.
+pub trait CliVersions: std::fmt::Debug + Send + Sync {
+    /// What `agent`'s CLI says its version is now, as its version command
+    /// prints it; None when the agent names no version command, isn't
+    /// known, or its CLI doesn't answer in time.
+    fn current<'a>(&'a self, agent: &'a str) -> VersionAsked<'a>;
 }
 
 /// SEC-6 (D217): what every agent launch and resume asks for the argv to

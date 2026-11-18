@@ -55,6 +55,7 @@ impl Fixture {
                     value: ASKER.to_owned(),
                 }),
                 repo: None,
+                folder: String::new(),
             })
             .await
             .unwrap()

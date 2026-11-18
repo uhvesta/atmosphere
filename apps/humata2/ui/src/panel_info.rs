@@ -1,5 +1,8 @@
 //! The Info panel: agent, machine, clones, forks, recovery and permissions.
 use super::*;
+use humata2_pr_review::info::{InfoAction, Switch};
+
+const RED: u32 = 0xff453a;
 
 pub(super) fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool, look: Look) -> Div {
     let kv = |key: &'static str, value: Div| {
@@ -47,6 +50,11 @@ pub(super) fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool,
     if !session.repo.is_empty() {
         clones.push(session.repo.as_str());
     }
+    for clone in &session.clones {
+        if !clones.contains(&clone.repo.as_str()) {
+            clones.push(clone.repo.as_str());
+        }
+    }
     for file in state
         .workspace
         .session_files
@@ -68,9 +76,22 @@ pub(super) fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool,
             .text_size(px(11.))
             .text_color(rgb(color))
     };
+    let on_this_mac = machine.is_some_and(humata2_clients::is_this_mac);
     let clone_rows = clones.into_iter().map(|repo| {
         let main = repo == session.repo;
-        row()
+        // PL-10: the clone's real path sits behind its right-click menu.
+        let path = session
+            .clones
+            .iter()
+            .find(|clone| clone.repo == repo)
+            .map(|clone| clone.path.clone())
+            .filter(|path| !path.is_empty());
+        let menu_open = path
+            .as_ref()
+            .is_some_and(|path| state.session.clone_menu.as_ref() == Some(path));
+        let line = row()
+            .id(SharedString::from(format!("session-info-clone {repo}")))
+            .test_support()
             .flex_wrap()
             .gap(px(6.))
             .child(text(repo.rsplit('/').next().unwrap_or(repo).to_owned()))
@@ -78,6 +99,48 @@ pub(super) fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool,
             .when(main, |row| {
                 row.child(chip("main clone".to_owned(), look.accent))
             })
+            .when_some(path.clone(), |line, path| {
+                let click_ui = ui.clone();
+                let toggled = if menu_open { None } else { Some(path) };
+                line.on_mouse_down(MouseButton::Right, move |_, _, cx| {
+                    click_ui.send(
+                        AppAction::Session(SessionAction::CloneMenu(toggled.clone())),
+                        cx,
+                    )
+                })
+            });
+        let choices = path.filter(|_| menu_open).map(|path| {
+            let here = if on_this_mac {
+                (
+                    "Reveal in Finder",
+                    SessionAction::RevealClone(path.clone()),
+                )
+            } else {
+                (
+                    "Open terminal here",
+                    SessionAction::OpenTerminalIn {
+                        session: session.id.clone(),
+                        folder: path.clone(),
+                    },
+                )
+            };
+            let copy = ("Copy path", SessionAction::CopyClonePath(path));
+            col().pl(px(8.)).children([here, copy].map(|(label, action)| {
+                let click_ui = ui.clone();
+                Button::new(SharedString::from(format!("session-info-clone-menu {repo} {label}")))
+                    .accessibility_label(label)
+                    .ghost()
+                    .small()
+                    .w_full()
+                    .h(px(23.))
+                    .p_0()
+                    .child(text(label).w_full().text_left().text_color(rgb(look.accent)))
+                    .on_click(move |_, _, cx| {
+                        click_ui.send(AppAction::Session(action.clone()), cx)
+                    })
+            }))
+        });
+        col().child(line).children(choices)
     });
     let details = col()
         .child(kv(
@@ -145,6 +208,9 @@ pub(super) fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool,
                 .text_color(rgb(look.accent))
                 .disabled(true),
         );
+    let review = session
+        .pull_request_review
+        .then(|| review_switches(ui, state, look));
     col()
         .size_full()
         .child(header(ui, Panel::Info, full, None, look))
@@ -161,6 +227,88 @@ pub(super) fn info(ui: &Rc<Ui>, state: &AppState, session: &Session, full: bool,
                 .child(details)
                 .child(restart)
                 .children(crate::desk_info::access(ui, state, session, look))
+                .children(crate::desk_info::channel_switches(ui, state, session, look))
+                .children(crate::desk_info::targeting(ui, state, session, look))
+                .children(review)
                 .child(permissions),
         )
+}
+
+/// One on/off switch, drawn as the Settings pages draw theirs, that sends
+/// `action` when clicked.
+fn pr_switch(ui: &Rc<Ui>, id: &'static str, label: &'static str, on: bool, action: AppAction, look: Look) -> Div {
+    let ui = ui.clone();
+    row()
+        .gap(px(10.))
+        .items_center()
+        .child(div().flex_1().min_w_0().child(label))
+        .child(
+            div()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(label)
+                .aria_selected(on)
+                .test_support()
+                .w(px(28.))
+                .h(px(16.))
+                .flex_shrink_0()
+                .rounded_full()
+                .p(px(2.))
+                .bg(rgb(if on { 0x28cd41 } else { look.fill }))
+                .flex()
+                .when(on, |x| x.justify_end())
+                .child(div().size(px(12.)).rounded_full().bg(rgb(0xffffff)))
+                .cursor_pointer()
+                .on_click(move |_, _, cx| ui.send(action.clone(), cx)),
+        )
+}
+
+/// A review's switches (PR-8, PR-25): whether the agent may push to the PR
+/// branch, and which of Focus, Notes and Order it may do.
+fn review_switches(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
+    let info = &state.pr_info;
+    let agent = |id, label, which: Switch, on: bool| {
+        pr_switch(ui, id, label, on, AppAction::PrInfo(InfoAction::SetSwitch(which, !on)), look)
+    };
+    card(look)
+        .p(px(10.))
+        .gap(px(6.))
+        .child(
+            row()
+                .gap(px(6.))
+                .child(icon(IconName::GitPullRequest, look.accent, 12.))
+                .child(text("This review").font_weight(FontWeight::SEMIBOLD)),
+        )
+        .child(pr_switch(
+            ui,
+            "session-info-push",
+            "Let the agent push to the PR branch",
+            info.push_allowed,
+            AppAction::PrInfo(InfoAction::SetPush(!info.push_allowed)),
+            look,
+        ))
+        .child(secondary(look, "Agent may:"))
+        .child(agent("session-info-agent-focus", "Focus", Switch::Focus, info.switches.focus))
+        .child(agent("session-info-agent-notes", "Notes", Switch::Notes, info.switches.notes))
+        .child(agent("session-info-agent-order", "Order", Switch::Order, info.switches.order))
+        .when_some(info.error.as_ref(), |card, error| {
+            card.child(
+                row()
+                    .id("session-info-review-error")
+                    .test_support()
+                    .gap(px(6.))
+                    .child(div().flex_1().min_w_0().text_color(rgb(RED)).child(error.to_string()))
+                    .child(
+                        Button::new("session-info-review-error-dismiss")
+                            .accessibility_label("Dismiss")
+                            .ghost()
+                            .small()
+                            .child(text("Dismiss"))
+                            .on_click({
+                                let ui = ui.clone();
+                                move |_, _, cx| ui.send(AppAction::PrInfo(InfoAction::DismissError), cx)
+                            }),
+                    ),
+            )
+        })
 }

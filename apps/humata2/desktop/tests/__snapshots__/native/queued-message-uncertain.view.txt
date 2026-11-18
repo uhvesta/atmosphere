@@ -41,8 +41,12 @@ Complementary "Inbox"
     text "2m"
     text "Codex in Ledger schema migration · board_item_move"
     text "The schema is in and the API tests pass (14 passed). The agent wants to mark PAY-3 done on the payments board. Moving items it did not create needs you."
-    text "Detail"
-    text "Item  PAY-3 Ledger schema\nMove  In progress → Done\nCreated by  You, 3 days ago"
+    text "PAY-3 Ledger schema"
+    text "Item"
+    text "In progress → Done"
+    text "Move"
+    text "You, 3 days ago"
+    text "Created by"
     CheckBox "Allow this for the rest of the session"
     Button "Allow"
     Button "Deny"
@@ -72,8 +76,9 @@ Tab "zsh"
 Button "New terminal"
 Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
   text "~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● humata board_item_move PAY-3 → Done\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n? Drop the old ledger_entries index before the switch, or keep\n  both until the backfill ends?\n  ❯ 1. Keep both\n    2. Drop it now\n    3. Type something else\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
-  #terminal-pane
-    #terminal focused
+  #terminal-replica
+    #terminal-pane
+      #terminal focused
 #session-queue
   text "1 message waiting to send · send manually"
   Button "Send now"

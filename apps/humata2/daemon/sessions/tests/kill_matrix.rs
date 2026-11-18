@@ -96,14 +96,15 @@ impl World {
     }
 
     fn layout(&self) -> Layout {
-        Layout {
-            root: self.root.join("Humata"),
-        }
+        Layout::new(self.root.join("Humata"))
     }
 
     fn config(&self) -> ReviveConfig {
         ReviveConfig {
             contain: None,
+            builds: None,
+            versions: None,
+            gate: None,
             holder: holder_binary(),
             logs: self.root.join("logs"),
             scrollback_bytes: 1 << 20,
@@ -138,6 +139,7 @@ impl World {
             home: self.root.clone(),
             revive: self.config(),
             holders: self.root.join("h"),
+            first_message: Default::default(),
         }
     }
 
@@ -515,7 +517,7 @@ async fn nothing_orphaned(world: &World, point: &str) {
         );
     }
 
-    let humata = world.layout().root;
+    let humata = world.layout().root();
     for folder in entries_of(&humata) {
         let Some(channel) = channels.iter().find(|c| c.folder == name_of(&folder)) else {
             panic!("{point}: a folder of no saved channel: {folder:?}");

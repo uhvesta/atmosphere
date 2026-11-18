@@ -9,7 +9,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{prelude::*, *};
-use humata2_app::layout::{FullScreen, PaneId};
+use humata2_app::layout::{FullScreen, PaneId, Reveal};
 use humata2_app::{AppAction, Load, PaneAction, Route};
 use humata2_clients::model::{ChannelId, Scope, SessionId};
 use humata2_session::SessionAction;
@@ -48,10 +48,28 @@ pub struct Shell {
     files_name: Entity<InputState>,
     machine_inputs: crate::machine_page::MachinePageInputs,
     _appearance: Subscription,
+    _focus_lost: Subscription,
     viewport: f32,
     terminals: crate::terminals::Terminals,
     documents: crate::document_tab::Documents,
     focus_target: Option<crate::terminals::FocusTarget>,
+}
+
+impl Shell {
+    /// The text input of `session`'s terminal tab `tab`, as the platform's
+    /// input method reaches it: what a test composes through, since a
+    /// headless window has no input method of its own (D484). `None` while
+    /// the tab has no screen.
+    #[must_use]
+    pub fn terminal_input(
+        &self,
+        session: &SessionId,
+        tab: usize,
+        bounds: Bounds<Pixels>,
+        cx: &App,
+    ) -> Option<impl InputHandler + use<>> {
+        self.terminals.input_handler(session, tab, bounds, cx)
+    }
 }
 
 impl Shell {
@@ -116,6 +134,17 @@ impl Shell {
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        // When the focused element leaves the tree (a sidebar folded away, a
+        // sheet or panel closed), GPUI dispatches keys from the window's root,
+        // which sits above the shell: its actions (⌘L, ⌘0, Escape) would stop
+        // answering. Hand the keyboard to the nearest focusable ancestor that
+        // is still drawn, or to the shell itself.
+        let focus_lost = cx.on_focus_lost(window, |this, window, cx| {
+            let target = window
+                .focus_lost_restore_target(cx)
+                .unwrap_or_else(|| this.focus.clone());
+            window.focus(&target, cx);
+        });
         let terminals = crate::terminals::Terminals::new(&ui, cx);
         let documents = crate::document_tab::Documents::new(&ui, window, cx);
         Self {
@@ -142,6 +171,7 @@ impl Shell {
             files_name,
             machine_inputs,
             _appearance: appearance,
+            _focus_lost: focus_lost,
             viewport: 0.,
         }
     }
@@ -242,7 +272,21 @@ impl Shell {
             .h_full()
             .flex_shrink_0()
             .cursor_col_resize()
-            .hover(move |divider| divider.bg(rgb(look.line)))
+            .group(id)
+            .flex()
+            .items_center()
+            .justify_center()
+            // The grip shows under the pointer, as frames 37 and 38 draw it.
+            .child(
+                div()
+                    .w(px(5.))
+                    .h(px(36.))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(rgb(look.secondary))
+                    .opacity(0.)
+                    .group_hover(id, |grip| grip.opacity(1.)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -276,11 +320,7 @@ impl Render for Shell {
             .read(|state| self.terminals.sync(&self.ui, state, look, window, cx));
         self.documents.sync(&self.ui, window, cx);
         let target = self.ui.read(|state| {
-            (state.overlays.is_empty()
-                && state.session.fork.is_none()
-                && state.session.moving.is_none()
-                && state.session.archiving.is_none())
-                .then(|| crate::terminals::focus_target(state))
+            (!state.dialog_holds_keys()).then(|| crate::terminals::focus_target(state))
         });
         if let Some(target) = target
             && self.focus_target.as_ref() != Some(&target)
@@ -334,6 +374,12 @@ impl Render for Shell {
         let panel = selected_panel.filter(|_| full || !columns.panel_hidden);
         let panel_width = columns.panel;
         let collapsed = columns.sidebar_hidden;
+        // How ⌘0 and ⌘L bring a hidden sidebar back (NV-6).
+        let reveal = self.ui.read(|state| {
+            state
+                .layout
+                .reveal_sidebar(viewport, in_session, state.panel().is_some())
+        });
         let main_width = if terminal_full {
             viewport
         } else {
@@ -489,6 +535,16 @@ impl Render for Shell {
             .font_family(".SystemUIFont")
             .text_size(px(13.))
             .track_focus(&self.focus)
+            // Escape in a terminal reaches its program (keys.rs unbinds
+            // Dismiss there), unless something over the page would close.
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                let escape = event.keystroke.key == "escape"
+                    && !event.keystroke.modifiers.modified();
+                if escape && this.ui.read(escape_closes_something) {
+                    cx.stop_propagation();
+                    this.send(AppAction::Escape, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &keys::OpenPalette, _, cx| {
                 this.send(AppAction::OpenPalette, cx)
             }))
@@ -512,7 +568,9 @@ impl Render for Shell {
                 this.send(AppAction::Sidebar(SidebarAction::CollapseAll), cx);
             }))
             .on_action(cx.listener(move |this, _: &keys::ToggleSidebar, _, cx| {
-                let action = if collapsed {
+                // Folded with room to spare, the sidebar docks again; only a
+                // window too narrow for it shows it over the page.
+                let action = if reveal == Some(Reveal::Overlay) {
                     AppAction::ToggleNavigationOverlay
                 } else {
                     AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar))
@@ -531,8 +589,39 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &keys::OpenSettings, _, cx| {
                 this.send(AppAction::Switch(Route::Settings), cx);
             }))
-            .on_action(cx.listener(|this, _: &keys::FocusSidebar, window, cx| {
+            .on_action(cx.listener(move |this, _: &keys::FocusSidebar, window, cx| {
+                // A hidden sidebar is shown first, so focus lands on rows
+                // people can see.
+                match reveal {
+                    Some(Reveal::Dock) => {
+                        this.send(AppAction::Pane(PaneAction::Toggle(PaneId::Sidebar)), cx);
+                    }
+                    Some(Reveal::Overlay) if !navigation_overlay => {
+                        this.send(AppAction::ToggleNavigationOverlay, cx);
+                    }
+                    _ => {}
+                }
                 window.focus(&this.sidebar_focus, cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::GoHosts, _, cx| {
+                this.send(AppAction::Switch(Route::Hosts), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::GoFiles, _, cx| {
+                this.send(AppAction::Switch(Route::Files), cx);
+            }))
+            .on_action(cx.listener(|this, _: &keys::TerminalFullScreen, _, cx| {
+                if this.ui.read(|state| matches!(state.route, Route::Session(_))) {
+                    this.send(AppAction::ToggleFullScreen(FullScreen::Terminal), cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &keys::ForkSession, _, cx| {
+                // The palette's Fork, which a Desk session doesn't have.
+                if this.ui.read(|state| matches!(state.route, Route::Session(_))) {
+                    let run = humata2_palette::PaletteAction::Delegate(
+                        humata2_palette::Delegate::Run(humata2_palette::Command::Fork),
+                    );
+                    this.send(AppAction::Palette(run), cx);
+                }
             }))
             .on_action(cx.listener(|this, _: &keys::TogglePanel, _, cx| {
                 this.send(AppAction::Pane(PaneAction::Toggle(PaneId::Panel)), cx);
@@ -545,6 +634,12 @@ impl Render for Shell {
                         humata2_palette::Command::MoveSession,
                     );
                     this.send(AppAction::Palette(begin), cx);
+                } else {
+                    // With nothing to move, the app says so (a toast).
+                    let run = humata2_palette::PaletteAction::Delegate(
+                        humata2_palette::Delegate::Run(humata2_palette::Command::MoveSession),
+                    );
+                    this.send(AppAction::Palette(run), cx);
                 }
             }))
             .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
@@ -691,4 +786,18 @@ impl Render for Shell {
             .child(self.reports.clone())
             .map(|root| crate::report_view::actions(root, &self.ui))
     }
+}
+
+/// Whether Escape has something over the page to close, so it is the app's
+/// even while a terminal holds the keyboard.
+fn escape_closes_something(state: &humata2_app::AppState) -> bool {
+    state.dialog_holds_keys()
+        || state.report.form.is_some()
+        || state.navigation_overlay
+        || state.settings.font_menu
+        || state.session.terminal_menu.is_some()
+        || state.session.menu
+        || state.hosts.start_confirm.is_some()
+        || state.machine_page.confirm.is_some()
+        || state.machine_page.menu_open
 }

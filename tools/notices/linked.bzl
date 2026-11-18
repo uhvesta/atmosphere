@@ -68,9 +68,9 @@ def _aspect_impl(target, ctx):
                 children.append(dep[LinkedCratesInfo].crates)
     return [LinkedCratesInfo(crates = depset(own, transitive = children))]
 
-# `deps` carries linked Rust code. `holder`, `humata` and `humatad2` are the
-# binaries of //apps/humata2/daemon/humatad:tools_mac.
-_FOLLOWED = ["deps", "holder", "humata", "humatad2"]
+# `deps` carries linked Rust code. `holder`, `humata`, `humatad2` and `stack`
+# are the binaries of //apps/humata2/daemon/humatad:tools_mac.
+_FOLLOWED = ["deps", "holder", "humata", "humatad2", "stack"]
 
 _linked_aspect = aspect(
     implementation = _aspect_impl,

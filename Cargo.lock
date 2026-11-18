@@ -4077,6 +4077,7 @@ dependencies = [
  "humata2-hosts",
  "humata2-inbox",
  "humata2-palette",
+ "humata2-pr-review",
  "humata2-review",
  "humata2-session",
  "humata2-settings",
@@ -4184,6 +4185,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-conversation"
+version = "0.0.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "humata2-desk"
 version = "0.0.0"
 dependencies = [
@@ -4202,6 +4214,7 @@ dependencies = [
  "humata2-engine",
  "humata2-report",
  "humata2-ui",
+ "notify",
  "tca-rust",
  "thiserror 2.0.21",
  "tokio",
@@ -4303,7 +4316,9 @@ dependencies = [
 name = "humata2-install"
 version = "0.0.0"
 dependencies = [
+ "humata2-machines",
  "rustix",
+ "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
@@ -4399,6 +4414,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "humata2-pr-review"
+version = "0.0.0"
+dependencies = [
+ "humata2-clients",
+ "tca-rust",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "humata2-repo-library"
+version = "0.0.0"
+dependencies = [
+ "rusqlite",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
 name = "humata2-report"
 version = "0.0.0"
 dependencies = [
@@ -4489,6 +4524,7 @@ name = "humata2-store"
 version = "0.0.0"
 dependencies = [
  "humata2-chunk",
+ "humata2-conversation",
  "humata2-durable",
  "prost",
  "rusqlite",
@@ -4527,6 +4563,7 @@ dependencies = [
  "humata2-inbox",
  "humata2-markdown",
  "humata2-palette",
+ "humata2-pr-review",
  "humata2-report",
  "humata2-review",
  "humata2-session",
@@ -4593,12 +4630,15 @@ dependencies = [
  "humata2-access",
  "humata2-app-peer",
  "humata2-chunk",
+ "humata2-conversation",
  "humata2-durable",
  "humata2-holder",
  "humata2-machines",
  "humata2-marks",
  "humata2-mcp",
  "humata2-mirror",
+ "humata2-passphrase",
+ "humata2-repo-library",
  "humata2-review-diff",
  "humata2-revive",
  "humata2-store",
@@ -4608,6 +4648,7 @@ dependencies = [
  "protoc-gen-prost",
  "protoc-gen-tonic",
  "rand 0.10.3",
+ "rusqlite",
  "rustix",
  "serde_json",
  "sha2 0.11.1",
@@ -4615,6 +4656,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
+ "toml 1.2.1+spec-1.1.0",
  "tonic",
  "tonic-prost",
  "tower",
@@ -8764,6 +8806,25 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "stack"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "stack-graph",
+ "tempfile",
+ "thiserror 2.0.21",
+ "toml 1.2.1+spec-1.1.0",
+]
+
+[[package]]
+name = "stack-graph"
+version = "0.0.0"
 
 [[package]]
 name = "static_assertions"

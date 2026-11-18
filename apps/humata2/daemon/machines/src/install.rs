@@ -1,67 +1,69 @@
-//! Streaming humatad2, its holder and the `humata` CLI onto a machine (MP-7,
-//! MP-19, TS-1): the bytes go in on stdin, the far end checks their size and
-//! SHA-256 and only then moves them into `~/.humata2/bin`.
+//! Streaming humatad2, its holder, the `humata` CLI and the `stack` CLI onto a
+//! machine (MP-7, MP-19, TS-1, D411): the bytes go in on stdin, the far end
+//! checks their size and SHA-256 and only then moves them into
+//! `~/.humata2/bin`.
 //!
-//! A file a running holder may use (the holder itself and `humata`) is never
-//! swapped under it: while any `humata2_holder` of the user runs, the
-//! verified copy waits beside the old one as `.<name>.staged`, and the next
-//! connect (or [`crate::local`] on the host) moves it in once none runs.
+//! A first install swaps the files in at once and writes the release's
+//! `bundle.json` (UP-1). A machine that already runs humatad2 is never
+//! upgraded by a connect: a new release is staged beside the old files as
+//! `.<name>.next` ([`stage_next_remote`]), over this same path, and the
+//! daemon's Upgrade call swaps it in once the person has said Migrate. A
+//! running holder keeps the inode it started from, so renaming over its file
+//! is safe; nothing waits for holders any more (D281 f).
 
 use std::collections::hash_map::RandomState;
 use std::fmt;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::link::BIN_DIR;
+use crate::bundle::{next_name, StagedRelease, BUNDLE_JSON};
+use crate::error::{output_said, QuoteError, RunError};
+use crate::link::{Link, BIN_DIR};
+use crate::name::MachineName;
 use crate::platform::Platform;
-use crate::runner::Exit;
+use crate::runner::{Exit, Purpose, Runner};
+use crate::stack_config::{StackConfig, StackConfigError};
 
 /// The install script's exit codes for what it found wrong.
 const CHECKSUM_MISMATCH: i32 = 65;
 const TRUNCATED: i32 = 66;
 const WRITE_FAILED: i32 = 67;
 const NO_CHECKSUM_TOOL: i32 = 68;
-/// Not a problem: the file was verified and staged, because a holder runs.
-const STAGED: i32 = 69;
 
-/// A shell function that succeeds while any `humata2_holder` of this user
-/// runs. `-x` matches the process name, so the script's own text (which
-/// names the holder) never counts.
-pub(crate) const HOLDERS_FN: &str = r#"holders() { if command -v pgrep >/dev/null 2>&1; then pgrep -u "$(id -u)" -x humata2_holder >/dev/null 2>&1; else ps -u "$(id -u)" -o comm= 2>/dev/null | grep -qx humata2_holder; fi; }
-"#;
+/// The most a streamed file may take: a release's tools are tens of MiB.
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// How many output lines a failed stage keeps (MP-20).
+const TAIL_LINES: usize = 40;
 
 /// A file Humata installs on every machine, and on the host (TS-0). The
-/// holder and `humata` sit beside humatad2, where it looks for them.
+/// holder, `humata` and `stack` sit beside humatad2, where it looks for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum InstalledFile {
     Humatad,
     Holder,
     Cli,
+    /// The stacked-PR CLI (D411).
+    Stack,
 }
 
 impl InstalledFile {
-    pub const ALL: [Self; 3] = [Self::Humatad, Self::Holder, Self::Cli];
+    pub const ALL: [Self; 4] = [Self::Humatad, Self::Holder, Self::Cli, Self::Stack];
 
     pub fn file_name(self) -> &'static str {
         match self {
             Self::Humatad => "humatad2",
             Self::Holder => "humata2_holder",
             Self::Cli => "humata",
+            Self::Stack => "stack",
         }
     }
 
-    /// Whether a running holder may use this file, so it waits for no
-    /// holder to run before it is swapped. humatad2 is swapped at once: the
-    /// service step restarts it, and holders outlive it.
-    pub fn waits_for_holders(self) -> bool {
-        !matches!(self, Self::Humatad)
-    }
-
-    /// The name a verified copy waits under while a holder runs.
+    /// The name a copy left by an older Humata waits under; installs remove
+    /// it, and nothing makes one any more over SSH.
     pub(crate) fn staged_name(self) -> String {
         format!(".{}.staged", self.file_name())
     }
@@ -119,6 +121,39 @@ impl fmt::Debug for Payload {
 pub trait Builds {
     /// Every [`InstalledFile`] for `platform`, or why there are none.
     fn payloads(&self, platform: Platform) -> Result<Vec<Payload>, BuildsError>;
+
+    /// The `bundle.json` a first install writes beside the files, whose
+    /// sha256 is the release's bundle id (UP-1); none when this source has
+    /// no release to name, as a test's fakes don't.
+    fn bundle_json(&self, _platform: Platform) -> Result<Option<Arc<[u8]>>, BuildsError> {
+        Ok(None)
+    }
+
+    /// The host's `config/stack.toml` with its secrets taken out, to put in
+    /// `~/.humata2/config` on a machine beside the tools (D411); none when
+    /// the host has no such file or this source has none to give, as a
+    /// test's fakes don't. Read afresh each time, so a changed file is what
+    /// the next link or setup sends.
+    fn stack_config(&self) -> Result<Option<StackConfig>, StackConfigError> {
+        Ok(None)
+    }
+
+    /// The host's `config/repos.toml` (RL-12), sent to a machine the way
+    /// `stack_config` is, into its own file beside it.
+    fn repos_config(&self) -> Result<Option<StackConfig>, StackConfigError> {
+        Ok(None)
+    }
+
+    /// The host's `config/agents.toml` (AGENTSET), sent the same way.
+    fn agents_config(&self) -> Result<Option<StackConfig>, StackConfigError> {
+        Ok(None)
+    }
+
+    /// The host's `config/machine-scripts.toml` (MACHINESCRIPTS), sent the
+    /// same way, into its own file beside the others.
+    fn machine_scripts_config(&self) -> Result<Option<StackConfig>, StackConfigError> {
+        Ok(None)
+    }
 }
 
 /// Why a bundle can't give the files for a platform.
@@ -128,6 +163,12 @@ pub enum BuildsError {
         "this Humata has no build for {platform} (it ships {shipped}); use a machine of one of those platforms"
     )]
     NoBuild { platform: Platform, shipped: String },
+    /// The app brought tools for `platform` that this daemon, still the older
+    /// release, may not use: the host must be migrated first (UP-1, D370).
+    #[error(
+        "the Linux tools for {platform} that this version of Humata brought are newer than the daemon on This Mac, so this machine can't be set up yet. Migrate the daemon on This Mac first (the \"Migrate the daemon on This Mac\" item in the Inbox), then add the machine again"
+    )]
+    HostNeedsMigrate { platform: Platform },
     #[error(
         "couldn't read Humata's tools manifest {path}: {source}. Humata's install is incomplete; reinstall Humata"
     )]
@@ -178,6 +219,7 @@ impl PartialEq for BuildsError {
             (Self::NoBuild { platform: a, shipped: x }, Self::NoBuild { platform: b, shipped: y }) => {
                 a == b && x == y
             }
+            (Self::HostNeedsMigrate { platform: a }, Self::HostNeedsMigrate { platform: b }) => a == b,
             (Self::ManifestUnreadable { path: a, source: x }, Self::ManifestUnreadable { path: b, source: y }) => {
                 a == b && x.kind() == y.kind()
             }
@@ -203,26 +245,6 @@ impl PartialEq for BuildsError {
 
 impl Eq for BuildsError {}
 
-/// How an install that didn't fail ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Installed {
-    /// The new copy is in place.
-    Swapped,
-    /// A holder runs, so the verified copy waits as `.<name>.staged`.
-    Staged,
-}
-
-impl Installed {
-    /// What a successful exit means; none for a failure.
-    pub(crate) fn from_exit(exit: Exit) -> Option<Self> {
-        match exit {
-            Exit::Code(0) => Some(Self::Swapped),
-            Exit::Code(STAGED) => Some(Self::Staged),
-            _ => None,
-        }
-    }
-}
-
 /// What went wrong installing one file.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum InstallProblem {
@@ -235,50 +257,78 @@ pub enum InstallProblem {
     )]
     Truncated,
     #[error(
-        "couldn't write it to ~/.humata2/bin (a full disk or the wrong permissions); fix that on the machine and try again"
+        "couldn't write it under ~/.humata2 (a full disk or the wrong permissions); fix that on the machine and try again"
     )]
     WriteFailed,
     #[error(
         "the machine has neither `sha256sum` nor `shasum`, so Humata can't check what arrived; install coreutils there and try again"
     )]
     NoChecksumTool,
-    #[error("the install script stopped ({exit}); its output is below")]
-    Other { exit: Exit },
+    #[error("the install script stopped ({exit}); {}", output_said(.printed))]
+    Other {
+        exit: Exit,
+        /// Whether the script printed anything the failure shows (MP-20).
+        printed: bool,
+    },
 }
 
 impl InstallProblem {
-    pub(crate) fn from_exit(exit: Exit) -> Self {
+    /// What an install script that exited with `exit` means; `printed` says
+    /// whether it printed anything the failure can show.
+    pub(crate) fn from_exit(exit: Exit, printed: bool) -> Self {
         match exit {
             Exit::Code(CHECKSUM_MISMATCH) => Self::ChecksumMismatch,
             Exit::Code(TRUNCATED) => Self::Truncated,
             Exit::Code(WRITE_FAILED) => Self::WriteFailed,
             Exit::Code(NO_CHECKSUM_TOOL) => Self::NoChecksumTool,
-            exit => Self::Other { exit },
+            exit => Self::Other { exit, printed },
         }
     }
 }
 
-/// A shell script that reads exactly `payload`'s length from stdin into a
-/// temporary file, checks size and checksum, and moves it into place, or
-/// beside it as `.<name>.staged` when the file waits for holders and one
-/// runs. It exits 0 when swapped, [`STAGED`] when staged, or one of the
-/// codes [`InstallProblem::from_exit`] reads. The file is never left
-/// half-written where anything would run it: a kill at any point leaves the
-/// old copy in place and at most a temporary file, which the next install
-/// of that file removes (PER-27).
-pub(crate) fn script(payload: &Payload, nonce: &str) -> String {
-    let len = payload.bytes.len();
-    let sha = &payload.sha256;
-    let name = payload.file.file_name();
-    let staged = payload.file.staged_name();
-    let waits = if payload.file.waits_for_holders() { "yes" } else { "no" };
+/// What [`receive_script`] receives and where it puts it.
+#[derive(Clone, Copy)]
+pub(crate) struct Receive<'a> {
+    /// The folder under `$HOME`.
+    pub(crate) dir: &'a str,
+    /// The name its temporary files carry.
+    pub(crate) stem: &'a str,
+    /// The file it ends as.
+    pub(crate) target: &'a str,
+    pub(crate) mode: &'a str,
+    pub(crate) len: usize,
+    pub(crate) sha: &'a str,
+    pub(crate) nonce: &'a str,
+    /// Shell run once the file is in place.
+    pub(crate) after: &'a str,
+}
+
+/// A shell script that reads exactly `len` bytes from stdin into a
+/// temporary file, checks size and checksum, gives it `mode` and moves it to
+/// `~/<dir>/<target>` (`dir` is `.humata2/bin` or `.humata2/config`), then
+/// runs `after`. It exits 0 when done, or
+/// with one of the codes [`InstallProblem::from_exit`] reads. The file is
+/// never left half-written where anything would run it: a kill at any point
+/// leaves the old copy in place and at most a temporary file, which the next
+/// receive of that `stem` removes (PER-27).
+pub(crate) fn receive_script(receive: &Receive<'_>) -> String {
+    let Receive {
+        dir,
+        stem,
+        target,
+        mode,
+        len,
+        sha,
+        nonce,
+        after,
+    } = *receive;
     format!(
         r#"set -u
 umask 077
-{HOLDERS_FN}d="$HOME/{BIN_DIR}"
-t="$d/.{name}.{nonce}.new"
+d="$HOME/{dir}"
+t="$d/.{stem}.{nonce}.new"
 mkdir -p "$d" || exit {WRITE_FAILED}
-rm -f "$d"/.{name}.*.new
+rm -f "$d"/.{stem}.*.new
 trap 'rm -f "$t"' EXIT
 head -c {len} > "$t" || exit {WRITE_FAILED}
 n=$(wc -c < "$t" | tr -d ' ')
@@ -287,40 +337,143 @@ if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum "$t" | cut -d ' ' -f
 elif command -v shasum >/dev/null 2>&1; then s=$(shasum -a 256 "$t" | cut -d ' ' -f 1)
 else echo "no sha256sum or shasum" >&2; exit {NO_CHECKSUM_TOOL}; fi
 [ "$s" = {sha} ] || {{ echo "SHA-256 $s, expected {sha}" >&2; exit {CHECKSUM_MISMATCH}; }}
-chmod 700 "$t" || exit {WRITE_FAILED}
+chmod {mode} "$t" || exit {WRITE_FAILED}
 sync "$t" 2>/dev/null || sync
-if [ {waits} = yes ] && holders; then
-  mv -f "$t" "$d/{staged}" || exit {WRITE_FAILED}
-  trap - EXIT
-  echo "a holder is running, so {name} waits as {staged}" >&2
-  exit {STAGED}
-fi
-mv -f "$t" "$d/{name}" || exit {WRITE_FAILED}
+mv -f "$t" "$d/{target}" || exit {WRITE_FAILED}
 trap - EXIT
-rm -f "$d/{staged}"
+{after}sync "$d" 2>/dev/null || sync
 "#
     )
 }
 
-/// Moves a staged copy of `file` with SHA-256 `sha` into place once no
-/// holder runs, without sending it again. Exits like [`script`]: 0 when
-/// swapped, [`STAGED`] while a holder still runs, and
-/// [`CHECKSUM_MISMATCH`] (removing it) when the staged copy isn't `sha`.
-pub(crate) fn promote_script(file: InstalledFile, sha: &str) -> String {
-    let name = file.file_name();
-    let staged = file.staged_name();
-    format!(
-        r#"set -u
-{HOLDERS_FN}d="$HOME/{BIN_DIR}"
-[ -f "$d/{staged}" ] || {{ echo "{staged} is gone" >&2; exit {TRUNCATED}; }}
-if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum "$d/{staged}" | cut -d ' ' -f 1)
-elif command -v shasum >/dev/null 2>&1; then s=$(shasum -a 256 "$d/{staged}" | cut -d ' ' -f 1)
-else echo "no sha256sum or shasum" >&2; exit {NO_CHECKSUM_TOOL}; fi
-[ "$s" = {sha} ] || {{ rm -f "$d/{staged}"; echo "staged SHA-256 $s, expected {sha}" >&2; exit {CHECKSUM_MISMATCH}; }}
-if holders; then exit {STAGED}; fi
-mv -f "$d/{staged}" "$d/{name}" || exit {WRITE_FAILED}
-"#
-    )
+/// The script that swaps `payload` into `~/.humata2/bin` at once, as a
+/// first install does, and removes a copy an older Humata left waiting as
+/// `.<name>.staged`. A running holder keeps the file it started from.
+pub(crate) fn script(payload: &Payload, nonce: &str) -> String {
+    let name = payload.file.file_name();
+    let staged = payload.file.staged_name();
+    receive_script(&Receive {
+        dir: BIN_DIR,
+        stem: name,
+        target: name,
+        mode: "700",
+        len: payload.bytes.len(),
+        sha: &payload.sha256,
+        nonce,
+        after: &format!("rm -f \"$d/{staged}\"\n"),
+    })
+}
+
+/// The script that writes the release's `bundle.json` (`bytes` on stdin).
+pub(crate) fn bundle_script(bytes: &[u8], nonce: &str) -> String {
+    receive_script(&Receive {
+        dir: BIN_DIR,
+        stem: BUNDLE_JSON,
+        target: BUNDLE_JSON,
+        mode: "644",
+        len: bytes.len(),
+        sha: &hex(&Sha256::digest(bytes)),
+        nonce,
+        after: "",
+    })
+}
+
+/// The script that stages `bytes` as `.<name>.next` (D281 f), checked the
+/// same way, leaving what is installed alone.
+fn next_script(name: &str, mode: &str, bytes: &[u8], nonce: &str) -> String {
+    receive_script(&Receive {
+        dir: BIN_DIR,
+        stem: name,
+        target: &next_name(name),
+        mode,
+        len: bytes.len(),
+        sha: &hex(&Sha256::digest(bytes)),
+        nonce,
+        after: "",
+    })
+}
+
+/// Why a release couldn't be staged on a machine.
+#[derive(Debug, Error)]
+pub enum RemoteStageError {
+    #[error(
+        "couldn't build the command that stages {file} on {machine}: {source}. This is a fault in Humata; report it"
+    )]
+    Command {
+        machine: MachineName,
+        file: String,
+        #[source]
+        source: QuoteError,
+    },
+    #[error(
+        "couldn't reach {machine} to stage {file}: {source}. Check that the machine is up and reachable, then Migrate again; nothing installed there was changed"
+    )]
+    Reach {
+        machine: MachineName,
+        file: String,
+        #[source]
+        source: RunError,
+    },
+    #[error(
+        "staging {file} on {machine} failed: {problem}. Nothing installed there was changed; fix that and Migrate again.\n{tail}"
+    )]
+    Stage {
+        machine: MachineName,
+        file: String,
+        problem: InstallProblem,
+        tail: String,
+    },
+}
+
+/// Stages `release` on the machine `link` reaches, over the same SSH path
+/// that installed it: each tool as `~/.humata2/bin/.<name>.next` (0755), then
+/// `.bundle.json.next` (0644), every one checked against its sha256 on the
+/// far end and moved in whole, so nothing installed or running is touched.
+/// The bundle goes last, so it is there only when the files it names are.
+/// Returns the bundle id, which the Upgrade call names. Pick the release for
+/// the machine's platform ([`crate::Bundle::release`]); it can be staged
+/// again if a try is cut short.
+pub fn stage_next_remote(
+    link: &Link,
+    runner: &dyn Runner,
+    release: &StagedRelease,
+) -> Result<String, RemoteStageError> {
+    let send = |name: &str, mode: &str, bytes: &Arc<[u8]>| -> Result<(), RemoteStageError> {
+        let file = next_name(name);
+        let machine = link.machine().clone();
+        let invocation = link
+            .script(
+                &next_script(name, mode, bytes, &nonce()),
+                Purpose::Install,
+                Some(INSTALL_TIMEOUT),
+                Some(Arc::clone(bytes)),
+            )
+            .map_err(|source| RemoteStageError::Command {
+                machine: machine.clone(),
+                file: file.clone(),
+                source,
+            })?;
+        let output = runner.run(&invocation).map_err(|source| RemoteStageError::Reach {
+            machine: machine.clone(),
+            file: file.clone(),
+            source,
+        })?;
+        if output.exit.success() {
+            return Ok(());
+        }
+        let tail = output.tail(TAIL_LINES);
+        Err(RemoteStageError::Stage {
+            machine,
+            file,
+            problem: InstallProblem::from_exit(output.exit, !tail.trim().is_empty()),
+            tail,
+        })
+    };
+    for payload in release.files() {
+        send(payload.file.file_name(), "755", &payload.bytes)?;
+    }
+    send(BUNDLE_JSON, "644", release.bundle_json())?;
+    Ok(release.id().to_owned())
 }
 
 /// A fresh hex word for temporary names and takeover markers. Unique, not
@@ -416,7 +569,7 @@ mod tests {
 
         let exit = install_here(home.path(), &payload, b"the fake build");
 
-        assert_eq!(InstallProblem::from_exit(exit), InstallProblem::ChecksumMismatch);
+        assert_eq!(InstallProblem::from_exit(exit, false), InstallProblem::ChecksumMismatch);
         assert!(files_in(&home.path().join(".humata2/bin")).is_empty());
     }
 
@@ -427,7 +580,7 @@ mod tests {
 
         let exit = install_here(home.path(), &payload, b"the who");
 
-        assert_eq!(InstallProblem::from_exit(exit), InstallProblem::Truncated);
+        assert_eq!(InstallProblem::from_exit(exit, false), InstallProblem::Truncated);
         assert!(files_in(&home.path().join(".humata2/bin")).is_empty());
     }
 
@@ -447,29 +600,20 @@ mod tests {
     }
 
     #[test]
-    fn a_file_a_holder_uses_waits_beside_while_one_runs_then_is_moved_in() {
+    fn a_file_a_holder_uses_is_swapped_in_while_a_holder_runs_and_a_leftover_staged_copy_goes() {
         let home = tempfile::tempdir().unwrap();
         let bin = home.path().join(".humata2/bin");
         let old = Payload::new(InstalledFile::Cli, Arc::from(&b"old cli"[..]));
         let new = Payload::new(InstalledFile::Cli, Arc::from(&b"new cli"[..]));
         assert_eq!(install_here(home.path(), &old, b"old cli"), Exit::Code(0));
+        // A copy an older Humata left waiting, and a holder that runs.
+        std::fs::write(bin.join(".humata.staged"), b"waiting").unwrap();
         std::fs::write(home.path().join("holder-running"), "").unwrap();
 
-        let exit = install_here(home.path(), &new, b"new cli");
-        assert_eq!(Installed::from_exit(exit), Some(Installed::Staged));
-        assert_eq!(std::fs::read(bin.join("humata")).unwrap(), b"old cli");
-        assert_eq!(std::fs::read(bin.join(".humata.staged")).unwrap(), b"new cli");
+        assert_eq!(install_here(home.path(), &new, b"new cli"), Exit::Code(0));
 
-        // Still running: the promote waits too.
-        let promote = promote_script(InstalledFile::Cli, new.sha256());
-        let exit = run_here(home.path(), promote.clone(), None);
-        assert_eq!(Installed::from_exit(exit), Some(Installed::Staged));
-
-        std::fs::remove_file(home.path().join("holder-running")).unwrap();
-        let exit = run_here(home.path(), promote, None);
-        assert_eq!(Installed::from_exit(exit), Some(Installed::Swapped));
+        assert_eq!(files_in(&bin).keys().collect::<Vec<_>>(), ["humata"]);
         assert_eq!(std::fs::read(bin.join("humata")).unwrap(), b"new cli");
-        assert_eq!(files_in(&bin).len(), 1);
     }
 
     #[test]
@@ -483,6 +627,56 @@ mod tests {
             std::fs::read(home.path().join(".humata2/bin/humatad2")).unwrap(),
             b"daemon"
         );
+        // A holder file put back while another holder runs goes in too.
+        let holder = Payload::new(InstalledFile::Holder, Arc::from(&b"holder"[..]));
+        assert_eq!(install_here(home.path(), &holder, b"holder"), Exit::Code(0));
+        assert_eq!(
+            std::fs::read(home.path().join(".humata2/bin/humata2_holder")).unwrap(),
+            b"holder"
+        );
+    }
+
+    #[test]
+    fn a_next_copy_waits_beside_the_installed_one_and_touches_nothing_else() {
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".humata2/bin");
+        let old = Payload::new(InstalledFile::Humatad, Arc::from(&b"old daemon"[..]));
+        assert_eq!(install_here(home.path(), &old, b"old daemon"), Exit::Code(0));
+
+        let exit = run_here(home.path(), next_script("humatad2", "755", b"new daemon", &nonce()), Some(b"new daemon"));
+
+        assert_eq!(exit, Exit::Code(0));
+        assert_eq!(std::fs::read(bin.join("humatad2")).unwrap(), b"old daemon");
+        let staged = bin.join(".humatad2.next");
+        assert_eq!(std::fs::read(&staged).unwrap(), b"new daemon");
+        assert_eq!(std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(files_in(&bin).len(), 2);
+    }
+
+    #[test]
+    fn a_next_copy_that_arrives_changed_is_refused_and_leaves_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let script = next_script("humata", "755", b"the real build", &nonce());
+
+        let exit = run_here(home.path(), script, Some(b"the fake build"));
+
+        assert_eq!(InstallProblem::from_exit(exit, false), InstallProblem::ChecksumMismatch);
+        assert!(files_in(&home.path().join(".humata2/bin")).is_empty());
+    }
+
+    #[test]
+    fn a_first_install_writes_the_bundle_beside_the_files() {
+        let home = tempfile::tempdir().unwrap();
+        let bundle = br#"{"platforms":{}}"#;
+
+        assert_eq!(
+            run_here(home.path(), bundle_script(bundle, &nonce()), Some(bundle)),
+            Exit::Code(0)
+        );
+
+        let written = home.path().join(".humata2/bin/bundle.json");
+        assert_eq!(std::fs::read(&written).unwrap(), bundle);
+        assert_eq!(std::fs::metadata(&written).unwrap().permissions().mode() & 0o777, 0o644);
     }
 
     #[test]
@@ -495,20 +689,6 @@ mod tests {
 
         assert_eq!(install_here(home.path(), &payload, b"holder"), Exit::Code(0));
         assert_eq!(files_in(&bin).keys().collect::<Vec<_>>(), ["humata2_holder"]);
-    }
-
-    #[test]
-    fn a_staged_copy_that_changed_is_not_moved_in() {
-        let home = tempfile::tempdir().unwrap();
-        let bin = home.path().join(".humata2/bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join(".humata.staged"), b"something else").unwrap();
-        let expected = Payload::new(InstalledFile::Cli, Arc::from(&b"cli"[..]));
-
-        let exit = run_here(home.path(), promote_script(InstalledFile::Cli, expected.sha256()), None);
-
-        assert_eq!(InstallProblem::from_exit(exit), InstallProblem::ChecksumMismatch);
-        assert!(files_in(&bin).is_empty());
     }
 
     #[test]

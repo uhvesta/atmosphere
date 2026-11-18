@@ -8,7 +8,7 @@
 use tokio::sync::mpsc;
 
 use crate::daemon::{DaemonError, Reply};
-use crate::model::{Agent, Capability, ChannelId, MachineId, RuleSetting, SessionId};
+use crate::model::{Agent, Capability, ChannelId, MachineId, MachineStop, RootPlan, RuleSetting, SessionId};
 
 pub mod fake;
 
@@ -197,6 +197,14 @@ pub enum AddOutcome {
     NeedsLogin {
         /// Why: the prompt it printed, or that it hung (D167).
         reason: LoginReason,
+    },
+    /// This Mac's daemon is behind this app, so the machine can't be set up yet:
+    /// migrate it, then add again (UP-1, D370).
+    NeedsMigrate {
+        /// The platform the tools are for, such as `linux-x86_64`.
+        platform: String,
+        /// The daemon's words: what stopped and how to fix it.
+        what: String,
     },
 }
 
@@ -405,6 +413,16 @@ pub struct MachineDetail {
     pub sessions: Vec<SessionId>,
     /// What its agents can reach.
     pub rules: Vec<ReachRule>,
+    /// Its sessions are stopped (frames 73, 76); `None` while they run.
+    pub stop: Option<MachineStop>,
+}
+
+/// How a Start sessions ended (D265).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Started {
+    /// The machine never got the stop, so the start only cancelled it
+    /// (Cancel stop, frame 76): nothing on it had ended.
+    pub cancelled: bool,
 }
 
 /// A skill on the machine with the same name as a synced one (SK-5).
@@ -437,6 +455,155 @@ pub enum ClashChoice {
     /// The one made on the machine.
     MachineLocal,
 }
+
+/// How a machine-script run, or one of its steps, ended (D686).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScriptOutcome {
+    /// It is running now.
+    Running,
+    /// It finished and nothing failed.
+    Passed,
+    /// A step failed, so the rule stopped.
+    Failed,
+    /// A step ran out of time and was killed.
+    TimedOut,
+    /// It didn't run, such as a `once` rule that already passed.
+    Skipped,
+}
+
+impl ScriptOutcome {
+    /// Whether the run needs a look: it failed or ran out of time.
+    #[must_use]
+    pub const fn is_problem(self) -> bool {
+        matches!(self, Self::Failed | Self::TimedOut)
+    }
+
+    /// How the page says it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Running => "Running",
+            Self::Passed => "Passed",
+            Self::Failed => "Failed",
+            Self::TimedOut => "Timed out",
+            Self::Skipped => "Skipped",
+        }
+    }
+}
+
+/// One step of a rule, as the rules file says it (D682).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptStepView {
+    /// `run`, `humata`, `start` or `send`.
+    pub kind: String,
+    /// What it does, as the page shows it.
+    pub label: String,
+}
+
+/// One rule of the owner's `machine-scripts.toml` (D680, D681).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptRuleView {
+    /// The rule's name.
+    pub name: String,
+    /// When it fires: `added`, `connected`, `upgraded`, `session-arrived`, `session-leaving`.
+    pub triggers: Vec<String>,
+    /// Machine names it is limited to; empty means every machine.
+    pub machines: Vec<String>,
+    /// It runs at most once per machine.
+    pub once: bool,
+    /// Its steps, in order.
+    pub steps: Vec<ScriptStepView>,
+}
+
+/// What one step of a run did (D686).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptStepRun {
+    /// Its place in the rule, from 0.
+    pub index: u32,
+    /// `run`, `humata`, `start` or `send`.
+    pub kind: String,
+    /// What it did.
+    pub label: String,
+    /// How it ended.
+    pub outcome: ScriptOutcome,
+    /// The exit status, when it ran a program that ended.
+    pub exit: Option<i32>,
+    /// The last lines of its output.
+    pub tail: Vec<String>,
+    /// Why it failed or was skipped, in the daemon's words; empty otherwise.
+    pub error: String,
+}
+
+/// One run of a rule on a machine (D686).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptRun {
+    /// The run's id.
+    pub id: String,
+    /// The machine it ran on.
+    pub machine: MachineId,
+    /// The rule.
+    pub rule: String,
+    /// What fired it: a trigger name, or `manual`.
+    pub trigger: String,
+    /// The session it was for, on a session trigger.
+    pub session: Option<SessionId>,
+    /// When it started, as people read it.
+    pub at: String,
+    /// How long it took.
+    pub took_ms: u64,
+    /// How it ended.
+    pub outcome: ScriptOutcome,
+    /// What each step did.
+    pub steps: Vec<ScriptStepRun>,
+}
+
+impl ScriptRun {
+    /// The lines worth showing for a run that went wrong: the end of the
+    /// first step that failed or ran out of time, else nothing.
+    #[must_use]
+    pub fn failure_tail(&self) -> Option<(&ScriptStepRun, &[String])> {
+        self.steps
+            .iter()
+            .find(|step| step.outcome.is_problem())
+            .map(|step| (step, step.tail.as_slice()))
+    }
+}
+
+/// The owner's machine scripts, as the app shows them (D686, D687).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MachineScripts {
+    /// The rules. Asked for one machine, only the rules that apply to it.
+    pub rules: Vec<ScriptRuleView>,
+    /// The last run of each rule, on the machine asked for or on each.
+    pub last_runs: Vec<ScriptRun>,
+    /// File names in the scripts folder.
+    pub script_names: Vec<String>,
+    /// Why the rules file can't be used, with what to change; the rules are
+    /// empty then.
+    pub problem: Option<String>,
+    /// Things that don't stop a rule, such as a machine name that isn't a
+    /// machine yet.
+    pub warnings: Vec<String>,
+}
+
+impl MachineScripts {
+    /// The last run of `rule`.
+    #[must_use]
+    pub fn last_run(&self, rule: &str) -> Option<&ScriptRun> {
+        self.last_runs.iter().find(|run| run.rule == rule)
+    }
+}
+
+/// Where the owner's machine-scripts rules are, on this Mac (D680).
+pub const SCRIPT_RULES_PATH: &str = "~/.humata2/config/machine-scripts.toml";
+
+/// Where the owner's scripts are, on this Mac (D680).
+pub const SCRIPTS_FOLDER: &str = "~/.humata2/scripts";
+
+/// What Edit rules writes when the rules file isn't there yet: the
+/// daemon's own commented sample (one text, humata2_script_sample). It is
+/// only comments, so no rule runs until the owner writes one.
+pub const SCRIPT_RULES_STARTER: &str = humata2_script_sample::SAMPLE_RULES;
 
 /// What the app asks about machines.
 pub trait Machines: Send + Sync + 'static {
@@ -472,6 +639,35 @@ pub trait Machines: Send + Sync + 'static {
     fn set_variable(&self, machine: &MachineId, name: &str, value: &str) -> Reply<()>;
     /// Removes a host variable (HO-13).
     fn remove_variable(&self, machine: &MachineId, name: &str) -> Reply<()>;
+    /// Stops every session on a machine, from the app (D260–D262). The
+    /// stop is kept and sent later when the machine can't be reached now;
+    /// the answer says whether it was delivered. A machine already
+    /// stopped is refused.
+    fn stop_sessions(&self, machine: &MachineId) -> Reply<MachineStop>;
+    /// Starts a machine's stopped sessions again, or cancels a stop it
+    /// never got (D265). A machine whose sessions aren't stopped is
+    /// refused.
+    fn start_sessions(&self, machine: &MachineId) -> Reply<Started>;
+    /// What changing `machine`'s Humata folder to `root` would reach: the
+    /// channels under the old root and the sessions running there (FC-10).
+    /// Changes nothing.
+    fn plan_change_root(&self, machine: &MachineId, root: &str) -> Reply<RootPlan>;
+    /// Applies `plan`: with `move_channels` the channels it lists move into
+    /// the new root, refused while any session runs in them; without it the
+    /// new root is for new channels only (FC-10, ST-5). Answers when the
+    /// change is done.
+    fn change_root(&self, plan: &RootPlan, move_channels: bool) -> Reply<()>;
+    /// The owner's machine scripts: the rules, each rule's last run and the
+    /// script names (D686, D687). With a machine, the rules that apply to it
+    /// and its last runs; without, every rule and each machine's.
+    fn scripts(&self, machine: Option<&MachineId>) -> Reply<MachineScripts>;
+    /// Runs a rule on a machine now, as the trigger `manual` or, with a
+    /// session, that session's trigger. Answers when the run is over: an
+    /// error says why it failed, and the run log has its steps.
+    fn run_script(&self, machine: &MachineId, rule: &str, session: Option<&SessionId>) -> Reply<()>;
+    /// The host's run log for a machine, newest first, at most `limit` (0
+    /// for the daemon's default); only `rule`'s when given.
+    fn script_runs(&self, machine: &MachineId, rule: Option<&str>, limit: u32) -> Reply<Vec<ScriptRun>>;
 }
 
 #[cfg(test)]
@@ -491,5 +687,60 @@ mod tests {
     fn a_tool_with_no_known_version_shows_its_name_alone() {
         assert_eq!(tool_label("claude", ""), "claude");
         assert_eq!(tool_label("claude", "  "), "claude");
+    }
+
+    fn step(index: u32, outcome: ScriptOutcome, tail: &[&str]) -> ScriptStepRun {
+        ScriptStepRun {
+            index,
+            kind: "run".to_owned(),
+            label: "setup.sh".to_owned(),
+            outcome,
+            exit: None,
+            tail: tail.iter().map(|line| (*line).to_owned()).collect(),
+            error: String::new(),
+        }
+    }
+
+    fn run_of(outcome: ScriptOutcome, steps: Vec<ScriptStepRun>) -> ScriptRun {
+        ScriptRun {
+            id: "run-1".to_owned(),
+            machine: MachineId::new("devbox-1"),
+            rule: "set-up-tools".to_owned(),
+            trigger: "added".to_owned(),
+            session: None,
+            at: "09:30".to_owned(),
+            took_ms: 10,
+            outcome,
+            steps,
+        }
+    }
+
+    #[test]
+    fn a_failed_run_points_at_the_first_step_that_went_wrong() {
+        let run = run_of(
+            ScriptOutcome::Failed,
+            vec![step(0, ScriptOutcome::Passed, &["fine"]), step(1, ScriptOutcome::Failed, &["boom"]), step(2, ScriptOutcome::Skipped, &[])],
+        );
+        let (failed, tail) = run.failure_tail().expect("a failed step");
+        assert_eq!(failed.index, 1);
+        assert_eq!(tail, ["boom".to_owned()]);
+    }
+
+    #[test]
+    fn a_run_that_passed_has_no_failure_to_show() {
+        let run = run_of(ScriptOutcome::Passed, vec![step(0, ScriptOutcome::Passed, &["fine"])]);
+        assert!(run.failure_tail().is_none());
+        assert!(!ScriptOutcome::Running.is_problem());
+        assert!(ScriptOutcome::TimedOut.is_problem());
+    }
+
+    #[test]
+    fn the_last_run_of_a_rule_is_found_by_its_name() {
+        let scripts = MachineScripts {
+            last_runs: vec![run_of(ScriptOutcome::Passed, vec![])],
+            ..MachineScripts::default()
+        };
+        assert!(scripts.last_run("set-up-tools").is_some());
+        assert!(scripts.last_run("other").is_none());
     }
 }

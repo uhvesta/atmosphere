@@ -9,14 +9,14 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use humata2_access::{
-    AccessRequest, Agent, Grant, GrantId, MachineId, Policy, PresenceMethod, RequestId,
-    Verdict,
+    AccessRequest, Agent, Grant, GrantId, MachineId, Policy, PresenceMethod, RequestId, Verdict,
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{InboxRecord, Store};
 use humata2_store_proto::humata::store::v1 as stored;
 use prost::Message;
 
+use super::migrate;
 use super::{Entry, Held, State, withdraw};
 use crate::grant_target;
 use crate::guard::Guard;
@@ -42,15 +42,13 @@ pub(super) fn record(entry: &Entry, held: &Held) -> InboxRecord {
             .unwrap_or_default(),
         grant,
         deferred: held.deferred,
+        permission: entry.permission,
     };
-    let created = held.request.created_at.as_ref().map_or(0, |at| {
-        at.seconds.saturating_mul(1000) + i64::from(at.nanos / 1_000_000)
-    });
     InboxRecord {
         id: entry.id.clone(),
         session: entry.session.clone(),
         entry: body.encode_to_vec(),
-        created_unix_ms: created,
+        created_unix_ms: created_unix_ms(&held.request),
         updated_unix_ms: unix_ms(SystemTime::now()),
     }
 }
@@ -77,11 +75,22 @@ pub(super) fn unix_ms(at: SystemTime) -> i64 {
     i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
 }
 
+/// When `request` was made, in unix milliseconds; 0 when it has no time.
+pub(super) fn created_unix_ms(request: &pb::InboxRequest) -> i64 {
+    request.created_at.as_ref().map_or(0, |at| {
+        at.seconds.saturating_mul(1000) + i64::from(at.nanos / 1_000_000)
+    })
+}
+
 /// The Inbox the store kept, with every grant still standing put back in
 /// the guard's policy. A request the store can't read is left out and
-/// said in the log; the rest still load.
+/// said in the log; the rest still load. The pending Migrate items come
+/// back first: they belong to no session, so no session's record names them.
 pub(super) fn restore(guard: &Guard, store: &Store, machine: &str) -> State {
     let mut state = State::default();
+    for request in migrate::kept_requests(store) {
+        state.add(migrate::new_entry(request));
+    }
     let records = match store.inbox_requests() {
         Ok(records) => records,
         Err(error) => {
@@ -113,7 +122,13 @@ pub(super) fn restore(guard: &Guard, store: &Store, machine: &str) -> State {
             match store.put_inbox_request(&self::record(&entry, &held)) {
                 // The host's mirror hears of it too (D226).
                 Ok(()) if held.request.state() == pb::RequestState::Withdrawn => {
-                    crate::away::record_journal_now(store, &guard.host_link(), &entry.session, before, &held.request);
+                    crate::away::record_journal_now(
+                        store,
+                        &guard.host_link(),
+                        &entry.session,
+                        before,
+                        &held.request,
+                    );
                 }
                 Ok(()) => {}
                 Err(error) => crate::log::say!(
@@ -190,7 +205,10 @@ fn restored(
         }
     });
     let mut changed = false;
-    if deferred && held.request.state == pb::RequestState::Pending as i32 {
+    // A permission card a machine saved while pending (D744): the restart
+    // ended the hook that held it, so nothing can hear its answer.
+    let pending = held.request.state == pb::RequestState::Pending as i32;
+    if (deferred || body.permission) && pending {
         // Nothing is left that could run it, so it can't be approved.
         withdraw(&mut held.request, pb::WithdrawReason::CallEnded);
         changed = true;
@@ -223,8 +241,10 @@ fn restored(
         keys: body.keys,
         request: tokio::sync::watch::channel(held).0,
         run: std::sync::Mutex::new(None),
-        // Only settled permission cards are saved: nothing holds them now.
+        // No hook holds a permission card after a restart: a pending one
+        // was withdrawn above, so it counts as an ordinary settled entry.
         permission: false,
+        only_choices: false,
     };
     Some((entry, standing, changed, before))
 }
@@ -351,7 +371,14 @@ mod tests {
             deferred: true,
             ..Held::new(request)
         };
-        let entry = Entry::new("rq_1".to_owned(), "se_a".to_owned(), None, None, None, held.clone());
+        let entry = Entry::new(
+            "rq_1".to_owned(),
+            "se_a".to_owned(),
+            None,
+            None,
+            None,
+            held.clone(),
+        );
         store.put_inbox_request(&record(&entry, &held)).unwrap();
         store
     }
@@ -362,10 +389,94 @@ mod tests {
         let store = store_with_a_waiting_call(directory.path());
         let guard = Guard::new(MACHINE, pb::DaemonRole::Machine);
         let state = restore(&guard, &store, MACHINE);
-        assert_eq!(state.requests[0].request.borrow().request.state(), pb::RequestState::Withdrawn);
+        assert_eq!(
+            state.requests[0].request.borrow().request.state(),
+            pb::RequestState::Withdrawn
+        );
         let kept = store.journal().entries().unwrap();
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].kind, "inbox.withdrawn");
+    }
+
+    /// The store of [`store_with_a_waiting_call`], with `body` kept as a
+    /// pending request `rq_2` of the same session.
+    fn store_with_entry(directory: &std::path::Path, body: &stored::InboxEntry) -> Store {
+        let store = store_with_a_waiting_call(directory);
+        store
+            .put_inbox_request(&InboxRecord {
+                id: "rq_2".to_owned(),
+                session: "se_a".to_owned(),
+                entry: body.encode_to_vec(),
+                created_unix_ms: 0,
+                updated_unix_ms: 0,
+            })
+            .unwrap();
+        store
+    }
+
+    fn pending_question() -> pb::InboxRequest {
+        pb::InboxRequest {
+            id: Some(pb::RequestId {
+                value: "rq_2".to_owned(),
+            }),
+            kind: pb::RequestKind::Question as i32,
+            state: pb::RequestState::Pending as i32,
+            ..Default::default()
+        }
+    }
+
+    fn state_of(state: &State, id: &str) -> pb::RequestState {
+        let entry = state.requests.iter().find(|entry| entry.id == id).unwrap();
+        entry.request.borrow().request.state()
+    }
+
+    #[test]
+    fn a_pending_request_kept_before_permission_cards_were_saved_restores_as_before() {
+        // Kept by a build whose InboxEntry had no `permission` field: an
+        // agent's question, which a restart leaves pending.
+        #[derive(Clone, PartialEq, prost::Message)]
+        struct OldInboxEntry {
+            #[prost(bytes = "vec", tag = "1")]
+            request: Vec<u8>,
+            #[prost(bool, tag = "5")]
+            deferred: bool,
+        }
+        let old = OldInboxEntry {
+            request: pending_question().encode_to_vec(),
+            deferred: false,
+        };
+        let body = stored::InboxEntry::decode(old.encode_to_vec().as_slice()).unwrap();
+        assert!(!body.permission);
+        let directory = tempfile::tempdir().unwrap();
+        let store = store_with_entry(directory.path(), &body);
+        let guard = Guard::new(MACHINE, pb::DaemonRole::Machine);
+        let state = restore(&guard, &store, MACHINE);
+        assert_eq!(state_of(&state, "rq_2"), pb::RequestState::Pending);
+    }
+
+    #[test]
+    fn a_permission_card_a_machine_kept_pending_is_withdrawn_at_start_up_and_journaled() {
+        let mut card = pending_question();
+        card.kind = pb::RequestKind::Session as i32;
+        let body = stored::InboxEntry {
+            request: card.encode_to_vec(),
+            permission: true,
+            ..Default::default()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let store = store_with_entry(directory.path(), &body);
+        let guard = Guard::new(MACHINE, pb::DaemonRole::Machine);
+        let state = restore(&guard, &store, MACHINE);
+        assert_eq!(state_of(&state, "rq_2"), pb::RequestState::Withdrawn);
+        let withdrawn = store
+            .journal()
+            .entries()
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.kind == "inbox.withdrawn")
+            .count();
+        // This card's withdrawal and the waiting call's.
+        assert_eq!(withdrawn, 2);
     }
 
     #[test]

@@ -244,6 +244,7 @@ async fn a_file_written_to_a_machine_reads_back_with_the_same_bytes() {
             size: data.len() as u64,
             sha256: sha256(&data),
             replace: false,
+            expected_sha256: None,
         })),
     }];
     let mut encoder = Encoder::new(Codec::None);
@@ -432,7 +433,7 @@ mod rig {
     /// most, `common::WAIT`). This is more than twice the two together.
     pub const LONG: Duration = Duration::from_secs(120);
 
-    const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+    const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
     /// The gate is a perl script until the harness has a helper of its own
     /// (harness-needs.md).
@@ -889,7 +890,7 @@ exit($? >> 8);
                 .expect("the add starts")
                 .into_inner();
             let asked = self.ended(&first).await;
-            let Some(pb::error::Kind::HostKeyChanged(key)) =
+            let Some(pb::error::Kind::HostKeyUnknown(key)) =
                 asked.error.clone().and_then(|error| error.kind)
             else {
                 panic!("the first add of {name} should stop at its host key; it ended {asked:?}");

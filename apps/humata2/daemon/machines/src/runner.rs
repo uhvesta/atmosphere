@@ -23,8 +23,6 @@ pub enum Purpose {
     Check,
     /// Streaming one file in.
     Install,
-    /// Moving a staged file into place once no holder runs.
-    Promote,
     /// Writing the peer link's enrollment key, sent on stdin (GRPC.md §8).
     Enroll,
     /// Writing and starting the user service.
@@ -43,6 +41,12 @@ pub enum Purpose {
     PeerLink,
     /// The link in a real terminal for an interactive login (MP-14).
     Login,
+    /// `humatad2 stop` on the machine, a one-off beside the peer link
+    /// (STOP, D262).
+    StopSessions,
+    /// A machine script, or the machine's own `humata`, run over the link
+    /// by a rule (MACHINESCRIPTS).
+    MachineScript,
 }
 
 /// The value of one variable a command gets.

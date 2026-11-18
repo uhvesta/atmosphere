@@ -2,8 +2,8 @@
 //! (SM-7, SM-9 to SM-12, SM-15 to SM-21, DK-9).
 
 use humata2_clients::comments::{
-    Anchor, Author, Call, Comment, CommentEvent, CommentId, CommentsClient, FakeComments, Side,
-    Status, Typing, Which,
+    Anchor, Author, Call, Comment, CommentEvent, CommentId, CommentsClient, Destination,
+    FakeComments, Side, Status, Typing, Which,
 };
 use humata2_clients::model::SessionId;
 use humata2_clients::DaemonError;
@@ -30,6 +30,7 @@ fn anchor(repo: &str, path: &str, first: u32, last: u32) -> Anchor {
         quoted: Vec::new(),
         base: None,
         detached: false,
+        outdated: false,
     }
 }
 
@@ -106,7 +107,10 @@ fn edit_refuses_a_stale_revision_and_a_comment_that_was_sent() {
         panic!("a current revision is accepted");
     };
     assert_eq!((edited.text.as_str(), edited.revision), ("two", 2));
-    assert!(is_refused(block_on(fake.edit(&comment.id, "three", 1))));
+    assert!(matches!(
+        block_on(fake.edit(&comment.id, "three", 1)),
+        Err(DaemonError::Conflict { .. })
+    ));
     sent(&fake, &[&edited]);
     let now = current(&fake, &comment.id);
     assert!(is_refused(block_on(fake.edit(&comment.id, "four", now.revision))));
@@ -421,4 +425,294 @@ fn fail_makes_a_call_fail_until_cleared_and_calls_are_recorded() {
     fake.clear_failure("send");
     assert!(block_on(fake.send(&session(), &[a.id.clone()])).is_ok());
     assert!(fake.calls().contains(&Call::Send(session(), vec![a.id.clone()])));
+}
+
+#[test]
+fn a_new_comment_is_for_the_terminal_and_the_user_with_no_link() {
+    let fake = FakeComments::new();
+    let comment = draft(&fake, "k1", "rename this");
+    assert_eq!(comment.destination, Destination::Terminal);
+    assert_eq!(comment.author, Author::User);
+    assert_eq!(comment.posted_url, None);
+    assert!(!comment.post_unconfirmed);
+    assert!(!comment.anchor.outdated);
+}
+
+#[test]
+fn notes_and_pull_request_drafts_are_listed_with_their_destination_and_author() {
+    let fake = FakeComments::new();
+    let terminal = draft(&fake, "k1", "rename this");
+    let note = fake.seed_note(
+        &session(),
+        anchor("api", "src/lib.rs", 9, 9),
+        "Check this",
+        Author::Agent("claude".to_owned()),
+    );
+    let pull_request = fake.seed_pull_request_draft(
+        &session(),
+        anchor("api", "src/main.rs", 2, 2),
+        "Nit",
+        Author::User,
+        "acme/api",
+        12,
+    );
+    assert_eq!(listing(&fake, Which::Open).comments.len(), 3);
+    assert_eq!(current(&fake, &terminal.id).destination, Destination::Terminal);
+    assert_eq!(current(&fake, &note.id).destination, Destination::Note);
+    assert_eq!(current(&fake, &note.id).author, Author::Agent("claude".to_owned()));
+    assert_eq!(
+        current(&fake, &pull_request.id).destination,
+        Destination::PullRequest { repo: "acme/api".to_owned(), number: 12 }
+    );
+}
+
+#[test]
+fn only_terminal_drafts_count_toward_the_badge_and_only_they_are_sent() {
+    let fake = FakeComments::new();
+    let terminal = draft(&fake, "k1", "rename this");
+    let note = fake.seed_note(&session(), anchor("api", "a.rs", 1, 1), "Check", Author::User);
+    let pull_request = fake.seed_pull_request_draft(
+        &session(),
+        anchor("api", "b.rs", 1, 1),
+        "Nit",
+        Author::User,
+        "acme/api",
+        12,
+    );
+    assert_eq!(listing(&fake, Which::Open).draft_count, 1);
+    assert!(is_refused(block_on(fake.send(&session(), &[note.id.clone()]))));
+    assert!(is_refused(block_on(fake.send(&session(), &[pull_request.id.clone()]))));
+    assert!(fake.typed(&session()).is_empty());
+
+    let result = sent(&fake, &[&terminal]);
+    assert_eq!(result.comments[0].status, Status::Sent);
+    assert_eq!(listing(&fake, Which::Open).draft_count, 0);
+}
+
+#[test]
+fn making_a_note_a_draft_keeps_its_id_author_and_anchor() {
+    let fake = FakeComments::new();
+    fake.set_review_pull_requests(&session(), vec![("acme/api".to_owned(), 12)]);
+    let note = fake.seed_note(
+        &session(),
+        anchor("api", "src/lib.rs", 9, 9),
+        "Check this",
+        Author::Agent("claude".to_owned()),
+    );
+    let made = match block_on(fake.make_note_a_draft(&note.id, Some(("acme/api", 12)))) {
+        Ok(comment) => comment,
+        Err(error) => panic!("a note becomes a draft: {error}"),
+    };
+    assert_eq!(made.id, note.id);
+    assert_eq!(made.author, Author::Agent("claude".to_owned()));
+    assert_eq!(made.anchor, note.anchor);
+    assert_eq!(made.revision, note.revision + 1);
+    assert_eq!(
+        made.destination,
+        Destination::PullRequest { repo: "acme/api".to_owned(), number: 12 }
+    );
+    assert_eq!(listing(&fake, Which::Open).draft_count, 0);
+}
+
+#[test]
+fn making_a_draft_refuses_a_terminal_comment_and_a_note_without_its_pull_request() {
+    let fake = FakeComments::new();
+    fake.set_review_pull_requests(&session(), vec![("acme/api".to_owned(), 12)]);
+    let terminal = draft(&fake, "k1", "rename this");
+    assert!(is_refused(block_on(fake.make_note_a_draft(&terminal.id, Some(("acme/api", 12))))));
+
+    // D284: with no pull request named, it is inferred from the note's
+    // repository; a note on one the review doesn't cover is refused.
+    let note = fake.seed_note(&session(), anchor("docs", "a.rs", 1, 1), "Check", Author::User);
+    assert!(is_refused(block_on(fake.make_note_a_draft(&note.id, None))));
+    assert_eq!(current(&fake, &note.id).destination, Destination::Note);
+}
+
+#[test]
+fn a_posted_pull_request_draft_keeps_its_link_and_can_no_longer_change() {
+    let fake = FakeComments::new();
+    let pull_request = fake.seed_pull_request_draft(
+        &session(),
+        anchor("api", "a.rs", 1, 1),
+        "Nit",
+        Author::User,
+        "acme/api",
+        12,
+    );
+    let url = "https://github.com/acme/api/pull/12#discussion_r1";
+    let posted = match fake.mark_posted(&pull_request.id, url) {
+        Ok(comment) => comment,
+        Err(error) => panic!("a pull request draft is posted: {error}"),
+    };
+    assert_eq!(posted.status, Status::Posted);
+    assert_eq!(posted.posted_url.as_deref(), Some(url));
+    assert!(is_refused(block_on(fake.edit(&pull_request.id, "changed", posted.revision))));
+    assert_eq!(listing(&fake, Which::Open).comments.len(), 1);
+}
+
+#[test]
+fn marking_posted_refuses_a_comment_that_is_not_a_pull_request_draft() {
+    let fake = FakeComments::new();
+    let terminal = draft(&fake, "k1", "rename this");
+    assert!(fake.mark_posted(&terminal.id, "https://example.test/c/1").is_err());
+    assert_eq!(current(&fake, &terminal.id).posted_url, None);
+}
+
+#[test]
+fn post_unconfirmed_and_outdated_are_carried_and_a_posted_draft_is_never_unconfirmed() {
+    let fake = FakeComments::new();
+    let pull_request = fake.seed_pull_request_draft(
+        &session(),
+        anchor("api", "a.rs", 1, 1),
+        "Nit",
+        Author::User,
+        "acme/api",
+        12,
+    );
+    let outdated = match fake.set_outdated(&pull_request.id, true) {
+        Ok(comment) => comment,
+        Err(error) => panic!("outdated is set: {error}"),
+    };
+    assert!(outdated.anchor.outdated);
+
+    let unconfirmed = match fake.set_post_unconfirmed(&pull_request.id, true) {
+        Ok(comment) => comment,
+        Err(error) => panic!("post unconfirmed is set: {error}"),
+    };
+    assert!(unconfirmed.post_unconfirmed);
+
+    let posted = match fake.mark_posted(&pull_request.id, "https://example.test/pr/12") {
+        Ok(comment) => comment,
+        Err(error) => panic!("a pull request draft is posted: {error}"),
+    };
+    assert!(!posted.post_unconfirmed);
+    assert!(fake.set_post_unconfirmed(&pull_request.id, true).is_err());
+}
+
+fn note_on(fake: &FakeComments, repo: &str) -> Comment {
+    fake.seed_note(&session(), anchor(repo, "src/lib.rs", 9, 9), "Check this", Author::User)
+}
+
+fn made_a_draft(fake: &FakeComments, id: &CommentId, pr: Option<(&str, u32)>) -> Comment {
+    match block_on(fake.make_note_a_draft(id, pr)) {
+        Ok(comment) => comment,
+        Err(error) => panic!("the note becomes a draft: {error}"),
+    }
+}
+
+#[test]
+fn a_draft_with_no_pull_request_named_takes_the_only_one_in_the_notes_repository() {
+    let fake = FakeComments::new();
+    fake.set_review_pull_requests(
+        &session(),
+        vec![("acme/api".to_owned(), 12), ("acme/web".to_owned(), 3)],
+    );
+    // By the full name and by the folder name the note's repo shows as.
+    let by_full_name = note_on(&fake, "acme/api");
+    let by_folder = note_on(&fake, "web");
+    assert_eq!(
+        made_a_draft(&fake, &by_full_name.id, None).destination,
+        Destination::PullRequest { repo: "acme/api".to_owned(), number: 12 }
+    );
+    assert_eq!(
+        made_a_draft(&fake, &by_folder.id, None).destination,
+        Destination::PullRequest { repo: "acme/web".to_owned(), number: 3 }
+    );
+}
+
+#[test]
+fn a_draft_with_no_pull_request_named_is_refused_when_none_or_several_match() {
+    let fake = FakeComments::new();
+    fake.set_review_pull_requests(
+        &session(),
+        vec![("acme/api".to_owned(), 12), ("acme/api".to_owned(), 13)],
+    );
+    let several = note_on(&fake, "api");
+    let none = note_on(&fake, "docs");
+    assert!(is_refused(block_on(fake.make_note_a_draft(&several.id, None))));
+    assert!(is_refused(block_on(fake.make_note_a_draft(&none.id, None))));
+    assert_eq!(current(&fake, &several.id).destination, Destination::Note);
+    assert_eq!(current(&fake, &none.id).destination, Destination::Note);
+
+    // Naming the pull request settles the several-match case.
+    let named = made_a_draft(&fake, &several.id, Some(("acme/api", 13)));
+    assert_eq!(
+        named.destination,
+        Destination::PullRequest { repo: "acme/api".to_owned(), number: 13 }
+    );
+}
+
+#[test]
+fn a_review_with_no_pull_requests_refuses_inference_and_a_named_one_that_is_not_bound() {
+    let fake = FakeComments::new();
+    let note = note_on(&fake, "api");
+    assert!(is_refused(block_on(fake.make_note_a_draft(&note.id, None))));
+    assert!(is_refused(block_on(fake.make_note_a_draft(&note.id, Some(("acme/api", 12))))));
+    assert_eq!(current(&fake, &note.id).destination, Destination::Note);
+}
+
+#[test]
+fn making_a_draft_of_a_pull_request_draft_returns_it_as_it_is() {
+    let fake = FakeComments::new();
+    fake.set_review_pull_requests(&session(), vec![("acme/api".to_owned(), 12)]);
+    let note = note_on(&fake, "api");
+    let first = made_a_draft(&fake, &note.id, None);
+    let again = made_a_draft(&fake, &note.id, None);
+    assert_eq!(again, first);
+}
+
+fn pull_request_draft(fake: &FakeComments, key: &str, repo: &str, number: u32) -> Result<Comment, DaemonError> {
+    block_on(fake.create_for_pull_request(
+        &session(),
+        anchor(repo, "src/lib.rs", 7, 7),
+        "Nit",
+        repo,
+        number,
+        key,
+    ))
+}
+
+#[test]
+fn creating_a_pull_request_draft_makes_a_user_draft_for_it_that_is_not_typed() {
+    let fake = FakeComments::new();
+    fake.set_review_pull_requests(&session(), vec![("acme/api".to_owned(), 12)]);
+    let made = match pull_request_draft(&fake, "k1", "acme/api", 12) {
+        Ok(comment) => comment,
+        Err(error) => panic!("a draft for a bound pull request is made: {error}"),
+    };
+    assert_eq!(made.status, Status::Draft);
+    assert_eq!(made.author, Author::User);
+    assert_eq!(made.destination, Destination::PullRequest { repo: "acme/api".to_owned(), number: 12 });
+    let listed = listing(&fake, Which::Open);
+    assert_eq!(listed.comments, vec![made.clone()]);
+    assert_eq!(listed.draft_count, 0);
+    assert!(is_refused(block_on(fake.send(&session(), &[made.id]))));
+}
+
+#[test]
+fn a_pull_request_draft_is_refused_for_one_the_review_does_not_hold_or_when_blank() {
+    let fake = FakeComments::new();
+    assert!(is_refused(pull_request_draft(&fake, "k1", "acme/api", 12)));
+    fake.set_review_pull_requests(&session(), vec![("acme/api".to_owned(), 12)]);
+    assert!(is_refused(pull_request_draft(&fake, "k2", "acme/api", 99)));
+    let blank = block_on(fake.create_for_pull_request(
+        &session(),
+        anchor("acme/api", "a.rs", 1, 1),
+        "  ",
+        "acme/api",
+        12,
+        "k3",
+    ));
+    assert!(is_refused(blank));
+    assert!(listing(&fake, Which::Open).comments.is_empty());
+}
+
+#[test]
+fn the_same_key_makes_one_pull_request_draft() {
+    let fake = FakeComments::new();
+    fake.set_review_pull_requests(&session(), vec![("acme/api".to_owned(), 12)]);
+    let first = pull_request_draft(&fake, "k1", "acme/api", 12);
+    let again = pull_request_draft(&fake, "k1", "acme/api", 12);
+    assert_eq!(first.map(|c| c.id), again.map(|c| c.id));
+    assert_eq!(listing(&fake, Which::Open).comments.len(), 1);
 }

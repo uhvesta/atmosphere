@@ -72,11 +72,12 @@ enum Capability {
   // and it is never low-risk (D20). An uncontained agent can open its own
   // connections from its machine whatever this says (SEC-5, HO-12).
   CAPABILITY_NETWORK_REACH = 20;
-  // "Stop or delete any session but itself", archive included (D21).
-  // Default Never.
+  // "Stop or archive any session but itself" (D21, D306). Default Ask me.
+  // Deleting another session is CAPABILITY_SESSION_DELETE_OTHER.
   CAPABILITY_SESSION_STOP_OTHER = 21;
-  // Change channel settings or repos (not access: that is user-only; not
-  // deleting the channel: that is CHANNEL_DELETE). Default Never.
+  // Change channel settings, or remove a repo from a channel (not access:
+  // that is user-only; not deleting the channel: that is CHANNEL_DELETE; not
+  // adding a repo: that is CHANNEL_REPO_ADD). Default Never.
   CAPABILITY_CHANNEL_CHANGE = 22;
   // "Fetch files from shared/, the channel folder or a main clone on its
   // machine into its own clone" (file_fetch). Default Allow.
@@ -124,6 +125,23 @@ enum Capability {
   // "Resolve": resolve one with a note on what was done (comment_resolve,
   // SM-19).
   CAPABILITY_COMMENT_RESOLVE = 43;
+  // "Stop or start all sessions on a machine" (STOP, D263). Default Never.
+  CAPABILITY_MACHINE_SESSIONS_STOP = 44;
+  // "Add a repo to a channel" (CH-26, D304): an agent proposes a GitHub repo
+  // for a channel. Default Ask me. No "Always allow ..." (a grant would cover
+  // one repo and be spent by its use).
+  CAPABILITY_CHANNEL_REPO_ADD = 45;
+  // "Move a Desk session into a channel" (DK-15, D305): a Desk session's
+  // agent asks to move its own session; the target channel's rule decides.
+  // Ask me or Never; no "Always allow ..."; never approved while away.
+  CAPABILITY_DESK_MOVE_TO_CHANNEL = 46;
+  // "Delete any session but itself" (D306), split from stopping and
+  // archiving. Default Never.
+  CAPABILITY_SESSION_DELETE_OTHER = 47;
+  // SEAM (MACHINESCRIPTS, D688): "Run a machine script now" from an agent
+  // (humata machine script run). Default Never. Triggered runs are the
+  // owner's own automation and need no capability.
+  CAPABILITY_MACHINE_SCRIPT_RUN = 48;
 
   // ----- User-only: no rule, never granted, no MCP tool. -----
 

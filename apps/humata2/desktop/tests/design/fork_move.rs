@@ -256,8 +256,57 @@ pub fn move_dialog(look: Look) -> Div {
     dialog(look, under, 110., 600., body)
 }
 
+/// Draft frame 113 (ROAM R2): Continue in another channel… (CV-8), the
+/// Move dialog's choices as channels and the Fork dialog's "Fork from"
+/// row as "Continue from", over the session it continues.
+pub fn continue_in_channel(look: Look) -> Div {
+    let under = rate_limiter(look);
+    let line = |glyph: IconName, text: &'static str| {
+        div().flex().items_start().gap(px(8.)).child(div().mt(px(1.)).child(small_icon(glyph, look.secondary))).child(div().flex_1().min_w_0().child(text))
+    };
+    let body = div()
+        .child(heading("Continue “API rate limiter” in another channel"))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(machine_row(look, false, "# payments-rewrite", "here now", false))
+                .child(machine_row(look, false, "# infra", "acme/infra", true))
+                .child(machine_row(look, false, "# pr-reviews", "acme/api", true))
+                .child(machine_row(look, true, "# web", "acme/web", true)),
+        )
+        .child(row(
+            look,
+            "Continue from",
+            div().flex().items_center().gap(px(8.)).child(popup(look, "Before turn 3")).child(secondary(look, "or before an earlier turn")).child(div().flex_1()),
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(7.))
+                .p(px(10.))
+                .rounded(px(8.))
+                .bg(c(look.fill))
+                .text_size(px(12.))
+                .child(line(IconName::FolderGit2, "A new session in # web, on its repos and a branch of its own; its agent picks up a copy of the conversation."))
+                .child(line(IconName::ShieldCheck, "“API rate limiter” stays as it is.")),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(8.))
+                .pt(px(4.))
+                .child(div().flex_1())
+                .child(button(look, Kind::Secondary, "Cancel"))
+                .child(button(look, Kind::Primary, "Continue in # web")),
+        );
+    dialog(look, under, 110., 600., body)
+}
+
 /// One step of the move: a mark, its words, and how it stands.
-fn step(look: Look, mark: &'static str, hex: u32, text: &'static str, dim: bool) -> Div {
+pub(crate) fn step(look: Look, mark: &'static str, hex: u32, text: &'static str, dim: bool) -> Div {
     div()
         .flex()
         .items_center()

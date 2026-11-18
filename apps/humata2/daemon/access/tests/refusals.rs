@@ -25,6 +25,24 @@ fn refused(principal: &Principal, call: &Call) -> Refusal {
     refusal_of(check(&policy(), principal, call, &on_mac()))
 }
 
+/// D335: what is pasted into a session's terminals is the user's, like the
+/// home folder: no agent reads or writes it, not even the session's own.
+#[test]
+fn a_sessions_pastes_are_the_users_alone() {
+    let pastes = Place {
+        root: Root::Pastes(a()),
+        ..file_of(&a(), "paste-1/notes.txt")
+    };
+    assert!(matches!(
+        check(&policy(), &Principal::App, &write(pastes.clone()), &on_mac()),
+        Verdict::Allowed { .. }
+    ));
+    for call in [read(pastes.clone()), write(pastes)] {
+        let refusal = refused(&as_agent(a()), &call);
+        assert_eq!(refusal.kind(), ErrorKind::OutsideHumataFolders, "{call:?}");
+    }
+}
+
 fn main_clone(file: &str) -> Place {
     Place {
         machine: mac(),
@@ -156,11 +174,7 @@ fn an_agent_writes_only_its_own_folders() {
         root: Root::ChannelFolder(payments()),
         ..file_of(&a(), "notes.md")
     };
-    for place in [
-        file_of(&b(), "src/lib.rs"),
-        channel_folder,
-        shared_on(the_box(), payments(), "notes.md"),
-    ] {
+    for place in [file_of(&b(), "src/lib.rs"), channel_folder] {
         let refusal = refused(&as_agent(a()), &write(place.clone()));
         assert_eq!(
             refusal.kind(),
@@ -176,6 +190,93 @@ fn an_agent_writes_only_its_own_folders() {
         &write(shared_on(mac(), payments(), "notes.md")),
         &on_mac(),
     )));
+}
+
+/// D755: shared/ on another machine of the channel is never an agent's to
+/// write; it puts the file in shared/ on its own machine for a session
+/// there to pull.
+#[test]
+fn an_agent_writes_shared_only_on_its_own_machine() {
+    let refusal = refused(
+        &as_agent(a()),
+        &write(shared_on(the_box(), payments(), "notes.md")),
+    );
+    assert_eq!(
+        refusal,
+        Refusal::SharedOnOtherMachine {
+            machine: the_box(),
+            here: mac(),
+        }
+    );
+    assert_eq!(refusal.kind(), ErrorKind::Denied(DeniedSource::HardLimit));
+    assert_eq!(
+        refusal.fix(),
+        Fix::PutInSharedHereForPull { machine: the_box() }
+    );
+}
+
+/// TP-4: the pull direction works. A session on the box copying a file
+/// from shared/ on the Mac into shared/ on its own machine needs only the
+/// copy-in.
+#[test]
+fn an_agent_pulls_another_machines_file_into_its_own_shared() {
+    let verdict = check(
+        &policy(),
+        &as_agent(c()),
+        &Call::CopyFiles {
+            from: shared_on(mac(), payments(), "note.txt"),
+            into: shared_on(the_box(), payments(), "note.txt"),
+        },
+        &on_mac(),
+    );
+    match verdict {
+        Verdict::Ask(request) => assert_eq!(request.capability, Capability::FilesCopyIn),
+        Verdict::Allowed { .. } => {}
+        other => panic!("expected the pull to go ahead or ask for copy-in, got {other:?}"),
+    }
+}
+
+/// A copy that would land in shared/ on another machine is refused for the
+/// landing, whatever its source.
+#[test]
+fn a_copy_into_a_remote_shared_is_refused_before_its_source_is_judged() {
+    for from in [
+        file_of(&a(), "src/lib.rs"),
+        shared_on(mac(), payments(), "note.txt"),
+        outside(),
+    ] {
+        let refusal = refused(
+            &as_agent(a()),
+            &Call::CopyFiles {
+                from: from.clone(),
+                into: shared_on(the_box(), payments(), "note.txt"),
+            },
+        );
+        assert!(
+            matches!(refusal, Refusal::SharedOnOtherMachine { .. }),
+            "{from:?}: {refusal:?}"
+        );
+    }
+}
+
+/// A send to another machine by name alone lands in its received/ folder;
+/// an agent can't write there, and the refusal gives D755's pull hint, not
+/// a path that leaves Humata's folders.
+#[test]
+fn a_copy_into_another_machines_received_folder_says_to_pull_from_there() {
+    let refusal = refused(
+        &as_agent(c()),
+        &Call::CopyFiles {
+            from: file_of(&c(), "note.txt"),
+            into: Place {
+                machine: mac(),
+                root: Root::Received,
+                path: path("the-box/note.txt"),
+                entry: Entry::File,
+            },
+        },
+    );
+    assert!(matches!(refusal, Refusal::SharedOnOtherMachine { .. }), "{refusal:?}");
 }
 
 #[test]
@@ -215,19 +316,28 @@ fn user_only_and_peer_only_capabilities_are_not_an_agents() {
     assert_eq!(refusal.fix(), Fix::Nothing);
 }
 
+/// The user can start a stopped machine, so the refusal doesn't say that
+/// nothing helps.
+#[test]
+fn a_stopped_machine_is_fixed_by_the_user_starting_it() {
+    let refusal = Refusal::MachineStopped { machine: mac() };
+    assert_eq!(refusal.fix(), Fix::UserStartsMachine { machine: mac() });
+    assert_ne!(refusal.fix(), Fix::Nothing);
+}
+
 #[test]
 fn a_never_rule_names_the_rule_to_change() {
     // Never by default.
     let refusal = refused(
         &as_agent(a()),
-        &use_on(Capability::SessionStopOther, Target::Session(b())),
+        &use_on(Capability::SessionDeleteOther, Target::Session(b())),
     );
     assert_eq!(refusal.kind(), ErrorKind::Denied(DeniedSource::NeverRule));
     assert_eq!(
         refusal.fix(),
         Fix::UserChangesRule {
             channel: payments(),
-            capability: Capability::SessionStopOther,
+            capability: Capability::SessionDeleteOther,
         }
     );
 }
@@ -502,10 +612,13 @@ fn the_capability_list_matches_the_trace_matrix() {
     let count = |tier: Tier| all.iter().filter(|c| c.tier() == tier).count();
     // TRACE.md §2's rows.
     assert_eq!(count(Tier::DefaultAllow), 15);
-    // GLOBAL_BOARD_WRITE joined Ask me with D155.
-    assert_eq!(count(Tier::AskMe), 17);
-    assert_eq!(count(Tier::AskNoAllow), 1);
-    assert_eq!(count(Tier::NeverByDefault), 3);
+    // GLOBAL_BOARD_WRITE joined Ask me with D155, CHANNEL_REPO_ADD with D304,
+    // SESSION_STOP_OTHER with D306 (SESSION_DELETE_OTHER took its Never place).
+    assert_eq!(count(Tier::AskMe), 19);
+    // DESK_MOVE_TO_CHANNEL joined NETWORK_REACH with D305.
+    assert_eq!(count(Tier::AskNoAllow), 2);
+    // MACHINE_SCRIPT_RUN joined them with D688.
+    assert_eq!(count(Tier::NeverByDefault), 5);
     assert_eq!(count(Tier::UserOnly), 11);
     assert_eq!(count(Tier::Peer), 2);
     // Rules exist for the agent tiers only.

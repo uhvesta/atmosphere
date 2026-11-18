@@ -45,6 +45,27 @@ impl Status {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    Milestone,
+    Task,
+    Step,
+}
+impl Kind {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Milestone => "Milestone",
+            Self::Task => "Task",
+            Self::Step => "Step",
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Scope {
+    Global,
+    Channel(usize),
+}
+
 pub(super) struct Comment {
     pub(super) body: String,
     pub(super) author: &'static str,
@@ -66,7 +87,7 @@ pub(super) enum Change {
         after_details: String,
     },
     BlockersSet {
-        ids: Vec<&'static str>,
+        ids: Vec<String>,
         note: String,
     },
     Commented {
@@ -109,7 +130,11 @@ impl Change {
 }
 
 pub(super) struct Item {
-    pub(super) id: &'static str,
+    pub(super) id: String,
+    pub(super) kind: Kind,
+    pub(super) scope: Scope,
+    pub(super) parent: Option<usize>,
+    pub(super) session: Option<usize>,
     pub(super) title: String,
     pub(super) details: String,
     pub(super) status: Status,
@@ -125,6 +150,7 @@ pub(super) struct Board {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum BoardError {
     EmptyTitle { item: usize },
+    InvalidParent { parent: Option<usize> },
     EmptyComment { item: usize },
     MissingBlocker { item: usize },
     SelfDependency { item: usize },
@@ -133,6 +159,7 @@ pub(super) enum BoardError {
 impl fmt::Display for BoardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::InvalidParent { .. } => "A step must belong to a milestone. Tasks and milestones stand alone.",
             Self::EmptyTitle { .. } => "Add a title before saving the item.",
             Self::EmptyComment { .. } => "Write a comment before adding it.",
             Self::MissingBlocker { .. } => "Choose a prerequisite item or describe an external blocker.",
@@ -165,23 +192,27 @@ impl Default for Board {
                 Status::InReview,
             ),
             (
-                "S1-2",
+                "PAY-4",
                 "Write the rollback migration",
                 "Restore the previous posting path before removing the new tables. Existing invoices must remain readable.",
                 Status::InProgress,
             ),
             (
-                "S1-3",
+                "PAY-5",
                 "Add property test for balance",
                 "Generate balanced posting batches and prove that their sum is zero. Reject any batch that violates the invariant.",
                 Status::Todo,
             ),
         ];
-        Self {
+        let mut board = Self {
             items: seeds
                 .into_iter()
                 .map(|(id, title, details, status)| Item {
-                    id,
+                    id: id.into(),
+                    kind: Kind::Task,
+                    scope: Scope::Global,
+                    parent: None,
+                    session: None,
                     title: title.into(),
                     details: details.into(),
                     status,
@@ -194,10 +225,113 @@ impl Default for Board {
                     }],
                 })
                 .collect(),
+        };
+        let ledger = board
+            .create(
+                Kind::Milestone,
+                Scope::Channel(0),
+                None,
+                "Ship the new ledger".into(),
+            )
+            .unwrap();
+        board.items[ledger].details =
+            "Deliver a reversible double-entry ledger with tested balance invariants.".into();
+        board.items[ledger].status = Status::InProgress;
+        for index in [2, 3, 4] {
+            board.items[index].kind = Kind::Step;
+            board.items[index].scope = Scope::Channel(0);
+            board.items[index].parent = Some(ledger);
+            board.items[index].session = Some(0);
         }
+        board.items[1].scope = Scope::Channel(0);
+        board.items[1].session = Some(1);
+        let launch = board
+            .create(
+                Kind::Milestone,
+                Scope::Global,
+                None,
+                "Prepare the release".into(),
+            )
+            .unwrap();
+        board.items[launch].details = "Coordinate release readiness across projects.".into();
+        board
+            .create(
+                Kind::Step,
+                Scope::Global,
+                Some(launch),
+                "Review the release checklist".into(),
+            )
+            .unwrap();
+        board
+            .create(
+                Kind::Task,
+                Scope::Channel(1),
+                None,
+                "Fix dashboard empty state".into(),
+            )
+            .unwrap();
+        board
     }
 }
 impl Board {
+    pub(super) fn create(
+        &mut self,
+        kind: Kind,
+        scope: Scope,
+        parent: Option<usize>,
+        title: String,
+    ) -> Result<usize, BoardError> {
+        let index = self.items.len();
+        if title.trim().is_empty() {
+            return Err(BoardError::EmptyTitle { item: index });
+        }
+        if (kind == Kind::Step
+            && !parent.is_some_and(|p| {
+                self.items
+                    .get(p)
+                    .is_some_and(|item| item.kind == Kind::Milestone)
+            }))
+            || (kind != Kind::Step && parent.is_some())
+        {
+            return Err(BoardError::InvalidParent { parent });
+        }
+        let scope = parent.map(|p| self.items[p].scope).unwrap_or(scope);
+        self.items.push(Item {
+            id: format!(
+                "{}-{}",
+                match scope {
+                    Scope::Global => "G",
+                    Scope::Channel(0) => "PAY",
+                    Scope::Channel(_) => "WORK",
+                },
+                index + 10
+            ),
+            kind,
+            scope,
+            parent,
+            session: None,
+            title: title.trim().into(),
+            details: String::new(),
+            status: Status::Todo,
+            blocked_on: vec![],
+            blocker_note: String::new(),
+            comments: vec![],
+            history: vec![HistoryEntry {
+                author: "You",
+                change: Change::Created,
+            }],
+        });
+        Ok(index)
+    }
+    pub(super) fn children(&self, parent: usize) -> Vec<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.parent == Some(parent))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     pub(super) fn move_item(&mut self, item: usize, to: Status) {
         let from = self.items[item].status;
         if from == to {
@@ -288,7 +422,7 @@ impl Board {
         }
         on.sort_unstable();
         on.dedup();
-        let ids = on.iter().map(|i| self.items[*i].id).collect();
+        let ids = on.iter().map(|i| self.items[*i].id.clone()).collect();
         self.items[item].blocked_on = on;
         self.items[item].blocker_note = note.clone();
         self.items[item].history.push(HistoryEntry {
@@ -303,6 +437,43 @@ impl Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn steps_inherit_milestone_scope_and_standalone_tasks_cannot_have_parents() {
+        let mut board = Board::default();
+        let milestone = board
+            .create(
+                Kind::Milestone,
+                Scope::Channel(1),
+                None,
+                "Ship the dashboard".into(),
+            )
+            .unwrap();
+        let step = board
+            .create(
+                Kind::Step,
+                Scope::Global,
+                Some(milestone),
+                "Add empty states".into(),
+            )
+            .unwrap();
+        assert_eq!(board.items[step].scope, Scope::Channel(1));
+        assert_eq!(board.items[step].parent, Some(milestone));
+        assert!(
+            board
+                .create(
+                    Kind::Task,
+                    Scope::Global,
+                    Some(milestone),
+                    "Standalone".into()
+                )
+                .is_err()
+        );
+        assert!(
+            board
+                .create(Kind::Step, Scope::Global, None, "Orphan".into())
+                .is_err()
+        );
+    }
     #[test]
     fn blocked_items_can_reference_prerequisites_or_external_reasons() {
         let mut board = Board::default();

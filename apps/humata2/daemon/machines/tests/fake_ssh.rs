@@ -14,10 +14,10 @@ use std::time::Duration;
 use fake_machine::{FakeMachine, FakeSshRunner, Fault};
 use humata2_machines::{
     AddSsh, Builds, BuildsError, Drive, EntryState, InstalledFile, Machines, MachinesConfig, ManageError,
-    Payload, Platform, Purpose, RetryPolicy, SetupError, StepEvent,
+    Payload, Platform, Purpose, RetryPolicy, SetupError, StackConfig, StackConfigError, StepEvent,
 };
 
-/// The same three files for every platform; `version` changes their bytes.
+/// The same files for every platform; `version` changes their bytes.
 struct Files(u32);
 
 impl Files {
@@ -35,6 +35,36 @@ impl Files {
 impl Builds for Files {
     fn payloads(&self, _platform: Platform) -> Result<Vec<Payload>, BuildsError> {
         Ok(Files::payloads(self))
+    }
+}
+
+/// [`Files`] that also name their release: what a tools bundle gives.
+struct Released(u32);
+
+impl Released {
+    const BUNDLE: &'static [u8] = b"{\"platforms\":{}}";
+}
+
+impl Builds for Released {
+    fn payloads(&self, _platform: Platform) -> Result<Vec<Payload>, BuildsError> {
+        Ok(Files(self.0).payloads())
+    }
+
+    fn bundle_json(&self, _platform: Platform) -> Result<Option<Arc<[u8]>>, BuildsError> {
+        Ok(Some(Arc::from(Self::BUNDLE)))
+    }
+}
+
+/// [`Files`] of build 1 that also give the host's stack settings.
+struct WithSettings(StackConfig);
+
+impl Builds for WithSettings {
+    fn payloads(&self, _platform: Platform) -> Result<Vec<Payload>, BuildsError> {
+        Ok(Files(1).payloads())
+    }
+
+    fn stack_config(&self) -> Result<Option<StackConfig>, StackConfigError> {
+        Ok(Some(self.0.clone()))
     }
 }
 
@@ -159,7 +189,7 @@ fn assert_clean(host: &Host, machine: &FakeMachine) {
 }
 
 #[test]
-fn adding_a_machine_needs_its_host_key_confirmed_and_installs_all_three_tools() {
+fn adding_a_machine_needs_its_host_key_confirmed_and_installs_all_the_tools() {
     let host = Host::new();
     let machine = FakeMachine::new();
     let fingerprint = fingerprint(&host, &machine);
@@ -292,6 +322,41 @@ fn a_name_already_added_is_refused_before_anything_runs() {
 }
 
 #[test]
+fn an_add_while_a_removal_is_on_its_way_is_refused_as_being_removed_until_it_finishes() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
+    let machines = host.machines();
+
+    // The removal is asked for and answered with, but hasn't run yet.
+    machines.removing("box-1");
+    assert!(matches!(
+        machines.plan_add(&request(None)),
+        Err(ManageError::BeingRemoved { .. })
+    ));
+
+    drive(&machine.runner(), &Files(1), |drive| machines.remove("box-1", drive)).0.unwrap();
+    assert!(machines.plan_add(&request(None)).is_ok());
+}
+
+#[test]
+fn an_add_while_a_removal_waits_for_its_machine_is_refused_as_being_removed() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
+    let machines = host.machines();
+    let runner = machine.runner().fault_at(0, Fault::MachineKilled);
+    let cut = drive(&runner, &Files(1), |drive| machines.remove("box-1", drive)).0;
+    assert!(matches!(cut, Err(ManageError::UninstallFailed { .. })));
+
+    // A fresh Machines, as after a restart: the entry still says Removing.
+    assert!(matches!(
+        host.machines().plan_add(&request(None)),
+        Err(ManageError::BeingRemoved { .. })
+    ));
+}
+
+#[test]
 fn reconnecting_with_the_same_build_installs_nothing() {
     let host = Host::new();
     let machine = FakeMachine::new();
@@ -303,14 +368,13 @@ fn reconnecting_with_the_same_build_installs_nothing() {
 
     assert_eq!(entry.unwrap().state, EntryState::Ready);
     assert_eq!(runner.ran(Purpose::Install), 0);
-    assert_eq!(runner.ran(Purpose::Promote), 0);
     // The daemon keeps running: nothing changed, so nothing restarts.
     assert_eq!(runner.ran(Purpose::Service), 0);
     assert_has(&machine, &Files(1));
 }
 
 #[test]
-fn reconnecting_starts_the_service_again_only_when_it_stopped_or_a_file_changed() {
+fn reconnecting_starts_the_service_again_only_when_it_stopped_and_leaves_a_new_build_to_migrate() {
     let host = Host::new();
     let machine = FakeMachine::new();
     add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
@@ -322,42 +386,99 @@ fn reconnecting_starts_the_service_again_only_when_it_stopped_or_a_file_changed(
     assert_eq!(entry.unwrap().state, EntryState::Ready);
     assert_eq!(runner.ran(Purpose::Service), 1);
 
+    // A newer build than the one installed: a reconnect doesn't upgrade a
+    // machine that already runs humatad2 (UP-1); Migrate does.
     let runner = machine.runner();
     let (entry, _) = drive(&runner, &Files(2), |drive| machines.reconnect("box-1", drive));
     assert_eq!(entry.unwrap().state, EntryState::Ready);
-    assert_eq!(runner.ran(Purpose::Service), 1);
-    assert_has(&machine, &Files(2));
+    assert_eq!(runner.ran(Purpose::Install), 0);
+    assert_eq!(runner.ran(Purpose::Service), 0);
+    assert_has(&machine, &Files(1));
 }
 
 #[test]
-fn a_new_build_waits_for_running_holders_then_goes_in() {
+fn a_new_build_is_left_alone_while_holders_run_and_nothing_waits_beside_it() {
     let host = Host::new();
     let machine = FakeMachine::new();
     add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
-    let old = Files(1).payloads();
-    let new = Files(2).payloads();
 
     machine.set("holder");
     let machines = host.machines();
-    let (entry, _) = drive(&machine.runner(), &Files(2), |drive| machines.reconnect("box-1", drive));
-    let entry = entry.unwrap();
+    let runner = machine.runner();
+    let (entry, _) = drive(&runner, &Files(2), |drive| machines.reconnect("box-1", drive));
+    // The machine stays usable on its build; Migrate brings the new one.
+    assert_eq!(entry.unwrap().state, EntryState::Ready);
+    assert_has(&machine, &Files(1));
+    assert_eq!(machine.installed(".humata2_holder.staged"), None);
+    assert_eq!(machine.installed(".humata.staged"), None);
+    assert_eq!(runner.ran(Purpose::Install), 0);
+}
 
-    // humatad2 never waits; the holder and humata do, beside the old ones.
-    assert_eq!(machine.installed("humatad2").as_deref(), Some(&new[0].bytes()[..]));
-    assert_eq!(machine.installed("humata2_holder").as_deref(), Some(&old[1].bytes()[..]));
-    assert_eq!(machine.installed("humata").as_deref(), Some(&old[2].bytes()[..]));
-    assert_eq!(machine.installed(".humata2_holder.staged").as_deref(), Some(&new[1].bytes()[..]));
-    assert_eq!(entry.staged, ["humata2_holder", "humata"]);
+#[test]
+fn the_hosts_stack_settings_reach_a_machine_without_their_secrets_and_follow_the_file() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    let first = WithSettings(StackConfig::from_text("prefix = \"alice\"\ngh_token = \"ghp_abc\"\n"));
+    add(&host, &machine, &machine.runner(), &first).unwrap();
+    let settings = machine.home().join(".humata2/config/stack.toml");
+    assert_eq!(std::fs::read(&settings).unwrap(), b"prefix = \"alice\"\n");
 
-    machine.clear("holder");
+    // The file changes on the host; the tools are what they were.
+    let machines = host.machines();
+    let runner = machine.runner();
+    let second = WithSettings(StackConfig::from_text("prefix = \"bob\"\n"));
+    let (entry, _) = drive(&runner, &second, |drive| machines.reconnect("box-1", drive));
+
+    assert_eq!(entry.unwrap().state, EntryState::Ready);
+    assert_eq!(std::fs::read(&settings).unwrap(), b"prefix = \"bob\"\n");
+    assert_has(&machine, &Files(1));
+    // Settings alone don't restart the daemon.
+    assert_eq!(runner.ran(Purpose::Service), 0);
+}
+
+#[test]
+fn a_host_with_no_stack_settings_leaves_the_machines_own_copy_alone() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    let settings = machine.home().join(".humata2/config/stack.toml");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, b"prefix = \"mine\"\n").unwrap();
+
+    add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
+
+    assert_eq!(std::fs::read(&settings).unwrap(), b"prefix = \"mine\"\n");
+}
+
+#[test]
+fn a_file_the_machine_lacks_is_put_back_and_the_others_are_not_touched() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+    add(&host, &machine, &machine.runner(), &Files(1)).unwrap();
+    std::fs::remove_file(machine.bin().join("humata2_holder")).unwrap();
+    let old = Files(1).payloads();
+    let new = Files(2).payloads();
+
+    let machines = host.machines();
     let runner = machine.runner();
     let (entry, _) = drive(&runner, &Files(2), |drive| machines.reconnect("box-1", drive));
 
-    assert_eq!(entry.unwrap().staged, Vec::<String>::new());
-    assert_has(&machine, &Files(2));
-    assert_eq!(machine.installed(".humata2_holder.staged"), None);
-    // Moved in from the staged copies, not sent again.
-    assert_eq!(runner.ran(Purpose::Install), 0);
+    assert_eq!(entry.unwrap().state, EntryState::Ready);
+    assert_eq!(runner.ran(Purpose::Install), 1);
+    assert_eq!(machine.installed("humata2_holder").as_deref(), Some(&new[1].bytes()[..]));
+    assert_eq!(machine.installed("humatad2").as_deref(), Some(&old[0].bytes()[..]));
+    assert_eq!(machine.installed("humata").as_deref(), Some(&old[2].bytes()[..]));
+    assert_eq!(machine.installed("stack").as_deref(), Some(&old[3].bytes()[..]));
+}
+
+#[test]
+fn a_first_install_writes_the_releases_bundle_json_after_the_tools() {
+    let host = Host::new();
+    let machine = FakeMachine::new();
+
+    add(&host, &machine, &machine.runner(), &Released(1)).unwrap();
+
+    assert_has(&machine, &Files(1));
+    assert_eq!(machine.installed("bundle.json").as_deref(), Some(Released::BUNDLE));
 }
 
 #[test]

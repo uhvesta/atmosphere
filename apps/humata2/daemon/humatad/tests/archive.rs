@@ -133,6 +133,7 @@ impl Fixture {
                 model: String::new(),
                 machine: None,
                 branch: String::new(),
+                reason: String::new(),
             })
             .await
             .unwrap()
@@ -313,8 +314,10 @@ async fn restoring_a_branch_never_pushed_starts_it_from_main() {
 }
 
 #[tokio::test]
-async fn a_restart_inside_the_window_finishes_the_delete() {
-    let mut fixture = Fixture::new(NEVER).await;
+async fn a_restart_inside_the_window_finishes_the_delete_when_it_closes() {
+    // A window short enough to close while the test waits, long enough to
+    // outlast the archive call (D430: the free is kept across the restart).
+    let mut fixture = Fixture::new("5000").await;
     let session = fixture.session("Fix login").await;
     let id = session.id.clone().unwrap();
     succeeded(&fixture.archive(&id, pb::ArchiveChoice::Archive).await);
@@ -362,6 +365,25 @@ async fn an_archive_cut_short_is_finished_at_restart() {
             .all(|t| !common::holder_answers(t)),
         "an archived session's agent is stopped"
     );
+}
+
+/// A restart inside an archive's undo window keeps the session's folder:
+/// it is freed when the window closes, not when the daemon comes back.
+#[tokio::test]
+async fn a_restart_inside_the_undo_window_keeps_the_folder() {
+    let mut fixture = Fixture::new(NEVER).await;
+    let session = fixture.session("Fix login").await;
+    let id = session.id.clone().unwrap();
+    succeeded(&fixture.archive(&id, pb::ArchiveChoice::Archive).await);
+    fixture.daemon.restart_env(&[(UNDO_WINDOW, NEVER)]).await;
+    last_start(&fixture.daemon).await;
+    // Long enough for a free at start to have run.
+    let settle = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < settle {
+        assert!(folder_of(&session).exists(), "the folder was freed inside its undo window");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(get_session(&fixture.daemon, &id).await.status, Status::Archived as i32);
 }
 
 /// Every step an archive takes, as the points a cut can land on: the

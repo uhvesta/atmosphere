@@ -260,9 +260,14 @@ async fn mcp_call(mcp: &mut Mcp, world: &World, tier: Tier) -> Value {
             world.ask_on_global_read().await;
             mcp.call("channels_list", json!({ "wait_seconds": 0 })).await
         }
+        // Deleting another session is Never by default; stopping it asks
+        // (D306).
         Tier::Never => {
-            mcp.call("session_stop", json!({ "session": world.other.value }))
-                .await
+            mcp.call(
+                "session_delete",
+                json!({ "session": world.other.value, "wait_seconds": 0 }),
+            )
+            .await
         }
     }
 }
@@ -392,7 +397,7 @@ async fn cli_args(world: &World, tier: Tier, local: &Path) -> Vec<String> {
             world.ask_on_global_read().await;
             vec!["channels"]
         }
-        Tier::Never => vec!["session", "stop", world.other.value.as_str()],
+        Tier::Never => vec!["session", "delete", world.other.value.as_str()],
     };
     args.into_iter().map(str::to_owned).collect()
 }

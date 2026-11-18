@@ -76,15 +76,101 @@ pub(super) fn held_revision(store: &Store) -> Result<u64, StoreError> {
     Ok(store.setting(COPY_KEY)?.map_or(0, |saved| saved.revision))
 }
 
+/// What the host knows of one machine's copy: whether its link is up now
+/// and the newest revision it said it keeps.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Delivery {
+    linked: bool,
+    revision: u64,
+}
+
+/// Which machines took a copy and which still wait for it, as
+/// SetApprovalPassphrase reports them.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Delivered {
+    pub(crate) updated: Vec<String>,
+    pub(crate) pending: Vec<String>,
+}
+
 /// Where the copy is made (on the host) or put in force (on a machine).
 pub(crate) struct PolicySource {
     guard: Arc<Guard>,
     store: Arc<Store>,
+    /// On the host: each machine that linked since this daemon started,
+    /// with what it acked.
+    deliveries: watch::Sender<BTreeMap<String, Delivery>>,
+}
+
+/// Marks a machine's link down when the link ends.
+pub(crate) struct Linked {
+    source: Arc<PolicySource>,
+    machine: String,
+}
+
+impl Drop for Linked {
+    fn drop(&mut self) {
+        self.source.deliveries.send_modify(|deliveries| {
+            if let Some(delivery) = deliveries.get_mut(&self.machine) {
+                delivery.linked = false;
+            }
+        });
+    }
 }
 
 impl PolicySource {
     pub(crate) fn new(guard: Arc<Guard>, store: Arc<Store>) -> Arc<Self> {
-        Arc::new(Self { guard, store })
+        Arc::new(Self {
+            guard,
+            store,
+            deliveries: watch::Sender::new(BTreeMap::new()),
+        })
+    }
+
+    /// Says `machine`'s link is up, until the returned value is dropped.
+    pub(crate) fn linked(self: &Arc<Self>, machine: &str) -> Linked {
+        self.deliveries.send_modify(|deliveries| {
+            deliveries.entry(machine.to_owned()).or_default().linked = true;
+        });
+        Linked {
+            source: Arc::clone(self),
+            machine: machine.to_owned(),
+        }
+    }
+
+    /// `machine` said it keeps the copy of `revision`.
+    pub(crate) fn acked(&self, machine: &str, revision: u64) {
+        self.deliveries.send_if_modified(|deliveries| {
+            let delivery = deliveries.entry(machine.to_owned()).or_default();
+            if revision > delivery.revision {
+                delivery.revision = revision;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    /// Waits up to `within` for every linked machine to keep the copy of
+    /// the rules in force now, then says which did. A machine whose link
+    /// is down, or that didn't ack in time, gets it with a later copy.
+    pub(crate) async fn delivered(&self, within: Duration) -> Delivered {
+        let revision = self.guard.policy_revision();
+        let mut deliveries = self.deliveries.subscribe();
+        let all_kept = |deliveries: &BTreeMap<String, Delivery>| {
+            deliveries
+                .values()
+                .all(|delivery| !delivery.linked || delivery.revision >= revision)
+        };
+        let _ = tokio::time::timeout(within, deliveries.wait_for(all_kept)).await;
+        let mut delivered = Delivered::default();
+        for (machine, delivery) in deliveries.borrow().iter() {
+            if delivery.revision >= revision {
+                delivered.updated.push(machine.clone());
+            } else {
+                delivered.pending.push(machine.clone());
+            }
+        }
+        delivered
     }
 
     /// The store the copy is kept in.
@@ -895,5 +981,30 @@ mod tests {
         // taken; what matters is that the local one is out of the way.
         machine.apply(&theirs).unwrap();
         assert!(grants_held(&guard).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_change_names_the_machines_that_kept_its_copy_and_those_still_waiting() {
+        let (_h, host, guard, _store) = host();
+        let _box_1 = host.linked("box-1");
+        let box_2 = host.linked("box-2");
+        drop(host.linked("box-3"));
+        guard.policy_changed();
+        let revision = guard.policy_revision();
+        host.acked("box-1", revision);
+        drop(box_2);
+        let delivered = host.delivered(Duration::from_secs(30)).await;
+        assert_eq!(delivered.updated, ["box-1"]);
+        assert_eq!(delivered.pending, ["box-2", "box-3"]);
+    }
+
+    #[tokio::test]
+    async fn a_linked_machine_that_never_acks_is_pending_once_the_wait_ends() {
+        let (_h, host, guard, _store) = host();
+        let _linked = host.linked("box-1");
+        guard.policy_changed();
+        let delivered = host.delivered(Duration::from_millis(50)).await;
+        assert!(delivered.updated.is_empty());
+        assert_eq!(delivered.pending, ["box-1"]);
     }
 }

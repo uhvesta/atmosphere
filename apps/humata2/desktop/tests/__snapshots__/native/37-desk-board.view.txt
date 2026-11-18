@@ -87,16 +87,18 @@ Button "Expand terminal"
 Button "Toggle side panel"
 Button "Session actions"
 Toolbar "Desk folder"
+  Status "Goes 7 days after close"
+  Button "Copy path"
   Button "Machine: This Mac"
   Button "Add repo"
   Button "Keep folder"
-  text "~/Humata/desk/plan-q4"
 Tab "claude" selected
 Tab "zsh"
 Tab "q4-plan.md"
   Button "Close tab"
 Button "New terminal"
-Log "Terminal output" description="~/Humata/desk/plan-q4 $ claude\n> Plan Q4 for payments: add the backfill follow-ups, and make a\n  channel for the web revamp.\n\n● humata board_items channel=payments-rewrite\n  ⎿ 6 items · 1 in progress · 1 in review\n● humata board_item_create PAY-13 “Drop the ledger_entries index”\n  ⎿ Added to # payments-rewrite · To do\n● humata board_item_create PAY-14 “Backfill metrics dashboard”\n  ⎿ Added to # payments-rewrite · To do · depends on PAY-13\n● humata channel_create web-revamp repos=acme/web\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n● Write(q4-plan.md)\n  ⎿ Wrote 38 lines\n\n✻ Ordering the payments lanes… (48s · esc to interrupt)\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
-  text "~/Humata/desk/plan-q4 $ claude\n> Plan Q4 for payments: add the backfill follow-ups, and make a\n  channel for the web revamp.\n\n● humata board_items channel=payments-rewrite\n  ⎿ 6 items · 1 in progress · 1 in review\n● humata board_item_create PAY-13 “Drop the ledger_entries index”\n  ⎿ Added to # payments-rewrite · To do\n● humata board_item_create PAY-14 “Backfill metrics dashboard”\n  ⎿ Added to # payments-rewrite · To do · depends on PAY-13\n● humata channel_create web-revamp repos=acme/web\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n● Write(q4-plan.md)\n  ⎿ Wrote 38 lines\n\n✻ Ordering the payments lanes… (48s · esc to interrupt)\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
-  #terminal-pane
-    #terminal focused
+Log "Terminal output" description="plan-q4 $ claude\n> Plan Q4 for payments: add the backfill follow-ups, and make a\n  channel for the web revamp.\n\n● humata board_items channel=payments-rewrite\n  ⎿ 6 items · 1 in progress · 1 in review\n● humata board_item_create PAY-13 “Drop the ledger_entries index”\n  ⎿ Added to # payments-rewrite · To do\n● humata board_item_create PAY-14 “Backfill metrics dashboard”\n  ⎿ Added to # payments-rewrite · To do · depends on PAY-13\n● humata channel_create web-revamp repos=acme/web\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n● Write(q4-plan.md)\n  ⎿ Wrote 38 lines\n\n✻ Ordering the payments lanes… (48s · esc to interrupt)\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  text "plan-q4 $ claude\n> Plan Q4 for payments: add the backfill follow-ups, and make a\n  channel for the web revamp.\n\n● humata board_items channel=payments-rewrite\n  ⎿ 6 items · 1 in progress · 1 in review\n● humata board_item_create PAY-13 “Drop the ledger_entries index”\n  ⎿ Added to # payments-rewrite · To do\n● humata board_item_create PAY-14 “Backfill metrics dashboard”\n  ⎿ Added to # payments-rewrite · To do · depends on PAY-13\n● humata channel_create web-revamp repos=acme/web\n  ⎿ ⏳ waiting for your approval (Inbox)\n\n● Write(q4-plan.md)\n  ⎿ Wrote 38 lines\n\n✻ Ordering the payments lanes… (48s · esc to interrupt)\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  #terminal-replica
+    #terminal-pane
+      #terminal focused

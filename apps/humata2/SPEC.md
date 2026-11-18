@@ -124,7 +124,7 @@ more, ST-2):
 | Claude Code | `claude` | yes | the agent's hooks |
 | Codex CLI | `codex` | yes | output fallback |
 | Copilot CLI | `copilot` | yes | the agent's hooks |
-| OpenCode | `opencode` | no | output fallback |
+| OpenCode | `opencode` | no | its server's events, through the hooks path (D201) |
 | Terminal (a plain shell) | `zsh` (the login shell) | no | none: no turns |
 
 The app labels a plain shell **Terminal** (frames 31, 40). This spec says
@@ -210,8 +210,9 @@ plain shell where it means the same thing.
 - **CH-2** The folder name is derived from the channel name (lowercase,
   non-alphanumerics become `-`) and shown live while typing. The user never
   picks a path.
-- **CH-3** The repo picker lists repos from the `gh` CLI on the host, with fuzzy
-  search and checkboxes; repos already in the channel are left out. The create
+- **CH-3** The repo picker is the one repo search (RL-5 to RL-10): the repo
+  library first, then the repos `gh` on the host finds within the scope, with
+  fuzzy search and checkboxes; repos already in the channel are left out. The create
   button says how many repos it will clone ("Create channel and clone 2
   repos").
 - **CH-4** Offline machines are shown in machine pickers but cannot be chosen.
@@ -247,7 +248,7 @@ plain shell where it means the same thing.
 - **CH-10** A channel with no repos is valid; its sessions start in an empty
   folder (`~/Humata/<channel>/sessions/<session>/`).
 - **CH-11** The channel page has tabs, in this order: **Sessions · n**,
-  **Inbox · n** (count shown only when nonzero), **Board**, **Repos and
+  **Desk · n** (CD-2), **Inbox · n** (count shown only when nonzero), **Board**, **Repos and
   machines**, **Agent access**, **Activity**. The page header has the channel
   name, one faint line naming its repos and machines, and a **New session**
   button (frame 18).
@@ -298,10 +299,8 @@ plain shell where it means the same thing.
 ```
 
 - **CH-18** **Add a GitHub repo…** (frame 20) is available at any time on
-  the Repos and machines tab. The user picks from saved repositories, pastes
-  a GitHub URL, or picks
-  a local path on the host (its remote is used for clones; a repo with no
-  remote is sent by bundle, FC-7).
+  the Repos and machines tab. The user picks from saved repositories or pastes
+  a GitHub URL; a folder on the host is never a source (D460).
 - **CH-19** The new repo's main clone is made on every machine of the channel
   in the background, with progress in that repo's row of the grid. A machine
   that is offline clones it when it returns, and its cell says it waits for
@@ -310,17 +309,164 @@ plain shell where it means the same thing.
   offer every repo of the channel (SE-2).
 - **CH-21** **Add repo to this session** (session menu, and the Diff and
   Files panels) clones the repo on the session's machine, on a branch named
-  as FC-11, tells the agent the repo and its path in one message, and adds
-  the repo's group to the session's diff, files and comments.
+  as FC-11, and adds the repo's group to the session's diff, files and
+  comments. Humata does not tell the agent about the repo (D743): the person
+  prompts the agent, which can ask Humata's tools for the session's repos.
 - **CH-22** Removing a repo from the channel is allowed at once when no
   session uses it; Humata then deletes its main clones. Otherwise the dialog
   lists the sessions using it and offers, per session, **Drop the repo from
   this session** (after the unpushed-work check, MV-9, for that repo) or
   **Archive the session**. The repo is removed when no session uses it.
-- **CH-23** Dropping a repo from a session deletes that session's clone of it,
-  tells the agent the repo is gone, and removes its group from the diff,
-  files and comments; open comments on it are kept with the session's
+- **CH-23** Dropping a repo from a session deletes that session's clone of it and
+  removes its group from the diff, files and comments (it tells the agent
+  nothing, D743); open comments on it are kept with the session's
   archive record.
+- **CH-26** An agent can propose adding a GitHub repo to a channel with
+  `channel_add_repo` (repo, reason, and whether to add it to its own
+  session too). A channel session's agent can propose only for its own
+  channel: any other channel is refused as Never. A Desk agent can propose
+  for any channel. The call is checked against the target channel's "Add a
+  repo to a channel" rule (IN-17, Ask me by default). The card (IN-10)
+  shows the repo, its source (a saved repository or a GitHub URL; an agent
+  cannot propose a local path on the host), the machines it will be cloned
+  on, offline ones marked as waiting, and the reason. It offers no **Always
+  allow …**, because each grant would cover one repo and be spent by its
+  use (IN-14). Approving runs CH-18 and CH-19 as the user's own **Add a
+  GitHub repo…** would. Adding the repo to the proposing session as well is
+  a second step under "Change its own session" (CH-21): on the card it is a
+  tick, **Also add it to <session>**, on by default; under Allow, that step
+  is asked separately. If the repo is already in the channel when the card
+  is answered (another card or the user added it), the card resolves as
+  "Already added" and nothing is cloned twice. A repo already in the
+  channel when the call is made is answered at once, "Already in the
+  channel", with no card. A channel Desk agent (CD-1) counts as a channel
+  agent here, for its own channel only, and its card has no **Also add**
+  tick: it has no clones. Removing a repo stays the user's (CH-22).
+  (provisional, D304)
+
+### The repo library and repo search (owner direction 2026-11-16, REPOS)
+
+The owner, 2026-11-16: "If I add a repo to be part of my state it should save
+it as a reference and be able to recall it. I shouldnt need to readd org +
+repo names ever again per machine." Searches stay inside the orgs the user
+usually works in, and the user widens them by hand, per search.
+Frames 108 (New channel's repo field), 109 (Add a GitHub repo…), 110
+(Settings › General › Repositories), 111 (a widened scope) and 112 (GitHub
+search failing, the library still listed) draw it.
+
+```text
+┌ Add a GitHub repo… ──────────────────────────────────────────────────────┐
+│ [bazelbuild ✕] [you ✕] [+ Org] [All of GitHub]   rules_j▏                │
+│ Library                                                                  │
+│ ☐ bazelbuild/rules_jvm_external        used 2 days ago · #deps           │
+│ ☐ bazel-contrib/rules_jvm              used last week · Desk             │
+│ GitHub · bazelbuild, you                                                 │
+│ ☐ bazelbuild/rules_java                Java rules for Bazel              │
+│ ☐ bazelbuild/rules_jsonnet             Jsonnet rules         private     │
+│                                                                          │
+│ widened:  [bazelbuild ✕] [buildfarm ✕] [you ✕] …     Save as default     │
+│ failing:  GitHub is limiting searches. Wait until 14:07; the search runs │
+│           again then. Signing in again doesn't lift the limit.           │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+```toml
+# ~/.humata2/config/repos.toml on the host; Humata sends it to every machine
+owners = ["bazelbuild"]   # GitHub orgs or users searched by default
+include_me = true         # and the repos of your own gh login
+```
+
+- **RL-1** The host keeps one **repo library**: every repo the user has
+  added, each with its owner/name, its remote (the clone URL it was added
+  with), its default branch, when it was added and when and where (a channel
+  or the Desk) it was last used. It is user data in the host's store, in a
+  file of its own (PER), so it survives restarts and reboots, and it is the
+  same from every machine and every client. Nothing else rebuilds it.
+  (provisional, D470)
+- **RL-2** A repo enters the library the first time it is added anywhere:
+  a new channel's repos (CH-1), **Add a GitHub repo…** (CH-18), an approved
+  agent proposal (CH-26), **Add repo to this session** (CH-21), a Desk
+  session's **Add repo** or `humata desk add` (DK-3), and their CLI forms.
+  Adding it again, or starting a session with a clone of it, moves its last
+  used forward. Searching, ticking without creating, a cancelled sheet and a
+  clone that fails add nothing. Removing a repo from a channel or a session
+  keeps it in the library. (provisional, D471)
+- **RL-3** The user never types an owner/name a second time, on any machine:
+  every repo picker opens on the library, most recently used first, before
+  anything is typed.
+- **RL-4** **Settings › General › Repositories** (ST-21) lists the library:
+  owner/name, remote, last used and where. **Remove** takes one repo out of
+  the library; channels, sessions and clones that use it are untouched, and
+  it comes back when it is added again. **Forget all…** empties the library
+  after a confirm that says how many repos it forgets and that nothing is
+  deleted on disk or on GitHub. Agents can't remove or forget.
+  (provisional, D472)
+- **RL-5** There is one repo search, and every place that picks a repo uses
+  it, with the same field and the same daemon call: New channel (CH-3),
+  **Add a GitHub repo…** (CH-18), **Add repo to this session** (CH-21), the
+  Desk's **Add repo** and New desk session (DK-3, DK-14), the palette,
+  `humata repos search` and the agents' `repo_search` tool (RL-11).
+- **RL-6** Results come in two groups. **Library** comes first: the library
+  repos that match the query, by D274's two tiers, most recently used first
+  within a tier. The scope never filters this group: these are the user's
+  own references. **GitHub** follows: the repos `gh` on the host finds
+  within the scope, leaving out those already shown under Library, under a
+  heading naming the scope ("GitHub · bazelbuild, you"). Each row shows
+  owner/name, its description and a private mark; a library row also shows
+  when and where it was last used. Ticked repos stay first (D277).
+  (provisional, D476)
+- **RL-7** The **scope** is a list of GitHub owners (orgs or users), set in
+  Settings (ST-21) or as `owners` in `~/.humata2/config/repos.toml` on the
+  host, plus `include_me` (the repos of the user's own `gh` login, on by
+  default). With no `owners` set, the scope is **Your repos**: the repos
+  `gh` lists as owner, collaborator or org member (CH-3), so a new install
+  searches what it did before. Settings writes the file and keeps its
+  comments; an edit by hand is read on the next search. (provisional, D474)
+- **RL-8** The search field shows the scope as chips before the text, one per
+  owner and one for "you" (or one **Your repos** chip), each with ✕. A search
+  stays inside the scope until the user widens it, for that search only:
+  **+ Org** adds an owner (typed, with the library's owners and the orgs the
+  `gh` login belongs to as suggestions), **All of GitHub** replaces the chips
+  with one "All of GitHub" chip, and ✕ narrows. Closing the picker, or
+  opening another, drops the change. While the scope differs from the
+  default, a quiet **Save as default** writes it to `repos.toml`; only the
+  user can. Nothing else makes a widened scope stick. (provisional, D475)
+- **RL-9** GitHub search runs `gh` on the host, never on a client or a
+  machine. Within owners it is one repository search qualified by each
+  owner, and needs 2 typed characters; All of GitHub is an unqualified
+  search and needs 3. **Your repos** is CH-3's listing, matched locally. A
+  search goes out when typing pauses, and an answer is reused for a minute
+  for the same query and scope, to stay inside GitHub's search limit.
+  (provisional, D477)
+- **RL-10** A failure touches only the GitHub group; the Library group always
+  answers. In place of the GitHub results, one line says what failed and what
+  to do:
+  - `gh` isn't installed on the host: install it there (`brew install gh`),
+    then try again.
+  - `gh` on the host is signed out: run `gh auth login` in a terminal on the
+    host (named), then try again. The token stays with `gh`, never in a file
+    (portable config).
+  - GitHub is limiting searches: wait until the time GitHub gives (or a few
+    minutes), and the search runs again then. Signing in again doesn't lift
+    the limit.
+  - The host can't reach GitHub: the library still answers; GitHub search
+    returns when the host is online. Nothing on this machine fixes it.
+  An owner chip GitHub doesn't know is marked "no such org or user", and the
+  rest of the scope still searches. (provisional, D478)
+- **RL-11** Agents use the same library and search. `repo_search` (MCP) and
+  `humata repos search` search the library and the default scope; an agent
+  may widen one call by naming owners or All of GitHub, and can never save a
+  scope or remove a library repo. `channel_add_repo` and `humata desk add`
+  take a library repo or an owner/name the search finds, and the card
+  (CH-26) says whether the repo is in the library. Approving adds it (RL-2);
+  denying adds nothing. A search is a global read (D278). (provisional, D479)
+- **RL-12** The host sends `config/repos.toml` to every machine's
+  `~/.humata2/config/` on link up and whenever it changes, with secrets
+  filtered, as it does `stack.toml` (D411). The library itself stays on the
+  host and is never copied: a machine's `humata repos search` asks the host,
+  and while the host is away it says so ("the host is away, and repo search
+  needs it; it answers again when the host is back") and adds nothing.
+  (provisional, D473)
 
 ### Deleting a channel
 
@@ -333,7 +479,10 @@ plain shell where it means the same thing.
   (as LD-5), board, main clones, `shared/` and folders on every machine to
   that machine's trash, and removes the channel from the sidebar. Restoring
   it from the host's trash within 30 days brings the channel back with its
-  sessions archived. (provisional, D11)
+  sessions archived. (provisional, D11) The dialog also lists the channel's
+  Desk sessions (CD-1), closed as CD-4. Restoring the channel leaves them in
+  the trash. Each can be restored on its own while its 30 days last, never
+  before its channel (D306).
 - **CH-25** Only the user can delete a channel. An agent has no way to ask
   for it, and the CLI needs presence (SEC-10). (provisional, D11)
 
@@ -366,6 +515,7 @@ is configurable per machine.
 ├── desk/                                   Desk sessions' scratch folders (DK-2)
 ├── pr-reviews/                             the PR reviews channel (PR-2)
 └── payments-rewrite/                       one folder per channel
+    ├── desk/                               the channel Desk's scratch folders (CD-1)
     ├── main/                               read-only reference, auto-fetched
     │   ├── api/          (acme/api @ main)
     │   └── ledger/       (acme/ledger @ main)
@@ -380,8 +530,9 @@ is configurable per machine.
 ```
 
 - **FC-1** The user never picks a path. Every folder above is created and
-  named by Humata. The one exception is a Desk session's folder, which the
-  user may pick (DK-2).
+  named by Humata. The only paths a user ever gives are a machine's root
+  (PL-1) and an explicit **Somewhere specific…** or drop target (PL-5,
+  PL-6).
 - **FC-2** A main clone is a read-only reference: agents and Humata's own
   tools do not write to it. Humata fetches it on its own so new session
   clones start from a recent `main`. (Whether a plain shell may work in it is
@@ -396,14 +547,80 @@ is configurable per machine.
 - **FC-7** On a remote machine without a signed-in `gh`, the host makes a git
   bundle and sends it over the SSH link; pushes from that machine go back
   through the host. The GitHub token never leaves the host.
-- **FC-8** `shared/` exists on every machine of the channel. An agent can copy
-  files into it (rule-gated, see TP-4).
+- **FC-8** `shared/` exists on every machine of the channel. An agent can
+  write into the one on its own machine and copy files into it from other
+  sessions or machines (rule-gated, see TP-4, IN-17). It can't write
+  `shared/` on another machine; a session there pulls the file, or the user
+  sends it (D755).
 - **FC-9** Humata shows no standing notice about a clone being behind main,
   shared, or unpushed. Unpushed or uncommitted work is shown only where it
   blocks an action (archiving, moving, removing a machine).
 - **FC-10** Changing a machine's root moves nothing silently: Humata says
   which channels live under the old root and offers to move them, or the
   change applies to new channels only.
+
+### Placement: roots, machines and repos, never folders
+
+The user picks repos, machines, channels and sessions. Humata picks every
+folder, under each machine's root, by the rules below, and shows a path only
+when asked (owner direction, 2026-11-16; D460).
+
+- **PL-1** Each machine has one root, `~/Humata` unless changed. Settings ›
+  Machines shows it as **Humata folder** with **Change…** (ST-5); changing
+  it goes through FC-10's plan. Add machine never asks for a root. The root
+  is the one path a user sets in normal use. (provisional, D465)
+- **PL-2** Everything Humata makes lands by rule under the root (§4's tree):
+  channels, sessions, Desk folders, PR reviews, trash and received files.
+  No dialog asks where. (D460)
+- **PL-3** Sending files to another machine asks only the machine. A file or
+  folder from a channel's shared folder lands in that channel's shared folder
+  there; one from a session's clone or folder lands in that channel's shared
+  folder there, under a folder named for the session; anything else (Home,
+  a Desk folder) lands in the target's received place for its source
+  machine (PL-4). A machine outside the channel gets it in its received
+  place; the channel's machines are not changed. (provisional, D462)
+- **PL-4** Received files sit in `<root>/received/<source machine>/`, shown
+  to the user as **From <source machine>**, never as a path. (provisional,
+  D462, D464)
+- **PL-5** **Copy to ▸** and **Move to ▸** list the machines, the channel's
+  first, each with where the file will land by name ("gpu-box · ml shared",
+  "laptop-2 · From This Mac"), then **Somewhere specific…** after a
+  separator. That opens a machine picker and a place browser; it and an
+  explicit drop target (PL-6) are the only ways to choose a folder.
+  (provisional, D463)
+- **PL-6** A Finder drop lands in the folder it is dropped on, or the pane's
+  open folder: the drop is the explicit ask. **Upload…** in a session's
+  Files panel with no folder open goes to the session's pastes, never into a
+  clone. (provisional, D468)
+- **PL-7** Session moves, syncs, restores, roams and channel moves never ask
+  where: the session's folder follows it to the same logical place (MV-16,
+  MV-17). The skills sync and every built-in sync place by rule (SK, TS).
+  (D460)
+- **PL-8** A dialog or Inbox card that moves or copies a session names the
+  channel and machine, not the folder (DK-16). (D460)
+- **PL-9** The New channel dialog shows the machines the channel goes on,
+  not its folder; the folder is the name's slug (CH-2). (provisional, D466)
+- **PL-10** Paths are hidden by default. Where a place has a real path (a
+  clone in Info, a Storage row, a file manager entry, an Inbox copy card, a
+  Desk folder, a saved report), its row's **…** and right-click menus have
+  **Reveal in Finder** (This Mac) or **Open terminal here** (a remote
+  machine) and **Copy path**, which copies the absolute path. Errors that
+  tell the user to act in a folder name it (AGENTS.md errors), and a
+  terminal shows its own prompt. (provisional, D466)
+- **PL-11** The file manager's pane header is breadcrumbs of names ("This
+  Mac › # ml › shared › datasets", "gpu-box › # ml › fix-login › api"). The
+  machine crumb lists its places: channels, Desk, each From <machine>, and
+  **Home** last; Home's folders show by name. (provisional, D464)
+- **PL-12** The CLI and MCP take machines, channels, sessions and repos.
+  `humata cp|mv <location>… <machine>` places by PL-3; `<machine>:<location>`
+  is the explicit form. `humata host root <machine>` prints the root;
+  `--default` resets it to `~/Humata`, through FC-10's plan. `host add
+  --root` stays, never prompted. (provisional, D465)
+- **PL-13** A machine-only send whose name is taken where it lands keeps
+  both: the new one gets FC-14's suffix and the tray says so; a byte-equal
+  file is not copied again and the tray says it was already there. A send to
+  Somewhere specific… asks Fail, Replace or Keep both as D142 says.
+  (provisional, D469)
 
 ### Branch names
 
@@ -554,8 +771,9 @@ is configurable per machine.
 ### Info panel
 
 - **SE-18** The Info panel shows: agent; machine with its OS; started; forked
-  from (link, with fork kind); forks (links); each clone (repo, branch, path,
-  "main clone" chip if it is one); for a context-only fork, "Shares the
+  from (link, with fork kind); forks (links); each clone (repo, branch,
+  "main clone" chip if it is one; its path behind the row's Reveal and Copy
+  path, PL-10); for a context-only fork, "Shares the
   files of “parent”" and a **Give it its own copy** button (FK-9).
 - **SE-19** It has a **Survives restarts** card: the terminal is held by
   `humatad` on <machine>, not by the app; after a reboot the agent is started
@@ -572,8 +790,9 @@ is configurable per machine.
 ### Turns and typing
 
 - **SE-21** Humata learns that an agent's turn ended from the agent's own
-  hooks for Claude Code and Copilot CLI. For Codex CLI, OpenCode and
-  user-added agents it uses the output fallback: the turn is taken to have
+  hooks for Claude Code and Copilot CLI, and from its server's events for
+  OpenCode (D201, D524). For Codex CLI and user-added agents it uses the
+  output fallback: the turn is taken to have
   ended after 3 seconds with no terminal output. A plain shell has no turns.
   The source is shown in Settings › Agents (ST-1). (provisional, D7)
 - **SE-22** A session whose turn end comes from the output fallback shows
@@ -646,29 +865,36 @@ review) are in §11.
   used. A Desk session belongs to no channel. It runs an agent's
   TUI or a plain terminal, with tabs, the two tab groups (SE-27) and the side
   panels like any session.
-- **DK-2** A Desk session works in a new scratch folder under the machine's
-  Humata root, `<root>/desk/<name>`. The name is the FC-13 slug of the title
-  the session starts with, with FC-14's suffix when a Desk folder of that
-  name exists on that machine: a session started as "Plan Q4" works in
-  `~/Humata/desk/plan-q4`. The folder keeps its name when the session is
-  renamed. Or it works in a folder the user picks
-  on that machine. This is the one place the user picks a path (FC-1).
-  Humata never deletes, trashes or moves a picked folder. A scratch folder is
-  deleted 7 days after its session closes (DK-11) unless the user keeps it
+- **DK-2** A Desk session works in a folder Humata makes for it under the
+  machine's Humata root, `<root>/desk/<name>`; the user never picks one
+  (FC-1, D451). The name is the FC-13 slug of the title the session starts
+  with, with FC-14's suffix when a Desk folder of that name exists on that
+  machine: a session started as "Plan Q4" works in `~/Humata/desk/plan-q4`.
+  The folder keeps its name when the session is renamed. Every Desk folder
+  is a git repository of its own, made with the folder (DV-1), so the files
+  in it have versions (DV-2). A folder is **kept** once its repository holds
+  a version, by the user or the agent (DV-4), or when the user keeps it
   (**Keep folder** in the folder bar, **Keep** on the Desk page, or `humata
-  desk keep`). `desk` is a reserved folder name: no channel's folder can be
+  desk keep`). Humata never deletes a kept folder on its own. A folder that
+  is not kept is deleted 7 days after its session closes (DK-11). Sessions
+  started in a folder the user picked, before D451, keep working there, and
+  Humata never deletes, trashes or moves that folder; no new session can
+  pick one. `desk` is a reserved folder name: no channel's folder can be
   `desk`.
-- **DK-3** The folder bar above the tabs shows the folder (with a "scratch"
-  chip for a scratch folder), a machine picker, a chip per repo with ✕,
-  **Add repo** and **Keep folder** (frames 37, 39). Picking another machine,
-  or `humata desk move <machine>`, moves the session to any online machine:
-  the folder and conversation are carried and checked as in any move (MV-2,
-  MV-13, MV-14) and the agent restarts there with its conversation. A picked
-  folder is copied, and the original stays where it was. **Add repo**, or
-  `humata desk add <owner/repo>`, clones the repo's default branch into the
-  folder; a Desk session has no branch of its own (FC-11 does not apply).
-  Removing a repo deletes its clone after the unpushed-work check (MV-9), and
-  never a branch on the remote.
+- **DK-3** The folder bar above the tabs shows the folder, with a chip that
+  says whether it is kept ("Goes 7 days after close", D734, or "Kept ·
+  N versions", DV-4), a machine picker, a chip per repo with ✕, **Add repo**
+  and **Keep folder** (frames 37, 39; re-drawn for DOCV). Picking another
+  machine, or `humata desk move <machine>`, moves the session to any online
+  machine: the folder, with its repository and versions (DV-10), and the
+  conversation are carried and checked as in any move (MV-2, MV-13, MV-14)
+  and the agent restarts there with its conversation. A folder picked
+  before D451 is copied, and the original stays where it was. **Add repo**,
+  or `humata desk add <owner/repo>`, clones the repo's default branch into
+  the folder, and the folder's own repository leaves the clone out (DV-1); a
+  Desk session has no branch of its own (FC-11 does not apply). Removing a
+  repo deletes its clone after the unpushed-work check (MV-9), and never a
+  branch on the remote.
 - **DK-4** A Desk session's Board panel shows every channel's items (scope
   **All channels**, BD-7) and marks the ones the session added. The session
   has two **Agent access** switches, set in the New desk session dialog and
@@ -701,7 +927,7 @@ review) are in §11.
   deleted as LD-5: its folder, record and conversation go to trash and can
   be restored for 30 days (LD-7). A scratch folder whose clones hold
   uncommitted or unpushed work is not deleted then; its row names the work
-  that holds it (as LD-17). A kept scratch folder or a picked folder stays,
+  that holds it (as LD-17). A kept folder (DK-2, DV-4) or a picked folder stays,
   with its closed session, until the user deletes the session; deleting a
   session with a picked folder leaves that folder alone. **Clean up…** lists
   the closed sessions, least recently used first, with their folder sizes,
@@ -715,11 +941,141 @@ review) are in §11.
 - **DK-13** **Copy to a channel…** asks for a channel, and for a machine
   when the channel has several, and copies the file into that channel's
   `shared/` folder there (FC-8). The Desk's copy stays. (provisional, D108)
-- **DK-14** **New desk session** (frame 40) asks for a title; what it runs
-  (an agent or **Terminal**); a machine (any online one); the folder (**A
-  new scratch folder**, or **A folder on the machine**); optional repos; and
-  the two access switches of DK-4. Under **A new scratch folder** the
-  dialog shows the path the folder will get. It has no field for the name.
+- **DK-14** **New desk session** (frame 40, re-drawn for DOCV) asks for a
+  title; what it runs (an agent or **Terminal**); a machine (any online
+  one); optional repos; and the two access switches of DK-4. It asks
+  nothing about the folder and shows no path: Humata makes the folder
+  (DK-2). (D451)
+
+### Moving a Desk session into a channel (owner direction 2026-11-16, ROAM)
+
+- **DK-15** A Desk session's agent can propose moving its session into a
+  channel with `desk_session_move_to_channel` (channel, reason). The request
+  is checked against the target channel's "Move a Desk session into a
+  channel" rule (IN-17), which offers only **Ask
+  me** and **Never**: the user always accepts or declines, there is no
+  **Always allow …**, and the While I'm away rule never approves it (as the
+  network rule, D20). The user can also do it from the Desk session's menu,
+  **Move into a channel…**, which opens the same choices as a dialog. A
+  Desk session whose tab runs a plain terminal (DK-1) has no agent to
+  propose; only the user moves it, and its shells come back fresh (MV-6).
+  Only an open session moves; a closed one is reopened first (DK-11).
+  (provisional, D305)
+- **DK-16** The card and the dialog show: the channel (the session's
+  folder is placed by MV-16 and not shown, PL-8); per repo, the branch it gets (FC-11, FC-14) and the point it starts from
+  (the clone's current HEAD, named as branch or commit when it is not the
+  default branch), with its uncommitted files; the repos the channel lacks,
+  as "Also adds <repos> to the channel"; and, when the session's machine is
+  not in the channel, a machine picker with the channel's online machines.
+  The dialog lets the user edit each branch name (FC-15); the card shows
+  them. Approving adds the missing repos to the channel (CH-18, CH-19)
+  first: a channel session's repos are always channel repos (CH-9, CH-20,
+  CH-22). If the target channel's "Add a repo to a channel" rule is Never,
+  an agent's proposal that would add repos is refused at once, naming that
+  rule. The user's own **Move into a channel…** still adds them.
+  (provisional, D305)
+- **DK-17** Accepting moves the session as MV-2, MV-13 and MV-14 do, even
+  when it stays on its machine: the folder (clones, files outside them,
+  Markdown included) is copied to its channel place with a manifest and
+  checked; each clone gets its new branch at its HEAD, uncommitted files
+  kept; the conversation is carried by its agent's adapter (CV-4) and
+  resumed by its exact id; and the old scratch folder goes to its machine's
+  trash only after the check and the resume. A copy on the same volume may
+  be copy-on-write. Too little disk fails before anything changes (MV-3). A
+  folder picked before D451 is copied like a scratch folder and the original
+  stays where it was; nothing asks (D461). A git checkout in
+  the session's folder (that folder itself included) that has a GitHub remote is offered as a repo to add, ticked by
+  default; a checkout with no remote, or one the user unticks, comes along
+  as plain files, and the card says so. After the move, a clone's local
+  default branch that holds unpushed commits is reset to the remote's: that
+  work lives on the session's FC-11 branch, so MV-9 doesn't name it twice.
+  While it moves, the session shows MV-4's progress; a failed step leaves it
+  a Desk session, running as before (MV-3). (provisional, D305)
+- **DK-18** After the move the session is a channel session at the top of
+  its channel's tree (no parent). It keeps its id, title, pin, VIP, journal,
+  comments and the board items it added, which stay its own for the "items
+  it created" rows. Its Desk row goes, and with it the DK-4 switches and
+  its standing grants: from then on the channel's rules apply. These are
+  the exceptions to MV-5 (a move keeps Inbox requests) and IN-22 (a moved
+  session keeps its grants). Its other pending Inbox requests are withdrawn
+  when the move finishes, and the agent is told in one message that the
+  rules changed and to ask again. (provisional, D305)
+- **DK-19** A pending move request is withdrawn (TP-15) when the session
+  closes, is deleted, or its target channel is deleted. If what the card
+  shows changes while it is pending (a repo added to the channel, a machine
+  gone offline, a branch name taken), the card is out of date. Answering
+  checks a digest of what the card shows; on a mismatch nothing moves and
+  the card is redrawn (as NV-27). A session has one pending move request; a
+  new one withdraws the old. (provisional, D305)
+
+### A channel's Desk (owner direction 2026-11-16, ROAM)
+
+- **CD-1** Every channel has its own Desk: short-lived, managerial
+  sessions that look after the channel or one of its sessions (the
+  **target**). A channel Desk session runs an agent or a plain terminal on
+  one of the channel's machines (by default the target session's). It works
+  in a scratch folder `<root>/<channel>/desk/<name>` (DK-2's naming), a git repository of
+  its own (DV-1, DV-13), beside
+  the channel's `main/`, `sessions/` and `shared/` (§4). It has no clones,
+  branch, fork or board of its own (as DK-12). It reads the channel's main
+  clones (FC-2, read-only) and `shared/` on its machine; with Contain agents
+  on (ST-17), the sandbox allows those paths read-only. It can be started
+  on, and moved to, any linked machine, and it lands at the same
+  `<root>/<channel>/desk/<name>` there (MV-16, MV-17). (provisional, D306,
+  D316)
+- **CD-2** The channel page has a **Desk · n** tab after **Sessions** (n
+  counts open channel Desk sessions; with none, the tab shows an empty state
+  with **New desk session**). While the channel has an open channel Desk
+  session, the sidebar shows a **Desk** row under the channel, above its
+  sessions, listing them as DK-1 does. Channel Desk sessions are not in the
+  Sessions tree. A session's Info panel lists the Desk sessions that target
+  it. A channel Desk session's Inbox requests show in its channel's Inbox,
+  not the global Inbox's **Desk** group (DK-12). (provisional, D306)
+- **CD-3** A channel Desk session uses its channel's rules, and the channel
+  is its own: the IN-17 rows about "its channel" apply to it. On top, it has
+  **management switches**, grants set in its New desk session dialog and
+  changeable in its Info panel (IN-23: only the user changes them):
+  - **Read its files** (on by default): read the target's files, or every
+    session's files in the channel, bridged reads included;
+  - **Send notes and questions** (on by default): to the target, or to any
+    session of the channel;
+  - **Type into its terminal** (off by default): typing can answer the
+    target CLI's own permission prompts;
+  - **Start and fork sessions** (off by default);
+  - **Stop and archive sessions** (off by default); never delete;
+  - **Change anyone's items on the channel board** (off by default).
+
+  With a session as the target, each switch covers that session and its
+  forks, including forks made later, and **Start and fork sessions** covers
+  only forking them. "Any session of the channel" never includes the
+  channel's Desk sessions. No switch answers Inbox requests: that stays the
+  user's (IN-23). A switch applies after the Never check,
+  as D182 does for the Desk: a row set to Never still refuses, and the
+  switch shows "Blocked by the channel rule: Never" with a link to that
+  rule. A switch that is off adds nothing; the channel's rule decides.
+  (provisional, D306)
+- **CD-4** **Close session** stops it and sends its scratch folder to the
+  machine's trash at once, unless the folder is kept (DV-13): there is no 7-day wait and no **Keep folder**.
+  Its record and conversation stay in the trash for 30 days and can be
+  restored from there (LD-7); the channel's retention rules do not apply to
+  them. Close always asks first, with one line saying the folder goes to
+  the trash now, even when it holds no Markdown (on the Desk the same label
+  keeps the folder 7 days, DK-11). When its folder holds Markdown files, the
+  confirmation also lists them and offers **Copy to shared/** for each
+  (DK-13). (provisional, D306)
+- **CD-5** A channel Desk session closes itself when its target session is
+  deleted, or archived and past MV-15's undo window, and when its channel is
+  deleted (CH-24). When its target goes and its folder holds Markdown
+  files, it stops instead and shows "Target gone" with **Close** (CD-4), so
+  the files can be copied first. Restarts resume it as any session
+  (PER-13). Restoring a channel Desk session from the trash reopens it and
+  resumes its conversation; it is refused while its target or its channel
+  is gone. (provisional, D306)
+- **CD-6** **New desk session** on the channel's Desk tab, or **New desk
+  session for this session** in a session's menu, asks for a title, what it
+  runs, the target (the channel, or one of its sessions), the machine, and
+  the CD-3 switches. Turning a channel Desk session into a channel session
+  is not offered: it has no clones to carry. (provisional, D306)
 
 ## 6. Forks
 
@@ -737,7 +1093,8 @@ review) are in §11.
   - **Code only**: new clones copied from the parent's files, and a fresh agent
     with no conversation.
 - **FK-3** The dialog also asks: fork from (now, or before an earlier turn,
-  listed by name, when the agent can fork at a turn); agent
+  listed by name, when the agent's conversation adapter can fork at a turn,
+  CV-2); agent
   (preselected from the default, ST-15; any agent may be chosen; plain
   shell only for code only); machine
   (any online machine of the channel; for context only, the parent's
@@ -786,6 +1143,77 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 └─⑂ Review the migration             context only     Codex: works in the parent's files
 ```
 
+### Conversations: fork at a turn, carry and resume (owner direction 2026-11-16, ROAM)
+
+- **CV-1** Each agent kind that keeps its conversation on disk has a
+  **conversation adapter** that knows that CLI's storage: Claude Code's
+  JSONL under its projects folder, Codex's rollout files and its SQLite
+  state, Copilot's session-state folder. Humata forks and carries
+  conversations itself through the adapter, and resumes them with the CLI's
+  own resume by exact id (PER-12). With no adapter, or an unknown version
+  (CV-3), fork from now uses the CLI's own fork by exact id where the CV-7
+  fixtures prove it (Codex and Copilot today), otherwise FK-6's handover;
+  a move refuses and offers **Start fresh with a summary** (CV-3).
+  (provisional, D307)
+- **CV-2** An adapter lists a conversation's turns (the user's prompts, not
+  injected context, tool results or side conversations), each with its
+  first line and time, for FK-3. Turns are those on the conversation's
+  current path: a prompt abandoned by `/rewind` or replaced by an edited
+  prompt is not listed or carried. A fork reads only complete records;
+  while a turn runs, from now means after the last finished turn.
+  **Fork before turn n** writes a new
+  conversation with a new id that holds exactly the turns before n, in the
+  CLI's own format, and never changes the parent's files. Fork from now
+  copies the whole conversation the same way. The fork counts as done only
+  after its agent has resumed it by its id (PER-14); otherwise the fork
+  shows PER-15's "Couldn't resume". (provisional, D307)
+- **CV-3** An adapter checks the format it reads, as CV-7 says: the
+  format check decides, and the CLI version recorded when the session
+  launched is kept with the result. A format it can't read (CV-7: unknown)
+  lists no turns, and the fork dialog says in one line that this <agent>
+  version can't fork at a turn yet, offering from now (CV-1). A move
+  refuses before anything is copied (MV-3), names the version, and offers
+  **Start fresh with a summary** (PER-15). The summary comes from the
+  running agent, asked to write one before it stops, or else from its
+  scrollback. Humata never falls back to copying bytes it can't read.
+  (provisional, D307)
+- **CV-4** For a move (MV-13, DK-3, DK-17) or a fork onto another machine
+  (FK-12), the adapter packs the conversation's files into the move
+  manifest (MV-14), and on the new machine places them where that CLI looks
+  for them, rewriting the old folder's path in the fields that hold it.
+  Humata never writes a CLI's index (such as Codex's SQLite state). If the
+  CLI doesn't find the placed conversation when resumed by id, the move
+  fails at the resume check (MV-3). (provisional, D307)
+- **CV-5** What is not carried: input typed but not sent, a turn that was
+  running when the agent paused (it is rolled back or kept as the CLI does
+  on resume, never replayed by Humata), and background jobs or shells the
+  agent started. The move dialog, the fork preview (FK-4) and the FK-10
+  line say so in one line. (provisional, D307)
+- **CV-6** A carried or forked conversation keeps the CLI's folder trust
+  only if the old folder was trusted: Humata marks the new folder trusted
+  for that CLI then, and otherwise lets the CLI ask. It never grants trust
+  the user didn't give. A move keeps its agent; when the target machine
+  lacks that CLI or runs another version, the move refuses before copying
+  and sends a VIP Inbox **Migrate <agent>** message (UP-1). Migrate brings
+  the older machine's CLI up to the newer version, never down (UP-1). This
+  also applies to forks onto another machine (FK-12) and to DK-16's machine
+  picker. (provisional, D307)
+- **CV-7** Every adapter is proven against the real CLI in an isolated
+  home with a loopback model server: list turns, fork before a turn and
+  resume the fork by id, carry to another home and folder and resume
+  there, and check the parent is unchanged. An adapter whose fixtures have
+  not yet passed once (Codex's and Copilot's today) lists no turns and
+  carries nothing. After that first proof, a newer CLI version is known when the
+  adapter's strict parse accepts every record; an unknown record kind or
+  path field makes it unknown (CV-3). The fixtures run on each new CLI
+  release, and a release that fails them is blocked. (provisional, D307)
+- **CV-8** **Continue in another channel…** (the session menu) starts a new
+  top-level session in the chosen channel, set up as that channel's **New
+  session** (its repos, its machine, an FC-11 branch from its main clones).
+  Its agent resumes a copy of the conversation, from now or before turn n
+  (CV-2), under a new id, placed for its new folder as CV-4 does; the
+  original session is untouched. (provisional, D307)
+
 ## 7. Moving and archiving
 
 ### Move a session to another machine
@@ -803,7 +1231,8 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
 - **MV-4** During a move the session shows "Moving to <machine>…" with the
   step in progress; the terminal is read-only until the agent resumes.
 - **MV-5** A move keeps the session's id, title, place in the tree, board,
-  Inbox requests and journal.
+  Inbox requests and journal. The exception is a Desk-to-channel move
+  (DK-18), which withdraws its other pending requests.
 - **MV-6** Plain shells move as a fresh shell in the same relative folder; the
   move dialog says running programs in them will not come along.
 
@@ -835,14 +1264,17 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
     ignored files in each clone, and its `refs/humata/…` refs (reviewed
     snapshots, RV-28);
   - the session folder's own files outside the clones, Markdown included
-    (documents under review, plans, notes the agent wrote);
+    (documents under review, plans, notes the agent wrote), and a Desk
+    folder's own repository with its versions and their comment records
+    (DV-10);
   - the machine daemon's store rows for the session (terminal tabs,
     scrollback, attach state, review notes and highlights, revive data),
     exported and imported as the store's self-describing records (TR-13),
     never as raw database files;
   - the agent's own per-session files: its conversation, its project-keyed
     folders and memory (e.g. `~/.claude/projects/<path>/`), with the paths
-    in them rewritten for the new folder.
+    in them rewritten for the new folder, as its conversation adapter
+    packs and places them (CV-4).
   `shared/` and the main clones are the channel's, not the session's, and
   don't move.
 - **MV-14** Before anything is copied, the old machine writes a **move
@@ -852,6 +1284,40 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
   that fails says which item failed to arrive or to match. The manifest is
   kept in the restart report format (PER-28) so the restart doctor can
   finish or undo a move cut off by a reboot.
+- **MV-16** A session's folder always follows where the session lives
+  (D313):
+  - a Desk session's folder is in the Desk's folder;
+  - a channel's Desk session (CD-1) is in that channel's own Desk folder;
+  - a channel session is under its channel.
+  Every move relocates the folder and everything in it to the new place:
+  - Desk to channel (DK-17);
+  - a channel renamed, or restored under another folder;
+  - machine to machine, for each kind (MV-13);
+  - conversation roam (CV-4, CV-8).
+  The move then rewrites every path Humata recorded for the session (store
+  rows, terminal tabs, the agent record) and resumes the agent there with its
+  conversation. The conversation itself is placed for the new folder, so
+  nothing in it points at the old place. On another machine the folder
+  lands at the same logical place: the Desk, that channel's Desk, or under
+  that channel. After a move, nothing of the session is left at the old
+  place except the trash item the move made (MV-14).
+- **MV-17** Desk sessions and channel Desk sessions live on any linked
+  machine, like channel sessions (D313):
+  - **Create anywhere:** the New desk session form and a channel's Desk
+    each have a machine pick. The default is This Mac.
+  - **Move anywhere:** any Desk, channel Desk or channel session can be
+    moved to any linked machine at any time. The move follows MV-13, MV-14
+    and MV-16, so the folder lands at the same logical place and the agent
+    resumes with its conversation.
+  - **Moves are cheap:** a move sends only what the target lacks. Files go
+    through the content-addressed transfer and its chunk dedupe. Clones
+    fetch their commits on the target from the remote, or from the old
+    machine, and are not copied as `.git`. Only the work-tree changes and
+    unpushed refs travel as files. The move shows progress per item.
+  - **One live copy:** the session is never running on two machines. The
+    agent stops on the old machine before it resumes on the new one. A move
+    cut off at any point loses nothing, and the restart doctor finishes or
+    undoes it from the manifest (MV-14).
 
 ### Undoing an archive
 
@@ -861,8 +1327,8 @@ Ledger schema migration  [api, ledger]  Claude · This Mac
   or at once when the app quits. **Undo** before then brings the session
   back exactly as it was, uncommitted work included, and starts its agent
   again with its conversation. After that only **Restore** brings it back
-  (LD-4), from what was pushed. A restart in between finishes the delete
-  (PER-27). (provisional, D110)
+  (LD-4), from what was pushed. A restart in between keeps the window and
+  finishes the delete when it closes (PER-27). (provisional, D110, D430)
 
 ## 8. Lifecycle and disk
 
@@ -1036,7 +1502,7 @@ each repo's branch.
   **Another session's branch…** (lists branches of other sessions in the
   channel).
 - **RV-2** The diff is grouped per repo. Each repo group shows its name,
-  branch and totals (+/−), and has its own **Push** / **Open PR** actions.
+  branch and totals (+/−), and has its own **Push & PR** action (D293, D388).
   Above the groups: number of files, number of repos, overall +/−.
 - **RV-3** Each file shows repo chip, path, added/modified/deleted, +/−, and
   **Open in editor** (SE-17; frame 01). Clicking the file's path opens it big
@@ -1236,8 +1702,10 @@ each repo's branch.
   repos to the same session, so one review can span N repos.
 - **PR-5** **Start the review** clones each PR's head into that machine's
   `~/Humata/pr-reviews/sessions/<review>/<repo>` (FC-6, FC-7) and starts the
-  **review chat** (PR-22): an agent told each PR's URL, title, base and head,
-  the user's context, and the tools of PR-23. It is not asked to review the
+  **review chat** (PR-22): an agent told each PR's URL, title, the user's
+  context, and the tools of PR-23; it is not told branches or where the
+  clones are (D743) and asks `session_info` or `review_context` when it
+  needs them. It is not asked to review the
   PR, and waits for the user's first question.
 - **PR-6** A review's clones are on the PR's own head branch name, tracking
   the PR's head (`refs/pull/<n>/head` for PRs from forks).
@@ -1289,7 +1757,9 @@ each repo's branch.
   kept and marked outdated.
 - **PR-17** A merged or closed PR shows "PR #482 was merged" (or closed) on
   its session with **Archive**. If drafts were never submitted, the Archive
-  dialog names them before going ahead.
+  dialog names them before going ahead. Archiving keeps them with the
+  archived review; a restore brings them back, and only deleting the review
+  removes them (D513).
 - **PR-18** The PR reviews channel's Sessions table shows, per review, the
   PR(s), author, state (open, merged, closed), drafts count and new commits.
 
@@ -1300,8 +1770,8 @@ each repo's branch.
   side and the quoted code, to the review chat (PR-22), never to GitHub.
 - **PR-20** The user can also type any general question about the PR in
   the review chat. Answers that cite code link back to it in the diff.
-- **PR-21** Where a review clones is the user's choice, as for any session
-  (PR-4): This Mac or any machine. A review can be moved to another machine
+- **PR-21** Which machine a review clones on is the user's choice, as for
+  any session (PR-4): This Mac or any machine. Where on it is PL-2's rule. A review can be moved to another machine
   later (MV-1), drafts, notes, the review chat and reviewed snapshots
   included.
 
@@ -1480,11 +1950,140 @@ mode. Frames 39 and 41–43 draw it.
   Info panel, with **Unarchive**, and stay in the session's Journal. Drop
   (SM-7) deletes a comment; archive keeps it.
 
+### Document versions (owner direction 2026-11-16, DOCV)
+
+A file in a Desk folder has versions the user can step back and forward
+through. A version is a git commit in the folder's own repository: the
+user saves one with **Save version**, the agent with plain `git commit`.
+Restoring an old version adds a new one, so nothing is lost (D450). New
+frames for the goldens flow are listed in `workflow/milestones/DOCV.md`
+and go to the owner before any golden changes.
+
+```text
+┌ Desk › Index rollout proposal  ○ Claude Code · This Mac ─────────────────────┐
+│ ~/Humata/desk/index-rollout-proposal  [Kept · 4 versions]  [This Mac ▾]      │
+│ claude │ ▤ rfc-index.md ✕ │ +            [Preview] [Source] [Side by side]   │
+│ ◀ ▶  v3 of 4 · 14:02 · claude · "Add the risks table" · read-only            │
+│      [History ▾]  [Compare with current]  [Restore as new version]  [Back]   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Risks                                                                        │
+│ ▌• The backfill doubles write load for an hour …                       ▢ 1   │
+│   ┌ You · line 21 · sent to claude (as it was at v3) ┐                       │
+│   │ What does "an hour" assume?                      │                       │
+│   └──────────────────────────────────────────────────┘                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+ History ▾   v4  15:40  You     "Before review"           +12 −3
+             v3  14:02  claude  "Add the risks table"     +30 −0
+             v2  13:10  claude  "Plan and sizes"          +41 −6
+             v1  12:55  claude  "First draft"             +58 −0
+```
+
+- **DV-1** Every folder Humata makes for a Desk session, on the global
+  Desk (DK-2) or a channel's (CD-1), is a git repository of its own, made
+  with the folder (`git init`, no commit). Humata writes that repository's
+  own `.git/config` only: an identity, so a plain `git commit` works on a
+  machine with none, and nothing else. Each clone in the folder (DK-3) is
+  listed in the repository's `.git/info/exclude`, so the folder's
+  repository never tracks a clone or its files. (provisional, D453, D454)
+- **DV-2** A **version** of a file is a commit in its folder's repository
+  that changes that file. Versions are per file, numbered v1, v2, … from the
+  oldest. Each shows its time, who made it, its message and the lines it
+  added and removed in that file. Who: **You** for a commit Humata made at
+  the user's click (Save version, restore: DV-5, DV-8), which carries a
+  `Humata-Saved-By: you` trailer; the session's agent for any other commit.
+  (provisional, D453)
+- **DV-3** A Markdown tab of a file in a Desk folder has a **History**
+  strip under its mode switch: ◀ and ▶ step to the previous and next
+  version; a label ("v3 of 4", or "Current" with "· unsaved changes" when
+  the file differs from its newest version, or "No versions yet");
+  **History ▾**, the list of versions newest first, each opening its
+  version when clicked; and **Save version**. Stepping keeps the tab's mode
+  (SM-4) and its position as near as the text allows. A tab of a file in
+  any other folder has no strip.
+- **DV-4** A Desk folder is **kept** once its repository holds a commit,
+  made by anyone, or when the user keeps it (DK-2). Closing a session whose
+  folder is not kept, while it holds files outside its clones, asks first,
+  in one line: nothing in it is saved as a version and the folder goes 7
+  days after closing. It offers **Save version and close** and **Close**.
+  (provisional, D451)
+- **DV-5** **Save version** asks for an optional message (empty: "Saved by
+  you") and commits every change in the folder outside its clones: changed,
+  new and deleted files. With no change it is disabled and says so ("No
+  changes since v4"). The agent saves a version with plain `git commit` in
+  its folder whenever it wants; there is no MCP tool to save, and no version
+  is made on its own, per turn or otherwise (D450). When the folder's
+  repository gains a commit, from either, the strip and the list update
+  without a reload.
+- **DV-6** An old version opens read-only in the same tab, in the tab's
+  mode, with a bar naming it (number, time, who, message) and **Compare with
+  current**, **Restore as new version** and **Back to current**. It shows
+  the comments on that file as they were when that version was made: their
+  lines, quoted passages, statuses and replies at that time, read-only. On
+  an old version nothing can be commented, sent, resolved, reopened or
+  archived; the current file's comments are untouched by viewing one. A
+  version with no comment record (DV-12) says "Comments weren't recorded
+  for this version" and shows none. (provisional, D456)
+- **DV-7** **Compare with current** opens the diff view (RV-1) with that
+  version as the base and the current file, unsaved changes included, as
+  the other side. Comments made there are ordinary diff comments (SM-13).
+- **DV-8** **Restore as new version** makes that version's text the
+  newest. If the folder has unsaved changes, they are first saved as a
+  version of their own ("Saved before restoring v3"); then the file gets
+  v3's text and is saved as "Restored v3". Only that file changes. Every
+  version stays: a restore never removes, resets or rewrites a commit. The
+  file's current comments re-anchor as after any change (SM-7); a restore
+  is the user's change, so it never addresses a comment (SM-16).
+  (provisional, D455)
+- **DV-9** The agent lists and reads versions with MCP tools:
+  `doc_versions_list` (`doc.versions_list`: a path → its versions as in
+  DV-2, with whether each has a comment record) and `doc_version_read`
+  (`doc.version_read`: a path and a version → that version's text and its
+  recorded comments). Its own session's folder needs no rule, as
+  `comments_list` (D21). Another session's folder needs **Read another
+  session's files** (FILES_READ_OTHER_SESSION), and another machine's
+  **Read files on another machine** (FILES_READ_OTHER_MACHINE), as
+  `file_read` does (IN-17). No tool saves or restores: the agent commits
+  with git (DV-5), and **Restore as new version** is the user's.
+  A Desk session has no channel-mates: another Desk session's folder
+  and versions are refused, as D182.3 says.
+  (provisional, D457)
+- **DV-10** Versions move with the folder and survive restarts and
+  reboots: they are commits in the folder's `.git`, which MV-13 carries
+  with the folder's files, and DV-12's records are store rows carried as
+  TR-13 records. Moving a Desk session to another machine (DK-3), into a
+  channel (DK-17) and a channel Desk session's moves (CD-1) keep every
+  version and its comments. Moved into a channel, the folder's repository
+  has no remote, so DK-17 offers no repo for it: it stays the session
+  folder's own repository, history included, at the new place, and goes on
+  leaving the clones out (DV-1).
+- **DV-11** Humata changes only the repositories it made (DV-1). It never
+  writes the global or system git config, never commits to, resets or
+  rewrites a clone or a folder the user picked before D451, and never
+  rewrites or removes a commit in its own repositories. The only commits
+  Humata makes are Save version and restore, each at the user's click. Its
+  own commits run with hooks and signing turned off for that one command,
+  so the user's global settings never prompt; the agent's commits run as
+  the agent runs them. (provisional, D454)
+- **DV-12** When a Desk folder's repository gains a commit, Humata records,
+  for each file the commit changed, the session's comments on that file:
+  anchors, quoted passages, statuses and replies, drafts included, archived
+  ones left out (SM-20). The record is keyed by the commit, kept with the
+  session (PER-25) and read-only. (provisional, D456)
+- **DV-13** On a channel's Desk (CD-1), a channel Desk session's folder is
+  a repository as DV-1 and is kept once it holds a version (DV-4). Close
+  (CD-4) still sends a folder that is not kept to the trash at once. A kept
+  folder stays where it is: the closed session shows under **Closed** on
+  the channel's Desk tab with **Reopen**, and its Markdown under
+  **Documents** (as DK-5). A kept folder belongs to the channel: it lives
+  on the channel's machine, moves with it (MV-16, MV-17), and goes to the
+  trash only when the user deletes its session or the channel (CH-24,
+  LD-7). The channel's retention rules don't delete it. (provisional, D452)
+
 ## 12. File manager and transfers
 
 ```text
 ┌ Files ─────────────────────────────────────────────────────────────────────┐
-│ [This Mac ▾] ~/Downloads/fixtures       ⇄   [gpu-box ▾] ~/Humata/ml/shared  │
+│ This Mac › Home › Downloads › fixtures  ⇄   gpu-box › # ml › shared         │
 ├──────────────────────────────────────┬─────────────────────────────────────┤
 │ ▸ ..                                 │ ▸ ..                                │
 │ ▾ datasets/          2.1 GB          │   weights/            —             │
@@ -1492,7 +2091,7 @@ mode. Frames 39 and 41–43 draw it.
 │     eval.parquet     310 MB          │                                     │
 │   README.md          2 KB            │   ◂── drop here, or drag from Finder│
 ├──────────────────────────────────────┴─────────────────────────────────────┤
-│ [New folder] [Rename] [Copy →] [Move →] [Delete]      Trash on gpu-box (3)  │
+│ [New folder] [Rename] [Copy to ▸] [Move to ▸] [Delete] Trash on gpu-box (3) │
 ├────────────────────────────────────────────────────────────────────────────┤
 │ Transfers  datasets/ → gpu-box   1.4 / 2.1 GB  ▓▓▓▓▓▓▓░░░  paused: link down │
 │            resumes on reconnect · checksummed                    [Cancel]  │
@@ -1501,9 +2100,12 @@ mode. Frames 39 and 41–43 draw it.
 
 - **FM-1** The file manager has two panes. Each pane can show any machine
   (This Mac or a remote), so the user can work between this computer and a
-  machine, or between two machines.
+  machine, or between two machines. Pane headers are breadcrumbs of names,
+  never paths (PL-11).
 - **FM-2** In either pane the user can create a folder, rename, copy, move and
-  delete files and folders, and copy or move between the panes.
+  delete files and folders. **Copy to ▸** and **Move to ▸** pick a machine
+  and land by rule (PL-3, PL-5); dropping onto the other pane is the explicit
+  form (PL-6).
 - **FM-3** Delete moves to the machine's Humata trash (LD-6). The user can
   restore it from the trash until it empties after 30 days (LD-7); the trash
   shows its item count.
@@ -1513,8 +2115,9 @@ mode. Frames 39 and 41–43 draw it.
   or connection is opened.
 - **FM-6** Transfers are chunked, resumable and checksummed. A file counts as
   transferred only when its checksum matches on the destination.
-- **FM-7** A transfers tray lists every transfer with source → destination,
-  progress and state, and lets the user cancel one.
+- **FM-7** A transfers tray lists every transfer as what → machine and the
+  place by name ("datasets/ → gpu-box · ml shared"), with progress and
+  state, and lets the user cancel one.
 - **FM-8** When the link drops, the transfer pauses and says why; on reconnect
   it continues from the last confirmed offset without user action.
 - **FM-9** Machine ↔ machine transfers go through the host (AR-4).
@@ -1717,8 +2320,9 @@ and frame 37 a Desk session's.
   - Question for you: the question, its choices and a reply field (IN-25).
   - Access asked ahead: the kind of action, its target and the grant that
     approving makes (IN-26).
-  - Cross-machine copy: source machine and path → destination machine and
-    path, sizes.
+  - Cross-machine copy: what, its size, and source machine → destination
+    machine with the landing place by name (PL-3); paths behind Details
+    (PL-10). Buttons: Approve, Somewhere else…, Deny. (provisional, D467)
   - Context hand-off or note to another session: the exact content to be
     sent.
 - **IN-11** **Open session ↗** opens the requester's session with its Inbox
@@ -1788,13 +2392,16 @@ and frame 37 a Desk session's.
   | Change its own session: rename, add or drop a repo, own copy | Ask me |
   | Stop, archive or delete its own session | Ask me |
   | Move a session to another machine | Ask me |
+  | Move a Desk session into a channel (DK-15; Ask me or Never, no Allow) | Ask me |
   | Push its branch or open a pull request (IN-24) | Ask me |
   | Open a network connection through the host (HO-11) | Ask me |
   | Add, create, start or stop machines; sync skills (MP-24) | Ask me |
   | Restore from trash | Ask me |
   | Create a channel | Ask me |
-  | Stop or delete any session but itself | Never |
-  | Change channel settings or repos | Never |
+  | Add a repo to a channel (CH-26) | Ask me |
+  | Stop or archive another session (D306) | Ask me |
+  | Delete another session | Never |
+  | Change channel settings, or remove a repo from a channel | Never |
   | Remove, forget or delete machines (MP-24) | Never |
 
   Access rules themselves are not in this list: only the user changes them
@@ -1824,7 +2431,8 @@ and frame 37 a Desk session's.
   | Machines | That machine and that action |
 
   A grant belongs to one session. Forks and rebuilt sessions get none of
-  their parent's grants. A moved session keeps its grants. A grant ends when
+  their parent's grants. A moved session keeps its grants, except after a
+  Desk-to-channel move (DK-18), which ends them. A grant ends when
   its session is archived or deleted. A grant whose rule is set to Never
   stops applying until the rule changes back. An agent cannot widen a grant.
 - **IN-23** Only the user changes access rules, the While I'm away rule,
@@ -1880,6 +2488,9 @@ and frame 37 a Desk session's.
   to "prepare the PR review for me").
 - **VW-12** Views work for sessions on remote machines: the view is stored
   with the session on the host and its files are read over the bridge.
+  Marking a view ready on the machine journals it as `view.offered`, and
+  the host takes it in once and owns its state from then on. Drafts stay
+  on the machine (GRPC.md 9.8).
 - **VW-13** A pull request view holds, per repo, a title, a body, a base
   branch and whether it is a draft. Preparing it pushes nothing. **Open it**
   shows the fields, editable, with **Push and open PR(s)**, which runs the
@@ -1903,7 +2514,7 @@ Linux machine (AR-7).
 - **TP-3** An agent can read files of another session or another machine,
   subject to the rules (Inbox when asked).
 - **TP-4** An agent can copy files from another session or machine into its
-  own clone or into `shared/`, subject to the rules.
+  own clone or into `shared/` on its own machine, subject to the rules (D755).
 - **TP-5** An agent can send a note or summary to another session, or ask it a
   question, subject to the rules. A delivered note is typed into the target's
   terminal at its next turn end (SE-23) as one message naming the sender. A
@@ -2841,8 +3452,8 @@ NV-32–NV-34 keep what still holds.
   scrollback length (kept on each machine).
 - **ST-4** **Default access for new channels**: the same rules as a channel's
   Agent access tab, applied when a channel is created.
-- **ST-5** **Machines**: per machine, the Humata root folder (FC-10) and the
-  VM tier switch (PER-8).
+- **ST-5** **Machines**: per machine, the **Humata folder** (its root, with
+  **Change…**, PL-1, FC-10) and the VM tier switch (PER-8).
 - **ST-6** **While I'm away** default for new channels (AW-4).
 - **ST-7** **Long lines: Wrap / Scroll**, Wrap by default. It applies to code
   in the Diff panel, the editor tab (all three modes), the Files viewer and
@@ -2903,6 +3514,12 @@ NV-32–NV-34 keep what still holds.
 - **ST-20** **Keyboard** lists every command with its shortcut. Each can be
   changed or cleared, and a shortcut already in use is refused, naming the
   command that has it. (provisional, D111)
+
+- **ST-21** **Repositories** (General): the default scope as chips with
+  **+ Org** and an **Include my repos** switch (RL-7), and the repo library
+  with **Remove** per repo and **Forget all…** (RL-4). Changes are written
+  to `config/repos.toml` on the host and reach every machine (RL-12).
+  (provisional, D474)
 
 ## 25. Security and secrets
 
@@ -2972,7 +3589,7 @@ NV-32–NV-34 keep what still holds.
 ### 26.1 Create an all-remote channel with repos and machines
 
 1. The user clicks **+** next to Channels.
-2. Types the name `ml-training`; the folder shows `~/Humata/ml-training`.
+2. Types the name `ml-training`.
 3. Picks machines: gpu-box and devbox-1 (This Mac unticked).
 4. Searches repos, ticks `acme/ml-pipelines` and `acme/infra`.
 5. Clicks **Create channel and clone 2 repos**.
@@ -3072,8 +3689,8 @@ NV-32–NV-34 keep what still holds.
 
 ### 26.7 Transfer a folder Mac → remote, recover after an SSH drop
 
-1. The user opens the file manager: This Mac `~/Downloads/fixtures` on the
-   left, gpu-box `~/Humata/ml-training/shared` on the right.
+1. The user opens the file manager: This Mac › Home › Downloads › fixtures
+   on the left, gpu-box › # ml-training › shared on the right.
 2. Drags `datasets/` from Finder onto the right pane.
 3. The tray shows the transfer, checksummed, in chunks.
 4. At 1.4 of 2.1 GB the SSH link drops. The transfer shows "paused: link
@@ -3174,8 +3791,8 @@ NV-32–NV-34 keep what still holds.
 
 1. In the file manager the user picks devbox-1 in the left pane and gpu-box in
    the right.
-2. Selects `~/Humata/ml-training/shared/weights/` on devbox-1 and clicks
-   **Copy →**.
+2. Selects `weights/` in #ml-training's shared folder on devbox-1 and
+   clicks **Copy to ▸** › gpu-box · ml-training shared.
 3. The tray shows devbox-1 → gpu-box via This Mac.
 4. gpu-box goes offline; the transfer pauses and the tray says it waits for
    gpu-box. The right pane shows its last listing and disables actions.
@@ -3209,8 +3826,7 @@ NV-32–NV-34 keep what still holds.
 2. **Review a pull request** opens with the title, author, size and checks
    fetched with `gh`. They add `acme/ledger#91` under Also review, pick
    devbox-1 and Claude Code, and type some context.
-3. **Start the review** clones both heads into
-   `~/Humata/pr-reviews/sessions/…` on devbox-1 and starts the review chat
+3. **Start the review** clones both heads on devbox-1 and starts the review chat
    with the PRs and the context. The agent waits.
 4. The user asks "where does a partial capture get refunded?". The agent
    focuses `refund.rs:140`, highlights the two callers and leaves a note on
@@ -3279,8 +3895,8 @@ NV-32–NV-34 keep what still holds.
 3. Existing sessions don't change. In "API rate limiter" the user picks **Add
    repo to this session** › `acme/web`.
 4. Humata clones it on the session's machine on `uhvesta/api-rate-limiter`,
-   tells the agent the repo and its path, and a `web` group appears in Diff
-   and Files.
+   and a `web` group appears in Diff and Files. The agent is told nothing
+   (D743); the user prompts it.
 5. gpu-box comes back and clones `acme/web`.
 6. Later the user removes `acme/ledger` from the channel. The dialog lists 2
    sessions using it; they drop it from one (no unpushed work) and archive
@@ -3360,3 +3976,8 @@ that used to be here is gone with it.
 - **q9** Should Humata also show a structured view of tool calls beside the
   terminal?
 - **q10** Answered: channels span many machines.
+- **q11** Should a whole channel session move into another channel (its
+  repos, branches, rules and board items change channel)? ROAM moves whole
+  sessions to another machine and from the Desk into a channel only
+  (DK-15); carrying just the conversation into another channel is CV-8
+  (D307).

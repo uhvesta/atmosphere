@@ -170,7 +170,7 @@ Status: **open** (waiting for the user) · **decided**.
 ## D21: Actions the IN-17 table has no row for (I0.2 boundaries). Open
 - **Problem:** some agent calls cross a boundary but match no IN-17 row: reading comments sent to its own session, reading the Global board apart from other channels, restoring or rebuilding an archived session, archiving another session, and watching another session's terminal read-only.
 - **Options:**
-  - (a) Fold each into the nearest row: comments to its own session are a read of its own session (IN-16, no rule); the Global board and other channels share the row "Global board, or other channels and their boards: anything"; restore and rebuild go through the start or fork rows for that machine; archiving another session goes through "Stop or delete any session but itself"; a read-only watch goes through "Read another session's files".
+  - (a) Fold each into the nearest row: comments to its own session are a read of its own session (IN-16, no rule); the Global board and other channels share the row "Global board, or other channels and their boards: anything"; restore and rebuild go through the start or fork rows for that machine; archiving another session goes through "Stop or archive another session" (Ask me since D306; deleting another session is its own row, "Delete another session", Never); a read-only watch goes through "Read another session's files".
   - (b) Add a row for each, with Ask me as default.
   - (c) Refuse each to agents until the spec names a rule.
 - **Provisional:** (a). Each match has the same reach and risk as the row it joins, and the table stays short.
@@ -919,7 +919,8 @@ A frame changes only with the owner's OK (D76). SPEC already follows the newer d
 - StopSession acts only on Running (holder shutdown, then Stopped); Launching and Resuming answer busy. Resume reuses kind START_SESSION with steps `launch`, `verify` (no RESUME_SESSION kind). ResumeSession supports MODE_RESUME only; fresh-with-summary answers not built.
 
 ## D124: Session status mapping (proposed by minion FL-D). Provisional
-- Launching/Resuming → STARTING, Running → WORKING, Exited → EXITED, Stopped → IDLE, ResumeFailed → RESUME_FAILED; an unfinished start shows STARTING.
+- Launching/Resuming → STARTING, Running → WORKING, Exited and Stopped → EXITED, ResumeFailed → RESUME_FAILED; a session with no agent record → IDLE; an unfinished start shows STARTING.
+- Amended 2026-11-17 (owner via Fable): Stopped used to map to IDLE. A stopped agent has no holder, so it is as gone as one that exited. Only EXITED offers Resume and turns off "Stop the agent" (SE-6, SE-14, D671). IDLE is for a running agent between turns (D169). To reverse: map `AgentState::Stopped` back to Idle in `session_status` (`daemon/humatad/src/session_service.rs`).
 - Known gap: an agent that exits while the daemon runs stays WORKING until the next reconcile or resume (needs a holder-exit watcher; FL follow-up).
 
 ## D125: The app's Channels and Sessions client traits (proposed by minion FL-D, agreed by the main agent). Provisional
@@ -1437,7 +1438,7 @@ The daemon had no feed of its comments, and the app never polls, so `CommentsCli
 
 ## D181: Context-only and before-turn forks (advised by a Fable agent, 2026-11-15). Settled
 
-**Part 1 superseded by D185** (context-only forks share and edit the parent's code); parts 2 and 3 stand, GiveOwnCopy included.
+**Part 1 superseded by D185** (context-only forks share and edit the parent's code); parts 2 and 3 stand, GiveOwnCopy included. **Part 2's byte-prefix copy is superseded by D307** (a conversation adapter writes the kept turns in the CLI's own format, CV-2).
 
 1. **Context-only fork (FK-7, IN-20).** The fork's cwd is its own session folder, created empty and with no clone records. Its branch is picked at fork time and reused by GiveOwnCopy. Humata's own calls refuse writes to the parent's clones through `SessionKind::ContextOnlyFork` (`Refusal::ParentReadOnly`), which is now wired from the fork origin, not always `Ordinary`. Agent file tools hit a blocking PreToolUse hook on `Write|Edit|MultiEdit|NotebookEdit`. It canonicalises `file_path` and exits 2 with "ask for your own copy" when the path is under `HUMATA_READ_ONLY_CLONES`, which the launch env sets. The check is local, so it can't fail open with the daemon down. **Bash is not covered**: blocking it needs containment, which is an owner decision if wanted. chmod, read-only mounts and seatbelt were rejected. Claude gets `--add-dir <parent clone>` to read without prompts.
 2. **Turns (FK-3).** ListTurns parses the agent's conversation file with the mirror's rule (a `user` line with text, not meta, not sidechain); one `humata2_mirror` function gives index, first line, time and offset. A before-turn fork copies the byte prefix up to turn n. Only agent kinds that name a conversation format (`claude-jsonl`) can fork at a turn; others list no turns and refuse. `before_turn = 1` and values past the last turn are refused. The code is not rolled back (FK-2: "as they are right now"); the preview and the FK-10 line say so. `before_turn` is stored in ForkOrigin.
@@ -1608,7 +1609,7 @@ SEC-6 containment isn't built (`contained: false`), so a context-only fork's Bas
   5. **Status:** D169's async `turn needs-input` hook stays beside the blocking one. Both start together, so its report is older than the next PostToolBatch and loses to it.
 - **Not taken:** `AskUser` (labels a Bash approval a question; a reply that means deny; unary, so a killed hook can't withdraw); a CLI that parses payloads (skew between CLI and daemon splits one feature).
 - **Risks pinned:** clap exits 2 on an unknown subcommand and Codex and Copilot read exit 2 as a deny, so every hook command ends `|| true`, with stdout kept. Only PermissionRequest is hooked, not PreToolUse too, so one ask is one card.
-- **Open:** a remote machine's agent reaches its own machine's daemon; carrying the normalized card over the host link is for the remote-work lane. Until then a remote machine's hook gets no decision, and the TUI asks.
+- **Open:** a remote machine's agent reaches its own machine's daemon; carrying the normalized card over the host link is for the remote-work lane. Until then a remote machine's hook gets no decision, and the TUI asks. Closed by D744: the machine journals the card to the host.
 - **Reverse:** drop the Hook RPC, `humata hook`, `inbox/permission.rs`, the `permission` field and the blocking hook entries; the async status hooks stay.
 
 ## D192: The permission hook holds for an hour, the daemon ending it first (minion HOOKS, advised by a Fable agent, 2026-11-16)
@@ -1683,6 +1684,7 @@ SEC-6 containment isn't built (`contained: false`), so a context-only fork's Bas
 - **Problem:** KP-4/PR-1 say a pasted PR link offers **Review this PR**, which opens Review a pull request (frame 67). That dialog belongs to the PR milestone, which is blocked (REVIEW, ASK, FRAMES2) and needs a host-side `gh` fetch (PR-3). Offered for any PR, the entry could only toast "start a session to review it": a control that does nothing (actionable UIs only).
 - **Pick:** the palette offers Review this PR for a pasted PR only when a session here already reviews that PR (`workspace.pulls[].session`); picking it opens that session. Other pasted PRs offer no review entry and search as usual.
 - **Undo:** the PR milestone brings the entry back for every pasted PR, opening the dialog.
+- **Superseded (2026-11-16, D288, PR C5):** every pasted PR now offers Review this PR · owner/name #n at once; it opens the session already reviewing that PR, or else the Review a pull request dialog with the link pasted and This Mac picked.
 
 ## D198: "Since I last reviewed" in a repo never reviewed shows everything since origin/main (minion REVIEW, advised by a Fable agent, 2026-11-16). Provisional
 - **Problem:** Flow 26.3 picks "Since I last reviewed" in a fresh session and expects three repo groups with totals. The daemon refused instead ("no review of <repo> yet … press Mark reviewed first"), so the panel showed an error and no diff.
@@ -2212,3 +2214,1657 @@ The owner: "We should force upgrade daemons and stuff when we detect them" and "
 - k) Words: "Upgraded to 2.0.5 · 2 min ago", "Read-only until migrated · Open message"; frames 77–83 in `desktop/tests/design/upgrade.rs`.
 SPEC: UP-1 added; TS-0, TS-1 and PER-6 reworded.
 
+
+## D282: How a host stops and starts a box, and who may (Provisional, 2026-11-16)
+STOP T4/T5 picks by the STOP manager:
+- a) A host stops a box by forwarding `DaemonService.StopSessions`/`StartSessions` over the existing relay link (relay LINK_OWN gains the two paths), not a new PeerService call.
+- b) The one-off SSH `humatad2 stop` is a hedge: it starts when the link fails or after 1 s with no answer, so a healthy link never also SIGKILLs a re-executing daemon. A box whose stop has settled ignores a late SSH stop.
+- c) Start waits up to 20 s for the box's link to come back.
+- d) A box remembers the last stop it applied (`stop/last.json`); a repeat of that id is refused FailedPrecondition, which the host counts as delivered, and `humatad2 stop` exits 0 on it.
+- e) The host keeps each box's stop at `<state>/stop/machines/<id>.json` and reconciles it at link-up through `HelloResponse.sessions_stopped`.
+- f) Agents may stop or start only through `CAPABILITY_MACHINE_SESSIONS_STOP` (44, never by default); an agent or script can never start a stop the user made (UserOnly); a person typing `humata stop` outside every session is admitted as Terminal and recorded via CLI.
+
+## D283: PR review: Undo strip at the chat tab's foot (Provisional, 2026-11-16)
+Each agent view change's Undo sits in a strip at the foot of the chat tab, newest first, 3 shown plus "+N"; changes caused by the code moving show without Undo; Back sits in the Diff header. Redraws golden 68's strip area (advisor sign-off; the owner sees before/after).
+
+## D284: PR drafts share the one comment ledger (Provisional, 2026-11-16)
+PR drafts are comments in the same ledger, moving draft → posted with a link; "Make it a draft" converts a note in place (no chat Undo).
+
+## D285: review_sessions store record (Provisional, 2026-11-16)
+A `review_sessions` record holds each review session's PRs, its push-allowed switch and agent switches; identity derives the review kind from it on every lookup. It is store migration 23 (TERM holds 21 and 22) and gets a "Migrate store" Inbox item per D281.
+
+## D286: PR polling is the daemon's (Provisional, 2026-11-16)
+Every minute while the app reports a review open, else every 5 minutes; one batched `gh` GraphQL query per tick; changes go out on the event feed. Exit flow runs on This Mac; devbox-1 only if the rig needs no network, else a logged gap.
+
+## D287: Submitting a PR review safely (Provisional, 2026-11-16)
+Each draft's line is checked locally against the PR's diff first; drafts GitHub would reject are listed with Re-attach or Drop. A review is tied to the clone's commit and recorded before posting; after a restart it is matched against GitHub's reviews, else shown Unconfirmed with Open on GitHub and Post again.
+
+## D288: Ask, agent view pacing, and Review this PR at once (Provisional, 2026-11-16)
+Ask is typed into the chat through the existing path, sent once, never stored as a comment. Agent view changes wait 1000 ms after the user's last scroll, key or selection; focus changes collapse to the latest. Reverses D197: Review this PR shows at once from the parsed URL and the dialog says "Fetching … with This Mac's gh…" while it resolves, or the reason and Try again.
+- Added 2026-11-16 by main: an agent's `pr_review_start` that passed its Ask may resolve the PRs it names (a read; no GitHub state changes). Without that approval, resolve stays user-only.
+- Added 2026-11-16 by main: SetPushAllowed publishes the Session event, because the app is pushed changes and never polls.
+
+## D289: Per-repo diff targets (Provisional, 2026-11-16)
+VIEWS picks (Opus 5.5 high advisor):
+- a) Each repo's base is translated exactly as the daemon does it; "Comparing per repo" shows only when the repos' specs differ.
+- b) A repo left out of a spec gets the default base; a repo outside the session, or named twice, is refused.
+- c) ListBases reads the clone's remote branches without fetching.
+- d) The default preset uses the repo's real default branch (origin/HEAD), not always origin/main.
+- e) `PushChoice.base_branch` becomes `gh pr create --base`; a PR already open against another base is not retargeted; PlanPush takes an optional spec.
+- f) Each repo's pick lives in app memory for now. Open gap: it isn't kept across restarts, and persistence is core (to close within VIEWS).
+- g) Offered views are kept on the host (`view.offered` in the machine journal); drafts stay on the machine and move with the session.
+- h) App views are keyed by id and arrive on the event feed; the Revert snapshot includes each repo's base.
+- i) A prepared review opens in the Diff panel; a repo no longer in the session shows "not in this session".
+- j) VIEWS owns the diff spec model, pickers, ListBases, the get_diff/get_file_diff fixes, base_branch, review_prepare outside the review chat, the PrepareView dispatcher and /render-humata-review. PR owns PullRequestReviewService, the review chat applying a plan (D80), PR views (VW-13) and /order-humata-review. PR rebases on VIEWS' first commit (review.proto).
+
+## D290: UPGRADE build identity and refusals (Provisional, 2026-11-16; D281 addendum l–o)
+- l) A daemon with no `bin/bundle.json` has nothing to compare against: it posts no Migrate items and refuses nothing. A release always ships bundle.json, so this is not a mixed-version fallback; a host with an id still treats a box with no id as mismatched.
+- m) A caller counts as a CLI only when it carries a CLI credential (session, script or login token) or the `humata-bundle` header; the app and admin calls aren't held to the release.
+- n) bundle.json is read once at daemon start, from `<parent of --state>/bin/bundle.json`.
+- o) `migration_needed` (error kind 60) maps to FailedPrecondition; the CLI exits with the PRECONDITION code.
+- Wire numbers: `HelloResponse.build = 12` (11 is STOP's `sessions_stopped`), `ServerInfo.build = 10`, `HelloRequest.host_build = 7`, `REQUEST_KIND_MIGRATE = 8`, `WITHDRAW_REASON_RESOLVED = 9`, `RequestPreview.migrate = 14`; BuildInfo/BuildFile/MigrateThing in a new build.proto.
+- Frames 77–83 (advisor-signed): one verb, "Migrated to 2.0.5 (a1b2c3d)"; the banner link reads "Open in Inbox"; a failure says "failed to start twice" and warns that migrating again without a fix fails the same way; the holders item ends when the last agent session has moved (open shells are listed but don't hold it); Allow all/Deny all skip Migrate items; a Migrate card omits IN-9 parts 5, 7, 8; 10 goldens (79–81 each card + machine page).
+
+## D291: Per-repo specs on the wire (Provisional, 2026-11-16; D289 addendum)
+- ListBases ships with its daemon implementation (VIEWS B3), not in the first model commit.
+- The client sends every repo in a per-repo spec: its own pick, else the header preset translated for it (OriginMain → default branch, UncommittedOnly → uncommitted, SinceLastReviewed → last reviewed, SinceFork → fork point). Picking a repo while another session's comparison is shown resets the header to the default branch.
+- "Default branch" is the merge base with `origin/HEAD`; "Uncommitted" is HEAD plus everything on disk.
+
+## D292: A holder that doesn't answer never hangs a close (Provisional, 2026-11-16; TERM)
+- `humata2_holder::shutdown` bounds its connect and Welcome wait with a named constant (about 3 s). On timeout it returns its own error.
+- When shutdown fails, desk close ends the holder by its saved pid: SIGTERM, a short grace, then SIGKILL, using the STOP sweep's helper. The close never waits without a bound while it holds the session lock.
+- TERM batch 3: the reply record lives in four columns on `tabs` (migration 22). An answer's record is saved before the answer is sent, so a crash leaves it pending, and the next start marks input uncertain instead of answering again. `terminal_uuid` uses SHA-256 with v8 bits until `uuid` gets its v5 feature.
+
+## D293: Default branch and saved diff targets (Provisional, 2026-11-16; VIEWS wave 2)
+- D198's rule "no origin/main means refuse" becomes "no default branch means refuse". The default branch is origin/HEAD, else origin/main. The refusal tells the person to run `git remote set-head origin --auto`. Uncommitted still works without a default branch.
+- Each repo's picked diff base is saved with the review state and read back at launch (D289 f). Any session-wide header preset that isn't the default is saved too.
+- Push & PR opens each repo's PR against that repo's picked branch, after checking it exists in every clone. An open PR is never retargeted; it gets a note instead. A multi-repo push reports every repo's PR and note (VIEWS F3).
+- Gap: marking only one repo reviewed waits until the owner asks for it.
+- TERM ui (task 5): the app's replicas use `FitPolicy::Controlling`, not D271's Focused. Headless golden windows are never activated, so Focused would never send the first fit. One desktop view per tab makes Controlling safe. Revisit in ANYHOST, when a browser and the desktop can both control the same tab.
+- The ui replaces a tab's replica when its link ends. The live link ends its frames when the holder's terminal UUID changes, so a new holder always gets a new replica (C1 answer 4).
+
+## D294: UPGRADE batch 2 picks p–t (Provisional, 2026-11-16; D290 addendum)
+- p: Hello's build travels in `BeginRelayResponse.build = 2`. The link has no credential to call GetServerInfo on its own daemon.
+- q: Migrate items live in memory until the store can hold an Inbox item with no session. The host detects again at every link-up, so none is lost. The store change, with D281 d's unique index, is the next UPGRADE task.
+- r: Approve answers "not built yet" until running a migration exists.
+- s: Detecting the same mismatch again with an unchanged card doesn't bump the revision.
+- t: For now only starting a session, typing and writable attach check the machine's release. Writes, moves and pasting images come later.
+- `humata-bundle` is stripped from relayed calls. The MCP server sends its own bundle id.
+
+## D295: The header's ⋯ session menu and Rename dialog (Provisional, 2026-11-16; SE-7, FC-17)
+- No frame draws the ⋯ menu or a Rename dialog. The menu is the machine page's menu card under the ⋯ button; Rename is a Move-style card with the title field and a "Rename the branch too" box.
+- Items, in order: Rename…, Move to another machine…, Stop the agent, Push and open a pull request, Archive session….
+- On a Desk session Move is hidden and Archive reads Close session, as the Desk closes rather than archives (DK-11).
+- Stop the agent is off once the agent exited. It ends the agent only; the session, terminals and clones stay.
+- Push and open a pull request opens the Changes panel, where pushing and opening the pull request already live.
+- Renaming the branch is opt-in. The daemon refuses a branch that is already pushed and the dialog shows why.
+
+## D298: Check a PR for new commits now (Provisional, 2026-11-16)
+PR owner ask F1, picks by an Opus 5.5 high advisor:
+- Refresh reuses CheckHeads; there is no new rpc.
+- A manual check publishes `PullRequestHeadsChanged` like a poll and restarts that session's D286 timer.
+- A check never moves the clone or tells the agent. Only Update the clone does that.
+- A check that finds nothing answers with empty changes plus `checked_at`.
+- A check while one is running joins it. A check within 15 s of the last returns the last answer without calling gh.
+- `HeadChange` gains `base_branch = 5` and `stack = 6`, so a retarget shows as a head change.
+- UI: a "Check for new commits" item on the PR chip menu (the D183 pattern) and a palette command. The notice slot reads "No new commits · checked HH:MM". No frame is needed.
+
+## D299: Reviewed commits per PR (Provisional, 2026-11-16)
+PR owner ask F2:
+- Marks are keyed by PR (owner, repo, number), not by session.
+- A mark records sha, `git patch-id --stable`, reviewed_at, the head at the time, and who (user plus gh login).
+- History is an append-only list of entries (MARKED, UNMARKED, CARRIED, WHOLE_PR), each with its commits, head and optional snapshot n.
+- The store is the source of truth: tables `pr_commit_marks` and `pr_review_history`, in the PR store migration (23 while it is unshipped, else 24 with its D281 Migrate item).
+- RV-6 Mark reviewed in a PR session records WHOLE_PR and pins its `refs/humata/reviewed` snapshot. Marking single commits takes no snapshot.
+- After a force push, a commit with the same patch-id is CARRIED. A changed patch is unreviewed again, and merge commits never carry.
+- The agent reads marks through a read-only `review_commits` MCP tool. Only the user marks.
+- The rpcs are `ListPullRequestCommits` and `MarkCommitsReviewed`.
+- The UI is a "Commits · N of M reviewed" disclosure atop the Diff file list, with history under it. It needs a new frame, which goes through the goldens flow.
+
+## D300: Stacked PRs (Provisional, 2026-11-16)
+PR owner ask F3. GitHub stacked PRs went GA on 2026-10-06, on github.com only: the REST `/repos/{o}/{r}/stacks` API, and a `stack` object on each PR. `gh stack` is an extension that needs gh ≥ 2.90.
+- **Detection:** the native stacks API first, ordered by the base chain. Otherwise one `gh pr list --state open` call, with the base chain worked out locally. No trailer or body-marker parsing.
+- **Shared model:** the stack model is a pure crate `//tools/stack/graph`, owned by STACK. Its `Stack{repo, trunk, source, github_number, entries}` is bottom first, with `parent_of` and `children_of`; a base chain may be a tree.
+- **STACK agrees (to confirm with that lane):**
+  - the base chain is the truth;
+  - linear chains are linked natively where available;
+  - head branch names stay stable across amends;
+  - the crate has no I/O.
+- **Diffs:** a stacked PR's diff base is its parent's head, the same base for the D287 check.
+- **Navigation:** one review session holds the stack, one clone per repo. A user-only `SwitchPullRequest` adds the PR to the binding, switches the clone and tells the agent. It is refused, with a fix, over uncommitted changes.
+- **UI:** a stack strip in the PR header, a picker for two children, and palette Up/Down the stack on ctrl-shift-up/down (not Shift+J/K, D55.9). This is a new frame through the goldens flow.
+- **Submit:** posts each PR at its own recorded head.
+
+## D301: A running machine is upgraded only by Migrate (Provisional, 2026-11-16; D281 addendum)
+- A machine that already runs humatad2, This Mac included, is no longer upgraded when it reconnects or when the app launches.
+- The app's release is staged beside the installed one, as `.<name>.next` files plus `.bundle.json.next` (the bundle last), and the old release keeps running.
+- Migrate checks the staged files against their sha256s and swaps them in, the bundle last. It keeps the old daemon as `humatad2.previous` and restarts on the new one.
+- A first install still installs the tools and `bundle.json` at once.
+
+## D302: Approve returns at once; arrival ends the item (Provisional, 2026-11-16; D281 addendum)
+- Approve on a Migrate item answers at once, with the item Migrating. There is no 60 s wait inside Approve.
+- The item ends as "Migrated to <version>" when the machine is next seen at the new bundle: the local daemon restarted on it, or a machine's Hello names it.
+- An upgrade that fails leaves the item pending with what failed and how to fix it, so a second click retries.
+
+## D303: Withdrawn Migrate rows are kept (Provisional, 2026-11-16; D281 addendum)
+- A Migrate item that ends keeps its row in `inbox_requests`; only a pending one blocks a new item for the same thing and machine, through the partial unique index.
+- Nothing prunes the withdrawn rows for now. They are small, one per upgrade. Pruning them comes with the Inbox's own history pruning, if that is ever needed.
+
+## D304: Agents propose a repo for a channel (Provisional, 2026-11-16; ROAM ask 1, SPEC CH-26, IN-17)
+- **Problem:** IN-17 made "Change channel settings or repos" Never, so an agent that needs a repo can't even ask.
+- **Pick (Opus advisor):**
+  - A new row, "Add a repo to a channel", Ask me, placed after "Create a channel". The old row becomes "Change channel settings, or remove a repo from a channel", Never.
+  - The target channel's rule decides. A channel agent may propose only for its own channel; any other channel is Never. A Desk agent may propose for any channel.
+  - No **Always allow …**: a grant would cover one repo and be spent by its use (IN-14). Allow is offered, because CH-22 undoes it.
+  - Agents propose saved repositories or GitHub URLs, never a local path on the host.
+  - Adding it to the proposing session too is a second step under "Change its own session": a tick on the card (on by default), or its own ask under Allow (`also_to_session` on `channel_add_repo`).
+  - A card whose repo was added meanwhile resolves "Already added". A call for a repo already in the channel is answered at once, "Already in the channel", with no card.
+  - A channel Desk agent counts as a channel agent for its own channel only, and its card has no Also add tick (it has no clones).
+- **Review:** an Opus 5.5 xhigh judge reviewed these picks on 2026-11-16; its changes are applied above and in CH-26. Still provisional.
+- **Affects:** access capability list (`ChannelRepoAdd`, split from `ChannelChange`), MCP `channel_add_repo` (exists), Inbox card kind, frames.
+- **Reverse:** make the row Never again; the capability stays split.
+
+## D305: Moving a Desk session into a channel (Provisional, 2026-11-16; ROAM ask 2, SPEC DK-15–DK-19)
+- **Pick (Opus advisor):**
+  - Ask me or Never only, with no Allow, no Always allow, and no While-I'm-away approval, as the network rule (D20). The user can also move the session directly from the Desk session's menu.
+  - Repos the channel lacks are added to the channel on approval, with no opt-out. A clone that belongs only to the session would break CH-9, CH-20 and CH-22.
+  - Each clone gets an FC-11 branch at its current HEAD. The card names the starting point when it isn't the default branch, and the dialog lets the user edit the branch name.
+  - The move always copies, verifies and then trashes the old folder (MV-14), even on the same machine, so there is one path and the restart doctor can finish or undo it.
+  - Afterwards the session is top-level in the channel tree. The Desk switches and standing grants end, its other pending requests are withdrawn and the agent is told to ask again, and the board items it added stay its own.
+  - A plain-terminal Desk session is moved by the user only. A closed session must be reopened first.
+- **Judge's changes (Opus 5.5 xhigh, 2026-11-16):**
+  - The request is checked against the target channel's rule. If that channel's "Add a repo to a channel" is Never, an agent's proposal that would add repos is refused at once; the user's own Move into a channel… still adds them.
+  - A same-volume copy may be copy-on-write; too little disk fails before anything changes.
+  - A checkout in the scratch or picked folder (the picked folder itself included) with a GitHub remote is offered as a repo to add, ticked by default; one with no remote comes as plain files. A clone's local default branch with unpushed commits is reset to the remote's after the move, since that work is on the FC-11 branch.
+  - DK-18 is the named exception to MV-5 (requests) and IN-22 (grants).
+  - Answering checks a digest of what the card shows; on a mismatch nothing moves and the card is redrawn (NV-27). One pending move request per session; a new one withdraws the old.
+  - The picks stay provisional.
+- **Reverse:** offer Allow; keep session-only repos (needs CH-9/CH-22 changes).
+
+## D306: A channel's Desk (Provisional, 2026-11-16; ROAM ask 3, SPEC CD-1–CD-6, CH-11, CH-24, IN-17)
+- **Pick (Opus advisor):**
+  - The target is the channel or one of its sessions, and a session target includes its forks, later ones too. The scratch folder is `<root>/<channel>/desk/<name>`, beside `main/`, `sessions/` and `shared/`, so no session folder name needs reserving. There are no clones; the agent reads the main clones and `shared/`. It doesn't move to another machine.
+  - It uses the channel's rules, and the channel counts as its own. Management switches are grants applied after Never (as D182):
+    - on by default: Read its files, and Send notes and questions;
+    - off by default: Type into its terminal (typing can answer the target CLI's own permission prompts), Start and fork (with a session target, only forking it and its forks), Stop and archive, and others' board items;
+    - never delete. "Any session of the channel" excludes channel Desk sessions, and no switch answers Inbox requests (IN-23).
+  - **Default change:** IN-17's "Stop or delete any session but itself: Never" is split into "Stop or archive another session: Ask me" and "Delete another session: Never". D182 checks Never before grants, so under the old row the Stop and archive switch could never apply. D21's fold of archiving another session follows the new Ask me row.
+  - Its Inbox requests show in its channel's Inbox, not the global Desk group.
+  - A switch blocked by Never says so beside it.
+  - The UI is a **Desk · n** tab after Sessions, which is always there. The sidebar Desk row under a channel shows only while one is open.
+  - Short-lived:
+    - Close sends the scratch folder to the trash at once, with no 7 days and no Keep. Record and conversation stay 30 days via the trash, and the channel's retention doesn't apply.
+    - Close always confirms, in one line, that the folder goes to the trash now, even with no Markdown (on the Desk the same label keeps the folder 7 days). The confirmation lists Markdown files and offers Copy to shared/.
+    - It closes itself when its target is deleted or archived (after MV-15's undo window) or its channel is deleted. When the target goes and its folder holds Markdown, it stops and shows "Target gone" with Close instead.
+    - Restoring one from the trash reopens it and resumes its conversation; refused while its target or channel is gone.
+  - CH-24 lists the channel's Desk sessions and closes them as CD-4. Restoring the channel leaves them in the trash; each is restored on its own while its 30 days last, never before its channel.
+  - Turning one into a channel session isn't offered; deferred.
+- **Review:** an Opus 5.5 xhigh judge reviewed these picks on 2026-11-16; its changes are applied above and in CD-1–CD-5, CH-24 and IN-17. Still provisional.
+- **Reverse:** each switch default is one line; a 7-day Keep like DK-11 could replace the instant trash; "Stop or archive another session" can go back to Never, and the Stop and archive switch then shows "Blocked by the channel rule: Never".
+
+## D307: Conversation adapters per agent (Provisional, 2026-11-16; ROAM ask 4, SPEC CV-1–CV-8, FK-3, MV-13, q11)
+- **Problem:** fork at a turn and carry work only for Claude's JSONL (D181: byte prefix; carry rewrites the folder path in any text file). The fixtures prove that Codex and Copilot fork and resume natively by exact id, but no fixture reads, truncates or writes a Codex rollout, its SQLite state, or a Copilot session-state folder.
+- **Pick (Opus advisor):**
+  - One adapter per format (Claude JSONL, Codex rollout + SQLite, Copilot session-state) behind one trait. It lists turns, forks before turn n into a new id without touching the parent, packs and places the files for a carry with field-aware path rewrites, and checks the version.
+  - Unknown format: no turns, and a move refuses (MV-3) with Start fresh with a summary, written by the running agent before it stops or else from its scrollback. There is no byte-copy fallback, because a blind rewrite can corrupt a conversation silently. With no adapter or an unknown format, fork from now uses the CLI's own fork by exact id where the fixtures prove it (Codex and Copilot today), otherwise FK-6.
+  - Codex and Copilot fork-at-turn stay empty until real-CLI fixtures first pass for their adapter (CV-7). After that, the format check decides: a newer version is known when the strict parse accepts every record, and an unknown record kind or path field makes it unknown; the launch version is recorded. Fixtures run on each new CLI release and a failing release is blocked.
+  - Turns are those on the current path; prompts abandoned by /rewind or replaced by an edit are not listed or carried. A fork reads only complete records, so from now during a turn means after the last finished turn. A fork is done only once it has resumed by id. This supersedes D181 part 2's byte-prefix copy: the adapter writes the kept turns in the CLI's own format.
+  - Humata never writes a CLI's index (such as Codex's SQLite). If the CLI doesn't find the placed conversation when resumed by id, the move fails at the resume check.
+  - Folder trust carries only if the old folder was trusted.
+  - A move keeps its agent; a missing or other-version CLI on the target refuses and sends Migrate (UP-1), which brings the older machine's CLI up, never down. The same holds for forks onto another machine and DK-16's machine picker.
+  - Ask 4's "another channel" is CV-8, **Continue in another channel…**: a new top-level session set up as that channel's New session, whose agent resumes a copy of the conversation (from now or before turn n) under a new id, leaving the original untouched. Moving a whole channel session to another channel stays q11.
+- **Review:** an Opus 5.5 xhigh judge reviewed these picks on 2026-11-16; its changes are applied above and in CV-1–CV-8 and q11. Still provisional.
+- **Reverse:** a version allowlist entry per CLI; a byte-copy fallback could be added behind a setting.
+
+## Frames for ROAM (to the owner through main; main's numbers 87–95 for the first nine)
+87. Inbox card: agent proposes a repo for the channel (CH-26), with the "Also add it to <session>" tick.
+88. Inbox card: move a Desk session into a channel (DK-16), with the "Also adds <repos> to the channel" line and the machine picker shown.
+89. Move into a channel… dialog (user-initiated, editable branches).
+90. Refused move: unknown conversation format, with Start fresh with a summary (CV-3).
+91. Channel page Desk tab, with sessions and the empty state; frame 18's tab row gains Desk · n.
+92. New desk session for a channel or session (CD-6), with the switches.
+93. Channel Desk Info panel switches, one shown "Blocked by the channel rule: Never".
+94. Channel Desk close confirmation listing Markdown with Copy to shared/ (CD-4).
+95. Sidebar: a channel's Desk row (CD-2).
+- 96: The target session's Info panel listing the Desk sessions that target it (CD-2).
+- 97: The Continue in another channel… dialog (CV-8).
+- (existing number, re-render) Re-recorded Agent access tab with the new IN-17 rows ("Stop or archive another session", "Delete another session").
+- (existing number, re-render) Re-recorded Delete channel dialog (CH-24), listing the channel's Desk sessions.
+Fork dialog turn lists for Codex/Copilot use FK-3's existing empty state, so no new frame. Move progress reuses MV-4.
+
+## D308: A host resends a start the link dropped (STOP manager pick, 2026-11-16; D282 c addendum). Provisional
+A box re-execs as it applies a stop, so a start the host sends can ride the link that is closing, or its answer can be lost. When a start ends Cancelled or Unavailable, the host waits for the box's link to change and sends it again, within D282 c's 20 s. A start is safe to repeat: a box already started answers FailedPrecondition ("not stopped"), which counts as done. Any other refusal is reported as is.
+- **Reverse:** one send, and report the connection loss.
+
+## D309: The one-off `humatad2 stop` sweeps as the daemon does and leaves its count for the next start (STOP manager pick, 2026-11-16; D269, D282 b addendum). Provisional
+When the daemon doesn't answer, `humatad2 stop` runs the same sweep (D269) itself and writes what it ended to `<state>/stop/ended_early.json`. The next boot adds those holders to its own count in the start report, then deletes the file. An unreadable file counts as none, so a report may undercount but a start never fails on it.
+- **Reverse:** the CLI ends holders without a record; the report then shows 0 for them.
+
+## D310: A stream that ends by itself is not cut while the daemon leaves (STOP manager pick, 2026-11-16; D270 addendum). Provisional
+A call whose stream ends by itself when the daemon leaves marks its response `EndsByItself`; today only the event feed does. A marked stream is left to end cleanly and is cut UNAVAILABLE only if still open 2 s after the daemon started leaving, inside the 3 s shutdown grace. Every other stream is still cut at once (D270). This replaces a fixed 250 ms wait, which loaded machines outran.
+- **Reverse:** drop the marker, and the feed's subscribers may see UNAVAILABLE on a stop.
+
+## D311: A repo with no default branch is refused in its own group, not the whole Diff panel (VIEWS manager pick, 2026-11-16; D293 addendum). Provisional
+With per-repo bases, refusing all of GetDiff when one repo has no default branch hides the other repos' diffs and this repo's own base picker. The person then can't pick a branch or Uncommitted for just that repo. Instead, GetDiff should return a per-repo error for that repo. The panel shows the refusal (with the `git remote set-head origin --auto` fix) inside that repo's group and keeps its picker live. The other repos show as usual. This is a follow-up after VIEWS's UI lands. Until then frame 98 draws today's whole-panel refusal.
+- **Reverse:** keep the whole-call refusal (D293 as written). The fix still works, but the other repos stay hidden until it is run.
+
+## D312: A Terminal session's shell is the daemon's agent `zsh` (TERM manager pick, 2026-11-16; SPEC §1 agents table, flow 9 steps 3–4). Provisional
+The app starts a Terminal session as the agent `zsh`, its command in SPEC §1, and the daemon knew only `claude`, `opencode` and what an agents file names, so every Terminal session and Open a shell was refused. The daemon now always has a kind `zsh`. It runs the shell that new shell tabs run (`--shell`, else `$SHELL`, else `/bin/sh`, with `--shell-arg`), whatever that shell is. It has no turns (status Idle while it runs) and no conversation, and it resumes as a fresh shell in its folder. An agents file that names `zsh` keeps its own. Open a shell still makes a Terminal session in a channel. A shell tied to no channel, in the machine's home folder, needs `OpenMachineShell` in the app and a place for such a tab in the model. That is still not built (HO-6's "Not wired yet" list).
+- **Reverse:** map the app's Terminal to a name the daemon lists, and refuse Terminal when it lists none.
+
+## D313: A session's folder follows the session on every move (owner decided, 2026-11-16; SPEC MV-16, DK-17, CD-1, MV-13, CV-4)
+The owner wants agents, their context and their sessions to flow freely between machines and paths, and to resume trivially wherever they land. So where a session lives decides where its folder is:
+- a Desk session's folder is in the Desk folder;
+- a channel's Desk session's folder is in that channel's Desk folder;
+- a channel session's folder is under the channel.
+
+Every move goes through the same steps. It relocates the folder and its contents. It rewrites Humata's recorded paths and the conversation's paths. It resumes the agent at the new path. The old copy goes to the trash. This applies to Desk to channel, a channel rename or restore, machine to machine, and conversation roam. A move that leaves the folder or any path at the old place is a bug.
+- **Reverse:** none; the owner's rule.
+- **Addendum (owner, same day; SPEC MV-17):** Desk sessions and channel Desk sessions can be created on any linked machine, and any session can be moved to any machine at any time. Moves are cheap. Content-addressed chunks travel only when the target lacks them. Clones fetch on the target, never copied as `.git`. Progress is shown per item. The session is never live on two machines at once, and a move that is cut off finishes or undoes from its manifest.
+
+## D314: A channel rename moves its folder (ROAM manager pick, 2026-11-16; MV-16 against FC-1). Provisional, asked in the wave
+FC-1 kept the channel folder's name on rename. MV-16 says a session's folder follows where it lives, and the owner wants paths to follow names. So a rename now renames `<root>/<channel>/` once, then re-places every session of the channel through MV-16's steps: the recorded paths, the agent launch and the conversation. Every session stops before the rename and resumes after it, as a move does. A rename that would cut off a running turn asks first.
+- **Reverse:** keep FC-1. The folder keeps its old name, and only the shown name changes.
+
+## D315: Moving a Desk session with a picked folder moves that folder too, after the user agrees (ROAM manager pick, 2026-11-16; MV-16 against DK-2/DK-3). Provisional, asked in the wave
+DK-2 and DK-3 never moved a picked folder. Under MV-16, a Desk session moved into a channel lands under the channel. When the folder was picked rather than made by Humata, the move dialog says the folder will be moved from `<picked path>`, and the user must tick that before Move is enabled. Nothing is left behind except the trash item.
+A move to another machine copies or fetches the picked folder to the same logical place there; the source stays where it was until the move has been checked, then goes to the trash. Main is asking the owner about this pick.
+- **Reverse:** a picked folder stays put. The session moves into the channel but keeps working at the picked path, which breaks MV-16 for that case.
+
+## D316: A channel's Desk session can live on and move to any machine (ROAM manager pick, 2026-11-16; MV-17 against CD-1). Provisional
+CD-1 said a channel's Desk session never changes machine. MV-17, which is the owner's words, replaces that. It is created on a picked machine and moved like any session, and it lands at `<root>/<channel>/desk/<n>` on the target. CD-1's text is amended to point to MV-17.
+- **Reverse:** none planned; this is the owner's rule.
+
+## D317: A peer link whose machine daemon is gone ends, so the host dials a new one (STOP manager pick, 2026-11-16; amends D213 and AWAY T3). Provisional
+D213 kept a machine's link up across its daemon's restarts, so the host's Uplink outlived the daemon. But nothing carries over that link once the daemon behind it is gone. The host showed the machine online, yet every relayed call failed and no fresh report came until Reconnect. That left a stopped-then-started box at MachineStopped. Now the link ends whenever the daemon behind it ends, whether from a stop, a start, an upgrade or a crash, and the host redials after its 5 s backoff and gets a fresh Hello and report. A restarting box shows offline for about 5 s.
+- **Reverse:** keep the link and have the host re-handshake inside it. That needs a protocol change, and a link that can't relay still looks healthy until then.
+
+## D318: A channel's Desk rows stay in the main store and are rebased when the channel is restored (ROAM manager pick, 2026-11-16; MV-16, D314). Provisional
+Restoring a channel under another folder must bring its channel-Desk sessions to the new place. Their rows stay in the main store, not the channel's side file, because a Desk item's "channel is gone" check finds the channel through them. `import_channel` rebases them, with their agent launches and earlier conversations, in the same transaction. What the user sees is the same as if the rows were snapshotted with the channel. A rename or restore while any session of the channel is Working, ProbablyIdle or NeedsInput asks first (`confirm_running`). An Inbox approval of an agent's rename counts as that confirmation.
+- **Reverse:** snapshot the rows into the channel's side file, and find the channel for `before_restore` some other way.
+
+## D319: A comment cut off mid-send ends Queued with its delivery unconfirmed, and the user is offered a resend (main's pick, 2026-11-16; SM-10, Gate 12 power cuts). Provisional
+A power cut on the host after a comment's send was saved but before the terminal confirmed it leaves Humata unable to tell whether the text reached the agent. The comment comes back Queued with `delivery_unconfirmed` set. The user can send it again or take it back. Humata never types it again on its own, because typing it twice would reach the agent twice. The power-cut suites accept this outcome as "finished" for CommentSend: the comment isn't lost, and the user is told what's unknown.
+- **Reverse:** confirm the delivery by reading the terminal's transcript after the restart and settle the comment as Sent or Draft. That needs a reliable marker in what the agent saw.
+
+## D336: A moved session takes its own Inbox requests and summary with it; host-wide and PR-scoped rows stay (ROAM manager pick, 2026-11-16; MV-16, MV-17, D313). Provisional
+When a session moves to another folder or machine, these rows move with it in the same import:
+- its open Inbox requests (`inbox_requests`), so an ask from the agent can still be answered once it resumes;
+- its AW-9 summary.
+The request-hash dedupe table stays put, because dedupe is the host's job across every session. Review sessions and their PRs (`review_sessions`, `review_session_prs`) belong to the PR, not to one agent session, so they stay; any reference they hold to the moved session's id or path is rewritten. Nothing about the session is left at the old place except the trash item (D313).
+- **Reverse:** leave the Inbox requests at the old place and close them as "moved", which asks the user again after the move.
+
+## D337: A keyed Type is typed at most once, across restarts; one a crash cut short says its text may have been typed (TERM manager pick, approved by main, 2026-11-16; GRPC.md 5.2, coach bug 17). Provisional
+Type notes its idempotency key in a new store table, `typed_keys` (schema step 28), before any text goes to the shell: pending first, typed once all of it is there. A retry the daemon's memory can't answer, as one after a restart, reads the row. Typed answers `typed` and types nothing. Pending means an earlier call started and never finished, as when the daemon stopped part way, so the retry fails saying some or all of the text may have been typed, and nothing is typed again; the person looks at the terminal and types what's missing with a new key. A call that typed nothing (the tab is missing, its shell exited, the holder refused or couldn't be reached) forgets its key, so a retry types. A timeout or a link lost part way leaves the key pending. Keys are kept 30 days, as every key is, and older rows are dropped when the daemon starts. A second call with a key whose first call is still typing gets the same may-have-been-typed answer. The rows carry no session, so they don't move with a channel; they belong to the call, not to a channel.
+- **Reverse:** drop step 28's table in a later step and the claim in `type_in`; a retry after a restart types again, as before.
+
+## D338: A shell tab is named by its program's title, and a new shell starts in the folder the tab is in (TERM manager pick, 2026-11-16; D73 panes, the TERM known limit on titles). Provisional
+Not built. `PaneEvent::TitleChanged` (OSC 0/2) renames a shell tab the user has not renamed. The title loses its control characters and is cut to 80 characters. A tab the user renamed keeps its name, and so does the agent's terminal, which shows the title only as its tooltip. `PaneEvent::PwdChanged` (OSC 7) records the tab's folder, but only when the URL's host is empty or is the session's machine; any other host is ignored. ⌘T and **+** › zsh start the new shell there, and fall back to the session's folder when the tab has none or the folder is gone. Neither the title nor the folder is saved: after a restart the tab shows its last saved name until the program sets the title again.
+- **Reverse:** drop the two events again (`ui/src/terminals.rs`); tabs keep the names they open with, and every shell starts in the session's folder.
+
+## D339: On a Mac, ⌘⌫, ⌘← and ⌘→ edit the command line (TERM manager pick, 2026-11-16; D73, README gap 1, micro-02). Provisional
+Not built. In `terminal/view/src/keys.rs`, ⌘⌫ sends Ctrl+U (delete to the start of the line), ⌘← sends Ctrl+A (start of the line) and ⌘→ sends Ctrl+E (end of the line), as Mac terminals do. These are the bytes shells and line editors already bind. A full-screen program receives the same bytes, and most read them the same way. ⌘C, ⌘V and the ⌘ scroll keys keep their meaning, and other ⌘ keys still go to the app. Off a Mac nothing changes: Home, End and Ctrl+U already reach the program.
+- **Reverse:** remove the three arms in `keys::intent`; ⌘⌫, ⌘← and ⌘→ are ignored again.
+
+## D345: The machine counts the lines it replays on a resume, and the host's reconnected line carries that count (TERM manager pick, approved by main, 2026-11-16; SE-16, TR-11, coach bug 16). Provisional
+SE-16's "reconnected; caught up N lines of output" always said 0. The host relays chunks without decoding them (TR-11), and it can't tell where the replay ends and live output begins. The machine can: an attach from an offset the holder still keeps replays up to the end the holder had when it opened. It counts the newlines in those bytes and then sends a new `KIND_CAUGHT_UP` notice with `caught_up_lines` and `at_offset` set to that end. The count is sent even when it is 0. The host relay holds its `RECONNECTED` line until that notice arrives, sends the count on in it, and never forwards `CAUGHT_UP` itself. When the machine answers with a fresh screen instead (the offset was trimmed, or the resume was refused), the host sends `RECONNECTED` with no count just before the snapshot, and the app's line says the output is shown rather than claiming 0. Old machines are not supported: under force-upgrade both ends update together, so there is no fallback for a machine that never says `CAUGHT_UP`. The proto change is one enum value, so it is additive.
+- **Reverse:** count in the app instead, from the output that follows the reconnect notice's `at_offset`. The app can't see where the catch-up ends either, so the count would include live output.
+- **Open:** SE-16 also wants a fresh screen's line to say how many lines were not kept. The machine knows only the trimmed byte count, not the lines, so this waits for the holder to keep a line count with its trim point.
+
+## D346: Moves skip whole files the target already has; chunk-level reuse comes next behind a proto change (ROAM manager pick, 2026-11-16; MV-17). Provisional
+A move or Desk carry sends no file of 1 MiB or more that the target already holds by content. The target keeps a sha256 marker for each such file under its `.carry/have/` folder. `.git` is never copied: clones are rebuilt on the target from its main clone or the remote, plus a bundle of unpushed commits. Reuse is per whole file for now, so a large conversation that grew since the last move is sent again in full. The next step is a chunk index the target answers (a new transfer RPC, which needs a proto change), so that only the changed chunks travel. MV-17's "chunk dedupe" is met only once that lands.
+- **Reverse:** drop the markers and always send every file; correct, but slow on slow links.
+
+## D347: A conversation carries whole: Codex moves in place and updates its thread row; Claude takes its config-dir files; another conversation stays (ROAM implementer pick, 2026-11-16; MV-16, CV-4, D336). Provisional
+- **Codex, one machine.** A move within one Codex dir rewrites the rollout where it is (no `Exists` refusal) and updates that thread's row in `state_5.sqlite` (`cwd`, `rollout_path`, and with a new clone's head `git_branch` and `git_sha`), no other row. CV-4's "never opens a SQLite file" is amended to this one write; a missing index is left missing. `thread_history_1.sqlite` is not touched, so its byte offsets may be stale after a rewrite that changes a line's length; unproven (X2). Across machines nothing changes: the CLI's index is never written.
+- **Claude.** `locate` lists only the conversation's own files: the transcript, `<id>/`, the folder's `memory/`, and in the config dir (`CLAUDE_CONFIG_DIR` when set) `file-history/<id>/**` (byte for byte), `todos/<id>-agent-*.json` and `plans/<slug>.md` (the slug from the transcript). Another conversation of the folder is never listed or carried. The folder is looked up as given, then canonical (`/var` is `/private/var`), and placed under the canonical form of a folder that exists. The slug and todo names are inferred, not proven by a capture.
+- **Carry rewrite.** The folder (and its canonical form), then the old config dir and home, each to the new one.
+- **Store, host take.** A host that already holds the session (`Take::AgentOnly`) takes only the agent's own rows: launch, interruptions, previous conversations, fresh seed. The Desk rows, fork origin, archive, comments, Inbox requests and AW-9 summary are the host's and stay. Inbox rows are carried whole, answered or not: the store can't tell open from answered, which is in the daemon-encoded entry.
+- **Proven by X2 (2026-11-16).** Claude Code 2.1.326 names `projects/<folder>` by making each UTF-16 unit that isn't an ASCII letter or digit a `-` (two for a character outside the BMP); a name over 200 units is cut to 200, then `-` and the base-36 magnitude of the path's 32-bit `String.hashCode`. The adapter and `{folder_dashed}` share one function for it. Codex 0.169.0 never repairs the byte offsets `thread_history_1.sqlite` keeps into a rollout rewritten where it is, though resume still works; with the thread's rows gone it rebuilds them from the rollout. So a move within one Codex dir now first deletes that thread's `thread_items`, `thread_turns` and `thread_history_projection_state` rows (the CLI's trigger drops its realtime items), which replaces "not touched" above.
+- **Reverse:** carry only the transcript and rewrite nothing outside the per-folder record, at the price of a resumed agent not finding its backups, todos and plan.
+
+## D348: A channel rename reaches each linked machine at once or when it next links; a busy machine asks in the Inbox (ROAM manager pick, 2026-11-16; MV-16, D314). Provisional
+Renaming a channel renames its folder on the host first, then on every linked machine the host can reach, by relaying RenameChannel; each machine derives its own folder from the new name. The host doesn't record machines that are offline. When one links, the host compares that machine's channel name and folder with its own and relays the rename; this survives a host restart. A machine whose agents are busy doesn't rename on its own. The host puts one Inbox request, "Rename <channel> on <machine>", with the sessions that would be stopped; approving it counts as `confirm_running`. Until then the host's records of that machine keep its old path, so nothing is shown that isn't true there. Closing, cleaning up or sweeping a remote Desk session needs its machine and is refused with `machine_offline` while it's away, like stop and resume.
+- **Folder clash and memory.** A machine that already has a folder with the new name asks the same way: it picks no other name and leaves the folder alone, and approving retries with `confirm_running`. These requests live in the host's memory, not the store; after a host restart, the link-time catch-up raises them again, and one is withdrawn when the machine catches up another way.
+- **Reverse:** queue every remote action as replayed work and show it pending, instead of refusing while the machine is away.
+
+## D349: A Claude conversation is written for the target's folder before it is chunked (ROAM implementer pick, 2026-11-16; MV-16, MV-17, D346). Provisional
+Unpacking used to rewrite the old folder's path in the conversation, so the chunks the old machine listed (its paths) never matched the ones the target held (its paths), and a moved conversation was sent whole every time. Now the host asks the target for the session's folder (`SessionCarryService.Target`), `Pack` carries it, and the old machine has the adapter place the staged Claude files for it into a scratch home, then names the old home and config dir back, so unpacking (which knows the new home) still rewrites those. The manifest records the folder as `placed_for` (an old manifest has none and is placed from the old folder as before). The old machine stores the chunks of the staged conversation in its own form before rewriting it, and the new machine those of the transcript as placed, so a session that goes away and comes back finds its chunks. Only Claude is placed ahead; Codex and Copilot carry as before, so their moved conversations keep sending whole files whose lines name the folder.
+- **Reverse:** drop `target_folder` and unpack from the old folder; correct, but a moved conversation is sent whole.
+
+## D320: Off a Mac, every ⌘ shortcut is typed with Ctrl+Shift (BUGS manager pick, 2026-11-16; flows/cases bug 18, NV-6, KP-2). Provisional
+On Linux the app's ⌘ chords were bound to Super, which the desktop keeps, so no shortcut worked. Off a Mac each ⌘ chord becomes Ctrl+Shift; one that already holds Shift or ⌥ becomes Ctrl+⌥+Shift, so ⌘N and ⇧⌘N stay apart. Plain Ctrl stays the shell's: bindings are matched before a terminal sees the key, and Ctrl+K, Ctrl+L, Ctrl+N and Ctrl+[ mean something there. Labels in the palette and the Shortcuts sheet still read ⌘ (follow-up), and the desktop tests that press `secondary-k` need `ctrl-shift-k` on Linux.
+- **Reverse:** bind the ⌘ chords to plain Ctrl in `ui/src/keys.rs` `off_mac`, and accept that they shadow the shell.
+
+## D321: ⌘0 and ⌘L dock a folded sidebar when the window has room, and show it over the page only when it has not (BUGS manager pick, 2026-11-16; bug 20, NV-6). Provisional
+`Layout::reveal_sidebar` says how a hidden sidebar comes back: Dock when only the user's fold hides it, Overlay when the window is too narrow. ⌘L shows the sidebar the same way before focusing it, so focus never lands on rows that are not drawn. ⌥⌘M with no session open shows a toast that says to open a session first, instead of doing nothing (bug 24).
+- **Reverse:** make ⌘0 always open the overlay while the sidebar is hidden, as before.
+
+## D322: The side panel's fold is kept per session, for this run (BUGS manager pick, 2026-11-16; bug 25, NV-37, SE-13). Provisional
+Folding the side panel in one session leaves the others as they were; the fold is not saved across restarts.
+- **Reverse:** keep one app-wide `layout.panel.collapsed` again.
+
+## D323: The archive toast's Undo lasts the daemon's 10 s undo window (BUGS manager pick, 2026-11-16; bug 28, MV-15). Provisional
+The archive toast used the 4 s toast life, so Undo went away while the daemon still allowed it. Undo toasts now last 10 s (`UNDO_TOAST`).
+- **Reverse:** use the 4 s life for every toast.
+
+## D324: `session_type` types raw keystrokes (BUGS manager pick, 2026-11-16; bug 51, SE-23). Provisional
+`Type` and the MCP `session_type` type exactly what they are given; the caller adds Enter, and wraps the text in bracketed paste itself if it wants one paste. The docs said otherwise and now match the code and its tests.
+- **Reverse:** wrap in bracketed paste in the daemon `type_in` and change the tests that type Enter.
+
+## D325: A queued multi-line message is sent as one paste; a one-line message is typed raw (BUGS manager pick, 2026-11-16; bug 62, SE-23). Provisional
+A multi-line queued message is wrapped in bracketed paste so its newlines don't each send a turn; a paste-end marker inside the text is removed. One-line messages are typed and Entered as before.
+- **Reverse:** always wrap in `clients/live/src/message.rs` `typed`.
+
+## D326: Needs you is not a turn end; Probably idle is not sure (BUGS manager pick, 2026-11-16; bugs 59-61). Provisional
+Live statuses map Working and Needs you to a running turn, Probably idle to an uncertain one that keeps queued messages waiting, and only a reported idle ends the turn. OpenCode's hook-backed turn end now delivers queued messages.
+- **Reverse:** map Needs you and Probably idle to Turn::Ended in `clients/live/src/map.rs`.
+
+## D327: Declining a CLI "Continue?" exits 13 (`declined`) (BUGS manager pick, 2026-11-16; bug 53, api/CLI.md). Provisional
+A no is a deliberate answer, not an interrupt, so it no longer shares 130 with Ctrl-C.
+- **Reverse:** map `NotConfirmed` back to the interrupted exit and drop row 13.
+
+## D328: The approval passphrase is typed only at `humata login` (BUGS manager pick, 2026-11-16; bug 54, SEC-13). Provisional
+The daemon never read a passphrase sent with an Inbox answer. The CLI prompts for it only when logging in; any other call refused for presence says to run `humata login`. A wrong passphrase reports the tries left (bug 56).
+- **Reverse:** check `presence.approval_passphrase` in `answer_request` and let `Ctx::proof` prompt for any call.
+
+## D329: A CLI wait that ends with no answer is `pending` (exit 12) (BUGS manager pick, 2026-11-16; bug 55). Provisional
+The request is still waiting, so the CLI says how to wait again instead of blaming a version mismatch.
+- **Reverse:** return `DaemonError::Ended` at the two sites in `cli/src/call.rs`.
+
+## D330: The CLI shows a machine copy's age (BUGS manager pick, 2026-11-16; bug 67). Provisional
+A read answered from a machine's copy carries `stale_as_of` in the `--json` envelope and a stderr line otherwise, as MCP does.
+- **Reverse:** drop `stale_as_of` from the CLI `Daemon` and `output::finish`.
+
+## D331: MCP lists only the tools the daemon runs, and its refusals say what to do (BUGS manager pick, 2026-11-16; bugs 48-50, 52, 64). Provisional
+`tools/list` is what the daemon dispatches. A fork's reason travels in `ForkSessionRequest.reason` onto the card. A stopped machine's refusal says to ask the user to start it. A turn-end `session_type` and a fork to a machine this host doesn't know are `invalid_field`, not "not built".
+- **Reverse:** let `Daemon::serves` default to true with no filter, map the refusals back to "not built", and drop `reason = 10`.
+- **Note (daemon triage, 2026-11-16):** a Desk start on a machine this host doesn't know is likewise `invalid_field` on `machine` with problem `UnknownValue`, as a fork's is, not `not_found`.
+
+## D332: The after-restart note makes no claim about a turn in progress (BUGS manager pick, 2026-11-16; bug 29). Provisional
+The daemon has no per-session mid-turn fact, so the note says the session came back idle and to tell it to continue if it was working.
+- **Reverse:** add a mid-turn flag to `LastStart` and restore the old line where it is set.
+
+## D333: A changed host key is cleared by removing and re-adding the machine (BUGS manager pick, 2026-11-16; bug 37). Provisional
+Until TrustNewHostKey is built, a key that differs from the pinned or confirmed one never gets a Confirm card; the message says to remove the machine and add it again, checking the new fingerprint.
+- **Reverse:** build TrustNewHostKey and show the pinned key beside the new one on the card.
+
+## D334: The board's Status menu offers the five columns; pins of deleted sessions go when the list is read (BUGS manager pick, 2026-11-16; bugs 45, 47, BD-1). Provisional
+Blocked and Won't do have no board column, so the menu leaves them out; an item that already has one still shows it. A pinned session the store no longer has is dropped when the Pinned list is read.
+- **Reverse:** add the two columns to `BoardColumn` and remove the filter; prune pins from the real delete paths instead of at list time.
+
+## D335: A terminal opens only web and mail links; pasted images and files reach the session's machine (TERM manager pick, approved by main, 2026-11-16; SE-16, FM-4, FM-10, coach bugs 4 and 5). Provisional
+A link clicked in a terminal opens only when it is `http`, `https` or `mailto`; any other scheme stays closed and a toast says to copy it and open it by hand if it is trusted. A pasted image goes through `PasteImage`: the daemon saves it in the session's paste folder and its path is typed. Files pasted from Finder into a session on this Mac type their own paths, each as one shell word. Files pasted into a session on another machine are uploaded through the existing file transfer into the session's pastes there, a new `paste-<id>` folder for each paste so names never clash, and the paths on that machine are typed. The pastes are a new file root, `SessionPastes` (files.proto, the user only like home: no agent reads or writes it and no grant covers it), under the store's `files/<session>/paste/`, so they go when the session does. The upload's answer carries the on-disk path in a new `Transfer.disk_path`, set only for a done upload into the pastes; for another machine the host asks it with the new `TransferEndService.Locate`, since the host knows only the engine's virtual path. That keeps one call per file, and `FileEntry` is unchanged. Anything that isn't a file is refused before anything is sent.
+- **Reverse:** drop the `SessionPastes` root, `disk_path` and `Locate`, and go back to the toast that says to copy the files to the machine first.
+
+## D340: A queued message is keyed by the app clock, a run serial and its text (BUGS manager pick, 2026-11-16; bug 63, follow-up). Provisional
+The key that keeps a re-sent queued message from being typed twice is `queued-<session>-<clock nanos>-<serial>-<position>-<text hash>`, made from the clock client, not `SystemTime`, so the reducer stays pure and its tests use `TestClock`. The app clock starts over each run, so the serial keeps same-instant messages apart within a run and the text hash keeps a new message after a restart from reusing an old key.
+- **Reverse:** make the key from `SystemTime` again in `QueuedMessage::new`.
+
+## D341: A restart cues the app with one Resync (BUGS manager pick, 2026-11-16; bug 32 leftover). Provisional
+After the restart report is set, `after_restart` publishes one `Resync`, so a restart with nothing to resume still makes the app read the report. It costs one extra list reload per restart.
+- **Reverse:** remove the publish in `session_service/watch.rs` `after_restart`.
+- **Engineering fix (2026-11-17, no product change):** the Resync goes out through `Feed::resync_all`, unnumbered and not kept, as events.rs documents for every Resync. It had gone through `publish`, so it was numbered and kept, and a client resuming from a later point replayed a stale one. Subscribers connected at the restart still get it. Test: `humatad2_unit_test` `a_resuming_subscriber_does_not_replay_an_earlier_resync`.
+
+## D342: The palette's Files load once per session, when the palette first opens (BUGS manager pick, 2026-11-16; bug 23, replaces nav_2). Provisional
+Opening the palette runs one FindFiles (at most 500 entries) for each non-archived session not asked yet; workspace loads and Resyncs fetch nothing and keep lists already fetched. A failed fetch is retried at the next open. After that the daemon pushes `FileChanged` (events.proto 31): the files service tells each user write, rename and trash, and the pointer loop's clone watcher stats only the paths each debounced notify batch names and tells adds, removes and 1:1 renames (at most 500 per batch; content-only edits tell nothing). A clone is listed whole only at first sight and on a notify rescan; a clone over 50,000 files is left alone until a rescan. The app applies them only to sessions already fetched. An edit made outside Humata to a session with no live agent is not told.
+- **Reverse:** fetch at workspace load (nav_2), or drop the `FileChanged` publish and re-fetch at each palette open.
+
+## D343: The user's own edit through the files service does not address a Sent comment (BUGS manager pick, 2026-11-16; bug 42). Provisional
+A user WriteFile into a session clone rebaselines Sent comments on that file: they stay Sent and their anchors follow the new text. Only changes that do not come through the files service (the agent or a terminal writing the disk) address a comment. Draft and Waiting comments still detach on any edit. A write forwarded to another machine is not hooked yet.
+- **Reverse:** remove the `use_user_writes` line in `serve.rs`; every edit counts as the agent's again.
+
+## D344: Off a Mac, shortcut labels read Ctrl+Shift (BUGS manager pick, 2026-11-16; bug 18 follow-up, completes D320). Provisional
+The Shortcuts sheet and the palette hints show the chord a binding is typed with: `⌘K` reads `Ctrl+Shift+K` and `⇧⌘N` reads `Ctrl+Alt+Shift+N` off a Mac; labels without ⌘ and every label on a Mac are unchanged. The desktop tests press `cmd-` on macOS and `ctrl-shift-` elsewhere.
+- **Reverse:** show the Mac glyphs on every platform (`keys::label` returns its input).
+
+## D380: The app reads the Desk again after a Desk change and on opening the Desk page (WIRE-A manager pick, 2026-11-16). Provisional
+The daemon sends no Desk events, so live the folder bar, Closed rows, Documents and Clean up stayed stale. The app now reloads the workspace after a successful Desk start, change (close, reopen, keep, repos, access), copy or clean up, and when the person navigates to the Desk page. It is not a poll: each reload follows something the person did. A document an agent writes while the Desk page stays open shows on the next visit, not at once.
+- **Reverse:** add Desk change events to the daemon's event stream (a proto SEAM) and drop the reloads in `features/app/src/desk.rs` and `route.rs` `desk_fresh`.
+
+## D381: Typing an ask into a session's queue is logged as Not built (WIRE-A manager pick, 2026-11-16). Provisional
+Flow 05 step 6 has the person type two asks while the agent works and see them wait under Waiting to send. The queue itself works live (`desktop/tests/live_flows/queue.rs`), but no control in `ui/src` sends `SessionAction::Draft` or `Submit`: keys typed in a session go to its terminal. The queue is fed today only by app actions (tests) and by comments. WIRE-A tags the typing as Not built and leaves where an ask is typed (a box under the terminal, or a key that holds the next line) to whoever designs it; the flow keeps its words.
+- **Reverse:** add the entry control, then retag flows/05 step 6 to its test.
+
+## D382: A Desk document needs a file root for the session's own folder (WIRE-A manager pick, 2026-11-16). Provisional
+A Desk session has no repo: its document sits in the session folder, outside every clone. `FileLocation` names only clones, the main clone, a channel's shared or own folder and home, so the live client sends a session clone with an empty repo (`clients/live/src/diff.rs:145`) and the daemon refuses it (`daemon/humatad/src/files/roots.rs:364`). Comments already anchor there with an empty repo (REVIEW t8). Pick, taken by main 2026-11-16: add a `SessionFolder { SessionId session = 1; }` root to `FileLocation` (field 9; TERM's j1 takes 8), served under the same policy checks as a clone, and have the live client use it when the repo is empty. It is a proto SEAM for main, so flows/04 steps 3 to 8 on the Desk are tagged Not built: WIRE until main takes it; the clicks are proven on a channel session meanwhile.
+- **Reverse:** keep Desk documents unreadable live, or copy them into a clone first.
+Built: the daemon places it as the session's own clone root, so access follows the session's grants exactly as its clones do (the owner's agent and its parent read and write; channel-mates need FilesReadOtherSession; a Desk agent against another session is refused). A grant on a clone path such as `acme/api/...` does not cover the same files through the folder root; a whole-session grant does. The MCP `files` tools and the CLI's locations don't name the root yet.
+
+## D383: A drawer move carries the item's revision; a stale one is refused (WIRE-A manager pick, 2026-11-16; reversed the same day by main). Provisional
+First logged as Not built: the client `Item` had no revision and `clients/live/src/boards.rs` sent `expected_revision: None`, so a drawer move made while an agent moved the same item won silently. Main ruled that a bug. Now `Item` carries `revision`, `Daemon::move_item` takes the revision the caller last read, and the live client sends it as `expected_revision`; the daemon's refusal reaches the app as `DaemonError::Conflict`, and the board shows why, reads the board again and keeps the drawer open. Adding or removing a dependency and setting an item's session still send no revision: each adds or drops one member and overwrites nothing. A title save stays Not built: the drawer has no title edit (a board-edit milestone).
+- **Reverse:** send `expected_revision` on the dependency and session patches too (`patch_item` already takes `seen`).
+
+## D384: Turning the wheel over the page in Side by side unticks Link scrolling (WIRE-A manager pick, 2026-11-16). Provisional
+SPEC says the page follows the source while scrolling is linked, and flows/04 says scrolling one side by hand unticks it. Only the checkbox unticked it. The page is the side that follows, so a wheel over the page is the hand scroll and unticks; a wheel over the source scrolls both and stays linked.
+- **Reverse:** untick on a wheel over either side, which leaves the link nothing to follow.
+
+## D385: SessionFolder reaches agents, the CLI and the file manager; no visible Open folder control yet (WIRE-A manager pick, 2026-11-16). Provisional
+D382's root is now `session_folder` in the MCP files tools (session defaults to the caller's own; access follows the session's grants), `<machine>:folder/<session>/<path>` in the CLI (a session named `folder` would read as this word, as `shared` and `main` already do), and `FileRoot::SessionFolder` in the file manager. `DeskAction::OpenFolder` opens a Desk session's folder in the Files page's active pane. No button calls it yet: an Open folder control on the Desk folder bar changes the native snapshots of frames 36 to 40, which must match the design goldens, so it waits for a golden pick.
+- **Reverse:** add the control once a golden shows it, or reach the action from the palette.
+
+## D386: The Desk form's preview counts a folder the daemon reports by its full path (WIRE-A manager pick, 2026-11-16). Provisional
+The form previews `~/Humata/desk/<name>` and suffixes a taken name. The live daemon reports each Desk session's folder as an absolute path, so no record ever matched and the live preview never showed the suffix the daemon then gave. A recorded folder now counts as taken when it equals the preview or ends with the preview's path after `~/Humata/`.
+- **Reverse:** have the daemon report the folder in the `~/` form the form uses, or have the form ask the daemon for the next free name.
+
+## D387: A session carries its pin and VIP mark from the daemon (WIRE-A manager pick, 2026-11-16). Provisional
+`session_pb` left `Session.pinned` and `Session.vip` unset, so only the marks client saw them. They are now kept per session in the daemon's process-wide `read_marks` store beside the unread set: loaded from `<state>/marks.db` at start, updated by MarkService.SetMarks. A real change goes out as a Session Updated event through the existing read-mark path. It covers this daemon's own sessions; a session placed on another machine shows the host's mark.
+- **Why provisional:** `read_marks` is now a little wide for its name, and a remote session's marks aren't read from its machine.
+- **Reverse:** move the pin and VIP sets into a module of their own with their own change channel; the tests go through MarkService, SessionService and the feed, so they stay.
+
+## D388: Each repo group's Push & PR button is named for its repo (WIRE-A manager pick, 2026-11-16). Provisional
+Every group drew a Push & PR button with the same name, so a click by name couldn't pick one. Its accessible name is now `Push & PR: <repo>` (for example `Push & PR: owner/ledger`); the drawn text stays, so the goldens don't change. A screen reader now says the repo too.
+- **Reverse:** drop the accessible name and click the buttons by id (`changes-push-<repo>`), as the fake-client tests do.
+
+## D389: The live rig waits on turn ends, not on the conversation file, where the daemon can tell it (WIRE-A manager pick, 2026-11-16). Provisional
+A test that needs the agent to have taken a message runs the agent with turn hooks and waits on the daemon's Session events for a turn end, reading the conversation once per event. `running_session` still re-reads the conversation every 100 ms: the live event stream carries no terminal output, and its callers' agents report no turns.
+- **Reverse:** add terminal output to the live event stream (events.proto, a SEAM) and wait on the agent's `got:` line everywhere.
+
+## D390 (Provisional, WIRE-B): a restart already known at the first load is told once per app run
+
+- **Context:** when humatad brings its sessions back before Humata opens (it starts at login), the app's first load already holds the restart, so no Restart event comes and no toast was shown (flow 7 step 3).
+- **Pick:** the app toasts each restart a load brings that it didn't hold before the load (same machine and start time). A reload tells nothing again. Quitting and reopening the app tells the latest restart again, once.
+- **Why provisional:** remembering across app runs which restarts were told (in the saved app state) would stop the repeat after a reopen; it's reversible and waits on the owner.
+
+## D391 (Superseded by D392, WIRE-B): the live read mark sends nothing until the daemon keeps read marks
+
+- **Context:** opening a session that is unread or needs recovery sends `mark_read` (features/session). The live client answered it "not in this release", so opening a session that couldn't resume after a reboot showed an error (flow 7 step 5).
+- **Pick:** the live `mark_read` succeeds and sends nothing. The daemon sets no unread mark today (CH-17 bold-until-opened isn't built on the daemon; the proto's `unread` is never set), and a session that couldn't resume keeps its recovery until Try again or Start fresh, which is the card. The fakes still clear both.
+- **Why provisional:** real read marks need a SessionService call to clear `unread` (a proto SEAM) and the daemon to set it on new output. Not built, no milestone; reversible.
+
+## D392 (Provisional, WIRE-B): the daemon keeps read marks; a client holds the session it shows viewed
+
+- **Context:** CH-16 shows a session with unread output bold; CH-17 clears it when the session is opened. The daemon never set `Session.unread`, and the live `mark_read` sent nothing (D391), so the fakes and the real daemon differed. The proto's ActivityService.MarkSeen was never built.
+- **Pick:** the daemon marks a session unread when its agent prints while no client views it, and keeps the mark in `<state>/marks.db` (an `unread` table beside the pins), so a restart keeps it. A client views a session by holding MarkService.ViewSession open: opening it clears the mark (the first message says whether it had one), and output while any client holds one marks nothing. Each change is a Session event. The app tells the daemon which session it shows on every navigation (`Daemon::view`); `mark_read` views the session too. MarkSeen is dropped: a one-shot clear would let the open session turn bold under the user's eyes. The fakes do the same, proven by the parity cases; a session that couldn't come back keeps its card when opened on both.
+- **Limits:** only output the daemon follows marks a session, so a session running on another machine isn't marked on the host yet. A terminal attach is not a view, because the app keeps links up for hidden sessions. The app's window being in the background still counts as viewing.
+- **Why provisional:** the owner may want per-client or per-user marks, or marks for shell tabs too; all are reversible behind the same call.
+
+## D393 (Provisional, WIRE-B): a resize or attach redraw never marks a session unread
+
+- **Context:** the app keeps links up for hidden sessions and resizes them with the window; the program redraws on SIGWINCH, and under D392 that redraw marked the session unread.
+- **Pick:** after the daemon resizes a session's agent tab (an attach's first size or a later resize), the session is redrawing until something is typed to that tab or the agent prints a word it hadn't printed in its recent output (the last 64 KiB of text, escape codes stripped, split into words, words with no letter or digit ignored). While redrawing, output with no new word marks nothing; new output still marks. The window lives in the daemon's follow loop (`read_marks/printed.rs`).
+- **Limits:** a repaint with changed words (a clock, a timer, a percentage) still marks. Genuine output made only of words already in the window doesn't mark while redrawing. The window starts empty when the follow starts (after a daemon restart), so the first redraw after it can still mark. Terminal-query answers don't count as typing.
+- **Why provisional:** a screen-level comparison on the tab's authoritative screen (D271) would be exact but costs a text read of the screen per chunk; reversible behind `read_marks`.
+
+## D394 (Provisional, WIRE-B): a remote session's read mark is its machine's, shown on the host
+
+- **Context:** D392 marked only sessions whose output the daemon follows, so a session on another machine was never unread on the host.
+- **Pick:** the machine marks its own sessions as D392 says and reports the mark on the Uplink (`SessionStatusReport.unread`, SEAM); the host's merged view shows it. ViewSession on the host for a session placed elsewhere answers at once from the host's view and holds MarkService.ViewSession open on the machine through the relay (added to the relay allowlist), reopening it whenever the machine's link comes back, pushed, while the client's view is held.
+- **Limits:** the host doesn't save the mark (a new column in `remote_session_reports` is a store SEAM); after a host restart it shows again from the machine's first report. While the link is down, a viewed remote session stays unread until the link returns.
+- **Why provisional:** the owner may want the host to keep the mark itself; reversible.
+
+## D395 (Provisional, WIRE-B): lost read-mark changes make every client reload
+
+- **Context:** the daemon's read-mark changes reach the feed through a bounded broadcast; a lag dropped them, so clients showed stale marks until their next load.
+- **Pick:** on a lag the daemon sends a Resync to every feed subscriber (`Feed::resync_all`, unnumbered and not kept for replay), and clients reload at once, as they already do on a Resync.
+- **Why provisional:** re-telling only the sessions whose marks differ would be lighter; reversible.
+
+## D396 (Provisional, WIRE-B): the host keeps a remote session's read mark with its last report
+
+- **Context:** under D394 the host showed a machine's mark from its reports but didn't save it, so after a host restart a remote session showed read until the machine reported again, and stayed read while the machine was down.
+- **Pick:** `remote_session_reports` gets `unread INTEGER NOT NULL DEFAULT 0` (store step 30, after TERM's step 29; SEAM); the host saves the mark with each report and rebuilds its views from it at start, so a restarted host shows the mark at once. The machine's next report still overrides it. Reports kept before the step read as not unread.
+- **Limits:** the kept mark is as of the last report; if the session was viewed on the machine while the link was down, it corrects at the next report.
+- **Why provisional:** the owner may want the host to hold read state of its own; the step number may need moving if another lane adds a store step first.
+
+## D397 (Provisional, WIRE-B): the desktop live rig can link a second machine
+
+- **Context:** the desktop live rig used `FakeMachines` with no linked second machine, so the app side of flow 08 step 11 couldn't run live.
+- **Pick:** `World::start_with_machine()` starts devbox-1, a fake machine behind a fake ssh with its own machine-role `humatad2` and agent, linked to the host, with the app on the real `LiveMachines`; `Devbox::{cut_link, restore_link}` take the link down and back. `live_flows/away_box.rs` drives a request answered on devbox-1 while the link was down. `start()` is unchanged.
+- **Limits:** the app lists waiting requests only and its `Request` has no field for where it was answered, so the test proves the link, the host Inbox and that the app never holds the request as waiting, not an "answered on devbox-1" row. Its waits are pushed (devbox-1's Inbox and Machines feeds, a blocking fifo, the CLI's exit) except two, listed as push gaps in WIRE.md: the wait for devbox-1's socket to listen, and the app-state wait that settles the headless app. devbox-1 runs the admin build (`--admin-pid`, as the daemon tests do) so the test can read its user-only feeds.
+- **Why provisional:** showing answered requests and where they were answered is a model, list and Inbox UI choice for the owner (no milestone yet).
+
+## D398 (Provisional, WIRE-B): humatad2 says it listens: READY=1 on its ready pipe and to NOTIFY_SOCKET
+
+- **Context:** whoever started `humatad2 serve` learned it listened by retrying a connect (the live rig, each 20 ms) or by a bare byte on `--ready-fd` (the bridge), and a systemd unit had no way to wait at all.
+- **Pick:** once the socket is bound, and before the first call is answered, `serve` writes `READY=1` and a newline to the `--ready-fd` pipe and closes it, and sends the datagram `READY=1` to `NOTIFY_SOCKET` when that is set (a leading `@` is an abstract name on Linux), so LINUX's user unit can be `Type=notify`. The pipe is made close-on-exec as `serve` takes it, so holders and agents started before ready can't keep a starter waiting; `NOTIFY_SOCKET` stays in the environment, because systemd takes notices from the main pid only and an exec relaunch keeps that pid. A daemon that won't listen closes the pipe without a word. A notice the service manager refuses is logged as a warning, not fatal. The bridge, which reads one byte, is unchanged. The live rig's `World::spawn_daemon` and devbox-1 start on the pipe (`spawn_ready`), and `reboot` waits for each killed process's exit through kqueue, not a `pgrep` loop.
+- **Why provisional:** a relaunch by exec before ready (an upgrade rollback at boot) drops `--ready-fd`, so its starter now hears the pipe close and counts the start as failed though the relaunched daemon comes up; carrying the pipe across that exec is a small follow-up if it matters.
+
+## D399 (Provisional, WIRE-B): headless waits park until something wakes them
+
+- **Context:** the live flows' `wait_until` settled the headless app, looked, and slept 100 ms. A watch on the store's state version can't serve as the signal: the store's state moves only inside `settle`'s `run_until_parked`, and terminal output reaches the views through gpui tasks, not the store.
+- **Pick:** between looks the test thread parks (`std::thread::park_timeout` to the deadline). It is woken by gpui itself, whose test scheduler unparks the thread that made the app whenever another thread hands the app work, by every event from the host's feed, and by the agents: each writes a byte to the World's `wrote` fifo after adding to its conversation, and a thread unparks the test and fires `World::wrote()`. Waits run on the thread that opened the app, which is asserted. Two waits look at what nothing pushes and keep a 100 ms look (`App::wait_polling`, marked GAP): the host's history index reading a conversation, and a scratch folder going from disk.
+- **Amended (live flows timeout fix):** the park is also capped at 16 ms, a display's frame tick. A terminal's pump that applied a full batch of a flood waits for the window's next frame, so frames that queue behind it wake no gpui task. A park to the deadline then drew no frame, and the pump, and the shell open waiting behind it, stalled until the wait timed out. The cap draws the frame a display would.
+- **Why provisional:** a wait whose predicate reads something that none of the three wakes now times out at its deadline instead of passing late, which names the wait; the fix is a push for it or `wait_polling`.
+
+## D438 (Provisional, WIRE-B): the history index says when it caught a session up
+
+- **Context:** D399 left one live wait on a 100 ms look: whether the host's history index had read a conversation, which nothing pushed.
+- **Pick:** each catch-up that adds lines (local or from a remote) publishes `HistoryIndexed { session, added }` on TOPIC_SESSIONS, scoped to the session's channel and the session; a catch-up that adds nothing publishes nothing. The client turns it into `Event::HistoryIndexed`, and a waiter searches again on it. The app ignores it for now (GAP): an open search is not rerun. Proven by `daemon/humatad/tests/history.rs::catching_a_conversation_up_is_told_on_its_sessions_feed`; `live_flows/find.rs` waits on it.
+- **Why provisional:** the event carries a count, not the lines, so a client that wants results still searches; rerunning an open search on it is a view pick for later.
+
+## D439 (Provisional, WIRE-B): an upgrade rollback that relaunches by exec keeps the ready pipe
+
+- **Context:** with D398 the starter waits on `--ready-fd`; a rollback that relaunched by exec dropped the flag, so its starter waited out its deadline though the rolled-back daemon was up.
+- **Pick:** the rollback clears close-on-exec on the pipe and passes `--ready-fd` through unchanged when it has not said READY yet, so the relaunched daemon says READY=1 on the starter's pipe; the upgrade's own exec and the relaunch after a stop have already said it and drop the flag. If the pipe can't be handed on, the daemon logs it and relaunches anyway. Proven by `tests/upgrade_cut.rs::a_rollback_relaunch_says_ready_on_the_starters_pipe` and unit tests in `ready.rs` and `stop/exec.rs`.
+- **Why provisional:** a rollback to a release older than D398 would refuse the flag; today every rollback target is the same build line, and the UPGRADE milestone owns mixed versions.
+
+## D440 (Provisional, WIRE-B): a Desk scratch folder is in the Bin before its row is marked deleted
+
+- **Context:** D399 left the second 100 ms look: whether Clean up had taken a scratch folder off disk.
+- **Pick:** keep the order clean-up already has and make it a rule: the folder moves to the Bin, then the row is marked deleted, then the event goes out after the commit. So once a client hears the session leave, its folder is gone, and the live wait is a single look. Proven by `daemon/humatad/tests/desk.rs::a_scratch_folder_is_in_the_bin_before_its_row_is_marked_deleted`, which stops the daemon at the row's commit and finds the folder gone.
+- **Why provisional:** a crash between the move and the mark leaves a row for a folder in the Bin; the next clean-up marks it, which is today's recovery.
+
+## D441 (Provisional, WIRE-B): live clone waits rely on the clone happening before launch
+
+- **Context:** `files.rs`, `document.rs` and `review.rs` looked for a session's clone every 50 ms.
+- **Pick:** the daemon records and clones before it launches the agent, so once the agent has the first message (pushed by the `wrote` fifo, D399), the clone is there and a single look finds it. `document.rs` uses `review.rs`'s `clone_of`.
+- **Why provisional:** if starts ever launch before cloning, these looks fail at once, which names the change.
+
+## D442 (Provisional, WIRE-B): the inbox, machines and boards live waits park
+
+- **Context:** `live_inbox.rs`, `live_machines.rs` and `live_boards.rs` kept D399's old 100 ms `wait_until`, and the inbox and boards rigs a 100 ms loop for the agent's first message.
+- **Pick:** the same as D399, copied into each (each test is its own crate): the waits park and are woken by gpui, by every host event, and (inbox, boards) by the agent's writes to a `wrote` fifo after each conversation line and each file it leaves in `out`. The first-message loops await `World::wrote()`.
+- **Why provisional:** a copy per rig; a shared test module needs a BUILD change and can come with the next rig.
+
+## D410: The stack CLI's user-facing picks (STACK manager, Opus advisor, 2026-11-16). Provisional
+`bazel run //tools/stack -- <command>` makes each `Topic:` trailer group on a branch one PR, based on its `Relative:`
+topic's PR (or the trunk). `stack commands` lists every command (`--json` for agents); `stack guide` is the manual.
+Owner-visible picks:
+- **Branches.** Head branches are `<prefix>/stack/<topic>`, flat (no nesting by Relative), and stay the same across
+  amends; renaming a Topic opens a new PR. The prefix is `--prefix`, else `prefix` in stack.toml, else the gh login;
+  it must pass `git check-ref-format`. An open PR keeps its head branch when the prefix changes. Remote branches are
+  never deleted.
+- **Config.** Settings are compiled-in defaults, overridden by `$HUMATA2_HOME/config/stack.toml` (else
+  `~/.humata2/config/stack.toml`); nothing is read from git config, env vars (other than the home) or the repo.
+  Unknown keys are refused; secret-looking keys (token, secret, password, credential, auth, api_key, ...) and
+  GitHub-token values are refused with where the secret belongs (gh's own auth). A malformed file names its path and line. `stack config show [--json]` prints each setting,
+  its value and its origin. A copied binary plus the config folder behaves the same on another machine.
+- **Template.** The PR template is compiled in; `template = "<file>"` in stack.toml names a file in the config folder
+  instead. The repo's `.github` template is never read. Required sections (`<!-- required -->`) must be filled in a
+  topic's first commit, or `check` refuses it.
+- **Descriptions.** Every PR body ends with the stack table (the whole chain, this PR marked), refreshed on every
+  upload. A body edited on GitHub is kept with a warning (`--overwrite-body` or `overwrite_body = true` replaces it).
+- **History.** Each PR gets one history comment (`<!-- stack:history v1 -->`), edited in place, with a row per new
+  head; a row whose base moved names `stack diff <topic> <a> <b>`.
+- **Revision pins.** Each upload that moves a topic pushes `refs/stack/<prefix>/<topic>/r<N>` and `r<N>-base`
+  (outside refs/heads), so old revisions survive the force-push. `pin_revisions` (default on) and `keep_revisions`
+  (default 0, keep all) in stack.toml. `stack diff <topic> [<a> <b>]` fetches the pins and runs `git range-diff`, so
+  base changes stay out; the default is the last two revisions.
+- **Status.** `stack status [--json]` draws the chain as a tree from PR bases (parent, depth) and shows a stopped
+  restack.
+- **Restack.** `stack restack edit <topic|sha>` stops at a topic's last commit (or a commit) for an amend; `continue`,
+  `skip`, `abort` drive it; `--step` stops after each later topic and `--exec <cmd>` runs a check after each (exit 5
+  when it fails). State is in the git dir (`stack/restack.json`), so a fresh process resumes it; `upload` refuses while
+  one is stopped. A conflict names the topic, commit and files.
+- **Errors.** Every error ends with a `Next:` line naming the command to run. Exit codes: 0 ok, 1 git/gh, 2 usage or
+  config, 3 conflict, 4 GitHub refused, 5 restack `--exec` failed.
+- When `gh stack` is installed (`native_stack`, default on), chains are also linked as native stacked PRs; a refusal is
+  a note, not a failure.
+- **Reverse:** set `prefix`, `template`, `pin_revisions = false`, `native_stack = false` in stack.toml; delete pins
+  with `git push <remote> --delete refs/stack/...`; drop the body table in `upload::write_stack_tables`.
+
+## D411: Every linked machine gets `stack` and the host's stack.toml (STACK manager, owner ask, 2026-11-16). Provisional
+- **Binary.** `stack` is a fourth installed file (`InstalledFile::Stack`) in the tools bundle (`:tools`, `:tools_mac`)
+  and in the app's Contents/Helpers. It installs, stages as `.stack.next` and upgrades like humatad2, holder and
+  humata, by checksum; a newer one comes with the release's VIP Inbox Migrate (no mixed versions). The Linux builds
+  are static musl, cross-built on the Mac (`//tools/stack:stack_linux`; `static_linux_test` checks for no interpreter).
+- **Config.** The host's `~/.humata2/config/stack.toml` (next to the daemon's state folder) goes to the machine's
+  `~/.humata2/config/stack.toml` at setup and at every link-up when its sha256 differs; the far end checks size and
+  sha256 before the rename. No host file: nothing is sent and the machine's copy is left alone.
+- **Secrets.** Before sending, top-level keys whose name has token, secret, password, passwd, credential, auth,
+  api_key, apikey or private_key, and values that start like a GitHub token, are dropped and logged by key name only.
+  Keys inside a `[table]` are not filtered (stack.toml has none); `auth` also drops a key like `author`.
+- **Open:** interactive-login machines get the binary but their link-up push only logs a failure; removing a machine
+  leaves its `config/stack.toml`.
+- **Reverse:** drop `InstalledFile::Stack` and the `stack` attr of `tools_bundle`, and the two push hooks
+  (`Setup` `Pending::Config`, `machine_service/stack_settings.rs`).
+
+## D412: The shared stack model gains `RepoStack` for PR review (STACK manager, Opus advisor, 2026-11-16; D300, PR A10). Provisional
+`//tools/stack/graph` keeps `Stack` (every PR, for the CLI's tables) and adds `RepoStack`, D300's model under that name:
+the one tree that holds a PR, bottom first, with `repo()`, `trunk()`, `source()` (`Native` or `BaseChain`),
+`github_number()`, `entries()`, `parent_of(n)` and `children_of(n)` (lowest number first).
+- **Trunk** is not an input: it is the bottom PR's base, so it can't disagree with the PRs.
+- **Forks.** `Pr` gains `from_fork`; a PR whose head is in a fork is never a parent, in `Stack` too.
+- **Loops.** `RepoStack::from_base_chain` gives no stack for a PR on or under a base loop, or a PR alone; the CLI's
+  `Stack` still breaks a loop at the lowest number, because its tables list every PR.
+- **Native.** `RepoStack::native(repo, number, members, prs)` orders the members by their bases (the base chain is the
+  truth, whatever order GitHub lists them in) and is None unless they form one linear chain; the daemon then falls
+  back to the base chain.
+- **Visibility** stays `//tools/stack:__pkg__`; the PR lane adds its exact daemon package when it first depends on it.
+- **Reverse:** drop `RepoStack`/`Source` and `Pr.from_fork`; nothing outside `tools/stack` uses them yet.
+
+## D420: ⌥← and ⌥→ move by word, and a Settings switch makes Option act as Alt (TERM manager pick, 2026-11-16; D73 Option as Alt, README gap 2, micro-03). Provisional
+⌥← and ⌥→ always send Esc b and Esc f, and ⌥⌫ always sends Esc DEL, so moving and deleting by word works out of the box. Every other ⌥ key types the character the keyboard layout gives, such as `#` on ⌥3 on a UK keyboard. Settings › Keyboard › **Option acts as Alt** (off by default) sends Esc plus the key for every ⌥ key instead, through `set_option_as_alt`, for people whose shell or editor binds ⌥ letters. It applies to every terminal at once, on desktop and in the browser. Off by default because turning it on stops some layouts from typing characters that need ⌥, and the switch's note says so.
+- **Reverse:** on by default; or drop the fixed word keys and leave everything to the switch.
+
+## D421: ⌘W closes the selected tab, and ⇧⌘↩ toggles Terminal full screen (TERM manager pick, 2026-11-16; NV-37, D73 tabs, README gap 3, micro-23). Provisional
+Not built. ⌘W (Ctrl+Shift+W off a Mac) sends `SessionAction::CloseTab` for the focused group's selected tab, the same as its ✕. It does nothing on the agent's terminal, which never closes from the tab row, and on a shell tab D423 decides. ⇧⌘↩ (Ctrl+Shift+Enter) toggles NV-37's Terminal full screen, the same as the header button. Both are bound in the app's keymap, so they work while the terminal has focus, and the Shortcuts sheet lists them. In a browser, ⌘W closes the browser tab before the page sees it, so on the web the palette's Close tab command is the way.
+- **Reverse:** unbind both; the ✕ and the header button stay the only ways.
+
+## D422: ⌘T opens a shell tab, and ⌃Tab and ⌃⇧Tab cycle the focused group's tabs (TERM manager pick, 2026-11-16; D73 tabs, README gap 4, micro-23). Provisional
+Not built. ⌘T (Ctrl+Shift+T off a Mac) does what **+** › zsh does in the focused group, starting in the folder D338 records. ⌃Tab and ⌃⇧Tab select the next and previous tab of the focused group, file tabs included, and wrap around. The app binds them in its own keymap, beside its other shortcuts. `register_host_shortcuts` stays for other hosts of the reusable terminal, and the app does not call it, so a key never has two bindings. Browsers keep ⌘T and ⌃Tab for themselves, so on the web the palette's New shell tab and Next tab commands do the same.
+- **Reverse:** call `register_host_shortcuts` from the desktop and handle its actions, or leave the keys unbound.
+
+## D423: A shell tab closes with its ✕, and closing it ends its shell (TERM manager pick, 2026-11-16; D73 tabs, README gap 5, micro-23). Provisional
+Not built. Every shell tab the user opened gets a ✕, and ⌘W works on it. Closing it stops its shell through the daemon and removes the tab on every screen showing the session. When a program other than the shell is running in it, a prompt asks first and names the program, because that program is stopped too. The agent's terminal still has no ✕: stopping the agent is in the session menu. The other D73 rule, that closing a view never stops a process, still holds for views. Closing the tab is what ends the shell; closing a window or a second view of the tab leaves it running.
+- **Reverse:** the ✕ only hides the tab and the shell keeps running; **+** lists hidden shells to show again.
+
+## D424: A bell flashes its tab, or marks a tab or session that is not on screen; it is silent unless a setting turns the sound on (TERM manager pick, 2026-11-16; README gap 8, micro-04). Provisional
+Not built. `PaneEvent::Bell` in the selected tab of a session on screen flashes that tab for 150 ms. In a tab that is not selected, it puts a dot on the tab until the tab is selected. In a session that is not on screen, it puts the dot on the session's sidebar row too. Bells within 500 ms of the last one count as one, so a program that rings in a loop doesn't flicker. Settings › **Bell sound** (off by default) also plays the system alert sound on desktop. In the browser, the sound plays only after the page has had a click. A bell never makes an Inbox message.
+- **Reverse:** sound on by default; or no dots, only the flash.
+
+## D350: Prepared views in the app are the daemon's, by id (VIEWS manager pick, 2026-11-16; VW-2–VW-10, D289(h)). Provisional
+- **Pick:** the app keeps no decisions of its own: every answer (Open it, Later, Not now, Revert, Keep, close) is one SetViewState, shown at once and put back if refused; views arrive by the event feed and a list when the app loads (every session's offers) and when the person comes back to a session (its whole Journal, Not now included, since the user's no-session list leaves Not now out). Later hides an offer for this visit; it shows again on return or after a restart. The saved `views` decisions by title are dropped (old files still load). Revert puts back route, trail, the session's tabs and panel, full screen, side-panel fold, board scope and per-repo diff targets; comments are never touched. A review plan opens the Diff panel with its per-repo targets.
+- **Reverse:** `features/views/src/lib.rs`, `features/app/src/views.rs`, `ui/src/view_tab.rs`, `Clients.views`.
+
+## D351: Prepared views stack; Keep and Close resume the one under (VIEWS manager pick, 2026-11-16; VW-9, D350). Provisional
+- **Pick:** each opened view pushes its own Revert snapshot; reopening a view already in the stack pushes nothing. Revert pops the top and shows the view under it, so a second Revert goes back to the page. Keep and Close drop only the top snapshot and show the view under it; Keep leaves the tab open. A walkthrough step opens its file beside the view and Next replaces only that file; a step in a repo the session doesn't hold opens nothing. A board view scoped to a session opens that session's board; one for a session the app doesn't know shows as a summary.
+- **Reverse:** `features/app/src/views.rs`, `ViewsAction::Resume`, `ViewContent::SessionBoard`.
+
+## D352: A machine's views reach the host only when offered, never while away (VIEWS manager pick, 2026-11-16; VW-12, AW-7, D226, D227). Provisional
+- **Pick:** only a draft's move to Waiting on a machine journals `view.offered` (must keep, before the agent hears back); drafts, revisions and key-only MarkReady calls are not journaled. PrepareView and MarkReady stay refused while the host is away (AW-7, D227 unchanged). The host owns an offered view's state from then on: replay inserts once and never overwrites an answer. D226 pick 5's replay list gains `view.offered`.
+- **Reverse:** `review/views.rs` mark_draft_ready, `away/journal.rs` record_view, the host's `view.` replay arm, `apply_machine_journal_view`.
+
+## D360: A stop's time reads as clock text, "14:02" in the fakes and frames (STOP manager pick, 2026-11-16; D260, frames 73–76). Provisional
+The page banner and the Hosts row say when the sessions were stopped as the local clock time of the stop record (`HH:MM`). The fakes and frames use a fixed "14:02" so captures stay stable.
+- **Reverse:** show a relative time ("12 min ago") and update frames 73–76.
+
+## D361: A stop with no recorded stopper reads "by you" (STOP manager pick, 2026-11-16; D264). Provisional
+A stop record or a host copy whose `by` is missing (an older record, or a relayed stop that lost it) reads as the user's own stop. Only the user and allowed rules can stop a machine, so this is the likeliest case.
+- **Reverse:** add an "unknown" stopper and its banner wording.
+
+## D362: A stop that hasn't reached its machine leaves the sessions' statuses as they are (STOP manager pick, 2026-11-16; D262, frame 76). Provisional
+Until the box takes the stop, its sessions keep their last known status (usually offline). Frame 76's banner says they may still be running. They read Stopped only once the box reports the sweep.
+- **Reverse:** mark them Stopped at once on the host, which says something the host can't know.
+
+## D363: The Stop and Start confirms centre on the page area, right of the sidebar (STOP manager pick, 2026-11-16; frames 72, 75). Provisional
+They read as the machine page's own dialogs, as frame 71's delete dialog does.
+- **Reverse:** centre them on the window.
+
+## D364: A stop or start cut by power is proven on the host; the box's own paths are crash-cut (STOP manager pick, 2026-11-16; exit criterion 5, D243). Provisional
+`stop_sessions_test` cuts the power at each of the 7 stop and 4 start points, through humata2_durable's simulation, with the holders cut and every program under them killed. A box runs the same stop and start code. Its own paths (`humatad2 stop`, the host copy, the relay) are crash-cut in `stop_box_test`, not power-cut. The simulation keeps unsynced writes in the process that made them, so a write a stop leaves unsynced before it restarts itself counts as kept. The stop syncs its record, rename and folder before each point, so nothing is known to depend on that.
+- **Reverse:** add a Stop operation to the PER-28 rig (`tests/common/power_cut.rs`) and power-cut the box too.
+
+## D370: The host posts "Migrate the daemon on This Mac" when a verified release is staged in its bin (UPGRADE manager pick, 2026-11-16; U7, force-upgrade). Provisional
+The host daemon watches `<bin>` (notify, non-recursive), and looks once at ready before it serves. A staged `.bundle.json.next` that differs from its own bundle and verifies posts a Daemon item for its own machine; `to` comes from the staged manifest (version empty). Migrate runs the existing local Runner; arrival at the new bundle ends it Approved. Unstaging withdraws the item as resolved, unless it is Migrating. A daemon with no bundle posts nothing (D290 l). Only a host runs the watch, so no machine posts its own items twice.
+- **Reverse:** drop `upgrade/local.rs` and its start in `serve.rs`.
+
+## D371: The CLI and host tools are their own Migrate kinds, local and remote; a Daemon item folds them in (UPGRADE manager pick, 2026-11-16; U7). Provisional
+The CLI is `<bin>/humata` and host tools are `<bin>/humata2_holder`. A file that is present and whose sha differs from the bundle posts a Cli or HostTools item; a missing file never posts. Remote machines report what is installed in `BuildInfo.installed` (build.proto 6), compared with their own `files`. Migrate for these is `Upgrade` with `to_bundle` equal to the daemon's own bundle: it renames only the differing tools from verified `.next` copies, with no record and no exec (FailedPrecondition when none are staged). The item ends Approved when the carry returns. While a Daemon item is pending, tool mismatches become lines of it and a pending Cli or HostTools item is withdrawn.
+- **Reverse:** drop `upgrade/tools.rs`, the tools-only arm of `run.rs` and `BuildInfo.installed`.
+
+## D372: A schema change is a line of the daemon item, not its own item (UPGRADE manager pick, 2026-11-16; U7). Provisional, owner question
+When both store schemas are known and differ, the Daemon item's changes list the store line. There is no standalone Store item: a store older than its binary keeps migrating at open, with SAFE's copy before it. Owner question: should a store found older on its own post its own item?
+- **Reverse:** post a Store item from the store open path.
+
+## D373: "Migrate the holders" restarts idle agent sessions onto the current holder; shells stay (UPGRADE manager pick, 2026-11-16; U6, PER-5, PER-6). Provisional, owner question
+Each holder spawn writes `<state>/holder_builds/<session>.sha` (shells: `<tab>.shell.sha`) before the holder starts. When the daemon's own `--holder` file matches the bundle, agent sessions whose record differs, or that have none, are listed in one Holders item for this machine; shells on old holders are listed as keeping running and never hold the item open. Plain terminal sessions count as shells. Stopped and exited agents drop out. Migrate restarts each listed agent at its next Idle or ProbablyIdle moment (AgentRecord Resuming, `restart_agent` with Why::Moved, same session and conversation); an agent with no turn tracking is never auto-restarted. The item has no deadline and ends Approved when none waits; a restart error marks it Failed so Migrate retries. Remote holders are not covered yet. Owner question: does ProbablyIdle count as idle?
+- **Reverse:** drop `upgrade/holders.rs` and the `HolderBuilds` hook in revive.
+
+## D374: The app posts its own item for an older local daemon (UPGRADE manager pick, 2026-11-16; U7, UPGRADE exit line 1). Provisional
+When install staged a release and the local daemon's ServerInfo has no build, the app shows "Migrate the daemon on This Mac", held by the app, not the daemon. Migrate checks the staged release is still the one shown, then `humata2_install::migrate_old_daemon` verifies every staged file, renames them with the bundle last, and kickstarts the daemon once. Known gap: the app has no reconnect, so the item stays Migrating until Humata is reopened.
+- **Reverse:** print the staged-release message again in `desktop/src/main.rs`.
+
+## D375: A Migrate card has one verb and skips bulk answers (UPGRADE manager pick, 2026-11-16; U7, D281k). Provisional
+A Migrate item takes only Migrate: Answer, Always, Choose and reply do nothing on it; Allow all/Deny all skip it and never ask on its account. Approving returns at once and the item shows Migrating; Failed shows the error and Migrate again. Machine pages are read-only while a Daemon item waits (new session and shell are refused with `MigrationNeeded`, pointing at the item). `DaemonError::MigrationNeeded` carries no source because `DaemonError` is Clone and Eq. Until the session feature carries a structured refusal, the session notice shows while its machine has an unanswered Daemon or Store item.
+- **Reverse:** drop the Migrate arms in `features/inbox` and `ui/src/request_card.rs`.
+
+## D376: After migrating an old local daemon, the app waits for it and reconnects (UPGRADE manager pick, 2026-11-16; batch 6, completes D374). Provisional
+Once `migrate_old_daemon` returns, the Inbox waits for the local daemon to answer at the staged bundle (`LocalDaemon::back_at`: notify on the socket's folder, one connect per event) against a 60 s app-clock bound. Back in time: the item ends Migrated and the app reloads and follows events, as after any daemon restart. Late, or back at the old bundle: the item is Failed with what to do (kickstart the daemon, or reopen Humata) and Migrate again on offer. `OldLocalDaemon(None)` ends a Migrating item Migrated instead of withdrawing it.
+- **Reverse:** drop `back_at` and the two actions; the item stays Migrating until Humata is reopened.
+
+## D377: A session keeps a structured "Migrate first" refusal (UPGRADE manager pick, 2026-11-16; batch 6, replaces D375's inference). Provisional
+`SessionState.refused` is set when send, resume or opening a terminal is refused with `MigrationNeeded`, and cleared by the next success or when the named item (or, unnamed, the same thing on the same machine) shows Approved. The session notice draws from it only. Typing and writable attach set it too (amended 2026-11-16, STOP+UPGRADE batch 2): the live link turns a `MigrationNeeded` refusal on attach open or mid-stream into `TerminalNotice::Refused`, decoded as send's is; the terminal view forwards it as `SessionAction::Typed(Err)`, and a written line or a writable-attach confirm sends `Typed(Ok)`, which clears it. Other typing failures stay toasts in the terminal view; the keystroke gate stays the daemon's.
+- **Reverse:** draw the notice from the machine page's migrations again; for typing, drop `SessionAction::Typed`, `TerminalNotice::Refused` and `Pump::refuse`.
+
+## D378: A machine reports its old holders to the host, which posts and carries its Holders item (UPGRADE manager pick, 2026-11-16; batch 6, U6 remote). Provisional
+A machine-role daemon runs the holder-record detection on itself and pushes `MachineToHost.holders` (peer.proto 12) after each Resume and on each change. The host posts that machine's Holders item from it. Migrate sends `Upgrade{thing = HOLDERS}` (daemon.proto `UpgradeRequest.thing = 3`), which starts the machine's restart loop and is idempotent. A dropped link mid-migrate leaves the item Migrating; on re-link the host asks again while sessions wait, and the item ends Approved when a report lists none. A failed restart on a machine is logged there and retried on the next link; the host doesn't show it Failed.
+- **Reverse:** drop the report from the uplink and `thing` from `UpgradeRequest`.
+
+## D379: A Migrate item carries its steps, per-session holder notes and a folded change list (UPGRADE manager pick, 2026-11-16; batch 6, frames 78, 79, 83). Provisional
+`MigratePreview.steps` (10) and `holders` (11). Steps are set at Migrate and saved with the item, so they survive the daemon's exec; each advance is one pushed update. This Mac's daemon: Check files, Copy the store, Swap files, Restart, Back at the new release (the store copy is made by the new daemon at its first start). A machine's daemon: Copy files over SSH, Swap files, Restart, Link back. The CLI and host tools: Swap files. Holders have none. Arrival marks every step done; a failure marks the step under way as failed. Holder rows read restarts when idle, restarting, no idle moment (no turn tracking), or stays until closed (shells). A card with more than 3 change lines starts folded to 3 and "N more"; the fold is per item and survives updates.
+- **Reverse:** drop the two fields and draw the batch 5 card.
+
+## D400: Off a Mac, the desktop keeps its state in the XDG data folder (LINUX manager pick, 2026-11-16). Provisional
+`$XDG_DATA_HOME/humata2` (live) and `…/humata2-fakes`, or `~/.local/share/…` when `XDG_DATA_HOME` is unset, empty or relative; macOS keeps `~/Library/Application Support/Humata 2` and `Humata 2 (fakes)`. Lowercase, no spaces, as Linux folders usually are; nobody runs the Linux app yet, so nothing moves.
+- **Reverse:** `default_data_dir` in `desktop/src/main.rs` returns the macOS folder names under `~/.local/share`.
+
+## D401: The Linux batch builds on the Mac and only runs tests in the VM (LINUX manager pick, 2026-11-16; refines D18). Provisional
+`testing/linux/run.sh` runs `bazel test --config=linux_arm64 --run_under=testing/linux/in_vm.sh --strategy=TestRunner=local`: each test's runfiles stream into the VM under `/v` at their Mac paths, run there with the test's full env and args, and its outputs come back. Two tests at a time (2 CPUs), and Bazel caches passes, so a rerun only runs what changed. `in_vm.sh` isn't a Bazel input, so after changing it rerun with `--nocache_test_results`.
+- **Reverse:** go back to copying each binary and running it bare (the old `run.sh`).
+
+## D402: GPUI suites on Linux build for glibc against a pinned sysroot (LINUX manager pick, 2026-11-16). Provisional
+gpui-kit turns on GPUI's X11 and Wayland backends on Linux, which link libxkbcommon, libxkbcommon-x11, fontconfig and freetype, so nothing that links GPUI builds for static musl. Those suites (`testing/linux/batch_targets_gui.txt`) build with `--config=linux_*_gnu` against a sysroot of pinned, hashed Ubuntu packages for those libraries (a MODULE.bazel change, main's). Daemon and CLI suites stay static musl.
+- **Reverse:** build GUI suites inside the VM instead (slow on 2 CPUs), or patch gpui-kit's platform features.
+
+## D403: The Linux launch smoke test runs on lavapipe under Xvfb and headless Weston (LINUX manager pick, 2026-11-16; method for D129). Provisional
+Mesa's lavapipe gives the VM a software Vulkan device for GPUI's wgpu renderer. X11: `Xvfb` with `Xft.dpi: 192`; Wayland: `weston --backend=headless --scale=2`. Frame 01 must be non-blank, `App::on_missing_glyphs` must report nothing, and the window's scale factor must be 2.
+- **Reverse:** pick another software renderer (llvmpipe GL) or give the VM a virtual GPU.
+
+## D404: Off a Mac, the UI's Menlo and system-font families map to bundled fonts (LINUX manager pick, 2026-11-16; reading of D129's "bundled fonts"). Provisional
+The UI names `Menlo` and `.SystemUIFont`, which Linux lacks; GPUI would fall back to whatever the machine has, or panic with no fonts at all. Off macOS the desktop registers the Inter and JetBrains Mono files `terminal/client/assets` already ships through `engine::Resources::font`, and the two family names map to them. Not built yet (LINUX task T5).
+- **Reverse:** rely on the system's fonts (fontconfig fallback) and install fonts in the VM only.
+
+## D405: Linux containment is Landlock, and fails closed where Landlock can't hold a rule (LINUX manager pick, 2026-11-16; for SEC-6/D128 on Linux). Provisional
+`daemon/contain` names Landlock plus a network namespace as LINUX's. Landlock only allows paths, so "hidden inside readable" becomes an allow list of every readable root minus the hidden ones; ABI 4 (Linux 6.7+, Ubuntu 24.04) limits TCP connects to 443; DNS is UDP, which Landlock can't limit; and a path-named unix socket can't be limited to the daemon's alone. Where the kernel's ABI is too old for a rule, `wrap` refuses (D217) rather than run looser. Owner question: is "TCP 443 and DNS, plus any local unix socket the agent can see" acceptable on Linux, or must Linux add a network namespace with a forwarded socket before contained agents run there?
+- **Reverse:** keep `ContainError::Unsupported` on Linux (contained agents are macOS-only) and drop SEC-6 from the Linux batch.
+
+## D406: The Keychain stays fake on every platform for LINUX (LINUX manager pick, 2026-11-16). Provisional
+`clients/src/keychain.rs` has only `FakeKeychain`, the live desktop included, so it is a gap on macOS too, not a Linux one; a Secret Service backend is a new feature, out of LINUX's scope.
+- **Reverse:** add a Secret Service (Linux) and Keychain (macOS) backend as its own milestone.
+
+## D407: The Linux desktop installs its local daemon as a systemd user service (LINUX manager pick, 2026-11-16; PER-18 for This Machine). Provisional
+`desktop/install` writes only a launchd agent. On Linux it writes `~/.config/systemd/user/humatad2.service` from the same unit text `daemon/machines/src/service.rs` writes on remote machines, runs `systemctl --user enable --now`, and asks for `loginctl enable-linger` as PER-18 says. Not built yet (LINUX task T4).
+- **Reverse:** start the daemon from the app on Linux (no service), losing reboot survival.
+
+## D425: The mouse is the history's whenever no program can hear it; ⇧ always keeps the wheel for the history (TERM manager pick, 2026-11-16; README bugs 8 and 9, micro-14). Provisional
+While a program takes the mouse (htop, vim with `mouse=a`), a wheel with ⇧ held scrolls the history and sends nothing, the same as ⇧ keeps a drag for selecting. On a Mac a ⇧ mouse wheel arrives as a sideways scroll, and it scrolls the history too. When nobody can hear the mouse because the tab's program ended, the link dropped or the tab is read-only, the wheel scrolls the history and a drag selects, even if the program left mouse reporting on. Not built: a program that crashes with mouse reporting on and leaves its shell running still gets reports at the shell. The pane can't tell that the program is gone. Fixing that needs the holder to notice the shell is back in front and send the reset itself.
+- **Reverse:** ⇧ wheel reaches the program like any other wheel; or keep sending reports after the program ends.
+
+## D426: A retried Type asks the tab's holder whether the first call's text arrived (TERM manager pick, 2026-11-16; follows D337, KeyState/KeyedInput). Provisional
+A keyed Type now types through the holder's keyed input, which buffers the whole text, writes it at once and remembers the key. Before typing, the daemon notes that holder's instance with the pending key (store step 29). A retry that finds the key pending asks the same holder. If it typed the text, the retry answers typed and types nothing. If it didn't, the retry types it now, and the holder's own key check means two racing calls still type it once. The old "may have been typed" answer remains only when nobody can tell: the holder was started again (new instance), is from a build without keyed input (it gets plain typing), didn't answer, or its instance couldn't be saved. Known limit: a holder remembers its last 256 keys, so a retry after more than 256 other keyed inputs into the same tab could type the text again.
+- **Reverse:** keep plain typing and the "may have been typed" answer for every unfinished key (D337 as it was).
+
+## D435: The restart and fork live tests wait on the agent's writes, not on a new Output event (WIRE-A manager pick, 2026-11-16; follows D399). Provisional
+`live_flows/restart.rs` (another session; Start fresh) and `live_flows/fork_kinds.rs` (the second turn) check the conversation, then wait on `World::wrote()`, WIRE-B's agent-write fifo, until the next write or the deadline, as `running_session` already does. They no longer sleep between reads. The approved Output event on `events.proto` was not added: `wrote()` already wakes the test on each write, and nothing in the app would read a raw-output topic. A draft of it (`TOPIC_OUTPUT`, `SessionOutput`, joined in the agent watch) exists in the lane's scratch work but is not shipped.
+- **Reverse:** add the Output topic and payload and have these tests wait on it.
+
+## D436: A live test that reboots the daemon follows its events, then waits for its restart report (WIRE-A manager pick, 2026-11-16; PER-29). Provisional
+`reboot_and_settle` in `live_flows/restart.rs` opens the daemon's event feed first, looks at the workspace once, and if no restart is known yet waits for the client's `Event::Restart`. The live client reads the report on the first daemon event after it is published. Following first and looking second means a report made between the two is still heard. The test no longer reloads every 100 ms.
+- **Reverse:** reload the workspace in a loop until it lists a restart.
+
+## D437: A box session's pin and VIP mark stay on the host (WIRE-A manager pick, 2026-11-16; NV-24). Provisional
+Marks are the person's view, and the host is where the person is: `SetMarks` is host only and the relay lets a box send only marks it reads, not pins (CLI.md, relay allowlist). The host fills `pinned` and `vip` from its own marks on every path that shows a session (GetSession, ListSessions, Session events). A box's report lays only its status, exit code, pointers and unread over the record, so it never takes a mark away. Keeping a copy per machine and forwarding SetMarks to the owning box would give two copies to keep in step for no reader on the box. `daemon/humatad/tests/read_marks_remote.rs` proves the marks survive the box's report.
+- **Reverse:** keep a per-machine copy and forward SetMarks to the owning machine, with a field on the box's report (an api/proto SEAM).
+
+## D430: An archived session's folder is freed only once its undo window closes, also after a restart (daemon triage, 2026-11-16). Provisional
+Startup schedules each free at `free_after_unix_ms` rather than freeing at once. A channel restored from the trash gives its sessions a fresh undo window from the restore, and one archived before the delete keeps the later of its own and the restore's. Freeing early deletes the person's folders.
+- **Reverse:** free every archived session's folder at startup, and let a restored channel's sessions keep the window they had.
+
+## D431: Only the host closes a channel Desk session whose channel is gone (daemon triage, 2026-11-16; CD-5, AWAY). Provisional
+Under AWAY a machine runs with the host closed, but its store can't know whether a channel is gone, so a machine's daemon skips CD-5's watch. The host closes those sessions when it comes back. A restore forwarded to a machine asks the channel's TrashRestore rule on the host before CD-4 and CD-5's checks, so a caller who may not restore there learns nothing of the channel or the target.
+- **Reverse:** run CD-5 on every machine from its own store, and judge the restore's preconditions before its permission.
+
+## D432: The host journals each session start it asks another machine for until the machine answers, and a restart report's restart.json is written last (daemon triage, 2026-11-16; PER-29, D150, D241). Provisional
+Before saving a remote session's record, the host writes `<state>/carry/remote_archive/start/<session>.json` with the start and its operation. The file goes when the machine answers with the session or refuses the start, also when that answer comes on a later link. At start, each file left over brings its operation back, shows as pending in the restart report, and asks the machine again under the same id once it links. The machine answers with the session it kept, or starts it. If the host no longer has a live record, the file is dropped. If the machine refuses, the host's record goes too. A power cut on either side so never leaves a host record that nothing runs. The restart report writes `operations.jsonl` before `restart.json`, because a reader takes `restart.json` as the sign that the report is whole.
+- **Reverse:** keep the lost answer's retry in memory only, and write the operations after `restart.json`.
+
+## D450: A doc's versions are git commits in its Desk folder; restore adds a version (owner, 2026-11-16; DOCV). Signed off
+Owner picks, verbatim in `workflow/milestones/DOCV.md`: a version is a git commit in the doc's folder; the agent commits with plain git when it wants and the user with **Save version**; there is no automatic snapshot per turn; restoring v3 saves it as a new newest version and v4 and later stay. "I never want to be picking folders": the New desk session dialog has no folder choice and no path, and every Desk folder is made by Humata under the machine's root. Desks are scoped global and per channel (CD-1). SPEC DK-2, DK-3, DK-14, DV-1–DV-13.
+- **Reverse:** owner's call only.
+
+## D451: Every Desk folder is a git repo, kept once it holds a version (DOCV manager pick, 2026-11-16; Opus taste advisor). Provisional
+The dialog asks no storage question. Every Desk folder Humata makes is a git repo; it is kept for good once its repo has a commit (Save version or the agent's `git commit`) or the user clicks Keep; otherwise it goes 7 days after close, as scratch folders did. What the user does decides, so flow 1's throwaway look cleans itself up and flow 4's doc can't vanish by surprise. Closing an unkept folder that holds files asks once, with **Save version and close** (DV-4). The advisor also suggested auto-saving a version on close; not taken, because the owner ruled out automatic snapshots. Sessions started in a picked folder before this keep working there; there is no way to start a new one. Recommendation: keep.
+- **Reverse:** (A) the dialog asks "A doc to keep" or "A quick look"; or (B) every Desk folder is kept and only Clean up… removes them.
+
+## D452: A channel Desk session's doc folder stays in place and lives as long as the channel (DOCV manager pick, 2026-11-16; with ROAM's CD-1, CD-4). Provisional
+CD-1 makes channel Desk sessions short-lived, and CD-4 trashes their folder at once on Close. A channel Desk folder is a repo too (DV-1); once it holds a version it is kept: Close stops the session but leaves the folder at `<root>/<channel>/desk/<name>`, listed on the channel's Desk tab under Closed and Documents, moved with the channel's machines (MV-16, MV-17), and trashed only when the user deletes its session or the channel. Retention rules don't touch it. A folder with no version is trashed at once, as CD-4 says. So the managerial sessions stay short-lived while a channel's spec belongs to the channel. Recommendation: keep.
+- **Reverse:** on Close, a channel Desk session's Markdown moves into `shared/` (one repo for the channel's docs) and the folder goes to trash as CD-4 has it.
+
+## D453: A version is a commit that changes the file; who made it comes from a trailer (DOCV manager pick, 2026-11-16). Provisional
+History is per file (`git log -- <path>`), numbered from the oldest; lines added and removed come from `--numstat` for that path. Humata's own commits carry `Humata-Saved-By: you` and show as **You**; any other commit shows as the session's agent, whatever author it names. The repo's local `.git/config` holds an identity named for the session's agent at a local address, so a plain `git commit` works on a machine with no global identity; it never names the user.
+- **Reverse:** tell agent and user apart by author name, and leave the identity to the user's global config.
+
+## D454: Humata writes only its own repo's local config; its own commits run without hooks or signing (DOCV manager pick, 2026-11-16). Provisional
+`git init` with no commit, so a fresh folder is not kept (D451). Each clone is listed in `.git/info/exclude` when it is added, so the folder's repo never tracks clones or makes gitlinks. Save version and restore run `git -c core.hooksPath=/dev/null -c commit.gpgsign=false commit …` so a user's global hooks or signing key never prompt or fail; nothing is written to the global or system config, and no clone or picked folder is ever committed to by Humata.
+- **Reverse:** let Humata's commits use the user's hooks and signing.
+
+## D455: Restore first saves unsaved changes, then writes only that file (DOCV manager pick, 2026-11-16; follows D450). Provisional
+Restoring v3 with unsaved changes saves them as "Saved before restoring v3", then writes v3's text to the one file and saves "Restored v3". Nothing is lost, and other files in the folder are left as they are. Restore is the user's change, so comments re-anchor (SM-7) and none is addressed (SM-16).
+- **Reverse:** restore the whole folder to that commit's tree; or refuse while there are unsaved changes.
+
+## D456: Comments on an old version come from a record taken at each commit (DOCV manager pick, 2026-11-16). Provisional
+Comments live in the store, not in the file, so "as they were" needs a record. When a Desk folder's repo gains a commit, the daemon stores, per changed file, the session's comments on it (drafts included, archived left out), keyed by the commit. An old version shows that record read-only; a version made before the record existed says comments weren't recorded. The daemon notices commits by watching the repo's HEAD, so the agent's plain `git commit` is recorded too.
+- **Reverse:** show the current comments re-anchored onto the old text (no record), or show no comments on old versions.
+
+## D457: The agent reads versions with two MCP tools and saves only with git (DOCV manager pick, 2026-11-16). Provisional
+`doc_versions_list` and `doc_version_read`, no rule for its own session's folder (as `comments_list`, D21), and the file-read rules for another session or machine. No save or restore tool: the owner said the agent saves with git, and a tool would duplicate it; the agent can still restore by writing the old text and committing. No new access switch, since both are reads under existing rules.
+- **Reverse:** add `doc_version_save` and `doc_version_restore` tools, each with its own rule.
+- 2026-11-17 (Fable ruled during the gate-30 fixes): a `desk_peer` access clause had let one Desk session read another's folder and versions. That went against D182.3, so it was reverted in `access/src/policy.rs`. Desk sessions have no channel-mates.
+
+## D458: Desk folders made before DOCV get a repo through a Migrate item (DOCV manager pick, 2026-11-16; UPGRADE force-upgrade rule). Provisional
+An open or kept Desk folder Humata made before DOCV has no repo. On upgrade, one VIP Inbox "Migrate Desk folders" item runs `git init` as DV-1 in each, with no commit, so whether it is kept doesn't change. Folders the user picked are never touched.
+- **Reverse:** leave old folders without history (no History strip on their files).
+
+## D460: The user picks repos, machines, channels and sessions, never folders (owner, 2026-11-16; NOPATH). Signed off
+Owner, word for word: "I never want to be picking folders. The app should be opinionated about how it handles for me. I should be picking higher level things like repos I need, machines I need. … If I want to move files between machines it should show me potential machines to move it to and not where on those machines UNLESS I ASK FOR IT TO MOVE IT SOME PLACE SPECIFICALLY. When I ask to sync sessions it should sync it for me to where it needs. When I ask to make a spec it should pick a folder to make it for me. These things should be somewhat configurable as like the 'roots' but once those roots are set they should be opinionated." Rules PL-1 to PL-13; FC-1, CH-18, DK-16, DK-17, SE-18, PR-21, FM-1, FM-2, FM-7, IN-10 and ST-5 follow. CH-18 loses its local-path source. Golden frames that show or ask for a path go to the owner's wave; none changes before then.
+
+## D461: D315 is withdrawn; "Move the picked folder" and draft frame 96 are moot (NOPATH manager pick, 2026-11-16; D460, D451). Provisional
+D315 asked the user to tick "Move the picked folder" before a Desk session with a picked folder could move into a channel. Under D460 nothing asks where, and since D451 no new session starts in a picked folder. A folder picked before D451 is copied to the channel place like a scratch folder, and the original stays where it was, so nothing the user owns is moved or deleted. `MoveDeskSessionToChannelRequest.move_picked_folder` is ignored and marked deprecated. Draft frame 96 is dropped from ROAM's list. Recommendation: keep.
+- **Reverse:** keep D315's tick for legacy picked folders.
+
+## D462: A machine-only send lands by its source's place; anything else lands in From <machine> (NOPATH manager pick, 2026-11-16; Opus taste advisor; PL-3, PL-4). Provisional
+A channel's shared files go to that channel's shared folder on the target. A session's files go to the channel's shared folder there, under a folder named for the session, so two sessions don't mix. Home and Desk files go to `<root>/received/<source machine>/`. A machine outside the channel gets the file in its received place and the channel is not changed, since adding a machine is a bigger step. Recommendation: keep.
+- **Reverse:** everything goes to received/, or sending a channel file adds the target machine to the channel.
+
+## D463: Copy to ▸ and Move to ▸ list machines; Somewhere specific… is the explicit form (NOPATH manager pick, 2026-11-16; Opus taste advisor; PL-5, amends D165). Provisional
+The menus list the channel's machines first, then the others, each with its landing place by name, then Somewhere specific…. The advisor recommended dropping the second pane, since it exists only to choose a destination. The two panes stay (D165 is the owner's) until the owner sees frame 61's redraw in the wave. Recommendation: keep the panes for now; ask the owner about one pane.
+- **Reverse:** one pane, with Somewhere specific… as the only way to browse a target.
+
+## D464: Places are shown by name: breadcrumbs, and received files as From <machine> (NOPATH manager pick, 2026-11-16; Opus taste advisor and main; PL-4, PL-11). Provisional
+A pane header reads "This Mac › # ml › shared › datasets". The machine crumb lists channels, Desk, each From <machine> and Home last. Main asked that the received place be named by purpose, never by path. Recommendation: keep.
+- **Reverse:** show the real path in the header.
+
+## D465: Each machine's root is a Settings row; Add machine never asks; `host root` with no path prints it (NOPATH manager pick, 2026-11-16; Opus taste advisor; PL-1, PL-12, FC-10). Provisional
+Settings › Machines shows **Humata folder** with the path muted and **Change…**, which opens a folder picker on This Mac or a field for a remote, with Use default, then FC-10's plan. The CLI `host root <machine>` prints the root, `--default` resets through the plan, and `host add --root` stays optional and is never prompted. A command without a path that silently resets a root could move channels. Recommendation: keep.
+- **Reverse:** Add machine asks for the root, prefilled; `host root <m>` resets.
+
+## D466: Paths are hidden; Reveal and Copy path sit in the row's … menu; New channel shows machines, not its folder (NOPATH manager pick, 2026-11-16; Opus taste advisor; PL-9, PL-10). Provisional
+Reveal and Copy path are in the right-click and … menus only, never on hover. On a remote machine Reveal is **Open terminal here**, a terminal on that machine in that folder. The New channel dialog's "Folder: ~/Humata/<slug>/" becomes "On: This Mac, gpu-box"; the Desk folder bar's path moves to its … menu (with DOCV, DK-3). Recommendation: keep.
+- **Reverse:** keep paths as muted, read-only text.
+
+## D467: The Inbox cross-machine copy card shows what, its size and machine → machine (NOPATH manager pick, 2026-11-16; Opus taste advisor; IN-10). Provisional
+For example: "fix-login wants to copy datasets/ (2.1 GB) from This Mac → gpu-box · ml shared", with Approve, Somewhere else… and Deny. A place the agent asked for shows as breadcrumbs, and real paths sit behind Details. The decision is whether these bytes go to that machine. Recommendation: keep.
+- **Reverse:** keep source path → destination path.
+
+## D468: A drop lands where it's dropped; Upload… with no folder open goes to the session's pastes (NOPATH manager pick, 2026-11-16; Opus taste advisor; PL-6, RV-35). Provisional
+A drop target is an explicit ask. Uploads are usually input for the agent, and putting them in a clone would leave untracked files in git. Recommendation: keep.
+- **Reverse:** Upload… goes into the open folder, clones included.
+
+## D469: A machine-only send keeps both when the name is taken (NOPATH manager pick, 2026-11-16; Opus taste advisor; PL-13, amends D142). Provisional
+The rule chose the place, so the rule settles a clash, and Keep both never loses data. A byte-equal file is not copied again. A send to Somewhere specific… keeps D142's Fail / Replace / Keep both question. Recommendation: keep.
+- **Reverse:** ask every time, or default to Replace.
+
+## D470: The repo library is the host's own SQLite file; the scope is config/repos.toml (REPOS manager pick, 2026-11-16; RL-1, RL-7). Provisional
+The library changes on every use (add, last used, remove), so it lives in the host's store in a file of its own, like the pins (`daemon/marks`), WAL with every write a transaction. The scope is a setting the user edits, so it is `owners` and `include_me` in `config/repos.toml`, as the portable-config rule asks. Writing last-used times into a synced TOML would rewrite the file on every machine at every use. The Opus advisor agreed.
+- **Reverse:** keep the library as `[[repo]]` tables in `repos.toml`.
+
+## D471: What puts a repo in the library (REPOS manager pick, 2026-11-16; RL-2). Provisional
+A successful add anywhere puts a repo in the library: a channel's create or Add a GitHub repo…, an approved agent proposal, Add repo to this session, the Desk's Add repo and `humata desk add`. Starting a session with a clone of it moves last used forward. Searches, ticks, cancelled sheets and failed clones add nothing, so the library holds only repos the user really used. Removing a repo from a channel keeps it in the library.
+- **Reverse:** also add every repo the user ticks, or drop library entries when their last channel lets them go.
+
+## D472: Settings offers Remove per repo and Forget all… (REPOS manager pick, 2026-11-16; RL-4). Provisional
+Remove takes one repo out. Forget all… empties the library after a confirm that gives the count and says nothing is deleted on disk or on GitHub. It is the reset when moving accounts. Neither touches channels or clones. The Opus advisor recommended (a).
+- **Reverse:** Remove only.
+
+## D473: Machines get repos.toml, never a copy of the library (REPOS manager pick, 2026-11-16; RL-12, D411). Provisional
+`repos.toml` goes to every machine the way `stack.toml` does (D411), secrets filtered. The library stays on the host as the one source. A machine's CLI asks the host, and while the host is away it says the host is away instead of searching a stale copy. The Opus advisor recommended this over a read-only `repo-library.toml` on each machine, because no copy means nothing stale and no mixed versions.
+- **Reverse:** push a read-only `~/.humata2/config/repo-library.toml` on link up, so a box can search while the host is away.
+
+## D474: The default scope is the listed owners plus you; with none listed it is Your repos (REPOS manager pick, 2026-11-16; RL-7, ST-21). Provisional
+Keys: `owners = [...]` (GitHub's word for an org or a user) and `include_me = true`. With `owners` set, the scope is those owners plus the user's own login. gh's collaborator and org-member listing then stays out, which is the noise the owner wants scoped away. With no `owners` key, the scope is Your repos (CH-3's listing), so a fresh install works as it does today. The advisor suggested making that listing opt-in in every case. The fallback is the manager's.
+- **Recommendation:** as written.
+- **Reverse:** make Your repos the default always, with owners added to it, or require owners to be set.
+
+## D475: Scope chips, + Org, All of GitHub, and Save as default only while the scope differs (REPOS manager pick, 2026-11-16; RL-8). Provisional
+The chips show the scope at a glance, and opting out is one click, which is what the owner asked for ("manually opt out of that when I am searching"). A widened scope dies with the picker. Save as default shows only while the scope differs from the default, and only the user can use it. The Opus advisor recommended chips over a dropdown.
+- **Reverse:** a scope dropdown beside the field.
+
+## D476: The scope never filters the library group (REPOS manager pick, 2026-11-16; RL-6). Provisional
+Library repos are the user's own references, and hiding them under a narrow scope would make them seem lost. The scope limits the GitHub group only. Within the library group, D274's match tier comes first and last used breaks ties, so a precise name beats a recent weak match. The Opus advisor recommended this.
+- **Reverse:** filter the library by scope too, or order the library by last used alone.
+
+## D477: GitHub search needs 2 characters within owners, 3 for All of GitHub, with a pause and a one-minute cache (REPOS manager pick, 2026-11-16; RL-9, D274). Provisional
+`gh api search/repositories` with `q=<query> user:<owner>…` (`user:` matches orgs too) is sent after a 300 ms pause in typing. Each answer is cached for a minute per query and scope. That keeps typing under GitHub's search limit of about 30 a minute. Your repos keeps CH-3's cached listing and the local D274 match. The Opus advisor proposed 3 characters for All of GitHub, because 2-character global queries are noise.
+- **Reverse:** one threshold for both, or no pause.
+
+## D478: A failed GitHub search leaves the library answering and says what to do (REPOS manager pick, 2026-11-16; RL-10, AGENTS.md errors). Provisional
+The daemon answers with the library group and one typed GitHub problem instead of failing the call. The problems are: gh missing, signed out, rate limited (with GitHub's reset time when gh prints it, and a reminder that signing in again doesn't lift it), GitHub unreachable from the host, and an unknown owner (marked on its chip). The client renders the daemon's text. The `gh_failure` split in `channel_service/gh_repos.rs` is the base.
+- **Reverse:** fail the whole search on a GitHub error.
+
+## D479: Agents may widen one search but never save a scope or remove a repo (REPOS manager pick, 2026-11-16; RL-11, CH-26, D278). Provisional
+Agents often need a repo outside the default scope, and refusing it would only send them to the owner. Saving the scope, Remove and Forget change the owner's lasting state, so only the user can do them. If agents ever need these, they get Agent-access switches, off by default. `repo_search` is a global read like SearchGitHubRepos (D278). The Opus advisor recommended this.
+- **Reverse:** limit agents to the default scope.
+
+## D480: A terminal tab keeps the program's title and folder apart from its name (TERM manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+The holder already reads the title a program sets (OSC 0 and 2) and the folder it reports (OSC 7), and the daemon used to drop both. Now the daemon saves them next to the tab, in a table of their own, so the user's name for the tab is never overwritten. The tab record carries them as `program_title` and `pwd`. The app shows the program's title only as a second line on the tab, never in place of the name. A shell started again for that tab (a restart) begins in the saved folder when it is still a folder on that machine, and otherwise in the session folder as before. The manager recommends this, and it goes to the owner's next wave.
+- **Reverse:** drop the `tab_program` table and the two proto fields, and the daemon goes back to ignoring the steps.
+
+## D481: A checkpoint over the limit trims the oldest history instead of failing (TERM manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+A tab's screen used to fail with an internal error when its checkpoint came out over 16 MiB. Now the engine drops the oldest history rows until the checkpoint fits, keeps the newest, and the daemon says how many rows went. The holder still keeps the whole output, so nothing is lost for good. Only a screen that does not fit even with no history is an error, and it says so. The manager recommends this, and it goes to the owner's next wave.
+- **Reverse:** return the error again and let the app ask for a smaller history.
+
+## D540: Only the user reaches a machine's received place (NOPATH-2 manager pick, 2026-11-16; PL-4, D462). Decided (owner via Fable, 2026-11-16)
+Files from another machine land in `<root>/received/<source machine>/`. That place belongs to no channel, so the policy treats it like Home: an agent's call that names it is refused as outside Humata's folders, and no grant covers it. The user copies or moves files from there into a channel.
+- **Reverse:** let agents read the received place of their own channel's machines.
+
+## D541: A session's `shared/<session>` folder is named after the session's folder, not its title (NOPATH-2 manager pick, 2026-11-16; PL-2, DK-11). Decided (owner via Fable, 2026-11-16)
+A session's folder keeps its name when the session is renamed (SPEC, Desk), so sends follow it there and a rename never starts a second folder. The title slug is used only when the session's folder is not known.
+- **Reverse:** name it by the title slug, so a renamed session starts a new folder.
+
+## D542: Keep both numbers the new copy `name-2.ext`, then `-3`, everywhere (NOPATH-2 manager pick, 2026-11-16; FC-14, D469). Decided (owner via Fable, 2026-11-16)
+The daemon's engine and the fake give the same name: the number goes before the last extension, and a name without one gets `name-2`. The old copy keeps its name.
+- **Reverse:** `name 2.ext` as Finder does.
+
+## D543: This Mac's root is stored on This Mac and reads as `this-mac` (NOPATH-2 manager pick, 2026-11-16; MACH, NOPATH). Decided (owner via Fable, 2026-11-16)
+Until the user changes it, This Mac's root is the folder humatad2 started with. A change is saved in the host's store, so This Mac never shows up as a box in the machine list. `host root this-mac <path>` and the machine's id both name it.
+- **Reverse:** register This Mac in the host registry and hide it from the machine list.
+
+## D544: Changing a machine's root can move its channels, and only when nothing runs there (NOPATH-2 manager pick, 2026-11-16; MACH). Decided (owner via Fable, 2026-11-16)
+The plan lists every channel and running session that the change affects. Without a move, new channels land under the new root at once and existing ones stay put. With a move, every channel folder, with its sessions, clones and conversations, goes to the new root the way a channel rename moves it. A running session refuses the move, and the same plan can still change the root for new channels only. A failure part way puts back what had moved.
+- **Reverse:** move channels lazily, as their sessions next start.
+
+## D545: Reveal on This Mac, Open terminal here on a remote, and Copy path everywhere (NOPATH-2 manager pick, 2026-11-16; PL-10). Decided (owner via Fable, 2026-11-16)
+The file manager's rows and Info's clone rows offer the folder the way the machine allows. Finder can only show This Mac's files, so a remote row opens a terminal tab on that machine in that folder instead. Copy path copies the absolute path on that file's machine.
+- **Reverse:** hide Reveal on remotes and offer nothing in its place.
+
+## D546: The Inbox copy card's Somewhere else… opens the destination machine's files, and the request keeps waiting (NOPATH-2 manager pick, 2026-11-16; IN-10, D467). Decided (owner via Fable, 2026-11-16)
+The card asks whether these bytes go to that machine. Somewhere else… doesn't answer: it opens the Files page on the destination machine so the user can copy the files where they want, and then deny or approve the agent's ask. The card's place reads in words ("api clone", "shared"), and the real paths and counts sit behind Details. An approve that names another place is left for later.
+- **Reverse:** offer Approve and Deny only.
+
+## D482: `:` stays a word boundary; a double-click on `path:42` copies the path (TERM manager pick, 2026-11-16; micro/12 step 3, E2E-BUGS). Decided (owner via Fable, 2026-11-16)
+A double-click selects a word, and `:` ends it, so `src/parse.rs:42` copies `src/parse.rs`. That path pastes into `vim`, `less` and an editor's open box as is, while `:42` breaks most of them. The same rule keeps `host:path`, `key:value` and `https:` splits predictable. A drag still copies the line number for anyone who wants it. Recommendation: keep it.
+- **Reverse:** drop `:` from `BOUNDARIES` in `terminal/view/src/selection.rs` when digits follow it.
+
+## D483: A killed program's mouse mode stays on for the shell (TERM manager pick, 2026-11-16; micro/14 branch, E2E-BUGS). Decided (owner via Fable, 2026-11-16)
+When `htop` or `vim` is killed with mouse tracking on, the shell gets the mouse reports as text until `reset` or the next program, as in most terminals. The pane cannot tell that the program that asked has gone while the shell lives on, and clearing modes on a guess would break a program that set them on purpose. ⇧ still selects and scrolls, and when the tab's own program ends the mouse goes back to the history. Recommendation: keep it.
+- **Reverse:** have the holder reset mouse modes when the foreground process group changes back to the shell.
+
+## D484: Tests compose through the tab's own text input (TERM manager pick, 2026-11-16; micro/13). Decided (owner via Fable, 2026-11-16)
+A headless window has no input method, and GPUI keeps the platform's input handler private, so a live test cannot type `にほんご` the way the Japanese input method does. `humata2_ui::Shell::terminal_input` hands out the shown tab's text input, the same handler the platform calls, and the live test marks and commits text through it (`desktop/tests/live_flows/ime.rs`). It is one public method on `Shell`, read only by tests, and adds no state. A real input method's candidate window and its key ordering stay untested. Recommendation: keep it.
+- **Reverse:** drop `Shell::terminal_input` and `Terminals::input_handler`, and leave composition to the pane's fakes (`terminal/pane/tests/pane.rs`).
+
+## D485: TERM is desktop only; its browser half is cut (owner, 2026-11-16; TERM, ANYHOST, LINUX). Decided (owner via Fable, 2026-11-16)
+The owner cut the browser client, ANYHOST and LINUX ("i want this app to be usable"; macOS desktop only). TERM's exit, scope and title now name the desktop app only, and its LINUX bash rows are deferred. The terminal link mapper crate stays wasm-clean (no tokio), so nothing built for the desktop has to be redone. Recommendation: keep.
+- **Reverse:** reopen ANYHOST. The browser serves the same `clients/terminal_link` mapper over gRPC-web into `terminal/web`'s replica. Add the browser exit bullets back to TERM, and run the LINUX list on the Linux VM batch.
+
+## D500: Text a person reads names a machine, never its id (STOP+UPGRADE manager pick, 2026-11-16; batch 2, UP-1, D260). Decided (owner via Fable, 2026-11-16)
+Migrate item titles, reasons and card lines, the upgrade gate's refusals ("Migrate the daemon on X first" and the CLI ones) and the stop gate's ("Start sessions on X first") say "This Mac" for the host's own machine and the machine's name otherwise (today its entry name, D61), falling back to the id when no name is known. Ids stay in the structured fields: `MigrationNeeded.machine`, the card's `machine`, request machine ids. A machine-role daemon doesn't know it is "This Mac" from the host's side, so its own refusals show its id. Items restored from the Inbox keep their old text until their next update.
+- **Reverse:** drop `Names` and `Migrations::set_names`, and pass `machine.value` to the titles and refusals again.
+
+## D510: Each repository's base is picked from a chip on its own line, and the header says "Comparing per repo" only when the bases differ (VIEWS+PR manager pick, 2026-11-16; RV-31, frames 84–86). Decided (owner via Fable, 2026-11-16)
+Under each repository's name sits an "against X" chip that opens that repository's menu. The menu offers the presets, then the branches the clone knew at its last fetch (under a filter), then the branch or commit typed into the filter. Only one menu, this one or the header's, is open at a time. The header reads "Comparing per repo" only when the repositories' bases really differ; overrides that all land on the same base don't count. Under another session's branch (OtherSession) the chip shows the base but is inert, since only the header's menu changes that.
+- **Reverse:** per-repository bases only from the header's menu, or the header reads "Comparing per repo" whenever any override is set.
+- **Amended by D739 (Fable, 2026-11-17):** when the bases agree, the chip shows only its chevron; the words appear in the header.
+
+## D511: A push asks GitHub for the repository's own branch base, and an open pull request is not retargeted (VIEWS+PR manager pick, 2026-11-16; RV-31, PR-10). Decided (owner via Fable, 2026-11-16)
+When a repository is compared with a branch, the push sends that branch, without an `origin/` prefix, as the pull request's base. A pull request that is already open keeps its base, and the push carries a note saying it wasn't retargeted and how to change it on GitHub. That note shows as an icon whose accessible name is the full note. Retargeting quietly could move a reviewed pull request under its reviewers.
+- **Reverse:** retarget the open pull request to the picked branch, or always push against the default branch.
+
+## D512: A review plan's Diff list starts with one line per repository, holding its base and push (VIEWS+PR manager pick, 2026-11-16; RV-31, RV-32). Decided (owner via Fable, 2026-11-16)
+A plan group can mix repositories, so putting base chips on group headers would draw the same repository more than once. Each repository instead gets one line above the groups: its name, its "against X" chip with the same menu, and its push. No golden covers plan mode.
+- **Reverse:** chips on each group header, for the repositories whose files the group holds.
+
+## D513: Archiving a review with unsubmitted pull request drafts asks first, and offers only Archive and Cancel (VIEWS+PR manager pick, 2026-11-16; PR-17). Decided (owner via Fable, 2026-11-16)
+The archive plan counts the session's pull request drafts that were never submitted (`ArchivePlan.unsubmitted_drafts`, once hard-coded to 0). Archive goes straight ahead only when nothing is unpushed and there are no such drafts. Otherwise the confirmation names them in one line ("N drafts on the pull request were never submitted; archiving keeps them"). With drafts and nothing unpushed, the dialog has Cancel and Archive: there is no work to delete or push, so the unpushed box and its two buttons don't show. No golden covers it; the fixtures have no drafts.
+
+- 2026-11-17 (OWNERFIX, owner via Fable): archiving now keeps unsubmitted pull request drafts, restore brings them back, and only delete removes them. The dialog line says they are kept; archive-then-restore tests in the fake and the daemon pin it.
+- **Reverse:** archive a review without asking, as before, and leave its drafts in the store.
+- **Ruling (owner via Fable, 2026-11-16):** Change. The confirmation stays, with Cancel and Archive only, but archiving no longer drops the drafts. They stay in the store with the archived review, come back when it is restored, and go only when the review is deleted. The line says N drafts were never submitted and are kept with the archived review. Why: an archive must not lose anything the person wrote.
+
+## D501: A box's failed holder restart shows Failed on the host (STOP+UPGRADE manager pick, 2026-11-16; batch 3, amends D378). Decided (owner via Fable, 2026-11-16)
+A machine-role daemon whose restart of an agent onto the current holder fails sends the failure up in `HoldersReport.failed` (peer.proto 2, a `humata.v1.Error`): its message names the session and why, its fix says to click Migrate again or close that session to free its old holder. The host shows that machine's Holders item Failed with it as `last_error`, clears its migrating flag and keeps Migrate on offer. The machine drops the failure when it begins the next Migrate round; the next report without one returns the item to Waiting, and a report listing no old holders ends it as before (Approved if migrating, else withdrawn). The failure is still logged on the machine. Replaces D378's "the host doesn't show it Failed".
+- **Reverse:** drop `HoldersReport.failed` and the machine's stored failure; the host item stays Migrating and the machine only logs.
+
+## D502: The stop and start confirms centre on the window, like every other dialog (STOP+UPGRADE manager pick, 2026-11-16; batch 4, frames 72 and 75, reverses D363). Decided (owner via Fable, 2026-11-16)
+An Opus high review of frames 72–76 against the native captures found the confirms mounted inside the machine page: centred on the page area, the sidebar left undimmed, and 94% of their width. Frames 71 and the fork dialog centre on the window. The confirms are now window-root overlays (stop at top 120, start at 180, shared scrim, Escape or a scrim click cancels), opened from the machine page or the Hosts row, and keep their set widths (520, 440). In the same batch: the Hosts card puts the stop line before the disk warning and keeps "up N" with a daemon detail, and a delivered stop on the fake ends the machine's sessions' pending requests as the daemon does.
+- **Reverse:** mount the confirms in the machine page again (D363).
+
+## D503: A stop's time reads in this Mac's local time, with the day when it wasn't today (STOP manager pick, 2026-11-16; amends D360). Decided (owner via Fable, 2026-11-16)
+D360's clock read the stop's Unix time as UTC, so anywhere outside UTC the banner and the Hosts row gave the wrong hour, and a stop from an earlier day read as if it happened today. `clients/live/src/local_time.rs` turns the time into text from a `LocalNow`: the clock now plus the UTC offset from `date +%z`, kept for 10 minutes as the file manager keeps its offset. The text is "14:02" for today's local date (and for a time after now), "Tue 14:02" within the 6 days before, "14 Nov 14:02" earlier in the year, and "14 Nov 2023 14:02" before that. `map::machine` and `map::machine_stop` take the `LocalNow`; each listing, event or stop reply reads it once. The text is fixed when the machine is mapped, so a stop shown as today can read as today after midnight until the next listing or machine event. The fakes and frames keep "14:02", so nothing is re-recorded.
+- **Reverse:** drop `local_time.rs` and format in UTC again as D360 did, or switch to a relative time.
+
+## D504: The box's own stop and start points are cut by crash and by power, not crash alone (STOP manager pick, 2026-11-16; reverses D364, exit criterion 5). Decided (owner via Fable, 2026-11-16)
+`stop_box_test` ends the host at each of its stop points (`stop.remote.copy_written`, `stop.remote.sent`, `stop.remote.delivered`) and start points (`start.remote.sent`, `start.remote.copy_removed`), and ends `humatad2 stop` on a box whose daemon doesn't answer at each of its points (`stop.remote.cli.record_written`, `daemon_killed`, `holders_signalled`). Each point is cut once as a crash and once as a power cut (humata2_durable's simulation on the faults build; on the box, its holders, what they ran and its agent are killed too). After the restart, the box is stopped once by that stop, the host shows it delivered, and a Start brings the session back on its conversation with a report that names the stop. A start cut shows the box running on both sides. A cut `humatad2 stop` can leave the sweep counting fewer agents than it ended, because the count is written last; the tests check only that nothing is left. The suite runs as 4 shards (`RIG_SHARDS` in `daemon/humatad/BUILD.bazel`).
+- **Reverse:** drop section 5 of `tests/stop_box.rs` and `RIG_SHARDS`; D364 stands again.
+
+## D520: The handover summary reads a Codex rollout by its lines' shape, not by the kind's format (E2E-BUGS manager pick, 2026-11-16; FK-6, agents-10 step 12). Decided (owner via Fable, 2026-11-16)
+`digest_of` in `daemon/humatad/src/session_service/start_fresh.rs` reads both Claude JSONL lines and a Codex rollout's `event_msg` `item_completed` lines (`UserMessage` as the user, `AgentMessage` as the agent). Codex's injected `AGENTS.md` and environment text are `response_item` lines and are left out, as Claude's meta lines are. The summary is a best-effort digest, so reading by shape needs no format to be passed down, and a kind that names no `conversation_format` still gets one. A fork before a given turn of a Codex parent still falls back to the terminal's output, because turn offsets come from `humata2_mirror::turns_of`, which reads Claude's shape; that waits until a Codex kind is built in.
+- **Reverse:** pass the parent kind's `conversation_format` to `handover_digest` and read through `humata2_conversation`'s adapter for that format.
+
+## D560: A channel's Add a GitHub repo… is one sheet built on the one repo search (REPOS manager pick, 2026-11-16; CH-6, CH-18, RL-5, D460). Decided (owner via Fable, 2026-11-16)
+The Repos and machines tab's Add a GitHub repo… buttons open a sheet that embeds the shared repo search (`RepoPicker::ChannelAddRepo`) with plain click rows. Picking a repo adds it and closes the sheet. An error shows inline and the sheet stays open. A repo the channel already has is refused inline, so a pick never starts a re-clone. The sheet shows no path and has no local-folder option.
+- **Reverse:** drop `Overlay::ChannelAddRepo` and disable the two stubs again.
+
+## D561: The client adds a repo to a channel by owner/name only; a pasted address is read on the client (REPOS manager pick, 2026-11-16; CH-18, KP-4, D460). Decided (owner via Fable, 2026-11-16)
+`Daemon::add_repo_to_channel(channel, "owner/name")` calls ChannelService.AddRepo and waits for its operation. The live call doesn't publish a ChannelSetup event, so a New channel sheet can't take it for its own setup. The pure `github::parse_repo_text` reads a pasted GitHub address (https, ssh, `git@github.com:`, a trailing `.git` or branch path) as owner/name. It refuses paths, `~`, `..` and other hosts. The palette offers "Add owner/name to this channel…" for such text while a channel is on screen.
+- **Reverse:** accept only typed owner/name and drop the palette entry.
+
+## D562: Adding a repo the channel lacks to a session adds it to the channel first (REPOS manager pick, 2026-11-16; CH-21, CH-18, CH-19). Decided (owner via Fable, 2026-11-16)
+A user's AddRepoToSession for a repo the channel doesn't have goes through the channel's own add (`ChannelSvc::add_repo_to_channel`). That add clones on every machine of the channel and records the repo in the library. The session add waits for this machine's main clone, then makes the session's clone from it on the session's branch (FC-11). A failed main clone is retried through the same add. If it fails again, the operation fails at its `add_to_channel` step, and the channel keeps the repo with a failed main clone, as a channel add does today. A session on another machine isn't served yet.
+- **Reverse:** refuse with "add it to the channel first" and drop the `add_to_channel` step.
+
+## D563: An agent adds repos only to its own session, only from its channel, and is asked first (REPOS manager pick, 2026-11-16; CH-21, CH-26, D479). Decided (owner via Fable, 2026-11-16)
+An agent may add a repo only to its own session, under OWN_SESSION_MANAGE (Ask by default), and only one its channel already has. For a repo the channel lacks, the agent is refused and pointed to `channel_add_repo` with its also-to-session flag, so the channel's proposal stays the only door for agents (CH-26). The operation reuses OperationKind ADD_REPO with the session as its target, so the proto doesn't change.
+- **Reverse:** let an agent's session add carry the channel add, behind the same ask.
+
+## D564: New desk session uses the one repo search, held in AppState (REPOS manager pick, 2026-11-16; DK-2, RL-5). Decided (owner via Fable, 2026-11-16)
+`features/desk` can't depend on `features/app`'s RepoSearch, because app depends on desk. The New desk session sheet's search therefore lives in `AppState.new_desk_repos` and is routed by `RepoPicker::NewDeskSession`, like the Desk's Add repo search (`desk_repos`). The desk form gains only `NewAction::ToggleRepo`: a tick adds or removes a repo, and the field stays open until Done. Return on typed text still adds it. The Folder row and its caption are unchanged (DOCV).
+- **Reverse:** move RepoSearch into a crate both features use.
+
+## D565: Org suggestions come from the library and from gh's list of the user's orgs (REPOS manager pick, 2026-11-16; RL-8, RL-9). Decided (owner via Fable, 2026-11-16)
+RepoService.ListRepoOwners is a global read that runs `gh api user/orgs` on the host. A gh failure comes back as the answer's problem, never a failed call, and the suggestions then fall back to the library's owners. One rule, `clients::repos::suggest_owners`, serves the search field's + Org and Settings › Repositories: library owners first (most recently used first), then GitHub orgs, de-duplicated ignoring case, without owners already in the scope. Each picker asks once per opening.
+- **Reverse:** suggest library owners only and drop ListRepoOwners.
+
+## D566: "used … ago" is worked out from a now the reducer is given (REPOS manager pick, 2026-11-16; RL-3). Decided (owner via Fable, 2026-11-16)
+The TCA clock is monotonic and has no epoch, so it can't be compared with a library row's `last_used_at_ms`. The reducers instead stamp `now_ms` into state from `Daemon::now_ms()`. The live client returns this machine's wall clock; the fake returns a settable fixed time. The UI no longer reads the clock itself, and the wording helpers are pure functions of (`last_used_at_ms`, `now_ms`).
+- **Reverse:** read the wall clock in the view again.
+
+## D567: The CLI can forget the library and save the scope (REPOS manager pick, 2026-11-16; RL-4, RL-7, D479; reverses B5's "the app's, not the CLI's"). Decided (owner via Fable, 2026-11-16)
+The owner wants everything the app does reachable from the CLI. `humata repos forget-all` first lists the library, then says how many repos go and that nothing on disk or GitHub is deleted. It asks "Continue?" like any plan, needs `--yes` without a terminal, and with `--dry-run` only says what it would do. `humata repos scope show` prints the saved scope. `humata repos scope set [--owner o]… [--no-include-me]` saves owners plus your own repos. With no owner it saves your repos, and it refuses `--no-include-me` alone. Both changes stay user-only (D479).
+- **Reverse:** drop forget-all and scope set from the CLI and leave them to Settings.
+
+## D522: Making or revoking a script token needs the user and no second presence step (E2E-BUGS manager pick, 2026-11-16; SEC-13, SEC-14, agents-18). Decided (owner via Fable, 2026-11-16)
+`CreateScriptToken` and `RevokeScriptToken` take a user caller only (`user_only` in `daemon/humatad/src/cli_login.rs`): the app, or a terminal whose `humata login` the user confirmed in the app or with the approval passphrase. That login is the presence step, so the daemon does not ask again, and the CLI's `present` path makes one call. An agent or a script is refused. For the owner's decision wave.
+- **Reverse:** have both handlers answer `PresenceRequired` (confirm in the app, or the passphrase while the host is away) when a proof is missing; the CLI already retries with one.
+
+## D523: A script token's channels limit channel actions, not a machine stop (E2E-BUGS manager pick, 2026-11-16; SEC-14, agents-18 step 7). Decided (owner via Fable, 2026-11-16)
+A token with `machine_sessions_stop` stops this machine's sessions whatever channels it lists (`check_script` in `daemon/access/src/policy.rs` skips the channel check for a machine target). A machine stop is not a channel action, and a cron stop that had to list every channel would break each time one is added. Proven by `daemon/humatad/tests/stop_access.rs::a_script_whose_token_lists_stopping_sessions_stops_the_machine_and_is_named_a_script`. For the owner's decision wave.
+- **Reverse:** refuse a machine stop unless the token lists every channel with a session on the machine.
+
+## D524: OpenCode's turn end comes from its server's events; SPEC SE-21 lags (E2E-BUGS manager pick, 2026-11-16; D201, SE-21, SE-23, agents-17). Decided (owner via Fable, 2026-11-16)
+Since D201 OpenCode reports its turns through the hooks path, the built-in agents table (`daemon/sessions/src/agents.rs`) marks it hook-backed, and the app sends held messages at its reported turn end (`flush` in `features/session/src/lib.rs`). SPEC SE-21 and its agents table listed OpenCode on the output fallback; they now put it beside Claude Code and Copilot CLI (E2E-BUGS e2e_4). A session that is only Probably idle never sends on its own, whatever its agent.
+- **Reverse:** drop OpenCode from `flush`'s agents, so its held messages wait for Send now as SE-21 reads today.
+
+## D550: The move step card shows a thin bar and "n of m MB" under the running copy step (ROAM manager pick, 2026-11-16; MV-17, draft frame 97). Decided (owner via Fable, 2026-11-16)
+A long copy looked frozen with only a step title. The running copy step now carries a 180 by 3 bar in the line and accent colours, with "62 of 118 MB" beside it in the secondary colour, drawn from `MoveProgress.done_units` and `total_units`. Steps without units show no bar. The owner decides whether the bar stays.
+- **Reverse:** drop `StepRow.progress` and `copy_progress`; the step card shows titles only again.
+
+## D551: Continue in another channel reaches the CLI and MCP (ROAM manager pick, 2026-11-16; CV-8)
+The CLI is `humata session continue <session> --channel <c> [--before-turn n]` (op id `session.continue_in_channel`), and MCP has `session_continue_in_channel`, which asks first like `session_fork`. The global `--channel` names the target. Leaving it out is a usage error, never the agent's own channel, because the daemon would only refuse that.
+- **Reverse:** remove the subcommand and the MCP tool; the RPC stays.
+
+## D552: A channel rename gives every known folder its exact new Claude project key, long keys included (ROAM manager pick, 2026-11-16; CH rename, D336)
+The session folder, clones and launch folder the records know about get their exact new key, through `claude_project_name`, in the store records, the conversation moves and the rewritten file contents. Claude's key is a 200-unit cut plus a hash of the whole path, so no prefix replace can rebuild a long one. A folder no record names keeps the prefix rule. Folders nested deeper than sessions/<name>/<clone> are not yet covered.
+- **Reverse:** go back to the prefix replace in `Placement`; long keys then go stale on rename.
+
+## D553: "Continue in another channel…" sits in the session menu under Move, hidden on the Desk (ROAM manager pick, 2026-11-16; CV-8, D307). Decided (owner via Fable, 2026-11-16)
+Its dialog picks a channel the way Move picks a machine, with the session's own channel dimmed as "here now". It picks a "Continue from" point the way Fork does: Now, or before turn n for n of 2 or more. Continue opens the new session. No frame draws this dialog, so it is built from existing components with no new chrome, and draft frame 113-continue-in-channel records it for the owner.
+- **Reverse:** drop the menu item and `overlay_continue.rs`; continue stays on the CLI and MCP.
+
+## D554: A session on another machine continues there, journaled on the host before that machine is asked (ROAM manager pick, 2026-11-16; CV-8, D432). Decided (owner via Fable, 2026-11-16)
+It continues on the machine that holds its conversation and clones, into a channel that machine is in; a channel it isn't in is refused before anything changes, since carrying the session across machines is a separate move. The host keeps the ask in `<state>/carry/remote_archive/continue/<op>.json` until its records are written, or until the machine made nothing or was forgotten. A link lost part way, or a host restart while the link is down, is finished when the link comes back: the host asks again under the same key and writes the records once. The record's start names the host operation, so replaying the caller's key while the continue runs answers with the session the machine named. Why: a continue the host forgot would leave a session running on the machine unlisted, and keeping the ask before making it means a cut at any point is made whole or not at all. Provisional: the restart report kind is `remote_continue`, and a journal that can't be read is logged and left for the owner, not retried.
+- **Reverse:** refuse sessions on another machine again (`not_built`).
+
+## D555: A continue writes its copy note before its records, and its session and start in one write (ROAM manager pick, 2026-11-16; CV-8)
+`record_and_carry` writes the `.humata/fork-copy-*` note first, then the session and its start in one store write (`put_session_with_detail`). At restart, a session folder that no record names and that holds only copy notes is taken back, along with any copy the notes name. No crash point can leave a session that a restart would start as a plain new session.
+- **Reverse:** write the records first again; the crash window between the note and `put_session` comes back.
+
+## D556: Turns, fork-before-turn and continue go through each CLI's conversation adapter, for Claude, Codex and Copilot (ROAM manager pick, 2026-11-16; CV-3, CV-8, lifts D520). Decided (owner via Fable, 2026-11-16)
+Listing turns, forking before a turn and continuing in a channel all read the conversation through its CLI's adapter. A format the adapter calls Unsupported is refused as AgentLacksFeature before anything changes, for a context fork from now or before a turn, locally or staged from the host. A handover before a turn cuts both the handed file and its summary where the parent's format says that turn starts (the adapter's turn starts for Codex and Copilot, the mirror's offsets for Claude), and a fork carried to another machine is cut the same way. Each fresh launch (start, fork, rebuild) runs the kind's version_args once (by default its adapter's, such as `--version` for Codex; an agents file may set its own) and keeps the first line as the session's `cli_version`; resumes keep it, a fork carried to another machine keeps its parent's, and the adapter's check gets the recorded version with no guessed fallback. Provisional: the mirror fallback for Claude conversations kept elsewhere, ContextFork as the fork's feature, and a remote raw copy still carrying the parent's id inside the conversation.
+- **Reverse:** restore `reads_turns` and the Copilot refusal; Codex and Copilot handovers before a turn then hand the whole conversation again.
+
+## D557: The palette offers "Continue in another channel…" where the session menu does (ROAM manager pick, 2026-11-16; CV-8, D553)
+It is listed only over a live channel session: hidden on the Desk and for archived sessions, like the menu item. It opens the same dialog. CV-8's draft frame is numbered 113-continue-in-channel, the lowest free number from 113 up, so it no longer shares 98.
+- **Reverse:** drop `Command::ContinueInChannel`.
+
+## D558: A channel has its own Desk tab and sidebar row, and closing a channel Desk session always asks first (ROAM manager pick, 2026-11-16; CD-2 to CD-6, D306, frames 91-95). Decided (owner via Fable, 2026-11-16)
+A channel's Desk sessions load per channel and never enter the plain Desk or the Sessions tree. The channel page shows "Desk · n" after Sessions, with an empty state offering New desk session, and the sidebar shows a Desk row under the channel while it has open channel Desk sessions. Closing from the session's own page returns to the channel's Desk tab. A switch whose channel rule is Never shows "Blocked by the channel rule: Never" whether on or off; the Ask/Never rows themselves are unchanged. Each row leaves a slot for DOCV's doc history strip.
+- **Reverse:** drop the channel Desk tab and sidebar row; channel Desk sessions stay reachable from the CLI and MCP only.
+
+## D559: The channel Desk matches frames 91 to 95, and adds what CD-2, CD-5 and CD-6 ask that no frame draws (ROAM manager pick, 2026-11-16; D558). Decided (owner via Fable, 2026-11-16)
+Its switches are pill toggles, the session header reads "# channel · Desk", and a blocked switch's "Agent access" link opens the channel's Agent access tab from the New dialog and the Info panel. The Close confirmation shows a line count per Markdown file, sent by the daemon as DeskSession `document_lines` (field 15) from a bounded read of at most 8 MiB per file, only when a channel Desk session is listed; a file it can't read or that is too large shows no count, and a Desk on another machine passes through that machine's counts. Without frames, as drafts: a session's Info panel lists the channel Desk sessions that target it (CD-2), "New desk session for this session" sits in a session's menu (CD-6), a session whose target went shows "Target gone" with Close (CD-5), and the sidebar cursor walks the channel Desk rows. Provisional because of the drafts.
+- **Reverse:** drop the drafts; the frames' parts stay.
+
+## D670: Codex is built in, and its conversation is found in its session folder once its CLI writes it (AGENTKINDS manager pick, 2026-11-16; B9). Decided (owner via Fable, 2026-11-16)
+The built-in agents are Claude, Codex, Copilot and OpenCode, in that order. Copilot 1.0.113 creates exactly the id it is given with `--session-id` and resumes it with the same flag, so it is pinned like Claude. Codex 0.169.0 has no flag to set an id, so a kind can say `conversation_id = "found-in-folder"`. A launch whose conversation file isn't there yet learns its conversation from the CLI's own folder: the newest rollout whose `session_meta` cwd is the session folder and whose id no other session's agent holds. The launch then names that id in its resume command and file. It learns on each turn report, on a resume the person asks for, before a fork and before a restart brings agents back. An agents file that says nothing stays pinned. Why: Humata can't choose the id, and the folder is the only thing it knows that the CLI records. Provisional: two Codex runs in one folder at once (for example a fork sharing it) are told apart only by the ids already taken.
+- **Reverse:** drop `found-in-folder`; Codex sessions then resume only with `codex resume --last` semantics, or not at all.
+
+## D671: A resume the person asks for isn't told it was interrupted, and typed text is submitted as its own keystroke (AGENTKINDS manager pick, 2026-11-16; B7, B12). Decided (owner via Fable, 2026-11-16)
+An agent that was Stopped or had exited and is resumed on the person's ask records no Interruption and gets no note. Verify checks only that it came up, stayed up and started no other conversation. Revival after a crash or a lost holder still tells. Text sent to an agent that ends in a newline is typed without it; 400 ms later a return is sent as its own write. The same pause applies to the first message and to notes. Under an idempotency key the return is a second step, `<key>/submit`, so a retry sends only the steps that never arrived. Why: the agents' TUIs take a pasted return as part of the paste, and a resume the person asked for isn't a failure. Provisional: the 400 ms pause.
+- **Reverse:** type the return with the text again, and tell every resume.
+
+## D672: `session start` defaults to this machine, `host ls` lists it, and attach waits for a resuming tab (AGENTKINDS manager pick, 2026-11-16; B3, B10). Decided (owner via Fable, 2026-11-16)
+`humata host ls` puts this machine first as "This Mac", using its id from GetServerInfo, since ListMachines holds only other machines. `humata session start` without `--machine` starts there, and `--machine this-mac` names it. Review, files and boards still need `--machine`. An attach that finds a holder its tab doesn't name yet, as happens while a resume is saving it, looks again for up to 5 s before refusing. Why: the owner's flows start and attach on this machine first. Provisional: the polling wait, which a notify could replace.
+- **Reverse:** require `--machine` again, and refuse the attach at once.
+- **Ruling (owner via Fable, 2026-11-16):** Change. `session start` defaulting to this machine and `host ls` listing it stand. The attach's look-again loop goes: the attach waits on the tab's change notification for the holder to be named, bounded at 5 s, and then refuses as it does now. Why: nothing polls where a notification exists.
+
+## D673: Copilot's hook and permission records are known from the CLI's own event schema (AGENTKINDS manager pick, 2026-11-16; B8). Decided (owner via Fable, 2026-11-16)
+The Copilot adapter's strict parse now knows `hook.start`, `hook.end`, `permission.requested` and `permission.completed`. Their `data` fields come from the session-event schema that ships inside the CLI package (1.0.113-1), not from a captured run. A fork or a carry rewrites them like any other line, and a field the parse doesn't know still refuses the conversation when it holds a path. Why: the owner's real sessions hold these records, so without them every fork and carry of those sessions was refused. Provisional: marked X2 until a real-CLI capture with a hook and a permission prompt confirms the shapes.
+- **Reverse:** drop the four entries; sessions holding them are refused again.
+
+## D674: An error's chain names each cause once (AGENTKINDS manager pick, 2026-11-16; the fork error printed twice). Decided (owner via Fable, 2026-11-16)
+`status::chain` adds a cause only when the text so far doesn't already say it. Many messages include `{source}` themselves, so the fork error and others had printed the reason twice. Provisional: a cause whose text happens to appear elsewhere in the message is left out.
+- **Reverse:** append every cause again, and drop `{source}` from the messages instead.
+
+## D675: The history mirror learns a conversation its agent wrote before the session named it (AGENTKINDS manager pick, 2026-11-16; B9). Decided (owner via Fable, 2026-11-16)
+HistoryService holds the agents and their home. Its catch-up and the host's ReadMirror run the same learning as a resume before they read the agent's file. A Codex session therefore shows up in search and in `humata session read` after its first turn, with no resume first. Why: the mirror follows Session events and never scans, so it needs the bound file. Provisional: the learn runs on each catch-up of an unbound session, which is one directory walk of the CLI's sessions folder.
+- **Reverse:** learn only on resume, fork, turn report and restart.
+
+## D630: Re-attach shows only on an outdated draft (VIEWS+PR manager pick, 2026-11-16; PR-14, frame 68). Decided (owner via Fable, 2026-11-16)
+A draft whose anchor still matches its PR's head has Edit and Drop only; one whose lines moved or went shows Re-attach, which opens the line picker on the current head.
+- **Reverse:** show Re-attach on every draft.
+
+## D631: A failed Ask shows its error under the review chat that asked, with a dismiss (VIEWS+PR manager pick, 2026-11-16; PR-12, frame 68). Decided (owner via Fable, 2026-11-16)
+The error belongs to the session the Ask was sent to and clears on dismiss or on the next Ask; other reviews show nothing.
+- **Reverse:** show the error as a toast.
+
+## D632: The bottom-up order comes from the names in the diff text (VIEWS+PR manager pick, 2026-11-16; PR-4 step 4). Decided (owner via Fable, 2026-11-16)
+Files and hunks are walked from callees up to callers by matching the names each hunk defines against the names other hunks use; a file with no match keeps its diff place.
+- **Reverse:** keep the diff's own order.
+
+## D633: A review on a machine is gated like a review here (VIEWS+PR manager pick, 2026-11-16; §26.17, PR-2). Decided (owner via Fable, 2026-11-16)
+Starting a review whose session lives on another machine asks the same Agent access switch and makes the clone there through the session carry service.
+- **Reverse:** allow remote reviews without the switch.
+
+## D634: A review's clones sit at the machine's host-layout paths, and git is routed by session and repo (VIEWS+PR manager pick, 2026-11-16; §26.17, D633). Decided (owner via Fable, 2026-11-16)
+The daemon finds which machine holds a review's clone from the store; a store error is shown, never a silent fall back to local git.
+- **Reverse:** clone every review on the host.
+
+## D635: Ask sits on hunk headers and file rows, shown on hover (VIEWS+PR manager pick, 2026-11-16; PR-12). Decided (owner via Fable, 2026-11-16)
+Ask on a hunk anchors the comment box to the hunk's new-side lines; Ask on a file anchors it to the file. The buttons are hidden until the row is hovered.
+- **Reverse:** show Ask only on single lines.
+
+## D636: HeadChange.stack comes from the review's own pull requests (VIEWS+PR manager pick, 2026-11-16; PR-16). Decided (owner via Fable, 2026-11-16)
+The parent and children are the review's PRs whose base and head branches chain; RepoStack is not consulted yet.
+- **Reverse:** read the stack from RepoStack.
+
+## D637: Moving a review carries its PR bindings with the session's store rows, and its review refs in their own bundle (VIEWS+PR manager pick, 2026-11-16; PR-21, MV-13). Decided (owner via Fable, 2026-11-16)
+The review sessions and their PRs ride the session snapshot; refs not on any remote go in a separate git bundle.
+- **Reverse:** re-fetch the PR refs on the target instead.
+
+## D638: The move's check step makes the review channel on the target first (VIEWS+PR manager pick, 2026-11-16; PR-21). Decided (owner via Fable, 2026-11-16)
+If the channel can't be made, or the target machine was removed, the move stops before anything is copied, with an error that says which.
+- **Reverse:** make the channel after the copy.
+
+## D639: A moved review whose GitHub is unreachable is rebuilt like any other carry (VIEWS+PR manager pick, 2026-11-16; PR-21). Decided (owner via Fable, 2026-11-16)
+No review-only error; the existing rebuild path and its message apply.
+- **Reverse:** add a review-specific error.
+
+## D620: ListViews `include_forks` walks the store's fork origins (VIEWS manager pick, 2026-11-16; VW-10, VW-14). Decided (owner via Fable, 2026-11-16)
+The daemon lists the session's views with those of every fork below it, read from `fork_origins` (each session once, so a cycle ends the walk), newest first by when each was prepared. A fork's drafts show only to that fork's own agent; a fork the caller may not read, or one the store no longer holds, is left out, not refused, as a board does. Provisional because the Journal still chains forks itself.
+- **Reverse:** list the session's own views only, as before.
+
+## D621: A review plan's notes are re-checked when views are listed, not stored again (VIEWS manager pick, 2026-11-16; RV-34). Decided (owner via Fable, 2026-11-16)
+ListViews reads each review plan's notes against its own session's clones as they are now, so a note whose lines changed reads "outdated" and one whose lines only moved shows its new lines; the stored view keeps the notes as prepared, and a plan whose clones can't be read now (a box's session listed on the host, say) is listed as prepared. The app reads the plan again when it opens the view, and the Changes panel draws each note as "L12–14 · text" with an outdated tag. Provisional until the owner sees it.
+- **Reverse:** show the notes as prepared, as before.
+
+## D622: A remote push the host kept but never sent ends Failed after a host restart, and is never sent twice (VIEWS manager pick, 2026-11-16; F3)
+If the host stops after keeping a push and before the box confirms it, the restart can't tell whether the box heard it, so the push ends Failed and says to look at the box and push again. The same idempotency key asked again after a restart answers the push already running, and the box opens one pull request. This is the code's behaviour; the tests pin it.
+- **Reverse:** none needed; to retry instead, the host would first have to ask the box whether it has the push.
+
+## D655: `humata cp|mv … <machine>` places in the CLI, one transfer per landing place, and keeps both by default (PLACES manager pick, 2026-11-16; PL-3, PL-12, PL-13). Decided (owner via Fable, 2026-11-16)
+The CLI reads the sessions and the source's channel and works out each source's landing by the same rule as the Files page's Copy to and Move to, so the daemon's StartTransfer is unchanged. Sources that land in different places start one transfer each. The first transfer uses the command's idempotency key and each later one adds `/n` to it, so a retry repeats every one. With no `--on-existing`, a machine-only send keeps both (PL-13), while a send to a location still fails on a taken name. The last word is a machine only when it has no `:` and no `/`. Inside a session it is a machine only if one has that name; otherwise it is the agent's own clone path, and `name/` forces a clone folder. Why: the person never types a path (PL-12), and an agent's bare clone paths keep working.
+- **Reverse:** move the rule into the daemon as a machine-only destination on StartTransferRequest; the CLI then sends the machine alone.
+
+## D568: A machine forwards its agents' repo searches to the host and keeps no copy (PLACES for REPOS, 2026-11-16; RL-11, RL-12, D227, D473). Decided (owner via Fable, 2026-11-16)
+A machine's daemon used to answer every RepoService call with "not built", so an agent on devbox-1 couldn't search at all. Now its `SearchRepos` and `ListRepoLibrary` go up the Uplink the way board calls do (D227). The host runs them as that agent, under its rule for global reads. While the host is away, the call is `host_unreachable` with RL-12's words, and no last copy is kept: a copy would offer repos the user has since removed. Removing a repo, forgetting the library, the scope and the org list stay on the host, and a machine refuses them with a fix that points there. The user's own `humata repos search` over SSH, outside every session, is refused the same way, because AWAY cut MachineUser forwarding.
+- **Reverse:** register RepoService on machines as not built again, and take the two rows out of the forwarder's table.
+
+## D610: An unreadable continue-in journal stops as stuck and is kept beside it as .bad (ROAM manager pick, 2026-11-16; D559, restart reports). Decided (owner via Fable, 2026-11-16)
+A journal file that can't be read, isn't JSON, or has the wrong shape goes into the restart report as remote_continue, step asked, state stuck. The file is renamed to `<op>.json.bad` (then .bad2 and on) and the folder is synced, so nothing is lost and the next restart doesn't trip on it again. The report is the only place it shows; there is no automatic retry.
+- **Reverse:** delete the bad journal instead of keeping it, or retry the step on the next restart.
+
+## D611: A resume asks the CLI its version again, and a wrapped CLI records its own version (ROAM manager pick, 2026-11-16; D559, revive). Decided (owner via Fable, 2026-11-16)
+resume() asks the CLI's version (CliVersions) before it saves "resuming", so a CLI upgraded since the start is seen before it runs. A wrapper's CLI is the leading args shared by start_args and resume_args, up to the first that starts with "-" or contains "{"; that command is the one asked for its version.
+- **Reverse:** keep the version recorded at start, and treat a wrapper as one opaque command.
+
+## D612: A channel rename moves every Codex and Copilot conversation to its new deep folder through the agent's adapter (ROAM manager pick, 2026-11-16; channel rename, deep folder keys). Decided (owner via Fable, 2026-11-16)
+follow_conversations runs in finish_move and goes through AgentKind::follow_folder, which uses adapter.place, never a directory walk or a text rewrite. An earlier conversation moves to the folder it recorded itself (Codex session_meta payload.cwd, Copilot session.start data.context.cwd); one that recorded none follows by its ancestor folders. The Codex thread row follows too. A file that exists but isn't where the CLI keeps it stops the rename with FollowError::Misplaced and says to put it back or remove it; a missing file is skipped.
+- **Reverse:** rewrite only the current conversation and leave earlier ones where they were.
+
+## D613: DeskClient::target_sessions stays, though the Info panel now reads the workspace (ROAM manager pick, 2026-11-16; CD-2, D559). Decided (owner via Fable, 2026-11-16)
+The Info panel's list of Desk sessions looking after a session is derived from the workspace, so the app's ListTargeting cache is gone. target_sessions stays on the client for the CLI and MCP, which have no workspace.
+- **Reverse:** remove target_sessions and its rpc.
+
+## D614: A copy to another machine re-ids its conversation through fork_conversation, with no raw-copy fallback (ROAM manager pick, 2026-11-16; carry, staged fork). Decided (owner via Fable, 2026-11-16)
+The staged remote fork (carry_fork stage_fork) was the one path that raw-copied a conversation. It now goes through forked_for_stage, which calls fork_conversation, so the copy gets its own id on every kind with an adapter (Claude, Copilot, Codex). A kind with an adapter whose file is misplaced fails with a typed NotFound instead of copying anyway; a pack that keeps its id keeps it.
+- **Reverse:** raw-copy and accept two sessions sharing one conversation id.
+
+## D615: The fake Desk keeps a closed session's folder only when it has saved versions (ROAM manager pick, 2026-11-16; DV-13, DOCV 64). Decided (owner via Fable, 2026-11-16)
+The fake's close keeps the folder when version_count > 0, matching DV-13 and DOCV 64b's version-only folder_kept. Reopen covers channel Desk sessions as it does plain ones.
+- **Reverse:** keep any folder with Markdown in it.
+
+## D616: Retargeting has its own rpc, the daemon alone decides Target gone, and a retarget resumes what it stopped (ROAM manager pick, 2026-11-16; CD-5, D559). Decided (owner via Fable, 2026-11-16)
+Desk.SetDeskTarget(session, target) is separate from SetDeskAccess, since access and target differ and the CLI and MCP name the call. The daemon's watch marks target_gone when the target is deleted, archived past the undo window, or no longer in the channel; reopen and restore use the same check, and the app shows only what the daemon says. A Desk folder with no Markdown is still closed rather than flagged (CD-5). Retargeting or clearing a session stopped for Target gone resumes it: locally through resume_saved, remotely through the existing remote resume HostOp; an offline link refuses the retarget and changes nothing. The sidebar's channel Desk header is a key stop.
+- **Reverse:** put retarget back on SetDeskAccess, or derive gone in the app.
+
+## D617: The Desk follows daemon events instead of re-reading (ROAM manager pick, 2026-11-16; flow 1, D559). Decided (owner via Fable, 2026-11-16)
+Event.desk = 33 carries a DeskSession (upsert) or a removal with only the session set, reusing the DeskSession message and the Session payload scope. The daemon follows its own Session events in desk_service/follow.rs, because every Desk write already tells one, so a single hook covers start, close, reopen, keep, access, repos, versions, moves, retarget and channel close/restore; clean-up publishes its own Gone. Sessions on other machines are filled from that machine as the list does, so they push too. The app applies events to workspace.desk in place; its post-action load() stays, since it also brings session rows.
+- **Reverse:** drop the event and re-read the Desk list after each change.
+
+## D618: The fake daemon tells Desk changes from one place, and its move moves the scratch folder (ROAM manager pick, 2026-11-16; D617). Decided (owner via Fable, 2026-11-16)
+Inner::emit diffs DeskData against what it last told and sends Desk events before the event itself, so every fake path, including remove_session and relocate_session, tells the app. The fake's move puts the scratch folder under the new machine's root, as the daemon does, so a move is a Desk change.
+- **Reverse:** emit Desk events per Desk call only.
+
+## D619: Copilot forks and carries are proven on the real CLI for tools, subagents, compaction, rewind and detached heads; the rest stays refused (ROAM manager pick, 2026-11-16; X1, X2). Decided (owner via Fable, 2026-11-16)
+Proven against Copilot CLI 1.0.113-1 in a temp HOME (captures under daemon/conversation/testdata/copilot/1.0.113-1): a tool call splits a turn, so a turn finishes only at an assistant.turn_end after a reply with no tool request; a subagent's prompt (with source) is not a turn; a compaction's summary survives a fork cut after it; /rewind rewrites events.jsonl in place; multi-line names are YAML block scalars. session.db is carried byte for byte only when it is SQLite and names none of the old folder, Copilot dir or id; any other binary file is still refused. A detached head is written as detached@<sha7> with headCommit set, and any branch YAML could misread is single-quoted, even where the CLI leaves it plain, since it reads back the same. Hooks, skills, MCP, plan mode, permission prompts, background tasks, workflows and a session.db with rows stay refused until proven. The X1 minimum stays 1.0.112.
+- **Reverse:** refuse tool, subagent and compacted conversations again, as X1 did.
+
+## D680: Machine scripts live in ~/.humata2/config/machine-scripts.toml and ~/.humata2/scripts, named, never pathed (MACHINESCRIPTS manager pick, 2026-11-16; TS-3, D411, portable config, PL). Decided (owner via Fable, 2026-11-16)
+One rules file on the host, synced to machines like stack.toml (secret filter applied); scripts in a Humata-owned folder named by file name only, streamed to `bash -s` over the link on each run, never stored on machines. No host variables reach scripts; they read the machine's login environment.
+- **Reverse:** store scripts on each machine, or let rules name paths.
+
+## D681: Four triggers: added, connected, session-arrived, session-leaving (MACHINESCRIPTS manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+`added` replaces `connected` on the first link-up after Add machine; `connected` fires once per later link-up and queues behind a run still going; `session-arrived` after a move ends (recovered moves too) on the new machine; `session-leaving` after the copy is verified and before the old agent stops, on the old machine. This Mac has none.
+- **Reverse:** fire `connected` on the first link-up too, or let session-leaving hold the move.
+
+## D682: Steps are run (script), humata (CLI argv), start (agent kind in a named channel) and send (type once idle) (MACHINESCRIPTS manager pick, 2026-11-16; SE-21, AGENTKINDS). Decided (owner via Fable, 2026-11-16)
+`send` waits for SE-21 idle (default 2 min) and is keyed so a retry never types twice; a kind with no turn end fails rather than typing blind unless `wait = "none"`. `start` uses StartSession and is refused on session triggers. Kinds come from Settings and built-ins; none are hard-coded.
+- **Reverse:** allow typing into every session of a kind on a machine trigger.
+
+## D683: Rules run in file order, steps in order, the first failed step stops its rule; `machines` defaults to all (MACHINESCRIPTS manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+An unknown machine name in `machines` is a check warning, since it may be added later.
+- **Reverse:** run rules in parallel, or continue after a failed step.
+
+## D684: Timeouts 5 min a step, rule cap up to 1 h, 60 s a session-leaving step; `once = true` runs a rule once per machine (MACHINESCRIPTS manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+A timed-out step is killed and fails. `once` records the first pass on the host; a failure retries at the next trigger. Without `once`, scripts should be idempotent.
+- **Reverse:** no `once`; longer default timeouts.
+
+## D685: Scripts get HUMATA_TRIGGER, HUMATA_MACHINE and, for session triggers, HUMATA_SESSION, HUMATA_CHANNEL, HUMATA_SESSION_DIR, HUMATA_FROM/HUMATA_TO (MACHINESCRIPTS manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+- **Reverse:** pass these as arguments instead.
+
+## D686: Results: a host run log (last 50 a machine, 40-line output tails), a Scripts section on the machine page, and one Inbox host ask per (machine, rule) only on failure, with Retry (MACHINESCRIPTS manager pick, 2026-11-16; D348). Decided (owner via Fable, 2026-11-16)
+A newer failure replaces the item; a later pass withdraws it. Nothing polls: the feed carries `MachineScriptRun`.
+- **Reverse:** show passes in the Inbox too, or post a card per failure.
+
+## D687: CLI `humata machine script list|check|run|log`; MachineService gets ListMachineScripts, CheckMachineScripts, RunMachineScript (Operation) and ListMachineScriptRuns; nothing writes rules (MACHINESCRIPTS manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+- **Reverse:** a separate MachineScriptService, or rule editing over gRPC.
+
+## D688: Triggered runs are the owner's automation and need no access check; an agent's Run now needs `machine_script_run`, NeverByDefault; peers can't call any of it (MACHINESCRIPTS manager pick, 2026-11-16; access switches). Decided (owner via Fable, 2026-11-16)
+Reads (list, check, log) follow `machine_read`. No RPC, CLI or MCP tool writes rules or scripts.
+- **Reverse:** Ask by default for Run now.
+
+## D689: Open: a "machine upgraded" trigger, and starting agents from TS-3 sync rules (MACHINESCRIPTS manager, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+Left out until UPGRADE's Migrate ends with a hook the run engine can hear. Recommendation: add `on = "upgraded"` firing after a machine's Migrate succeeds.
+- **Reverse:** n/a (nothing built).
+- **Ruling (owner via Fable, 2026-11-16):** Answered. Build `on = "upgraded"`: it fires once on a machine after its Migrate succeeds, and queues like `connected`. MACHINESCRIPTS builds it as soon as UPGRADE's Migrate ends with a hook the run engine can hear. Starting agents from sync rules needs nothing new, since D682's `start` step does it.
+
+## D690: The app's real-SSH end-to-end test is `desktop/tests/live_flows/real_vm.rs`, run by the manual `//apps/humata2/desktop:live_flows_ssh_test` (SSHE2E manager pick, 2026-11-16; flows/cases/real/02 and 03). Decided (owner via Fable, 2026-11-16)
+It lives in the live_flows crate to drive the same headless app harness (App, live clients, the typing helpers). The new target is a copy of `live_flows_test` with the real `//apps/humata2/daemon/humatad:tools` folder added and `args = ["real_vm::", "--test-threads=1"]`. Its tests skip with a message when TERMINAL_LAB_SSH_CONFIG is unset, the way the terminal lab and host SSH tests are gated. In `live_flows_test` they always skip. Waits are on observed state only.
+- **Reverse:** a crate of its own once the harness moves to a shared support library.
+
+## D691: Each real-VM run makes its own throwaway Unix user on the shared VM, with its home on a sparse 3 GiB ext4 loop image under /var/tmp/h2e-<user>, and removes it at the end (SSHE2E manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+The Add machine flow installs into `$HOME/.humata2`, starts a systemd user service and stops older daemons by uid (`daemon/machines/src/service.rs`). A per-run user is therefore the only way to keep runs apart and keep the Lima user's own account clean. The sparse home lets the 2 GiB free rule (D694) pass, while the root disk pays only for what is written. The test checks for 600 MiB free first and fails with how much is free. It uses sudo on the VM. It never stops, restarts or resizes the VM. Runs older than a day that were left behind are swept at the start.
+- **Reverse:** a test-only remote-home override in the provider, if the owner would rather not add users to the VM.
+
+## D692: The real-VM link cut goes through a gate in front of the real `ssh` on the host daemon's PATH (SSHE2E manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+While a flag file exists, the gate exits 255, as a refused connection does. Otherwise it execs `/usr/bin/ssh` unchanged. The cut sets the flag, then kills only the link `ssh` whose `-F` names the run's own temp ssh config. With no hold, a real redial would come back before the lost state could be seen, and the test would be flaky. Lima's own `ssh` and `limactl` are never touched.
+- **Reverse:** none needed. It mirrors `Devbox::cut_link`.
+
+## D693: The real-VM test gives the host daemon `--tools` from `//apps/humata2/daemon/humatad:tools`, not the app bundle (SSHE2E manager pick, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+MACHINESCRIPTS' w4 owns the app bundle carrying the Linux tool sets (install by arch). The test does not wait on that work. It should switch to w4's Linux-only tools target once that lands, which builds fewer platforms.
+- **Reverse:** point the target at the bundle's machine-tools folder.
+
+## D694: Open: the shared VM's disk needs to grow to 6 GiB to pass Add machine's 2 GiB free rule (SSHE2E manager, 2026-11-16). Decided (owner via Fable, 2026-11-16)
+`h2-terminal-c1` has a 4 GiB disk. `NEED_FREE_MIB` is 2 GiB (`daemon/machines/src/setup.rs:29`). The product check stays as it is (main, 2026-11-16).
+Freeing what tests made (`apt-get clean`, journal vacuum) took the free space from 1304 to 1651 MiB. Adding the VM from the real app (real/01) still stops at DiskLow, 397 MiB short. The fix is to grow the VM disk to 6 GiB, which is on the owner's list through main.
+Until then, the real-VM test gives its throwaway user a sparse loop-mounted home (D691). The DiskLow check runs on that home and passes. It says nothing about the root disk.
+- **Reverse:** n/a (nothing changed in the product).
+
+## D720: Which agents Humata offers is a per-kind switch in `~/.humata2/config/agents.toml` (AGENTSET manager, owner's words 2026-11-16). Provisional
+`[agents.<kind>]` holds `enabled` (default true) and `install_when_missing` (default false). A custom kind may also set `install = "<command>"`. With no file, every kind is enabled and nothing is installed. The plain shell is not a switch and is always on. A bad file is logged, and the daemon treats every kind as enabled with no installs, so a typo never blocks starts. `ListAgents` lists only enabled kinds unless `include_disabled` is set, and `SetAgentEnabled` (user-only) writes the file and keeps its other lines.
+- **Reverse:** drop the file. Every kind is then on, as before.
+
+## D721: A disabled kind is refused only at new starts, and existing sessions are never refused (AGENTSET manager, 2026-11-16). Provisional
+StartSession, script starts and review starts (all through `begin_session`) check the switch before they relay, so the host refuses at once. Fork with a different `--agent` and desk starts check it too. Resume, restore after a reboot, move, rebuild and attach never check it. The refusal is FailedPrecondition, and its fix names Settings › Agents › <agent>.
+- **Reverse:** remove the checks.
+
+## D722: "Install when missing" is per agent, off by default, and never installs over a CLI that is found (AGENTSET manager, owner's words 2026-11-16). Provisional
+The built-in commands run with `bash -lc` on the machine. claude: `curl -fsSL https://claude.ai/install.sh | bash`. codex: `npm install -g @openai/codex`. copilot: `npm install -g @github/copilot`. opencode: `curl -fsSL https://opencode.ai/install | bash`. They run only when the CLI is not found. One install runs per kind at a time, and a second start waits for it. The deadline is 10 minutes. After the install the CLI must be found, or the install counts as failed. A failure refuses the start with the command, the end of its output, and what to do: run it yourself on that machine, or turn the option off and install it your way. Humata never upgrades third-party CLIs. Its own tools (humatad2, holder, humata, stack) are installed and upgraded as before (UPGRADE).
+- **Reverse:** turn the option off. Nothing else installs agent CLIs.
+
+## D723: A CLI is installed only by a start that needs it on that machine; the start waits for it and shows it as a step (owner's proxy, 2026-11-16). Provisional
+Nothing installs when the daemon starts. The install shows as a step of that start's operation, so the person sees what it waits on.
+- **Reverse:** a background install when the daemon starts (rejected: it does work nobody asked for yet).
+
+## D724: `agents.toml` ships to machines beside `repos.toml` (RL-12, D411) (AGENTSET manager, 2026-11-16). Provisional
+It goes on setup and on each link-up when the copy differs, with the secret filter applied. Each daemon reads its own copy afresh for every check, so a new copy works without a restart.
+- **Reverse:** keep the file host-only, so machines start every kind.
+
+## D725: Settings › Agents is one "Agents" card of agent switches (owner's proxy, 2026-11-16). Provisional
+The card sits above Default agent, with one caption under its title and no note on each row. There is one row per agent in order (Claude Code, Codex, Copilot, OpenCode, then custom), each a name and a pill switch like frames 92/93 (`settings-agent-enabled-<id>`). Under an enabled agent with an install command there is an indented "Install when missing" row, off by default (`settings-agent-install-<id>`). It shows the exact command in mono and "Never replaces one that's there", and is hidden while the agent is off. There are no installed, missing or version chips, and no Save button. A failed save puts the switch back and shows the error. `AgentDefinition.install_command` (17) carries the command. The pickers (new session, fork, desk, channel, tab "+", PR review, submit review) and Default agent offer `SettingsState::offered_agents()`: the enabled built-ins, plus Terminal where it was offered. Before the list loads, they offer them all. A default agent that is disabled falls back to the first enabled agent.
+- **Reverse:** remove the card. The pickers then offer every agent again.
+
+## D726: Missing agents are said only where they block (AGENTSET manager, 2026-11-16; D-no-unfixable-detection). Provisional
+A start whose CLI is not found is refused with what to do: install it yourself on that machine, or turn on "Install when missing". Nothing polls for missing CLIs or shows "missing" anywhere else. The machine page list of agents a machine has is left for later.
+- **Reverse:** n/a (nothing extra is built).
+
+## D727: "Found" resolves the CLI the way launch does (AGENTSET manager, 2026-11-16). Provisional
+The CLI looked for is the kind's program, or the CLI a wrapper names: opencode looks for `opencode`, and `/usr/bin/env <cli>` looks for `<cli>`. An absolute path must be an executable file. A bare name must resolve on the machine's PATH the same way the session's launch resolves it, with a 10 s deadline. The worker records the exact rule in `agent_gate.rs`.
+- **Reverse:** n/a.
+
+## D728: The switches are two humatad modules, not a new crate (AGENTSET manager, 2026-11-16). Provisional
+`agent_switches.rs` (the file) and `agent_gate.rs` (the checks and installs) are used only by humatad. A crate would add a workspace member and a repin for no other user.
+- **Reverse:** move them to a crate once a second user (the CLI, say) needs them.
+
+## D729: The frame "Settings › Agents with agent switches" goes to the owner's design wave as one light frame of all three states (owner's proxy, 2026-11-16). Provisional
+The frame shows an agent that is on, one that is on with "Install when missing" on, and one that is off. It is rendered headless to the scratchpad, never into the goldens. A golden is recorded only after the owner approves the frame.
+- **Reverse:** n/a.
+
+- **Ruling (owner via Fable, 2026-11-16):** Answered. Grow `h2-terminal-c1` to 6 GiB. Main does it at a moment when no terminal lab session is live on the VM, because the resize stops it. The 2 GiB product rule stays, and D691's per-run sparse home stays so runs remain apart.
+
+## D730: A plan never asks; the call that acts does, and approving it runs the action (Fable 5.2, 2026-11-17). Decided (by Fable)
+PlanArchive, PlanDelete, PlanPush and PlanRemoveChannelMachine check the access rule but never put a request in the Inbox. Never still refuses the plan. Ask answers the plan as Allow does. Only the executing call (ArchiveSession, DeleteSession, PushAndOpenPullRequests, RemoveChannelMachine) asks, so approving its Inbox request carries out the action, and refusing it does nothing. Before this, the plan asked and approval only re-ran the plan, so an MCP agent's `session_archive` or `session_delete` never acted, and the CLI asked twice.
+- **Why:** a plan only reads, and the user's yes is meant for the action. One request per action, whose answer is the action's result.
+- **Follow-ups (Fable's refinements, not done here):** show the plan on the act's Inbox card; when a destructive choice's plan token has expired by approval time, re-plan and run only if the fresh plan matches what the card showed, else fail as plan_stale.
+- **Reverse:** gate the plans with `answer_gated` again in `session_service.rs` and `channel_service.rs`.
+
+## D731: A Desk start the host asked a box for survives the host dying before the answer (bug fix, 2026-11-17; follows D432). Decided
+The host keeps a journal of each Desk start it asks another machine for, in `state/desk_remote_start/<session>.json`, written durably before its own records, and saves its record as started (`StartStep::Done`) from the first write. A host restart's session recovery therefore never undoes the start as one cut short on the host. Instead, the restart restores the start's operation under its own id, waits for the machine's link, and asks the machine again under the same session id. The machine answers with the session it kept (`known_start`), or starts it. A refusal removes only the host's records and never a folder. The journal goes when the machine answers or refuses.
+- **Why:** before this, the host's record said `Recorded` until the answer arrived. A restart in that window found no "desk" channel, failed to finish the start, and undid it, so the host lost the session the box kept running.
+- **Not changed:** a link that breaks during the live call still ends the start with an error and removes the host's records, as before. Following a lost answer there, as `start_session_answered` does for channel sessions, is a follow-up.
+- **Reverse:** remove `desk_service/remote_asked.rs` and its calls in `desk_service/remote.rs` and `desk_service.rs`, and save the host's detail as `Recorded` again.
+
+## D732: A pull request draft fits lines in the same repository key, or in the bare name equal to the PR repo's name part (bug fix, 2026-11-17; follows D624). Decided
+Lines in `api` (a box's clone with no owner) can carry a draft for `acme/api`. Lines in `acme/api` can too. Lines in `other/api` or `web` cannot. D624 keys a repo as `owner/name`, or as the bare name when there is no owner, so a bare name means the same repository under its short key. The one rule is `humata2_clients::comments::repo_holds_pull`. Draft for GitHub (`github_target`) and the fake comments client use it, and the daemon's CreateComment check repeats it in `review/comments.rs`.
+- **Why:** `github_target` already offered Draft for GitHub for a bare name, but the fake and the daemon refused the draft unless the keys matched exactly. The button then led to a refusal.
+- **Reverse:** require the exact key everywhere, offer the button only on an exact match, and make the fixtures' repos owner-qualified.
+
+## D733: A working report restarts the 10 s quiet net (bug fix, 2026-11-17; reads D-turns' "WORKING, until 10 s with no output"). Decided
+When a hook newly says working, the session shows Working, and the 10 s of quiet that turns it Probably idle are counted from that report. Quiet from before the report no longer counts. Before this change, an agent quiet for more than 10 s that then reported working (`humata turn working`, or UserPromptSubmit after a long pause) went straight to Probably idle, so a "while the session works" view such as SE-24's "n others can type here" never showed. A repeat of the same report is still a no-op. In the code, `turns::set_hook` resets the entry's quiet and counts the report in `armed`, and the output watch (`watch.rs`) restarts its `Quieting` clock when that count moves.
+- **Reverse:** drop `armed` and `Quieting::rearm`, and keep counting the quiet from the last output only.
+
+## D734: The unkept Desk folder chip reads "Goes 7 days after close" (2026-11-17; reads DK-3, DV-4). Decided
+The chip used to read "Not kept · goes 7 days after close". In the 638 pt session pane of frames 37 and 90 that pushed **Keep folder** off the bar's right edge, and the golden cut the chip to "Not kept · goes 7 days aft…". **Keep folder** sits beside the chip and already says the folder isn't kept, so the chip now gives only the deadline. Fable judged this; the golden code, `ui/src/desk_bar.rs`, SPEC DK-3 and the flow docs use the new wording.
+- **Reverse:** restore the longer wording and let the folder name shrink instead.
+
+## D735: Native captures 67, 68 and 69 re-recorded after the review diff's number column and the Context box's padding moved to the goldens (Fable 5.2, 2026-11-17). Decided (by Fable)
+`look_test` compares the recorded captures in `__snapshots__/native/`, so the two code changes made after Fable's earlier approval (run 41) only count once the captures are re-recorded. The review diff's number column now fits 36 pt in `ui/src/panel_changes.rs` `review_code`, and the Review a pull request dialog's Context box has 10 pt top padding in `ui/src/overlay_pr_review.rs`. Re-recorded with `native_test_record -- _frame_6`; only 67, 68 and 69 changed. Look scores against the goldens: 67 0.209% → 0.007%, 68 0.947% → 0.066%, 69 0.011% → 0.011%. Fable approved all three: numbers and code land on the golden's x positions, nothing overlaps or clips, and the Context text sits at the golden's height.
+- **Follow-up, done (Fable approved, 2026-11-17):** in frame 68 the +/- sign sat tight against the line number (`139−`), where the golden leaves about one cell (`139 −`). In a review's inline code, `code_rows_focused` in `ui/src/panel_changes.rs` now draws the sign one cell right (a relative offset, so no column moves) when the line's first character is indentation, which puts it in the code's first, blank cell as the golden does. A line that starts at column 0 keeps the sign in its own cell so it never covers code. Native 68 was re-recorded (only the signs changed; look 0.066% → 0.049%). Native 69 stayed within its record tolerance, because its signs are behind the dialog. Fable's note: in a hunk that mixes indented and column-0 lines the signs sit one cell apart between rows, which is better than moving a column; judge it when a capture first shows such a line.
+- **Reverse:** drop the `.when(review && …starts_with…)` offset on the sign, and restore the previous captures from the commit before this one.
+
+## D736: A box review's diff is forwarded to the box; Mark reviewed, review plans and note re-anchoring follow separately (Fable 5.2, 2026-11-17; reads PR-4, PR-21, RV-1, RV-6). Decided (by Fable)
+For a review session on another machine, the host checks access first. It then resolves each repo's pull request base through the link (RunReviewGit, as the heads check does) and forwards GetDiff/GetFileDiff to the box's daemon with that base written out as an explicit merge-base spec (`wire::with_pull_request_bases`). A down link answers machine-offline. For these sessions the host runs none of a local GetDiff's follow-ups: it records no shown trees and re-anchors no line notes or non-PR comments. Everything else that reads the session's clones (MarkReviewed, review plans, line notes) answers Unimplemented: "this session runs on <machine>, and Mark reviewed, review plans and line notes don't work yet for a session on another machine". It no longer fails on the host's empty placement of the folder. PR review comments go through the host's `gh` and are unaffected.
+- **Why:** forwarding MarkReviewed without the shown-tree baseline would mark against the wrong trees, so it needs its own design rather than riding on the transport fix. Queued as the next change.
+- **Reverse:** forward MarkReviewed and the review-plan calls to the box, have the forwarded GetDiff return the shown trees for the host to record, then drop the refusal in `review.rs` `not_here`.
+
+## D737: Design goldens 37 and 90 and native captures 37 and 40 re-recorded for the hidden-path Desk folder bar, D734's chip and DK-14's new desk session dialog (Fable 5.2, 2026-11-17; reads D460, D466, D734, DK-14). Decided (by Fable)
+Design goldens 37 and 90 still showed the old Desk folder bar, with the path `~/Humata/desk/plan-q4` and a "scratch" chip. They now show the bar that `design/desk.rs` `folder_bar` draws: Desk folder, Copy path, the chip "Goes 7 days after close", the machine, + Add repo, and Keep folder. Native capture 37 changes only by that chip, in the picture and in its `view.txt` Status line. Native capture 40 now shows the DK-14 dialog with the Agent access labels kept to one line (`ui/src/overlay_desk_new.rs`). Re-recorded with `design_test_record` and `native_test_record -- desk::`. That run also rewrote design 39, 42, 43, 55, 79, 80 and 89, which record at exact tolerance; those changes are rendering noise within the verify tolerance, so they were put back unchanged. Look scores against the goldens: 37 0.694% → 0.063%, 40 1.199% → 0.000%. Fable approved all four: the bar matches D460/D466 and D734, nothing is clipped, and nothing else changed.
+- **Follow-ups (Fable, not blocking):** the mock terminal's first line still shows `~/Humata/desk/plan-q4 $`, so a neutral prompt such as `plan-q4 $` would keep the path off screen; native 37's board panel expand and close icons sit 3–9 pt left of the golden's, and the rail's Inbox badge is a point or two off; in the native sidebar the selected desk row is semibold and the channel counts are regular, where the golden has them the other way round.
+- **Reverse:** restore the previous four snapshots from the commit before this one.
+
+## D738: Humata sets no shell prompt; its mock terminals show `plan-q4 $`, not a path (Fable 5.2, 2026-11-17; narrows D466; reads D460, D737). Decided (by Fable)
+D466 covers Humata-authored chrome only. Terminal content (the user's prompt, agent output) belongs to the user and their tools and is never rewritten. Humata sets no PS1 or PROMPT: `daemon/holder/src/server.rs` sets only TERM, COLORTERM and LANG. A ZDOTDIR shim or PS1 override would override the user's config without opt-in, break real setups (p10k, starship, fish), and still leave paths in `pwd` and agent output. Humata-authored mocks, fixtures and goldens follow D466 and show the session name, not a path. The first mock terminal line `~/Humata/desk/plan-q4 $ claude` is now `plan-q4 $ claude` in `clients/src/fixture/desk.rs`, `desktop/tests/design/desk.rs` and `desktop/tests/design/roam.rs`. Re-recorded: design 37, 89, 90 and 97 (`design_test_record`), and native 37 and its view.txt (`native_test_record -- desk::`). Design 39, 42, 43, 55, 79 and 80, which the exact-tolerance record rewrote with noise, were put back unchanged. Design 89 also picks up the Desk folder strip that D737 gave 37 and 90; its old golden still drew the path behind the dialog. The look score of native 37 against design 37 stays at 0.063%. Fable approved all five frames: only the first terminal line changed, with no clipping or reflow.
+- **Follow-ups (Fable, not blocking):**
+  - Sweep the other dialog-over-board goldens for a stale path strip.
+  - Native terminal text runs slightly narrower than the design's: line ends at about 920 px against 934 px. This is inside the masked terminal body.
+- **Reverse:** restore the three mock lines and the six snapshots.
+
+## D739: The Diff panel says "against X" once while the repos share a base; Add repo… is quiet text; the Journal drawing follows VW-10; the session menu hides Stop on a stopped session (Fable 5.2, 2026-11-17; amends D510; reads RV-2, CH-21, VW-10, SE-7, D295). Decided (by Fable)
+Fable's notes on native 17's Diff panel, taken together:
+- **Repo base chip (pick A of four):** while every repository shares the header's base, each repo's second line shows only the base menu's chevron (a 24 pt target named "<repo>: against <base>", opening the same per-repo menu) beside Push & PR. When the bases differ, every line shows "against X" as golden 85 draws it. B (hide the chip, add "Pick per repo…" to the header menu), C (hide it for a single repo) and D (keep D510 as it was) were turned down: B and C need header-menu work, D printed "against main" three times.
+- **Add repo… (CH-21)** is a quiet accent text action like Push & PR, not a bordered button, so the summary line keeps the goldens' height. Golden 85 draws none.
+- **RV-2** now says **Push & PR**, as D293, D388 and golden 85 do. Wording only.
+- **Design 08** is redrawn for VW-10: newest first; title and state, then kind · the fork it came from · when, then the summary, then Open. The design diff panel (session.rs, frames 01, 02, 11, 15, 16, 17, 30, 62, 65) draws the chevron and Push & PR line.
+- **Session ⋯ menu:** a stopped session's menu has no "Stop the agent" (it was greyed out); "New desk session for this session…" gains its ellipsis, and the menu card widens from 230 to 256 pt so that label fits.
+- **Re-recorded:** design 01, 02, 08, 11, 15, 16, 17, 30, 62, 65; native 01, 02, 11, 15, 16, 17, 30, archive-unpushed, changes-pushed, changes-wrapped-long-line (light, dark), fork-dialog, rename-dialog, session-menu-closed, session-menu-open, session-menu-stopped-dark; panels changes and changes-full (light, dark). Fable approved all; it rejected the first menu captures for a clipped label, fixed by the wider card as it prescribed.
+- **Follow-ups (Fable, not blocking):** the native Journal lists the fake's seeded views oldest first (the fake seeds them in reverse) and says "Kept", which is not a VW-10 word; with a pull request open, the api row's "Push & PR" turns primary text and "PR #1" overhangs the other rows' right edge by about 7 pt; give the lone chevron a hover tooltip and a visible hover/focus state; the session menu draws its items as bordered centred buttons rather than menu rows.
+- **Handed to VERIFY:** the native Journal's order (the fake seeds its views oldest first) and its "Kept" wording belong to the VERIFY lane's fixture work; this decision does not change them.
+- **Reverse:** restore the listed snapshots from the commit before this one and put back the "against X" chip on every repo line, the bordered Add repo… and the greyed Stop.
+
+## D740: The Diff panel's quiet actions keep their colour on hover; the lone chevron is a real button; the session menu draws menu rows; the machine page's native and design frames follow frame 57 and the read-only rule (Fable 5.2, 2026-11-17; D739 follow-ups; reads D510, D739). Decided (by Fable)
+- **Quiet actions** (`ui/src/panel_changes.rs`): Push & PR and Add repo… use a custom button variant whose text stays accent and whose hover and press fill `look.fill`. The ghost variant forced the text to `accent_foreground` on hover, which turned Push & PR primary text in changes-pushed.
+- **PR #1:** the head row's second line is inset 8 pt rather than 4, so the pull request's number ends where the totals above it do instead of overhanging by about 7 pt. The design `repo_actions` still insets 4 pt; no look frame covers the Diff panel, so it is left as drawn.
+- **Lone chevron:** while the bases agree, the chip is a 24×20 button with the same quiet variant, a "<repo>: against <base> · change" tooltip, hover and focus states, and the same per-repo menu. Residual: gpui-component's Button exposes no aria-expanded, so the chevron-only chip no longer reports collapsed; the worded chip still does.
+- **Menu rows** (`ui/src/action_menu.rs`): the shared menu component gains `item`, a borderless, left-aligned 26 pt row with a hover fill. The session ⋯ menu uses it; the machine page's ⋯ menu still draws `ghost_in` buttons and can move to rows later.
+- **Machine page order:** `ui/src/hosts.rs` already puts "Free space…" before "Open a shell", as frame 57 and design `pages.rs` do; native 28-hosts, 56-add-machine and 58-add-machine-unattended were stale and are re-recorded.
+- **Design 79 and 80:** native dims a read-only machine's variable links (`ui/src/machine_page.rs`, "A read-only machine takes no variable changes"); the design `Machine.read_only` now draws them tertiary too, so design 79-machine-migrating and 80-machine-read-only are re-recorded. Every other design frame from that record was put back.
+- **Re-recorded:** native 01, 02, 11, 15, 16, 17, 30, archive-unpushed, changes-pushed, changes-wrapped-long-line (light, dark), fork-dialog, rename-dialog, session-menu-closed, session-menu-open, session-menu-stopped-dark, 28-hosts, 56-add-machine, 58-add-machine-unattended; panels changes (light, dark) and changes-full (light, dark); design 79-machine-migrating, 80-machine-read-only.
+- **Verdicts:** Fable approved every frame listed. Its non-blocking follow-ups: end Push & PR on the totals edge even with no PR number after it (its trailing padding now leaves it about 7 pt short); put back aria-expanded on the chevron-only chip once Button carries it; move design `session.rs` to the 8 pt inset and add a look frame over the Diff push row; set Archive session… (and the Stop / Push group) apart with separators; make dimmed variable links inert with a "Read-only until migrated" tooltip; wrap design 57's explanation and warning lines inside the dialog. The header icon shift it saw is the other D739's panel header change.
+- **Reverse:** revert `panel_changes.rs`, `action_menu.rs` and the session menu in `pages.rs`, and restore the listed snapshots.
+
+## D742: The panel header's buttons, the rail's Inbox badge and the sidebar's weights follow the goldens (Fable 5.2, 2026-11-17; D737 follow-ups; narrows L17.2). Decided (by Fable)
+- **Panel header** (`ui/src/panels.rs`): the 16 pt expand and close buttons now sit in a row with a 6 pt gap and a -2 pt right margin. Their 12 pt glyphs land where `design/session.rs` `panel_header` draws them: 10 pt apart and 14 pt from the edge. Before, they were 2 and 6 pt too far left.
+- **Rail Inbox badge:** matches `kit::badge`: px 6, no minimum width, 10.5 pt text, and `look.accent` rather than `look.selection` (dark 0x3b8cff; light is unchanged).
+- **Sidebar weights** (`ui/src/sidebar.rs`, `ui/src/sidebar_desk.rs`): a folded channel's rollup count takes the row's weight, BOLD when unread. L17.2 is narrowed: selection alone never bolds a sidebar session row.
+  - Channel rows are semibold when unread, or when selected with requests waiting (goldens 15, 16).
+  - Desk rows are semibold only when unread (golden 37). They show no waiting count, so a waiting request doesn't bold them. If a later golden gives Desk rows a count, they take the channel rule.
+- **Re-recorded** with `native_test_record -- desk::`: native 36, 37, 38, 40 and 55. Look scores: 36 0.008%, 37 0.000%, 38 0.000%, 40 0.000%, 55 0.054%. `panels_test_record` kept every panels frame.
+- **Design 55:** re-recorded for the desk drawing that already matches native ("your folder", "Kept").
+- **Design 39, 42 and 43:** an uncommitted edit had shortened the version bar's placeholder in `design/desk.rs` to "What changed". Fable rejected that because native and flows say "What changed? (optional)", so the text was restored and these three keep their earlier goldens. Design 41, recorded earlier today from the shortened string, is re-recorded with the restored placeholder (clipped in the narrow pane); Fable approved it, and native 41 scores 0.170% against it.
+- **Verdicts:** Fable approved native 36, 37, 38, 40 and 55 and design 55, and re-approved design 37 and 90 and native 37 and 40 as the desktop agent handed them back.
+- **Follow-ups (Fable, not blocking):** a clipped placeholder should end in an ellipsis in design and native, then re-record 41. In native 37 the terminal mock's prompt box sits about 14 pt higher than the golden's, has no right edge, and shows ">" with no space before the cursor (masked).
+- **Reverse:** revert the three ui files and restore the snapshots listed.
+
+## D741: A fork or move copy leaves out what git or the agent drops mid-copy; opening or closing a shell tab pushes its session (live flows fixes, 2026-11-17). Decided
+- **Copy (`daemon/sessions/src/tree_copy.rs`):** an entry gone since its folder was listed is left out instead of failing the fork or move, and git's own `*.lock` files under `.git` are never copied, so the copy's clone never looks locked; any other copy error still fails and names the file. Reverse: drop `left_out_if_gone` and `git_lock`.
+- **Tabs (`daemon/humatad/src/terminal.rs`, `clients/live/src/terminals.rs`):** opening or closing a session's shell tab publishes that session's Updated event, and the client keeps its last tab list when re-listing fails rather than showing none. Reverse: remove the `tell.session` calls and `listed_tabs`.
+
+## D743: Humata never tells an agent where its repos are; the person prompts the agent, and an agent that wants its session's repos asks a tool (owner, 2026-11-16; recorded 2026-11-17; amends CH-21). Decided (by owner)
+- **Rule:** no message, MCP initialize instruction, tool description, environment variable or first-message line names a clone's path or branch. Adding a repo to a session (CH-21) clones it and adds its group to the diff, files and comments, and says nothing to the agent.
+- **What agents may get:** with their kind's switch on in Settings › Agents, a session-scoped humata MCP server and Humata's tools on PATH, whose descriptions say only what the tools do. `humata whoami` and the MCP tools return the session's repos when the agent asks.
+- **Why:** the owner prompts the TUIs; pushed hints surprise the person and the agent alike.
+- **Reverse:** a new owner direction only.
+
+## D744: A machine session's permission card is journaled to the host's Inbox when raised (remote Copilot fix, 2026-11-17)
+- **Problem:** D191 left open how a remote machine's agent hook reaches the person: the card was raised in the machine's own Inbox and never saved, so D225's journal never carried it. The host's Inbox stayed empty and the hook held for its full hour. That broke the live remote Copilot flow.
+- **Pick:** on a role-machine daemon, `raise_permission` saves the card and journals it like every other new request (D225). The host mirrors it (D226), and its answer goes down the link to the waiting hook. The hook letting go withdraws the card, and that withdrawal is journaled too. The stored `InboxEntry` gets `permission = 6`, so the machine's next start withdraws a card still pending (CALL_ENDED), journaled, so no card is left pending after a restart (D191.4). On the host nothing changes: cards are still not saved when raised. No login or bind is involved: the hook uses its session token on its own machine, and the host relays the answer as its own user.
+- **Upgrade (D-UPGRADE):** additive, no Migrate item. An entry kept without the field decodes as `permission = false`, and false is right for every old entry. Before this change a permission card was saved only once settled, and the flag is read only for a pending entry, so no old pending entry was ever a permission card. Machine journal entries carry `humata.v1.InboxRequest`, not the stored `InboxEntry`, so they don't change. The test `a_pending_request_kept_before_permission_cards_were_saved_restores_as_before` (inbox/kept.rs) decodes an entry encoded without the field and checks it restores as before. An older machine daemon still raises cards it never journals, but the force-upgrade to the new release fixes that.
+- **Reverse:** drop the commit in `raise_permission` and the `permission` field; remote hooks again get no decision.
+
+## D745: Synced skills reach a machine's agents as links in each agent's own skills folder (VF-5, Fable's ruling, 2026-11-17). Decided (by Fable)
+- **Problem:** a sync put the set in `~/Humata/.skills/<agent>/` and nothing pointed the agents at it, so a remote Copilot listed none of the synced skills (`flows/cases/results/copilot-sync.md` G2). SK-4 says agents started there are pointed at the managed folder.
+- **Pick:** no home variable (`COPILOT_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`; D193). After each applied sync the machine links every synced skill into the agent's own folder, `~/.copilot/skills`, `~/.claude/skills` or `~/.codex/skills` (each CLI's personal skills folder, checked against `copilot help skill` 1.0.113 and codex 0.169), as `<name>` → `~/Humata/.skills/<agent>/<name>`. That is an absolute link through the stable `.skills` link, so SK-9 holds. An agent folder that isn't there is made only when that agent has a synced skill. Humata's links are the symlinks pointing into `~/Humata/.skills`; anything else of that name (a folder, a file, someone else's link) is the machine's own and is never replaced or removed (SK-4). Humata's links whose skill left the set are removed, and so is one whose clash is picked `local` in `~/Humata/.skills-choices.json` (SK-5). A `synced` pick still can't displace the machine's own folder: the person moves theirs away. Humata's own links no longer count as clashes, so a second sync doesn't ask again.
+- **A linking failure** after the set switched fails the sync (`Internal`, "the agents don't see the new skills yet"), so the host keeps its old record and the next sync links again.
+- **Open:** the host keeps the clash picks in its record (`skills_service.rs`), and the link carries no picks, so the machine's `.skills-choices.json` is empty today and a clash is always the machine's own. Sending the picks with the set is a proto change for its own lane.
+- **Reverse:** drop `Managed::link_agents` and its call in `peer_skills::apply_inner`; the set stays where it is and agents see none of it.
+
+## D746: Copilot 1.0.113-1's new records are known to the strict reader, and a landing runs that strict read before it adds any repo (VERIFY, 2026-11-17; reads D736, desk.proto). Decided
+- **Known now:** `instruction.update_delivery`, eight `model.*` record kinds, workspace.yaml's `remote_steerable` and `mc_*` keys (with `mc_pending_repository_warning`) and `tool.execution_complete.fileEdits`, each with exactly the fields seen in scrubbed real captures (`daemon/conversation/testdata/copilot/1.0.113-1/`). Anything else is still refused.
+- **Order (`daemon/sessions/src/carry_landing.rs`):** `check_landing` runs the adapter's strict check before `add_repos`, so a refused Desk move or carry changes nothing.
+- **Still refused:** `system.notification` (background shells); a session that ran one forks code-only until a separate ruling.
+- **Amended (VF-60, 2026-11-17):** `system.notification` is now known when its `kind.type` is `shell_completed` or `shell_detached_completed` (the second has no `exitCode`), with exactly the fields seen in real captures (`NOTIFICATION_KINDS` in `copilot.rs`). A session that ran a background shell forks with its conversation. Any other notification kind is still refused, and that session still forks code-only.
+- **Reverse:** drop the allowlisted kinds from `copilot.rs` and the fixtures.
+
+## D748: Agents get Humata's MCP server, tools on PATH and pre-allowed tools per session, through flags only (VF-1, VF-2, VF-42; follows D743, 2026-11-17). Decided (by Fable, amended by owner via D743)
+- **Problem:** no code gave a session's agent Humata's `humata` MCP server, `humata` wasn't on a tab's PATH, and MCP.md §1 described a holder-written config that didn't exist.
+- **Pick:** at its start the daemon writes `state/humata-mcp-claude.json` and `state/humata-mcp-copilot.json`. Each names `humatad2 mcp --socket <socket>` and holds no token: the server reads `HUMATA_SESSION_TOKEN` from the agent's environment, and the daemon still checks the process tree. Each built-in kind is started and resumed with flags confirmed against its CLI's `--help`. Nothing goes into the agent's user config, the repo, AGENTS.md or CLAUDE.md, and nothing is typed into the TUI.
+  - Claude Code 2.1.326: `--mcp-config=<file>` and `--allowedTools=mcp__humata,Bash(humata:*)`, never `--strict-mcp-config`.
+  - Copilot 1.0.113: `--additional-mcp-config=@<file>`, `--allow-tool=humata` and `--allow-tool=shell(humata:*)`.
+  - Codex 0.169.0: `-c mcp_servers.humata={ command, args, env_vars = ["HUMATA_SESSION_TOKEN"], default_tools_approval_mode = "approve" }`.
+  - The variadic flags take their value after `=`.
+- **Shells and custom kinds:** every session tab, plain shells included, gets `PATH` with the `humata` binary's folder first, plus the token and socket. An agents-file kind gets the server only where its args name `{humata_mcp}`, the Claude-format file.
+- **Saved agents:** at start, saved agent launches take this daemon's tools arguments (`Agents::with_tools_in`), so an agent started before the change resumes with them. Rebuilds and forks plan anew.
+- **The switch:** a kind turned off in Settings › Agents isn't started (D720), so its tools never run.
+- **D743:** the MCP initialize instructions say what the tools do and name no path, clone, folder or branch. `humata whoami` (agent tier) returns `folder` and `clones` (repo, path, branch) when asked, and the `session_info` tool returns the repos.
+- **Open:**
+  - Copilot shows a non-allowlisted server's initialize instructions only with `--allow-all-mcp-server-instructions`. That flag isn't passed, because it would also cover the person's other servers.
+  - Codex has no per-command allow flag for `humata`.
+- **Reverse:** drop `with_humata_tools` and the `install_mcp_configs` call in `serve.rs`, and the PATH in `identity::tab_env`.
+
+## D747: The Markdown gallery's pixel goldens draw code in the theme's mono face, and the pixel tests run in their own binary (Fable 5.2, 2026-11-17). Decided (by Fable)
+- **Cause:** gpui-component 0.9.1 resolves its default mono family once per process (`theme/mono_font.rs` OnceLock). `markdown/headless/tests/snapshots.rs` mixed font-less `#[gpui_kit::test]` contexts with headless Metal renders, so whichever test ran first fixed code to the system UI face or to Menlo. The old goldens came from the font-less order.
+- **Change:** the three Metal tests moved to `tests/pixels.rs` (target `:pixels`, goldens in `tests/__snapshots__/pixels/`). `older_gallery` and `annotate` moved to the headless library for both files. gallery.png and gallery-annotated.png re-recorded in Menlo, where the box diagram lines up.
+- **Reverse:** merge the files back, and expect order-dependent fonts again.
+
+## D749: The versions bar's placeholder ends in an ellipsis, its step buttons are 26 pt, and the mock agent's cursor sits after "> " (Fable 5.2, 2026-11-17; D739 follow-ups). Decided (by Fable)
+- **Placeholder:** in a narrow pane the Save version box's placeholder ends in "…" rather than being cut mid-word (frame 41).
+  - Design `versions_bar` puts the text in a truncating child.
+  - Native `ui/src/doc_history.rs`: the input can't ellipsize its own placeholder. While the box is empty and unfocused, the same words are drawn over it with `truncate()`, and the input keeps its placeholder for screen readers.
+- **Step buttons:** the native < and > buttons are 26 pt wide, as drawn, instead of being label-padded to about 38 pt. The note field now starts where the design's does.
+- **Mock agent cursor:** the mock agent's input box (`clients/src/fixture/terminal.rs`) puts the cursor at column 5, after "│ > ". That gives "> █" as in design `session.rs` `input_box`. This shared fixture moves the cursor one cell in every agent frame, about 1,000 px, which is within native tolerance. Only my frames were re-recorded.
+- **Re-recorded:**
+  - Native 37, 39, 41, 42 and 43, with `native_test_record -- desk::` and `-- document::`.
+  - Design 41.
+- **Look scores (budget 0.5%):** 37 0.000%, 39 0.021% (was 0.140%), 41 0.006% (was 0.170%), 42 0.014% (was 0.127%), 43 0.007% (was 0.149%).
+- **Verdicts:** Fable approved all six frames.
+- **Open, for the terminal owner:**
+  - When a side panel narrows the pane, the agent grid keeps its first size (135 columns), so the box's right border is off-screen (native 07, 37 and others). `FitPolicy::Shown` refits only while focused and in control.
+  - The box's height and offset are D219's cell-metric gap; remove the TERMINAL_BODY mask once that is fixed.
+- **Reverse:** restore the field and step buttons in `doc_history.rs`, `\x1b[4G` in the fixture and the design field, then re-record the frames listed.
+
+## D750: A shown terminal fits its own new bounds while unfocused, and never re-asks for a size it already asked for (terminal owner, 2026-11-17; D749's open item, reads D271 point 3). Provisional
+- **Cause:** `FitPolicy::Shown` (`terminal/client/src/replica.rs`, `ReplicaPty::resize`) sent a Resize only while focused or before its first size. The view still recorded the unsent size as asked for, so when a side panel narrowed an unfocused pane the grid kept its first size (135 columns) and drew past the pane's right edge (native 07, 08, 37, 68).
+- **Pick:** under `Shown`, the replica remembers the columns, rows and cell size it last sent. Unfocused, it sends a Resize only when its own bounds fit a different size from that. Focused, it fits as before. A Resized or new snapshot from another view's resize makes it fit the same bounds again, which match what it last sent, so nothing is sent: the view that set the size keeps it, and two views never take turns (D271 point 3 holds). A failed send is not remembered, so the next fit retries. Holders are untouched; this only changes when a Resize frame is sent. No debounce: the view already drops fits that give the same cell size, so a divider drag sends one Resize per column change, as a focused view already does.
+- **Tests:** `an_unfocused_shown_replica_refits_when_its_own_bounds_change` (failed before the fix: 100 columns stayed 100) and `an_unfocused_shown_replica_never_takes_back_a_size_another_view_set`, in `terminal/client/tests/component.rs`.
+- **Follow-up:** the `FIT` comment in `ui/src/terminals.rs` still describes the old rule; native goldens 07, 08, 37 and 68 need re-recording.
+- **Reverse:** restore the `sized` flag in `ReplicaPty::resize`.
+
+## D751: D743 amends PR-5 and SL-4's note: the review chat's first message names each PR's URL, title, author and size, not its branches or clone location, and the rebuild note drops the branch name (daemon owner, 2026-11-17). Reversible
+- **Pick:** `first_message_of` in `apps/humata2/daemon/humatad/src/review/pull_requests/start.rs` lists each PR as URL, title, author, files and lines. The base and head branches and the "cloned at its head branch in this folder" text are gone; the agent gets branches from session_info and review_context. `note_of` in `apps/humata2/daemon/humatad/src/session_service/rebuild.rs` says "owner/name lost ..." with no branch.
+- **SPEC:** PR-5 is already updated by main: the agent is told the URL, title, user context and PR-23 tools, and asks session_info or review_context for branches or clone locations.
+- **Tests:** `the_review_chat_is_told_each_pr_and_the_users_context` in `apps/humata2/daemon/humatad/tests/pr_review.rs` (no branch names in the first message); `rebuild_on_box_2_clones_last_pushed_sha_resumes_mirrored_conversation_and_names_lost_work` in `apps/humata2/daemon/humatad/tests/rebuild_session.rs` (the agent's terminal does not name the branch).
+- **Impact:** string only; no schema or upgrade impact.
+- **Reverse:** put the branches back into both message formats and the test assertions.
+
+## D752: An add on This Mac waits behind This Mac's daemon Migrate item, so a first-seen host key never meets a client at another release (host_key_unknown follow-up, 2026-11-17; UP-1, D281, D290 m, D370, D374). Decided
+- **Problem:** errors.proto kind 59 `host_key_unknown` replaces the old first-seen answer (`host_key_changed` with an empty expected fingerprint), and `clients/live/src/machines.rs` now shows the Confirm card only on `host_key_unknown`. A CLI at another release is already refused everything but ServerInfo and Upgrade (`daemon/humatad/src/upgrade/gate.rs`, `cli_ready` and `cli_check`; D281 e, D290 m), so an old `humata hosts add` can't reach a new daemon. The desktop is not held to the release (D290 m): between installing a new Humata and clicking Migrate, the app talks to This Mac's daemon at the old release, and the Add machine dialog ran the add anyway. The new app then got the old answer and showed a failure where it should offer Confirm. In the other direction, an app older than the daemon got kind 59, which it can't read. Both are mixed-version fallbacks.
+- **Pick:** the Add machine dialog already gets This Mac's Daemon Migrate items (`features/app/src/lib.rs`, the `add` block; D370's host item and D374's app-held item both arrive). `AddMachineAction::Start` (`features/hosts/src/add.rs`) now runs nothing while one of those is unanswered. It shows the D370 "This Mac needs migrating" card with Migrate This Mac, or Migrating when the item already migrates. Once the item is migrated, the existing rerun starts the same add. No new Migrate item, proto field or daemon gate is needed: the daemon already posts the item, and the app is the only client that needed holding. From this release on, an older app is held too, because the newer daemon posts "Migrate the daemon on This Mac" for the release the older app staged.
+- **Upgrade (D-UPGRADE):** kind 59 is an additive oneof case. Nothing is stored, journaled or sent between machines with it: it travels only from This Mac's daemon to this Mac's app or CLI. The CLI is held by the bundle header, and the app now by this pick. Remote machines' daemons never send it, since the host runs the SSH connect. Not covered: an app built before this change, opened after a newer daemon was installed. That is a downgrade (D281 h), and its dialog shows the daemon's words as a failure, not a Confirm card.
+- **Tests:** in `features/hosts/tests/migrate.rs`, `an_add_while_this_macs_daemon_waits_to_migrate_does_not_run_and_offers_migrate`, `an_add_held_behind_this_macs_migrate_runs_once_it_is_migrated` and `an_add_while_this_mac_is_migrating_waits_and_runs_once_it_is_migrated` failed before the fix. `an_add_after_this_mac_was_migrated_runs_at_once` and `a_store_item_waiting_does_not_hold_an_add` guard against holding too much.
+- **Reverse:** drop `this_mac_unmigrated` and its check in `Start`.
+
+## D753: Text is never typed into a holder from before the wait for keys; it is refused with the "Migrate the holders" item named (BUG-T1 follow-up, 2026-11-17; force-upgrade, D373, D378). Decided
+- **Pick:** BUG-T1's `AwaitKeys` frame is new, and an older holder hangs up on it. `humata2_holder::await_keys` no longer answers `Unsupported` for that; it fails with `HolderError::Outdated`, and `ReadsKeys::Unsupported` is gone. `type_then_return` (first message, notes, the interrupted note, rebuild note) and the start-fresh seed fail with it. TerminalService.Type and the review comment paste refuse with FailedPrecondition before anything is typed, and a Type key is released, so a retry after the migrate types once. The message says the holder is from an older build; the fix says to click Migrate on the "Migrate the holders" Inbox item, which restarts the agent onto the current holder at its next idle moment in the same conversation, and that a shell tab is never migrated, so close it and open a new one.
+- **Why no new item:** the upgrade path already raises it. Every holder from before this frame was spawned from another `humata2_holder` file, so its `holder_builds` sha differs, or it has none (D373), and the Holders item lists its agent session from the daemon's first look after start (`upgrade/holders.rs`; a box reports to the host, D378). Typing without the wait was a mixed-version fallback, which the force-upgrade rule bans.
+- **Holders from before keyed input too (pick made, 2026-11-17):** the `KeyedInput::Unsupported` and `KeyState::Unsupported` fallbacks to plain typing are gone. `keyed_input` and `key_arrived` answer such a holder with the same `HolderError::Outdated`, so Type, review comments, the submit step and a start fresh summary are refused with "Migrate the holders" named and nothing typed (start fresh logs it as `SeedOutdated`). The refusal never stops the holder: it keeps running, with its program, until its session is migrated. `daemon/holder/tests/keyed_input.rs` `a_holder_from_before_keyed_input_is_refused_as_outdated` and `tests/return_after_text.rs` `a_holder_from_an_older_build_is_an_error_to_migrate_not_a_skipped_wait` show both: refused, then the same holder still attaches and its process is still running.
+- **Tests:** `a_holder_from_an_older_build_is_an_error_to_migrate_not_a_skipped_wait` (`daemon/holder/tests/return_after_text.rs`) failed before the change: a stand-in old holder got `Unsupported`.
+- **Upgrade:** no schema change. Old shells stay typable by hand but refuse `session type` with submit until reopened.
+- **Reverse:** answer `ReadsKeys::Unsupported` again and type without the wait.
+
+## D754: `humata session type` and MCP `session_type` press Enter by default; `--no-submit` and `submit: false` leave the text in the input, and the reply says `submitted` (Fable 5.2 ruling, 2026-11-17; amends D671 and B12). Decided (by Fable)
+- **Pick:** the CLI appends one `\n` to the text unless it already ends in `\n` or `\r`; empty text presses Enter alone. `--no-submit` sends the text unchanged; there is no `--submit` flag. MCP `session_type` takes `submit?: boolean` (default true) with the same rule. The daemon still splits a trailing newline off as the submit (D671). `TypeResponse.submitted` (terminal.proto 4) is true only when the daemon wrote that return: false with no trailing newline and while queued. The CLI's JSON and MCP's result carry the daemon's `typed` and `submitted`; the CLI says "typed and submitted" or "typed, not submitted (press Enter or run again without --no-submit)".
+- **Why:** B12 seen live: people and agents ran `session type` and the agent never got the text, because nothing pressed Enter.
+- **Upgrade (D-UPGRADE):** `submitted` is an additive field; an old client ignores it, and an old daemon's reply reads as `submitted` false. No Migrate item.
+- **Tests:** `cli/tests/sessions.rs` (`type_presses_enter_after_the_text_by_default`, `type_never_presses_enter_twice`, `type_with_no_submit_types_the_text_as_it_is`, `type_says_whether_the_daemon_submitted_it`); `daemon/humatad/tests/terminal.rs::typing_says_it_submitted_only_text_that_ends_in_a_newline`; `daemon/humatad/tests/mcp.rs::session_type_presses_enter_unless_told_not_to`.
+- **Reverse:** drop the append and the flag; `submitted` can stay.
+
+## D755: An agent never writes `shared/` on another machine of its channel; the refusal is its own, and its fix is the pull (Fable 5.2 ruling, 2026-11-17; keeps D33 pick 11, reads IN-17 and TP-4). Decided (by Fable)
+- **Problem:** VERIFY's Copilot files flow 5 asked an agent on one machine to send a file to another machine's `shared/`. `write_place` in `daemon/access/src/policy.rs` refused it as `NotItsFolder` with the fix "work in the session's own clone or the channel's shared/ folder", which is wrong here: the target is the channel's `shared/`, just on the wrong machine.
+- **Pick:** keep the hard refusal (D33 pick 11). IN-17's row is "Write into shared/ on its machine", so no rule covers another machine's `shared/`, and TP-4 is a pull: a session copies files in to its own clone or `shared/`. `daemon/access/src/verdict.rs` gets `Refusal::SharedOnOtherMachine { machine, here }` (kind `denied`, hard limit) with `Fix::PutInSharedHereForPull { machine }`. In `write_place`, `Root::Shared` on a machine that isn't the agent's own returns it; `Root::Clone` of another session and `Root::ChannelFolder` keep `NotItsFolder`, and another channel's `shared/` keeps the `other_channel` refusal. A copy whose landing is refused is refused before its source is judged, so the push fails at once. `daemon/humatad/src/status.rs` says: an agent writes shared/ only on the machine it runs on (its machine), so nothing was written to shared/ on the target machine; put the file in shared/ here, a session on the target machine can copy it in from there, or the user can send it with `humata cp`. Naming the machine is fine: it is one of the agent's channel's machines.
+- **SPEC:** main updates FC-8 (an agent writes the `shared/` on its own machine; another machine's is pulled by a session there or sent by the user) and TP-4 ("`shared/` on its own machine").
+- **Docs:** `api/MCP.md` `file_write` and `files_copy_in`, `api/CLI.md` §5.5 files put row; flows: `flows/cases/results/copilot-files.md` Flow 5 rerun in the pull direction, `flows/cases/agents/04-ask-ahead-and-grants.md` and `flows/cases/macro/12-files-across-sessions-and-machines.md` new cases.
+- **Upgrade (D-UPGRADE):** no proto change; the error kind stays `denied` with source hard limit. Only the message and fix text change.
+- **Tests:** in `daemon/access/tests/refusals.rs`, `an_agent_writes_shared_only_on_its_own_machine` (refusal and fix), `an_agent_pulls_another_machines_file_into_its_own_shared` (the pull needs only copy-in) and `a_copy_into_a_remote_shared_is_refused_before_its_source_is_judged`; `an_agent_writes_only_its_own_folders` keeps the clone and channel-folder cases. `daemon/humatad/tests/agent_send_machine.rs` still sees kind `denied` for the push and the pull landing.
+- **Reverse:** add an IN-17 capability "Write into shared/ on another machine of its channel", Ask me by default, and have `write_place` return `need(...)` for it in place of the refusal.
+
+## D756: An agent's bare last word of `cp|mv` that names no machine it can see is refused unless it has a `.` (Fable 5.2 ruling, 2026-11-17; amends D655, reads TP-1 and PL-12). Decided (by Fable)
+- **Problem:** D655 read an agent's bare last word as a machine when one had that name, and otherwise as a path in its own clone. An agent sees only its own and its channel's machines (TP-1), so `humata cp … vm-b`, with vm-b outside the channel or misspelled, quietly copied into a file named `vm-b` in the agent's clone.
+- **Pick:** for an agent principal only, on the last word of `humata cp|mv`, when the word has no `:` and no `/`: (1) a machine the agent can see is that machine; (2) otherwise a word with a `.` is a path in its own clone; (3) otherwise `CliError::NotAMachineHere { word }`, kind `invalid_field`, exit 2, and nothing starts. The fix names `humata host ls`, `./word` for a file and `word/` for a folder. `./name` and `name/` always mean the clone. The CLI strips a leading `./` and trailing `/` before it sends the path, because the daemon's path check (`RepoPath::new`) refuses `.` and empty parts. `name:` keeps the existing not-found. The person's reading is unchanged.
+- **Why:** a typo or a machine outside the channel must not become a file in silence. The refusal is the same whether or not a hidden machine has that name, so it says nothing about machines the agent can't see.
+- **Docs:** `api/CLI.md` §5.5; `flows/cases/macro/12-files-across-sessions-and-machines.md`; `flows/cases/results/copilot-files.md` Flow 5 attempt 1.
+- **Tests:** `cli/tests/files.rs`, the six `an_agent…` cases after `a_send_to_a_machine_nobody_has_starts_nothing`.
+- **Reverse:** fall back to the clone path.
+
+## D757: Only a resume after a move starts a fresh agent when its conversation file is missing; any other restart saves the resume as failed. A resume check ignores the conversations of the store's other sessions (test triage, 2026-11-17; amends the move resume of D671's follow-ups, reads PER-13 and PER-14). Approved, with one required amendment
+- **Problem:** the move resume (`start_moved`) started a fresh agent whenever a resumed agent's conversation file was missing. It was keyed on `Why::Moved`, but `restart_agent` also used `Why::Moved` for the own-copy and upgrade restarts. So a restart in the parent's own copy whose conversation was gone quietly started a new conversation, and `context_fork_test` saw it. Separately, a machine restart resumes all its agents at once, and one CLI's sessions can share a conversation folder. Another session's agent writing its own conversation looked like this agent starting another one (`another_grew`), so a fork's resume after a power cut failed with AgentStartedAnotherConversation (`power_cut_both_test`, RemoteFork).
+- **Pick:** `Why::Restarted(line)` is the strict restart: a missing conversation is `ResumeFailed(ConversationFileMissing)`. `Why::Moved(line)` is used only by `resume_moved_agent`, which ResumeSession's AfterMove branch calls (`humatad/src/session_service.rs` `run_resume`). A move has carried and checked every file the agent wrote, so a missing file there is one never written, and the agent starts fresh. In `verify`, a grown sibling file that is another session's `launch.conversation_file` in the same folder, as the store lists it, isn't counted. An unknown file that grows still fails the resume.
+- **Tests:** `daemon/revive/tests/kill_matrix.rs` `a_restart_whose_conversation_is_gone_fails_and_only_a_move_starts_it_fresh` and `another_session_writing_its_conversation_beside_it_does_not_fail_a_resume`; `daemon/humatad:context_fork_test`; `daemon/humatad:power_cut_both_test`.
+- **Upgrade:** no schema or proto change.
+- **Reverse:** make `restart_agent` use `Why::Moved` again, and count every sibling in `verify`.
+- **Ruling:** Ruled by Fable, 2026-11-17. Approved: (a) is PER-15 as written (a lost conversation is never a silent fresh start), and the person's way out is intact, since "Couldn't resume" keeps Try again and Start fresh with a summary, which falls back to the saved scrollback when the transcript is gone. (b) hides no wrong-conversation resume: the agent is resumed by its pinned id (PER-12), so the real failure is the CLI starting a new id, which is an unknown file and still fails; an interrupted resume must also see its own file grow.
+- **Required amendment (a):** `MODE_AFTER_MOVE` is a public `ResumeSessionRequest` mode, and `resume_session` trusts it (`session_service.rs`, `moved = request.mode == AfterMove`). Any caller allowed to resume a session can send it for a session that never moved and get the fresh start this decision reserves for moves. Honor the fresh start only when the move itself is the caller (the host's own `run_resume` path, or the moving machine's peer call) or the landed move's manifest shows no conversation was carried; otherwise treat AfterMove as the strict restart. Add a test that an AfterMove resume from an ordinary caller with the conversation gone is `ResumeFailed(ConversationFileMissing)`.
+- **Amendment applied (2026-11-17):** `resume()` in `humatad/src/session_service.rs` honors the after-move fresh start only when the caller is the host (`Caller::User(UserVia::Host)`) and this daemon is not the host. Anyone else gets the strict resume. On the host, `resume_remote()` in `session_service/remote.rs` passes a caller's own AfterMove request on to the machine as a plain resume. The move itself doesn't go through there: on the host it calls `run_resume` with `moved` set, and for a box it calls `resume_session_on` from `move_session.rs`. Test: `daemon/humatad/tests/sessions.rs` `an_after_move_resume_of_a_session_that_never_moved_does_not_start_it_fresh`, red in run 80; `move_session_test` covers the real move still starting fresh.
+
+## D758: A host's follow of a remote start, Desk start, resume or channel setup asks the machine again on the same link when it answers that it can't be reached, after a pause from 1 s doubling to 30 s, instead of waiting for a new link (test triage, 2026-11-17; reads D150 and D432). Decided
+- **Problem:** `power_cut_machine_test` (`Start/Machine/Box@store.session_detail.put.committing` and `.committed`) left the host's start journal (`carry/remote_archive/start/<session>.json`) in place for good. Right after the box's restart, the box answered calls on the new link as unreachable (Unavailable with no `humata.v1.Error`, or MachineOffline) while that link stayed up. `follow_on_link` in `daemon/humatad/src/remote_work.rs` took that as "the link broke" and returned. `Links::reopen_on_new_link` starts a follow again only on a new link, so nothing asked again: the start was never answered and its journal never cleared. The lookup (`get_session`), the start asked again after a NotFound, a dropped watch and `settled`'s ask again all had the same return.
+- **Pick:** on such an answer the follow pauses (1 s, doubling to 30 s) and asks again on the same link. When the link really goes, `reopen_on_new_link` drops the run as before. While the host waits on the machine's restart, `restart_wait` still bounds the wait. A refusal of the start asked again after a NotFound tells the start answered and ends the host's operation with the machine's words, the same as a refusal of the first ask again. A refused lookup ends the host's operation with the machine's words, where before it waited for good. `channel_attempt`, a channel's setup on one machine, had the same return on an unreachable answer to `create_channel` and on a dropped watch of its setup. It now pauses and asks again on the same link too; the same id gives back the one channel. A `create_channel` refusal with no `humata.v1.Error` and any other code now fails that machine's steps with the machine's words, where before it waited for a new link. A setup the machine forgets more than `MAX_ATTEMPTS` times still waits for the next link.
+- **Tests:** `remote_work.rs` `a_start_the_box_answers_unreachable_while_its_link_stays_up_is_asked_again_until_answered` and `a_start_the_box_lost_is_asked_again_when_its_first_answers_on_the_new_link_are_unreachable`; `a_channel_the_box_answers_unreachable_while_its_link_stays_up_is_asked_again_until_made` and `a_channel_whose_setup_watch_breaks_while_its_link_stays_up_is_asked_again`; `daemon/humatad:power_cut_machine_test`.
+- **Upgrade:** no schema or proto change.
+- **Reverse:** return None from `follow_on_link` and `channel_attempt` on an unreachable answer again.
+
+## D759: gpui's test scheduler is patched so a block with a timeout no longer deadlocks against work from another thread, and every live flow case has its own time limit, the PR review cases included (test triage, 2026-11-17). Decided
+- **Problem:** `live_flows_test` shard 2 timed out on `pr_review::a_note_made_a_draft_and_the_persons_own_draft_post_in_one_review_per_pull_request`. The case's steps all passed. It hung in `drop(App)`: gpui's `App::shutdown` blocks with a timeout, and in gpui-pre-scheduler 0.3.12 `TestScheduler::block_until` then takes the rng lock and, while holding it, the state lock. Meanwhile a tokio thread (the terminal attach pump in `clients/live/src/link.rs`, passing on a notice) woke an app task, and `schedule_local` takes the state lock and, while holding it, the rng lock. Each thread waited on the other for good. Any live flow could hit it; this case's timing made it likely. The per-case limit (`desktop/tests/live_flows/leftovers.rs`) didn't end it because only `World` and `RemoteWorld` started a `CaseClock`. Four of the five PR review cases run on `pr_github::Fixture`, so they had no limit, and the whole target ran until Bazel's timeout.
+- **Pick:**
+  - (1) `apps/humata2/engine/patches/gpui-scheduler-lock-order.patch`, applied to gpui-pre-scheduler in every crate repository by a crate annotation in MODULE.bazel, reads the timeout range under the state lock and then takes the rng on its own. No path holds the rng while it takes the state any more.
+  - (2) Each case's watch starts in `runtime()`, which every case calls first, and belongs to the case's thread (it ends with the case). A world or fixture adds its folders to it with `case_watches`, and `pr_review::started` adds the fixture daemon's folder. Past `CASE_LIMIT` the processes under those folders are ended. `CASE_GRACE` after that, a hang that holds no process (like this one) can't be ended inside the binary: the watch prints the stacks, names the case in the file `LIVE_FLOWS_HUNG` names, and exits. `tests/live_flows_shard.sh` then fails that case, runs the cases that hadn't reported again without it, and fails the shard naming it. One hang fails one case and the others still report.
+- **Tests:** `engine:wakes_test` / `wakes_fast_test` `work_from_other_threads_while_the_app_blocks_does_not_hang_it`, which hung in run 88 without the patch and passed in run 89 with it (as did the six PR review rounds that hung in run 86); `live_flows_cases` `leftovers::tests::a_hung_case_has_the_processes_of_folders_added_after_its_watch_began_ended`; `desktop:live_flows_shard_test` (a stand-in binary whose case b hangs: b fails, a doesn't run again, c runs); `desktop:live_flows_test`.
+- **Upgrade:** none; tests only.
+- **Reverse:** drop the annotation and patch package. Start the watch in `CaseClock::start` again, and `exec` the binary once in the shard script.
+
+## D760: Removing (or forgetting) a machine clears its skills sync state, so a machine added again under the name gets a first sync that asks (SK-5), and removing it takes it out of every channel. An add of a name whose removal hasn't finished is refused as being removed, not `name_taken` (VERIFY, 2026-11-17). Decided
+- **Problem (1):** the host keeps each machine's skills sync state in `<state>/skills/<machine>.json` (`daemon/humatad/src/skills_service.rs`, `SkillsHost::record_path`), keyed by name only. RemoveMachine (`machine_service.rs` `remove_machine`) dropped the link, peer reports, stop and Inbox journal mark, but never this file. A re-add under the same name read the old manifest, so `plan_skills_sync` (`daemon/machines/src/skills.rs`, `first_sync: current.is_none()`) said `first_sync: false`, and `on_link_up` could sync it without asking.
+- **Problem (2):** RemoveMachine answers with its operation before the removal runs, and the entry stays in `hosts.json` (as `Ready` until the job claims it, then `Removing`, kept `Removing` while the machine can't be reached). `Machines::plan_add` (`daemon/machines/src/manage.rs`) refused any listed name as `NameTaken`, which tells the user to pick another name.
+- **Pick (1):** `SkillsHost::forget` (after any sync running to the machine ends, under its gate) deletes the record and drops its plan tokens. `Work::forget_journal`, which remove and Forget machine (LD-12) both call, now runs it. `forget_journal_now`, which an add afresh and a login enrollment call before the link starts, runs `forget_now`. That also clears a record left by a build before this fix. A record that can't be deleted is logged with a fix that says to delete it by hand.
+- **Problem (3):** RemoveMachine left the machine's id in every channel's `machines`; only Forget machine (LD-12, `archive_lost`) took it out. The VERIFY remote lane saw removed ids still listed.
+- **Pick (3):** the `Forgetting` hook gains `take_out_of_channels`, the same `leave_channels` Forget machine runs (`session_service/forget.rs`). It runs only once the removal has committed: in RemoveMachine's job, right after `Machines::remove` returns Ok (`Work::removed`, on the job's blocking thread), and for a removal that a cut-short run left `Removing` once `recover` finishes it at the next start, or a reconnect finishes it. A removal that fails (the machine can't be reached for its uninstall, or another add, reconnect or removal is running) leaves the machine listed and in every channel it was in, and a retry that succeeds then takes it out. A failure to update the channels comes after the removal is done, so it is logged with a fix (take it out of each channel by hand) and doesn't fail the removal.
+- **Pick (2): refuse, don't wait.** `ManageError::BeingRemoved { machine }`: plan_add and plan_create return it when the entry is `Removing` or a removal was asked for (`Machines::removing`, set by RemoveMachine before it answers, cleared when `Machines::remove` ends). Its status is `ABORTED` with no kind (CLI exit 6, kind `aborted`). Its fix says to wait for the removal to finish and add again, and that a removal waiting on an unreachable machine finishes once the machine is back or Humata restarts. Waiting would hold the add's operation open for a removal that may wait on an offline machine indefinitely. Adds, reconnects and removals already refuse rather than queue (`Busy`, `NotReady`). The error has no source: no underlying error exists, only the state.
+- **Tests:** `daemon/humatad/tests/skills.rs` `a_machine_removed_and_added_again_has_a_first_sync_that_asks_again`; `skills_service.rs` unit `a_forgotten_machine_starts_over_with_a_first_sync_and_no_picks`; `daemon/machines/tests/fake_ssh.rs` `an_add_while_a_removal_is_on_its_way_is_refused_as_being_removed_until_it_finishes` and `an_add_while_a_removal_waits_for_its_machine_is_refused_as_being_removed`; `daemon/humatad/tests/machines.rs` `an_add_while_the_machine_is_being_removed_is_refused_until_the_removal_ends`; `daemon/humatad/tests/forget_machine.rs` `removing_a_machine_takes_it_out_of_every_channel` and `a_removal_that_fails_leaves_the_machine_listed_and_in_its_channels`.
+- **Docs:** `api/CLI.md` host add and host remove rows; `api/GRPC.md` §10.
+- **Upgrade:** no schema or proto change. A stale record from an earlier build is deleted at the next add afresh.
+- **Reverse:** drop the skills forget from `forget_journal`/`forget_journal_now`, the `Work::removed` calls (RemoveMachine's job, `recover_in_background`, `reconnect`), and have `name_free` return `NameTaken` again.
+
+## D761: Copilot's ask-user form is an Inbox question: its `preToolUse` hook, matched to `ask_user`, holds while the question waits, the session needs you meanwhile, and the reply reaches Copilot as the reason the form was skipped (VERIFY copilot-t1, 2026-11-17). Decided
+- **Problem:** Copilot 1.0.113 asks the person through its `ask_user` tool: a form in its TUI (a message plus an elicitation `requestedSchema`, whose fields may offer an `enum` of choices). It raises no permission ask, so no Inbox request came, `humata session status` kept saying `working`, and only someone looking at the terminal found out (flows/cases/results/copilot-t1.md, flow 3; the lane answered with `humata session type`). Copilot's own events.jsonl shows `tool.execution_start` of `ask_user`, then `human_response.recorded`, then a `postToolUse` hook: tool hooks fire for it.
+- **Signal:** the hooks plugin Humata already writes for Copilot (D193) gets a `preToolUse` hook with `"matcher": "ask_user"` running `humata hook copilot question` (held up to `HOLD_SECONDS`, like the permission hook). The matcher keeps every other tool call from waiting on a CLI run; the daemon reads `toolName` all the same. Not taken: tailing events.jsonl (Humata reads it for the conversation mirror, not live, and a watcher can only type an answer into the form, which a choice list doesn't take); a permission ask (Copilot raises none).
+- **Pick:** `SessionService.Hook` takes the event `question`. `agent_hooks::parse_question` reads the payload (`toolArgs` an object or a JSON string; `message` or `question`; each schema field's title and description on a line of its own; choices from `enum`, `oneOf`/`anyOf` consts, array `items`, or a `choices` list). The daemon raises the existing question card (`REQUEST_KIND_QUESTION`, `QuestionPreview` with the whole question and every choice), held like a permission card (D191): the same question again holds the same card, the last hook letting go withdraws it (CALL_ENDED), Answer all skips it. It takes `humata inbox reply <id> <text>` (one of the choices or the person's own words) or Deny; Approve is refused with a fix that says to reply. While the hook holds it the session is NEEDS_INPUT (the D158.7 `Asking` hold), until it is answered, denied or withdrawn. The answer goes back as `{"permissionDecision":"deny","permissionDecisionReason":"The user answered this question in Humata's Inbox ... Their answer: <text>"}`: Copilot's docs say that reason is shown to the agent, and the form never opens. A Deny says the person declined, with their note. No answer (the 3590 s cap, a withdrawal, or Settings › Agents › Ask for permission in the Inbox off, D199) is empty output, and Copilot's own form opens.
+- **Owed live check:** that Copilot 1.0.113 runs a `preToolUse` hook with a `matcher` for `ask_user`, and that the model goes on with the answer in the deny reason rather than asking again. Until then the form in the TUI still works whenever the hook gives no decision.
+- **Tests:** `daemon/agent_hooks:questions_test` (the captured form and a choices form become one question with every choice; another tool, a permission payload and another agent raise none; an answer, a decline and no answer render as Copilot reads them; the plugin holds `ask_user` for an hour); `daemon/humatad:hooks_test` `copilots_ask_user_form_is_an_inbox_question_and_the_reply_reaches_it`, `declining_copilots_question_tells_it_and_ends_the_wait`, `a_question_whose_hook_lets_go_is_withdrawn_and_another_tool_raises_none`; `cli:hook_test` `an_ask_user_form_goes_to_the_daemon_as_a_question`.
+- **Docs:** `api/CLI.md` hook row, `api/GRPC.md` SessionService row, `HookRequest.event` comment in `sessions.proto`.
+- **Upgrade:** no schema or proto change (a comment only). The daemon rewrites the Copilot plugin at its start; a session started before keeps the old hooks until it restarts. An older CLI refuses `question` as usage, which `|| true` turns into no decision, so the form opens.
+- **Reverse:** drop the `preToolUse` entry from `copilot_plugin` and the `question` arm of `hook_of`.
+
+## D762: Every write into an agent tab passes one input gate that refuses text while the agent asks a question on its screen (folder trust) or when its screen can't be read, so a lost submit is never reported and Humata never answers the trust question for you (VERIFY copilot-remote rerun finding 1 and copilot-files rerun, 2026-11-17; SPEC CV-6). Decided (by the fixing agent; reversible)
+- **Problem:** after a move to a remote machine (copilot-remote rerun, Flows 3 and 4) and on a fresh remote session (copilot-files rerun, f5), `humata session type <s> "text"` answered `typed: true, submitted: true` but the text never reached Copilot; the screen then showed only "MCP Servers reloaded", and a second type worked. Root cause: Copilot 1.0.113 shows "Confirm folder trust" in every folder not remembered as trusted (CV-6 lets it ask after a move, since a session-only "Yes" isn't carried). The dialog reads keys in raw mode, so BUG-T1's `ready_for_text` (`await_keys`) said ready. The text went into the dialog, `shown` timed out after 5 s (its result is ignored by design, for pastes shown as summaries), and the separate Enter answered the dialog with its highlighted "1. Yes". Copilot then loaded its MCP servers ("MCP Servers reloaded"). So Humata both lost the text and granted trust the user never gave (against CV-6).
+- **Pick:** one input gate, `input_gate::guard(socket)` (`daemon/humatad/src/input_gate.rs`), async and keyed by the holder socket, is asked before any text is written into an agent tab. It rebuilds the screen the holder shows now from the output it kept (`holders::screen_at`: a read-only throwaway `vt_authority` screen, `Authority::screen_text`, the active area only) and looks for a known question (`screen_question::asked_on`: "Do you trust the files in this folder?", box drawing and wrapping ignored). A question there is `InputRefused::Question`; a screen it can't read within 3 s (no holder, attach failed, engine error, timeout) is `InputRefused::Unreadable`: it fails closed and nothing is typed blind. Type answers FailedPrecondition for a question (answer it in the Inbox (D767) or on screen; Humata won't answer it; Enter alone accepts it for this session only) and Unavailable for an unreadable screen (type again in a moment), types nothing and releases its key. Enter alone is still sent: it is the person answering on purpose. Shell tabs are not gated.
+- **Not taken:** holding Type's text until the agent is ready (the question waits for a person, for as long as they take; a held text would then submit into whatever came next; the background notes and seeds do wait); typing when the screen can't be read (fail open, the first version of this pick: an unreadable screen says nothing about where the text would go); refusing every text the program didn't show (Claude shows a long paste as a summary, which would no longer submit); answering the trust question automatically (CV-6); patterns for agents with no recorded screen.
+- **Scope:** every write of text into an agent tab goes through the gate. Type (`type_in`: the CLI, MCP `session_type`, the composer, machine scripts through `type_for_script`; a remote session's Type is relayed and gated by that machine's daemon); the review comments' paste (`type_comments`, keyed and plain; the relayed one is a remote Type; the return pressed after the paste is only a return and isn't gated); a rebuilt session's note (`rebuild.rs` `type_note`, which now waits in the background up to 10 min for the gate); and the start-fresh and fork-handover seed (`start_fresh.rs` `type_seed`, which waits up to 10 min, then fails as `SeedNotReady` and is kept for the next restart). The local queued send (`SendQueuedNow`) is not built and types nothing. A start's first message (`sessions/src/start.rs`) and revive's interrupted note (`revive/src/agent.rs`) are in crates without humatad: D763 gives them a `WriteGate` trait that humatad implements with `input_gate::guard`. Not covered: a question drawn after the gate read the screen but before the text landed (a window of milliseconds).
+- **Tests:** `daemon/humatad:terminal_test` `text_typed_while_the_agent_asks_folder_trust_is_refused_and_never_answers_it` (a fake agent asks trust as a select list in raw mode; text with and without submit is refused and the question still waits; Enter alone answers it; then the text submits); `daemon/humatad:humatad2_unit_test` `input_gate::tests` (a holder that can't be reached, and a socket that never sends a screen, both refuse as Unreadable, which Type answers as Unavailable) and `screen_question::tests`; `daemon/vt_authority:authority_test` `the_screen_text_is_what_the_active_area_shows_now_without_history`.
+- **Upgrade:** daemon only; no proto, schema or holder change. A remote machine's daemon needs this build for its sessions to get the check.
+- **Reverse:** drop the `input_gate::guard` calls (terminal.rs `type_in` and `type_comments`, rebuild.rs `type_note`, start_fresh.rs `type_seed`) and the `WriteGate` impl.
+- **Follow-up:** add the first-run questions of Codex and Claude Code to `screen_question::ASKED` once their screens are recorded live (VERIFY with those agents); none is in the tree or the VERIFY evidence now, so none is guessed.
+
+## D763: A start's first message is typed only once the agent's input is clear (D762's gate) and its return is pressed only once the agent shows it. Until then the session needs you; one still unsent after 30 min is an Inbox request with its whole text (VERIFY copilot-t1 BUG-T1b, 2026-11-17; amends D671, uses D762 and D765). Provisional
+- **Cause:** `type_then_return` (`daemon/holder/src/client.rs`) waited up to 15 s for the text to show, ignored the result, and pressed return anyway. Copilot 1.0.113 in a folder it doesn't trust asks "Confirm folder trust" first, reading keys raw, and holds what is typed unshown. The blind return answered that question for the person (against CV-6), and the message was left typed in Copilot's input. A VM pty probe showed Copilot keeps the text: once the dialog closed, its input read `❯ reply with the single word pong`. This Mac passed only because the verify lanes pre-trust their root.
+- **Holder:** `type_then_return` returns `Typed::Submitted` or `Typed::Held(HeldReturn)`; a program that hasn't shown the text within 15 s gets no return. `Shown` (`shown.rs`) counts the `[Paste` summary Copilot and Claude Code show for multi-line text as shown. `deliver(socket, text, pause, held, ready, limit)` sees a held or untyped text through: with a `ready` check it types only when the input is clear, presses return once the text shows, and types the text again once when the input is clear but the text still isn't shown 15 s later (the program dropped it); without one it never retypes, as a dropped text can't be told from a held one.
+- **Input ready:** the agent reads keys (`await_keys`, raw mode) and D762's `input_gate::guard` says Ok (no known question on its screen, and the screen could be read). The sessions crate has no screen, so it asks through `humata2_sessions::WriteGate`, keyed by holder socket; humatad's `input_gate::StartGate` maps `InputRefused` onto `GateRefusal`.
+- **Start:** `FirstMessage::send` (`daemon/sessions/src/first_message.rs`) asks the gate once; clear and shown within 15 s, it submits before the start is Done as before. Otherwise the start finishes and a background follow runs `deliver` for up to `ANSWER_WAIT` (30 min). While it waits, `HeldMessages::waiting` holds `Asking` (status `needs_input`, not `working` or `probably_idle`); a submitted message lets go, and the turn's hooks take over. Still unsent, `HeldMessages::unsent` (`daemon/humatad/src/start_message.rs`) raises a question of the session's own with the whole text and the choices "Send it now" and "Leave it unsent", holding `Asking` until it is answered. "Send it now" tries again through the same path. It goes through `raise_question`, not a host ask, because a host ask stays in the daemon's memory: a remote machine's never reached the host. A session question on a machine is saved and journaled (D744), so the host's Inbox shows it and its answer comes back down the link.
+- **Revive:** the resumed agent's "interrupted" note (`daemon/revive/src/agent.rs` `verify`) asks the same gate, now `humata2_revive::WriteGate` (sessions re-exports it), set in `ReviveConfig.gate`. While the gate says Question, nothing is typed and the resume's deadline moves out with each look (every 500 ms), so a person answering in their own time doesn't fail the resume. Unreadable fails closed: nothing is typed, and the deadline isn't moved. Once clear, `deliver` types the note and presses return once it shows, retyping a dropped note once.
+- **Not changed:** the other typing paths are D762's. A screen that stays unreadable for the whole resume timeout still fails as `AgentStartedAnotherConversation`; no new `ResumeFailure` variant.
+- **Tests:** `daemon/holder:return_after_text_test` `a_return_waits_while_the_program_asks_a_question_of_its_own`, `a_text_the_program_dropped_while_it_asked_arrives_once`, `a_text_the_program_kept_while_it_asked_is_not_typed_twice`, `a_text_whose_input_never_clears_is_not_sent`, `a_paste_shown_as_a_summary_is_submitted`; `daemon/holder:holder_unit_test` (`shown.rs` summary cases); `daemon/humatad:humatad2_unit_test` `start_message::tests::a_waiting_start_message_needs_you_and_an_unsent_one_is_asked_about_with_its_text`; `start_message::tests::a_remote_machines_unsent_start_message_is_asked_about_in_the_hosts_inbox_with_its_text`; `daemon/revive:kill_matrix_test` `a_resumed_agent_asking_a_question_is_told_once_it_is_answered_however_long_that_takes`.
+- **Upgrade:** daemon and holder library only; no proto or schema change. A remote machine's daemon needs this build for its starts.
+- **Reverse:** have `type_then_return` press return after `SHOWN_LIMIT` again, set `Starter.first_message` to the default (no gate, no Inbox) and `ReviveConfig.gate` to `None`.
+- **Amendment (VERIFY rerun2, 2026-11-17): a first message left in the input gets one more Enter.** Live, once the trust box was answered, the held start message was typed and shown and its return pressed, but in 1 of 2 sessions Copilot left it in its input. Now, 3 s (`SUBMIT_WAIT`) after a first message's return (submitted at once, or after a held wait), `FirstMessage` asks the gate whether the agent's input still shows the message (`WriteGate::unsent`, default `false` so revive's gates are unchanged; humatad's `StartGate` reads the screen: the last row starting with `❯` or `>`, with the rows below it, still holds the message's last line). If so, and the gate still says the input is clear (no question on the screen, screen readable), return is pressed once more, never twice; otherwise nothing more is pressed. The start doesn't wait for this look. Tests: `daemon/sessions:sessions_unit_test` `first_message::tests`; `daemon/humatad:humatad2_unit_test` `input_gate::tests` (`input_shows`). Reverse: drop the `confirm_logged` calls in `first_message.rs`.
+
+## D764: A Repos and machines grid cell shows its repo's main clone as the host records it, or MACHINE_OFFLINE when the host's last look at that machine wasn't ONLINE; it counts live sessions only (CH-9, 2026-11-17). Decided
+- **Problem:** `GetGrid` (CH-9, TP-1, `humata channel grid`) answered "not built". `GridCell.state` offers READY, CLONING, FAILED and MACHINE_OFFLINE, but the host keeps one main-clone state per channel repo (`ChannelRepo.main`), not one per machine. CH-9 says the grid shows no clone health and marks offline machines.
+- **Pick:** one cell per channel repo × channel machine, repos then machines in the channel's order. `sessions` counts the channel's sessions placed on that machine (an empty machine is the host) whose detail lists that repo. Archived sessions and deleted Desk sessions count nothing; sessions on machines or repos the channel no longer lists show nowhere. `state` is MACHINE_OFFLINE for a machine other than the host whose last seen reachability (the one `host list` shows) isn't ONLINE, or that the machine list doesn't have; otherwise the repo's main state (Cloning, Ready, Failed). The read is CHANNEL_READ on the channel, asked like GetChannel. It is not relayed (host only, as `api/CLI.md` says). No probe runs: the grid reads what the host already knows.
+- **Not taken:** a per-machine main state (no store field holds it; the machine's own clone health is not the grid's job per CH-9); asking each machine live (slow, and an offline one would hold the reply).
+- **Tests:** `daemon/humatad:humatad2_unit_test` (`channel_service/grid.rs`: counts per cell, main state vs offline, sessions on dropped machines or repos, no machine list); `daemon/humatad:channel_grid_test`.
+- **Docs:** `api/GRPC.md` ChannelService row; `flows/cases/README.md` gap 49.
+- **Upgrade:** none: no schema or proto change.
+- **Reverse:** put back the `not_built` arm in `get_grid` and drop `channel_service/grid.rs`.
+
+## D767: A question an agent asks on its own screen, such as Copilot's "Confirm folder trust", raises an Inbox question with its choices; the session needs you while it shows, and only the person's reply picks a choice (VERIFY copilot-remote, 2026-11-17). Decided
+- **Problem:** Copilot 1.0.113 asks "Do you trust the files in this folder?" for every fresh remote session and after every move, before its input box shows. No hook fires for it, so no Inbox request came and the status said working. D762 only stops Type from typing into it.
+- **Signal:** the session's agent watch (`session_service/watch.rs`, SE-21) already times the agent's output. Each time the output goes quiet (`QUIET_AFTER`, 3 s), `screen_ask::quiet` reads the tab's screen from its holder (`holders::screen_at`) and asks D762's `screen_question::asked_on`. That is one matcher, and only agent tabs are read. Not taken: a timer of its own (the quiet spell is when a question sits on the screen), hooks (none fire).
+- **Pick:** the card is the existing QUESTION card held as D761's are (`Inbox::raise_question`): the question line, the folder shown just above it, every numbered choice the screen lists (`1. Yes`, `2. Yes, and remember this folder for future sessions`, `3. No (Esc)`), and a note that Yes lets the agent use the folder's files and Humata never answers for you. The card takes only one of its choices (its words, ignoring case, or its number), kept as the choice's words; anything else is refused with the list. Approve is refused (D761). While it is held, `Asking` keeps the session NEEDS_INPUT. A reply re-reads the screen and, only if it still asks the same question with the same choices, moves the highlight there with arrow keys and presses Enter. Deny types nothing, and the screen keeps the question for the person; the same screen isn't asked again. The screen no longer asking (answered in the terminal), the agent exiting or a new holder withdraws the card (CALL_ENDED). D199's Ask for permission in the Inbox off keeps it on the screen only. Humata never picks a choice by itself.
+- **Owed live check:** that Copilot's trust list moves with arrow keys and takes Enter as the tests' agent does, on a fresh remote session and after a move.
+- **Tests:** `daemon/humatad:screen_questions_test` (`folder_trust_on_the_agents_screen_is_an_inbox_question_answered_only_by_the_person`, `folder_trust_answered_in_the_terminal_withdraws_the_question`, `declining_folder_trust_in_the_inbox_types_nothing`); `daemon/humatad:humatad2_unit_test` `screen_ask` tests (the question, folder, choices and highlight read off Copilot's screen; arrow moves).
+- **Docs:** `api/CLI.md` `humata inbox reply` row.
+- **Upgrade:** none: the daemon looks at screens from its start, and a session whose screen asks now raises the card at its next quiet spell.
+- **Reverse:** drop the `screen_ask::quiet` call in `watch.rs`.
+- **Amendment (VERIFY rerun2, 2026-11-17): the card offers every choice the box shows, and a reply reaches the box.** Live with Copilot 1.0.113, cards offered only `["Yes"]` or `["Yes", "Yes, and remember…"]` while the screen showed all three rows, and `humata inbox reply <rq> Yes` marked the card answered but the box stayed up (only a bare Enter typed in the session cleared it). Cause: the card was raised from the first quiet spell's read of the screen, which listed fewer rows than the finished box (inferred from the cards against the captured screens: the raw output of that moment wasn't kept), and a later look at the same question was skipped because `look` compared only holder and question, so the card never caught up. On the reply, `pick` re-read the screen, found three choices where the card had one or two, and returned without typing or saying anything. The folder never reached the card either, as Copilot puts four rows of its own between the folder and the question and only four rows above were searched. Now: (1) `Open` keeps what the card shows; a look that reads different words or choices withdraws the old card and raises one with the new list (its key carries the choices, so the two never merge); a moved highlight alone isn't a new card. (2) A reply re-reads the screen and, while it still asks the same question and still lists the chosen choice's words, moves from the highlight there now to that choice's row there now (`keys_for`), then presses Enter; a screen that stopped asking or dropped the choice types nothing and says why in the log (`NotPicked`). (3) The folder is the nearest path row anywhere above the question. (4) A choice's key hint is left off its words (`No (Esc)` is `No`), so replying `No` (or `3`) presses that row; Deny still types nothing. Remote sessions: the card is raised, held and picked by the machine's own daemon, whose holder it types into; the host's answer comes down the link (D744), so the same code path serves both. D762's gate doesn't apply to these keys (they go through the link, not Type). Tests: `daemon/humatad:screen_questions_test` `a_trust_box_drawn_in_steps_offers_every_choice_and_no_picks_the_no_row`; `daemon/humatad:humatad2_unit_test` `screen_ask::tests` (`copilots_captured_trust_boxes_give_every_choice_and_the_highlight`, from both captured screens with made-up folders; `a_reply_moves_the_highlight_to_its_row_on_the_screen_now`; `a_reply_to_a_card_read_off_a_box_still_drawing_picks_its_row_on_the_full_box`; `a_reply_picks_nothing_once_the_screen_stops_asking_or_drops_the_choice`; `a_key_hint_is_left_off_a_choice_and_other_brackets_are_kept`). Still owed live: the pick on Copilot itself. The held start message that once needed a second Enter is D763's amendment.
+
+## D768: An agent on a machine's own daemon looks machines up, lists and stats other machines' files and copies between machines through the host, which answers as that agent; `this-mac` there names the host Mac (VERIFY copilot-files BUG, 2026-11-17; uses TP-8, D672, D755). Decided
+- **Problem:** on vm-a, `humata cp this-mac:shared/agent-note.txt shared/` and `humata host ls` failed "MachineService.ListMachines isn't built into this humatad2 yet" (exit 7) and told the agent to update Humata, which was current. The machine-role daemon (`machine_service/box_storage.rs`) answered ListMachines and GetMachine `not_built`, and judged an agent's read of the host's files locally: the channel rule's Ask became `status::needs_approval`, Unimplemented with no kind, which agents read as `peer_version_unsupported`. The machine has no machine list and no links in any case; only the host does.
+- **Pick:** five more Uplink rows (`away/registry.rs`): MachineService ListMachines and GetMachine, FileService ListDirectory and Stat, TransferService StartTransfer. A machine's daemon sends an agent's call of these up as a `ForwardedCall` (`away/up.rs` `ask_host`) when it isn't about this machine alone: the lookups always, a list or stat that names another machine, and a copy whose source or destination names another machine (this machine's own side goes up with no machine named, and the host fills in the link's id: the host knows the machine by that id, not by the `ma_…` id the machine's daemon gives itself, which the 19:05 live rerun showed failing as "session … is on machine vm-a, not ma_…"). The host's `BoardSvc::run_forwarded` runs it with its own services (`HostCalls`) as that session's agent, under the host's rules; the machine adds nothing. The host's answer to a machine agent's ListMachines puts This Mac first (`is_this_mac`) when the channel has it, as the machine can't name the host otherwise. A user's or script's ListMachines on a machine's daemon stays `not_built` (the app talks to the host). ReadFile of another machine from a machine is refused with a fix (copy it in first): a stream isn't forwarded. With the host away, the call fails Unavailable `host_unreachable` with "wait until the host is linked".
+- **CLI:** `this-mac` for an agent on a machine-role daemon resolves to the listed `is_this_mac` machine (not the daemon's own machine, as D672 does elsewhere); `host ls` doesn't add This Mac twice.
+- **Errors:** `status::needs_approval` is PermissionDenied with kind `denied` and the capability, not Unimplemented. `not_built`'s fix no longer says to update: it says to do it from the app and that updating helps only once a release builds it. The CLI's bare-Unimplemented text says the CLI and humatad come from different releases and to migrate from the host's Inbox.
+- **Received:** a send to another machine by name alone lands in its `received/`, which an agent can't write; the refusal is D755's pull hint (`SharedOnOtherMachine`, message now "writes only on the machine it runs on"), not "leads outside Humata's folders".
+- **Asked reads:** FileService reads still use `guard.require`, so a read the channel's rule Asks about is refused at once and raises no Inbox card, on the host and on a machine alike. Making reads wait in the Inbox is open.
+- **Not taken:** giving machines their own machine list or links (two sources of truth; D227 keeps the host the one judge); forwarding ReadFile's stream.
+- **Owed:** MCP's file tools pass a machine name as typed; "This Mac" isn't a name the host resolves, so an agent's MCP copy should use `this-mac` or the id.
+- **Tests:** `daemon/humatad:humatad2_unit_test` (`away::registry` rows); `daemon/humatad:away_forward_test` (a machine agent's ListMachines, Stat and StartTransfer go up as forwarded calls); `cli:this_machine_test` (`this-mac` on a machine picks the host; `host ls` lists it once); `daemon/humatad:agent_send_machine_test` (an agent on box-1 lists machines and pulls from This Mac on the rig); `daemon/access:refusals_test` (received/ refusal).
+- **Upgrade:** both ends: a machine at an older release still answers `not_built`, and a host at an older release refuses the new rows as unknown methods. D-UPGRADE's Migrate covers it; no schema change.
+- **Reverse:** drop the five rows and their arms in `run_forwarded`, and the `ask_host` calls in `box_storage.rs`, `files/forward.rs` and `transfer_service.rs`.
+- **Ruling (Fable, 2026-11-17):** an asked file read must not be a dead end. It raises an Inbox approval carrying the agent, session, machine, path and operation, and the call answers at once with `approval_pending` and the request id (the same gate other asked calls use); it does not hold the read open. The agent waits on the request or asks again with the same key. One card per session, capability and path, so retries don't stack. A machine agent's forwarded read is asked on the host (D227). `status::needs_approval` goes away for file reads.
+
+## D769: `humata cp a b`, with one source and `b` a new name or an existing file, copies to the file `b`, as plain cp does; StartTransfer takes the landing name (VERIFY copilot-files BUG, 2026-11-17; amends D756). Decided
+- **Problem:** a host agent's `humata cp note.txt vm-b.txt` answered "there is no vm-b.txt there": D756 reads the dotted word as a path in the agent's clone, and StartTransfer's destination must be an existing folder; each source lands under its own name in it.
+- **Pick:** `StartTransferRequest.name` (field 7): the one source's name in the destination folder; empty keeps its own. It is refused with more than one source and when it isn't one plain path part. The engine's `start_as` lands the one top under it (on-existing rules apply to that name). The CLI, for one source and a destination without a trailing `/`, Stats the destination: a folder takes the source under its own name; not found, or a file, sends the parent folder with `name` set to the last part. Any other answer (a refusal, unreadable) is sent as a folder, as before, and the daemon says what is wrong.
+- **Not taken:** guessing from a dot in the name (folders have dots too); a daemon-side Stat in StartTransfer (the destination's meaning is the CLI's, like cp's).
+- **Tests:** `daemon/transfers:transfers_test` (a named top lands under the new name; two sources with a name are refused); `cli:files_test` (`cp note.txt vm-b.txt` sends the clone root and `vm-b.txt`; an existing folder keeps the source's name).
+- **Upgrade:** additive proto field; an older daemon ignores `name` and fails as before. Ships with D768.
+- **Reverse:** stop setting `name` in `commands/files.rs`; the field stays unused.
+
+## D770: every Settings section is served; the portable ones live in `config/settings.toml` (VERIFY worker, 2026-11-17). Provisional
+- **Pick:** UpdateSettings serves default_agent, terminal, retention_defaults, long_lines, skills and notifications, and UpdateChannelSettings serves default_agent (with clear_default_agent) and retention. None of them returns `not_built` any more. The global sections other than skills are kept in the humata home's `config/settings.toml` (portable config, written whole). Skills go in the state folder's `skills-settings.json`, the file skills sync already reads, so SK-3/SK-6 take the change at once. A channel's own default agent and retention go in the store keys `channel.<id>.default_agent` and `channel.<id>.retention` at the channel's revision. The Settings revision is the newest of every section's saves; the config file's saves are counted under the store key `settings.sections`. GetSettings fills every section: Wrap (ST-7), retention all off (ST-14, LD-16), skills auto sync on (SK-3), no quiet hours and VIP doesn't break them (NV-23), the terminal's font size 12, 10000 lines of scrollback and a theme that follows the system (ST-3), and the daemon's `--default-agent`. A channel without its own retention reads as the Settings defaults; without its own default agent, the field is unset.
+- **Checks:** every section is checked before any is saved. The default agent must be a known agent, the font size 0 or 6–72, scrollback at most 1000000, retention at most 3650 days, long lines Wrap or Scroll, skill patterns and opted-out machines non-empty, and quiet hours both HH:MM or both empty. A `settings.toml` broken by hand shows the defaults (logged) and refuses an update, naming the file.
+- **ST-15:** a start that names no agent takes the channel's own default agent, then the one in Settings, then the agent the channel was made with (`session_service.rs` `agent_for`, through `settings_service::default_agent_for`). So once Settings names an agent, it wins over the agent a channel was created with.
+- **Follow-ups:** retention isn't carried out yet (nothing archives on these days). The terminal's font, size, theme and scrollback are served but the app and holders don't read them yet. The default agent's model is stored and never passed (SE-2). UpdateChannelSettingsRequest has no `clear_retention`, so a channel's own retention can be changed but not cleared back to Settings. Skills settings could move into `config/` later.
+- **Tests:** `daemon/humatad:settings_sections_test`.
+- **Reverse:** put `unbuilt_section`/`unbuilt_channel_section` back in `settings_service.rs`, drop `settings_service/sections.rs` and the `agent_for` fallback. The saved files are left as they are.
+- **Ruling (Fable, 2026-11-17):** the order stands: the channel's own default agent, then Settings, then the agent the channel was made with. ST-15 names a per-channel override as the only way a channel differs from Settings; the creation-time agent is a fallback, not a pin. No change to `agent_for`. The dialogs that preselect an agent (new session, fork, PR review) must resolve it the same way, so what is shown is what starts.
+
+## D771: provider import previews a whole plan and spends it once (MP-23) (VERIFY worker, 2026-11-17). Provisional
+- **Pick:** PreviewProviderImport (user-only, no presence) takes the picked file as UTF-8, or refuses it as INVALID_ARGUMENT `file`. It returns the text as given, its providers, every command each runs (`Provider::commands`), and the ids it replaces (already in the file, or the built-in Lima). It saves nothing. A file with problems (bad TOML, a bad provider, no providers, or a merge that wouldn't parse) returns them with no token. Otherwise its `pl_` token holds the whole providers file the import would write, plus the file's revision at preview. When no imported id is in the file yet, that file is the current text with the import appended, comments kept; otherwise the TOML tables are merged and the named providers replaced. ImportProvider (user, present) spends the token once, within ten minutes. It is FAILED_PRECONDITION `plan_stale` when the token is unknown, spent or old, or when the providers file changed since the preview. Otherwise it writes the file whole and returns the new revision.
+- **Not taken:** re-parsing the file at import (the plan must be exactly what was shown); holding plans across a daemon restart (a restart asks for a new preview).
+- **Follow-ups:** the idempotency key isn't replayed (a repeat after success is `plan_stale`, and nothing is written twice). The table merge drops the existing file's comments.
+- **Tests:** `daemon/humatad:provider_import_test`.
+- **Reverse:** return `not_built` from both calls in `provider_service.rs` and drop `provider_service/import.rs`.
+
+## D772: An agent reads machine reachability through `topology_get` from the channel's grid, not the machine list: `online`, `offline`, or `unknown` when the grid has no cell for the machine (TP-1, gap 79, 2026-11-17). Decided
+- **Problem:** MCP.md promised `topology_get` (WhoAmI + GetChannel + ListSessions, CHANNEL_READ) with a `reachability` per machine, but the tool was unserved. Reachability lives in `MachineService.ListMachines`, a user/host call an agent's CHANNEL_READ doesn't cover, and on a machine daemon it isn't built (owned by the remote-cp fix).
+- **Pick:** `daemon/humatad/src/mcp/topology.rs` also calls `ChannelService.GetGrid` (D764), which is CHANNEL_READ on the same channel. This machine is always `online`. Another machine is `offline` if any of its grid cells is MACHINE_OFFLINE, `online` if it has cells and none is, and `unknown` if it has none (a channel with no repos, or a machine only a session names). Order: this machine, then the channel's machines in order, then any other machine a live session is on. Each lists the channel's live sessions there as `{id, title, agent, status}`. `id` and `name` are both the machine's id as the channel and sessions carry it: a remote machine's name, and the host's own `ma_` id (no channel-scoped call names the host).
+- **Not taken:** letting agents call ListMachines (widens what an agent sees past its channel); a new per-machine field on ChannelGrid (a proto change for the one case of a channel with no repos).
+- **Follow-ups:** a channel with no repos shows its other machines as `unknown`; if that matters, add per-machine reachability to `ChannelGrid`. Host away: the tool answers from the machine's own daemon, where GetGrid sees every other machine as offline (D764 with no machine list).
+- **Tests:** `daemon/humatad:mcp_test` `topology_get_names_this_machine_and_the_channels_sessions_on_it`, `tools_list_offers_only_tools_the_daemon_runs` (now expects it listed); `daemon/humatad:humatad2_unit_test` (`mcp::topology` order and reachability cases).
+- **Docs:** `api/MCP.md` topology_get row; `flows/cases/README.md` gap 79; `flows/cases/agents/08-forking-onto-another-machine.md`.
+- **Upgrade:** none: no schema or proto change. An older `humatad2 mcp` keeps answering not built until updated.
+- **Reverse:** drop `Operation::TopologyGet` from `serves()` and the dispatch, and `mcp/topology.rs`.
+
+## D773: GiveOwnCopy for a context-only fork on another machine is relayed to that machine, which makes the copy as it does for its own sessions; the host shows the machine's steps and then records the fork's new branch and folder (FK-9, VERIFY, 2026-11-17). Decided (by the fixing agent; reversible)
+- **Problem:** `session_service/own_copy.rs` answered "not built" for a fork whose record names another machine, although such forks are made there (D187, D208).
+- **Pick:** the host runs its own checks first: the access rule, the idempotency key, and that the fork is context-only (the host keeps the fork origin of a fork on a box). It then relays GiveOwnCopy to the machine under the key `host-own-copy-<caller's key>`, so a retry gets the machine's operation back. An offline machine is refused at once with MachineOffline. A machine's refusal (busy, has its own copy, no conversation) goes back at once, before any host operation exists, as a refusal here does. After that the host's GIVE_OWN_COPY operation has the same step keys as the machine's and mirrors them (`archive_remote::follow_to_end`) under the fork's lifecycle lock. On success the host reads the fork from the machine with GetSession. It records each repo's new branch, and the folder and clone paths laid out on its own root, as `place_session` does for a session on a box. Then it publishes the fork and its family.
+- **Not taken:** asking the machine and answering from its operation without a host operation (the app follows host operations only); reading the new branch from the machine's pointer reports (they arrive late and may never name a repo with no commits).
+- **Upgrade:** the machine's peer link now lets the host relay GiveOwnCopy (`relay.rs` LISTED_METHODS, beside ForkSession), so the machine needs this humatad2 too. A machine on an older humatad2 refuses the call as off its peer list (PermissionDenied) and nothing changes; there is no fallback.
+- **Tests:** `daemon/humatad:own_copy_remote_test` (red in run 108 before the fix: the host answered not built); `humatad2_unit_test` (the peer allowlist).
+- **Reverse:** put the `not_built_part` answer back in `give_own_copy_of` and drop `own_copy_remote`, `run_own_copy_remote` and `take_up_own_copy`.
+- **Follow-up:** a link lost during the copy fails the host's operation while the machine may finish it. The host's record then keeps the old branch and folder, and asking again is refused because the fork has its own copy. The host should read the fork again when the machine's link comes back. An older machine's off-list refusal should come back as a Migrate error naming the machine (the force-upgrade rule), not a bare PermissionDenied.
+- **Ruling (Fable, 2026-11-17):** confirmed: the bare PermissionDenied must go. The refusal is FailedPrecondition with kind `peer_version_unsupported` naming the machine and its version, with the fix "Migrate <machine> from the Inbox", and the host makes sure that machine's VIP Migrate (daemon) item exists (D281). It is made once in the relay (`relay.rs`), for any method the host lists and the machine refuses as off its list, not in `own_copy` alone; where the host knows the machine's version from Hello it refuses before relaying. Not `host_needs_migrate` (that is the host lacking a build) and not Unimplemented.
+
+## D774: SendNote, AskSession and AnswerQuestion are served: a note or question is typed once into the other session's agent after its turn, through the input gate; the asked session's answer is the asking call's result (TP-5; VERIFY worker, 2026-11-17). Provisional
+- **Problem:** all three answered `not_built`, so `humata session note|ask` and MCP `session_note`/`session_ask`/`session_answer` failed, though SPEC TP-5, CLI.md and the MCP tool list promise them.
+- **Pick:** `session_service/notes.rs`. Both calls gate on SESSION_NOTE with the target session (an agent's call asks the user first, answer_gated). A session can't note or ask itself. The target must run here with its agent Running; else FailedPrecondition, nothing typed (resume it first). Moving (MV-4) refuses as Type does. It waits while the turn is WORKING or NEEDS_INPUT (a note up to 45 s, TP-11's default; an ask until its own deadline), then `await_keys`, then `input_gate::guard` (fails closed, D762), then types the one line and a separate return with holder keyed input (`tp5/<hash of caller + idempotency key>`), so a retried call types nothing twice. An outdated holder is refused with the Migrate fix. The line names the sender (session title and id, "the user" or the script's name), never a path or branch (D743); control characters and line breaks become spaces; empty is Missing, over 16 KiB TooLong.
+- **Questions:** `qu_<id>` (from the same hash when keyed, so a retry reuses it; random otherwise) held in the daemon's memory as long as the asking call. `timeout_seconds` 0 means 30 minutes, capped there; MCP asks with 600 s (TP-11's longest wait). Only the asked session's own agent answers (others PermissionDenied); answered, declined, expired or abandoned questions are NotFound, with the fix to send the answer as a note. A repeated answer with the same idempotency key is taken again. A turn that doesn't end before the deadline makes the ask EXPIRED with nothing typed. CLI: `humata session answer <qu_id> [answer] [--decline]`.
+- **Not taken:** a durable turn-end queue (SendNote never answers `typed: false`; a note to a session still mid-turn after 45 s is Unavailable and says to send it again); MCP `when` is ignored (always at turn end).
+- **Follow-ups:** relay notes and questions to a session on another machine (refused now, FailedPrecondition, nothing typed); questions survive a daemon restart (today the asking call ends with it); a retried ask after its answer waits again rather than replaying the answer; MCP `session_answer` has no decline field.
+- **Tests:** `daemon/humatad:session_notes_test` (waits for the turn then types once; an agent's note asks first and names its sender; answered, declined and expired questions; only the asked session answers; a stopped session gets nothing); `cli:dry_run_test` (`session answer`).
+- **Upgrade:** none: new behaviour behind existing RPCs; an older daemon still answers `not_built`.
+- **Reverse:** put the three `not_built` stubs back in `session_service.rs` and drop `notes.rs`, the MCP arms and `SessionCommand::Answer`.
+
+## D775: `session type` reports agent_busy only while the turn is WORKING or NEEDS_INPUT; PROBABLY_IDLE is not busy (VERIFY, 2026-11-17). Decided (by the fixing agent; reversible)
+
+- **Pick:** `terminal.rs` `agent_busy` was "anything but Idle", so a Copilot agent idle at its prompt (no idle hook heard, output quiet: PROBABLY_IDLE) read busy. Now only WORKING and NEEDS_INPUT are busy. The desk's move and rename guards keep "anything but Idle" (they must be sure).

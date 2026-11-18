@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::mpsc;
 
 use super::{
-    Anchor, Author, Comment, CommentEvent, CommentEvents, CommentId, CommentsClient, Listing, Side,
-    Sent, Status, ThreadReply, Which,
+    Anchor, Author, Comment, CommentEvent, CommentEvents, CommentId, CommentsClient, Destination,
+    Listing, Side, Sent, Status, ThreadReply, Which,
 };
 use crate::daemon::{DaemonError, Reply};
 use crate::model::SessionId;
@@ -40,12 +40,17 @@ pub enum Call {
     Watch(SessionId),
     /// `create`, with the idempotency key last.
     Create(SessionId, Anchor, String, String),
+    /// `create_for_pull_request`: session, anchor, text, repository, number
+    /// and the idempotency key last.
+    CreateForPullRequest(SessionId, Anchor, String, String, u32, String),
     /// `edit`.
     Edit(CommentId, String, u64),
     /// `drop_comment`.
     Drop(CommentId),
     /// `reattach`.
     Reattach(CommentId, Anchor, u64),
+    /// `make_note_a_draft`, with the pull request named, if any.
+    MakeNoteADraft(CommentId, Option<(String, u32)>),
     /// `send`.
     Send(SessionId, Vec<CommentId>),
     /// `take_back`.
@@ -67,6 +72,8 @@ struct SessionState {
     agent: String,
     typing: Typing,
     comments: Vec<Comment>,
+    /// The review's pull requests, `owner/name` and number.
+    pull_requests: Vec<(String, u32)>,
     next: u32,
     keys: HashMap<String, CommentId>,
     /// The unconfirmed batch each waiting comment was in.
@@ -86,6 +93,7 @@ impl SessionState {
             agent: "claude".to_owned(),
             typing: Typing::Typed,
             comments: Vec::new(),
+            pull_requests: Vec::new(),
             next: 1,
             keys: HashMap::new(),
             batches: HashMap::new(),
@@ -98,6 +106,39 @@ impl SessionState {
 
     fn emit(&mut self, event: &CommentEvent) {
         self.watchers.retain(|watcher| watcher.send(event.clone()).is_ok());
+    }
+
+    /// Adds a draft with the next id and tells the watchers of it.
+    fn add(
+        &mut self,
+        session: &SessionId,
+        anchor: Anchor,
+        text: &str,
+        destination: Destination,
+        author: Author,
+    ) -> Comment {
+        let id = CommentId::new(format!("{session}/c-{}", self.next));
+        self.next += 1;
+        let comment = Comment {
+            id,
+            session: session.clone(),
+            anchor,
+            text: text.to_owned(),
+            status: Status::Draft,
+            revision: 1,
+            unconfirmed: false,
+            archived: false,
+            replies: Vec::new(),
+            resolved_by: None,
+            addressed: None,
+            destination,
+            author,
+            posted_url: None,
+            post_unconfirmed: false,
+        };
+        self.comments.push(comment.clone());
+        self.emit(&CommentEvent::Changed(comment.clone()));
+        comment
     }
 
     fn position(&self, id: &CommentId) -> Option<usize> {
@@ -153,11 +194,41 @@ fn refused(what: &str, reason: &str) -> DaemonError {
     DaemonError::Refused { what: what.to_owned(), reason: reason.to_owned() }
 }
 
+fn conflict(what: &str, reason: &str) -> DaemonError {
+    DaemonError::Conflict { what: what.to_owned(), reason: reason.to_owned() }
+}
+
+/// The review's one pull request for a note on `note_repo`: the one whose
+/// `owner/name` is that repository or whose name is its folder. None or
+/// several are refused, the second asking for the pull request by name.
+fn infer_pull_request(
+    note_repo: &str,
+    pull_requests: &[(String, u32)],
+) -> Result<(String, u32), DaemonError> {
+    let folder = note_repo.rsplit('/').next().unwrap_or(note_repo);
+    let mut hits = pull_requests.iter().filter(|(repo, _)| {
+        repo == note_repo || repo.rsplit('/').next().is_some_and(|name| name == folder)
+    });
+    match (hits.next(), hits.next()) {
+        (Some((repo, number)), None) => Ok((repo.clone(), *number)),
+        (None, _) => Err(refused(
+            "This draft",
+            "the note is on a repository none of this review's pull requests are in; make a draft only of a note on a repository the review covers",
+        )),
+        _ => Err(refused(
+            "This draft",
+            "this review has several pull requests in that repository; say which one the draft is for",
+        )),
+    }
+}
+
+/// A change made against an older revision is a conflict, as the daemon
+/// answers it (RevisionConflict), not a refusal.
 fn check_revision(comment: &Comment, revision: u64) -> Result<(), DaemonError> {
     if comment.revision == revision {
         Ok(())
     } else {
-        Err(refused(
+        Err(conflict(
             "This change",
             "the comment changed since you opened it; reopen it to see the latest and try again",
         ))
@@ -246,6 +317,13 @@ impl FakeComments {
     /// only when there are two or more (SM-9).
     pub fn set_repos(&self, session: &SessionId, repos: &[&str]) {
         self.inner().session(session).repos = repos.len();
+    }
+
+    /// The pull requests the session's review is bound to, `owner/name` and
+    /// number. Drafts are made only for these, and a note's pull request is
+    /// inferred from them (D284).
+    pub fn set_review_pull_requests(&self, session: &SessionId, pull_requests: Vec<(String, u32)>) {
+        self.inner().session(session).pull_requests = pull_requests;
     }
 
     /// The agent's name, used when it resolves a comment.
@@ -363,7 +441,7 @@ impl FakeComments {
                 comment.anchor.detached = true;
                 Ok(())
             }),
-            Status::Addressed | Status::Resolved => {
+            Status::Addressed | Status::Resolved | Status::Posted => {
                 Ok(inner.session(&session).comments[index].clone())
             }
         }
@@ -378,6 +456,90 @@ impl FakeComments {
         self.inner().change(id, |comment, _| {
             comment.anchor.first = first;
             comment.anchor.last = last;
+            Ok(())
+        })
+    }
+
+    /// A note the review chat left for the user, as a comment (PR-23).
+    pub fn seed_note(
+        &self,
+        session: &SessionId,
+        anchor: Anchor,
+        text: &str,
+        author: Author,
+    ) -> Comment {
+        self.inner().session(session).add(session, anchor, text, Destination::Note, author)
+    }
+
+    /// A draft for pull request `number` of `repo` (`owner/name`), as the
+    /// review chat or the agent writes it (D284).
+    pub fn seed_pull_request_draft(
+        &self,
+        session: &SessionId,
+        anchor: Anchor,
+        text: &str,
+        author: Author,
+        repo: &str,
+        number: u32,
+    ) -> Comment {
+        let destination = Destination::PullRequest { repo: repo.to_owned(), number };
+        self.inner().session(session).add(session, anchor, text, destination, author)
+    }
+
+    /// GitHub took a pull request draft, at `url` (PR-14). Only a draft for
+    /// a pull request can be posted.
+    ///
+    /// # Errors
+    /// Not found, or refused for a comment that isn't a draft for a pull
+    /// request.
+    pub fn mark_posted(&self, id: &CommentId, url: &str) -> Result<Comment, DaemonError> {
+        self.inner().change(id, |comment, _| {
+            if !matches!(comment.destination, Destination::PullRequest { .. }) {
+                return Err(refused(
+                    "This post",
+                    "only a draft for a pull request is posted; a comment for the terminal is sent to the agent",
+                ));
+            }
+            if comment.status != Status::Draft {
+                return Err(refused("This post", "only a draft can be posted"));
+            }
+            comment.status = Status::Posted;
+            comment.posted_url = Some(url.to_owned());
+            comment.post_unconfirmed = false;
+            Ok(())
+        })
+    }
+
+    /// Sets whether a submit was cut short after GitHub may have taken the
+    /// draft (D287).
+    ///
+    /// # Errors
+    /// Not found, or refused for a posted comment, which is never unconfirmed.
+    pub fn set_post_unconfirmed(
+        &self,
+        id: &CommentId,
+        unconfirmed: bool,
+    ) -> Result<Comment, DaemonError> {
+        self.inner().change(id, |comment, _| {
+            if comment.status == Status::Posted {
+                return Err(refused(
+                    "This flag",
+                    "a posted comment was posted, so it is never unconfirmed",
+                ));
+            }
+            comment.post_unconfirmed = unconfirmed;
+            Ok(())
+        })
+    }
+
+    /// Sets whether a pull request draft's lines changed since it was
+    /// written (PR-16).
+    ///
+    /// # Errors
+    /// Not found.
+    pub fn set_outdated(&self, id: &CommentId, outdated: bool) -> Result<Comment, DaemonError> {
+        self.inner().change(id, |comment, _| {
+            comment.anchor.outdated = outdated;
             Ok(())
         })
     }
@@ -435,6 +597,12 @@ impl Inner {
                 return Err(refused(
                     "This send",
                     "only drafts can be sent; take the sent ones out of the selection",
+                ));
+            }
+            if !matches!(comment.destination, Destination::Terminal) {
+                return Err(refused(
+                    "This send",
+                    "notes and pull request drafts are not typed into the terminal; take them out of the selection",
                 ));
             }
         }
@@ -557,24 +725,52 @@ impl CommentsClient for FakeComments {
             if text.trim().is_empty() {
                 return Err(refused("This comment", "it is empty; write what you want changed"));
             }
-            let id = CommentId::new(format!("{session}/c-{}", state.next));
-            state.next += 1;
-            let comment = Comment {
-                id: id.clone(),
-                session: session.clone(),
-                anchor,
-                text: text.to_owned(),
-                status: Status::Draft,
-                revision: 1,
-                unconfirmed: false,
-                archived: false,
-                replies: Vec::new(),
-                resolved_by: None,
-                addressed: None,
-            };
-            state.keys.insert(key.to_owned(), id);
-            state.comments.push(comment.clone());
-            state.emit(&CommentEvent::Changed(comment.clone()));
+            let comment = state.add(session, anchor, text, Destination::Terminal, Author::User);
+            state.keys.insert(key.to_owned(), comment.id.clone());
+            Ok(comment)
+        })
+    }
+
+    fn create_for_pull_request(
+        &self,
+        session: &SessionId,
+        anchor: Anchor,
+        text: &str,
+        repo: &str,
+        number: u32,
+        key: &str,
+    ) -> Reply<Comment> {
+        let call = Call::CreateForPullRequest(
+            session.clone(),
+            anchor.clone(),
+            text.to_owned(),
+            repo.to_owned(),
+            number,
+            key.to_owned(),
+        );
+        self.call("create_for_pull_request", call, |inner| {
+            let state = inner.session(session);
+            if let Some(existing) = state.keys.get(key).and_then(|id| state.position(id)) {
+                return Ok(state.comments[existing].clone());
+            }
+            if !state.pull_requests.iter().any(|(held, n)| held == repo && *n == number) {
+                return Err(refused(
+                    "This draft",
+                    "it is not for one of the pull requests this session reviews; start another review to cover it",
+                ));
+            }
+            if !anchor.repo.is_empty() && !super::repo_holds_pull(&anchor.repo, repo) {
+                return Err(refused(
+                    "This draft",
+                    "its lines are in another repository than the pull request's; anchor it on a file of the pull request's repository",
+                ));
+            }
+            if text.trim().is_empty() {
+                return Err(refused("This comment", "it is empty; write what you want changed"));
+            }
+            let destination = Destination::PullRequest { repo: repo.to_owned(), number };
+            let comment = state.add(session, anchor, text, destination, Author::User);
+            state.keys.insert(key.to_owned(), comment.id.clone());
             Ok(comment)
         })
     }
@@ -610,6 +806,40 @@ impl CommentsClient for FakeComments {
         })
     }
 
+    fn make_note_a_draft(&self, id: &CommentId, pr: Option<(&str, u32)>) -> Reply<Comment> {
+        let pr_owned = pr.map(|(repo, number)| (repo.to_owned(), number));
+        let call = Call::MakeNoteADraft(id.clone(), pr_owned);
+        self.call("make_note_a_draft", call, |inner| {
+            let (session, index) = inner.locate(id)?;
+            let held = inner.session(&session).comments[index].clone();
+            if matches!(held.destination, Destination::PullRequest { .. }) {
+                return Ok(held);
+            }
+            inner.change(id, |comment, state| {
+                if comment.destination != Destination::Note {
+                    return Err(refused(
+                        "This draft",
+                        "only a note becomes a draft; this comment is already for the agent",
+                    ));
+                }
+                let (repo, number) = match pr {
+                    Some((repo, number)) => {
+                        if !state.pull_requests.iter().any(|(held, n)| held == repo && *n == number) {
+                            return Err(refused(
+                                "This draft",
+                                "it is not one of the pull requests this session reviews; draft only for those",
+                            ));
+                        }
+                        (repo.to_owned(), number)
+                    }
+                    None => infer_pull_request(&comment.anchor.repo, &state.pull_requests)?,
+                };
+                comment.destination = Destination::PullRequest { repo, number };
+                Ok(())
+            })
+        })
+    }
+
     fn reattach(&self, id: &CommentId, anchor: Anchor, revision: u64) -> Reply<Comment> {
         self.call("reattach", Call::Reattach(id.clone(), anchor.clone(), revision), |inner| {
             inner.change(id, |comment, _| {
@@ -620,7 +850,7 @@ impl CommentsClient for FakeComments {
                         "only drafts can move; write a new comment on the new passage",
                     ));
                 }
-                comment.anchor = Anchor { detached: false, ..anchor };
+                comment.anchor = Anchor { detached: false, outdated: false, ..anchor };
                 Ok(())
             })
         })

@@ -3,18 +3,22 @@
 
 use humata2_access::Call;
 use humata2_grpc::humata::v1 as pb;
-use humata2_mirror::{TurnMark, turns_of};
+use humata2_sessions::TurnsError;
 use tonic::{Code, Status};
 
-use super::SessionSvc;
+use super::{Loaded, SessionSvc};
 use crate::channel_service::{Gated, blocking, failed, gate};
 use crate::history_service::rfc3339;
 use crate::identity::Caller;
 use crate::status;
 
+/// A session's turns, as `SessionSvc::session_turns` reads them.
+pub(super) type SessionTurns = Result<Option<Vec<pb::Turn>>, TurnsError>;
+
 impl SessionSvc {
     /// Every turn of the session, in order; nothing is paged. An agent
-    /// whose conversation format can't be read has none. A session's own
+    /// whose conversation format can't be read has none, nor has a
+    /// conversation its adapter doesn't support (CV-3). A session's own
     /// agent reads its own turns freely; anyone else is held to the rule
     /// that reads the session (as GetSession is), and a rule that asks
     /// puts the call in the Inbox until the user answers (`approved`).
@@ -38,39 +42,54 @@ impl SessionSvc {
                 return Ok(Gated::Ask(asked));
             }
         }
-        let reads = self
-            .starter
-            .agents
-            .get(&loaded.record.agent)
-            .is_ok_and(|kind| kind.conversation_format.reads_turns());
-        let Some(record) = loaded.agent.as_ref().filter(|_| reads) else {
-            return Ok(Gated::Done(pb::ListTurnsResponse {
-                turns: Vec::new(),
-                page: None,
-            }));
-        };
-        let path = record.launch.conversation_file.clone();
-        let marks = blocking(move || turns_of(&path))
-            .await?
-            .map_err(|error| {
-                failed(
+        let turns = match self.session_turns(&loaded).await? {
+            Ok(turns) => turns.unwrap_or_default(),
+            Err(TurnsError::Unsupported { .. }) => Vec::new(),
+            Err(error) => {
+                return Err(failed(
                     Code::Unavailable,
                     &error,
-                    "check that the session's conversation file is still there and readable by this user, then list the turns again",
+                    "check that the session's conversation is still there and readable by this user, then list the turns again",
                     None,
-                )
-            })?;
-        Ok(Gated::Done(pb::ListTurnsResponse {
-            turns: marks.into_iter().map(turn_message).collect(),
-            page: None,
-        }))
+                ));
+            }
+        };
+        Ok(Gated::Done(pb::ListTurnsResponse { turns, page: None }))
     }
-}
 
-fn turn_message(mark: TurnMark) -> pb::Turn {
-    pb::Turn {
-        index: mark.index,
-        user_text: mark.first_line,
-        at: mark.at.as_deref().and_then(rfc3339::parse),
+    /// The turns of the session's conversation, read through its agent's
+    /// conversation adapter (`AgentKind::turns`), the way a fork or a
+    /// continue cuts it. None when its agent's turns can't be read; no turns
+    /// when it has no agent record yet.
+    pub(super) async fn session_turns(
+        &self,
+        loaded: &Loaded,
+    ) -> Result<SessionTurns, Status> {
+        let Ok(kind) = self.starter.agents.get(&loaded.record.agent) else {
+            return Ok(Ok(None));
+        };
+        let Some(record) = loaded.agent.as_ref() else {
+            return Ok(Ok(Some(Vec::new())));
+        };
+        let kind = kind.clone();
+        let home = self.starter.home.clone();
+        let folder = loaded.record.folder.clone();
+        let id = record.launch.conversation_id.clone();
+        let file = record.launch.conversation_file.clone();
+        let version = record.launch.cli_version.clone();
+        let read =
+            blocking(move || kind.turns(&home, &folder, &id, &file, version.as_deref())).await?;
+        Ok(read.map(|turns| {
+            turns.map(|turns| {
+                turns
+                    .into_iter()
+                    .map(|turn| pb::Turn {
+                        index: turn.index,
+                        user_text: turn.first_line,
+                        at: turn.at.as_deref().and_then(rfc3339::parse),
+                    })
+                    .collect()
+            })
+        }))
     }
 }

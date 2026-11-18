@@ -7,7 +7,10 @@
 //! that has an agent, and after that each Session event on the feed
 //! catches that session up (its title, channel and machine are described
 //! to the mirror first, so hits and filters name what is current). A
-//! session that is gone from the store is forgotten (LD-22).
+//! session that is gone from the store is forgotten (LD-22). While a
+//! session's agent runs here, a change to its conversation file catches it
+//! up too (`follow.rs`, N1), since an agent may write the end of a turn
+//! after the session's last event.
 //!
 //! Sessions on other machines are mirrored by the host reading them there
 //! (D189): `remote.rs` follows the machines' links and reports and, for each
@@ -27,6 +30,7 @@
 //!   page's `page_token`;
 //! - anything else of the mirror is `internal`, with the chain of causes.
 
+mod follow;
 mod remote;
 pub(crate) mod rfc3339;
 mod source;
@@ -35,14 +39,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use humata2_grpc::humata::v1 as pb;
-use humata2_mirror::{Mirror, MirrorError, PageAsk, Query, Scrubber, SessionMeta};
-use humata2_store::{SessionRecord, Store, StoreError};
+use humata2_mirror::{Mirror, MirrorError, PageAsk, Query, SessionMeta};
+use humata2_store::{AgentState, SessionRecord, Store, StoreError};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
 use tonic::{Code, Request, Response, Status};
 
 use crate::channel_service::blocking;
 use crate::compression::Compression;
-use crate::events::Feed;
+use crate::events::{Feed, Scope};
 use crate::guard::Guard;
 use crate::host_relay::Links;
 use crate::identity::{self, Caller};
@@ -64,11 +69,20 @@ struct Shared {
     /// entries log the first is appending to.
     mirror: Mutex<Option<Mirror>>,
     store: Arc<Store>,
+    /// Where an index catch-up is told (D438).
+    feed: Arc<Feed>,
     /// Reads of other machines' sessions (D189); set by `use_links` on the
     /// host, never on a machine's own daemon.
     remote: OnceLock<Arc<remote::Remote>>,
     /// The codec ReadMirror's answers use (TR-11).
     compression: Compression,
+    /// The agents and the home their CLIs run in, so a conversation an
+    /// agent wrote before its session named it (Codex) is learned here and
+    /// mirrored with no resume first (B9).
+    agents: humata2_sessions::Agents,
+    agent_home: PathBuf,
+    /// The conversation files of this machine's running agents (N1).
+    follow: follow::Follow,
 }
 
 /// Why a session couldn't be caught up. Logged, never shown to a caller:
@@ -79,6 +93,8 @@ enum SyncError {
     Store(#[source] StoreError),
     #[error("couldn't update the session's mirror; the next change to the session tries again")]
     Mirror(#[source] MirrorError),
+    #[error("the session's conversation wasn't copied, because this machine's host variable values couldn't be read to scrub it; the next change to the session tries again")]
+    Scrub(#[source] source::ScrubberError),
 }
 
 impl HistorySvc {
@@ -90,17 +106,24 @@ impl HistorySvc {
         _guard: Arc<Guard>,
         feed: Arc<Feed>,
         store: Arc<Store>,
+        agents: humata2_sessions::Agents,
+        agent_home: PathBuf,
     ) -> Self {
         let compression = Compression::new(&state);
+        let (touch, touched) = mpsc::unbounded_channel();
         let shared = Arc::new(Shared {
             state,
             mirror: Mutex::new(None),
             store,
+            feed: feed.clone(),
             remote: OnceLock::new(),
             compression,
+            agents,
+            agent_home,
+            follow: follow::Follow::new(touch),
         });
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(follow_sessions(Arc::downgrade(&shared), feed));
+            runtime.spawn(follow_sessions(Arc::downgrade(&shared), feed, touched));
         }
         Self { shared }
     }
@@ -207,9 +230,11 @@ impl Shared {
     /// since; forgets it when the store no longer has it.
     fn catch_up(&self, id: &str) -> Result<(), SyncError> {
         let Some(record) = self.store.session(id).map_err(SyncError::Store)? else {
+            self.follow.unfollow(id);
             return self.mirror().and_then(|m| m.forget(id)).map_err(SyncError::Mirror);
         };
         if self.is_remote(&record) {
+            self.follow.unfollow(id);
             // Another machine's conversation is read there (D189): name the
             // session to the mirror and hand it to that machine's task, so
             // this follower never waits on a machine.
@@ -219,29 +244,79 @@ impl Shared {
             }
             return Ok(());
         }
+        self.learn(id).map_err(SyncError::Store)?;
         let Some(agent) = self.store.agent(id).map_err(SyncError::Store)? else {
             // No agent has run: there is no conversation to copy yet.
+            self.follow.unfollow(id);
             return Ok(());
         };
         let mirror = self.describe(&record)?;
         let file = agent.launch.conversation_file;
+        // Followed before it is read, so a line written in between is seen.
+        let runs = matches!(
+            agent.state,
+            AgentState::Launching | AgentState::Running { .. } | AgentState::Resuming
+        );
+        if runs && !file.as_os_str().is_empty() {
+            if let Err(error) = self.follow.follow(id, &file) {
+                crate::log::say!("humatad2: {}", status::chain(&error));
+            }
+        } else {
+            self.follow.unfollow(id);
+        }
         if file.as_os_str().is_empty() || !file.exists() {
             return Ok(());
         }
-        // SEAM: LD-21 needs the host's variable values here, from
-        // MachineService's host variables once that is built; until then
-        // nothing is scrubbed.
-        let scrubber = Scrubber::new(Vec::new());
-        mirror
+        // LD-21: the host's own variable values, read now; when they can't be
+        // read nothing is copied (D189.3).
+        let scrubber = source::scrubber().map_err(SyncError::Scrub)?;
+        let added = mirror
             .catch_up(id, &file, &scrubber)
+            .map_err(SyncError::Mirror)?;
+        self.indexed(id, &record.channel, added);
+        Ok(())
+    }
+
+    /// Saves the conversation session `id`'s agent wrote, when the session
+    /// doesn't name it yet and it is there now (Codex). Blocking.
+    fn learn(&self, id: &str) -> Result<(), StoreError> {
+        self.agents
+            .learn_conversation(&self.store, &self.agent_home, id)
             .map(|_| ())
-            .map_err(SyncError::Mirror)
+    }
+
+    /// Tells whoever may read session `id` of channel `channel` that the
+    /// index has `added` more of its entries, so a search that missed them
+    /// can run again (D438). Adding none tells no one.
+    fn indexed(&self, id: &str, channel: &str, added: usize) {
+        if added == 0 {
+            return;
+        }
+        self.feed.publish_in(
+            pb::Change::Updated,
+            pb::event::Payload::HistoryIndexed(pb::HistoryIndexed {
+                session: Some(pb::SessionId {
+                    value: id.to_owned(),
+                }),
+                added: u64::try_from(added).unwrap_or(u64::MAX),
+            }),
+            Scope {
+                channel: channel.to_owned(),
+                session: id.to_owned(),
+            },
+            None,
+        );
     }
 }
 
 /// Catches every session of the store up once, then follows the feed's
-/// Session events while the service is there.
-async fn follow_sessions(shared: Weak<Shared>, feed: Arc<Feed>) {
+/// Session events and the running agents' conversation files while the
+/// service is there.
+async fn follow_sessions(
+    shared: Weak<Shared>,
+    feed: Arc<Feed>,
+    mut touched: mpsc::UnboundedReceiver<follow::Touch>,
+) {
     // Subscribe before the first pass so no event falls between the two.
     let mut live = feed.subscribe(None).1;
     if let Some(start) = shared.upgrade() {
@@ -270,7 +345,14 @@ async fn follow_sessions(shared: Weak<Shared>, feed: Arc<Feed>) {
         }
     }
     loop {
-        let published = match live.recv().await {
+        let received = tokio::select! {
+            received = live.recv() => received,
+            Some(touch) = touched.recv() => {
+                caught_up_touched(&shared, touch, &mut touched).await;
+                continue;
+            }
+        };
+        let published = match received {
             Ok(published) => published,
             // Events missed while behind: the next ones still count.
             Err(RecvError::Lagged(_)) => continue,
@@ -289,6 +371,33 @@ async fn follow_sessions(shared: Weak<Shared>, feed: Arc<Feed>) {
             return;
         }
         catch_up_logged(&shared, id).await;
+    }
+}
+
+/// How long a burst of writes to conversation files is let to finish
+/// before the sessions are caught up, once.
+const TOUCH_SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Catches up the sessions whose files `first` and the touches that follow
+/// it within [`TOUCH_SETTLE`] changed, each once.
+async fn caught_up_touched(
+    shared: &Weak<Shared>,
+    first: follow::Touch,
+    touched: &mut mpsc::UnboundedReceiver<follow::Touch>,
+) {
+    tokio::time::sleep(TOUCH_SETTLE).await;
+    let Some(held) = shared.upgrade() else {
+        return;
+    };
+    let mut sessions: Vec<String> = held.follow.touched(&first);
+    while let Ok(touch) = touched.try_recv() {
+        sessions.extend(held.follow.touched(&touch));
+    }
+    drop(held);
+    sessions.sort();
+    sessions.dedup();
+    for id in sessions {
+        catch_up_logged(shared, id).await;
     }
 }
 
@@ -349,8 +458,14 @@ fn other_channel(channel: &str) -> Status {
     )
 }
 
-fn timestamp(text: &str) -> Option<humata2_grpc::Timestamp> {
+pub(crate) fn timestamp(text: &str) -> Option<humata2_grpc::Timestamp> {
     rfc3339::parse(text)
+}
+
+/// The scrubber for this machine's host variable values, for a read that
+/// leaves the daemon; it fails rather than read unscrubbed (D189.3).
+pub(crate) fn scrubber() -> Result<humata2_mirror::Scrubber, Status> {
+    source::scrubber().map_err(|error| status::internal(status::chain(&error), ""))
 }
 
 fn page_ask(page: Option<&pb::PageRequest>) -> PageAsk {
@@ -512,6 +627,79 @@ impl pb::history_service_server::HistoryService for HistorySvc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Codex session saved before its CLI wrote its rollout names the
+    /// rollout once the history catches the session up, with no resume.
+    #[test]
+    fn catching_up_a_codex_session_learns_the_conversation_its_cli_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let state = dir.path().join("state");
+        let folder = home.join("Humata/desk/sessions/se_codex");
+        std::fs::create_dir_all(&folder).unwrap();
+        let store = Arc::new(Store::open(state.join("store")).unwrap());
+        let agents = humata2_sessions::Agents::builtin();
+        let plan = agents.get("codex").unwrap().launch(&home, &folder, "placeholder-id");
+        store
+            .put_session(&SessionRecord {
+                id: "se_codex".to_owned(),
+                channel: "desk".to_owned(),
+                machine: String::new(),
+                title: "codex".to_owned(),
+                agent: "codex".to_owned(),
+                folder: folder.clone(),
+                created_unix_ms: 1,
+            })
+            .unwrap();
+        store
+            .put_agent(&humata2_store::AgentRecord {
+                session: "se_codex".to_owned(),
+                tab: "se_codex_tab".to_owned(),
+                launch: humata2_store::AgentLaunch {
+                    agent: "codex".into(),
+                    folder: folder.clone(),
+                    argv: plan.argv,
+                    resume_argv: plan.resume_argv,
+                    variable_names: Vec::new(),
+                    conversation_id: "placeholder-id".into(),
+                    conversation_file: plan.conversation_file,
+                    holder_socket: PathBuf::from("/nowhere.sock"),
+                    cols: 80,
+                    rows: 24,
+                    cli_version: None,
+                },
+                state: humata2_store::AgentState::Running { holder_pid: 7 },
+                generation: 1,
+                interruptions: Vec::new(),
+                updated_unix_ms: 1,
+            })
+            .unwrap();
+        let day = home.join(".codex/sessions/2026/11/16");
+        std::fs::create_dir_all(&day).unwrap();
+        let rollout = day.join("rollout-2026-11-16T10-00-00-019a-real.jsonl");
+        let meta = serde_json::json!({
+            "timestamp": "2026-11-16T10:00:00.000Z",
+            "type": "session_meta",
+            "payload": {"id": "019a-real", "cwd": folder, "cli_version": "0.169.0"},
+        });
+        std::fs::write(&rollout, format!("{meta}\n")).unwrap();
+        let history = HistorySvc::new(
+            state,
+            Arc::new(Guard::new("m1", pb::DaemonRole::Host)),
+            Arc::new(Feed::default()),
+            store.clone(),
+            agents,
+            home,
+        );
+
+        // The mirror's copy may still fail on this machine's host variables;
+        // the conversation is learned before that.
+        let _ = history.shared.catch_up("se_codex");
+
+        let saved = store.agent("se_codex").unwrap().unwrap();
+        assert_eq!(saved.launch.conversation_id, "019a-real");
+        assert_eq!(saved.launch.conversation_file, rollout);
+    }
 
     #[test]
     fn an_agent_with_no_channel_asked_gets_its_own() {

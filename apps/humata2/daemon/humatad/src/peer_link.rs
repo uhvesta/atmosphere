@@ -47,6 +47,7 @@ use crate::peer::{self, Gate, Handshake, Peer};
 use crate::relay::{self, Relay};
 use crate::serve;
 use crate::sync;
+use crate::upgrade::build::Release;
 
 /// The link's log, in the state folder's `logs`.
 const LOG_FILE: &str = "peer-link.log";
@@ -69,6 +70,7 @@ pub(crate) async fn run(
     machine: String,
     sync_nonce: Option<&str>,
     socket: Option<PathBuf>,
+    release: Release,
 ) -> Result<(), DaemonError> {
     // Opened before the marker, so that failing to open it still reaches
     // whoever reads this terminal, before the stream starts.
@@ -99,7 +101,8 @@ pub(crate) async fn run(
         Relay::to_socket(socket, machine.clone(), |socket| async move {
             bridge::connect_or_start(&socket).await
         }),
-    ));
+    )
+    .with_build(release));
     let stop = serve::stop_signal()?;
     let (input, output) = stdio(output);
     serve_link(input, output, handshake.clone(), machine, stop).await?;
@@ -182,6 +185,10 @@ where
                 // dials a new one (D144, TR-7).
                 () = handshake.relay().lost() => {}
             }
+            // The host's Uplink is a stream the link serves itself and the
+            // host keeps open, so it ends here, or the shutdown below would
+            // wait for it for good.
+            handshake.end();
         }
     };
 
@@ -192,10 +199,9 @@ where
         .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
         .layer(MapRequestLayer::new(peer::mark))
         .layer(InterceptorLayer::new(Gate::new(handshake.clone())))
-        .add_service(pb::daemon_service_server::DaemonServiceServer::new(Daemon::new(
-            machine,
-            pb::DaemonRole::Machine,
-        )))
+        .add_service(pb::daemon_service_server::DaemonServiceServer::new(
+            Daemon::new(machine, pb::DaemonRole::Machine).with_link(handshake.relay().clone()),
+        ))
         .add_service(pb::peer_service_server::PeerServiceServer::new(Peer::new(handshake.clone())));
     let router = relay::register(router, handshake.relay());
     router

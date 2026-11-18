@@ -8,6 +8,22 @@ use std::time::Duration;
 use terminal_lab::{Assets, Lab};
 use terminal_session::{Endpoint, Record, SessionSpec, SessionStore, Update};
 
+/// Stops every process whose command line names this test's own folder (its
+/// holders, under `/private/tmp`), even when the test fails partway.
+struct OwnHolders(String);
+impl OwnHolders {
+    fn of(dir: &std::path::Path) -> Self {
+        let dir = std::fs::canonicalize(dir).unwrap();
+        assert!(dir.starts_with("/private/tmp/"), "{} is not under /private/tmp", dir.display());
+        Self(format!("{}/", dir.display()))
+    }
+}
+impl Drop for OwnHolders {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("pkill").arg("-f").arg(&self.0).status();
+    }
+}
+
 fn wait(
     runtime: &tokio::runtime::Runtime,
     cx: &mut HeadlessAppContext,
@@ -25,6 +41,23 @@ fn wait(
             w.render_frame(cx);
         })
         .unwrap();
+    }
+}
+/// Waits as [`wait`] does until `done` holds. A real shell starts and
+/// answers slower while other tests run, so this fails only after 10 s.
+fn wait_until(
+    runtime: &tokio::runtime::Runtime,
+    cx: &mut HeadlessAppContext,
+    lab: &Entity<Lab>,
+    window: AnyWindowHandle,
+    what: &str,
+    mut done: impl FnMut(&mut HeadlessAppContext) -> bool,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    wait(runtime, cx, lab, window);
+    while !done(cx) {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        wait(runtime, cx, lab, window);
     }
 }
 fn screen(cx: &mut HeadlessAppContext, lab: &Entity<Lab>, id: u64) -> String {
@@ -70,6 +103,7 @@ fn real_shells_render_move_paste_detach_resume_and_resize_headlessly() {
         .prefix("tui-")
         .tempdir_in("/tmp")
         .unwrap();
+    let _holders = OwnHolders::of(dir.path());
     let holder = std::fs::canonicalize(std::env::var("HUMATA2_HOLDER").unwrap()).unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
@@ -102,10 +136,13 @@ fn real_shells_render_move_paste_detach_resume_and_resize_headlessly() {
     runtime.block_on(async {
         for id in [a,b] {
             let mut terminal=store.attach(id).await.unwrap();
-            // Set up small shell helpers, then type real commands with echo on.
-            let setup=format!(r#"stty -echo; PS1='$ '; export LAB_STILL=original; colors() {{ printf '\033[31mred  \033[32mgreen  \033[33myellow\033[0m\n\033[34mblue \033[35mmagenta \033[36mcyan\033[0m\n\033[38;2;111;194;255m24-bit color\033[0m\n'; }}; docs() {{ printf '\033]8;;https://ghostty.org\033\\Terminal documentation\033]8;;\033\\\nhttps://example.com\n\033]2;READY_{id}\007'; }}; stty echo; printf '\033c'
+            // Set up small shell helpers with echo off and wait until the shell
+            // has run them, so the real commands below are never echoed early
+            // however slowly the shell starts; the last one turns echo back on.
+            let setup=format!(r#"stty -echo; PS1='$ '; export LAB_STILL=original; colors() {{ printf '\033[31mred  \033[32mgreen  \033[33myellow\033[0m\n\033[34mblue \033[35mmagenta \033[36mcyan\033[0m\n\033[38;2;111;194;255m24-bit color\033[0m\n'; }}; docs() {{ printf '\033]8;;https://ghostty.org\033\\Terminal documentation\033]8;;\033\\\nhttps://example.com\n\033]2;READY_{id}\007'; stty echo; }}; printf '\033c\033]2;SETUP_{id}\007'
 "#);
             terminal.writer.input(setup.as_bytes()).await.unwrap();
+            marker(&mut terminal.reader,&format!("\x1b]2;SETUP_{id}\x07")).await;
             terminal.writer.input(b"pwd\runame -sm\rcolors\rdocs\r").await.unwrap();
             marker(&mut terminal.reader,&format!("\x1b]2;READY_{id}\x07")).await;
         }
@@ -496,8 +533,9 @@ fn real_shells_render_move_paste_detach_resume_and_resize_headlessly() {
         window.click(if remote { "new-ssh" } else { "new-local" }, cx)
     })
     .unwrap();
-    wait(&runtime, &mut cx, &lab, window);
-    assert!(cx.update(|cx| lab.read(cx).terminal(3).is_some()));
+    wait_until(&runtime, &mut cx, &lab, window, "the new shell's terminal", |cx| {
+        cx.update(|cx| lab.read(cx).terminal(3).is_some())
+    });
     cx.update(|cx| {
         lab.read(cx)
             .terminal(3)
@@ -512,8 +550,9 @@ fn real_shells_render_move_paste_detach_resume_and_resize_headlessly() {
         window.press("enter", cx);
     })
     .unwrap();
-    wait(&runtime, &mut cx, &lab, window);
-    assert!(screen(&mut cx, &lab, 3).contains("CREATED_OK"));
+    wait_until(&runtime, &mut cx, &lab, window, "the new shell's output", |cx| {
+        screen(cx, &lab, 3).contains("CREATED_OK")
+    });
     cx.update(|cx| {
         lab.read(cx)
             .terminal(3)

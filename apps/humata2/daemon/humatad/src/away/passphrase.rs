@@ -62,8 +62,8 @@ enum SetError {
 
 /// Sets, generates or clears the approval passphrase on the host, keeping
 /// only its hash. `machine` is this daemon's machine, named when the disk
-/// is full. Machines get the new hash with the next policy copy, so none is
-/// listed as updated or pending until that copy exists.
+/// is full. Machines get the new hash with the next policy copy; the
+/// caller fills in which have it.
 pub(crate) async fn set_approval_passphrase(
     store: &Arc<Store>,
     on_host: bool,

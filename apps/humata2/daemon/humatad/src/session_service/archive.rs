@@ -30,6 +30,7 @@ use super::lineage::{Lineage, publish_family};
 use super::push::{PullRequestText, RepoPush, run_pushes, step_rows};
 use super::{Loaded, SessionSvc, busy, now_ms, run_resume, start_error, turns, watch};
 use crate::channel_service::{Gated, blocking, error_of, failed, timestamp_ms};
+use crate::holder_end;
 use crate::identity::{self, Caller};
 use crate::operations::{Progress, Started};
 use crate::status;
@@ -152,7 +153,7 @@ impl Lifecycle {
 
 /// How long the clones wait after an archive. Test daemons read
 /// `HUMATA2_ARCHIVE_UNDO_MS`; a release build always waits the 10 seconds.
-fn undo_window_ms() -> i64 {
+pub(crate) fn undo_window_ms() -> i64 {
     #[cfg(feature = "admin")]
     if let Some(ms) = std::env::var("HUMATA2_ARCHIVE_UNDO_MS")
         .ok()
@@ -265,6 +266,7 @@ impl Work {
             pull_request: Some(PullRequestText {
                 title: title.to_owned(),
                 body: format!("{title}\n\nBranch: {}", self.branch),
+                base: None,
             }),
         }
     }
@@ -406,6 +408,11 @@ fn store_failure(status: &Status, session: &str) -> pb::Error {
 }
 
 impl SessionSvc {
+    /// Gives archive the review service, to count a review's drafts. Once.
+    pub(crate) fn use_review(&self, review: crate::review::Review) {
+        let _ = self.review.set(review);
+    }
+
     /// What archiving the session would lose, and the token ArchiveSession
     /// takes to delete that work. Changes nothing.
     pub(super) async fn plan_archive_of(
@@ -441,6 +448,10 @@ impl SessionSvc {
                 None,
             )
         })?;
+        let unsubmitted_drafts = match (&loaded.review, self.review.get()) {
+            (Some(_), Some(review)) => review.unsubmitted_pr_drafts(&id)?,
+            _ => 0,
+        };
         let unpushed: Vec<pb::UnpushedRepo> = works.iter().filter_map(Work::unpushed).collect();
         let choices = if unpushed.is_empty() {
             vec![pb::ArchiveChoice::Archive]
@@ -455,7 +466,7 @@ impl SessionSvc {
             forks_keep_running: u32::try_from(lineage.fork_count(&id)).unwrap_or(u32::MAX),
             unpushed,
             choices: choices.into_iter().map(|choice| choice as i32).collect(),
-            unsubmitted_drafts: 0,
+            unsubmitted_drafts,
             token: Some(pb::PlanToken {
                 value: self.lifecycle.make_plan(PlanKind::Archive, &id),
             }),
@@ -514,6 +525,12 @@ impl SessionSvc {
             Some(AgentState::Resuming) => return Err(busy(&id, "being resumed")),
             _ => {}
         }
+        // Before its agent is recorded, the start may still launch it.
+        refuse_while_starting(
+            &self.operations,
+            &id,
+            loaded.detail.as_ref().and_then(|detail| detail.operation.as_deref()),
+        )?;
         let token = request
             .plan
             .as_ref()
@@ -741,19 +758,36 @@ impl SessionSvc {
 
     /// Finishes the archives a cut run left (`recover_archives`) once the
     /// start's reconcile and revive are done (`started` is set then), so an
-    /// agent revive brought back is stopped. Never blocks the start.
+    /// agent revive brought back is stopped. Never blocks the start. Keeps
+    /// `started` too, for a start the host asks again (`known_start`).
     pub(crate) fn finish_archives_after(&self, started: Arc<crate::restart::Started>) {
+        let _ = self.restart.set(started.clone());
+        // D241: each archive still archiving is named pending now, before
+        // the restart report is written. (A read that fails is logged when
+        // the recovery reads again.)
+        if let Ok(rows) = self.starter.store.archives() {
+            for row in rows.iter().filter(|row| row.state == ArchiveState::Archiving) {
+                started.operations().record(
+                    &format!("archive:{}", row.session_id),
+                    "archive",
+                    "archiving",
+                    crate::restart::OperationState::Pending {
+                        waits_for: "the start to finish, then the session's lock".to_owned(),
+                    },
+                );
+            }
+        }
         let me = self.clone();
         tokio::spawn(async move {
             started.wait().await;
-            me.recover_archives().await;
+            me.recover_archives(started.operations()).await;
         });
     }
 
     /// After a restart: an archive cut short is finished (the agent stopped,
     /// the summary written) and every archived session's clones are freed
     /// now (MV-15). Takes as long as the git reads do; the caller spawns it.
-    pub(super) async fn recover_archives(&self) {
+    pub(super) async fn recover_archives(&self, operations: &crate::restart::Operations) {
         let store = self.starter.store.clone();
         let rows = match blocking(move || store.archives()).await {
             Ok(Ok(rows)) => rows,
@@ -773,13 +807,23 @@ impl SessionSvc {
             .iter()
             .filter(|row| row.state == ArchiveState::Archiving)
         {
+            use crate::restart::OperationState as State;
+            let operation = format!("archive:{}", row.session_id);
+            let record = |state: State| operations.record(&operation, "archive", "archiving", state);
             let guard = self.lifecycle.lock_of(&row.session_id).lock_owned().await;
-            if let Err(error) = self.finish_archive(row.clone()).await {
-                crate::log::say!(
-                    "humatad2: couldn't finish archiving session {}: {}",
-                    row.session_id,
-                    status::chain(&error)
-                );
+            match self.finish_archive(row.clone()).await {
+                Ok(()) => record(State::Finished),
+                Err(error) => {
+                    let reason = format!(
+                        "{}; the session stays archiving, so fix that, then restart humatad2 to finish it",
+                        status::chain(&error)
+                    );
+                    crate::log::say!(
+                        "humatad2: couldn't finish archiving session {}: {reason}",
+                        row.session_id
+                    );
+                    record(State::Stuck { reason });
+                }
             }
             drop(guard);
         }
@@ -810,7 +854,9 @@ impl SessionSvc {
                     error.message()
                 );
             }
-            self.free_now(&row.session_id).await;
+            // Freed when its undo window closes, as it would have been had
+            // the daemon kept running: a restart never frees one early.
+            self.schedule_free(&row.session_id, row.free_after_unix_ms);
         }
     }
 
@@ -833,6 +879,38 @@ impl SessionSvc {
             Target::Session(self.session_ref(&loaded.record)),
             approved,
         )
+    }
+
+    /// What PlanDelete and DeleteSession do until deleting is built: the
+    /// session's rule decides first (a session's own delete is "Stop,
+    /// archive or delete its own session"; another's is "Delete another
+    /// session", Never by default), so a call the rule refuses is refused
+    /// and one it sends to Ask waits for the user, and only then does the
+    /// call say deleting isn't built.
+    pub(super) async fn delete_of<T>(
+        &self,
+        caller: &Caller,
+        id: Option<pb::SessionId>,
+        approved: bool,
+        method: &str,
+    ) -> Result<Gated<T>, Status> {
+        Self::refuse_peer(caller)?;
+        let id = session_id(id)?;
+        let loaded = self.load(&id).await?;
+        let own = matches!(caller, Caller::Agent(agent) if agent.session.id.as_str() == id);
+        if let Some(asked) = self.gate(
+            caller,
+            if own {
+                Capability::OwnSessionEnd
+            } else {
+                Capability::SessionDeleteOther
+            },
+            Target::Session(self.session_ref(&loaded.record)),
+            approved,
+        )? {
+            return Ok(Gated::Ask(asked));
+        }
+        Err(status::not_built(method))
     }
 
     async fn read_lineage(&self) -> Result<Lineage, Status> {
@@ -863,15 +941,18 @@ impl SessionSvc {
         let Some(mut agent) = agent else {
             return Ok(());
         };
-        if !matches!(agent.state, AgentState::Running { .. }) {
+        let AgentState::Running { holder_pid } = agent.state else {
             return Ok(());
-        }
+        };
         // A holder already gone is as stopped as one that was asked to.
-        if let Err(error) = humata2_holder::shutdown(&agent.launch.holder_socket).await {
-            crate::log::say!(
-                "humatad2: stopping session {session}'s terminal: {}",
-                status::chain(&error)
-            );
+        if let Err(error) = holder_end::shut_or_end(
+            &agent.launch.holder_socket,
+            holder_pid,
+            &format!("session {session}'s terminal"),
+        )
+        .await
+        {
+            crate::log::say!("humatad2: {error}");
         }
         agent.state = AgentState::Stopped;
         agent.updated_unix_ms = now_ms();
@@ -1017,6 +1098,7 @@ impl SessionSvc {
         // A kill here leaves the row archived with its grants and requests
         // still live: the restart ends them (`recover_archives`).
         crate::fault::point("archive.archived");
+        self.tell.ended(&id);
         // The session no longer waits on anyone (IN-22, TP-15).
         if let Err(error) = self.end_grants_of(&id).await {
             crate::log::say!(
@@ -1086,7 +1168,7 @@ impl SessionSvc {
             None => None,
         };
         let (store, key) = (self.starter.store.clone(), session.to_owned());
-        let layout_root = self.starter.layout.root.clone();
+        let layout_root = self.starter.layout.clone();
         let here = self.machine.clone();
         let session_key = session.to_owned();
         let freed = blocking(move || -> Result<bool, ArchiveError> {
@@ -1117,7 +1199,10 @@ impl SessionSvc {
                             session: key.clone(),
                             channel: record.channel.clone(),
                         })?;
-                    remove_session_folder(&layout_root, &channel.folder, &record.folder)?;
+                    // The channel may have stayed under an older root.
+                    let channel_dir = layout_root.channel(&channel.folder);
+                    let root = channel_dir.parent().unwrap_or(&channel_dir);
+                    remove_session_folder(root, &channel.folder, &record.folder)?;
                 }
             }
             // A kill here leaves the folder gone and the row archived: the
@@ -1139,6 +1224,7 @@ impl SessionSvc {
         drop(folder_guard);
         drop(guard);
         if freed {
+            self.tell.ended(&session_key);
             self.tell
                 .session(&session_key, pb::Change::Updated, None)
                 .await;
@@ -1277,6 +1363,97 @@ impl SessionSvc {
             progress,
         )
         .await;
+    }
+}
+
+/// Refuses to archive `session` while `start`, the operation starting it, is
+/// still running here: the start could launch the agent of an archived
+/// session. A start that ended, or that a restart lost, refuses nothing, so a
+/// stuck session can still be archived.
+fn refuse_while_starting(
+    operations: &crate::operations::Operations,
+    session: &str,
+    start: Option<&str>,
+) -> Result<(), Status> {
+    let Some(start) = start.filter(|start| operations.running(start)) else {
+        return Ok(());
+    };
+    Err(status::failure(
+        Code::Aborted,
+        pb::Error {
+            message: format!("session {session} is still starting, so it can't be archived yet"),
+            fix: format!(
+                "wait for its start (operation {start}) to finish, then archive it again; stopping the session doesn't end a start that is running"
+            ),
+            retry: None,
+            kind: Some(pb::error::Kind::SessionBusy(pb::SessionBusy {
+                session: Some(pb::SessionId {
+                    value: session.to_owned(),
+                }),
+                running: Some(pb::OperationId {
+                    value: start.to_owned(),
+                }),
+                running_title: "still starting".to_owned(),
+            })),
+        },
+    ))
+}
+
+#[cfg(test)]
+mod starting_tests {
+    use std::sync::Arc;
+
+    use tonic::Code;
+
+    use super::refuse_while_starting;
+    use crate::events::Feed;
+    use crate::identity::{Caller, UserVia};
+    use crate::operations::{Operations, Started};
+    use humata2_grpc::humata::v1 as pb;
+
+    /// Operations holding one running start, and its id.
+    fn one_start() -> (Operations, crate::operations::Progress, String) {
+        let operations = Operations::new(Arc::new(Feed::default()));
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
+                value: "ch".to_owned(),
+            })),
+        };
+        let steps = [("write_record".to_owned(), "Saving the session".to_owned())];
+        let started = operations.start_steps(
+            &Caller::User(UserVia::App),
+            pb::OperationKind::StartSession,
+            target,
+            &steps,
+            false,
+            None,
+        );
+        let Ok(Started::New(progress)) = started else {
+            panic!("the start operation began");
+        };
+        let id = progress.operation().id.map(|id| id.value).unwrap_or_default();
+        (operations, progress, id)
+    }
+
+    #[test]
+    fn a_running_start_refuses_the_archive_and_names_it() {
+        let (operations, _progress, id) = one_start();
+        let refused = refuse_while_starting(&operations, "s1", Some(&id)).unwrap_err();
+        assert_eq!(refused.code(), Code::Aborted);
+    }
+
+    #[test]
+    fn an_ended_start_or_none_refuses_nothing() {
+        let (operations, progress, id) = one_start();
+        progress.succeed(None);
+        assert!(refuse_while_starting(&operations, "s1", Some(&id)).is_ok());
+        assert!(refuse_while_starting(&operations, "s1", None).is_ok());
+    }
+
+    #[test]
+    fn a_start_a_restart_lost_refuses_nothing() {
+        let operations = Operations::new(Arc::new(Feed::default()));
+        assert!(refuse_while_starting(&operations, "s1", Some("op_gone")).is_ok());
     }
 }
 

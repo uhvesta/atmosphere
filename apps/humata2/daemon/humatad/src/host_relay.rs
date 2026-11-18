@@ -31,6 +31,10 @@ use crate::status;
 /// to create (D139: "the host writes its record first with an id it mints").
 pub(crate) const HOST_ASSIGNED_ID: &str = "humata-host-assigned-id";
 
+/// The header naming a channel's folder on a call that starts a channel's
+/// Desk session on a machine that holds no record of the channel (MV-17).
+pub(crate) const CHANNEL_FOLDER: &str = "humata-channel-folder";
+
 /// How many state changes `watch_all` holds for a slow follower before it
 /// resynchronises it from the current states (TR-8).
 const FOLLOW_BACKLOG: usize = 256;
@@ -293,10 +297,26 @@ impl Relayed {
         pb::session_service_client::SessionServiceClient::new(self.channel.clone())
     }
 
+    pub(crate) fn desk(&self) -> pb::desk_service_client::DeskServiceClient<Channel> {
+        pb::desk_service_client::DeskServiceClient::new(self.channel.clone())
+    }
+
+    pub(crate) fn channels(&self) -> pb::channel_service_client::ChannelServiceClient<Channel> {
+        pb::channel_service_client::ChannelServiceClient::new(self.channel.clone())
+    }
+
+    pub(crate) fn diff(&self) -> pb::diff_service_client::DiffServiceClient<Channel> {
+        pb::diff_service_client::DiffServiceClient::new(self.channel.clone())
+    }
+
     pub(crate) fn carry(&self) -> pb::session_carry_service_client::SessionCarryServiceClient<Channel> {
         pb::session_carry_service_client::SessionCarryServiceClient::new(self.channel.clone())
     }
 
+
+    pub(crate) fn marks(&self) -> pb::mark_service_client::MarkServiceClient<Channel> {
+        pb::mark_service_client::MarkServiceClient::new(self.channel.clone())
+    }
 
     pub(crate) fn operation(&self) -> pb::operation_service_client::OperationServiceClient<Channel> {
         pb::operation_service_client::OperationServiceClient::new(self.channel.clone())
@@ -315,6 +335,17 @@ pub(crate) fn assigned<T>(message: T, id: Option<&str>) -> Result<Request<T>, Re
         })?;
         request.metadata_mut().insert(HOST_ASSIGNED_ID, value);
     }
+    Ok(request)
+}
+
+/// As [`assigned`], also naming the channel's folder (see [`CHANNEL_FOLDER`]).
+pub(crate) fn assigned_in<T>(message: T, id: &str, folder: &str) -> Result<Request<T>, RelayError> {
+    let mut request = assigned(message, Some(id))?;
+    let value = MetadataValue::try_from(folder).map_err(|source| RelayError::BadAssignedId {
+        id: folder.to_owned(),
+        source,
+    })?;
+    request.metadata_mut().insert(CHANNEL_FOLDER, value);
     Ok(request)
 }
 
@@ -427,6 +458,13 @@ mod tests {
             &self,
             _request: Request<pb::StartSessionsRequest>,
         ) -> Result<tonic::Response<pb::StartSessionsResponse>, Status> {
+            Err(Status::unimplemented("not used"))
+        }
+
+        async fn upgrade(
+            &self,
+            _request: Request<pb::UpgradeRequest>,
+        ) -> Result<tonic::Response<pb::UpgradeResponse>, Status> {
             Err(Status::unimplemented("not used"))
         }
 

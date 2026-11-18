@@ -45,6 +45,8 @@ use crate::machine_service::{
 use crate::operations::{Operations, Started};
 use crate::status;
 
+mod import;
+
 /// What a failed create left, for DeleteWhatWasMade.
 struct Left {
     provider: String,
@@ -66,6 +68,8 @@ pub(crate) struct ProviderSvc {
     login: Arc<crate::login_service::LoginSvc>,
     /// Where a call a rule sends to Ask me waits for the user (D38.6).
     inbox: Arc<Inbox>,
+    /// MP-23: import plans by token, each good once.
+    imports: Arc<Mutex<HashMap<String, import::Planned>>>,
 }
 
 impl ProviderSvc {
@@ -99,6 +103,7 @@ impl ProviderSvc {
             left,
             login: Arc::new(login),
             inbox,
+            imports: Arc::default(),
         }
     }
 
@@ -641,18 +646,107 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
         }))
     }
 
+    /// MP-23: the file's full text, its providers and every command they
+    /// will run, and which ids it replaces. Nothing is saved; the token
+    /// imports exactly this, once, while the providers file is unchanged.
     async fn preview_provider_import(
         &self,
-        _request: Request<pb::PreviewProviderImportRequest>,
+        request: Request<pb::PreviewProviderImportRequest>,
     ) -> Result<Response<pb::ProviderImportPlan>, Status> {
-        Err(status::not_built("humata.v1.ProviderService.PreviewProviderImport"))
+        let caller = identity::caller(&request)?;
+        self.require_settings(&caller)?;
+        let request = request.into_inner();
+        let text = String::from_utf8(request.file).map_err(|_| {
+            status::invalid_field(
+                "file",
+                pb::invalid_field::Problem::BadFormat,
+                format!("the provider file {} isn't UTF-8 text, so it can't be a providers TOML file", request.file_name),
+                "pick the provider's .toml file, saved as UTF-8 text",
+            )
+        })?;
+        let (current, revision) = current_revision(&self.work)?;
+        let existing = self.providers()?;
+        let plan = import::plan(&text, &current, &existing);
+        let token = plan.merged.as_ref().map(|merged| {
+            let token = format!("pl_{}", uuid::Uuid::new_v4().simple());
+            let mut imports = lock(&self.imports);
+            imports.retain(|_, planned| planned.made.elapsed() < import::PLAN_LIFETIME);
+            imports.insert(
+                token.clone(),
+                import::Planned {
+                    merged: merged.clone(),
+                    base: revision,
+                    made: std::time::Instant::now(),
+                },
+            );
+            pb::PlanToken { value: token }
+        });
+        Ok(Response::new(pb::ProviderImportPlan {
+            text,
+            providers: plan.providers.iter().map(provider_of).collect(),
+            commands: plan
+                .providers
+                .iter()
+                .flat_map(|provider| {
+                    provider.commands().into_iter().map(|(action, command)| pb::provider_import_plan::Command {
+                        provider: Some(pb::ProviderId {
+                            value: provider.id().to_owned(),
+                        }),
+                        action: action.to_owned(),
+                        command: command.to_owned(),
+                    })
+                })
+                .collect(),
+            replaces: plan
+                .replaces
+                .into_iter()
+                .map(|value| pb::ProviderId { value })
+                .collect(),
+            problems: plan.problems,
+            token,
+        }))
     }
 
+    /// MP-23: adds what the plan showed, with the user at the Mac.
     async fn import_provider(
         &self,
-        _request: Request<pb::ImportProviderRequest>,
+        request: Request<pb::ImportProviderRequest>,
     ) -> Result<Response<pb::SetProvidersConfigResponse>, Status> {
-        Err(status::not_built("humata.v1.ProviderService.ImportProvider"))
+        let caller = identity::caller(&request)?;
+        self.require_settings(&caller)?;
+        self.require_present(&caller, Capability::SettingsChange)?;
+        let token = request
+            .into_inner()
+            .plan
+            .map(|plan| plan.value)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| status::missing("plan"))?;
+        let planned = lock(&self.imports)
+            .remove(&token)
+            .filter(|planned| planned.made.elapsed() < import::PLAN_LIFETIME)
+            .ok_or_else(|| import::stale("the import plan is unknown, used or older than ten minutes"))?;
+        let (_, current) = current_revision(&self.work)?;
+        if current != planned.base {
+            return Err(import::stale(
+                "the providers changed since this import was previewed, so nothing was added",
+            ));
+        }
+        let path = providers_path(self.work.machines.hosts_file());
+        write_whole(&path, &planned.merged).map_err(|source| {
+            status::internal(
+                format!(
+                    "couldn't save the providers file {}: {source}. Free some disk space or fix the folder's permissions, then import again",
+                    path.display()
+                ),
+                "",
+            )
+        })?;
+        Ok(Response::new(pb::SetProvidersConfigResponse {
+            problems: Vec::new(),
+            revision: Some(pb::Revision {
+                value: revision(&planned.merged, true),
+            }),
+        }))
     }
 
     /// Checks the provider, the name and the params before anything runs,

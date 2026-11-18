@@ -12,11 +12,13 @@
 use std::sync::Arc;
 
 use humata2_grpc::humata::v1 as pb;
+use tokio::sync::broadcast;
 
 use super::SessionSvc;
 use super::move_session::{self, Moving};
 use crate::carry::{Carry, Journaled};
 use crate::host_relay::{LinkState, Links};
+use crate::peer_reports::ReportUpdate;
 use crate::restart::OperationState;
 use crate::status;
 
@@ -32,12 +34,21 @@ impl SessionSvc {
         for journal in carry.journals() {
             // A move already undone, with only a machine's copy left to take
             // back, isn't moving: its session runs where it was.
-            let marked = (journal.phase != "aborted").then(|| Moving::begin(&journal.session));
+            let marked = (journal.phase != "aborted")
+                .then(|| Moving::begin(&journal.session, &journal.to, &journal.operation));
             self.recover_when_linked_after(Some(started.clone()), journal, marked);
         }
         self.recover_forks_after(started.clone());
+        // A push on another machine the host was following when it stopped.
+        self.recover_remote_pushes_after(started.clone());
         // D222: a remote archive's or restore's follow-up the last run left.
-        self.recover_remote_archives_after(started);
+        self.recover_remote_archives_after(started.clone());
+        // D554: a continue on another machine the last run journaled and
+        // didn't record is asked again under its key once that machine links.
+        self.recover_remote_continues_after(started.clone());
+        // D432: a start the last run asked another machine for and heard
+        // no answer to is asked again once that machine links.
+        self.recover_remote_starts_after(started);
     }
 
     /// Finishes or undoes the move `journal` names once the links of its
@@ -72,42 +83,81 @@ impl SessionSvc {
             if let Some(started) = started {
                 started.wait().await;
             }
-            if let Err(machine) = links_up(&carry, &journal).await {
+            let session = journal.session.clone();
+            // A try that fails because a machine was cut off (its link still
+            // read as up, or it flapped meanwhile) is made again once a link of
+            // the move is up anew; the journal says what is still owed.
+            let mut journal = journal;
+            loop {
+                let seen = match links_up(&carry, &journal).await {
+                    Ok(seen) => seen,
+                    Err(machine) => {
+                        note(
+                            OperationState::Stuck {
+                                reason: format!("{machine} was forgotten before the move could be recovered"),
+                            },
+                            &journal,
+                        );
+                        crate::log::say!(
+                            "humatad2: the move of session {} was cut short, and {machine} was forgotten before it could be recovered. Check the session on its machine; nothing was deleted",
+                            journal.session
+                        );
+                        drop(marked);
+                        return;
+                    }
+                };
+                // Taken before the try, so a report that comes while it runs
+                // isn't missed.
+                let reports = remote.report_updates();
+                let held = svc.lifecycle.lock_of(&journal.session).lock_owned().await;
+                let outcome = move_session::recover(svc.clone(), carry.clone(), remote.clone(), journal.clone(), held).await;
                 note(
-                    OperationState::Stuck {
-                        reason: format!("{machine} was forgotten before the move could be recovered"),
+                    match &outcome {
+                        // The agent runs on the new machine from `resumed` on.
+                        Ok(()) if matches!(journal.phase.as_str(), "resumed" | "switched") => OperationState::Finished,
+                        Ok(()) => OperationState::Undone {
+                            reason: format!("the agent still ran on {}", journal.from),
+                        },
+                        Err(error) => OperationState::Stuck {
+                            reason: status::chain(error),
+                        },
                     },
                     &journal,
                 );
-                crate::log::say!(
-                    "humatad2: the move of session {} was cut short, and {machine} was forgotten before it could be recovered. Check the session on its machine; nothing was deleted",
-                    journal.session
-                );
-                drop(marked);
-                return;
-            }
-            let held = svc.lifecycle.lock_of(&journal.session).lock_owned().await;
-            let session = journal.session.clone();
-            let settled = journal.clone();
-            let outcome = move_session::recover(svc.clone(), carry, remote, journal, held).await;
-            note(
-                match &outcome {
-                    // The agent runs on the new machine from `resumed` on.
-                    Ok(()) if matches!(settled.phase.as_str(), "resumed" | "switched") => OperationState::Finished,
-                    Ok(()) => OperationState::Undone {
-                        reason: format!("the agent still ran on {}", settled.from),
-                    },
-                    Err(error) => OperationState::Stuck {
-                        reason: status::chain(error),
-                    },
-                },
-                &settled,
-            );
-            if let Err(error) = outcome {
-                crate::log::say!(
-                    "humatad2: couldn't finish or undo the move of session {session}: {}. Nothing was deleted; the next start tries again, or look at the session on both machines",
-                    status::chain(&error)
-                );
+                if let Err(error) = &outcome {
+                    crate::log::say!(
+                        "humatad2: couldn't finish or undo the move of session {session}: {}. Nothing was deleted; Humata tries again when the session changes on a machine of the move, when one links again, or at the next start",
+                        status::chain(error)
+                    );
+                }
+                let again = match &outcome {
+                    Ok(()) => false,
+                    // A machine busy with the session, as when it was still
+                    // resuming the agent the move asked it to, tells the host
+                    // once that is done: the next try is then.
+                    Err(error) if error.code() == tonic::Code::Aborted => {
+                        tokio::select! {
+                            relinked = relinked(&carry, &seen) => relinked.is_ok(),
+                            reported = reported(reports, &journal) => reported.is_ok(),
+                        }
+                    }
+                    Err(_) => relinked(&carry, &seen).await.is_ok(),
+                };
+                if !again {
+                    break;
+                }
+                // A try may have moved the journal on (to `unpacked` or
+                // `aborted`) or ended it: the next works from what it says now.
+                let operation = journal.operation.clone();
+                let reader = carry.clone();
+                let kept = tokio::task::spawn_blocking(move || {
+                    reader.journals().into_iter().find(|kept| kept.operation == operation)
+                })
+                .await;
+                match kept {
+                    Ok(Some(kept)) => journal = kept,
+                    _ => break,
+                }
             }
             drop(marked);
             svc.tell.session(&session, pb::Change::Updated, None).await;
@@ -115,16 +165,73 @@ impl SessionSvc {
     }
 }
 
+/// The remote machines of a move and the generation of each one's link
+/// when a try began (none when it had dropped again by then).
+type Seen = Vec<(String, Option<u64>)>;
+
 /// Waits until the links of both machines of the move are up. The host
 /// itself always is. Err names a machine that was forgotten meanwhile.
-async fn links_up(carry: &Carry, journal: &Journaled) -> Result<(), String> {
+async fn links_up(carry: &Carry, journal: &Journaled) -> Result<Seen, String> {
+    let mut seen = Vec::new();
     for machine in [&journal.from, &journal.to] {
         if carry.is_host(machine) {
             continue;
         }
         wait_up(carry.links(), machine).await.map_err(|()| machine.clone())?;
+        let state = carry.links().watch(machine);
+        let now = *state.borrow();
+        let generation = match now {
+            LinkState::Up { generation } => Some(generation),
+            LinkState::Down => None,
+        };
+        seen.push((machine.clone(), generation));
     }
-    Ok(())
+    Ok(seen)
+}
+
+/// Waits until the link of one of `seen`'s machines is up anew, which is
+/// when a try that failed for a machine cut off may succeed. Err when a
+/// machine was forgotten, or none of the move's machines has a link.
+async fn relinked(carry: &Carry, seen: &Seen) -> Result<(), ()> {
+    let mut waits = tokio::task::JoinSet::new();
+    for (machine, generation) in seen {
+        let (links, machine, generation) = (carry.links().clone(), machine.clone(), *generation);
+        waits.spawn(async move { came_back(&links, &machine, generation).await });
+    }
+    match waits.join_next().await {
+        Some(Ok(outcome)) => outcome,
+        _ => Err(()),
+    }
+}
+
+/// Waits until a remote machine of the move reports on its session, or
+/// stops holding it. Err once no more reports can come.
+async fn reported(mut reports: broadcast::Receiver<Arc<ReportUpdate>>, journal: &Journaled) -> Result<(), ()> {
+    loop {
+        match reports.recv().await {
+            Ok(update) => match &*update {
+                ReportUpdate::Session { machine, session, .. } | ReportUpdate::Gone { machine, session }
+                    if session == &journal.session && (machine == &journal.from || machine == &journal.to) =>
+                {
+                    return Ok(());
+                }
+                _ => {}
+            },
+            // Reports were missed, and one may have been about the session.
+            Err(broadcast::error::RecvError::Lagged(_)) => return Ok(()),
+            Err(broadcast::error::RecvError::Closed) => return Err(()),
+        }
+    }
+}
+
+/// Waits until `machine`'s link is up with a generation other than `seen`.
+async fn came_back(links: &Links, machine: &str, seen: Option<u64>) -> Result<(), ()> {
+    let mut state = links.watch(machine);
+    state
+        .wait_for(|now| matches!(now, LinkState::Up { generation } if Some(*generation) != seen))
+        .await
+        .map(drop)
+        .map_err(drop)
 }
 
 pub(super) async fn wait_up(links: &Links, machine: &str) -> Result<(), ()> {

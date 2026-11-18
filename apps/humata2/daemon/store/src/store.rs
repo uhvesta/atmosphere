@@ -15,7 +15,7 @@ use crate::journal::Journal;
 use crate::last_good::{self, LastGood, Restored};
 use crate::{Pointers, RepoPointer, SessionRecord, StoreError, TabKind, TabRecord, blob, fault, schema};
 
-const DATABASE: &str = "state.sqlite";
+pub(crate) const DATABASE: &str = "state.sqlite";
 const BLOBS: &str = "blobs";
 const FILES: &str = "files";
 const PASTE: &str = "paste";
@@ -27,7 +27,7 @@ static PASTES: AtomicU64 = AtomicU64::new(0);
 /// ```text
 /// state.sqlite              sessions, tabs, pointers, agents, the journal
 /// blobs/<sha256>            blobs too big for their row (see blob.rs)
-/// files/<session>/paste/    images pasted into the session's terminals
+/// files/<session>/paste/    images and files pasted into the session's terminals
 /// ```
 ///
 /// Folders are 0700 and files 0600. Every write is one SQLite transaction
@@ -63,6 +63,7 @@ impl Store {
         create_dir(&root.join(FILES))?;
         let database = root.join(DATABASE);
         last_good::finish_restore(&root, &database)?;
+        last_good::finish_upgrade_restore(&root, &database)?;
         sweep_partials(&root)?;
         Self::sweep_paste_partials(&root.join(FILES))?;
         let connection = schema::open(&database)?;
@@ -165,27 +166,8 @@ impl Store {
 
     pub fn put_session(&self, session: &SessionRecord) -> Result<(), StoreError> {
         check_id(&session.id)?;
-        self.inner.write("session.put", "save a session", |transaction| {
-            transaction
-                .execute(
-                    "INSERT INTO sessions (id, channel, machine, title, agent, folder, created_unix_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                     ON CONFLICT (id) DO UPDATE SET
-                         channel = excluded.channel, machine = excluded.machine,
-                         title = excluded.title, agent = excluded.agent,
-                         folder = excluded.folder, created_unix_ms = excluded.created_unix_ms",
-                    params![
-                        session.id,
-                        session.channel,
-                        session.machine,
-                        session.title,
-                        session.agent,
-                        path_bytes(&session.folder),
-                        session.created_unix_ms,
-                    ],
-                )
-                .map(drop)
-        })
+        self.inner
+            .write("session.put", "save a session", |transaction| insert_session(transaction, session))
     }
 
     pub fn session(&self, id: &str) -> Result<Option<SessionRecord>, StoreError> {
@@ -268,7 +250,8 @@ impl Store {
         self.inner.read("read a tab", |connection| {
             connection
                 .query_row(
-                    "SELECT id, session, kind, title, holder_socket, holder_pid, created_unix_ms
+                    "SELECT id, session, kind, title, holder_socket, holder_pid, created_unix_ms,
+                            holder_generation
                      FROM tabs WHERE id = ?1",
                     [id],
                     tab_row,
@@ -282,7 +265,8 @@ impl Store {
         self.inner.read("list tabs", |connection| {
             connection
                 .prepare(
-                    "SELECT id, session, kind, title, holder_socket, holder_pid, created_unix_ms
+                    "SELECT id, session, kind, title, holder_socket, holder_pid, created_unix_ms,
+                            holder_generation
                      FROM tabs ORDER BY created_unix_ms, id",
                 )?
                 .query_map([], tab_row)?
@@ -366,13 +350,7 @@ impl Store {
         bytes: &[u8],
     ) -> Result<PathBuf, StoreError> {
         check_id(extension)?;
-        if self.session(session)?.is_none() {
-            return Err(StoreError::NoSession {
-                id: session.to_owned(),
-            });
-        }
-        let folder = self.inner.root.join(FILES).join(session).join(PASTE);
-        create_dir(&folder)?;
+        let folder = self.paste_folder(session)?;
         let path = folder.join(format!(
             "paste-{}-{}.{extension}",
             unix_ms(),
@@ -380,6 +358,42 @@ impl Store {
         ));
         write_atomic(&path, bytes)?;
         Ok(path)
+    }
+
+    /// As [`Self::save_paste`], for a paste a call names with its idempotency
+    /// `key`: the key names the file, so a retry, even one after a restart,
+    /// finds the first save and keeps its bytes instead of saving again.
+    pub fn save_keyed_paste(
+        &self,
+        session: &str,
+        key: &str,
+        extension: &str,
+        bytes: &[u8],
+    ) -> Result<PathBuf, StoreError> {
+        use sha2::{Digest, Sha256};
+        check_id(extension)?;
+        let folder = self.paste_folder(session)?;
+        let digest = Sha256::digest(key.as_bytes());
+        let name: String = digest[..16].iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = folder.join(format!("paste-k{name}.{extension}"));
+        if !path.exists() {
+            write_atomic(&path, bytes)?;
+        }
+        Ok(path)
+    }
+
+    /// The folder what is pasted into a session's terminals goes in, made
+    /// if it isn't there yet and readable only by this user (D335). It goes
+    /// when the session does.
+    pub fn paste_folder(&self, session: &str) -> Result<PathBuf, StoreError> {
+        if self.session(session)?.is_none() {
+            return Err(StoreError::NoSession {
+                id: session.to_owned(),
+            });
+        }
+        let folder = self.inner.root.join(FILES).join(session).join(PASTE);
+        create_dir(&folder)?;
+        Ok(folder)
     }
 
     /// Removes the pastes a crash cut short in each session's folder under
@@ -521,12 +535,14 @@ pub(crate) fn put_tab(transaction: &Transaction<'_>, tab: &TabRecord) -> rusqlit
     };
     transaction
         .execute(
-            "INSERT INTO tabs (id, session, kind, title, holder_socket, holder_pid, created_unix_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO tabs (id, session, kind, title, holder_socket, holder_pid, created_unix_ms,
+                               holder_generation)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT (id) DO UPDATE SET
                  session = excluded.session, kind = excluded.kind, title = excluded.title,
                  holder_socket = excluded.holder_socket, holder_pid = excluded.holder_pid,
-                 created_unix_ms = excluded.created_unix_ms",
+                 created_unix_ms = excluded.created_unix_ms,
+                 holder_generation = excluded.holder_generation",
             params![
                 tab.id,
                 tab.session,
@@ -535,6 +551,7 @@ pub(crate) fn put_tab(transaction: &Transaction<'_>, tab: &TabRecord) -> rusqlit
                 path_bytes(&tab.holder_socket),
                 tab.holder_pid,
                 tab.created_unix_ms,
+                i64::try_from(tab.holder_generation).unwrap_or(i64::MAX),
             ],
         )
         .map(drop)
@@ -610,7 +627,36 @@ fn tab_row(row: &Row<'_>) -> rusqlite::Result<TabRecord> {
         holder_socket: bytes_path(row.get(4)?),
         holder_pid: row.get(5)?,
         created_unix_ms: row.get(6)?,
+        holder_generation: u64::try_from(row.get::<_, i64>(7)?).unwrap_or(0),
     })
+}
+
+/// Saves `session` in `transaction`, over any record of the same id: the
+/// statement of [`Store::put_session`], shared with
+/// [`Store::put_session_with_detail`].
+pub(crate) fn insert_session(
+    transaction: &Transaction<'_>,
+    session: &SessionRecord,
+) -> rusqlite::Result<()> {
+    transaction
+        .execute(
+            "INSERT INTO sessions (id, channel, machine, title, agent, folder, created_unix_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (id) DO UPDATE SET
+                 channel = excluded.channel, machine = excluded.machine,
+                 title = excluded.title, agent = excluded.agent,
+                 folder = excluded.folder, created_unix_ms = excluded.created_unix_ms",
+            params![
+                session.id,
+                session.channel,
+                session.machine,
+                session.title,
+                session.agent,
+                path_bytes(&session.folder),
+                session.created_unix_ms,
+            ],
+        )
+        .map(drop)
 }
 
 pub(crate) fn path_bytes(path: &Path) -> &[u8] {

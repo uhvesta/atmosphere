@@ -43,6 +43,8 @@ rust_library(
     visibility = [
         "//apps/humata2/cli:__pkg__",
         "//apps/humata2/clients/live:__pkg__",
+        # The desktop live flows call ViewService as a session's agent.
+        "//apps/humata2/desktop:__pkg__",
     ],
     deps = [
         "//apps/humata2/api/proto:humata2_rust",
@@ -73,11 +75,15 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/app_peer",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/marks",
+    # REPOS (RL-5): the repo library.
+    "//apps/humata2/daemon/repo_library",
     "//apps/humata2/daemon/mcp",
     "//apps/humata2/daemon/mirror",
     "//apps/humata2/daemon/contain",
     "//apps/humata2/daemon/passphrase",
     "//apps/humata2/daemon/review_diff",
+    "//apps/humata2/daemon/vt_authority",
+    "//apps/humata2/terminal/vt:ghostty_vt",
     "@crates//:clap",
     "@crates//:hmac",
     "@crates//:http-body",
@@ -86,11 +92,13 @@ SHARED_DEPS = [
     "@crates//:prost",
     "@crates//:rand",
     "@crates//:rustix",
+    "@crates//:serde",
     "@crates//:serde_json",
     "@crates//:sha2",
     "@crates//:thiserror",
     "@crates//:tokio",
     "@crates//:tokio-stream",
+    "@crates//:toml",
     "@crates//:tonic",
     "@crates//:tower",
     "@crates//:uuid",
@@ -124,9 +132,10 @@ rust_binary(
     deps = DAEMON_DEPS,
 )
 
-# TS-2: humatad2, the holder and the humata CLI for every platform a
-# machine may be, with a manifest of their SHA-256s, as one folder for the
-# app to carry and `humatad2 serve --tools` to read.
+# TS-2: humatad2, the holder, the humata CLI and the stack CLI for every
+# platform a machine may be, with a manifest of their SHA-256s, as one folder
+# for the app to carry and `humatad2 serve --tools` to read. The Linux
+# platforms are the static musl ones (bazel/platforms), cross-built here.
 tools_bundle(
     name = "tools",
     holder = "//apps/humata2/daemon/holder:humata2_holder",
@@ -138,6 +147,7 @@ tools_bundle(
         "//bazel/platforms:macos_arm64": "darwin-arm64",
         "//bazel/platforms:macos_x86_64": "darwin-x86_64",
     },
+    stack = "//tools/stack:stack",
     visibility = ["//apps/humata2:__subpackages__"],
 )
 
@@ -151,6 +161,24 @@ tools_bundle(
     platforms = {
         "//bazel/platforms:macos_arm64": "darwin-arm64",
     },
+    stack = "//tools/stack:stack",
+    visibility = ["//apps/humata2/app:__pkg__"],
+)
+
+# The Linux tools (static musl, both architectures) the app carries in
+# Contents/Resources/machine-tools, which it installs in ~/.humata2/machine-tools
+# so Add machine finds the matching set (TS-2). ELF files only: nothing there
+# needs codesigning.
+tools_bundle(
+    name = "tools_linux",
+    holder = "//apps/humata2/daemon/holder:humata2_holder",
+    humata = "//apps/humata2/cli:humata",
+    humatad2 = ":humatad2",
+    platforms = {
+        "//bazel/platforms:linux_arm64": "linux-aarch64",
+        "//bazel/platforms:linux_x86_64": "linux-x86_64",
+    },
+    stack = "//tools/stack:stack",
     visibility = ["//apps/humata2/app:__pkg__"],
 )
 
@@ -173,7 +201,8 @@ rust_binary(
 
 # The admin test daemon with every fault point live, its own and its
 # crates': HUMATA2_STOP_AT, HUMATA2_FAULT_TRACE, HUMATA2_FAULT_ARM,
-# HUMATA2_POWER_CUT_ROOTS, and SIGUSR2 as a power cut. Never shipped.
+# HUMATA2_FAIL_AT (a step returns its error), HUMATA2_POWER_CUT_ROOTS, and
+# SIGUSR2 as a power cut. Never shipped.
 rust_binary(
     name = "humatad2_faults",
     testonly = True,
@@ -206,7 +235,11 @@ rust_test(
     name = "humatad2_unit_test",
     crate = ":humatad2",
     rustc_env = APP_IDENTITY,
-    deps = ["@crates//:tempfile"],
+    deps = [
+        "//apps/humata2/daemon/conversation",
+        "@crates//:rusqlite",
+        "@crates//:tempfile",
+    ],
 )
 
 # Runs a program in a terminal session of its own, for the CLI login
@@ -215,26 +248,154 @@ rust_binary(
     name = "setsid",
     testonly = True,
     srcs = ["tests/bin/setsid.rs"],
+    # The desktop's remote live flows start the multi-machine rig, whose
+    # fake `ssh` runs each link in a group of its own.
+    visibility = ["//apps/humata2/desktop:__pkg__"],
     deps = ["@crates//:rustix"],
+)
+
+# The multi-machine rig (tests/common/remote_rig.rs and the harness it sits
+# on), as a library for the desktop's live flows: a host and fake boxes in
+# one test. Every binary it starts comes from the test's environment.
+rust_library(
+    name = "remote_rig",
+    testonly = True,
+    srcs = [
+        "tests/common/mcp_client.rs",
+        "tests/common/mod.rs",
+        "tests/common/pr_github.rs",
+        "tests/common/remote_rig.rs",
+        "tests/rig/lib.rs",
+    ],
+    crate_name = "humata2_remote_rig",
+    crate_root = "tests/rig/lib.rs",
+    visibility = ["//apps/humata2/desktop:__pkg__"],
+    deps = [
+        ":grpc",
+        "//apps/humata2/chunk:humata2_chunk",
+        "//apps/humata2/daemon/machines",
+        "//apps/humata2/daemon/machines:fake_machine",
+        "//apps/humata2/daemon/store",
+        "@crates//:hyper-util",
+        "@crates//:prost",
+        "@crates//:rustix",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+        "@crates//:tokio-stream",
+        "@crates//:tonic",
+        "@crates//:tower",
+    ],
 )
 
 # The tests that run on the multi-machine rig.
 RIG_TESTS = [
     "away_approved_board",
     "away_left_out",
+    "change_root",
+    "channel_rename_roam",
+    "continue_in_remote",
+    "continue_in_journal",
+    "desk_into_channel_roam",
+    "desk_roam",
+    "desk_roam_upgrade",
+    "desk_versions_remote",
+    "desk_migrate_remote",
+    "desk_close_remote",
     "flow_26_10",
     "fork_remote",
     "forget_machine",
+    "hooks_remote",
+    "host_variables_move",
+    "host_variables_remote",
+    "inbox_copy",
+    "move_cheap",
     "move_session",
+    "move_typing",
     "pointers",
+    "power_cut_both",
+    "power_cut_host",
+    "power_cut_machine",
+    "push_remote",
+    "push_remote_restart",
+    "read_marks_remote",
     "rebuild_session",
     "remote_archive",
     "remote_rename",
+    "remote_stack",
+    "remove_machine_cut",
     "remove_machine_live",
     "restart_operations",
+    "stop_access",
+    "stop_box",
     "stop_sessions",
+    "storage_remote",
     "two_machines",
+    "upgrade_box",
+    "upgrade_holders",
+    "upgrade_inbox",
+    "upgrade_kinds",
+    "upgrade_refusals",
+    "upgrade_remote_holders",
+    "views_remote",
+    "desk_picked_remote",
+    "desk_stuck_remote",
 ]
+
+# Chained after desk_stuck_remote: a plain start cut the same way.
+RIG_TESTS.append("start_stuck_remote")
+
+# Chained after start_stuck_remote: a box's restart whose resume of an agent
+# fails (HUMATA2_FAIL_AT), then the host's resume taking the record over.
+RIG_TESTS.append("start_resume_failed_remote")
+
+# Chained after start_resume_failed_remote: stop on an agent saved as
+# launching whose old holder still lives.
+RIG_TESTS.append("stop_launching")
+
+# DESKWATCH: a Desk session on a box is told on the host's feed when the box changes it.
+RIG_TESTS.append("desk_events_remote")
+
+# Chained after desk_events_remote: a pull request review started on a
+# box (PR-4, PR-21), checked, updated and submitted through the host.
+RIG_TESTS.append("pr_review_remote")
+
+# Chained after pr_review_remote: a review moved to a box and back (PR-21).
+# SEAM: BUILD list.
+RIG_TESTS.append("pr_review_move")
+
+# D731: a host killed between asking a box for a Desk start and keeping its answer.
+RIG_TESTS.append("desk_start_host_cut")
+
+# An agent sends to its channel's machine by name (PL-3, TP-1).
+RIG_TESTS.append("agent_send_machine")
+
+# FK-9: a context-only fork on a box given its own copy through the host.
+RIG_TESTS.append("own_copy_remote")
+
+# Single power cuts picked from the suites below, one test each: the quick
+# check to queue while working on recovery.
+RIG_TESTS.append("power_cut_focus")
+
+# The PER-28 power-cut suites (D243): one test per operation, each a trace of
+# it and then a fresh host and box per point. A shard's tests share a few
+# rigs at a time (AT_ONCE in tests/common/power_cut.rs), so its operations
+# take turns; an operation's shard is its index modulo the shards, which
+# splits the points about evenly between the two.
+POWER_CUT_TESTS = [
+    "power_cut_both",
+    "power_cut_host",
+    "power_cut_machine",
+]
+
+POWER_CUT_SHARDS = 2
+
+# Rig suites with many tests of their own, each a host and boxes for
+# minutes: shared out so each shard stays within a large test's time.
+RIG_SHARDS = {
+    "stop_box": 4,
+}
 
 # Each test starts humatad2 and humata2_holder as the real binaries and
 # talks to them over gRPC on a socket of its own: the admin daemon with
@@ -248,6 +409,7 @@ RIG_TESTS = [
         # and fake boxes per test; under a full gate its tests outrun the
         # 300 s of a medium test. Every wait in them has its own deadline.
         size = "large" if src.removeprefix("tests/").removesuffix(".rs") in RIG_TESTS else "medium",
+        timeout = "eternal" if src.removeprefix("tests/").removesuffix(".rs") in POWER_CUT_TESTS else None,
         srcs = [src] + glob(["tests/common/*.rs"]),
         crate_root = src,
         data = [
@@ -258,6 +420,7 @@ RIG_TESTS = [
             "//apps/humata2/cli:humata",
             "//apps/humata2/daemon/holder:humata2_holder",
             "//apps/humata2/daemon/holder:humata2_holder_faults",
+            "//tools/stack",
         ],
         env = {
             "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
@@ -267,13 +430,24 @@ RIG_TESTS = [
             "HUMATAD2": "$(rootpath :humatad2_admin)",
             "HUMATAD2_FAULTS": "$(rootpath :humatad2_faults)",
             "HUMATAD2_RELEASE": "$(rootpath :humatad2)",
+            "STACK": "$(rootpath //tools/stack:stack)",
         },
+        # A shard of a power-cut suite traces its operations and cuts each
+        # at all of its points: long, but each wait in it has a deadline.
+        shard_count = POWER_CUT_SHARDS if src.removeprefix("tests/").removesuffix(".rs") in POWER_CUT_TESTS else RIG_SHARDS.get(
+            src.removeprefix("tests/").removesuffix(".rs"),
+            0,
+        ),
         deps = [
             ":grpc",
             "//apps/humata2/chunk:humata2_chunk",
+            "//apps/humata2/daemon/machines",
             "//apps/humata2/daemon/machines:fake_machine",
+            # REPOS (RL-5): tests/repos.rs seeds the library.
+            "//apps/humata2/daemon/repo_library",
             "//apps/humata2/daemon/passphrase",
             "//apps/humata2/daemon/store",
+            "//apps/humata2/terminal/vt:ghostty_vt",
             "@crates//:hmac",
             "@crates//:hyper-util",
             "@crates//:prost",

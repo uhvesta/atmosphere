@@ -12,6 +12,7 @@ FEATURES = [
     "hosts",
     "inbox",
     "palette",
+    "pr_review",
     "review",
     "session",
     "settings",

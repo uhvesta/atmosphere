@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata2_holder::{HolderSpec, SavedOutput};
@@ -14,7 +14,8 @@ use humata2_store::{
 };
 
 use crate::agent::{
-    Why, blocking, probe, relaunch, resume, running, spawn, stop_holder, store_error, unix_ms,
+    Why, blocking, fresh_replies, probe, relaunch, resume, running, spawn, stop_holder,
+    store_error, unix_ms,
 };
 use crate::report::Restart;
 use crate::{Env, ReviveConfig, ReviveError};
@@ -26,7 +27,8 @@ pub enum Revived {
     Reattached,
     /// Its holder still answers, and the agent in it had ended.
     Exited { code: i32 },
-    /// It never finished starting, so it was started again from scratch.
+    /// It never finished starting, or it was moved before it wrote any
+    /// conversation, so it was started again from scratch.
     Relaunched,
     /// Resumed with its conversation, which it was seen to take up.
     Resumed { interruption: Interruption },
@@ -74,6 +76,20 @@ pub async fn reconcile(
     config: &ReviveConfig,
     env: Env<'_>,
     restored: Option<&Restored>,
+) -> Result<Reconciled, ReviveError> {
+    reconcile_then(store, config, env, restored, Box::new(|_| {})).await
+}
+
+/// [`reconcile`], with `before_json` run on the report's folder after the
+/// report's other files are written and before its `restart.json`. A
+/// reader takes `restart.json` as the sign the report is whole, so what
+/// the caller writes beside it must be there first.
+pub async fn reconcile_then(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    env: Env<'_>,
+    restored: Option<&Restored>,
+    before_json: Box<dyn FnOnce(&Path) + Send>,
 ) -> Result<Reconciled, ReviveError> {
     let at_unix_ms = unix_ms();
     let listing = |doing, source| ReviveError::Store {
@@ -138,7 +154,7 @@ pub async fn reconcile(
         reconciled.shells.push((id, outcome));
     }
     let config = config.clone();
-    reconciled.report = blocking(move || report.write(&config))
+    reconciled.report = blocking(move || report.write(&config, before_json))
         .await
         .and_then(|written| written);
     Ok(reconciled)
@@ -161,12 +177,41 @@ pub async fn resume_agent(
     revive_listed(store, config, record, env, Why::Interrupted).await
 }
 
+/// Resumes an agent the person stopped, or that exited, because they asked
+/// to (D671, Provisional): as [`resume_agent`], but no interruption is
+/// recorded and the agent isn't told it was interrupted. Its resume is
+/// checked only for coming up, staying up and starting no other
+/// conversation, so an agent that writes nothing until prompted resumes.
+pub async fn resume_agent_asked(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    record: AgentRecord,
+    env: Env<'_>,
+) -> Result<Revived, ReviveError> {
+    revive_listed(store, config, record, env, Why::Asked).await
+}
+
 /// Starts `record`'s agent again with its conversation, as [`resume_agent`]
 /// does, for a change the person asked for rather than an interruption: no
 /// interruption is recorded and the agent isn't told it was interrupted.
 /// `line` is shown first in its terminal, after `[Humata] `. A failure is
-/// saved as [`Revived::ResumeFailed`], as a resume's is.
+/// saved as [`Revived::ResumeFailed`], as a resume's is, and so is a
+/// conversation file that is gone: it can't be resumed (D757).
 pub async fn restart_agent(
+    store: &Arc<Store>,
+    config: &ReviveConfig,
+    record: AgentRecord,
+    env: Env<'_>,
+    line: &str,
+) -> Result<Revived, ReviveError> {
+    revive_listed(store, config, record, env, Why::Restarted(line)).await
+}
+
+/// [`restart_agent`] after a move that carried every file the agent wrote
+/// and checked them here: a conversation file missing after it is one the
+/// agent never wrote, so the agent is started fresh with its first command
+/// ([`Revived::Relaunched`]) rather than failed (D757).
+pub async fn resume_moved_agent(
     store: &Arc<Store>,
     config: &ReviveConfig,
     record: AgentRecord,
@@ -266,6 +311,10 @@ async fn revive_agent(
     if !record.state.should_run() {
         return Ok(Revived::Left);
     }
+    // A launching record being brought back is a launch in flight: a stop
+    // that ends its old holder must wait for this to be done.
+    let _in_flight = (record.state == AgentState::Launching)
+        .then(|| crate::agent::LaunchInFlight::enter(&record.session));
     let socket = record.launch.holder_socket.clone();
     let created = tab.as_ref().map_or_else(unix_ms, |tab| tab.created_unix_ms);
     let Some(welcome) = probe(&socket).await else {
@@ -307,7 +356,32 @@ async fn revive_agent(
             // Unreadable: keep the output rather than lose it.
             .unwrap_or(true);
             if !started_fresh {
-                let _ = humata2_holder::shutdown(&socket).await;
+                // Found by its pid file, or by the socket it serves if that
+                // file is gone, so a holder that won't shut down is ended.
+                match humata2_holder::find_holder(&socket).await {
+                    Ok(Some(pid)) => {
+                        let ended = humata2_holder::shutdown_or_end(&socket, pid)
+                            .await
+                            .map(|_| ())
+                            .map_err(|source| ReviveError::EndHolder {
+                                what: format!("session {}'s agent", record.session),
+                                source,
+                            });
+                        settle_failed_end(store, &record, welcome.exited.is_some(), ended).await?;
+                    }
+                    found => {
+                        if let Err(error) = found {
+                            eprintln!("humata2 revive: {error}");
+                        }
+                        // No holder to find: a socket nobody answers on is
+                        // how a holder that already stopped looks.
+                        if let Err(error) = humata2_holder::shutdown(&socket).await
+                            && !matches!(error, humata2_holder::HolderError::Connect { .. })
+                        {
+                            eprintln!("humata2 revive: {error}");
+                        }
+                    }
+                }
             }
             stop_holder(&socket, None).await;
             launch_or_resume(store, config, record, created, env, why).await
@@ -318,6 +392,130 @@ async fn revive_agent(
             stop_holder(&socket, None).await;
             resume(store, config, record, created, env, why).await
         }
+    }
+}
+
+/// What a failed end of an old holder leaves of the agent saved as
+/// launching. `agent_exited` is what the holder's welcome said: the agent in
+/// it had already ended, so none can be running and the agent is saved as
+/// stopped, where resume and start fresh take it. If the agent may still be
+/// running in that holder, it stays launching: stopped would let a resume
+/// start a second agent beside it, and the error (which says how to end the
+/// holder) is the way out. Provisional: recommend keeping this; a stop that
+/// ends a launching agent's holder by its pid would let the person do it from
+/// the app. The save is best effort: if it fails too, the next restart tries
+/// again.
+async fn settle_failed_end(
+    store: &Arc<Store>,
+    record: &AgentRecord,
+    agent_exited: bool,
+    ended: Result<(), ReviveError>,
+) -> Result<(), ReviveError> {
+    let Err(error) = ended else {
+        return Ok(());
+    };
+    if agent_exited {
+        let mut stopped = record.clone();
+        stopped.state = AgentState::Stopped;
+        stopped.updated_unix_ms = unix_ms();
+        let _ = crate::agent::save(store, &stopped, "save that the agent didn't start again").await;
+    }
+    Err(error)
+}
+
+#[cfg(test)]
+mod end_failed_tests {
+    //! A holder that couldn't be ended leaves the agent somewhere the person
+    //! can act on, unless the agent might still be running.
+
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use humata2_holder::EndError;
+    use humata2_store::{AgentLaunch, AgentRecord, AgentState, SessionRecord, Store};
+
+    use super::settle_failed_end;
+    use crate::ReviveError;
+
+    fn failed_end() -> Result<(), ReviveError> {
+        Err(ReviveError::EndHolder {
+            what: "session se_a's agent".to_owned(),
+            source: EndError::Survived { socket: PathBuf::from("/nowhere/h.sock"), pid: 1 },
+        })
+    }
+
+    fn saved_launching(root: &Path) -> (Arc<Store>, AgentRecord) {
+        std::fs::create_dir_all(root.join("state")).unwrap();
+        let store = Arc::new(Store::open(root.join("state")).unwrap());
+        store
+            .put_session(&SessionRecord {
+                id: "se_a".to_owned(),
+                channel: "ch_1".to_owned(),
+                machine: "ma_1".to_owned(),
+                title: "Fix the build".to_owned(),
+                agent: "fake".to_owned(),
+                folder: root.to_owned(),
+                created_unix_ms: 1,
+            })
+            .unwrap();
+        let record = AgentRecord {
+            session: "se_a".to_owned(),
+            tab: "tb_a".to_owned(),
+            launch: AgentLaunch {
+                agent: "fake".to_owned(),
+                folder: root.to_owned(),
+                argv: vec![OsString::from("/bin/sh")],
+                resume_argv: vec![OsString::from("/bin/sh")],
+                variable_names: Vec::new(),
+                conversation_id: "c1".to_owned(),
+                conversation_file: root.join("c1.jsonl"),
+                cli_version: None,
+                holder_socket: root.join("h.sock"),
+                cols: 80,
+                rows: 24,
+            },
+            state: AgentState::Launching,
+            generation: 1,
+            interruptions: Vec::new(),
+            updated_unix_ms: 1,
+        };
+        store.put_agent(&record).unwrap();
+        (store, record)
+    }
+
+    #[tokio::test]
+    async fn an_old_holder_that_cannot_be_ended_with_its_agent_already_gone_leaves_the_agent_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, record) = saved_launching(dir.path());
+
+        let outcome = settle_failed_end(&store, &record, true, failed_end()).await;
+
+        assert!(matches!(outcome, Err(ReviveError::EndHolder { .. })), "{outcome:?}");
+        assert_eq!(store.agent("se_a").unwrap().expect("still saved").state, AgentState::Stopped);
+    }
+
+    #[tokio::test]
+    async fn an_old_holder_that_cannot_be_ended_with_its_agent_maybe_running_keeps_the_agent_launching() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, record) = saved_launching(dir.path());
+
+        let outcome = settle_failed_end(&store, &record, false, failed_end()).await;
+
+        assert!(matches!(outcome, Err(ReviveError::EndHolder { .. })), "{outcome:?}");
+        // Stopped here would let a resume run a second agent beside the one
+        // still running in the old holder.
+        assert_eq!(store.agent("se_a").unwrap().expect("still saved").state, AgentState::Launching);
+    }
+
+    #[tokio::test]
+    async fn an_old_holder_that_ended_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, record) = saved_launching(dir.path());
+
+        settle_failed_end(&store, &record, true, Ok(())).await.expect("nothing failed");
+
+        assert_eq!(store.agent("se_a").unwrap().expect("still saved").state, AgentState::Launching);
     }
 }
 
@@ -358,10 +556,13 @@ async fn revive_shell(
         let pid = blocking(move || humata2_holder::holder_pid(&socket)).await?;
         if let Some(pid) = pid.filter(|pid| *pid != tab.holder_pid) {
             tab.holder_pid = pid;
+            // Another process than the one saved: a new holder.
+            tab.holder_generation = tab.holder_generation.saturating_add(1);
             let saving = tab.clone();
+            let fresh = fresh_replies(saving.holder_generation);
             blocking({
                 let store = store.clone();
-                move || store.put_tab(&saving)
+                move || store.put_tab_with_replies(&saving, &fresh)
             })
             .await?
             .map_err(|source| {
@@ -381,9 +582,20 @@ async fn revive_shell(
             what: what.clone(),
             source,
         })?;
-    let cwd = folder
-        .filter(|folder| folder.is_dir())
-        .unwrap_or_else(|| config.home.clone());
+    let reported = {
+        let (store, id) = (store.clone(), tab.id.clone());
+        match blocking(move || store.tab_program(&id)).await? {
+            Ok(program) => Some(program.pwd),
+            Err(error) => {
+                eprintln!(
+                    "humata2 revive: couldn't read where tab {}'s program was, so its new shell starts in the session folder: {error}",
+                    tab.id
+                );
+                None
+            }
+        }
+    };
+    let cwd = crate::shell_start::start_folder(reported.as_deref(), folder, &config.home);
     let line = match why {
         Some(why) => format!("[Humata] {why} This is a new shell in {}.", cwd.display()),
         None => format!(
@@ -403,22 +615,34 @@ async fn revive_shell(
         scrollback_bytes: config.scrollback_bytes,
         log: config.logs.join(format!("{}.log", tab.id)),
     };
+    if let Some(builds) = &config.builds {
+        let (builds, tab) = (builds.clone(), tab.id.clone());
+        let _ = blocking(move || builds.shell_spawned(&tab)).await;
+    }
     let spawned = spawn(spec, Some(&line), what).await?;
     point("revive.shell.spawned");
     tab.holder_pid = spawned.pid;
+    tab.holder_generation = tab.holder_generation.saturating_add(1);
     let (saving, socket) = (tab.clone(), tab.holder_socket.clone());
+    let fresh = fresh_replies(saving.holder_generation);
     let put = blocking({
         let store = store.clone();
-        move || store.put_tab(&saving)
+        move || store.put_tab_with_replies(&saving, &fresh)
     })
-    .await?;
-    if let Err(source) = put {
-        let _ = humata2_holder::shutdown(&socket).await;
-        return Err(store_error(
-            tab.session.as_deref().unwrap_or("none"),
-            "save the restarted shell's tab",
-            source,
-        ));
+    .await;
+    let session = tab.session.clone().unwrap_or_else(|| "none".to_owned());
+    let saved_tab = match put {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(source)) => Err(store_error(&session, "save the restarted shell's tab", source)),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = saved_tab {
+        // Nothing could find the new holder again: it is ended, and if it
+        // stays that is said, beside the error that is returned.
+        if let Err(end) = humata2_holder::shutdown_or_end(&socket, spawned.pid).await {
+            eprintln!("humata2 revive: {end}");
+        }
+        return Err(error);
     }
     Ok(ShellRevived::Restarted { saved })
 }

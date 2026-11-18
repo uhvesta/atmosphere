@@ -18,13 +18,91 @@ pub(super) async fn attach<D: Daemon, C: Console>(
     read_only: bool,
 ) -> Result<Done, CliError> {
     streams::no_json(ctx)?;
+    if ctx.flags.dry_run {
+        return Err(CliError::AttachDryRun);
+    }
+    let session = ctx.session(session).await?;
+    let tab = match tab {
+        Some(value) => pb::TabId { value },
+        None => {
+            let request = pb::ListTabsRequest {
+                session: Some(session.clone()),
+            };
+            let tabs: pb::ListTabsResponse = ctx.call(rpc::terminal::LIST_TABS, &request).await?;
+            default_tab(&session.value, &tabs.tabs)?
+        }
+    };
     let open = pb::AttachOpen {
-        session: Some(ctx.session(session).await?),
-        tab: tab.map(|value| pb::TabId { value }),
+        session: Some(session),
+        tab: Some(tab),
         read_only,
         ..Default::default()
     };
     streams::attach(ctx, open).await
+}
+
+/// The tab `attach` opens without `--tab`: the agent's tab, or the only tab
+/// when the session has no agent tab. Anything else needs `--tab`.
+fn default_tab(session: &str, tabs: &[pb::Tab]) -> Result<pb::TabId, CliError> {
+    let agent = tabs.iter().find(|tab| tab.kind == pb::tab::Kind::Agent as i32);
+    let chosen = match (agent, tabs) {
+        (Some(tab), _) => Some(tab),
+        (None, [only]) => Some(only),
+        (None, _) => None,
+    };
+    chosen
+        .and_then(|tab| tab.id.clone())
+        .ok_or_else(|| CliError::NoAgentTab {
+            session: session.to_owned(),
+            tabs: tabs
+                .iter()
+                .filter_map(|tab| tab.id.as_ref().map(|id| id.value.clone()))
+                .collect(),
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(id: &str, kind: pb::tab::Kind) -> pb::Tab {
+        pb::Tab {
+            id: Some(pb::TabId { value: id.into() }),
+            kind: kind as i32,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_agent_tab_is_chosen_over_shells() {
+        let tabs = [tab("tb_shell", pb::tab::Kind::Shell), tab("tb_agent", pb::tab::Kind::Agent)];
+        let chosen = default_tab("se_1", &tabs).expect("the agent tab is chosen");
+        assert_eq!(chosen.value, "tb_agent");
+    }
+
+    #[test]
+    fn the_only_tab_is_chosen_when_there_is_no_agent_tab() {
+        let tabs = [tab("tb_shell", pb::tab::Kind::Shell)];
+        let chosen = default_tab("se_1", &tabs).expect("the only tab is chosen");
+        assert_eq!(chosen.value, "tb_shell");
+    }
+
+    #[test]
+    fn several_shells_and_no_agent_tab_is_an_error_naming_the_tabs() {
+        let tabs = [tab("tb_a", pb::tab::Kind::Shell), tab("tb_b", pb::tab::Kind::Shell)];
+        assert!(matches!(
+            default_tab("se_1", &tabs),
+            Err(CliError::NoAgentTab { tabs, .. }) if tabs == ["tb_a", "tb_b"]
+        ));
+    }
+
+    #[test]
+    fn no_tabs_at_all_is_an_error() {
+        assert!(matches!(
+            default_tab("se_1", &[]),
+            Err(CliError::NoAgentTab { tabs, .. }) if tabs.is_empty()
+        ));
+    }
 }
 
 /// Opens a shell on a machine and attaches to it; with `--json`, prints
@@ -37,8 +115,8 @@ pub(super) async fn shell<D: Daemon, C: Console>(
         idempotency_key: ctx.key(),
         machine: Some(ctx.machine(machine).await?),
     };
-    if ctx.flags.json {
-        return reply(ctx, rpc::terminal::OPEN_MACHINE_SHELL, &request).await;
+    if ctx.flags.json || ctx.flags.dry_run {
+        return ctx.change(rpc::terminal::OPEN_MACHINE_SHELL, &request).await;
     }
     let tab: pb::Tab = ctx.call(rpc::terminal::OPEN_MACHINE_SHELL, &request).await?;
     let open = pb::AttachOpen {
@@ -75,6 +153,12 @@ pub(super) async fn session<D: Daemon, C: Console>(
             };
             reply(ctx, rpc::terminal::LIST_QUEUED, &request).await
         }
+        SessionCommand::Tabs { session } => {
+            let request = pb::ListTabsRequest {
+                session: Some(ctx.session(&session).await?),
+            };
+            reply(ctx, rpc::terminal::LIST_TABS, &request).await
+        }
         SessionCommand::SendNow { session, ids } => {
             let request = pb::SendQueuedNowRequest {
                 idempotency_key: ctx.key(),
@@ -84,7 +168,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                     .map(|value| pb::QueuedTypingId { value })
                     .collect(),
             };
-            reply(ctx, rpc::terminal::SEND_QUEUED_NOW, &request).await
+            ctx.change(rpc::terminal::SEND_QUEUED_NOW, &request).await
         }
         SessionCommand::Start {
             agent,
@@ -108,31 +192,37 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 title: title.unwrap_or_default(),
                 agent: agent.map(|value| pb::AgentId { value }),
                 model: model.unwrap_or_default(),
-                machine: Some(ctx.needs_machine().await?),
+                machine: Some(ctx.machine_or_this().await?),
                 repos,
                 first_message: message.unwrap_or_default(),
                 board_item: None,
                 branch: String::new(),
                 rebuild: None,
+                review: None,
             };
-            reply(ctx, rpc::session::START_SESSION, &request).await
+            ctx.change(rpc::session::START_SESSION, &request).await
         }
         SessionCommand::Fork {
             session,
             kind,
+            agent,
+            before_turn,
             title,
             branch,
         } => {
+            let parent = ctx.session(&session).await?;
+            refuse_another_channel(ctx, &session, &parent).await?;
             let request = pb::ForkSessionRequest {
                 idempotency_key: ctx.key(),
-                parent: Some(ctx.session(&session).await?),
+                parent: Some(parent),
                 kind: values::fork_kind(kind) as i32,
-                before_turn: 0,
+                before_turn: before_turn.unwrap_or(0),
                 title: title.unwrap_or_default(),
-                agent: None,
+                agent: agent.map(|value| pb::AgentId { value }),
                 model: String::new(),
                 machine: ctx.machine_flag().await?,
                 branch: branch.unwrap_or_default(),
+                reason: String::new(),
             };
             if ctx.flags.dry_run {
                 let preview = ctx.json(rpc::session::PREVIEW_FORK, &request).await?;
@@ -141,7 +231,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                     outcome: Outcome::Planned,
                 });
             }
-            reply(ctx, rpc::session::FORK_SESSION, &request).await
+            ctx.change(rpc::session::FORK_SESSION, &request).await
         }
         SessionCommand::Read { session, from, to } => super::search::read(ctx, &session, from, to).await,
         SessionCommand::Rename { session, title } => {
@@ -152,14 +242,14 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 expected_revision: None,
                 rename_branch: false,
             };
-            reply(ctx, rpc::session::RENAME_SESSION, &request).await
+            ctx.change(rpc::session::RENAME_SESSION, &request).await
         }
         SessionCommand::Stop { session } => {
             let request = pb::StopSessionRequest {
                 idempotency_key: ctx.key(),
                 id: Some(ctx.session(&session).await?),
             };
-            reply(ctx, rpc::session::STOP_SESSION, &request).await
+            ctx.change(rpc::session::STOP_SESSION, &request).await
         }
         SessionCommand::Resume { session, fresh } => {
             use pb::resume_session_request::Mode;
@@ -173,7 +263,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 id: Some(ctx.session(&session).await?),
                 mode: mode as i32,
             };
-            reply(ctx, rpc::session::RESUME_SESSION, &request).await
+            ctx.change(rpc::session::RESUME_SESSION, &request).await
         }
         SessionCommand::Archive {
             session,
@@ -233,7 +323,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 id: Some(ctx.session(&session).await?),
                 machine: ctx.machine_flag().await?,
             };
-            reply(ctx, rpc::session::RESTORE_SESSION, &request).await
+            ctx.change(rpc::session::RESTORE_SESSION, &request).await
         }
         SessionCommand::Rebuild { session } => {
             let request = pb::RebuildSessionRequest {
@@ -241,7 +331,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 id: Some(ctx.session(&session).await?),
                 machine: ctx.machine_flag().await?,
             };
-            reply(ctx, rpc::session::REBUILD_SESSION, &request).await
+            ctx.change(rpc::session::REBUILD_SESSION, &request).await
         }
         SessionCommand::Move { session, to } => {
             let request = pb::MoveSessionRequest {
@@ -249,7 +339,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 id: Some(ctx.session(&session).await?),
                 to: Some(ctx.machine(&to).await?),
             };
-            reply(ctx, rpc::session::MOVE_SESSION, &request).await
+            ctx.change(rpc::session::MOVE_SESSION, &request).await
         }
         SessionCommand::Repo(SessionRepoCommand::Add { session, repo }) => {
             let request = pb::AddRepoToSessionRequest {
@@ -257,7 +347,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 id: Some(ctx.session(&session).await?),
                 repo: Some(resolve::repo(&repo)?),
             };
-            reply(ctx, rpc::session::ADD_REPO_TO_SESSION, &request).await
+            ctx.change(rpc::session::ADD_REPO_TO_SESSION, &request).await
         }
         SessionCommand::Repo(SessionRepoCommand::Drop { session, repo }) => {
             let id = Some(ctx.session(&session).await?);
@@ -285,7 +375,21 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 idempotency_key: ctx.key(),
                 fork: Some(ctx.session(&session).await?),
             };
-            reply(ctx, rpc::session::GIVE_OWN_COPY, &request).await
+            ctx.change(rpc::session::GIVE_OWN_COPY, &request).await
+        }
+        SessionCommand::Continue { session, before_turn } => {
+            // The target is the global --channel, never the agent's own: the
+            // daemon refuses the session's own channel and the Desk.
+            let channel = ctx.channel_flag().await?.ok_or(CliError::Missing {
+                flag: "--channel <name|id>",
+            })?;
+            let request = pb::ContinueInChannelRequest {
+                idempotency_key: ctx.key(),
+                session: Some(ctx.session(&session).await?),
+                channel: Some(channel),
+                before_turn: before_turn.unwrap_or(0),
+            };
+            ctx.change(rpc::session::CONTINUE_IN_CHANNEL, &request).await
         }
         SessionCommand::Push {
             session,
@@ -301,7 +405,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 text,
                 reason: String::new(),
             };
-            reply(ctx, rpc::session::SEND_NOTE, &request).await
+            ctx.change(rpc::session::SEND_NOTE, &request).await
         }
         SessionCommand::Ask { session, text } => {
             let request = pb::AskSessionRequest {
@@ -312,11 +416,25 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 timeout_seconds: ctx.wait_seconds(),
             };
             ctx.note(&format!("Waiting for {session} to answer…"));
-            reply(ctx, rpc::session::ASK_SESSION, &request).await
+            ctx.change(rpc::session::ASK_SESSION, &request).await
+        }
+        SessionCommand::Answer {
+            question,
+            answer,
+            decline,
+        } => {
+            let request = pb::AnswerQuestionRequest {
+                idempotency_key: ctx.key(),
+                question: Some(pb::QuestionId { value: question }),
+                answer: answer.unwrap_or_default(),
+                decline,
+            };
+            ctx.change(rpc::session::ANSWER_QUESTION, &request).await
         }
         SessionCommand::Type {
             session,
             text,
+            no_submit,
             at_turn_end,
             tab,
         } => {
@@ -326,11 +444,84 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 idempotency_key: ctx.key(),
                 session: Some(ctx.session(&session).await?),
                 tab: tab.map(|value| pb::TabId { value }),
-                text,
+                text: if no_submit { text } else { submitted(text) },
                 when: when as i32,
             };
-            reply(ctx, rpc::terminal::TYPE, &request).await
+            if ctx.flags.json || ctx.flags.dry_run {
+                return ctx.change(rpc::terminal::TYPE, &request).await;
+            }
+            let reply: pb::TypeResponse = ctx.call(rpc::terminal::TYPE, &request).await?;
+            ctx.console.print(&typed_text(&reply));
+            Ok(Done::printed())
         }
+    }
+}
+
+/// `text` with Enter pressed after it (D671: a trailing newline is the
+/// submit), unless it already ends in one.
+fn submitted(mut text: String) -> String {
+    if !text.ends_with(['\n', '\r']) {
+        text.push('\n');
+    }
+    text
+}
+
+/// What a person is told a Type did. Text that is only typed hasn't been
+/// sent. Text written mid-turn may run after the turn: the agent decides.
+fn typed_text(reply: &pb::TypeResponse) -> String {
+    let what = if reply.queued.is_some() {
+        "queued; typed and submitted when the turn ends"
+    } else if reply.submitted {
+        "typed and submitted"
+    } else {
+        "typed, not submitted (press Enter or run again without --no-submit)"
+    };
+    if reply.agent_busy {
+        format!("{what}\nSent while the agent was busy; it may run after the current turn")
+    } else {
+        what.to_owned()
+    }
+}
+
+/// Refuses `session fork --channel <c>` when the parent isn't in channel
+/// `c`: a fork stays in its parent's channel, and `session continue
+/// --channel` is what carries a session into another (CV-8). No fork is
+/// asked for then.
+async fn refuse_another_channel<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    named: &str,
+    parent: &pb::SessionId,
+) -> Result<(), CliError> {
+    let (Some(typed), Some(channel)) = (ctx.flags.channel.clone(), ctx.channel_flag().await?) else {
+        return Ok(());
+    };
+    let mut page = String::new();
+    loop {
+        let reply: pb::ListSessionsResponse = ctx
+            .call(
+                rpc::session::LIST_SESSIONS,
+                &pb::ListSessionsRequest {
+                    channel: Some(channel.clone()),
+                    include_archived: true,
+                    page: Some(pb::PageRequest {
+                        page_size: 0,
+                        page_token: page.clone(),
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        if reply.sessions.iter().any(|session| session.id.as_ref() == Some(parent)) {
+            return Ok(());
+        }
+        let next = reply.page.map(|page| page.next_page_token).unwrap_or_default();
+        if next.is_empty() || next == page {
+            return Err(CliError::ForkElsewhere {
+                session: named.to_owned(),
+                channel: typed,
+            });
+        }
+        page = next;
     }
 }
 
@@ -354,8 +545,12 @@ async fn push<D: Daemon, C: Console>(
         open_pull_request: pr,
         pr_title: String::new(),
         pr_body: String::new(),
+        base_branch: String::new(),
     };
-    let plan_request = pb::PlanPushRequest { id: id.clone() };
+    let plan_request = pb::PlanPushRequest {
+        id: id.clone(),
+        spec: None,
+    };
     let again = plan_request.clone();
     let push = pb::PushAndOpenPullRequestsRequest {
         idempotency_key: ctx.key(),

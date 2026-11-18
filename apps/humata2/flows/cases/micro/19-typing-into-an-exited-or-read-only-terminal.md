@@ -17,7 +17,7 @@ Micro. macOS and Linux for the daemon; the app's terminal state is shown on macO
 1. **I do (T1):** Click into the exited shell tab and type `hello`, then Return.
    - **I see:** The output stays as it was. No line says the shell exited, and `hello` does not show up.
    - **State and events:** The shell's holder reports Exited (code 3). The daemon refuses typed input to an exited shell. Through the app, the keys never reach the link: the replica stops input once the tab has exited (`terminal/client/src/replica.rs:537`), and `write_accepted` returns `false` with no error (`:306`). So the keys are dropped and nothing is queued.
-   - **Status:** Likely bug. The daemon refuses the input and sends an Exited notice (`daemon/humatad/tests/terminal.rs::a_shell_that_exits_says_so`, `::typing_into_a_shell_that_exited_is_refused`). But the app drops the notice (`clients/terminal_link/src/lib.rs:191`), and it draws an exit line only for tab 0 (`ui/src/session_tabs.rs:632`). So the person gets no line and no message.
+   - **Status:** Fakes only. The keys are not sent, and the app says why once: "This tab's shell has exited, so what you typed was not sent. Open a new terminal to run more commands." The daemon refuses (`daemon/humatad/tests/terminal.rs::typing_into_a_shell_that_exited_is_refused`); the app's toast is `desktop/tests/native/terminal.rs::typing_into_an_exited_shell_says_why_once`, told once per stop (`terminal/pane/tests/pane.rs::dropped_input_is_told_once_each_time_input_stops`).
 
    - **Getting back (T1):** Open a new shell from the session's tab bar. For tab 0 of an exited agent, the exit line has **Resume** (`ui/src/session_tabs.rs:632-645`). Resume starts the agent on its conversation; a new shell starts a fresh shell in the folder. The exited shell is not restarted.
 
@@ -104,7 +104,7 @@ Micro. macOS and Linux for the daemon; the app's terminal state is shown on macO
 
 | Step or branch | Status | Evidence |
 | --- | --- | --- |
-| 1. Typing into an exited shell (T1) | Likely bug | `daemon/humatad/tests/terminal.rs::typing_into_a_shell_that_exited_is_refused`; `clients/terminal_link/src/lib.rs:191`; `ui/src/session_tabs.rs:632` |
+| 1. Typing into an exited shell (T1) | Fakes only | `daemon/humatad/tests/terminal.rs::typing_into_a_shell_that_exited_is_refused`, `desktop/tests/native/terminal.rs::typing_into_an_exited_shell_says_why_once` |
 | 2. Typing into a moving session (T2) | Works (real daemon) | `daemon/humatad/tests/move_session.rs::a_moving_session_s_terminal_is_read_only_until_it_resumes` |
 | 3. Typing into a read-only attach (T3) | Works (real daemon) | `daemon/humatad/tests/terminal.rs::a_read_only_attach_watches_but_cannot_type` |
 | 4. Typing into a stopped session (T4) | Works (real daemon) | `daemon/humatad/tests/stop_sessions.rs::while_stopped_agents_and_scripts_are_refused_and_nothing_can_be_typed_attached_or_started` |
@@ -123,7 +123,7 @@ Tag count, branches: Works (real daemon) 2 (B2, B5), Code, no test 2 (B1, B3), N
 - Likely bug: the app drops the daemon's Exited notice. `clients/terminal_link/src/lib.rs:191` returns nothing for `ServerMessage::Notice`, and `ui/src/session_tabs.rs:632` draws the exit line only for tab 0. So an exited shell tab shows only its last output. To confirm: exit a shell tab in the app and look for a line.
 - Likely bug: the app keeps a moving session as Idle. `clients/live/src/map.rs:384` maps `SessionStatus::Moving` to `Status::Idle`, and a unit test asserts that mapping. A session that is moving shows no moving status in the list. To confirm: start a move from another client, then look at the session in the app.
 - Likely bug (to confirm): the Type RPC has no moving check. `daemon/humatad/src/terminal.rs:877-915` (`type_in`) goes straight to `type_into` (`:659`) without the `is_moving` check that the attach path has (`daemon/humatad/src/attach.rs:323`). A typed line sent by RPC during a move may reach the holder on the source. To confirm: hold a move at its copy step and call the Type RPC.
-- Likely bug: keys are dropped with no message on a read-only, exited or moving tab (`terminal/client/src/replica.rs:305-307`, `terminal/pane/src/host.rs:119-122`). The same drop as in micro-17.
+- Fixed: keys dropped on a read-only, exited or moving tab raise one toast that says why (`desktop/tests/native/terminal.rs::typing_into_an_exited_shell_says_why_once`, `ui/src/terminals.rs::tests::typing_during_a_move_names_where_the_session_is_going`, Fakes only).
 - Not built: the MV-4 line "Moving to <machine>…" for a moving session's tab (SPEC MV-4). The string is not in `ui/src`. The only move progress is the move sheet, which shows for a move this app started (`ui/src/overlays.rs:255-311`).
 - Not built: take control from a read-only attach in the shipped path (`clients/terminal_link/src/lib.rs:103` ignores `TakeControl`). It exists only in the lab host and viewer (`terminal/host/src/lib.rs`, `terminal/client/src/lib.rs:665-676`).
 - Not built in the shipped path: the machine-offline state (SPEC SE-16). `WRITABLE_MACHINE_OFFLINE` is produced only for a remote machine's relay (`daemon/humatad/src/remote_terminal.rs:591`). This case uses a stopped session, not an offline machine.

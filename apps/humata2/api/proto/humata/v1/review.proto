@@ -22,6 +22,16 @@ service DiffService {
   // RV-30: the reviews kept per repo, for "Since review 3, Tuesday 14:02".
   rpc ListReviewedSnapshots(ListReviewedSnapshotsRequest)
       returns (ListReviewedSnapshotsResponse);
+  // The branches one repository's changes can be compared with, read from
+  // refs/remotes/origin/* as of the last fetch (nothing is fetched), with
+  // the default branch first.
+  rpc ListBases(ListBasesRequest) returns (ListBasesResponse);
+  // Frame 98: has Humata ask the remote for its default branch in one
+  // repository's clone (`git remote set-head origin --auto`), on the
+  // session's machine, when GetDiff answered NoDefaultBranch. User-only,
+  // like MarkReviewed. Running it again is harmless.
+  rpc FindDefaultBranch(FindDefaultBranchRequest)
+      returns (FindDefaultBranchResponse);
 }
 
 service CommentService {
@@ -50,6 +60,14 @@ service CommentService {
   // marking it dealt with; its status is kept for Unarchive.
   rpc ArchiveComment(ArchiveCommentRequest) returns (Comment);
   rpc UnarchiveComment(UnarchiveCommentRequest) returns (Comment);
+  // D284: the note becomes a draft for a pull request of its session, in
+  // place: the same comment, its id, author and anchor kept; never a copy.
+  // The pull request is the one of the session's reviews whose repository
+  // the note is on. INVALID_FIELD when the note's repository isn't one of the
+  // review's (or, with two pull requests in it, `pr` is missing or not one of
+  // the review's); NOT_FOUND when the note isn't there; FAILED_PRECONDITION
+  // when it isn't a note.
+  rpc MakeNoteADraft(MakeNoteADraftRequest) returns (Comment);
   // D151, D161: the app's feed of one session's comments, every change the
   // daemon saves, in order. The first event is `resync`, so a listing made
   // after it misses nothing; a later `resync` means the feed fell behind
@@ -75,6 +93,10 @@ service PullRequestReviewService {
   rpc SubmitReview(SubmitReviewRequest) returns (SubmitReviewResponse);
   // The agent's draft of the review summary (PR-12).
   rpc DraftSummary(DraftSummaryRequest) returns (DraftSummaryResponse);
+  // A9 (D299): the PR's commits, which are reviewed, and the history.
+  rpc ListPullRequestCommits(ListPullRequestCommitsRequest) returns (PullRequestCommits);
+  // A9. User-only.
+  rpc MarkCommitsReviewed(MarkCommitsReviewedRequest) returns (PullRequestCommits);
 }
 
 service ViewService {
@@ -167,11 +189,17 @@ message DiffSpecBase {
     ForkPointBase fork_point = 4;
     // What is staged, for "only my unstaged changes".
     IndexBase index = 5;
+    // This repo's pull request's base, merge-base form (PR-10). PR review
+    // sessions only; a repo that is no pull request's is refused.
+    PullRequestBaseRef pull_request_base = 6;
   }
 }
 
 message ForkPointBase {}
 message IndexBase {}
+// PR-10: this repo's pull request's base, merge-base form, PR review
+// sessions only.
+message PullRequestBaseRef {}
 
 message DiffSpecCompare {
   enum Upto {
@@ -371,6 +399,32 @@ message ListReviewedSnapshotsResponse {
   repeated ReviewedSnapshot snapshots = 1;
 }
 
+// The branches one repository's changes can be compared with. Names carry
+// no `origin/` prefix, and `HEAD` is left out.
+message ListBasesRequest {
+  SessionId session = 1;
+  RepoRef repo = 2;
+}
+
+message FindDefaultBranchRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // One of the session's repositories.
+  RepoRef repo = 3;
+}
+
+message FindDefaultBranchResponse {
+  // The branch origin/HEAD names now, without `origin/`.
+  string default_branch = 1;
+}
+
+message ListBasesResponse {
+  repeated string branches = 1;
+  // origin/HEAD's branch, which is also first in `branches`. Empty when the
+  // clone doesn't know it, or when that branch isn't among the fetched ones.
+  string default_branch = 2;
+}
+
 // ---------------------------------------------------------------------------
 
 enum CommentStatus {
@@ -414,7 +468,7 @@ message CommentDestination {
 message SessionTerminal {}
 
 // PR-23: a note for the user from the review chat, shown under its lines;
-// never posted. "Make it a draft" copies it to a pull request draft.
+// never posted. "Make it a draft" turns it into one in place (D284).
 message UserNote {}
 
 message Comment {
@@ -450,6 +504,10 @@ message Comment {
   bool delivery_unconfirmed = 17;
   // When the terminal took it; unset until SENT.
   google.protobuf.Timestamp sent_at = 18;
+  // A submit was cut short after GitHub may have taken this draft, and
+  // GitHub doesn't list a review that holds it. The draft stays a draft;
+  // the user decides whether to post again. Never set with POSTED.
+  bool post_unconfirmed = 19;  // next free: 20
 }
 
 // One answer in a comment's thread (DK-9, SM-19).
@@ -503,6 +561,14 @@ message DropCommentRequest {
 message DropCommentResponse {
   // PR-24: for a review chat note, the drop's change id, for Undo.
   string undo_id = 1;
+}
+
+message MakeNoteADraftRequest {
+  IdempotencyKey idempotency_key = 1;
+  CommentId id = 2;
+  // Needed only when the review holds two pull requests in the note's
+  // repository: which one the draft is for.
+  PullRequestRef pr = 3;
 }
 
 message ReattachCommentRequest {
@@ -644,6 +710,20 @@ message HeadChange {
   uint32 new_commits = 2;
   bool force_pushed = 3;
   PullRequestState state = 4;
+  // A8 (D298): the new base when it changed since the last recorded one;
+  // else empty. A changed base lists the PR even with no new commits.
+  string base_branch = 5;
+  // D300: where the PR sits among the review's own PRs; unset when it is in
+  // no stack. SEAM
+  StackPosition stack = 6;
+}
+
+// D300: a pull request's place in a stack of the review's own pull requests.
+// A stack may be a tree, so a PR can have several children.
+message StackPosition {
+  // The PR this one is based on; unset for the bottom of the stack.
+  PullRequestRef parent = 1;
+  repeated PullRequestRef children = 2;
 }
 
 message CheckHeadsResponse {
@@ -677,8 +757,23 @@ message PlanSubmitRequest { SessionId session = 1; }
 message SubmitPlan {
   message PerPullRequest {
     PullRequestRef pr = 1;
+    // Only what will be posted.
     repeated Comment drafts = 2;
     string drafted_summary = 3;
+    // Drafts that won't be posted with this review, and why. They stay
+    // drafts.
+    repeated LeftOut left_out = 4;  // next free: 5
+  }
+  message LeftOut {
+    enum Reason {
+      REASON_UNSPECIFIED = 0;
+      // The lines changed since the draft was written (PR-16).
+      REASON_OUTDATED = 1;
+      // The lines aren't in the PR's diff; GitHub would refuse it with 422.
+      REASON_OUT_OF_DIFF = 2;
+    }
+    Comment draft = 1;
+    Reason reason = 2;
   }
   SessionId session = 1;
   repeated PerPullRequest pull_requests = 2;
@@ -721,6 +816,69 @@ message DraftSummaryRequest {
 message DraftSummaryResponse {
   Delivery delivery = 1;
   JournalPosition journal = 2;
+}
+
+// A9 (D299): commits marked reviewed, per PR, across restarts and force
+// pushes. Any review session of the PR sees the same marks and history.
+message ListPullRequestCommitsRequest {
+  SessionId session = 1;      // a review session holding `pr`
+  PullRequestRef pr = 2;
+}
+
+// User-only.
+message MarkCommitsReviewedRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  PullRequestRef pr = 3;
+  repeated string commits = 4;  // shas on the clone's head
+  bool reviewed = 5;            // false: unmark
+  PresenceProof presence = 6;
+}
+
+message PullRequestCommits {
+  PullRequestRef pr = 1;
+  string head_sha = 2;                    // the clone's head
+  repeated PrCommit commits = 3;          // base...head, oldest first
+  repeated CommitReviewEntry history = 4; // seq ascending, append-only
+}
+
+message PrCommit {
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_UNREVIEWED = 1;
+    STATE_REVIEWED = 2;   // this sha was marked
+    STATE_CARRIED = 3;    // an earlier sha with the same patch-id was marked
+  }
+  string sha = 1;
+  string subject = 2;
+  string patch_id = 3;            // `git patch-id --stable` of `git show <sha>`
+  State state = 4;
+  string reviewed_as_sha = 5;     // CARRIED: the sha that was marked; else empty
+  google.protobuf.Timestamp reviewed_at = 6;  // unset when unreviewed
+  string reviewed_head_sha = 7;   // the head when the mark was made
+  ReviewedBy by = 8;              // unset when unreviewed
+}
+
+message ReviewedBy {
+  Actor actor = 1;        // UserActor for every mark
+  string gh_login = 2;    // `gh api user` login at the time
+}
+
+message CommitReviewEntry {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_MARKED = 1;
+    KIND_UNMARKED = 2;
+    KIND_CARRIED = 3;
+    KIND_WHOLE_PR = 4;
+  }
+  uint32 seq = 1;
+  google.protobuf.Timestamp at = 2;
+  Kind kind = 3;
+  repeated string commits = 4;
+  string head_sha = 5;
+  optional uint32 snapshot_n = 6;   // WHOLE_PR only: the RV-6 snapshot's n
+  ReviewedBy by = 7;
 }
 
 // ---------------------------------------------------------------------------

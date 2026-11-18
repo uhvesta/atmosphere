@@ -6,6 +6,7 @@
 use super::{Overlays, button, card, header, secondary};
 use crate::bridge::Ui;
 use crate::theme::Look;
+use crate::repo_search_field::{RepoField, repo_search_field};
 use crate::widgets::{col, row};
 use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::component::Sizable as _;
@@ -25,11 +26,14 @@ impl Overlays {
         workspace: &Workspace,
         look: Look,
         ui: &Rc<Ui>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let title = workspace
             .session(session)
             .map_or_else(|| session.to_string(), |found| found.title.clone());
+        let adding = ui.read(|state| state.desk_repos.adding_owner.clone());
+        self.sync_owner(adding.as_deref(), window, cx);
         let add = {
             let ui = ui.clone();
             let input = self.desk.repo.clone();
@@ -63,14 +67,38 @@ impl Overlays {
             .child(
                 col()
                     .gap(px(6.))
-                    .child(
-                        div().h(px(26.)).child(
-                            Input::new(&self.desk.repo)
-                                .small()
-                                .min_h(px(26.))
-                                .aria_label("Repo to add"),
-                        ),
-                    )
+                    .child({
+                        let search = ui.read(|state| state.desk_repos.clone());
+                        let (rows, more) = search.rows(&[], 50);
+                        let pick = |repo: &str| {
+                            AppAction::Desk(DeskAction::AddRepo(session.clone(), repo.to_owned()))
+                        };
+                        repo_search_field(
+                            ui,
+                            look,
+                            RepoField {
+                                id: "desk-add-repo",
+                                picker: humata2_app::RepoPicker::DeskAddRepo,
+                                hint: None,
+                                search: &search,
+                                query: Input::new(&self.desk.repo)
+                                    .small()
+                                    .min_h(px(26.))
+                                    .aria_label("Repo to add")
+                                    .into_any_element(),
+                                owner: Input::new(&self.owner)
+                                    .small()
+                                    .min_h(px(26.))
+                                    .aria_label("Org or user")
+                                    .into_any_element(),
+                                rows: &rows,
+                                more,
+                                checkable: false,
+                                pick: &pick,
+                                workspace,
+                            },
+                        )
+                    })
                     .child(secondary(
                         look,
                         "Its default branch is cloned into this session's folder.",

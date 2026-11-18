@@ -17,6 +17,7 @@ humata2-clients = { path = "../clients" }
 humata2-engine = { path = "../engine" }
 humata2-report = { path = "../report" }
 humata2-ui = { path = "../ui" }
+notify = { workspace = true }
 tca-rust = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

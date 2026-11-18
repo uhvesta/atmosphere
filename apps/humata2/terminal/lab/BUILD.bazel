@@ -196,7 +196,10 @@ humata2_snapshot_test(
         srcs = ["tests/neovim.rs"],
         data = ["//apps/humata2/daemon/holder:humata2_holder"],
         env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
-        tags = ["manual"],
+        tags = [
+            "external",
+            "manual",
+        ],
         target_compatible_with = ["@platforms//os:macos"],
         deps = [
             ":lib" + engine,
@@ -223,7 +226,10 @@ humata2_snapshot_test(
         srcs = ["tests/interactive.rs"],
         data = ["//apps/humata2/daemon/holder:humata2_holder"],
         env = {"HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)"},
-        tags = ["manual"],
+        tags = [
+            "external",
+            "manual",
+        ],
         target_compatible_with = ["@platforms//os:macos"],
         deps = [
             ":lib" + engine,

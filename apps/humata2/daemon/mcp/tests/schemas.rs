@@ -274,3 +274,44 @@ async fn one_field_of_a_choice_is_required_and_two_are_refused() {
     assert_eq!(reply["error"]["code"], -32602);
     assert!(daemon.calls().is_empty());
 }
+
+/// MCP.md §6: D382
+#[tokio::test]
+async fn a_session_folder_location_is_accepted_and_reaches_the_daemon_as_given() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+    let location = json!({ "root": "session_folder", "session": "se_desk", "path": "rfc.md" });
+
+    let reply = client
+        .call_raw(json!(1), "file_read", json!({ "location": location }))
+        .await;
+
+    assert!(reply["result"].is_object(), "{reply}");
+    let calls = daemon.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].operation, Operation::FileRead);
+    assert_eq!(calls[0].arguments["location"], location);
+}
+
+/// MCP.md §6: D382. A session's folder holds no repository, so naming one
+/// is not a field of that location.
+#[tokio::test]
+async fn a_session_folder_location_takes_no_repo() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    let reply = client
+        .call_raw(
+            json!(1),
+            "file_read",
+            json!({ "location": {
+                "root": "session_folder",
+                "repo": "o/n",
+                "path": "rfc.md",
+            } }),
+        )
+        .await;
+
+    assert_eq!(reply["error"]["code"], -32602, "{reply}");
+    assert!(daemon.calls().is_empty());
+}

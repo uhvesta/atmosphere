@@ -11,20 +11,29 @@ use crate::console::Console;
 use crate::error::{CliError, Failure};
 use crate::exit;
 
-/// Prints a run's result or failure and gives its exit code.
+/// Prints a run's result or failure and gives its exit code. `stale_as_of`
+/// is when the host answered a read the machine served from its copy: it is
+/// shown with the result so a copied read is never mistaken for a live one.
 pub fn finish(
     console: &impl Console,
     flags: &Global,
     operation: &str,
     result: Result<Done, CliError>,
+    stale_as_of: Option<String>,
 ) -> i32 {
     match result {
-        Ok(done) => success(console, flags, operation, done),
+        Ok(done) => success(console, flags, operation, done, stale_as_of),
         Err(error) => failure(console, flags, operation, &error.failure()),
     }
 }
 
-fn success(console: &impl Console, flags: &Global, operation: &str, done: Done) -> i32 {
+fn success(
+    console: &impl Console,
+    flags: &Global,
+    operation: &str,
+    done: Done,
+    stale_as_of: Option<String>,
+) -> i32 {
     let outcome = match done.outcome {
         Outcome::Exited(code) => return code,
         Outcome::Printed if !flags.json => return exit::OK,
@@ -41,6 +50,9 @@ fn success(console: &impl Console, flags: &Global, operation: &str, done: Done) 
         envelope.insert("outcome".into(), json!(outcome));
         if outcome == "journaled" {
             envelope.insert("journal".into(), journal);
+        }
+        if let Some(at) = &stale_as_of {
+            envelope.insert("stale_as_of".into(), json!(at));
         }
         envelope.insert("result".into(), done.result);
         if strict_failure {
@@ -60,10 +72,16 @@ fn success(console: &impl Console, flags: &Global, operation: &str, done: Done) 
         if !text.is_empty() {
             console.print(&text);
         }
+        if let Some(at) = &stale_as_of {
+            console.eprint(&format!(
+                "This is the copy this machine kept; the Mac answered it at {at} and isn't reachable now."
+            ));
+        }
         match outcome {
-            "planned" => {
+            "planned" if done.result.get("token").is_some() => {
                 console.eprint("Nothing changed. Run it again with --plan <token> to do this.")
             }
+            "planned" => console.eprint("Nothing changed. Run it without --dry-run to do this."),
             "journaled" if strict_failure => {
                 console.eprint(STRICT_MESSAGE);
                 console.eprint(STRICT_FIX);

@@ -29,6 +29,7 @@ fn tab(id: &str, session: &str) -> TabRecord {
         holder_socket: PathBuf::from(format!("/tmp/{id}.sock")),
         holder_pid: 77,
         created_unix_ms: 3,
+        holder_generation: 0,
     }
 }
 
@@ -47,6 +48,7 @@ fn agent(session: &str, state: AgentState) -> AgentRecord {
             holder_socket: PathBuf::from(format!("/tmp/tb_{session}.sock")),
             cols: 120,
             rows: 40,
+            cli_version: Some("2.1.0 (Claude Code)".to_owned()),
         },
         state,
         generation: 1,

@@ -18,8 +18,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{prelude::*, *};
 use humata2_app::AppAction;
-use humata2_clients::{EntryKind, StorageAction, StorageKind, StorageRow};
-use humata2_files::{FilesAction as A, FilesState, NamingKind, Side, human_bytes};
+use humata2_clients::{EntryKind, StorageAction, StorageKind, StorageRow, TransferMode};
+use humata2_files::{FilesAction as A, FilesState, NamingKind, RowChoice, Side, human_bytes};
 
 const ORANGE: u32 = 0xff9f0a;
 const RED: u32 = 0xff453a;
@@ -144,6 +144,7 @@ fn line(
     stale: bool,
     look: Look,
     on_down: Option<Box<dyn Fn(&MouseDownEvent, &mut App)>>,
+    on_menu: Option<Box<dyn Fn(&MouseDownEvent, &mut App)>>,
 ) -> ObservedElement<Stateful<Div>> {
     let (text, secondary) = if stale {
         (look.secondary, look.tertiary)
@@ -199,6 +200,13 @@ fn line(
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, move |event, _, cx| on_down(event, cx));
     }
+    // PL-10: a right click opens the row's menu.
+    if let Some(on_menu) = on_menu {
+        line = line.on_mouse_down(MouseButton::Right, move |event, _, cx| {
+            cx.stop_propagation();
+            on_menu(event, cx);
+        });
+    }
     line
 }
 
@@ -237,10 +245,7 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
                 ui.send(AppAction::Files(A::TogglePicker(side)), cx);
             })
     };
-    let path = pane
-        .folder
-        .as_ref()
-        .map_or_else(String::new, |folder| folder.display_path());
+    let path = state.breadcrumb(side).join(" \u{203a} ");
     let head = row()
         .gap(px(8.))
         .h(px(40.))
@@ -318,6 +323,7 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
                     ui2.send(AppAction::Files(A::Up(side)), cx);
                 }) as Box<dyn Fn(&MouseDownEvent, &mut App)>
             }),
+            None,
         ));
     }
     for entry in &pane.entries {
@@ -362,6 +368,13 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
                     }
                 }) as Box<dyn Fn(&MouseDownEvent, &mut App)>
             }),
+            Some({
+                let ui = ui.clone();
+                let name = entry.name.clone();
+                Box::new(move |_: &MouseDownEvent, cx: &mut App| {
+                    ui.send(AppAction::Files(A::OpenRowMenu(side, name.clone())), cx);
+                }) as Box<dyn Fn(&MouseDownEvent, &mut App)>
+            }),
         ));
     }
     if pane.loading && !pane.loaded {
@@ -389,6 +402,7 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
 
     let ui2 = ui.clone();
     let ui3 = ui.clone();
+    let close_menu = state.row_menu.is_some();
     col()
         .id(SharedString::from(format!("files-pane {tag}")))
         .relative()
@@ -403,8 +417,12 @@ fn pane(ui: &Rc<Ui>, state: &FilesState, side: Side, look: Look) -> Stateful<Div
                 .overflow_y_scroll(),
         )
         .children(picker_list(ui, state, side, look))
+        .children(row_menu(ui, state, side, look))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             ui2.send(AppAction::Files(A::Activate(side)), cx);
+            if close_menu {
+                ui2.send(AppAction::Files(A::CloseRowMenu), cx);
+            }
         })
         // FM-4: files dragged in from Finder upload into this pane's folder.
         // The reducer refuses a pane that is stale or has no folder.
@@ -486,18 +504,160 @@ fn picker_list(
     Some(list)
 }
 
+/// The menu of a row (PL-10): Reveal in Finder on This Mac, Open terminal
+/// here on another machine, and Copy path. It is the pane's last child, so it
+/// paints over the rows.
+fn row_menu(
+    ui: &Rc<Ui>,
+    state: &FilesState,
+    side: Side,
+    look: Look,
+) -> Option<ObservedElement<Stateful<Div>>> {
+    let menu = state.row_menu.as_ref().filter(|menu| menu.side == side)?;
+    let tag = side_name(side);
+    let mut list = col()
+        .id(SharedString::from(format!("files-row-menu {tag}")))
+        .role(Role::ListBox)
+        .aria_label("Row menu")
+        .test_support()
+        .absolute()
+        .top(px(70.))
+        .right(px(16.))
+        .w(px(200.))
+        .p(px(4.))
+        .gap(px(1.))
+        .rounded(px(8.))
+        .bg(rgb(look.card))
+        .border_1()
+        .border_color(rgb(look.line))
+        .shadow_lg()
+        .occlude()
+        .text_size(px(12.5));
+    for choice in state.row_choices(side, &menu.name) {
+        let (label, action) = match choice {
+            RowChoice::RevealInFinder => ("Reveal in Finder", A::RevealInFinder(side, menu.name.clone())),
+            RowChoice::OpenTerminalHere => ("Open terminal here", A::OpenTerminalHere(side, menu.name.clone())),
+            RowChoice::CopyPath => ("Copy path", A::CopyPath(side, menu.name.clone())),
+        };
+        let ui = ui.clone();
+        list = list.child(
+            row()
+                .id(SharedString::from(format!("files-row-menu-item {tag} {label}")))
+                .role(Role::ListBoxOption)
+                .aria_label(label)
+                .test_support()
+                .h(px(26.))
+                .px(px(8.))
+                .rounded(px(5.))
+                .text_color(rgb(look.text))
+                .cursor_pointer()
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    ui.send(AppAction::Files(action.clone()), cx);
+                }),
+        );
+    }
+    Some(list)
+}
+
+/// The Copy to / Move to menu over the action bar: every machine with where
+/// the files land (PL-5), then Somewhere specific…, which goes into the other
+/// pane. It is the bar's last child, so it paints over the panes.
+fn send_menu(
+    ui: &Rc<Ui>,
+    state: &FilesState,
+    can_transfer: bool,
+    look: Look,
+) -> Option<ObservedElement<Stateful<Div>>> {
+    let mode = state.send_menu?;
+    let verb = match mode {
+        TransferMode::Copy => "Copy",
+        TransferMode::Move => "Move",
+    };
+    let mut list = col()
+        .id("files-send-menu")
+        .role(Role::ListBox)
+        .aria_label(format!("{verb} to"))
+        .test_support()
+        .absolute()
+        .bottom(px(44.))
+        .left(px(16.))
+        .w(px(300.))
+        .p(px(4.))
+        .gap(px(1.))
+        .rounded(px(8.))
+        .bg(rgb(look.card))
+        .border_1()
+        .border_color(rgb(look.line))
+        .shadow_lg()
+        .occlude()
+        .text_size(px(12.5));
+    let entry = |id: SharedString, label: String, enabled: bool| {
+        row()
+            .id(id)
+            .role(Role::ListBoxOption)
+            .aria_label(label.clone())
+            .test_support()
+            .gap(px(8.))
+            .h(px(26.))
+            .px(px(8.))
+            .rounded(px(5.))
+            .text_color(rgb(if enabled { look.text } else { look.tertiary }))
+            .child(div().flex_1().min_w_0().whitespace_nowrap().child(label))
+    };
+    for target in state.send_targets() {
+        let ui = ui.clone();
+        let machine = target.machine.clone();
+        let action = match mode {
+            TransferMode::Copy => A::CopyTo(machine),
+            TransferMode::Move => A::MoveTo(machine),
+        };
+        let mut item = entry(
+            SharedString::from(format!("files-send-item {}", target.machine)),
+            target.label.clone(),
+            target.online,
+        )
+        .children((!target.online).then(|| dim(look, "offline")));
+        if target.online {
+            item = item.cursor_pointer().on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                ui.send(AppAction::Files(action.clone()), cx);
+            });
+        } else {
+            item = item.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        }
+        list = list.child(item);
+    }
+    let ui = ui.clone();
+    let action = match mode {
+        TransferMode::Copy => A::Copy,
+        TransferMode::Move => A::Move,
+    };
+    let mut specific = entry(
+        SharedString::from("files-send-item specific"),
+        "Somewhere specific\u{2026}".to_owned(),
+        can_transfer,
+    );
+    if can_transfer {
+        specific = specific.cursor_pointer().on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            ui.send(AppAction::Files(action.clone()), cx);
+        });
+    } else {
+        specific = specific.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    }
+    Some(list.child(specific))
+}
+
+/// The action bar: New folder, Rename, Copy to, Move to, Delete and the trash.
 fn action_bar(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look: Look) -> Div {
     let from = state.active_pane();
     let to = state.pane(state.active.other());
     let usable = !from.stale && from.folder.is_some();
     let picked = usable && !from.selected.is_empty();
     let can_transfer = picked && !to.stale && to.folder.is_some();
-    let arrow_right = state.active == Side::Left;
-    let (copy, mv) = if arrow_right {
-        ("Copy →", "Move →")
-    } else {
-        ("← Copy", "← Move")
-    };
+    // Copy to and Move to open a menu of machines (PL-5).
 
     // New folder and Rename open the name prompt; the shell-owned input is
     // given the prompt's starting text first.
@@ -569,6 +729,7 @@ fn action_bar(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look: 
     });
 
     row()
+        .relative()
         .gap(px(8.))
         .h(px(42.))
         .px(px(16.))
@@ -579,13 +740,29 @@ fn action_bar(ui: &Rc<Ui>, state: &FilesState, name: &Entity<InputState>, look: 
         .child(new_folder)
         .child(rename)
         .child(
-            primary(ui, "files-copy", copy, AppAction::Files(A::Copy), look)
-                .disabled(!can_transfer),
+            primary(
+                ui,
+                "files-copy",
+                "Copy to \u{25b8}",
+                AppAction::Files(A::ToggleSendMenu(TransferMode::Copy)),
+                look,
+            )
+            .disabled(!picked),
         )
-        .child(button(ui, "files-move", mv, AppAction::Files(A::Move), look).disabled(!can_transfer))
+        .child(
+            button(
+                ui,
+                "files-move",
+                "Move to \u{25b8}",
+                AppAction::Files(A::ToggleSendMenu(TransferMode::Move)),
+                look,
+            )
+            .disabled(!picked),
+        )
         .child(button(ui, "files-delete", "Delete", AppAction::Files(A::Delete), look).disabled(!picked))
         .child(div().flex_1())
         .children(trash)
+        .children(send_menu(ui, state, can_transfer, look))
 }
 
 /// The name prompt: a small centred sheet over the page, shown while
@@ -993,5 +1170,6 @@ pub(crate) fn page(
         .children(name_prompt(ui, state, name, look))
         .children(trash_sheet(ui, state, look))
         .children(low_disk_sheet(ui, state, look))
+        .test_support()
         .into_any_element()
 }

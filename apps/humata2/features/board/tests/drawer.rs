@@ -181,6 +181,7 @@ fn a_global_item_offers_every_session() {
         depends_on: Vec::new(),
         session: None,
         parent: None,
+        revision: 0,
     });
     let (mut store, _) = store_with(workspace.clone());
     open(&mut store, "GLB-1");
@@ -290,6 +291,76 @@ fn a_refused_edit_shows_why_refreshes_and_keeps_the_picker() {
     store.finish();
 }
 
+/// `workspace` with PAY-7 at `revision` and in `status`.
+fn with_pay7(mut workspace: Workspace, revision: u64, status: S) -> Workspace {
+    let item = workspace
+        .items
+        .iter_mut()
+        .find(|i| i.id == id("PAY-7"))
+        .expect("PAY-7");
+    item.revision = revision;
+    item.status = status;
+    workspace
+}
+
+#[test]
+fn a_move_from_an_old_copy_shows_why_refreshes_and_keeps_the_drawer() {
+    // An agent moved PAY-7 to In review (revision 2) after the app read it
+    // In progress (revision 1).
+    let on_daemon = with_pay7(fixture::design(), 2, S::InReview);
+    let on_screen = with_pay7(fixture::design(), 1, S::InProgress);
+    let (clients, fakes) = Clients::fake(on_daemon, Arc::new(TestClock::new()));
+    let store = TestStore::new(
+        BoardState {
+            workspace: Arc::new(on_screen),
+            ..Default::default()
+        },
+        Board::new(clients),
+    );
+    let mut store = store.non_exhaustive();
+    open(&mut store, "PAY-7");
+
+    store.send(A::Move(id("PAY-7"), S::Done), |_| {});
+    store.receive_matching(
+        "the refusal",
+        |a| matches!(a, A::Done(Err(_))),
+        |_| {},
+    );
+    store.receive(A::Delegate(Delegate::Refresh), |_| {});
+
+    assert_eq!(store.state().drawer, Some(id("PAY-7")), "the drawer stays open");
+    assert!(store.state().error.as_deref().is_some_and(|e| !e.is_empty()));
+    let on_daemon = fakes.daemon.workspace();
+    let pay7 = on_daemon
+        .items
+        .iter()
+        .find(|i| i.id == id("PAY-7"))
+        .expect("PAY-7");
+    assert_eq!(pay7.status, S::InReview, "the agent's move was not overwritten");
+    store.finish();
+}
+
+#[test]
+fn a_move_from_the_current_copy_lands() {
+    let current = with_pay7(fixture::design(), 2, S::InReview);
+    let (mut store, fakes) = store_with(current);
+    let mut store = {
+        open(&mut store, "PAY-7");
+        store.non_exhaustive()
+    };
+    store.send(A::Move(id("PAY-7"), S::Done), |_| {});
+    store.receive(A::Done(Ok(())), |_| {});
+    assert_eq!(store.state().error, None);
+    let on_daemon = fakes.daemon.workspace();
+    let pay7 = on_daemon
+        .items
+        .iter()
+        .find(|i| i.id == id("PAY-7"))
+        .expect("PAY-7");
+    assert_eq!(pay7.status, S::Done);
+    store.finish();
+}
+
 #[test]
 fn closing_the_drawer_closes_the_picker() {
     let (mut store, _) = store_with(fixture::design());
@@ -307,4 +378,25 @@ fn closing_the_drawer_closes_the_picker() {
         s.history = Vec::new();
     });
     store.finish();
+}
+
+#[test]
+fn picking_the_scope_already_shown_keeps_the_drawer_and_another_scope_closes_it() {
+    let (mut store, _) = store_with(fixture::design());
+    open(&mut store, "PAY-7");
+    let shown = store.state().scope.clone();
+    store.send(A::ScopeMenu, |s| s.scope_menu = true);
+
+    // The same scope only closes the menu.
+    store.send(A::SetScope(shown), |s| s.scope_menu = false);
+
+    // Another scope closes the drawer too.
+    let other = match store.state().scope {
+        Scope::Global => Scope::Channel(ChannelId::new("payments-rewrite")),
+        _ => Scope::Global,
+    };
+    store.send(A::SetScope(other.clone()), |s| {
+        s.scope = other;
+        s.drawer = None;
+    });
 }

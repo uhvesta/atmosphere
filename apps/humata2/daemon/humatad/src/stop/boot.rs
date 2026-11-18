@@ -87,7 +87,14 @@ impl Settle {
             );
         }
         let settled = match swept {
-            Ok(swept) => {
+            Ok(mut swept) => {
+                // What `humatad2 stop` ended itself, for a daemon that
+                // didn't answer, counts as this stop's too.
+                let noted = folder.clone();
+                match tokio::task::spawn_blocking(move || noted.ended_early()).await {
+                    Ok(early) => swept.ended.extend(early),
+                    Err(error) => crate::log::say!("humatad2: a background task failed: {error}"),
+                }
                 let tabs = match tokio::task::spawn_blocking(move || store.tabs()).await {
                     Ok(tabs) => tabs,
                     Err(error) => {
@@ -133,7 +140,17 @@ async fn settle_record(
     let ended = ended_of(record.ended.as_ref(), &swept.ended, &swept.left, &tabs);
     let folder = folder.clone();
     let before = record.clone();
-    let settled = tokio::task::spawn_blocking(move || folder.settle(&ended)).await;
+    let settled = tokio::task::spawn_blocking(move || {
+        let settled = folder.settle(&ended)?;
+        if let Err(error) = folder.clear_ended_early() {
+            crate::log::say!(
+                "humatad2: couldn't remove the note of holders `humatad2 stop` ended: {}",
+                status::chain(&error)
+            );
+        }
+        Ok::<_, super::RecordError>(settled)
+    })
+    .await;
     match settled {
         Ok(Ok(settled)) => Some(settled),
         Ok(Err(error)) => {
@@ -205,6 +222,7 @@ fn by_pb(by: &StoppedBy) -> pb::StoppedBy {
             ByKind::User => pb::StoppedByKind::User,
             ByKind::Agent => pb::StoppedByKind::Agent,
             ByKind::Terminal => pb::StoppedByKind::Terminal,
+            ByKind::Script => pb::StoppedByKind::Script,
         } as i32,
         via: match by.via {
             Via::App => pb::StopVia::App,
@@ -324,6 +342,7 @@ mod tests {
             holder_socket: PathBuf::from(format!("/h/{id}.sock")),
             holder_pid: 1,
             created_unix_ms: 0,
+            holder_generation: 0,
         }
     }
 

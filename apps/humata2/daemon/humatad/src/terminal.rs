@@ -12,7 +12,9 @@ use humata2_access::{AccessRequest, Call, Capability, Target};
 use humata2_chunk::Link;
 use humata2_grpc::humata::v1 as pb;
 use humata2_holder::{HolderError, HolderSpec, KeyState, KeyedInput};
-use humata2_store::{SessionRecord, Store, StoreError, TabKind, TabRecord};
+use humata2_store::{
+    AgentState, SessionRecord, Store, StoreError, TabKind, TabRecord, TabReplies, TypedKey,
+};
 use pb::invalid_field::Problem;
 use tokio::sync::watch;
 use tonic::{Request, Response, Status, Streaming};
@@ -23,16 +25,25 @@ use crate::compression::Compression;
 use crate::desk_service;
 use crate::error::DaemonError;
 use crate::guard::Guard;
+use crate::holder_end;
 use crate::holders::{Holders, TypeFailed};
 use crate::identity::{self, Caller, Identities};
 use crate::inbox::Inbox;
 use crate::remote_terminal::RemoteTerminal;
+use crate::input_gate;
 use crate::serve::SOCKET_PATH_MAX;
+use crate::upgrade::items::Migrations;
 use crate::{paste, status};
 
 /// How long a holder gets to answer a first connection before a tab is
 /// listed without its offsets.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How a screen that couldn't start at boot is tried again: the first
+/// pause, the longest, and how many tries (about half a minute in all).
+const SCREEN_RETRY_FIRST: Duration = Duration::from_millis(100);
+const SCREEN_RETRY_LAST: Duration = Duration::from_secs(2);
+const SCREEN_RETRIES: usize = 18;
 
 /// Results kept for retries with the same idempotency key.
 const REMEMBERED_MAX: usize = 4096;
@@ -43,6 +54,76 @@ const INITIAL_ROWS: u16 = 24;
 
 /// How long a tab's shell gets to take text typed into it.
 const TYPE_TIMEOUT: Duration = Duration::from_secs(10);
+/// D671 (Provisional): between typing a Type call's text and pressing
+/// return. An Ink-style terminal (Copilot's) reads a burst as a paste and
+/// takes a return in it, or 100ms after it, as a newline instead of a
+/// submit, so the return is a write of its own after this pause.
+const SUBMIT_PAUSE: Duration = Duration::from_millis(400);
+
+/// BUG-T1: a Type call that submits waits, until the program in the tab
+/// has run this long, for it to read keys itself before it types, and
+/// then up to `SHOWN_WAIT` for it to show the text before it presses
+/// return. Either way it goes on after: a program that keeps line editing
+/// on, or shows a long paste as a summary, still gets the text and the
+/// return.
+const KEYS_WAIT: Duration = Duration::from_secs(5);
+const SHOWN_WAIT: Duration = Duration::from_secs(5);
+/// How long reaching a holder to watch its output may take.
+const WATCH_REACH: Duration = Duration::from_secs(2);
+
+/// Waits until the program in the holder at `socket` reads keys itself,
+/// then watches its output for the text about to be typed. `None` when
+/// the holder can't be watched or doesn't answer (it may be stopped):
+/// typing it says why. A holder from an older build is refused, with
+/// nothing typed: its session moves onto the current holder through the
+/// "Migrate the holders" item (D373, D753), not by typing without the wait.
+async fn ready_for_text(socket: &Path) -> Result<Option<humata2_holder::OutputWatch>, Status> {
+    // The holder answers by `KEYS_WAIT` after the program started; the
+    // rest is for reaching it.
+    let asked = tokio::time::timeout(
+        KEYS_WAIT + WATCH_REACH,
+        humata2_holder::await_keys(socket, KEYS_WAIT),
+    )
+    .await;
+    match asked {
+        Ok(Ok(_)) => {}
+        Ok(Err(error @ HolderError::Outdated { .. })) => return Err(outdated_holder(&error)),
+        Ok(Err(_)) | Err(_) => return Ok(None),
+    }
+    Ok(tokio::time::timeout(WATCH_REACH, humata2_holder::watch_output(socket))
+        .await
+        .ok()
+        .and_then(Result::ok))
+}
+
+
+/// The refusal for text typed into a holder from an older build.
+fn outdated_holder(error: &HolderError) -> Status {
+    status::failure(
+        tonic::Code::FailedPrecondition,
+        pb::Error {
+            message: error.to_string(),
+            fix: "click Migrate on the \"Migrate the holders\" item in the Inbox, which restarts the session's agent onto the current holder at its next idle moment and keeps its conversation, then type again. A shell tab is never migrated: close it and open a new one".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
+/// Waits until `watch` shows `text`, once `body` typed it.
+async fn shown(
+    watch: &mut Option<humata2_holder::OutputWatch>,
+    body: &Result<(), TypeFailure>,
+    text: &[u8],
+) {
+    if let (Some(watch), Ok(())) = (watch, body) {
+        let _ = watch.shown(text, SHOWN_WAIT).await;
+    }
+}
+
+/// How long a Type call's key is kept, as every idempotency key is (GRPC.md
+/// 5.2): 30 days.
+const TYPED_KEYS_KEPT_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 /// Where a tab's holder listens: `holders/` and 16 hex digits of the tab's
 /// id, so the path stays under the socket limit for an ordinary state
@@ -93,10 +174,112 @@ pub(crate) struct TerminalsConfig {
     pub(crate) remote: Option<RemoteTerminal>,
     /// The socket this daemon serves on, given to session tabs.
     pub(crate) socket: PathBuf,
+    /// UP-1, D281 e: what would run across releases is refused, by the Inbox's Migrate items.
+    pub(crate) migrations: Migrations,
+    /// D373: keeps which holder file each tab's holder was spawned from.
+    pub(crate) builds: Arc<crate::upgrade::holders::Builds>,
+    /// Tells the feed a session whose tabs changed, so every client lists
+    /// them without asking (a list read just before is not the last word).
+    pub(crate) tell: crate::session_service::Tell,
 }
 
 /// The service. Its state sits behind an `Arc` so a call waiting for the
 /// user's approval can own what it needs to run later.
+/// The folders a shell may be started in for `session` (PL-10): its folder
+/// and clones, and, when its folder is in a channel's, that channel's folder
+/// and the `received` folder beside the channels.
+fn session_places(store: &Store, session: &SessionRecord) -> Result<Vec<PathBuf>, StoreError> {
+    let mut places = vec![session.folder.clone()];
+    if let Some(detail) = store.session_detail(&session.id)? {
+        places.extend(detail.repos.into_iter().map(|clone| clone.path));
+    }
+    if let Some(channel) = store.channel(&session.channel)? {
+        places.extend(channel_places(&session.folder, &channel.folder));
+    }
+    Ok(places)
+}
+
+/// A session's folder is `<channels>/<channel folder>/sessions/<name>`; this
+/// is the channel's folder and `<channels>/received` when it is.
+fn channel_places(session_folder: &Path, channel_folder: &str) -> Vec<PathBuf> {
+    let Some(sessions) = session_folder.parent() else {
+        return Vec::new();
+    };
+    if sessions.file_name() != Some(std::ffi::OsStr::new("sessions")) {
+        return Vec::new();
+    }
+    let Some(channel) = sessions.parent().filter(|channel| channel.ends_with(channel_folder)) else {
+        return Vec::new();
+    };
+    let depth = Path::new(channel_folder).components().count();
+    let mut places = vec![channel.to_owned()];
+    if let Some(channels) = channel.ancestors().nth(depth) {
+        places.push(channels.join("received"));
+    }
+    places
+}
+
+/// `asked` as a canonical folder inside one of `places`, or why it is not.
+fn resolve_folder(asked: &str, places: &[PathBuf]) -> Result<PathBuf, Status> {
+    let path = Path::new(asked);
+    if !path.is_absolute() {
+        return Err(status::invalid_field(
+            "folder",
+            Problem::BadFormat,
+            format!("folder {asked} isn't an absolute path"),
+            "give the full path of the folder on the session's machine",
+        ));
+    }
+    if path.components().any(|part| part == std::path::Component::ParentDir) {
+        return Err(status::invalid_field(
+            "folder",
+            Problem::NotAllowedHere,
+            format!("folder {asked} goes up with \"..\", which could leave the session's folders"),
+            "give the folder's path without \"..\"",
+        ));
+    }
+    let real = match std::fs::canonicalize(path) {
+        Ok(real) => real,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(status::not_found(
+                pb::EntityKind::File,
+                asked,
+                format!("folder {asked} doesn't exist on this machine"),
+                "open the terminal from a folder that exists, or refresh the file list and try again",
+            ));
+        }
+        Err(error) => {
+            return Err(status::invalid_field(
+                "folder",
+                Problem::BadFormat,
+                format!("couldn't look at folder {asked}: {error}"),
+                "check that the path names a folder Humata can open",
+            ));
+        }
+    };
+    let inside = places
+        .iter()
+        .filter_map(|place| std::fs::canonicalize(place).ok())
+        .any(|place| real.starts_with(place));
+    if !inside {
+        return Err(status::invalid_field(
+            "folder",
+            Problem::NotAllowedHere,
+            format!("folder {asked} isn't inside the session's folder, its clones, its channel's folder or the received files"),
+            "open the terminal from a folder in one of those places",
+        ));
+    }
+    if !real.is_dir() {
+        return Err(status::invalid_field(
+            "folder",
+            Problem::BadFormat,
+            format!("{asked} is a file, not a folder"),
+            "open the terminal in the folder that holds the file",
+        ));
+    }
+    Ok(real)
+}
+
 pub(crate) struct Terminals {
     core: Arc<Core>,
 }
@@ -105,13 +288,36 @@ pub(crate) struct Core {
     config: TerminalsConfig,
     remembered: Mutex<Remembered>,
     writers: Arc<Writers>,
-    holders: Holders,
+    /// Shared with every attach, which asks it for the tab's link each time
+    /// it needs the screen, so it never keeps a link that was replaced.
+    holders: Arc<Holders>,
 }
 
 impl Terminals {
     /// The shared state, for the review's comment sink.
     pub(crate) fn core(&self) -> Arc<Core> {
         self.core.clone()
+    }
+
+    /// Starts the screen of every tab the store lists, in the background,
+    /// so a program's queries are answered whether or not anyone opens
+    /// the tab (D271). A tab whose holder isn't up yet, as one being
+    /// brought back after a restart, is tried again for a while.
+    pub(crate) fn start_screens(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let core = self.core.clone();
+        runtime.spawn(async move {
+            let store = core.config.store.clone();
+            let tabs = match blocking(move || store.tabs()).await {
+                Ok(Ok(tabs)) => tabs,
+                _ => return,
+            };
+            for tab in tabs {
+                tokio::spawn(core.clone().start_screen_when_up(tab));
+            }
+        });
     }
 }
 
@@ -125,14 +331,60 @@ impl std::ops::Deref for Terminals {
 
 impl Terminals {
     pub(crate) fn new(config: TerminalsConfig) -> Self {
-        Self {
+        let terminals = Self {
             core: Arc::new(Core {
                 remembered: Mutex::new(Remembered::default()),
                 writers: Arc::new(Writers::default()),
-                holders: Holders::new(config.scrollback_bytes),
+                holders: Arc::new(Holders::new(config.scrollback_bytes, config.store.clone())),
                 config,
             }),
-        }
+        };
+        terminals.start_screens();
+        terminals.drop_old_typed_keys();
+        terminals
+    }
+
+    /// The links to the tabs' holders, which type an Inbox answer to a
+    /// question on an agent's screen (D767).
+    pub(crate) fn holder_links(&self) -> Arc<Holders> {
+        self.core.holders.clone()
+    }
+
+    /// Drops the Type keys older than [`TYPED_KEYS_KEPT_MS`], in the
+    /// background, so the table holds only the window's calls. A failure
+    /// leaves them for the next start.
+    fn drop_old_typed_keys(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let store = self.core.config.store.clone();
+        runtime.spawn_blocking(move || {
+            if let Err(error) = store.prune_typed_keys(unix_ms() - TYPED_KEYS_KEPT_MS) {
+                crate::log::say!("humatad2: couldn't drop old Type keys: {error}");
+            }
+        });
+    }
+}
+
+/// Why typing into a tab failed: before any text reached its shell, or at
+/// a point where some of it may have.
+enum TypeFailure {
+    Untyped(Status),
+    MaybeTyped(Status),
+}
+
+/// Splits `text` into what to type and whether it ended with a newline
+/// (`\n`, `\r` or `\r\n`), the Type call's way of asking to submit: the
+/// request has no separate submit field, so text ending in a newline
+/// submits, as before. D671 (Provisional).
+fn split_submit(text: &[u8]) -> (&[u8], bool) {
+    let body = text
+        .strip_suffix(b"\r\n")
+        .or_else(|| text.strip_suffix(b"\n"))
+        .or_else(|| text.strip_suffix(b"\r"));
+    match body {
+        Some(body) => (body, true),
+        None => (text, false),
     }
 }
 
@@ -168,6 +420,16 @@ impl Core {
     /// shell) and its holder's instance, for the review's comment batches
     /// (SM-9). A holder that can't answer in time gives `holder: 0`.
     pub(crate) async fn comments_target(&self, session: &str) -> Result<CommentsTarget, Status> {
+        // MV-4: a session that moved to another machine has its tabs there;
+        // its batches go to its agent's tab through the relay.
+        if let Some(record) = self.find_session(session).await?
+            && self.elsewhere(&record).is_some()
+        {
+            return Ok(CommentsTarget {
+                tab: record.id,
+                holder: 0,
+            });
+        }
         let tab = self.typing_tab(session).await?;
         let asked = tokio::time::timeout(
             TYPE_TIMEOUT,
@@ -188,6 +450,19 @@ impl Core {
     /// can remember keys. Without that (`target.holder == 0`, or a holder
     /// that turns out not to know keyed input) it is plain typing, which
     /// cannot be told apart from a second try after a restart.
+    /// BUG-T1: once the agent in the comments' tab on this machine reads
+    /// keys itself, watches its output for the comments about to be typed.
+    /// `None` for a tab elsewhere or one that can't be watched.
+    pub(crate) async fn watch_for_comments(
+        &self,
+        target: &CommentsTarget,
+    ) -> Result<Option<humata2_holder::OutputWatch>, Status> {
+        match self.find_tab(&target.tab).await {
+            Ok(Some(tab)) => ready_for_text(&tab.holder_socket).await,
+            Ok(None) | Err(_) => Ok(None),
+        }
+    }
+
     pub(crate) async fn type_comments(
         &self,
         target: &CommentsTarget,
@@ -196,9 +471,25 @@ impl Core {
     ) -> CommentsTyped {
         let tab = match self.find_tab(&target.tab).await {
             Ok(Some(tab)) => tab,
-            Ok(None) => return CommentsTyped::No(no_tab(&target.tab)),
+            Ok(None) => return self.type_comments_elsewhere(target, key, text).await,
             Err(status) => return CommentsTyped::No(status),
         };
+        // MV-4: as for Type, nothing is typed into a session that moves. None of
+        // the batch is typed, so the refusal reads as No.
+        if let Some(session) = &tab.session
+            && let Err(status) = crate::session_service::refuse_input_while_moving(session)
+        {
+            return CommentsTyped::No(status);
+        }
+        // D762: not into a question the agent asks on its screen, and not
+        // blind. The return after the paste is only a return.
+        if tab.kind == TabKind::Agent
+            && text != b"\r"
+            && let Err(refused) = input_gate::guard(&tab.holder_socket).await
+        {
+            let session = tab.session.as_deref().unwrap_or(&tab.id);
+            return CommentsTyped::No(input_gate::refusal(session, &refused));
+        }
         if target.holder == 0 {
             return self.type_plain(&tab, text).await;
         }
@@ -212,7 +503,10 @@ impl Core {
             Ok(Ok(KeyedInput::Written | KeyedInput::Repeat)) => {
                 CommentsTyped::Yes
             }
-            Ok(Ok(KeyedInput::Unsupported)) => self.type_plain(&tab, text).await,
+            // D753: a holder from before keyed input types nothing.
+            Ok(Err(error @ HolderError::Outdated { .. })) => {
+                CommentsTyped::No(outdated_holder(&error))
+            }
             // Failed before anything could be typed.
             Ok(Err(
                 error @ (HolderError::Connect { .. }
@@ -259,6 +553,56 @@ impl Core {
         }
     }
 
+    /// Types a batch into the agent's tab of a session on another machine,
+    /// where `target.tab` names the session (see [`Core::comments_target`]).
+    /// The relayed Type carries `key`, so a second try types nothing twice.
+    async fn type_comments_elsewhere(&self, target: &CommentsTarget, key: &str, text: &[u8]) -> CommentsTyped {
+        let record = match self.find_session(&target.tab).await {
+            Ok(Some(record)) => record,
+            Ok(None) => return CommentsTyped::No(no_tab(&target.tab)),
+            Err(status) => return CommentsTyped::No(status),
+        };
+        let Some((machine, remote)) = self.elsewhere(&record) else {
+            return CommentsTyped::No(no_tab(&target.tab));
+        };
+        if let Err(status) = crate::session_service::refuse_input_while_moving(&record.id) {
+            return CommentsTyped::No(status);
+        }
+        let Ok(text) = String::from_utf8(text.to_vec()) else {
+            return CommentsTyped::No(status::internal(
+                format!("the comments for session {} aren't UTF-8 text, so they weren't typed", record.id),
+                "edit the comments so they are plain text, then send them again",
+            ));
+        };
+        let request = pb::TypeRequest {
+            idempotency_key: Some(pb::IdempotencyKey { value: key.to_owned() }),
+            session: Some(pb::SessionId { value: record.id.clone() }),
+            tab: None,
+            text,
+            when: pb::type_request::When::Now as i32,
+        };
+        match remote.type_text(&machine, request).await {
+            Ok(typed) if typed.get_ref().typed => CommentsTyped::Yes,
+            Ok(_) => CommentsTyped::Unknown(status::internal(
+                format!("{machine} took the comments for session {} but didn't say it typed them", record.id),
+                "look at the agent's terminal; send the comments again if they aren't there",
+            )),
+            // Refused before anything was typed.
+            Err(refused)
+                if matches!(
+                    refused.code(),
+                    tonic::Code::NotFound
+                        | tonic::Code::FailedPrecondition
+                        | tonic::Code::PermissionDenied
+                        | tonic::Code::InvalidArgument
+                ) =>
+            {
+                CommentsTyped::No(refused)
+            }
+            Err(failed) => CommentsTyped::Unknown(failed),
+        }
+    }
+
     /// Plain typing through the tab's holder link.
     async fn type_plain(&self, tab: &TabRecord, text: &[u8]) -> CommentsTyped {
         let no_log = Path::new("");
@@ -268,6 +612,7 @@ impl Core {
                 return CommentsTyped::No(holder_failed("reach the tab's shell", &error, no_log));
             }
         };
+        crate::read_marks::tab_typed(tab);
         match tokio::time::timeout(TYPE_TIMEOUT, link.type_text(text)).await {
             Ok(Ok(())) => CommentsTyped::Yes,
             Ok(Err(TypeFailed::Exited)) => CommentsTyped::No(status::not_found(
@@ -299,6 +644,33 @@ impl Core {
 }
 
 impl Core {
+    /// Links `tab`'s holder so its screen runs, trying again with a growing
+    /// pause until it connects, the tab is gone, or about half a minute
+    /// passed. A later call that needs the link starts it then.
+    async fn start_screen_when_up(self: Arc<Self>, tab: TabRecord) {
+        let mut pause = SCREEN_RETRY_FIRST;
+        for _ in 0..SCREEN_RETRIES {
+            let linked = tokio::time::timeout(
+                PROBE_TIMEOUT,
+                self.holders.link(&tab.id, &tab.holder_socket),
+            )
+            .await;
+            if matches!(linked, Ok(Ok(_))) {
+                return;
+            }
+            tokio::time::sleep(pause).await;
+            pause = (pause * 2).min(SCREEN_RETRY_LAST);
+            match self.find_tab(&tab.id).await {
+                Ok(Some(_)) => {}
+                _ => return,
+            }
+        }
+        crate::log::say!(
+            "humatad2: tab {}'s screen didn't start at boot; it starts when the tab is next used",
+            tab.id
+        );
+    }
+
     /// Drops the in-memory link and writer of `tab` once its holder has been
     /// shut down (D182.4), so nothing reuses a connection to a gone holder.
     pub(crate) fn forget_tab(&self, tab: &str) {
@@ -318,6 +690,27 @@ impl Core {
                 "look up the session",
             )),
         }
+    }
+
+    /// Whether `session`'s agent is mid-turn: WORKING or NEEDS_INPUT (D775).
+    /// Unlike the desk's move and rename guards, PROBABLY_IDLE is not busy.
+    async fn agent_busy(&self, session: &str) -> Result<bool, Status> {
+        let store = self.config.store.clone();
+        let key = session.to_owned();
+        let agent = blocking(move || store.agent(&key))
+            .await?
+            .map_err(|error| status::store(error, &self.config.machine, "read the session's agent"))?;
+        Ok(match agent.map(|agent| agent.state) {
+            Some(AgentState::Running { holder_pid }) => {
+                // PROBABLY_IDLE (output quiet, no hook said the turn ended)
+                // is an agent at its prompt, as Copilot sits: not mid-turn.
+                matches!(
+                    crate::session_service::running_turn(session, holder_pid),
+                    pb::SessionStatus::Working | pb::SessionStatus::NeedsInput
+                )
+            }
+            _ => false,
+        })
     }
 
     async fn session(&self, id: &str) -> Result<SessionRecord, Status> {
@@ -344,6 +737,19 @@ impl Core {
                     "pick one of the session's repositories, or leave repo unset to start in the session folder",
                 )
             })
+    }
+
+    /// `asked` made canonical, when it is a folder inside one of `session`'s
+    /// places (PL-10): its own folder, its clones, its channel's folder, or the
+    /// place files from other machines land.
+    async fn checked_folder(&self, session: &SessionRecord, asked: &str) -> Result<PathBuf, Status> {
+        let store = self.config.store.clone();
+        let record = session.clone();
+        let places = blocking(move || session_places(&store, &record))
+            .await?
+            .map_err(|error| status::store(error, &self.config.machine, "look up the session's folders"))?;
+        let asked = asked.to_owned();
+        blocking(move || resolve_folder(&asked, &places)).await?
     }
 
     async fn find_tab(&self, id: &str) -> Result<Option<TabRecord>, Status> {
@@ -483,11 +889,21 @@ impl Core {
             }
             _ => (0, 0),
         };
+        let program = {
+            let (store, id) = (self.config.store.clone(), tab.id.clone());
+            blocking(move || store.tab_program(&id))
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default()
+        };
         pb::Tab {
             id: Some(pb::TabId {
                 value: tab.id.clone(),
             }),
             session: tab.session.clone().map(|value| pb::SessionId { value }),
+            program_title: Some(program.title).filter(|title| !title.is_empty()),
+            pwd: Some(program.pwd).filter(|pwd| !pwd.is_empty()),
             kind: match tab.kind {
                 TabKind::Agent => pb::tab::Kind::Agent,
                 TabKind::Shell => pb::tab::Kind::Shell,
@@ -537,6 +953,8 @@ impl Core {
             scrollback_bytes: config.scrollback_bytes,
             log: log.clone(),
         };
+        let (builds, shell) = (config.builds.clone(), id.clone());
+        blocking(move || builds.record_shell(&shell)).await?;
         let spawned = match blocking(move || humata2_holder::spawn(&spec)).await? {
             Ok(spawned) => spawned,
             Err(error) => {
@@ -556,16 +974,38 @@ impl Core {
             holder_socket: socket,
             holder_pid: spawned.pid,
             created_unix_ms: unix_ms(),
+            holder_generation: 0,
         };
+        // A new shell has answered nothing, so its screen answers every
+        // query it prints, from the first byte, whenever its link starts.
+        // Saved with the tab, so no link finds the tab without it.
         let store = config.store.clone();
         let saved = tab.clone();
-        if let Err(error) = blocking(move || store.put_tab(&saved)).await? {
+        let first = TabReplies {
+            generation: tab.holder_generation,
+            ..TabReplies::default()
+        };
+        if let Err(error) = blocking(move || store.put_tab_with_replies(&saved, &first)).await? {
             // Nothing could find the shell again, so it doesn't stay.
-            let _ = humata2_holder::shutdown(&tab.holder_socket).await;
+            if let Err(error) = holder_end::shut_or_end(
+                &tab.holder_socket,
+                tab.holder_pid,
+                &format!("new tab {}", tab.id),
+            )
+            .await
+            {
+                crate::log::say!("humatad2: {error}");
+            }
             self.revoke(&tab.id).await;
             return Err(status::store(error, &config.machine, "save the new tab"));
         }
-        Ok(self.describe(&tab).await)
+        // The screen runs from now on, watched or not. Describing the tab
+        // below links it; a failure is tried again by whatever uses it.
+        let described = self.describe(&tab).await;
+        if let Some(session) = &tab.session {
+            self.config.tell.session(session, pb::Change::Updated, None).await;
+        }
+        Ok(described)
     }
 
     /// Ends `tab`'s session token. A failure to save that is left for the
@@ -577,40 +1017,261 @@ impl Core {
     }
 
     /// Types `text` into `tab`'s terminal through its holder link and
-    /// waits until all of it is there.
-    async fn type_into(&self, tab: &TabRecord, text: &[u8]) -> Result<(), Status> {
+    /// waits until all of it is there. A failure says whether some of the
+    /// text may have been typed.
+    async fn type_into(&self, tab: &TabRecord, text: &[u8]) -> Result<(), TypeFailure> {
         let no_log = Path::new("");
         let link = self
             .holders
             .link(&tab.id, &tab.holder_socket)
             .await
-            .map_err(|error| holder_failed("reach the tab's shell", &error, no_log))?;
+            .map_err(|error| {
+                TypeFailure::Untyped(holder_failed("reach the tab's shell", &error, no_log))
+            })?;
+        crate::read_marks::tab_typed(tab);
         let typed = match tokio::time::timeout(TYPE_TIMEOUT, link.type_text(text)).await {
             Ok(typed) => typed,
             Err(_) => {
                 // A late answer must not reach the next call: it gets a
                 // connection of its own.
                 self.holders.forget(&tab.id);
-                return Err(status::internal(
+                return Err(TypeFailure::MaybeTyped(status::internal(
                     format!(
                         "tab {}'s shell didn't take the text within {} seconds; some of it may have been typed",
                         tab.id,
                         TYPE_TIMEOUT.as_secs()
                     ),
                     "",
-                ));
+                )));
             }
         };
         typed.map_err(|failed| match failed {
-            TypeFailed::Lost(error) => holder_failed("type into the tab", &error, no_log),
-            TypeFailed::Refused { .. } => status::internal(status::chain(&failed), ""),
-            TypeFailed::Exited => status::not_found(
+            // The link failed part way: some of the text may be there.
+            TypeFailed::Lost(error) => {
+                TypeFailure::MaybeTyped(holder_failed("type into the tab", &error, no_log))
+            }
+            TypeFailed::Refused { .. } => {
+                TypeFailure::Untyped(status::internal(status::chain(&failed), ""))
+            }
+            TypeFailed::Exited => TypeFailure::Untyped(status::not_found(
                 pb::EntityKind::Tab,
                 &tab.id,
                 format!("tab {}'s shell exited before the text reached it", tab.id),
                 "open a new tab in the session and type again",
-            ),
+            )),
         })
+    }
+
+    /// After `body` was typed, presses return in `tab` as a write of its own
+    /// when `submit`, once `SUBMIT_PAUSE` has passed. The text is already
+    /// there if the return fails, so that failure is a maybe-typed one.
+    ///
+    /// With `keyed` (the session, the call's key and the holder an earlier
+    /// call with it went to), the return is a step of its own under the key
+    /// `<key>/submit`, beside the body's step, so a retry whose body arrived
+    /// but whose return didn't sends only the return, and one whose both
+    /// arrived sends nothing.
+    async fn then_submit(
+        &self,
+        tab: &TabRecord,
+        body: Result<(), TypeFailure>,
+        submit: bool,
+        keyed: Option<(&str, &str, Option<u64>)>,
+    ) -> Result<(), TypeFailure> {
+        body?;
+        if !submit {
+            return Ok(());
+        }
+        let Some((session, key, retry_of)) = keyed else {
+            tokio::time::sleep(SUBMIT_PAUSE).await;
+            return self.submit_return(tab).await;
+        };
+        let held = holder_key(&submit_step_key(key));
+        let asked = tokio::time::timeout(
+            TYPE_TIMEOUT,
+            humata2_holder::key_arrived(&tab.holder_socket, &held),
+        )
+        .await;
+        let maybe = |status: Status| TypeFailure::MaybeTyped(status);
+        let state = match asked {
+            Ok(Ok(state)) => state,
+            Ok(Err(error @ HolderError::Outdated { .. })) => {
+                return Err(maybe(outdated_holder(&error)));
+            }
+            // Nothing is known about the return: some of the call's text is
+            // already in the tab, so it is maybe-typed either way.
+            Ok(Err(error)) => {
+                return Err(maybe(holder_failed("reach the tab's shell", &error, Path::new(""))));
+            }
+            Err(_) => return Err(maybe(maybe_typed_before(session))),
+        };
+        match submit_step(state, retry_of) {
+            SubmitStep::Skip => return Ok(()),
+            SubmitStep::Unknown => return Err(maybe(maybe_typed_before(session))),
+            SubmitStep::Send => {}
+        }
+        if let (KeyState::NotArrived { holder }, None) = (state, retry_of) {
+            // A call with no text of its own typed through no holder yet.
+            self.note_typed_key_holder(key, holder).await;
+        }
+        tokio::time::sleep(SUBMIT_PAUSE).await;
+        let sent = tokio::time::timeout(
+            TYPE_TIMEOUT,
+            humata2_holder::keyed_input(&tab.holder_socket, &held, b"\r"),
+        )
+        .await;
+        match sent {
+            Ok(Ok(KeyedInput::Written | KeyedInput::Repeat)) => Ok(()),
+            Ok(Err(error @ HolderError::Outdated { .. })) => {
+                Err(maybe(outdated_holder(&error)))
+            }
+            Ok(Err(error)) => Err(maybe(holder_failed(
+                "press return in the tab",
+                &error,
+                Path::new(""),
+            ))),
+            Err(_) => Err(maybe(maybe_typed_before(session))),
+        }
+    }
+
+    /// Presses return in `tab` as a plain write.
+    async fn submit_return(&self, tab: &TabRecord) -> Result<(), TypeFailure> {
+        self.type_into(tab, b"\r").await.map_err(|failure| match failure {
+            TypeFailure::Untyped(status) | TypeFailure::MaybeTyped(status) => {
+                TypeFailure::MaybeTyped(status)
+            }
+        })
+    }
+
+    /// D426: types `text` into `tab` once for `key` through its holder,
+    /// which remembers the keys it typed, and notes that holder with the
+    /// key so a retry can ask it. `retry_of` is the holder an earlier call
+    /// with the key went to: only its answer counts, since a holder started
+    /// again has a new terminal and an empty memory. A holder from a build
+    /// before keyed input types nothing and is refused as outdated (D753);
+    /// it keeps running until its session is migrated.
+    async fn type_keyed(
+        &self,
+        tab: &TabRecord,
+        session: &str,
+        key: &str,
+        retry_of: Option<u64>,
+        text: &[u8],
+    ) -> Result<(), TypeFailure> {
+        let no_log = Path::new("");
+        let held = holder_key(key);
+        let asked = tokio::time::timeout(
+            TYPE_TIMEOUT,
+            humata2_holder::key_arrived(&tab.holder_socket, &held),
+        )
+        .await;
+        let holder = match (asked, retry_of) {
+            // The earlier call's text is there, all of it.
+            (Ok(Ok(KeyState::Arrived { holder })), Some(first)) if holder == first => return Ok(()),
+            // None of it is: it is typed now.
+            (Ok(Ok(KeyState::NotArrived { holder })), Some(first)) if holder == first => holder,
+            // Another holder, or none that answers, proves nothing.
+            (_, Some(_)) => return Err(TypeFailure::MaybeTyped(maybe_typed_before(session))),
+            // This holder typed it for a key the store no longer had.
+            (Ok(Ok(KeyState::Arrived { .. })), None) => return Ok(()),
+            (Ok(Ok(KeyState::NotArrived { holder })), None) => holder,
+            (Ok(Err(error @ HolderError::Outdated { .. })), None) => {
+                return Err(TypeFailure::Untyped(outdated_holder(&error)));
+            }
+            (Ok(Err(error)), None) => {
+                return Err(TypeFailure::Untyped(holder_failed(
+                    "reach the tab's shell",
+                    &error,
+                    no_log,
+                )));
+            }
+            (Err(_), None) => {
+                return Err(TypeFailure::Untyped(status::internal(
+                    format!(
+                        "tab {}'s shell didn't answer within {} seconds, so nothing was typed. Try again once the session responds",
+                        tab.id,
+                        TYPE_TIMEOUT.as_secs()
+                    ),
+                    "",
+                )));
+            }
+        };
+        if retry_of.is_none() {
+            self.note_typed_key_holder(key, holder).await;
+        }
+        crate::fault::point("terminal.type.held");
+        let typed = tokio::time::timeout(
+            TYPE_TIMEOUT,
+            humata2_holder::keyed_input(&tab.holder_socket, &held, text),
+        )
+        .await;
+        match typed {
+            Ok(Ok(KeyedInput::Written | KeyedInput::Repeat)) => Ok(()),
+            // Started again from an older build since it was asked: nothing
+            // was typed.
+            Ok(Err(error @ HolderError::Outdated { .. })) => {
+                Err(TypeFailure::Untyped(outdated_holder(&error)))
+            }
+            // Failed before anything could be typed.
+            Ok(Err(
+                error @ (HolderError::Connect { .. }
+                | HolderError::KeyTooLong { .. }
+                | HolderError::KeyedInputTooLarge { .. }),
+            )) => Err(TypeFailure::Untyped(holder_failed("type into the tab", &error, no_log))),
+            Ok(Err(error)) => Err(TypeFailure::MaybeTyped(holder_failed(
+                "type into the tab",
+                &error,
+                no_log,
+            ))),
+            Err(_) => Err(TypeFailure::MaybeTyped(status::internal(
+                format!(
+                    "tab {}'s shell didn't take the text within {} seconds; it may have been typed. Retry with the same key to find out, which never types it twice",
+                    tab.id,
+                    TYPE_TIMEOUT.as_secs()
+                ),
+                "",
+            ))),
+        }
+    }
+
+    /// Notes the holder the call holding `key` types through (D426). If
+    /// that can't be saved, a retry says the text may have been typed.
+    async fn note_typed_key_holder(&self, key: &str, holder: u64) {
+        let store = self.config.store.clone();
+        let key = key.to_owned();
+        if let Ok(Err(error)) = blocking(move || store.note_typed_key_holder(&key, holder)).await {
+            crate::log::say!("humatad2: couldn't note which shell a Type call types into: {error}");
+        }
+    }
+
+    /// Notes Type key `key` before its text is typed, and says where an
+    /// earlier call with it stands.
+    async fn claim_typed_key(&self, key: &str) -> Result<TypedKey, Status> {
+        let store = self.config.store.clone();
+        let owned = key.to_owned();
+        blocking(move || store.claim_typed_key(&owned, unix_ms()))
+            .await?
+            .map_err(|error| status::store(error, &self.config.machine, "note the Type call's key"))
+    }
+
+    /// Notes that the call holding `key` typed all of its text. If that
+    /// can't be saved, the key stays pending, and a retry says the text
+    /// may have been typed rather than typing it again.
+    async fn finish_typed_key(&self, key: String) {
+        let store = self.config.store.clone();
+        if let Ok(Err(error)) = blocking(move || store.finish_typed_key(&key)).await {
+            crate::log::say!("humatad2: couldn't note a Type call as typed: {error}");
+        }
+    }
+
+    /// Forgets `key`, for a call that typed none of its text. If that can't
+    /// be saved, a retry says the text may have been typed: it never types
+    /// twice.
+    async fn release_typed_key(&self, key: String) {
+        let store = self.config.store.clone();
+        if let Ok(Err(error)) = blocking(move || store.release_typed_key(&key)).await {
+            crate::log::say!("humatad2: couldn't forget an untyped Type call's key: {error}");
+        }
     }
 
     fn recall(&self, key: Option<&str>) -> Option<Outcome> {
@@ -685,9 +1346,16 @@ impl Core {
         if let Some(Outcome::Tab(tab)) = self.recall(key.as_deref()) {
             return Ok(Gated::Done(tab));
         }
-        let folder = match &request.repo {
-            None => session.folder.clone(),
-            Some(repo) => self.clone_path(&session, repo).await?,
+        // PL-10: a folder asked for wins over the repo; it is checked here, on
+        // the session's own machine, so a session elsewhere is judged by its
+        // machine's daemon once the request is forwarded.
+        let folder = if !request.folder.is_empty() {
+            self.checked_folder(&session, &request.folder).await?
+        } else {
+            match &request.repo {
+                None => session.folder.clone(),
+                Some(repo) => self.clone_path(&session, repo).await?,
+            }
         };
         let tab = self.open_shell(Some(&session), folder).await?;
         self.remember(key, Outcome::Tab(tab.clone()));
@@ -775,12 +1443,15 @@ impl Core {
                 "stop the session instead; that ends the agent",
             ));
         }
-        match humata2_holder::shutdown(&tab.holder_socket).await {
-            // A holder that's gone already has nothing left to stop.
-            Ok(()) | Err(HolderError::Connect { .. }) => {}
-            Err(error) => {
-                return Err(holder_failed("stop the tab's shell", &error, Path::new("")));
-            }
+        // A holder that's gone already, or doesn't answer, is ended by its pid.
+        if let Err(error) = holder_end::shut_or_end(
+            &tab.holder_socket,
+            tab.holder_pid,
+            &format!("tab {}", tab.id),
+        )
+        .await
+        {
+            return Err(status::internal(status::chain(&error), ""));
         }
         let store = self.config.store.clone();
         blocking(move || store.remove_tab(&id))
@@ -789,8 +1460,34 @@ impl Core {
         self.writers.forget(&tab.id);
         self.holders.forget(&tab.id);
         self.revoke(&tab.id).await;
+        if let Some(session) = &tab.session {
+            self.config.tell.session(session, pb::Change::Updated, None).await;
+        }
         self.remember(key, Outcome::Closed);
         Ok(Gated::Done(pb::CloseTabResponse {}))
+    }
+
+    /// MACHINESCRIPTS (D682): a `send` step types `text` into `session` as the host's own call, once for
+    /// `key`, then presses return when `enter`. Never asks.
+    pub(crate) async fn type_for_script(&self, session: &str, text: &str, enter: bool, key: &str) -> Result<(), Status> {
+        let caller = Caller::User(identity::UserVia::Host);
+        crate::stop::gate::require_running(&caller)?;
+        // A trailing newline is the submit (D671): the Type call presses
+        // return once the agent has shown the text (BUG-T1).
+        let text = if enter { format!("{text}\n") } else { text.to_owned() };
+        let request = pb::TypeRequest {
+            idempotency_key: Some(pb::IdempotencyKey { value: format!("{key}/text") }),
+            session: Some(pb::SessionId { value: session.to_owned() }),
+            text,
+            ..pb::TypeRequest::default()
+        };
+        match self.type_in(&caller, request, true).await? {
+            Gated::Done(_) => Ok(()),
+            Gated::Ask(_) => Err(status::internal(
+                "typing for a machine script was sent to Ask me, which an approved call never is",
+                "",
+            )),
+        }
     }
 
     async fn type_in(
@@ -803,6 +1500,13 @@ impl Core {
         let session = id_of(request.session.clone().map(|session| session.value))
             .ok_or_else(|| status::missing("session"))?;
         let session = self.session(&session).await?;
+        // UP-1, D281 e: nothing is typed into a session on a machine at another release.
+        crate::upgrade::gate::machine_ready(
+            &self.config.migrations,
+            &pb::MachineId {
+                value: session.machine.clone(),
+            },
+        )?;
         if let Some(asked) = gate(
             &self.config.guard,
             caller,
@@ -814,6 +1518,9 @@ impl Core {
         )? {
             return Ok(Gated::Ask(asked));
         }
+        // MV-4: a session that moves takes no input until its agent resumes.
+        // Refused here, before the relay to a box, which never learns of the move.
+        crate::session_service::refuse_input_while_moving(&session.id)?;
         if let Some((machine, remote)) = self.elsewhere(&session) {
             return Ok(Gated::Done(remote.type_text(&machine, request).await?.into_inner()));
         }
@@ -821,20 +1528,123 @@ impl Core {
             return Ok(Gated::Done(typed));
         }
         if request.when == pb::type_request::When::TurnEnds as i32 {
-            return Err(status::not_built(
-                "humata.v1.TerminalService.Type with when TURN_ENDS",
+            return Err(status::invalid_field(
+                "when",
+                pb::invalid_field::Problem::NotAllowedHere,
+                "typing at the end of the turn isn't something the daemon does; only the app holds text until a turn ends",
+                "type now with when=now (or leave when out), or ask the user with inbox_ask to send it once your turn is over; updating Humata doesn't add this",
             ));
         }
-        let tab = match id_of(request.tab.map(|tab| tab.value)) {
-            Some(tab) => self.tab(&tab, Some(&session.id)).await?,
-            None => self.typing_tab(&session.id).await?,
-        };
-        self.type_into(&tab, request.text.as_bytes()).await?;
+        // Read before anything is written: the agent's turn as it is when
+        // the text arrives.
+        let agent_busy = self.agent_busy(&session.id).await?;
+        // Only reached once the text and, for a trailing newline, the
+        // return are written: a call that fails returns before this is
+        // given back.
         let typed = pb::TypeResponse {
             queued: None,
             typed: true,
             turn_end_uncertain: false,
+            submitted: split_submit(request.text.as_bytes()).1,
+            agent_busy,
         };
+        // D337: the key is noted in the store before anything is typed, so
+        // a retry this daemon's memory can't answer, as one after a
+        // restart, still types the text at most once.
+        // D426: a call with the key that never finished typed through the
+        // holder noted with it, which remembers its keys: the retry asks it.
+        let mut retry_of = None;
+        if let Some(key) = key.as_deref() {
+            match self.claim_typed_key(key).await? {
+                TypedKey::Claimed => {}
+                TypedKey::Typed => {
+                    self.remember(Some(key.to_owned()), Outcome::Typed(typed.clone()));
+                    return Ok(Gated::Done(typed));
+                }
+                TypedKey::Pending { holder: 0 } => return Err(maybe_typed_before(&session.id)),
+                TypedKey::Pending { holder } => retry_of = Some(holder),
+            }
+        }
+        let tab = match id_of(request.tab.map(|tab| tab.value)) {
+            Some(tab) => self.tab(&tab, Some(&session.id)).await,
+            None => self.typing_tab(&session.id).await,
+        };
+        // D671 (Provisional): a trailing newline is the submit, sent as its
+        // own write after the text has settled in the agent's prompt.
+        let (text, submit) = split_submit(request.text.as_bytes());
+        // BUG-T1: a return pressed before the program has taken the text
+        // reaches it with the text, as part of a paste. A retry's text may
+        // be there already, shown before this could watch for it.
+        let mut watch = match &tab {
+            Ok(tab) if submit && !text.is_empty() && retry_of.is_none() => {
+                match ready_for_text(&tab.holder_socket).await {
+                    Ok(watch) => watch,
+                    Err(refused) => {
+                        if let Some(key) = key {
+                            self.release_typed_key(key).await;
+                        }
+                        return Err(refused);
+                    }
+                }
+            }
+            _ => None,
+        };
+        // D762: text typed while the agent asks a question of its own on
+        // its screen would go into the question, and its Enter answer it.
+        // Enter alone (no text) is the person answering it on purpose.
+        // An unreadable screen refuses too: nothing is typed blind.
+        let refused = match &tab {
+            Ok(tab) if !text.is_empty() && tab.kind == TabKind::Agent => {
+                input_gate::guard(&tab.holder_socket).await.err()
+            }
+            _ => None,
+        };
+        if let Some(refused) = refused {
+            // A retry's text may be there already: its key stays.
+            if let (Some(key), None) = (key.clone(), retry_of) {
+                self.release_typed_key(key).await;
+            }
+            return Err(input_gate::refusal(&session.id, &refused));
+        }
+        let typing = match (tab, key.as_deref()) {
+            (Ok(tab), Some(key)) => {
+                let body = if text.is_empty() && submit {
+                    Ok(())
+                } else {
+                    self.type_keyed(&tab, &session.id, key, retry_of, text).await
+                };
+                shown(&mut watch, &body, text).await;
+                self.then_submit(&tab, body, submit, Some((&session.id, key, retry_of))).await
+            }
+            (Ok(tab), None) => {
+                let body = if text.is_empty() && submit {
+                    Ok(())
+                } else {
+                    self.type_into(&tab, text).await
+                };
+                shown(&mut watch, &body, text).await;
+                self.then_submit(&tab, body, submit, None).await
+            }
+            // The earlier call's text may be in a tab this can't find now.
+            (Err(status), _) if retry_of.is_some() => Err(TypeFailure::MaybeTyped(status)),
+            (Err(status), _) => Err(TypeFailure::Untyped(status)),
+        };
+        match typing {
+            Ok(()) => {
+                crate::fault::point("terminal.type.typed");
+                if let Some(key) = key.clone() {
+                    self.finish_typed_key(key).await;
+                }
+            }
+            Err(TypeFailure::Untyped(status)) => {
+                if let Some(key) = key {
+                    self.release_typed_key(key).await;
+                }
+                return Err(status);
+            }
+            // The key stays pending: a retry asks the holder what arrived.
+            Err(TypeFailure::MaybeTyped(status)) => return Err(status),
+        }
         self.remember(key, Outcome::Typed(typed.clone()));
         Ok(Gated::Done(typed))
     }
@@ -852,6 +1662,8 @@ impl Core {
         if let Some(asked) = self.gate_input(caller, self.session_target(&record), approved)? {
             return Ok(Gated::Ask(asked));
         }
+        // MV-4: as for Type, nothing is saved into a session that moves.
+        crate::session_service::refuse_input_while_moving(&record.id)?;
         if let Some((machine, remote)) = self.elsewhere(&record) {
             return Ok(Gated::Done(remote.paste_image(&machine, request).await?.into_inner()));
         }
@@ -862,7 +1674,14 @@ impl Core {
         let size_bytes = request.data.len() as u64;
         let store = self.config.store.clone();
         let folder = session.clone();
-        let saved = blocking(move || store.save_paste(&folder, extension, &request.data)).await?;
+        // The key names the file, so a retry after a restart, which this
+        // daemon's memory no longer answers, still saves once.
+        let named = key.clone();
+        let saved = blocking(move || match named {
+            Some(key) => store.save_keyed_paste(&folder, &key, extension, &request.data),
+            None => store.save_paste(&folder, extension, &request.data),
+        })
+        .await?;
         let path = match saved {
             Ok(path) => path,
             Err(StoreError::NoSession { .. } | StoreError::InvalidId { .. }) => {
@@ -1016,6 +1835,15 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             && let Some(record) = self.find_session(session).await?
             && let Some((machine, remote)) = self.elsewhere(&record)
         {
+            // UP-1, D281 e: a writable attach into a session on a machine at another release is refused.
+            if !open.read_only {
+                crate::upgrade::gate::machine_ready(
+                    &self.config.migrations,
+                    &pb::MachineId {
+                        value: machine.clone(),
+                    },
+                )?;
+            }
             if open.read_only {
                 self.config.guard.require(
                     &caller,
@@ -1028,6 +1856,18 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         }
         let tab = self.tab(&id, session.as_deref()).await?;
         let target = self.tab_target(&tab).await?;
+        // UP-1, D281 e: a writable attach into a session on a machine at another release is refused.
+        if !open.read_only
+            && let Some(session) = &tab.session
+            && let Some(record) = self.find_session(session).await?
+        {
+            crate::upgrade::gate::machine_ready(
+                &self.config.migrations,
+                &pb::MachineId {
+                    value: record.machine,
+                },
+            )?;
+        }
         match (&target, open.read_only) {
             (Target::Session(session), true) => {
                 // A stream can't be held and replayed once approved, so an Ask stays refused here.
@@ -1042,7 +1882,7 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             .config
             .compression
             .pick(Link::Local, &open.accept_codecs);
-        let stream = attach::start(&tab, &open, incoming, &self.writers, codec).await?;
+        let stream = attach::start(&tab, &open, incoming, &self.writers, &self.holders, codec).await?;
         Ok(Response::new(stream))
     }
 
@@ -1105,6 +1945,10 @@ impl pb::terminal_service_server::TerminalService for Terminals {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         if let Some((machine, remote)) = self.remote_input(&caller, request.session.clone()).await? {
+            if let Some(session) = &request.session {
+                // MV-4: as for Type, nothing is sent into a session that moves.
+                crate::session_service::refuse_input_while_moving(&session.value)?;
+            }
             return remote.send_queued_now(&machine, request).await;
         }
         // Not built: nothing to run once approved, so Ask stays refused.
@@ -1215,6 +2059,58 @@ fn idempotency(method: &str, key: Option<pb::IdempotencyKey>) -> Option<String> 
     id_of(key.map(|key| key.value)).map(|key| format!("{method}/{key}"))
 }
 
+/// The key a Type call's return goes to its holder under, a step of the
+/// call's key beside the body's own step (which keeps the call's key).
+fn submit_step_key(key: &str) -> String {
+    format!("{key}/submit")
+}
+
+/// What to do about one write of a keyed Type call, given what its holder
+/// says about the step's key.
+#[derive(Debug, PartialEq, Eq)]
+enum SubmitStep {
+    /// It arrived before: send nothing.
+    Skip,
+    /// It didn't: send it.
+    Send,
+    /// Nothing proves either way: send nothing and say it may have arrived.
+    Unknown,
+}
+
+/// Whether a step's write goes out. `retry_of` is the holder an earlier call
+/// with the key went to: only its answer counts, since a holder started
+/// again has a new terminal and an empty memory.
+fn submit_step(state: KeyState, retry_of: Option<u64>) -> SubmitStep {
+    match (state, retry_of) {
+        (KeyState::Arrived { holder }, Some(first)) if holder == first => SubmitStep::Skip,
+        (KeyState::NotArrived { holder }, Some(first)) if holder == first => SubmitStep::Send,
+        (_, Some(_)) => SubmitStep::Unknown,
+        (KeyState::Arrived { .. }, None) => SubmitStep::Skip,
+        (KeyState::NotArrived { .. }, None) => SubmitStep::Send,
+    }
+}
+
+/// The key a Type call's text goes to its holder under: a digest of the
+/// call's key, which fits the holder's limit however long the key is.
+fn holder_key(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(key.as_bytes());
+    let hex: String = digest[..16].iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("type-{hex}")
+}
+
+/// A Type call came with the key of an earlier one that started typing
+/// and never finished, as when the daemon stopped part way. Some or all of
+/// that text may have reached the shell, so nothing is typed again.
+fn maybe_typed_before(session: &str) -> Status {
+    status::internal(
+        format!(
+            "an earlier Type call with this key into session {session} started and didn't finish, so some or all of its text may have been typed; nothing was typed again. Look at the session's terminal, and type what's missing with a new key"
+        ),
+        "",
+    )
+}
+
 fn no_session(id: &str) -> Status {
     status::not_found(
         pb::EntityKind::Session,
@@ -1245,4 +2141,63 @@ fn unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod submit_tests {
+    use super::{holder_key, split_submit, submit_step, submit_step_key, SubmitStep};
+    use humata2_holder::KeyState;
+
+    #[test]
+    fn a_trailing_newline_is_split_off_as_the_submit() {
+        for text in [&b"hello\n"[..], b"hello\r", b"hello\r\n"] {
+            assert_eq!(split_submit(text), (&b"hello"[..], true));
+        }
+    }
+
+    #[test]
+    fn text_without_a_trailing_newline_is_not_submitted() {
+        assert_eq!(split_submit(b"hello"), (&b"hello"[..], false));
+        // Newlines inside the text stay in it.
+        assert_eq!(split_submit(b"a\nb"), (&b"a\nb"[..], false));
+    }
+
+    #[test]
+    fn a_lone_newline_is_only_a_submit() {
+        assert_eq!(split_submit(b"\n"), (&b""[..], true));
+    }
+
+    #[test]
+    fn a_retry_whose_return_arrived_sends_nothing() {
+        let arrived = KeyState::Arrived { holder: 7 };
+        assert_eq!(submit_step(arrived, Some(7)), SubmitStep::Skip);
+        assert_eq!(submit_step(arrived, None), SubmitStep::Skip);
+    }
+
+    #[test]
+    fn a_retry_whose_return_did_not_arrive_sends_it() {
+        let missing = KeyState::NotArrived { holder: 7 };
+        assert_eq!(submit_step(missing, Some(7)), SubmitStep::Send);
+    }
+
+    #[test]
+    fn a_first_try_sends_the_return() {
+        assert_eq!(submit_step(KeyState::NotArrived { holder: 7 }, None), SubmitStep::Send);
+    }
+
+    #[test]
+    fn another_holder_proves_nothing_about_a_retry() {
+        for state in [
+            KeyState::Arrived { holder: 8 },
+            KeyState::NotArrived { holder: 8 },
+        ] {
+            assert_eq!(submit_step(state, Some(7)), SubmitStep::Unknown);
+        }
+    }
+
+    #[test]
+    fn the_return_has_a_step_key_of_its_own() {
+        assert_ne!(submit_step_key("k"), "k");
+        assert_ne!(holder_key(&submit_step_key("k")), holder_key("k"));
+    }
 }

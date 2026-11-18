@@ -26,8 +26,8 @@ or not built.
 
 1. **Open the Files page.**
    - **I do:** open a session and choose its **Files** page.
-   - **I see:** two panes. Each has a machine picker, a folder path and a
-     listing, folders first, then files by name.
+   - **I see:** two panes. Each has a machine picker, a breadcrumb of place
+     names (no path, PL-11) and a listing, folders first, then files by name.
    - **State and events:** the app lists both panes' folders through the file
      service. Nothing changes on disk.
    - **Status:** Works (real daemon). `desktop/tests/live_flows/files.rs::the_files_page_copies_moves_renames_and_deletes_on_a_real_daemon`
@@ -134,7 +134,7 @@ or not built.
       The daemon's change watch is Works (real daemon): `daemon/humatad/tests/transfers.rs::a_watch_from_the_current_version_waits_for_the_next_change`.
 
 13. **`humata cp` and `humata mv` from the CLI.**
-    - **I do:** in the session's terminal, run `humata cp <clone path> <shared path>`, then `humata mv`.
+    - **I do:** in the session's terminal, run `humata cp <clone location> <machine>` (placed by PL-3), then `humata mv` with an explicit `<machine>:<location>`.
     - **I see:** the copy and move finish. `humata transfers` lists the finished copy.
     - **State and events:** the same transfer as the app's.
     - **Status:** Works (real daemon). `daemon/humatad/tests/cli_files.rs::cp_from_the_session_clone_to_shared_arrives_with_identical_bytes`,
@@ -221,6 +221,22 @@ or not built.
   No test in `daemon/humatad/tests` or `daemon/mcp/tests` calls it with another machine.
   The capability's rule is Fakes only: `daemon/access/tests/channel_desk.rs::one_capability_set_to_never_blocks_a_switch_with_two`
   (FilesReadOtherMachine set to Never), and the guard maps it at `daemon/humatad/src/guard.rs:391`.
+
+### An agent brings a file into its shared/ from another machine
+
+- **When:** an agent session runs on vm-a, a machine of the channel, and needs a file that is in the channel's `shared/` on This Mac.
+- **I do:** the agent copies `this-mac:shared/x` into its own `shared/` with `humata cp`. Then it tries the other direction: it sends a file from its machine into `shared/` on This Mac.
+- **I see:** the pull lands in `shared/` on vm-a, after a copy-in card if the rule asks. The push is refused at once with the pull hint: put the file in `shared/` here, and a session on the other machine copies it in, or the user sends it with `humata cp`.
+- **Expected outcome:** the file in `shared/` on vm-a has the same bytes as `this-mac:shared/x`. The push writes nothing on the other machine, and no card is raised for it (D755, TP-4).
+- **Status:** Works (real daemon, fake boxes) for the pull and the push's refusal kind: `daemon/humatad/tests/agent_send_machine.rs::an_agent_names_its_channels_machine_by_name_and_sees_no_other` (the agent there runs on This Mac and pulls from box-1). The refusal and its fix are Fakes only: `daemon/access/tests/refusals.rs::an_agent_writes_shared_only_on_its_own_machine`, `daemon/access/tests/refusals.rs::a_copy_into_a_remote_shared_is_refused_before_its_source_is_judged` and `daemon/access/tests/refusals.rs::an_agent_pulls_another_machines_file_into_its_own_shared`.
+
+### An agent's bare destination word that names no machine
+
+- **When:** an agent session in a channel with one clone, and a machine vm-b outside the channel (or no machine of that name at all).
+- **I do:** the agent runs `humata cp this-mac:shared/a.txt vm-b`, then `cp … ./vm-b`, `cp … vm-b/` and `cp … notes.md`.
+- **I see:** `vm-b` is refused as usage (exit 2): it is not a machine of this channel, so nothing was copied, with the hint to pick one `humata host ls` lists, or write `./vm-b` for a file or `vm-b/` for a folder. `./vm-b`, `vm-b/` and the dotted `notes.md` land in the agent's own clone.
+- **Expected outcome:** the refused word starts no transfer, and the refusal is the same whether or not a machine the agent can't see is named vm-b. A machine of the channel named by its name still gets the file by PL-3 (D756, amending D655).
+- **Status:** Fakes only (CLI against a fake daemon): `cli/tests/files.rs::an_agents_bare_word_that_is_no_machine_it_sees_starts_nothing`, `an_agents_dot_slash_word_lands_in_its_clone`, `an_agents_word_with_a_slash_lands_in_that_folder_of_its_clone`, `an_agents_dotted_word_lands_in_its_clone`, `an_agents_word_naming_a_machine_it_sees_sends_there` and `an_agent_cant_tell_a_hidden_machine_from_no_machine`.
 
 ## Expected outcomes
 

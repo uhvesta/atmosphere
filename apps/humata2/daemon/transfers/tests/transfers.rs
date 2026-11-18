@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_transfers::{
-    Disk, End, EndError, Entry, Item, Mode, OnExisting, Problem, Request, Sink, State, Transfers,
+    Disk, End, EndError, Entry, Item, Landing, Mode, OnExisting, Problem, Request, Sink, State, Transfers,
     Trash, TransferError, UploadRequest, Config,
 };
 use sha2::{Digest, Sha256};
@@ -20,11 +20,13 @@ struct World {
     transfers: Arc<Transfers>,
 }
 
-/// A disk that says it is another one, and reads slowly when asked.
+/// A disk that says it is another one, reads slowly, and can't rename,
+/// when asked.
 struct Wrapped {
     inner: Disk,
     other_disk: bool,
     slow: bool,
+    no_rename: bool,
 }
 
 struct SlowRead(Box<dyn Read + Send>);
@@ -72,6 +74,13 @@ impl End for Wrapped {
         self.inner.finish_file(path, mode, ms)
     }
     fn rename(&self, from: &Path, to: &Path) -> Result<(), EndError> {
+        if self.no_rename {
+            return Err(EndError::Io {
+                doing: "move",
+                path: from.to_owned(),
+                source: std::io::Error::other("renames are refused here"),
+            });
+        }
         self.inner.rename(from, to)
     }
     fn sync_folder(&self, folder: &Path) -> Result<(), EndError> {
@@ -89,6 +98,7 @@ struct Options {
     other_disk: bool,
     slow: bool,
     floor: u64,
+    no_rename: bool,
 }
 
 fn world(options: Options) -> World {
@@ -99,6 +109,7 @@ fn world(options: Options) -> World {
             inner: Disk::new("local", trash.clone()),
             other_disk: options.other_disk,
             slow,
+            no_rename: options.no_rename,
         })
     };
     let transfers = Transfers::open(Config {
@@ -116,7 +127,7 @@ fn world(options: Options) -> World {
 }
 
 fn plain() -> Options {
-    Options { other_disk: true, slow: false, floor: 0 }
+    Options { other_disk: true, slow: false, floor: 0, no_rename: false }
 }
 
 fn bytes(len: usize, seed: u8) -> Vec<u8> {
@@ -223,7 +234,7 @@ fn an_existing_name_fails_is_replaced_or_kept_beside() {
 
     w.transfers.start(request("k", &[&src], &dst, Mode::Copy, OnExisting::KeepBoth)).unwrap();
     assert_eq!(w.transfers.wait("k").unwrap().state, State::Done);
-    assert_eq!(fs::read(dst.join("a 2.txt")).unwrap(), b"new");
+    assert_eq!(fs::read(dst.join("a-2.txt")).unwrap(), b"new");
     assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"old");
 
     w.transfers.start(request("r", &[&src], &dst, Mode::Copy, OnExisting::Replace)).unwrap();
@@ -232,6 +243,108 @@ fn an_existing_name_fails_is_replaced_or_kept_beside() {
     let trashed = w.trash.list().unwrap();
     assert_eq!(trashed.len(), 1);
     assert_eq!(trashed[0].bytes, 3);
+}
+
+#[test]
+fn keeping_both_twice_numbers_the_second_copy_two_then_three() {
+    let w = world(plain());
+    let src = w.dir.path().join("src/a.txt");
+    fs::write(&src, b"new").unwrap();
+    let dst = w.dir.path().join("dst");
+    fs::write(dst.join("a.txt"), b"old").unwrap();
+
+    w.transfers.start(request("k1", &[&src], &dst, Mode::Copy, OnExisting::KeepBoth)).unwrap();
+    assert_eq!(w.transfers.wait("k1").unwrap().state, State::Done);
+    w.transfers.start(request("k2", &[&src], &dst, Mode::Copy, OnExisting::KeepBoth)).unwrap();
+    assert_eq!(w.transfers.wait("k2").unwrap().state, State::Done);
+
+    assert_eq!(fs::read(dst.join("a.txt")).unwrap(), b"old");
+    assert_eq!(fs::read(dst.join("a-2.txt")).unwrap(), b"new");
+    assert_eq!(fs::read(dst.join("a-3.txt")).unwrap(), b"new");
+}
+
+#[test]
+fn keeping_both_a_file_with_the_same_bytes_writes_nothing_and_says_it_was_there() {
+    let w = world(plain());
+    let src = w.dir.path().join("src/notes.md");
+    fs::write(&src, b"same words").unwrap();
+    let dst = w.dir.path().join("dst");
+    fs::write(dst.join("notes.md"), b"same words").unwrap();
+
+    w.transfers.start(request("k", &[&src], &dst, Mode::Copy, OnExisting::KeepBoth)).unwrap();
+    let done = w.transfers.wait("k").unwrap();
+
+    assert_eq!(done.state, State::Done);
+    assert_eq!(done.landings, vec![Landing::AlreadyThere]);
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
+    assert_eq!(fs::read(dst.join("notes.md")).unwrap(), b"same words");
+}
+
+#[test]
+fn keeping_both_a_file_with_other_bytes_of_the_same_size_is_saved_under_a_new_name() {
+    let w = world(plain());
+    let src = w.dir.path().join("src/notes.md");
+    fs::write(&src, b"same words").unwrap();
+    let dst = w.dir.path().join("dst");
+    fs::write(dst.join("notes.md"), b"othr words").unwrap();
+
+    w.transfers.start(request("k", &[&src], &dst, Mode::Copy, OnExisting::KeepBoth)).unwrap();
+    let done = w.transfers.wait("k").unwrap();
+
+    assert_eq!(done.state, State::Done);
+    assert_eq!(done.landings, vec![Landing::SavedAs("notes-2.md".to_owned())]);
+    assert_eq!(fs::read(dst.join("notes-2.md")).unwrap(), b"same words");
+    assert_eq!(fs::read(dst.join("notes.md")).unwrap(), b"othr words");
+}
+
+#[test]
+fn keeping_both_a_name_nobody_holds_lands_as_asked() {
+    let w = world(plain());
+    let src = w.dir.path().join("src/notes.md");
+    fs::write(&src, b"words").unwrap();
+    let dst = w.dir.path().join("dst");
+
+    w.transfers.start(request("k", &[&src], &dst, Mode::Copy, OnExisting::KeepBoth)).unwrap();
+    assert_eq!(w.transfers.wait("k").unwrap().landings, vec![Landing::AsAsked]);
+}
+
+#[test]
+fn keeping_both_a_folder_is_already_there_only_when_every_file_matches() {
+    let w = world(plain());
+    let src = w.dir.path().join("src/tree");
+    make_tree(&src);
+    let dst = w.dir.path().join("dst");
+
+    w.transfers.start(request("a", &[&src], &dst, Mode::Copy, OnExisting::Fail)).unwrap();
+    assert_eq!(w.transfers.wait("a").unwrap().state, State::Done);
+
+    w.transfers.start(request("b", &[&src], &dst, Mode::Copy, OnExisting::KeepBoth)).unwrap();
+    let same = w.transfers.wait("b").unwrap();
+    assert_eq!(same.landings, vec![Landing::AlreadyThere]);
+    assert!(!dst.join("tree-2").exists());
+
+    let extra = dst.join("tree/extra.txt");
+    fs::write(&extra, b"only here").unwrap();
+    w.transfers.start(request("c", &[&src], &dst, Mode::Copy, OnExisting::KeepBoth)).unwrap();
+    let differs = w.transfers.wait("c").unwrap();
+    assert_eq!(differs.landings, vec![Landing::SavedAs("tree-2".to_owned())]);
+    assert_eq!(tree(&dst.join("tree-2")), tree(&src));
+}
+
+#[test]
+fn a_move_of_a_file_already_there_takes_it_from_the_source_and_writes_nothing() {
+    let w = world(plain());
+    let src = w.dir.path().join("src/notes.md");
+    fs::write(&src, b"same words").unwrap();
+    let dst = w.dir.path().join("dst");
+    fs::write(dst.join("notes.md"), b"same words").unwrap();
+
+    w.transfers.start(request("m", &[&src], &dst, Mode::Move, OnExisting::KeepBoth)).unwrap();
+    let done = w.transfers.wait("m").unwrap();
+
+    assert_eq!(done.landings, vec![Landing::AlreadyThere]);
+    assert!(!src.exists());
+    assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
 }
 
 #[test]
@@ -323,6 +436,50 @@ fn starting_the_same_id_twice_copies_once() {
     assert_eq!(fs::read_dir(&dst).unwrap().count(), 1);
 }
 
+#[test]
+fn a_source_given_a_new_name_lands_under_it_as_cp_a_b_does() {
+    let w = world(plain());
+    let src = w.dir.path().join("src/note.txt");
+    fs::write(&src, b"note").unwrap();
+    let dst = w.dir.path().join("dst");
+    w.transfers
+        .start_as(request("n", &[&src], &dst, Mode::Copy, OnExisting::Fail), Some("vm-b.txt".into()))
+        .unwrap();
+    let done = w.transfers.wait("n").unwrap();
+    assert_eq!(done.state, State::Done, "{:?}", done.problem);
+    assert_eq!(fs::read(dst.join("vm-b.txt")).unwrap(), b"note");
+    assert!(!dst.join("note.txt").exists());
+}
+
+#[test]
+fn a_new_name_for_two_sources_starts_nothing() {
+    let w = world(plain());
+    let (a, b) = (w.dir.path().join("src/a.txt"), w.dir.path().join("src/b.txt"));
+    fs::write(&a, b"a").unwrap();
+    fs::write(&b, b"b").unwrap();
+    let dst = w.dir.path().join("dst");
+    let refused = w
+        .transfers
+        .start_as(request("two", &[&a, &b], &dst, Mode::Copy, OnExisting::Fail), Some("one.txt".into()));
+    assert!(matches!(refused, Err(TransferError::NameNeedsOneSource { .. })), "{refused:?}");
+    assert!(fs::read_dir(&dst).unwrap().next().is_none());
+}
+
+#[test]
+fn a_new_name_that_is_a_path_starts_nothing() {
+    let w = world(plain());
+    let src = w.dir.path().join("src/a.txt");
+    fs::write(&src, b"a").unwrap();
+    let dst = w.dir.path().join("dst");
+    for name in ["../a.txt", "x/y", "..", "."] {
+        let refused = w
+            .transfers
+            .start_as(request(&format!("p{}", name.len()), &[&src], &dst, Mode::Copy, OnExisting::Fail), Some(name.into()));
+        assert!(matches!(refused, Err(TransferError::BadName { .. })), "{name}: {refused:?}");
+    }
+    assert!(fs::read_dir(&dst).unwrap().next().is_none());
+}
+
 fn upload_request(w: &World, id: &str, data: &[u8], sha: String) -> UploadRequest {
     UploadRequest {
         id: id.to_owned(),
@@ -406,4 +563,178 @@ fn a_finished_transfer_is_still_listed_after_reopening() {
     .unwrap();
     assert_eq!(again.list().len(), 1);
     assert_eq!(again.get("l").unwrap().state, State::Done);
+}
+
+/// A umask other than the usual 022: anything made without its own mode
+/// shows it (a 0666 default comes out 0664 here).
+fn umask_002() {
+    static SET: std::sync::Once = std::sync::Once::new();
+    SET.call_once(|| {
+        rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o002));
+    });
+}
+
+fn mode_of(path: &Path) -> u32 {
+    fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+}
+
+#[test]
+fn a_copy_keeps_each_files_exact_mode_under_another_umask() {
+    umask_002();
+    let w = world(plain());
+    let src = w.dir.path().join("src/modes");
+    fs::create_dir_all(&src).unwrap();
+    let modes = [("run.sh", 0o755), ("private.key", 0o600), ("note.txt", 0o644), ("group.txt", 0o640)];
+    for (name, mode) in modes {
+        fs::write(src.join(name), bytes(100, 3)).unwrap();
+        fs::set_permissions(src.join(name), fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let dst = w.dir.path().join("dst");
+    w.transfers.start(request("c", &[&src], &dst, Mode::Copy, OnExisting::Fail)).unwrap();
+    assert_eq!(w.transfers.wait("c").unwrap().state, State::Done);
+    for (name, mode) in modes {
+        assert_eq!(mode_of(&dst.join("modes").join(name)), mode, "{name} after copy");
+    }
+}
+
+#[test]
+fn a_moved_file_keeps_its_mode_at_the_destination_and_after_restore_from_trash() {
+    umask_002();
+    for mode in [0o644, 0o600, 0o755] {
+        let w = world(plain());
+        let src = w.dir.path().join(format!("src/file-{mode:o}"));
+        fs::create_dir_all(src.parent().unwrap()).unwrap();
+        fs::write(&src, bytes(500, 4)).unwrap();
+        fs::set_permissions(&src, fs::Permissions::from_mode(mode)).unwrap();
+        let dst = w.dir.path().join("dst");
+        w.transfers.start(request("m", &[&src], &dst, Mode::Move, OnExisting::Fail)).unwrap();
+        assert_eq!(w.transfers.wait("m").unwrap().state, State::Done);
+        assert_eq!(mode_of(&dst.join(format!("file-{mode:o}"))), mode, "destination");
+        let trashed = w.trash.list().unwrap();
+        assert_eq!(trashed.len(), 1);
+        let back = w.trash.restore(&trashed[0].id).unwrap();
+        assert_eq!(back, src);
+        assert_eq!(mode_of(&src), mode, "after restore from the trash");
+    }
+}
+
+/// Folders `tree` (0750) holding `ro` (0555, with a file and a 0555
+/// folder that holds one) and `private` (0700), and `locked` (0555, with a
+/// file): read-only folders at every depth, the tops included.
+fn make_moded_tree(src: &Path) -> Vec<(&'static str, u32)> {
+    let modes = vec![
+        ("tree", 0o750),
+        ("tree/ro", 0o555),
+        ("tree/ro/sub", 0o555),
+        ("tree/ro/inside.txt", 0o644),
+        ("tree/ro/sub/deep.txt", 0o600),
+        ("tree/private", 0o700),
+        ("locked", 0o555),
+        ("locked/note.txt", 0o640),
+    ];
+    for (rel, _) in &modes {
+        if rel.ends_with(".txt") {
+            fs::write(src.join(rel), bytes(64, 5)).unwrap();
+        } else {
+            fs::create_dir_all(src.join(rel)).unwrap();
+        }
+    }
+    // Deepest first, so each read-only folder is set once it is filled.
+    for (rel, mode) in modes.iter().rev() {
+        fs::set_permissions(src.join(rel), fs::Permissions::from_mode(*mode)).unwrap();
+    }
+    modes
+}
+
+/// Lets the temporary folder go: read-only folders under `root` are made
+/// writable again.
+fn unlock(root: &Path) {
+    let Ok(meta) = fs::symlink_metadata(root) else { return };
+    if meta.is_dir() {
+        let _ = fs::set_permissions(root, fs::Permissions::from_mode(0o700));
+        for entry in fs::read_dir(root).unwrap().flatten() {
+            unlock(&entry.path());
+        }
+    }
+}
+
+#[test]
+fn a_copy_keeps_each_folders_exact_mode_under_another_umask() {
+    umask_002();
+    let w = world(plain());
+    let src = w.dir.path().join("src");
+    let modes = make_moded_tree(&src);
+    let dst = w.dir.path().join("dst");
+    let sources = [src.join("tree"), src.join("locked")];
+    let sources: Vec<&Path> = sources.iter().map(|p| p.as_path()).collect();
+    w.transfers.start(request("c", &sources, &dst, Mode::Copy, OnExisting::Fail)).unwrap();
+    let done = w.transfers.wait("c").unwrap();
+    let arrived: Vec<(&str, u32)> = modes.iter().map(|(rel, _)| (*rel, mode_of(&dst.join(rel)))).collect();
+    let found_staging = staging_left(&dst);
+    unlock(w.dir.path());
+    assert_eq!(done.state, State::Done, "{:?}", done.problem);
+    assert_eq!(arrived, modes);
+    assert!(!found_staging);
+}
+
+#[test]
+fn a_failed_copy_with_read_only_folders_staged_is_cancelled_without_a_trace() {
+    umask_002();
+    let w = world(Options { no_rename: true, ..plain() });
+    let src = w.dir.path().join("src");
+    make_moded_tree(&src);
+    let dst = w.dir.path().join("dst");
+    let sources = [src.join("tree"), src.join("locked")];
+    let sources: Vec<&Path> = sources.iter().map(|p| p.as_path()).collect();
+    w.transfers.start(request("f", &sources, &dst, Mode::Copy, OnExisting::Fail)).unwrap();
+    let failed = w.transfers.wait("f").unwrap();
+    let cancelled = w.transfers.cancel("f").unwrap();
+    let left: Vec<String> = fs::read_dir(&dst)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    unlock(w.dir.path());
+    assert_eq!(failed.state, State::Failed);
+    assert_eq!(cancelled.state, State::Cancelled, "{:?}", cancelled.problem);
+    assert!(left.is_empty(), "left in the destination: {left:?}");
+}
+
+#[test]
+fn a_cancelled_copy_of_a_read_only_folder_leaves_no_staging() {
+    umask_002();
+    let w = world(Options { slow: true, ..plain() });
+    let src = w.dir.path().join("src");
+    fs::create_dir_all(src.join("ro")).unwrap();
+    fs::write(src.join("ro/big.bin"), bytes(4 << 20, 6)).unwrap();
+    fs::set_permissions(src.join("ro"), fs::Permissions::from_mode(0o555)).unwrap();
+    let dst = w.dir.path().join("dst");
+    w.transfers.start(request("x", &[&src.join("ro")], &dst, Mode::Copy, OnExisting::Fail)).unwrap();
+    let cancelled = w.transfers.cancel("x").unwrap();
+    let left = fs::read_dir(&dst).unwrap().count();
+    unlock(w.dir.path());
+    assert_eq!(cancelled.state, State::Cancelled, "{:?}", cancelled.problem);
+    assert_eq!(left, 0);
+}
+
+#[test]
+fn read_only_folders_moved_on_one_disk_or_across_keep_their_modes() {
+    umask_002();
+    for other_disk in [false, true] {
+        let w = world(Options { other_disk, ..plain() });
+        let src = w.dir.path().join("src");
+        let modes = make_moded_tree(&src);
+        let dst = w.dir.path().join("dst");
+        let sources = [src.join("tree"), src.join("locked")];
+        let sources: Vec<&Path> = sources.iter().map(|p| p.as_path()).collect();
+        w.transfers.start(request("m", &sources, &dst, Mode::Move, OnExisting::Fail)).unwrap();
+        let done = w.transfers.wait("m").unwrap();
+        let arrived: Vec<(&str, u32)> = modes.iter().map(|(rel, _)| (*rel, mode_of(&dst.join(rel)))).collect();
+        let gone = !src.join("tree").exists() && !src.join("locked").exists();
+        let trashed = w.trash.list().unwrap().len();
+        unlock(w.dir.path());
+        assert_eq!(done.state, State::Done, "{:?} (other disk: {other_disk})", done.problem);
+        assert_eq!(arrived, modes, "other disk: {other_disk}");
+        assert!(gone, "the sources are still there (other disk: {other_disk})");
+        assert_eq!(trashed, if other_disk { 2 } else { 0 });
+    }
 }

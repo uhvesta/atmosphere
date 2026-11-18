@@ -1,7 +1,7 @@
 //! The transfers tray (FM-7, FM-8, FM-13).
 
 use humata2_clients::model::{MachineId, TransferId};
-use humata2_clients::{TransferPhase, TransferRow};
+use humata2_clients::{Landing, TransferPhase, TransferRow};
 use tca::Effect;
 
 use super::{Edit, Files, FilesAction, FilesState, Side};
@@ -59,9 +59,28 @@ impl FilesState {
                 "Resumes on reconnect, from the last confirmed offset \u{b7} checksummed per chunk".to_owned()
             }
             TransferPhase::Paused { reason, .. } | TransferPhase::Failed { reason } => reason.clone(),
-            TransferPhase::Done => "Checksum ok".to_owned(),
+            TransferPhase::Done => {
+                let told = self.landing_notes(row);
+                if told.is_empty() { "Checksum ok".to_owned() } else { told }
+            }
             TransferPhase::Cancelled => "Stopped before it finished".to_owned(),
         }
+    }
+
+    /// What a finished transfer did about names that were taken (PL-13):
+    /// `saved as notes-2.md`, `notes.md already there`; empty when every
+    /// name landed as asked.
+    #[must_use]
+    pub fn landing_notes(&self, row: &TransferRow) -> String {
+        row.outcomes
+            .iter()
+            .filter_map(|item| match &item.landing {
+                Landing::AsAsked => None,
+                Landing::SavedAs(name) => Some(format!("saved as {name}")),
+                Landing::AlreadyThere => Some(format!("{} already there", item.name)),
+            })
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ")
     }
 
     /// Whether `machine` is an end of any transfer that isn't over.

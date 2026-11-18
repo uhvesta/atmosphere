@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::capability::Capability;
+use crate::channel_desk::ChannelDeskAccess;
 use crate::ids::{ChannelId, MachineId, SessionId, SessionRef};
 
 /// The caller, as the daemon established it from the socket, the session
@@ -52,6 +53,10 @@ pub enum SessionKind {
     /// A Desk session (DK-4, D182). It belongs to no channel and takes the
     /// new-channel defaults; its switches allow more on top, after Never.
     Desk(DeskAccess),
+    /// A channel's own Desk session (CD-3, D306). Its agent is judged in
+    /// that channel, by its rules; its switches allow more on top, after
+    /// Never, on its target and the target's forks.
+    ChannelDesk(ChannelDeskAccess),
 }
 
 /// The two Desk switches (DK-10, D182.3). A switch that is off adds

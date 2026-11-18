@@ -25,7 +25,15 @@ use crate::identity::TOKEN_HEADER;
 use crate::{serve, status};
 
 mod boards;
+// REPOS (CH-21)
+mod session_repo;
+mod doc_versions;
 mod history;
+mod pull_requests;
+// REPOS
+mod repos;
+// TP-1 (D772).
+mod topology;
 
 #[derive(clap::Args)]
 pub(crate) struct McpArgs {
@@ -51,6 +59,19 @@ struct GrpcDaemon {
     socket: PathBuf,
     channel: Channel,
     token: Mutex<Option<SessionToken>>,
+    /// The release this binary is, named on every call (UP-1).
+    bundle: Option<tonic::metadata::AsciiMetadataValue>,
+}
+
+/// The bundle id of the release this binary was installed with: the sha256
+/// of the `bundle.json` beside it, as the daemon names its own (D281 a).
+/// None when there is none, as in a build run from the tree.
+fn bundle_id() -> Option<tonic::metadata::AsciiMetadataValue> {
+    use sha2::{Digest, Sha256};
+    let folder = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let bytes = std::fs::read(folder.join("bundle.json")).ok()?;
+    let hex: String = Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect();
+    MetadataValue::try_from(hex).ok()
 }
 
 impl GrpcDaemon {
@@ -70,6 +91,7 @@ impl GrpcDaemon {
             socket,
             channel,
             token: Mutex::new(None),
+            bundle: bundle_id(),
         }
     }
 
@@ -81,6 +103,11 @@ impl GrpcDaemon {
             let mut value = MetadataValue::try_from(token.expose()).map_err(|_| not_a_token())?;
             value.set_sensitive(true);
             request.metadata_mut().insert(TOKEN_HEADER, value);
+        }
+        // UP-1, D290 m: a call with a session token is a CLI's, so it names
+        // its release as the humata CLI does.
+        if let Some(bundle) = &self.bundle {
+            request.metadata_mut().insert(crate::upgrade::build::BUNDLE_HEADER, bundle.clone());
         }
         Ok(request)
     }
@@ -677,12 +704,7 @@ impl GrpcDaemon {
     /// daemon asks the user first when the rule says so.
     async fn session_fork(&self, call: Call) -> Result<Reply, ToolError> {
         let arguments = &call.arguments;
-        let kind = match text(arguments, "kind").as_str() {
-            "code_and_context" => pb::ForkKind::CodeAndContext,
-            "code_only" => pb::ForkKind::CodeOnly,
-            "context_only" => pb::ForkKind::ContextOnly,
-            other => return Err(fork_unsupported(format!("kind {other:?} isn't a fork kind"), "send kind code_and_context, code_only or context_only")),
-        };
+        let ForkChoices { kind, agent, before_turn } = fork_choices(arguments)?;
         let some_repos = arguments
             .get("repos")
             .and_then(Value::as_array)
@@ -698,8 +720,11 @@ impl GrpcDaemon {
             idempotency_key: Some(key(&call)),
             parent: Some(self.own_session().await?),
             kind: kind as i32,
+            before_turn,
+            agent: agent.map(|value| pb::AgentId { value }),
             title: text(arguments, "title"),
             machine: (!machine.is_empty()).then_some(pb::MachineId { value: machine }),
+            reason: text(arguments, "reason"),
             ..Default::default()
         })?;
         let operation = self
@@ -710,6 +735,34 @@ impl GrpcDaemon {
             .into_inner();
         Ok(applied(
             json!({ "operation": operation.id.map(|id| id.value) }),
+            None,
+        ))
+    }
+
+    /// `session_continue_in_channel` (CV-8): a new session in another channel
+    /// from a copy of the caller's conversation; the daemon asks the user
+    /// first when the rule says so.
+    async fn session_continue_in_channel(&self, call: Call) -> Result<Reply, ToolError> {
+        let arguments = &call.arguments;
+        let request = self.request(pb::ContinueInChannelRequest {
+            idempotency_key: Some(key(&call)),
+            session: Some(self.own_session().await?),
+            channel: Some(pb::ChannelId {
+                value: text(arguments, "channel"),
+            }),
+            before_turn: arguments.get("before_turn").and_then(Value::as_u64).and_then(|turn| u32::try_from(turn).ok()).unwrap_or(0),
+        })?;
+        let started = self
+            .sessions()
+            .continue_in_channel(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(
+            json!({
+                "operation": started.operation.and_then(|operation| operation.id).map(|id| id.value),
+                "session": started.session.map(|id| id.value),
+            }),
             None,
         ))
     }
@@ -743,6 +796,35 @@ impl GrpcDaemon {
         ))
     }
 
+    /// Deletes a session through the same plan and delete calls as the
+    /// CLI, so the daemon's rules (another session's: Never, D306) apply.
+    async fn session_delete(&self, call: Call) -> Result<Reply, ToolError> {
+        let id = self.named_session(&call.arguments).await?;
+        let plan = self
+            .sessions()
+            .plan_delete(self.request(pb::PlanDeleteRequest {
+                id: Some(id.clone()),
+            })?)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let request = self.request(pb::DeleteSessionRequest {
+            idempotency_key: Some(key(&call)),
+            id: Some(id),
+            plan: plan.token,
+        })?;
+        let deleted = self
+            .sessions()
+            .delete_session(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(
+            json!({ "trash_item": deleted.trash_item.map(|item| item.value) }),
+            None,
+        ))
+    }
+
     /// A tool's `location` as a FileLocation; the caller's own session,
     /// channel and machine are the defaults.
     async fn file_location(
@@ -761,6 +843,9 @@ impl GrpcDaemon {
             "clone" => Root::SessionClone(pb::SessionClone {
                 session: Some(self.named_session(&location).await?),
                 repo: Some(repo),
+            }),
+            "session_folder" => Root::SessionFolder(pb::SessionFolder {
+                session: Some(self.named_session(&location).await?),
             }),
             "shared" => Root::ChannelShared(pb::ChannelShared {
                 channel: Some(self.own_channel().await?),
@@ -857,6 +942,7 @@ impl GrpcDaemon {
                     location: Some(location),
                     size: bytes.len() as u64,
                     sha256: files::hex(&Sha256::digest(&bytes)),
+                    expected_sha256: None,
                     replace: call
                         .arguments
                         .get("replace")
@@ -973,7 +1059,7 @@ impl GrpcDaemon {
                 value: text(&call.arguments, "session"),
             }),
             tab: None,
-            text: text(&call.arguments, "text"),
+            text: typed_text(&call.arguments),
             when: when as i32,
         })?;
         let typed = self
@@ -984,6 +1070,8 @@ impl GrpcDaemon {
             .into_inner();
         let result = json!({
             "typed": typed.typed,
+            "submitted": typed.submitted,
+            "agent_busy": typed.agent_busy,
             "queued_id": typed.queued.map(|id| id.value),
             "turn_end_uncertain": typed.turn_end_uncertain,
         });
@@ -991,7 +1079,171 @@ impl GrpcDaemon {
     }
 }
 
+/// How long `session_ask` waits for the asked session's answer: TP-11's
+/// longest wait.
+const ASK_WAIT_SECONDS: u32 = 600;
+
+impl GrpcDaemon {
+    /// `session_note` (TP-5): typed once the other session's turn is over.
+    async fn session_note(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::SendNoteRequest {
+            idempotency_key: Some(key(&call)),
+            to: Some(pb::SessionId {
+                value: text(&call.arguments, "session"),
+            }),
+            text: text(&call.arguments, "text"),
+            reason: String::new(),
+        })?;
+        let sent = self
+            .sessions()
+            .send_note(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(json!({ "typed": sent.typed }), None))
+    }
+
+    /// `session_ask` (TP-5): waits for the other session's `session_answer`.
+    async fn session_ask(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::AskSessionRequest {
+            idempotency_key: Some(key(&call)),
+            to: Some(pb::SessionId {
+                value: text(&call.arguments, "session"),
+            }),
+            question: text(&call.arguments, "question"),
+            reason: String::new(),
+            timeout_seconds: ASK_WAIT_SECONDS,
+        })?;
+        let asked = self
+            .sessions()
+            .ask_session(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        let outcome = match asked.outcome() {
+            pb::ask_session_response::Outcome::Answered => "answered",
+            pb::ask_session_response::Outcome::Declined => "declined",
+            _ => "expired",
+        };
+        Ok(applied(json!({ "outcome": outcome, "answer": asked.answer }), None))
+    }
+
+    /// `session_answer` (TP-5): answers a question typed into the caller's
+    /// own terminal.
+    async fn session_answer(&self, call: Call) -> Result<Reply, ToolError> {
+        let request = self.request(pb::AnswerQuestionRequest {
+            idempotency_key: Some(key(&call)),
+            question: Some(pb::QuestionId {
+                value: text(&call.arguments, "question_id"),
+            }),
+            answer: text(&call.arguments, "answer"),
+            decline: false,
+        })?;
+        self.sessions()
+            .answer_question(request)
+            .await
+            .map_err(|status| self.failed(&status))?;
+        Ok(applied(json!({ "answered": true }), None))
+    }
+}
+
+/// `session_type`'s text, with Enter pressed after it (a trailing newline
+/// is the submit, D671) unless `submit` is false or it already ends in one.
+fn typed_text(arguments: &Map<String, Value>) -> String {
+    let mut typed = text(arguments, "text");
+    let submit = arguments.get("submit").and_then(Value::as_bool).unwrap_or(true);
+    if submit && !typed.ends_with(['\n', '\r']) {
+        typed.push('\n');
+    }
+    typed
+}
+
+impl GrpcDaemon {
+    /// `desk_session_move_to_channel`: asks to move the caller's own Desk
+    /// session into a channel (DK-15, D305). The daemon plans it when it asks.
+    async fn desk_move_to_channel(&self, call: Call) -> Result<Reply, ToolError> {
+        let arguments = &call.arguments;
+        let request = self.request(pb::MoveDeskSessionToChannelRequest {
+            idempotency_key: Some(key(&call)),
+            session: None,
+            channel: Some(pb::ChannelId {
+                value: text(arguments, "channel"),
+            }),
+            plan: None,
+            branch: text(arguments, "branch"),
+            reason: text(arguments, "reason"),
+            ..Default::default()
+        })?;
+        let operation = pb::desk_service_client::DeskServiceClient::new(self.channel.clone())
+            .move_desk_session_to_channel(request)
+            .await
+            .map_err(|status| self.failed(&status))?
+            .into_inner();
+        Ok(applied(
+            json!({ "operation": operation.id.map(|id| id.value) }),
+            None,
+        ))
+    }
+}
+
 impl Daemon for GrpcDaemon {
+    /// The tools `call` dispatches below; every other one answers
+    /// `not_built`, so `tools/list` leaves it out. Keep the two in step.
+    fn serves(&self, operation: Operation) -> bool {
+        matches!(
+            operation,
+            Operation::Whoami |
+            Operation::InboxAsk |
+            Operation::InboxRequest |
+            Operation::SessionType |
+            Operation::ReviewContext |
+            Operation::ReviewFocus |
+            Operation::ReviewNote |
+            Operation::ReviewNoteEdit |
+            Operation::ReviewNoteDrop |
+            Operation::ReviewPrepare |
+            Operation::ViewPrepare |
+            Operation::ViewRevise |
+            Operation::ViewMarkReady |
+            Operation::ViewsList |
+            Operation::CommentsList |
+            Operation::CommentReply |
+            Operation::CommentResolve |
+            Operation::DocVersionsList |
+            Operation::DocVersionRead |
+            Operation::ChannelsList |
+            Operation::SessionInfo |
+            Operation::TopologyGet |
+            Operation::SessionStop |
+            Operation::SessionArchive |
+            Operation::SessionDelete |
+            Operation::SessionFork |
+            Operation::SessionContinueInChannel |
+            Operation::FileWrite |
+            Operation::FilesList |
+            Operation::FileRead |
+            Operation::InboxWithdraw |
+            Operation::InboxMine |
+            Operation::AccessExplain |
+            Operation::BoardItemsList |
+            Operation::BoardItemGet |
+            Operation::BoardItemHistory |
+            Operation::BoardItemCreate |
+            Operation::BoardItemUpdate |
+            Operation::BoardItemMove |
+            Operation::BoardItemDelete |
+            Operation::SessionsSearch |
+            Operation::RepoSearch | // REPOS
+            Operation::RepoLibrary |
+            Operation::SessionRead |
+            Operation::ReviewDraft |
+            Operation::ReviewDraftEdit |
+            Operation::ReviewDraftDrop |
+            Operation::ReviewSummaryDraft |
+            Operation::PrReviewStart
+        )
+    }
+
     async fn bind(&self, token: &SessionToken) -> Result<(), ToolError> {
         *lock(&self.token) = Some(token.clone());
         self.agent().await.map(|_| ())
@@ -1003,6 +1255,10 @@ impl Daemon for GrpcDaemon {
             Operation::InboxAsk => self.ask(call).await,
             Operation::InboxRequest => self.request_access(call).await,
             Operation::SessionType => self.session_type(call).await,
+            Operation::SessionNote => self.session_note(call).await,
+            Operation::SessionAsk => self.session_ask(call).await,
+            Operation::SessionAnswer => self.session_answer(call).await,
+            Operation::ReviewCommits => self.review_commits(call).await,
             Operation::ReviewContext => self.review_context().await,
             Operation::ReviewFocus => self.review_focus(call).await,
             Operation::ReviewNote => self.review_note(call).await,
@@ -1016,11 +1272,17 @@ impl Daemon for GrpcDaemon {
             Operation::CommentsList => self.comments_list(call).await,
             Operation::CommentReply => self.comment_reply(call).await,
             Operation::CommentResolve => self.comment_resolve(call).await,
+            Operation::DocVersionsList => self.doc_versions_list(call).await,
+            Operation::DocVersionRead => self.doc_version_read(call).await,
             Operation::ChannelsList => self.channels_list().await,
             Operation::SessionInfo => self.session_info().await,
+            Operation::TopologyGet => self.topology_get().await,
             Operation::SessionStop => self.session_stop(call).await,
             Operation::SessionArchive => self.session_archive(call).await,
+            Operation::SessionDelete => self.session_delete(call).await,
             Operation::SessionFork => self.session_fork(call).await,
+            Operation::SessionContinueInChannel => self.session_continue_in_channel(call).await,
+            Operation::SessionAddRepo => self.session_add_repo(call).await, // REPOS (CH-21)
             Operation::FileWrite => self.file_write(call).await,
             Operation::FilesList => self.files_list(call).await,
             Operation::FileRead => self.file_read(call).await,
@@ -1035,7 +1297,15 @@ impl Daemon for GrpcDaemon {
             Operation::BoardItemMove => self.board_item_move(call).await,
             Operation::BoardItemDelete => self.board_item_delete(call).await,
             Operation::SessionsSearch => self.sessions_search(call).await,
+            Operation::RepoSearch => self.repo_search(call).await, // REPOS
+            Operation::RepoLibrary => self.repo_library().await,
             Operation::SessionRead => self.session_read(call).await,
+            Operation::ReviewDraft => self.review_draft(call).await,
+            Operation::ReviewDraftEdit => self.review_draft_edit(call).await,
+            Operation::ReviewDraftDrop => self.review_draft_drop(call).await,
+            Operation::ReviewSummaryDraft => self.review_summary_draft(call).await,
+            Operation::PrReviewStart => self.pr_review_start(call).await,
+            Operation::DeskSessionMoveToChannel => self.desk_move_to_channel(call).await,
             other => Err(not_built(other)),
         };
         pending_or(reply)
@@ -1149,6 +1419,39 @@ fn text(arguments: &Map<String, Value>, field: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// What a `session_fork` call chooses beyond the machine: the copy mode, the
+/// fork's agent (none: the parent's) and the turn to fork before (0: now).
+#[derive(Debug)]
+struct ForkChoices {
+    kind: pb::ForkKind,
+    agent: Option<String>,
+    before_turn: u32,
+}
+
+fn fork_choices(arguments: &Map<String, Value>) -> Result<ForkChoices, ToolError> {
+    let kind = match text(arguments, "kind").as_str() {
+        "code_and_context" => pb::ForkKind::CodeAndContext,
+        "code_only" => pb::ForkKind::CodeOnly,
+        "context_only" => pb::ForkKind::ContextOnly,
+        other => return Err(fork_unsupported(format!("kind {other:?} isn't a fork kind"), "send kind code_and_context, code_only or context_only")),
+    };
+    let agent = Some(text(arguments, "agent")).filter(|agent| !agent.is_empty());
+    let before_turn = match arguments.get("before_turn") {
+        None | Some(Value::Null) => 0,
+        Some(value) => value
+            .as_u64()
+            .and_then(|turn| u32::try_from(turn).ok())
+            .filter(|turn| *turn >= 2)
+            .ok_or_else(|| {
+                fork_unsupported(
+                    format!("before_turn {value} isn't a turn a fork can start before"),
+                    "send a whole number from 2 (1 is the first prompt, so nothing comes before it), or leave before_turn out to fork from now",
+                )
+            })?,
+    };
+    Ok(ForkChoices { kind, agent, before_turn })
 }
 
 /// A `session_fork` argument this daemon can't act on.
@@ -1271,12 +1574,15 @@ kinds! {
     NotFound, MachineOffline, HostUnreachable, Denied, UserOnly, PresenceRequired,
     IdentityMismatch, PeerUnproven, RevisionConflict, PlanStale, NameTaken, InvalidField, UnpushedWork,
     SessionBusy, ParentReadOnly, MainCloneReadOnly, OutsideHumataFolders, DiskFull, RateLimited,
-    GithubCli, GitFailed, PushRefused, SshFailed, HostKeyChanged, ChecksumMismatch, ResumeFailed,
+    GithubCli, GitFailed, PushRefused, SshFailed, HostKeyChanged, HostKeyUnknown, ChecksumMismatch, ResumeFailed,
     AgentLacksFeature, ProviderStepFailed, ProviderIdentityInvalid, LoginNeedsUser,
     PeerVersionUnsupported, OffsetTrimmed, NotCancellable, AlreadyAnswered, RequestWithdrawn,
     UserAway, NotInChannel, PrClosed, ReviewPartlyPosted, SkillNameClash, LingerUnavailable,
     DaemonAlreadyRunning, DaemonNotRunning, JournalEntryRejected, RepoNotVisible, StepFailed,
     PassphraseLocked, DependencyLoop, Internal,
+    MigrationNeeded,
+    HostNeedsMigrate,
+    NoDefaultBranch,
 }
 
 /// The fields of the kinds agents most often branch on, with enum values
@@ -2025,5 +2331,54 @@ mod review {
             }).collect::<Vec<_>>(),
             "agent_may": { "focus": switches.focus, "notes": switches.notes, "order": switches.order },
         })
+    }
+}
+
+#[cfg(test)]
+mod fork_choice_tests {
+    use super::*;
+
+    fn arguments(value: Value) -> Map<String, Value> {
+        value.as_object().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_fork_with_only_a_kind_forks_from_now_with_the_parents_agent() {
+        let choices = fork_choices(&arguments(json!({ "kind": "code_only" }))).unwrap();
+        assert_eq!(choices.kind, pb::ForkKind::CodeOnly);
+        assert_eq!(choices.agent, None);
+        assert_eq!(choices.before_turn, 0);
+    }
+
+    #[test]
+    fn the_agent_and_turn_are_taken_as_given() {
+        let choices = fork_choices(&arguments(json!({ "kind": "context_only", "agent": "codex", "before_turn": 5 }))).unwrap();
+        assert_eq!(choices.kind, pb::ForkKind::ContextOnly);
+        assert_eq!(choices.agent.as_deref(), Some("codex"));
+        assert_eq!(choices.before_turn, 5);
+    }
+
+    #[test]
+    fn every_copy_mode_is_taken() {
+        for (name, expected) in [
+            ("code_and_context", pb::ForkKind::CodeAndContext),
+            ("code_only", pb::ForkKind::CodeOnly),
+            ("context_only", pb::ForkKind::ContextOnly),
+        ] {
+            assert_eq!(fork_choices(&arguments(json!({ "kind": name }))).unwrap().kind, expected);
+        }
+    }
+
+    #[test]
+    fn a_turn_before_the_second_or_not_a_number_is_refused() {
+        for turn in [json!(0), json!(1), json!(-3), json!("4"), json!(1.5), json!(10_000_000_000u64)] {
+            let result = fork_choices(&arguments(json!({ "kind": "code_only", "before_turn": turn })));
+            assert!(matches!(result, Err(ToolError { kind: ErrorKind::InvalidField, .. })), "{turn}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_kind_is_refused() {
+        assert!(fork_choices(&arguments(json!({ "kind": "everything" }))).is_err());
     }
 }

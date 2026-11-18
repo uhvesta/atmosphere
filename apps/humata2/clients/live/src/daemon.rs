@@ -5,17 +5,18 @@ use std::time::Duration;
 
 use humata2_clients::model::{
     Agent, Answer, Archive, Capability, ChannelId, DiffBase, ForkKind, GrantId, ItemId, ItemStatus,
-    MachineId, PushChoice, PushPlan, Recovery, RepoDiff, RequestId, Restart, RuleSetting, Scope,
-    SessionId, SessionOptions, SetupId, TransferId,
+    MachineId, PushChoice, PushPlan, Recovery, RepoBases, RepoDiff, RequestId, Restart,
+    RuleSetting, Scope, SessionId, SessionOptions, SetupId, TransferId,
 };
 use humata2_clients::{
-    ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, PastTurn, Reply, UnpushedWork,
+    AgentSwitch, ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, PastTurn, Reply,
+    SwitchChange, UnpushedWork,
     Workspace,
 };
 use humata2_grpc::humata::v1 as pb;
 
-use crate::connection::{LiveDaemon, Shared, fresh_key, not_in_this_release};
-use crate::{map, setup};
+use crate::connection::{LiveDaemon, Shared, fresh_key, key_of, not_in_this_release};
+use crate::{map, message, setup};
 
 const PAGE_SIZE: u32 = 200;
 const POLL: Duration = Duration::from_millis(100);
@@ -79,23 +80,20 @@ impl Shared {
     /// publishes it only after it has brought its sessions back, so the
     /// first session event after that is the cue. At most one read runs.
     pub(crate) fn check_restart(self: &Arc<Self>) {
-        {
-            let mut state = self.state();
-            if state.restart_known || state.restart_reading {
-                return;
-            }
-            state.restart_reading = true;
+        if !self.state().restart_cue() {
+            return;
         }
         let shared = self.clone();
         self.spawn(async move {
-            let restart = shared.read_restart().await;
-            {
-                let mut state = shared.state();
-                state.restart_reading = false;
-                state.restart_known |= restart.is_some();
-            }
-            if let Some(Some(restart)) = restart {
-                shared.publish(Event::Restart(restart));
+            loop {
+                let restart = shared.read_restart().await;
+                let again = shared.state().restart_read_ended(restart.is_some());
+                if let Some(Some(restart)) = restart {
+                    shared.publish(Event::Restart(restart));
+                }
+                if !again {
+                    break;
+                }
             }
         });
     }
@@ -179,8 +177,9 @@ impl Shared {
                     Err(status) if status.code() == tonic::Code::Unimplemented => break,
                     Err(status) => return Err(self.error(&status, "The machines")),
                 };
+            let now = crate::local_time::LocalNow::read();
             for listed in &reply.machines {
-                let mapped = map::machine(listed);
+                let mapped = map::machine(listed, &now);
                 if mapped.id != self.machine
                     && mapped.kind != humata2_clients::model::MachineKind::ThisMac
                     && !machines.iter().any(|known| known.id == mapped.id)
@@ -199,7 +198,7 @@ impl Shared {
         Ok(machines)
     }
 
-    async fn load(&self) -> Result<Workspace, DaemonError> {
+    async fn load(self: &Arc<Self>) -> Result<Workspace, DaemonError> {
         let mut channels = Vec::new();
         let mut token = String::new();
         loop {
@@ -241,10 +240,10 @@ impl Shared {
                 .into_inner();
             for session in &reply.sessions {
                 let tabs = match session.id.as_ref() {
-                    Some(id) => self.refresh_tabs(id).await.unwrap_or_default(),
+                    Some(id) => self.listed_tabs(id).await,
                     None => Vec::new(),
                 };
-                sessions.push(map::session(session, &tabs, &self.agents));
+                sessions.push(self.map_session(session, &tabs).await);
             }
             token = reply
                 .page
@@ -265,7 +264,7 @@ impl Shared {
         let restart = restart.flatten();
         let machines = self.load_machines().await?;
         let (items, item_details) = self.load_items(&ids).await?;
-        let desk = self.load_desk().await?;
+        let desk = self.load_desk(&ids).await?;
         Ok(Workspace {
             items,
             item_details,
@@ -432,6 +431,7 @@ impl Shared {
                 board_item: None,
                 branch: String::new(),
                 rebuild: None,
+                review: None,
             })
             .await
             .map_err(|status| self.error(&status, "The new session"))?
@@ -514,7 +514,14 @@ impl Shared {
                 machine: options.machine.map(|machine| pb::MachineId {
                     value: machine.as_str().to_owned(),
                 }),
-                branch: options.branch,
+                // A context-only fork works in its parent's clones, so it has
+                // no branch to name and the daemon refuses one; the dialog's
+                // branch draft is for the other kinds.
+                branch: match options.kind {
+                    ForkKind::Conversation => String::new(),
+                    ForkKind::Worktree | ForkKind::Shared => options.branch,
+                },
+                reason: String::new(),
             })
             .await
             .map_err(|status| self.error(&status, "Forking the session"))?
@@ -582,6 +589,75 @@ impl Shared {
             .map(|_| ())
     }
 
+    async fn continue_in_channel(
+        &self,
+        session: SessionId,
+        channel: ChannelId,
+        before_turn: Option<u32>,
+    ) -> Result<SessionId, DaemonError> {
+        const WHAT: &str = "Continuing the session in another channel";
+        let reply = self
+            .sessions()
+            .continue_in_channel(pb::ContinueInChannelRequest {
+                idempotency_key: fresh_key(),
+                session: Some(pb::SessionId {
+                    value: session.as_str().to_owned(),
+                }),
+                channel: Some(pb::ChannelId {
+                    value: channel.as_str().to_owned(),
+                }),
+                // 0 is the whole conversation, from now.
+                before_turn: before_turn.unwrap_or(0),
+            })
+            .await
+            .map_err(|status| self.error(&status, WHAT))?
+            .into_inner();
+        let id = reply.session.ok_or_else(|| DaemonError::Refused {
+            what: WHAT.to_owned(),
+            reason:
+                "the daemon didn't name the session it started. Reload to see whether it exists"
+                    .to_owned(),
+        })?;
+        if let Some(operation) = reply.operation {
+            self.finish(operation, WHAT).await?;
+        }
+        Ok(SessionId::new(id.value))
+    }
+
+    async fn rename_session(
+        &self,
+        session: SessionId,
+        title: String,
+        rename_branch: bool,
+    ) -> Result<(), DaemonError> {
+        self.sessions()
+            .rename_session(pb::RenameSessionRequest {
+                idempotency_key: fresh_key(),
+                id: Some(pb::SessionId {
+                    value: session.as_str().to_owned(),
+                }),
+                title,
+                expected_revision: None,
+                rename_branch,
+            })
+            .await
+            .map_err(|status| self.error(&status, "Renaming the session"))?;
+        Ok(())
+    }
+
+    async fn stop_session(&self, session: SessionId) -> Result<(), DaemonError> {
+        self.sessions()
+            .stop_session(pb::StopSessionRequest {
+                idempotency_key: fresh_key(),
+                id: Some(pb::SessionId {
+                    value: session.as_str().to_owned(),
+                }),
+            })
+            .await
+            .map_err(|status| self.error(&status, "Stopping the agent"))?;
+        Ok(())
+    }
+
     async fn read_archive_plan(&self, session: &SessionId) -> Result<pb::ArchivePlan, DaemonError> {
         self.sessions()
             .plan_archive(pb::PlanArchiveRequest {
@@ -600,6 +676,7 @@ impl Shared {
             forks_keep_running: plan.forks_keep_running,
             unpushed: plan.unpushed.iter().map(unpushed).collect(),
             frees: None,
+            unsubmitted_drafts: plan.unsubmitted_drafts,
         })
     }
 
@@ -627,6 +704,51 @@ impl Shared {
             .into_inner();
         self.finish(operation, "Archiving the session").await?;
         Ok(Archive { frees: None })
+    }
+
+    /// Brings an archived session back where it was (the Undo after an
+    /// archive), and waits for the daemon to finish.
+    async fn restore_session(&self, session: SessionId) -> Result<(), DaemonError> {
+        let operation = self
+            .sessions()
+            .restore_session(pb::RestoreSessionRequest {
+                idempotency_key: fresh_key(),
+                id: Some(pb::SessionId {
+                    value: session.as_str().to_owned(),
+                }),
+                machine: None,
+            })
+            .await
+            .map_err(|status| self.error(&status, "Restoring the session"))?
+            .into_inner();
+        self.finish(operation, "Restoring the session").await?;
+        Ok(())
+    }
+
+    /// Sets a session's pin or VIP mark on the host, the same marks the
+    /// sidebar's Pinned list reads.
+    async fn set_session_marks(
+        &self,
+        session: SessionId,
+        pinned: Option<bool>,
+        vip: Option<bool>,
+        what: &str,
+    ) -> Result<(), DaemonError> {
+        use pb::entity_ref::Entity;
+        pb::mark_service_client::MarkServiceClient::new(self.wire.clone())
+            .set_marks(pb::SetMarksRequest {
+                idempotency_key: fresh_key(),
+                entity: Some(pb::EntityRef {
+                    entity: Some(Entity::Session(pb::SessionId {
+                        value: session.as_str().to_owned(),
+                    })),
+                }),
+                pinned,
+                vip,
+            })
+            .await
+            .map_err(|status| self.error(&status, what))?;
+        Ok(())
     }
 
     async fn cancel_setup(&self, setup: SetupId) -> Result<(), DaemonError> {
@@ -665,17 +787,22 @@ impl Shared {
         })
     }
 
-    async fn send(&self, session: SessionId, text: String) -> Result<(), DaemonError> {
+    async fn send(
+        self: &Arc<Self>,
+        session: SessionId,
+        text: String,
+        key: Option<String>,
+    ) -> Result<(), DaemonError> {
         let id = pb::SessionId {
             value: session.as_str().to_owned(),
         };
         let tab = self.tab(&session, 0).await?;
         self.terminal()
             .r#type(pb::TypeRequest {
-                idempotency_key: fresh_key(),
+                idempotency_key: key.map_or_else(fresh_key, key_of),
                 session: Some(id),
                 tab: tab.id,
-                text: format!("{text}\r"),
+                text: message::typed(&text),
                 when: pb::type_request::When::Now as i32,
             })
             .await
@@ -738,10 +865,28 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.read_session_file(&session, &repo, &path).await })
     }
 
+    fn find_files(&self, session: &SessionId) -> Reply<Vec<humata2_clients::model::SessionFile>> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.find_session_files(&session).await })
+    }
+
     fn diffs(&self, session: &SessionId, base: &DiffBase) -> Reply<Vec<RepoDiff>> {
         let shared = self.shared.clone();
         let (session, base) = (session.clone(), base.clone());
         Box::pin(async move { shared.session_diffs(&session, &base).await })
+    }
+
+    fn bases(&self, session: &SessionId, repo: &str) -> Reply<RepoBases> {
+        let shared = self.shared.clone();
+        let (session, repo) = (session.clone(), repo.to_owned());
+        Box::pin(async move { shared.repo_bases(&session, &repo).await })
+    }
+
+    fn find_default_branch(&self, session: &SessionId, repo: &str) -> Reply<String> {
+        let shared = self.shared.clone();
+        let (session, repo) = (session.clone(), repo.to_owned());
+        Box::pin(async move { shared.find_default_branch(&session, &repo).await })
     }
 
     fn mark_reviewed(&self, session: &SessionId) -> Reply<()> {
@@ -761,7 +906,7 @@ impl Daemon for LiveDaemon {
         session: &SessionId,
         token: &str,
         choices: Vec<PushChoice>,
-    ) -> Reply<Option<u32>> {
+    ) -> Reply<Vec<humata2_clients::model::PushedPullRequest>> {
         let shared = self.shared.clone();
         let session = session.clone();
         let token = token.to_owned();
@@ -781,7 +926,13 @@ impl Daemon for LiveDaemon {
     fn send(&self, session: &SessionId, text: &str) -> Reply<()> {
         let shared = self.shared.clone();
         let (session, text) = (session.clone(), text.to_owned());
-        Box::pin(async move { shared.send(session, text).await })
+        Box::pin(async move { shared.send(session, text, None).await })
+    }
+
+    fn send_keyed(&self, session: &SessionId, text: &str, key: &str) -> Reply<()> {
+        let shared = self.shared.clone();
+        let (session, text, key) = (session.clone(), text.to_owned(), key.to_owned());
+        Box::pin(async move { shared.send(session, text, Some(key)).await })
     }
 
     fn answer(&self, request: &RequestId, answer: Answer) -> Reply<()> {
@@ -836,6 +987,35 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.move_session(session, to).await })
     }
 
+    fn continue_in_channel(
+        &self,
+        session: &SessionId,
+        channel: &ChannelId,
+        before_turn: Option<u32>,
+    ) -> Reply<SessionId> {
+        let shared = self.shared.clone();
+        let (session, channel) = (session.clone(), channel.clone());
+        Box::pin(async move { shared.continue_in_channel(session, channel, before_turn).await })
+    }
+
+    fn rename_session(&self, session: &SessionId, title: &str, rename_branch: bool) -> Reply<()> {
+        let shared = self.shared.clone();
+        let (session, title) = (session.clone(), title.to_owned());
+        Box::pin(async move { shared.rename_session(session, title, rename_branch).await })
+    }
+
+    fn add_repo_to_session(&self, session: &SessionId, repo: &str) -> Reply<()> {
+        let shared = self.shared.clone();
+        let (session, repo) = (session.clone(), repo.to_owned());
+        Box::pin(async move { shared.add_repo_to_session(session, repo).await })
+    }
+
+    fn stop_agent(&self, session: &SessionId) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.stop_session(session).await })
+    }
+
     fn plan_archive(&self, session: &SessionId) -> Reply<ArchivePlan> {
         let shared = self.shared.clone();
         let session = session.clone();
@@ -852,20 +1032,45 @@ impl Daemon for LiveDaemon {
         later("Adding a host")
     }
 
-    fn restore_session(&self, _session: &SessionId) -> Reply<()> {
-        later("Restoring a session")
+    fn restore_session(&self, session: &SessionId) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.restore_session(session).await })
     }
 
-    fn set_pinned(&self, _session: &SessionId, _pinned: bool) -> Reply<()> {
-        later("Pinning a session")
+    fn set_pinned(&self, session: &SessionId, pinned: bool) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move {
+            shared
+                .set_session_marks(session, Some(pinned), None, "Pinning the session")
+                .await
+        })
     }
 
-    fn set_vip(&self, _session: &SessionId, _vip: bool) -> Reply<()> {
-        later("Marking a session very important")
+    fn set_vip(&self, session: &SessionId, vip: bool) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move {
+            shared
+                .set_session_marks(session, None, Some(vip), "Marking the session very important")
+                .await
+        })
     }
 
-    fn mark_read(&self, _session: &SessionId) -> Reply<()> {
-        later("Marking a session read")
+    /// Views the session on the daemon, which clears its unread mark (D392).
+    /// A session that couldn't resume keeps its recovery until it is
+    /// resumed or started fresh: the daemon has no note to clear.
+    fn mark_read(&self, session: &SessionId) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.view(Some(&session)).await })
+    }
+
+    fn view(&self, session: Option<&SessionId>) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.cloned();
+        Box::pin(async move { shared.view(session.as_ref()).await })
     }
 
     fn create_session(
@@ -896,22 +1101,73 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.create_channel(name, repos, machines).await })
     }
 
+    fn add_repo_to_channel(&self, channel: &ChannelId, repo: &str) -> Reply<()> {
+        let shared = self.shared.clone();
+        let (channel, repo) = (channel.clone(), repo.to_owned());
+        Box::pin(async move { shared.add_repo_to_channel(channel, repo).await })
+    }
+
     fn github_repos(&self, query: &str) -> Reply<Vec<String>> {
         let shared = self.shared.clone();
         let query = query.to_owned();
         Box::pin(async move { shared.github_repos(query).await })
     }
 
-    fn move_item(&self, item: &ItemId, status: ItemStatus) -> Reply<()> {
+    // REPOS (RL-5): the repo library and the one repo search, over RepoService.
+    fn search_repos(
+        &self,
+        query: &str,
+        scope: Option<humata2_clients::repos::RepoScope>,
+    ) -> Reply<humata2_clients::repos::RepoSearch> {
         let shared = self.shared.clone();
-        let item = item.clone();
-        Box::pin(async move { shared.move_item(&item, status).await })
+        let query = query.to_owned();
+        Box::pin(async move { shared.search_repos(query, scope).await })
     }
 
-    fn create_item(&self, scope: Scope, title: &str) -> Reply<ItemId> {
+    fn repo_library(&self) -> Reply<Vec<humata2_clients::repos::LibraryRepo>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.repo_library().await })
+    }
+
+    fn remove_from_repo_library(&self, repo: &str) -> Reply<Vec<humata2_clients::repos::LibraryRepo>> {
+        let shared = self.shared.clone();
+        let repo = repo.to_owned();
+        Box::pin(async move { shared.remove_from_repo_library(&repo).await })
+    }
+
+    fn forget_repo_library(&self) -> Reply<u32> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.forget_repo_library().await })
+    }
+
+    fn repo_scope(&self) -> Reply<humata2_clients::repos::RepoScope> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.repo_scope().await })
+    }
+
+    fn save_repo_scope(
+        &self,
+        scope: humata2_clients::repos::RepoScope,
+    ) -> Reply<humata2_clients::repos::RepoScope> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.save_repo_scope(scope).await })
+    }
+
+    fn repo_owners(&self) -> Reply<Vec<String>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.repo_owners().await })
+    }
+
+    fn move_item(&self, item: &ItemId, status: ItemStatus, seen: Option<u64>) -> Reply<()> {
+        let shared = self.shared.clone();
+        let item = item.clone();
+        Box::pin(async move { shared.move_item(&item, status, seen).await })
+    }
+
+    fn create_item_in(&self, scope: Scope, title: &str, status: ItemStatus) -> Reply<ItemId> {
         let shared = self.shared.clone();
         let title = title.to_owned();
-        Box::pin(async move { shared.create_item(&scope, &title).await })
+        Box::pin(async move { shared.create_item(&scope, &title, status).await })
     }
 
     fn add_dependency(&self, item: &ItemId, on: &ItemId) -> Reply<()> {
@@ -972,5 +1228,15 @@ impl Daemon for LiveDaemon {
     fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool> {
         let shared = self.shared.clone();
         Box::pin(async move { shared.change_asks_in_inbox(inbox).await })
+    }
+
+    fn agent_switches(&self) -> Reply<Vec<AgentSwitch>> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.agent_switches().await })
+    }
+
+    fn set_agent_switch(&self, agent: Agent, change: SwitchChange) -> Reply<AgentSwitch> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.set_agent_switch(agent, change).await })
     }
 }

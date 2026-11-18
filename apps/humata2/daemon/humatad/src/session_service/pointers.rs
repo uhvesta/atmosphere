@@ -12,7 +12,7 @@
 //! host, which keeps the last report.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
@@ -31,12 +31,25 @@ use crate::channel_service::timestamp_ms;
 /// ticks while the machine is idle.
 const QUIET: Duration = Duration::from_millis(200);
 
+/// The most paths the watcher keeps for one session between two looks;
+/// past it the clone is listed again instead.
+const TOUCHED_MAX: usize = 20_000;
+
+/// What the watcher saw in a session's clones since the loop last looked.
+#[derive(Default)]
+struct Dirty {
+    /// The absolute paths notify named.
+    paths: HashSet<PathBuf>,
+    /// Events were lost (overflow, rescan or an error): list the clones again.
+    rescan: bool,
+}
+
 /// The last pointers of each session on this machine.
 #[derive(Default)]
 pub(super) struct Cache {
     shown: Mutex<HashMap<String, Vec<pb::Pointer>>>,
-    /// Sessions whose status changed since the loop last looked.
-    pending: Mutex<HashSet<String>>,
+    /// Sessions whose status or files changed since the loop last looked.
+    pending: Mutex<HashMap<String, Dirty>>,
     wake: Notify,
     /// What watches each live session's clones, so a commit, a branch move,
     /// a push or a file edit wakes a look at that session alone.
@@ -64,7 +77,33 @@ impl Cache {
 
     /// Asks for a look at `session` now.
     pub(super) fn poke(&self, session: &str) {
-        lock(&self.pending).insert(session.to_owned());
+        lock(&self.pending).entry(session.to_owned()).or_default();
+        self.wake.notify_one();
+    }
+
+    /// Notes what a clone's watcher said, and wakes a look unless it was a read.
+    fn touch(&self, session: &str, event: notify::Result<notify::Event>) {
+        {
+            let mut pending = lock(&self.pending);
+            let dirty = pending.entry(session.to_owned()).or_default();
+            match event {
+                // Reading a clone is not a change to it; git reads it to look.
+                Ok(event) if matches!(event.kind, EventKind::Access(_)) => return,
+                Ok(event) if !event.need_rescan() => {
+                    if !dirty.rescan {
+                        dirty.paths.extend(event.paths);
+                        if dirty.paths.len() > TOUCHED_MAX {
+                            dirty.paths.clear();
+                            dirty.rescan = true;
+                        }
+                    }
+                }
+                Ok(_) | Err(_) => {
+                    dirty.paths.clear();
+                    dirty.rescan = true;
+                }
+            }
+        }
         self.wake.notify_one();
     }
 
@@ -82,10 +121,7 @@ impl Cache {
                 let cache = Arc::clone(self);
                 let id = session.to_owned();
                 let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                    // Reading a clone is not a change to it; git reads it to look.
-                    if event.is_ok_and(|event| !matches!(event.kind, EventKind::Access(_))) {
-                        cache.poke(&id);
-                    }
+                    cache.touch(&id, event);
                 })
                 .ok()?;
                 watcher.watch(&repo.path, RecursiveMode::Recursive).ok()?;
@@ -144,11 +180,25 @@ pub(super) fn spawn(tell: Tell) {
     });
 }
 
+/// `path` as a clone's relative `/`-separated path; none for the clone
+/// itself or a path outside it. `canon` is the clone's real path, which is
+/// how some watchers name what they saw.
+fn inside(root: &Path, canon: Option<&Path>, path: &Path) -> Option<String> {
+    let rel = path
+        .strip_prefix(root)
+        .ok()
+        .or_else(|| canon.and_then(|canon| path.strip_prefix(canon).ok()))?;
+    let parts: Option<Vec<&str>> = rel.components().map(|part| part.as_os_str().to_str()).collect();
+    let joined = parts?.join("/");
+    (!joined.is_empty()).then_some(joined)
+}
+
 /// One pass over the live sessions, or over those of `only`.
-async fn look_at(tell: &Tell, only: Option<HashSet<String>>) {
+async fn look_at(tell: &Tell, only: Option<HashMap<String, Dirty>>) {
     let store = tell.store.clone();
     let machine = tell.machine.clone();
     let cache = tell.pointers.clone();
+    let file_changes = tell.file_changes.clone();
     let looked = spawn_blocking(move || -> Vec<(String, Vec<pb::Pointer>)> {
         let (Ok(agents), Ok(details), Ok(records)) =
             (store.agents(), store.session_details(), store.sessions())
@@ -170,7 +220,7 @@ async fn look_at(tell: &Tell, only: Option<HashSet<String>>) {
             .filter(|record| !remote::elsewhere(record, &machine))
             .map(|record| record.id.clone())
             .collect();
-        let wanted = |session: &str| only.as_ref().is_none_or(|only| only.contains(session));
+        let wanted = |session: &str| only.as_ref().is_none_or(|only| only.contains_key(session));
         let mut found = Vec::new();
         let mut watched = HashSet::new();
         for detail in details {
@@ -179,6 +229,31 @@ async fn look_at(tell: &Tell, only: Option<HashSet<String>>) {
             }
             cache.watch(&detail.session, &detail.repos);
             watched.insert(detail.session.clone());
+            // Bug 23: the watcher wakes this look on every file change in the
+            // clone, an agent's edits included. Only the paths it named are
+            // looked at; the clone is listed again only when events were lost
+            // or it has no list yet (the first pass, which names none).
+            let dirty = only.as_ref().and_then(|only| only.get(&detail.session));
+            for repo in &detail.repos {
+                let named = pb::RepoRef {
+                    owner: repo.owner.clone(),
+                    name: repo.name.clone(),
+                };
+                let canon = dirty
+                    .filter(|dirty| !dirty.paths.is_empty())
+                    .and_then(|_| repo.path.canonicalize().ok());
+                let touched: Vec<String> = dirty
+                    .map(|dirty| {
+                        dirty
+                            .paths
+                            .iter()
+                            .filter_map(|path| inside(&repo.path, canon.as_deref(), path))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let rescan = dirty.is_some_and(|dirty| dirty.rescan);
+                file_changes.look(&detail.session, &named, &repo.path, &touched, rescan);
+            }
             let pointers: Vec<pb::Pointer> = detail.repos.iter().filter_map(pointer).collect();
             found.push((detail.session, pointers));
         }
@@ -199,8 +274,12 @@ async fn look_at(tell: &Tell, only: Option<HashSet<String>>) {
     for (session, pointers) in looked {
         if tell.pointers.keep(&session, pointers) {
             tell.session(&session, pb::Change::Updated, None).await;
-            // The event just told is this change, not a status to look at.
-            lock(&tell.pointers.pending).remove(&session);
+            // The event just told is this change, not a status to look at; paths the
+            // watcher named since stay for the next look.
+            let mut pending = lock(&tell.pointers.pending);
+            if pending.get(&session).is_some_and(|dirty| dirty.paths.is_empty() && !dirty.rescan) {
+                pending.remove(&session);
+            }
         }
     }
 }
@@ -341,8 +420,7 @@ fn count(path: &Path, range: &str) -> u32 {
 /// Where a branch with no upstream is counted from: the remote's default
 /// branch as last fetched.
 fn default_base(path: &Path) -> String {
-    git(path, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
-        .filter(|name| !name.is_empty())
+    humata2_review_diff::origin_head(path)
         .or_else(|| {
             ["origin/main", "origin/master"].into_iter().find_map(|name| {
                 git(path, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/{name}")])

@@ -6,7 +6,6 @@
 //! two machines is not tried here; the daemon-level transfer tests cover it.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use humata2_app::{AppAction, Route};
 use humata2_clients::model::{ChannelId, MachineId, SessionId};
@@ -14,7 +13,7 @@ use humata2_clients::{EntryKind, FileRoot, Folder, TransferPhase};
 use humata2_files::{FilesAction, Side};
 use tokio::runtime::Runtime;
 
-use super::{App, DEADLINE, World, running_session, runtime, session_now};
+use super::{App, World, running_session, runtime, session_now};
 
 const REPO: &str = "owner/ledger";
 
@@ -58,24 +57,18 @@ fn find_folders(channels: &Path) -> (PathBuf, PathBuf) {
             .map(|entries| entries.flatten().map(|entry| entry.path()).collect())
             .unwrap_or_default()
     };
-    let until = Instant::now() + DEADLINE;
-    loop {
-        for channel in children(channels) {
-            for session in children(&channel.join("sessions")) {
-                let clone = session.join("ledger");
-                let shared = channel.join("shared");
-                if clone.join(".git").exists() && shared.is_dir() {
-                    return (shared, clone);
-                }
+    // The channel's folders come with the channel, and the clone before
+    // the agent launches (D441): one look is enough.
+    for channel in children(channels) {
+        for session in children(&channel.join("sessions")) {
+            let clone = session.join("ledger");
+            let shared = channel.join("shared");
+            if clone.join(".git").exists() && shared.is_dir() {
+                return (shared, clone);
             }
         }
-        assert!(
-            Instant::now() < until,
-            "the session's clone never appeared under {}",
-            channels.display()
-        );
-        std::thread::sleep(Duration::from_millis(50));
     }
+    panic!("the running session has no clone under {}", channels.display());
 }
 
 fn start(runtime: &Runtime) -> Scene<'_> {
@@ -200,10 +193,11 @@ fn the_files_page_copies_moves_renames_and_deletes_on_a_real_daemon() {
     // Copy README.md from the clone into shared/.
     files(app, FilesAction::Select(Side::Left, "README.md".to_owned(), false));
     files(app, FilesAction::Copy);
-    assert!(
-        app.ui.read(|state| !state.files.transfers.is_empty()),
-        "the copy has a tray row"
-    );
+    // The row comes from the daemon's transfer feed, which pushes after the
+    // start answers: settling can't wait for it, so wait for the row.
+    app.wait_until("the copy's tray row", |app| {
+        app.ui.read(|state| !state.files.transfers.is_empty())
+    });
     wait_transfers_done(app, 1);
     app.wait_until("the copy to be listed on the right", |app| {
         lists(app, Side::Right, "README.md")

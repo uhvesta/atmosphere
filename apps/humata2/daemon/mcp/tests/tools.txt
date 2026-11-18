@@ -16,6 +16,9 @@ channels_list
 comment_reply
 comment_resolve
 comments_list
+desk_session_move_to_channel
+doc_version_read
+doc_versions_list
 file_fetch
 file_read
 file_write
@@ -41,6 +44,9 @@ network_close
 network_connect
 operation_get
 pr_review_start
+repo_library
+repo_search
+review_commits
 review_context
 review_draft
 review_draft_drop
@@ -55,6 +61,7 @@ session_add_repo
 session_answer
 session_archive
 session_ask
+session_continue_in_channel
 session_delete
 session_drop_repo
 session_fork

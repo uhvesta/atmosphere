@@ -7,7 +7,8 @@ use humata2_cli::{exit, rpc};
 use humata2_proto::humata::v1 as pb;
 use pb::file_location::Root;
 use pb::write_file_message::Message as Part;
-use support::{FakeConsole, FakeDaemon, run};
+use humata2_cli::Environment;
+use support::{FakeConsole, FakeDaemon, run, run_as};
 
 // SHA-256 of "hello".
 const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
@@ -48,6 +49,72 @@ async fn a_session_location_names_machine_session_repo_and_path() {
             path: "src/lib".into(),
         })
     );
+}
+
+#[tokio::test]
+async fn a_folder_location_names_machine_session_and_path_with_no_repo() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "files", "ls", "ma_1:folder/se_1/notes"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+    let sent: pb::ListDirectoryRequest = daemon.only(rpc::files::LIST_DIRECTORY);
+    assert_eq!(
+        sent.location,
+        Some(pb::FileLocation {
+            machine: support::machine("ma_1"),
+            root: Some(Root::SessionFolder(pb::SessionFolder {
+                session: support::session("se_1"),
+            })),
+            path: "notes".into(),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_folder_location_without_a_session_is_refused() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(&daemon, &console, &["--json", "files", "ls", "ma_1:folder/"]).await;
+    assert_eq!(exit, exit::USAGE);
+    assert!(!daemon.called(rpc::files::LIST_DIRECTORY));
+}
+
+#[tokio::test]
+async fn a_received_location_names_the_machine_it_is_on_the_source_machine_and_the_path() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "files", "ls", "ma_1:received/ma_2/notes"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+    let sent: pb::ListDirectoryRequest = daemon.only(rpc::files::LIST_DIRECTORY);
+    assert_eq!(
+        sent.location,
+        Some(pb::FileLocation {
+            machine: support::machine("ma_1"),
+            root: Some(Root::Received(pb::MachineReceived {
+                from: support::machine("ma_2"),
+            })),
+            path: "notes".into(),
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_received_location_without_a_source_machine_is_refused() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(&daemon, &console, &["--json", "files", "ls", "ma_1:received/"]).await;
+    assert_eq!(exit, exit::USAGE);
+    assert!(!daemon.called(rpc::files::LIST_DIRECTORY));
 }
 
 #[tokio::test]
@@ -235,6 +302,370 @@ async fn cp_needs_a_source_and_a_destination() {
     let console = FakeConsole::pipe();
     let exit = run(&daemon, &console, &["--json", "cp", "ma_1:shared/a.txt"]).await;
     assert_eq!(exit, exit::USAGE);
+}
+
+/// NOPATH (PL-12): `humata cp|mv <location>… <machine>` places by PL-3.
+fn channel_on(machines: &[&str]) -> pb::Channel {
+    pb::Channel {
+        id: support::channel("ch_1"),
+        machines: machines.iter().map(|m| pb::MachineId { value: (*m).into() }).collect(),
+        ..Default::default()
+    }
+}
+
+fn shared_on(machine: &str, path: &str) -> Option<pb::FileLocation> {
+    Some(pb::FileLocation {
+        machine: support::machine(machine),
+        root: Some(Root::ChannelShared(pb::ChannelShared {
+            channel: support::channel("ch_1"),
+        })),
+        path: path.into(),
+    })
+}
+
+fn received_on(machine: &str, from: &str) -> Option<pb::FileLocation> {
+    Some(pb::FileLocation {
+        machine: support::machine(machine),
+        root: Some(Root::Received(pb::MachineReceived {
+            from: support::machine(from),
+        })),
+        path: String::new(),
+    })
+}
+
+#[tokio::test]
+async fn a_shared_file_sent_to_a_machine_of_the_channel_lands_in_its_shared_folder() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(rpc::channel::GET_CHANNEL, &channel_on(&["ma_1", "ma_2"]));
+    let console = FakeConsole::pipe();
+    let words = ["--json", "--channel", "ch_1", "cp", "ma_1:shared/a.txt", "ma_2"];
+    assert_eq!(run(&daemon, &console, &words).await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, shared_on("ma_2", ""));
+    assert_eq!(sent.on_existing, pb::OnExisting::KeepBoth as i32);
+}
+
+#[tokio::test]
+async fn a_sessions_file_lands_under_a_folder_named_for_the_session() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::session::LIST_SESSIONS,
+        &pb::ListSessionsResponse {
+            sessions: vec![pb::Session {
+                id: support::session("se_1"),
+                channel: support::channel("ch_1"),
+                machine: support::machine("ma_1"),
+                title: "Fix login".into(),
+                folder: "/home/me/Humata/payments/fix-login".into(),
+                ..Default::default()
+            }],
+            page: None,
+        },
+    );
+    daemon.reply(rpc::channel::GET_CHANNEL, &channel_on(&["ma_1", "ma_2"]));
+    let console = FakeConsole::pipe();
+    let words = ["--json", "mv", "ma_1:se_1/acme/web/notes.md", "ma_2"];
+    assert_eq!(run(&daemon, &console, &words).await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, shared_on("ma_2", "fix-login"));
+    assert_eq!(sent.mode, pb::TransferMode::Move as i32);
+}
+
+#[tokio::test]
+async fn a_machine_outside_the_channel_gets_it_in_its_received_place() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(rpc::channel::GET_CHANNEL, &channel_on(&["ma_1"]));
+    let console = FakeConsole::pipe();
+    let words = ["--json", "--channel", "ch_1", "cp", "ma_1:shared/a.txt", "ma_3"];
+    assert_eq!(run(&daemon, &console, &words).await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, received_on("ma_3", "ma_1"));
+}
+
+#[tokio::test]
+async fn sources_that_land_in_two_places_start_one_transfer_for_each() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(rpc::channel::GET_CHANNEL, &channel_on(&["ma_2"]));
+    let console = FakeConsole::pipe();
+    let words = [
+        "--json",
+        "--channel",
+        "ch_1",
+        "cp",
+        "ma_1:shared/a.txt",
+        "ma_1:received/ma_4/b.txt",
+        "ma_1:shared/c.txt",
+        "ma_2",
+    ];
+    assert_eq!(run(&daemon, &console, &words).await, exit::OK);
+    let sent: Vec<pb::StartTransferRequest> = daemon.sent(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].destination, shared_on("ma_2", ""));
+    assert_eq!(sent[0].sources.len(), 2);
+    assert_eq!(sent[1].destination, received_on("ma_2", "ma_1"));
+    assert_eq!(sent[1].sources.len(), 1);
+    assert_ne!(sent[0].idempotency_key, sent[1].idempotency_key);
+}
+
+#[tokio::test]
+async fn a_machine_only_send_keeps_an_on_existing_that_was_asked_for() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(rpc::channel::GET_CHANNEL, &channel_on(&["ma_2"]));
+    let console = FakeConsole::pipe();
+    let words = [
+        "--json",
+        "--channel",
+        "ch_1",
+        "cp",
+        "--on-existing",
+        "replace",
+        "ma_1:shared/a.txt",
+        "ma_2",
+    ];
+    assert_eq!(run(&daemon, &console, &words).await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.on_existing, pb::OnExisting::Replace as i32);
+}
+
+#[tokio::test]
+async fn a_send_to_a_location_still_fails_on_a_taken_name_unless_asked() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let words = ["--json", "--channel", "ch_1", "cp", "ma_1:shared/a.txt", "ma_2:shared/"];
+    assert_eq!(run(&daemon, &console, &words).await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.on_existing, pb::OnExisting::Fail as i32);
+    assert_eq!(sent.destination, shared_on("ma_2", ""));
+}
+
+#[tokio::test]
+async fn a_send_to_a_machine_nobody_has_starts_nothing() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let words = ["--json", "--channel", "ch_1", "cp", "ma_1:shared/a.txt", "nowhere"];
+    assert_eq!(run(&daemon, &console, &words).await, exit::NOT_FOUND);
+    assert!(!daemon.called(rpc::transfer::START_TRANSFER));
+}
+
+/// D756: an agent's last word of `cp|mv`, as session se_1 of channel ch_1
+/// with one clone, acme/api.
+fn agent_on_ch_1() -> FakeDaemon {
+    let daemon = FakeDaemon::new();
+    who_is_agent_on_ch_1(&daemon);
+    daemon
+}
+
+/// As [`agent_on_ch_1`], answering who the caller is for every location
+/// of a copy whose sources and destination are all in the agent's clone:
+/// each reply answers one call.
+fn agent_on_ch_1_for_clone_copies() -> FakeDaemon {
+    let daemon = FakeDaemon::new();
+    for _ in 0..4 {
+        who_is_agent_on_ch_1(&daemon);
+    }
+    daemon
+}
+
+fn who_is_agent_on_ch_1(daemon: &FakeDaemon) {
+    daemon.reply(
+        rpc::daemon::WHO_AM_I,
+        &pb::WhoAmIResponse {
+            actor: Some(pb::Actor {
+                actor: Some(pb::actor::Actor::Agent(pb::AgentActor {
+                    session: support::session("se_1"),
+                    ..Default::default()
+                })),
+            }),
+            channel: support::channel("ch_1"),
+            ..Default::default()
+        },
+    );
+    daemon.reply(
+        rpc::session::GET_SESSION,
+        &pb::Session {
+            id: support::session("se_1"),
+            repos: vec![pb::SessionRepo {
+                repo: Some(pb::RepoRef {
+                    owner: "acme".into(),
+                    name: "api".into(),
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+    );
+}
+
+/// Runs `humata --json --channel ch_1 cp ma_1:shared/a.txt <last>` as the
+/// agent, and gives its exit and what it printed.
+async fn agent_sends_to(daemon: &FakeDaemon, last: &str) -> (i32, String) {
+    let console = FakeConsole::pipe();
+    let environment = Environment {
+        session_token: Some("session-secret".into()),
+        ..Environment::default()
+    };
+    let words = ["--json", "--channel", "ch_1", "cp", "ma_1:shared/a.txt", last];
+    let exit = run_as(&environment, daemon, &console, &words).await;
+    (exit, console.stdout())
+}
+
+fn own_clone(path: &str) -> Option<pb::FileLocation> {
+    Some(pb::FileLocation {
+        machine: None,
+        root: Some(Root::SessionClone(pb::SessionClone {
+            session: support::session("se_1"),
+            repo: Some(pb::RepoRef {
+                owner: "acme".into(),
+                name: "api".into(),
+            }),
+        })),
+        path: path.into(),
+    })
+}
+
+#[tokio::test]
+async fn an_agents_bare_word_that_is_no_machine_it_sees_starts_nothing() {
+    let daemon = agent_on_ch_1();
+    let (exit, _) = agent_sends_to(&daemon, "vm-b").await;
+    assert_eq!(exit, exit::USAGE);
+    assert!(!daemon.called(rpc::transfer::START_TRANSFER));
+}
+
+#[tokio::test]
+async fn an_agents_dot_slash_word_lands_in_its_clone() {
+    let daemon = agent_on_ch_1();
+    assert_eq!(agent_sends_to(&daemon, "./vm-b").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_clone("vm-b"));
+}
+
+#[tokio::test]
+async fn an_agents_word_with_a_slash_lands_in_that_folder_of_its_clone() {
+    let daemon = agent_on_ch_1();
+    assert_eq!(agent_sends_to(&daemon, "vm-b/").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_clone("vm-b"));
+}
+
+#[tokio::test]
+async fn an_agents_dotted_word_lands_in_its_clone() {
+    let daemon = agent_on_ch_1();
+    assert_eq!(agent_sends_to(&daemon, "notes.md").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_clone("notes.md"));
+}
+
+/// Runs `humata --json cp note.txt <last>` as the agent, from its clone.
+async fn agent_copies_note_to(daemon: &FakeDaemon, last: &str) -> i32 {
+    let console = FakeConsole::pipe();
+    let environment = Environment {
+        session_token: Some("session-secret".into()),
+        ..Environment::default()
+    };
+    run_as(&environment, daemon, &console, &["--json", "cp", "note.txt", last]).await
+}
+
+#[tokio::test]
+async fn an_agents_copy_to_a_name_nothing_holds_makes_that_file() {
+    let daemon = agent_on_ch_1_for_clone_copies();
+    daemon.refuse(rpc::files::STAT, pb::error::Kind::NotFound(Default::default()));
+    assert_eq!(agent_copies_note_to(&daemon, "vm-b.txt").await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_clone(""));
+    assert_eq!(sent.name, "vm-b.txt");
+    assert_eq!(sent.sources, vec![own_clone("note.txt").unwrap()]);
+}
+
+#[tokio::test]
+async fn an_agents_copy_onto_a_file_names_that_file() {
+    let daemon = agent_on_ch_1_for_clone_copies();
+    daemon.reply(
+        rpc::files::STAT,
+        &pb::FileEntry {
+            location: own_clone("docs/old.txt"),
+            kind: pb::file_entry::Kind::File as i32,
+            ..Default::default()
+        },
+    );
+    assert_eq!(agent_copies_note_to(&daemon, "docs/old.txt").await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_clone("docs"));
+    assert_eq!(sent.name, "old.txt");
+}
+
+#[tokio::test]
+async fn an_agents_copy_into_a_folder_keeps_the_sources_name() {
+    let daemon = agent_on_ch_1_for_clone_copies();
+    daemon.reply(
+        rpc::files::STAT,
+        &pb::FileEntry {
+            location: own_clone("docs"),
+            kind: pb::file_entry::Kind::Folder as i32,
+            ..Default::default()
+        },
+    );
+    assert_eq!(agent_copies_note_to(&daemon, "./docs").await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, own_clone("docs"));
+    assert!(sent.name.is_empty());
+}
+
+#[tokio::test]
+async fn a_copy_of_two_sources_never_names_a_new_file() {
+    let daemon = agent_on_ch_1_for_clone_copies();
+    daemon.refuse(rpc::files::STAT, pb::error::Kind::NotFound(Default::default()));
+    let console = FakeConsole::pipe();
+    let environment = Environment {
+        session_token: Some("session-secret".into()),
+        ..Environment::default()
+    };
+    let words = ["--json", "cp", "a.txt", "b.txt", "out.d/"];
+    assert_eq!(run_as(&environment, &daemon, &console, &words).await, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert!(sent.name.is_empty());
+    assert!(!daemon.called(rpc::files::STAT));
+}
+
+#[tokio::test]
+async fn an_agents_word_naming_a_machine_it_sees_sends_there() {
+    let daemon = agent_on_ch_1();
+    daemon.reply(
+        rpc::machine::LIST_MACHINES,
+        &pb::ListMachinesResponse {
+            machines: vec![pb::Machine {
+                id: support::machine("ma_2"),
+                name: "vm-a".into(),
+                ..Default::default()
+            }],
+            page: None,
+        },
+    );
+    daemon.reply(rpc::channel::GET_CHANNEL, &channel_on(&["ma_1", "ma_2"]));
+    assert_eq!(agent_sends_to(&daemon, "vm-a").await.0, exit::OK);
+    let sent: pb::StartTransferRequest = daemon.only(rpc::transfer::START_TRANSFER);
+    assert_eq!(sent.destination, shared_on("ma_2", ""));
+}
+
+#[tokio::test]
+async fn an_agent_cant_tell_a_hidden_machine_from_no_machine() {
+    let nothing = agent_on_ch_1();
+    let hidden = agent_on_ch_1();
+    // The daemon lists only what the agent may see, but knows vm-b.
+    hidden.reply(
+        rpc::machine::GET_MACHINE,
+        &pb::MachineDetail {
+            machine: Some(pb::Machine {
+                id: support::machine("ma_9"),
+                name: "vm-b".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    let refused = agent_sends_to(&nothing, "vm-b").await;
+    assert_eq!(refused.0, exit::USAGE);
+    assert_eq!(agent_sends_to(&hidden, "vm-b").await, refused);
+    assert!(!hidden.called(rpc::transfer::START_TRANSFER));
 }
 
 /// The bytes a `files put` sent, decoded, and the codecs its chunks used.

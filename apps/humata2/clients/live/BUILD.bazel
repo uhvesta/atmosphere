@@ -9,7 +9,9 @@ rust_library(
     visibility = ["//apps/humata2/desktop:__subpackages__"],
     deps = [
         "//apps/humata2/clients",
+        "//apps/humata2/clients/terminal_link",
         "//apps/humata2/daemon/humatad:grpc",
+        "//apps/humata2/terminal/wire",
         "@crates//:http-body-util",
         "@crates//:hyper-util",
         "@crates//:prost",
@@ -45,6 +47,7 @@ rust_test(
     deps = [
         ":live",
         "//apps/humata2/clients",
+        "//apps/humata2/terminal/wire",
         "//libs/tca-rust:tca",
         "@crates//:serde_json",
         "@crates//:tempfile",
@@ -69,6 +72,7 @@ rust_test(
     deps = [
         ":live",
         "//apps/humata2/clients",
+        "//apps/humata2/terminal/wire",
         "//libs/tca-rust:tca",
         "@crates//:serde_json",
         "@crates//:tempfile",
@@ -251,6 +255,31 @@ rust_test(
     ],
 )
 
+# A shell tab across an app restart on a real humatad2 (admin build): the
+# same holder, the output printed meanwhile, typing only once synced.
+rust_test(
+    name = "term_restart_live_test",
+    srcs = ["tests/term_restart.rs"],
+    crate_root = "tests/term_restart.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "//apps/humata2/terminal/wire",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
 # Searching and reading conversations through the live client against a real humatad2 (admin build) and a Claude conversation file.
 rust_test(
     name = "history_live_test",
@@ -267,6 +296,55 @@ rust_test(
     deps = [
         ":live",
         "//apps/humata2/clients",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# Pasted pull requests through the live client against a real humatad2 (admin
+# build) and a fake gh: the same answers as the fake client, and each gh failure
+# as its own error (PR-1, PR-3).
+rust_test(
+    name = "pull_requests_live_test",
+    srcs = ["tests/pull_requests.rs"],
+    crate_root = "tests/pull_requests.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# The review chat through the live client against a real humatad2 (admin build)
+# in a review session: the reported view comes back, and the switches hold
+# (PR-22, PR-25).
+rust_test(
+    name = "review_chat_live_test",
+    srcs = ["tests/review_chat.rs"] + glob(["tests/support/*.rs"]),
+    crate_root = "tests/review_chat.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    },
+    deps = [
+        ":live",
+        "//apps/humata2/clients",
+        "//apps/humata2/terminal/wire",
+        "//libs/tca-rust:tca",
         "@crates//:serde_json",
         "@crates//:tempfile",
         "@crates//:tokio",

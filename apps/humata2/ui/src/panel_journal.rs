@@ -1,25 +1,22 @@
 //! The Journal panel: the session family's prepared views.
 use super::*;
+use crate::view_tab::{kind_words, state_words};
+use humata2_views::ViewsAction;
 
 pub(super) fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> Div {
     // VW-10: every view prepared in the session and its forks, newest
-    // first (the workspace lists them newest first).
-    let views: Vec<_> = state
+    // first (the daemon lists them newest first).
+    let family: Vec<SessionId> = state
         .session
         .open
         .as_ref()
         .map(|open| {
-            let family: Vec<&SessionId> = std::iter::once(open)
-                .chain(state.workspace.forks(open).map(|fork| &fork.id))
-                .collect();
-            state
-                .workspace
-                .views
-                .iter()
-                .filter(|view| family.contains(&&view.session))
+            std::iter::once(open.clone())
+                .chain(state.workspace.forks(open).map(|fork| fork.id.clone()))
                 .collect()
         })
         .unwrap_or_default();
+    let views = state.views.journal(&family);
     col()
         .size_full()
         .child(header(ui, Panel::Journal, full, None, look))
@@ -32,14 +29,18 @@ pub(super) fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> 
                 .gap(px(8.))
                 .p(px(10.))
                 .text_size(px(12.5))
-                .children(views.iter().map(|view| {
-                    let note = if view.note.is_empty() {
-                        view.prepared.clone()
-                    } else if view.prepared.is_empty() {
-                        view.note.clone()
-                    } else {
-                        format!("{} · {}", view.note, view.prepared)
-                    };
+                .children(views.iter().enumerate().map(|(n, record)| {
+                    let view = &record.view;
+                    let mut meta = vec![kind_words(&record.content).to_owned()];
+                    // Which session, for a fork.
+                    if state.session.open.as_ref() != Some(&view.session) {
+                        if let Some(owner) = state.workspace.session(&view.session) {
+                            meta.push(format!("in {}", owner.title));
+                        }
+                    }
+                    if !view.prepared.is_empty() {
+                        meta.push(view.prepared.clone());
+                    }
                     card(look)
                         .p(px(10.))
                         .gap(px(2.))
@@ -47,9 +48,27 @@ pub(super) fn journal(ui: &Rc<Ui>, state: &AppState, full: bool, look: Look) -> 
                             row()
                                 .gap(px(6.))
                                 .child(icon(IconName::Sparkles, 0xbf5af2, 12.))
-                                .child(text(view.title.clone()).font_weight(FontWeight::SEMIBOLD)),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(text(view.title.clone()).font_weight(FontWeight::SEMIBOLD)),
+                                )
+                                .child(secondary(look, state_words(record.state))),
                         )
-                        .when(!note.is_empty(), |card| card.child(secondary(look, note)))
+                        .child(secondary(look, meta.join(" · ")))
+                        .when(!view.note.is_empty(), |card| {
+                            card.child(secondary(look, view.note.clone()))
+                        })
+                        .child(
+                            row().justify_end().pt(px(4.)).child(widgets::push_quiet(
+                                ui,
+                                SharedString::from(format!("journal-open-{n}")),
+                                "Open",
+                                AppAction::Views(ViewsAction::Open(record.id.clone())),
+                                look,
+                            )),
+                        )
                 }))
                 .when(views.is_empty(), |list| {
                     list.child(secondary(

@@ -1,0 +1,118 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load(":linux.bzl", "linux_builds")
+
+# bazel run //tools/stack -- <command> turns the trailer-tagged commits on a
+# branch into a linked stack of GitHub PRs, through the gh CLI. `stack --help`
+# and `stack guide` document it; tools/skills/stack points agents here.
+# Crates come from the root Cargo workspace (@crates).
+rust_library(
+    name = "stack_cli",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    compile_data = [
+        "src/default_template.md",
+        "src/guide.md",
+    ],
+    crate_name = "stack_cli",
+    crate_root = "src/lib.rs",
+    deps = [
+        "//tools/stack/graph",
+        "@crates//:clap",
+        "@crates//:regex",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:toml",
+    ],
+)
+
+rust_binary(
+    name = "stack",
+    srcs = ["src/main.rs"],
+    # Humata 2 ships it to every machine in its tools bundle and app (D411).
+    visibility = [
+        "//apps/humata2/app:__pkg__",
+        "//apps/humata2/daemon/humatad:__pkg__",
+    ],
+    deps = [":stack_cli"],
+)
+
+# The static Linux builds, cross-built on any host: `bazel build //tools/stack:stack_linux`.
+linux_builds(
+    name = "stack_linux",
+    binary = ":stack",
+    file_name = "stack",
+    platforms = {
+        "//bazel/platforms:linux_arm64": "linux-aarch64",
+        "//bazel/platforms:linux_x86_64": "linux-x86_64",
+    },
+)
+
+rust_test(
+    name = "static_linux_test",
+    srcs = ["tests/static_linux.rs"],
+    data = [":stack_linux"],
+    env = {"STACK_LINUX": "$(rootpath :stack_linux)"},
+)
+
+rust_test(
+    name = "stack_cli_test",
+    crate = ":stack_cli",
+    deps = ["@crates//:tempfile"],
+)
+
+# A stand-in for gh: answers the calls stack makes from a JSON state file
+# ($FAKE_GH_STATE), so the tests never reach the network.
+rust_binary(
+    name = "fake_gh",
+    testonly = True,
+    srcs = ["tests/fake_gh.rs"],
+    deps = ["@crates//:serde_json"],
+)
+
+# One test binary per file: each runs the built `stack` in a scratch clone of
+# a local bare remote, with the fake gh on PATH.
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [
+            src,
+            "tests/support/mod.rs",
+        ],
+        crate_root = src,
+        data = [
+            ":fake_gh",
+            ":stack",
+        ],
+        env = {
+            "FAKE_GH": "$(rootpath :fake_gh)",
+            "STACK_BIN": "$(rootpath :stack)",
+        },
+        deps = [
+            "@crates//:serde_json",
+            "@crates//:tempfile",
+        ],
+    )
+    for src in [
+        "tests/check.rs",
+        "tests/config.rs",
+        "tests/diff.rs",
+        "tests/help.rs",
+        "tests/prefix.rs",
+        "tests/restack.rs",
+        "tests/status.rs",
+        "tests/upload.rs",
+    ]
+]
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "linux.bzl",
+    ],
+    tags = ["starlark"],
+)

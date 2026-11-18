@@ -4,7 +4,9 @@
 //! ends with the bytes the hook prints. Empty bytes are no decision, so the
 //! agent's own prompt asks: for a payload that isn't an ask, a card nobody
 //! answered in time, one that was withdrawn, or every ask while Settings ›
-//! Agents › Ask for permission in the Inbox is off (D199).
+//! Agents › Ask for permission in the Inbox is off (D199). The `question`
+//! event does the same for the agent's own ask-user form (D761): its card
+//! is an Inbox question, and the session needs you while it's held.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -21,7 +23,7 @@ use tonic::{Request, Response, Status};
 
 use super::{HooksError, SessionSvc};
 use crate::identity::{self, Caller};
-use crate::inbox::permission::{Ask, Decision};
+use crate::inbox::permission::{Ask, Decision, Question};
 use crate::status;
 
 pub(crate) type HookStream = ReceiverStream<Result<pb::HookReply, Status>>;
@@ -29,8 +31,10 @@ pub(crate) type HookStream = ReceiverStream<Result<pb::HookReply, Status>>;
 /// How often the stream says the card is still open.
 const KEEPALIVE: Duration = Duration::from_secs(15);
 
-/// The one event a hook holds the stream for.
+/// The events a hook holds the stream for: a permission ask, and the
+/// agent's own ask-user form (D761).
 const PERMISSION: &str = "permission";
+const QUESTION: &str = "question";
 
 impl SessionSvc {
     pub(super) async fn hook_of(
@@ -54,48 +58,104 @@ impl SessionSvc {
         self.inbox.hook_heard(&agent.agent).await;
         let request = request.into_inner();
         let (sender, receiver) = mpsc::channel(4);
-        let asked = (request.event == PERMISSION)
-            .then(|| Agent::parse(&request.agent))
-            .flatten()
-            .and_then(|kind| {
-                let ask = agent_hooks::parse_permission(kind, &request.payload).ok()?;
-                Some((kind, ask))
-            });
-        // Not an ask this daemon answers, or the user keeps asks in the
-        // agent's own prompt (D199): no decision, no card.
-        let asked = match asked {
-            Some(asked) if !self.inbox.asks_in_agent().await? => Some(asked),
+        let kind = Agent::parse(&request.agent);
+        let hooked = match (request.event.as_str(), kind) {
+            (PERMISSION, Some(kind)) => agent_hooks::parse_permission(kind, &request.payload)
+                .ok()
+                .map(|ask| Hooked::Permission(kind, ask)),
+            (QUESTION, Some(kind)) => agent_hooks::parse_question(kind, &request.payload)
+                .ok()
+                .map(|asked| Hooked::Question(kind, asked)),
             _ => None,
         };
-        let Some((kind, ask)) = asked else {
+        // Not an ask this daemon answers, or the user keeps asks in the
+        // agent's own prompt (D199): no decision, no card.
+        let hooked = match hooked {
+            Some(hooked) if !self.inbox.asks_in_agent().await? => Some(hooked),
+            _ => None,
+        };
+        let Some(hooked) = hooked else {
             let _ = sender.try_send(Ok(final_reply(Vec::new())));
             return Ok(Response::new(ReceiverStream::new(receiver)));
         };
-        let ask = Ask {
-            tool: ask.tool,
-            command: ask.command,
-            description: ask.description,
-            key: ask.key,
-        };
-        let wait = self
-            .inbox
-            .raise_permission(&caller, &agent, kind.name(), ask)
-            .await?;
-        tokio::spawn(async move {
-            let mut wait = wait;
-            hold(wait.decided(), kind, sender, DAEMON_HOLD).await;
-            // Lets go of the card: the last hook to let go withdraws it.
-            drop(wait);
-        });
+        match hooked {
+            Hooked::Permission(kind, ask) => {
+                let ask = Ask {
+                    tool: ask.tool,
+                    command: ask.command,
+                    description: ask.description,
+                    edits_files: ask.edits_files,
+                    key: ask.key,
+                };
+                let wait = self
+                    .inbox
+                    .raise_permission(&caller, &agent, kind.name(), ask)
+                    .await?;
+                tokio::spawn(async move {
+                    let mut wait = wait;
+                    let render = move |decision| permission_stdout(kind, decision);
+                    hold(wait.decided(), render, sender, DAEMON_HOLD).await;
+                    // Lets go of the card: the last hook to let go withdraws it.
+                    drop(wait);
+                });
+            }
+            Hooked::Question(kind, asked) => {
+                let asked = Question {
+                    question: asked.question,
+                    choices: asked.choices,
+                    key: asked.key,
+                    only_choices: false,
+                };
+                let wait = self.inbox.raise_question(&caller, &agent, asked).await?;
+                // The agent waits on the person while its form is held, so
+                // the session needs you until the card is settled (D761).
+                let asking = super::Asking::hold(&agent.session.id.to_string());
+                tokio::spawn(async move {
+                    let mut wait = wait;
+                    let render = move |decision| question_stdout(kind, decision);
+                    hold(wait.decided(), render, sender, DAEMON_HOLD).await;
+                    drop(asking);
+                    drop(wait);
+                });
+            }
+        }
         Ok(Response::new(ReceiverStream::new(receiver)))
     }
 }
 
+/// What a hook holds a card for.
+enum Hooked {
+    Permission(Agent, agent_hooks::Ask),
+    Question(Agent, agent_hooks::Question),
+}
+
+/// What `agent`'s permission hook prints for `decision`.
+fn permission_stdout(agent: Agent, decision: Decision) -> Vec<u8> {
+    let decision = match decision {
+        Decision::Allow => agent_hooks::Decision::Allow,
+        Decision::Deny { message } => agent_hooks::Decision::Deny { message },
+        // A permission card takes no reply.
+        Decision::Reply { .. } | Decision::Undecided => agent_hooks::Decision::Undecided,
+    };
+    agent_hooks::render_permission(agent, &decision)
+}
+
+/// What `agent`'s ask-user hook prints for `decision` (D761).
+fn question_stdout(agent: Agent, decision: Decision) -> Vec<u8> {
+    let reply = match decision {
+        Decision::Reply { text } => agent_hooks::Reply::Answer(text),
+        Decision::Deny { message } => agent_hooks::Reply::Declined { message },
+        // A question card takes no approval.
+        Decision::Allow | Decision::Undecided => agent_hooks::Reply::Undecided,
+    };
+    agent_hooks::render_question(agent, &reply)
+}
+
 /// Waits for `decided` until the hook lets go or `limit` passes, sending
-/// keepalives meanwhile; then sends what the hook prints.
+/// keepalives meanwhile; then sends what `render` says the hook prints.
 async fn hold(
     decided: impl Future<Output = Decision>,
-    agent: Agent,
+    render: impl FnOnce(Decision) -> Vec<u8>,
     sender: mpsc::Sender<Result<pb::HookReply, Status>>,
     limit: Duration,
 ) {
@@ -119,13 +179,7 @@ async fn hold(
             }
         }
     };
-    let decision = match decision {
-        Decision::Allow => agent_hooks::Decision::Allow,
-        Decision::Deny { message } => agent_hooks::Decision::Deny { message },
-        Decision::Undecided => agent_hooks::Decision::Undecided,
-    };
-    let stdout = agent_hooks::render_permission(agent, &decision);
-    let _ = sender.send(Ok(final_reply(stdout))).await;
+    let _ = sender.send(Ok(final_reply(render(decision)))).await;
 }
 
 /// Where Codex and Copilot find their hooks (D193): the value of Codex's
@@ -168,6 +222,36 @@ pub(crate) fn install_agent_hooks(
     })
 }
 
+/// Writes the MCP config files Claude Code and Copilot load Humata's own
+/// server from (D748) into `state`, for `humatad` (this daemon's binary,
+/// run as `mcp`) talking to `socket`, and says where each agent finds it:
+/// the files, and the value of Codex's `-c mcp_servers.humata=…`. At the
+/// daemon's start, before it serves. The files hold the command and the
+/// socket only; the session's token stays in each agent's environment.
+pub(crate) fn install_mcp_configs(
+    state: &Path,
+    humatad: &Path,
+    socket: &Path,
+) -> Result<humata2_sessions::HumataTools, HooksError> {
+    let claude_mcp = state.join("humata-mcp-claude.json");
+    let copilot_mcp = state.join("humata-mcp-copilot.json");
+    for (path, contents) in [
+        (&claude_mcp, agent_hooks::claude_mcp_config(humatad, socket)),
+        (&copilot_mcp, agent_hooks::copilot_mcp_config(humatad, socket)),
+    ] {
+        if std::fs::read(path).is_ok_and(|have| have == contents.as_bytes()) {
+            continue;
+        }
+        humata2_store::write_atomic(path, contents.as_bytes())
+            .map_err(|source| HooksError::Write { path: path.clone(), source })?;
+    }
+    Ok(humata2_sessions::HumataTools {
+        claude_mcp,
+        copilot_mcp,
+        codex_mcp: agent_hooks::codex_mcp(humatad, socket),
+    })
+}
+
 fn final_reply(stdout: Vec<u8>) -> pb::HookReply {
     pb::HookReply {
         keepalive: false,
@@ -195,6 +279,21 @@ mod tests {
         install_agent_hooks(state.path(), humata, &socket).expect("installed");
     }
 
+    #[test]
+    fn the_mcp_configs_are_written_into_the_state_folder_and_rewritten_alike() {
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let humatad = Path::new("/opt/humata/bin/humatad2");
+        let socket = state.path().join("humatad.sock");
+        let tools = install_mcp_configs(state.path(), humatad, &socket).expect("installed");
+        let read = |path: &Path| std::fs::read_to_string(path).expect("written");
+        assert!(tools.claude_mcp.starts_with(state.path()));
+        assert_eq!(read(&tools.claude_mcp), agent_hooks::claude_mcp_config(humatad, &socket));
+        assert_eq!(read(&tools.copilot_mcp), agent_hooks::copilot_mcp_config(humatad, &socket));
+        assert_eq!(tools.codex_mcp, agent_hooks::codex_mcp(humatad, &socket));
+        // Again at the next start: same files, no error.
+        install_mcp_configs(state.path(), humatad, &socket).expect("installed");
+    }
+
     /// The replies `hold` sends, keepalives first, until it ends.
     async fn replies(decided: impl Future<Output = Decision>, limit: Duration) -> Vec<pb::HookReply> {
         let (sender, mut receiver) = mpsc::channel::<Result<pb::HookReply, Status>>(8);
@@ -208,7 +307,7 @@ mod tests {
             }
             sent
         });
-        hold(decided, Agent::Claude, sender, limit).await;
+        hold(decided, |decision| permission_stdout(Agent::Claude, decision), sender, limit).await;
         held.await.expect("the reader ended")
     }
 

@@ -1,4 +1,4 @@
-"""tools_bundle: humatad2, humata2_holder and humata for every platform (TS-2).
+"""tools_bundle: humatad2, humata2_holder, humata and stack for every platform (TS-2).
 
 The bundle is one folder, the one `humatad2 serve --tools` reads:
 
@@ -6,6 +6,7 @@ The bundle is one folder, the one `humatad2 serve --tools` reads:
     <platform>/humatad2
     <platform>/humata2_holder
     <platform>/humata
+    <platform>/stack
 
 Platforms are named as `uname -sm` names them, lowercased (`darwin-arm64`,
 `linux-x86_64`, `linux-aarch64`), so the daemon finds a machine's files by
@@ -30,6 +31,7 @@ _FILES = {
     "holder": "humata2_holder",
     "humata": "humata",
     "humatad2": "humatad2",
+    "stack": "stack",
 }
 
 # Copies each build into the folder (a Mac build signed ad hoc, as the
@@ -100,5 +102,6 @@ tools_bundle = rule(
         "humatad2": attr.label(cfg = _split, mandatory = True),
         # Each platform to build for, with its name as `uname -sm` gives it.
         "platforms": attr.label_keyed_string_dict(mandatory = True),
+        "stack": attr.label(cfg = _split, mandatory = True),
     },
 )

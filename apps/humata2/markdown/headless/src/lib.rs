@@ -169,3 +169,45 @@ pub fn open(
     cx.run_until_parked();
     (window, pane)
 }
+
+/// An older gallery: the third list item and the last paragraph's wording
+/// came later, and a closing paragraph went away.
+#[must_use]
+pub fn older_gallery() -> String {
+    format!(
+        "{}\nA closing paragraph that went away.\n",
+        GALLERY.replace("- Third item\n", "").replace("The end.", "The finish.")
+    )
+}
+
+/// Comments on a passage, the table and the diagram, one whose passage is
+/// gone, and a diff against [`older_gallery`].
+pub fn annotate(view: &mut MarkdownView, cx: &mut Context<MarkdownView>) {
+    let document = view.document().clone();
+    let passage = "**strong**, *emphasis*";
+    let start = GALLERY.find(passage).expect("the gallery has the passage");
+    let on = |id: &str, selection: humata2_markdown::SourceSelection, body: &str| Comment {
+        id: id.into(),
+        anchor: Anchor::new(&document, &selection),
+        body: body.into(),
+    };
+    let text = document
+        .selection(start..start + passage.len(), "strong, emphasis")
+        .expect("the passage is in the gallery");
+    let table = document.block_selection(10).expect("block 11 is the table");
+    let diagram = document.block_selection(15).expect("block 16 is the diagram");
+    let old = humata2_markdown::Document::new("A passage that is long gone from the gallery.\n");
+    let gone = old.selection(2..9, "passage").expect("the old text has it");
+    let comments = vec![
+        on("c1", text, "Say which styles the parser keeps."),
+        on("c2", table, "Add a row for diagrams."),
+        on("c3", diagram, "Label the arrow."),
+        Comment {
+            id: "c4".into(),
+            anchor: Anchor::new(&old, &gone),
+            body: "This passage was removed.".into(),
+        },
+    ];
+    view.set_comments(comments, cx);
+    view.set_diff_base(Some(&older_gallery()), cx);
+}

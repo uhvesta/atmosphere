@@ -68,6 +68,7 @@ pub fn access(look: Look) -> Div {
         ("Start or fork sessions (same machine)", 1),
         ("Start or fork sessions on another machine", 1),
         ("Start a PR review", 1),
+        ("Move a Desk session into this channel", 1),
         ("Change its own session", 1),
         ("Stop, archive or delete its own session", 1),
         ("Move a session to another machine", 1),
@@ -76,7 +77,8 @@ pub fn access(look: Look) -> Div {
         ("Add, create, start or stop machines; sync skills", 1),
         ("Restore from trash", 1),
         ("Create a channel", 1),
-        ("Stop or delete any session but itself", 2),
+        ("Stop any session but itself", 1),
+        ("Delete any session but itself", 2),
         ("Change channel settings or repos", 2),
         ("Remove, forget or delete machines", 2),
     ];
@@ -96,6 +98,11 @@ pub fn access(look: Look) -> Div {
     let always = || div().text_color(c(look.tertiary)).child("Always · no setting");
     let mut rows = vec![row("Read and write its own clones", always())];
     for (text, default) in rules {
+        // D305: moving a Desk session in has no Allow.
+        if *text == "Move a Desk session into this channel" {
+            rows.push(row(text, segmented(look, &["Ask me", "Never"], 0)));
+            continue;
+        }
         rows.push(row(text, segmented(look, &["Allow", "Ask me", "Never"], *default)));
         if *text == "Draft PR review comments" {
             // D128.2: the daemon never checks this one, so it has no setting.

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::end::Entry;
-use crate::engine::{Mode, OnExisting, Problem, Snapshot, State};
+use crate::engine::{Landing, Mode, OnExisting, Problem, Snapshot, State};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Phase {
@@ -33,6 +33,9 @@ pub(crate) struct Top {
     /// Where it is read from; none for an upload.
     pub source: Option<PathBuf>,
     pub shown: String,
+    /// Where it landed; set while committing.
+    #[serde(default)]
+    pub landed: Landing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +106,7 @@ impl Record {
             version: self.version,
             caller_data: self.caller_data.clone(),
             upload: self.upload.is_some(),
+            landings: self.tops.iter().map(|t| t.landed.clone()).collect(),
         }
     }
 }

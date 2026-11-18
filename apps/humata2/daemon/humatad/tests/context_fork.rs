@@ -45,7 +45,12 @@ struct Fixture {
 
 /// How an agent that keys its conversations by folder names that folder.
 fn dashed(folder: &std::path::Path) -> String {
-    folder.display().to_string().replace(['/', '.'], "-")
+    folder
+        .display()
+        .to_string()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// Makes the world's agent keep each conversation at
@@ -103,6 +108,7 @@ impl Fixture {
             let mut agents: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&world.agents).unwrap()).unwrap();
             agents[0]["conversation_format"] = format.into();
+            agents[0]["version_args"] = serde_json::json!([]);
             std::fs::write(&world.agents, agents.to_string()).unwrap();
         }
         let args = world.args();
@@ -152,6 +158,7 @@ impl Fixture {
             model: String::new(),
             machine: None,
             branch: String::new(),
+            reason: String::new(),
         }
     }
 
@@ -306,6 +313,7 @@ async fn a_context_only_fork_carries_the_conversation_and_works_in_the_parents_c
             idempotency_key: None,
             session: fork.id.clone(),
             repo: Some(common::repo_ref("acme", "nope")),
+            folder: String::new(),
         })
         .await
         .unwrap_err();
@@ -320,6 +328,7 @@ async fn a_context_only_fork_carries_the_conversation_and_works_in_the_parents_c
             idempotency_key: None,
             session: fork.id.clone(),
             repo: Some(common::repo_ref("acme", "api")),
+            folder: String::new(),
         })
         .await
         .unwrap()

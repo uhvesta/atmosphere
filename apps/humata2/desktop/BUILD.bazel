@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//apps/humata2/testing:defs.bzl", "humata2_snapshot_test")
 
 # Humata 2's desktop app, on fake clients until the real daemon is wired in.
@@ -15,9 +16,12 @@ rust_binary(
         "//apps/humata2/clients/live",
         "//apps/humata2/desktop/install",
         "//apps/humata2/engine",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/inbox",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",
         "@crates//:gpui-kit",
+        "@crates//:notify",
         "@crates//:thiserror",
         "@crates//:tokio",
     ],
@@ -38,12 +42,23 @@ rust_binary(
         "//apps/humata2/clients/live",
         "//apps/humata2/desktop/install",
         "//apps/humata2/engine",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/inbox",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",
         "@crates//:gpui-kit",
+        "@crates//:notify",
         "@crates//:thiserror",
         "@crates//:tokio",
     ],
+)
+
+# The app crate's own unit tests (src/*.rs `#[cfg(test)]` modules): where
+# state is kept, which bundled tools are found, the starting screen.
+rust_test(
+    name = "unit_test",
+    crate = ":humata2",
+    target_compatible_with = ["@platforms//os:macos"],
 )
 
 # LOOK2: each native capture of frames 18–35 matches its design golden on
@@ -111,6 +126,24 @@ humata2_snapshot_test(
     ],
 )
 
+# IN-10, D467: an agent's cross-machine copy as one Inbox card.
+humata2_snapshot_test(
+    name = "inbox_copy_test",
+    srcs = ["tests/inbox_copy.rs"],
+    compile_data = ["Cargo.toml"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/session",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
 # The design goldens: what the UI should look like (D76). Record with
 # `bazel run //apps/humata2/desktop:design_test_record`.
 humata2_snapshot_test(
@@ -141,11 +174,33 @@ humata2_snapshot_test(
         "//apps/humata2/features/desk",
         "//apps/humata2/features/hosts",
         "//apps/humata2/features/palette",
+        "//apps/humata2/features/pr_review",
         "//apps/humata2/features/review",
         "//apps/humata2/features/session",
         "//apps/humata2/features/settings",
         "//apps/humata2/features/sidebar",
         "//apps/humata2/testing/snapshot",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
+# A session's terminals draw through the reusable replica, fed by each tab's
+# link (TERM task 5): the screen, the fitted grid, and typing.
+rust_test(
+    name = "terminal_replica_test",
+    srcs = ["tests/terminal_replica.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/terminal_replica.rs",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/session",
+        "//apps/humata2/testing/flow",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",
         "@crates//:gpui-kit",
@@ -175,6 +230,48 @@ rust_test(
     ],
 )
 
+# The Files page as a person uses it (FM, PL-5): two panes, Copy to ▸ a
+# machine lands by rule, Somewhere specific… into the other pane's folder.
+rust_test(
+    name = "files_page_test",
+    srcs = ["tests/files_page.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/files_page.rs",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/files",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
+# A file manager row's menu (PL-10): Copy path, Reveal in Finder on This Mac,
+# Open terminal here on another machine, on the fake clipboard and Finder.
+rust_test(
+    name = "files_row_menu_test",
+    srcs = ["tests/files_row_menu.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/files_row_menu.rs",
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/files",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
 # Add machine and a machine's page as a person does them, on the fake machines
 # client (MACH; HO-1, HO-2, HO-4, HO-5, MP-12 to MP-17, SK-5).
 rust_test(
@@ -196,41 +293,203 @@ rust_test(
     ],
 )
 
-# The app on a real humatad2 (FL T8b): a session made through the UI, a
-# reboot that brings it back, and a lost conversation shown as recoverable.
+# Settings › Machines › Change… as a person does it: type the folder, Plan, choose
+# (PL-1, FC-10, ST-5).
 rust_test(
-    name = "live_flows_test",
-    size = "large",
-    srcs = ["tests/live_flows.rs"] + glob(["tests/live_flows/*.rs"]),
+    name = "root_change_test",
+    srcs = ["tests/root_change.rs"],
     compile_data = ["Cargo.toml"],
-    crate_root = "tests/live_flows.rs",
-    data = [
-        "//apps/humata2/daemon/humatad:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_admin",
-    ],
-    env = {
-        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
-    },
-    # Starts real daemons and holders, so it runs alone.
-    tags = ["exclusive"],
+    crate_root = "tests/root_change.rs",
     target_compatible_with = ["@platforms//os:macos"],
     deps = [
         "//apps/humata2/clients",
-        "//apps/humata2/clients/live",
         "//apps/humata2/engine:engine_test_support",
         "//apps/humata2/features/app",
-        "//apps/humata2/features/files",
-        "//apps/humata2/features/review",
-        "//apps/humata2/features/session",
         "//apps/humata2/testing/flow",
         "//apps/humata2/ui",
         "//libs/tca-rust:tca",
         "@crates//:gpui-kit",
+        "@crates//:tokio",
+    ],
+)
+
+# What the live flow cases run: humata, the holder, both humatad2 builds
+# and setsid, by the environment variables the cases read them from.
+LIVE_FLOWS_DATA = [
+    "//apps/humata2/cli:humata",
+    "//apps/humata2/daemon/humatad:holder_for_clients",
+    # SEAM (D397): devbox-1's own machine-role daemon (live_flows/away_box.rs).
+    "//apps/humata2/daemon/humatad:humatad2",
+    "//apps/humata2/daemon/humatad:humatad2_admin",
+    # SEAM: the multi-machine rig's fake ssh runs each link under setsid.
+    "//apps/humata2/daemon/humatad:setsid",
+]
+
+LIVE_FLOWS_ENV = {
+    "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
+    "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+    "HUMATA2_SETSID": "$(rootpath //apps/humata2/daemon/humatad:setsid)",
+    "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+    "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
+}
+
+# The app on a real humatad2 (FL T8b): a session made through the UI, a
+# reboot that brings it back, and a lost conversation shown as recoverable.
+# The cases themselves; live_flows_test runs them in shards.
+rust_test(
+    name = "live_flows_cases",
+    size = "large",
+    srcs = ["tests/live_flows.rs"] + glob(["tests/live_flows/*.rs"]),
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/live_flows.rs",
+    data = LIVE_FLOWS_DATA,
+    env = LIVE_FLOWS_ENV,
+    # Run through live_flows_test.
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/daemon/humatad:grpc",
+        # SEAM: a host and boxes in one test (live_flows/remote.rs).
+        "//apps/humata2/daemon/humatad:remote_rig",
+        # SEAM (D397): devbox-1, a fake machine behind a fake ssh.
+        "//apps/humata2/daemon/machines:fake_machine",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/board",
+        "//apps/humata2/features/desk",
+        "//apps/humata2/features/files",
+        "//apps/humata2/features/hosts",
+        # SEAM: flow 26.17 drives the review dialog, follower, Submit and notices.
+        "//apps/humata2/features/pr_review",
+        "//apps/humata2/features/review",
+        "//apps/humata2/features/session",
+        "//apps/humata2/features/views",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:hyper-util",
+        "@crates//:rustix",
         "@crates//:serde_json",
+        "@crates//:sha2",
         "@crates//:tempfile",
         "@crates//:thiserror",
         "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
+    ],
+)
+
+# The live flow cases in shards that run side by side and beside other
+# tests. Each case has its own world: its own folders under /tmp, its own
+# daemon socket and no TCP port, and it ends only the processes started from
+# its folders. A case past its limit has its world ended
+# (live_flows/leftovers.rs), so a hang fails that case, not the run.
+# RUST_TEST_THREADS keeps the shards together near the machine's cores.
+sh_test(
+    name = "live_flows_test",
+    size = "large",
+    srcs = ["tests/live_flows_shard.sh"],
+    data = [":live_flows_cases"] + LIVE_FLOWS_DATA,
+    env = dict(
+        LIVE_FLOWS_ENV,
+        LIVE_FLOWS_CASES = "$(rootpath :live_flows_cases)",
+        RUST_TEST_THREADS = "4",
+    ),
+    shard_count = 3,
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+# The shard script on a stand-in case binary (tests/live_flows_shard_test.sh):
+# a case hung past its grace fails alone, and the cases that hadn't ended
+# run again without it (D759).
+sh_test(
+    name = "live_flows_shard_test",
+    srcs = ["tests/live_flows_shard_test.sh"],
+    data = ["tests/live_flows_shard.sh"],
+    env = {"LIVE_FLOWS_SHARD": "$(rootpath tests/live_flows_shard.sh)"},
+)
+
+# SSHE2E (D690): the app's whole path to a real shell on the shared Lima VM
+# h2-terminal-c1: the app on live clients, this Mac's humatad2, real ssh,
+# humatad2 --role machine and its holder on the VM, installed by the host's
+# own Add machine from the real linux-aarch64 tools. Only `real_vm::` tests
+# run. They skip unless TERMINAL_LAB_SSH_CONFIG is given:
+#   ./terminal-ssh-demo.sh start
+#   bazel test //apps/humata2/desktop:live_flows_ssh_test \
+#     --test_env=TERMINAL_LAB_SSH_CONFIG="$HOME/.lima/h2-terminal-c1/ssh.config"
+# Each test makes and removes its own throwaway user on the VM (D691).
+rust_test(
+    name = "live_flows_ssh_test",
+    size = "large",
+    srcs = ["tests/live_flows.rs"] + glob(["tests/live_flows/*.rs"]),
+    # Only the real-VM tests, one at a time: the VM has 0.75 GiB.
+    args = [
+        "real_vm::",
+        "--test-threads=1",
+    ],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/live_flows.rs",
+    data = [
+        "//apps/humata2/cli:humata",
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        # SEAM (D397): devbox-1's own machine-role daemon (live_flows/away_box.rs).
+        "//apps/humata2/daemon/humatad:humatad2",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+        # SEAM: the multi-machine rig's fake ssh runs each link under setsid.
+        "//apps/humata2/daemon/humatad:setsid",
+        # The real tools the host installs on the VM (linux-aarch64).
+        "//apps/humata2/daemon/humatad:tools",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATA2_SETSID": "$(rootpath //apps/humata2/daemon/humatad:setsid)",
+        "HUMATA2_TOOLS": "$(rootpath //apps/humata2/daemon/humatad:tools)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
+    },
+    # Starts real daemons and holders, so it runs alone.
+    tags = [
+        "exclusive",
+        "external",
+        "manual",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/daemon/humatad:grpc",
+        # SEAM: a host and boxes in one test (live_flows/remote.rs).
+        "//apps/humata2/daemon/humatad:remote_rig",
+        # SEAM (D397): devbox-1, a fake machine behind a fake ssh.
+        "//apps/humata2/daemon/machines:fake_machine",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/features/board",
+        "//apps/humata2/features/desk",
+        "//apps/humata2/features/files",
+        "//apps/humata2/features/hosts",
+        # SEAM: flow 26.17 drives the review dialog, follower, Submit and notices.
+        "//apps/humata2/features/pr_review",
+        "//apps/humata2/features/review",
+        "//apps/humata2/features/session",
+        "//apps/humata2/features/views",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:hyper-util",
+        "@crates//:rustix",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:tempfile",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:tower",
     ],
 )
 
@@ -269,6 +528,46 @@ rust_test(
         "@crates//:serde_json",
         "@crates//:tempfile",
         "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+# The machines dialog against a real humatad2 with real LiveMachines and a
+# fake machine behind a fake `ssh`: add, the new-session picker, offline.
+rust_test(
+    name = "live_machines_test",
+    size = "large",
+    # Adds machines and clones a repo onto one; more than the large default.
+    timeout = "long",
+    srcs = ["tests/live_machines.rs"],
+    compile_data = ["Cargo.toml"],
+    crate_root = "tests/live_machines.rs",
+    data = [
+        "//apps/humata2/daemon/humatad:holder_for_clients",
+        "//apps/humata2/daemon/humatad:humatad2",
+        "//apps/humata2/daemon/humatad:humatad2_admin",
+    ],
+    env = {
+        "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/humatad:holder_for_clients)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_admin)",
+        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2)",
+    },
+    # Starts a real daemon and a fake machine's daemon, so it runs alone.
+    tags = ["exclusive"],
+    target_compatible_with = ["@platforms//os:macos"],
+    deps = [
+        "//apps/humata2/clients",
+        "//apps/humata2/clients/live",
+        "//apps/humata2/daemon/machines:fake_machine",
+        "//apps/humata2/engine:engine_test_support",
+        "//apps/humata2/features/app",
+        "//apps/humata2/testing/flow",
+        "//apps/humata2/ui",
+        "//libs/tca-rust:tca",
+        "@crates//:gpui-kit",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:tempfile",
         "@crates//:tokio",
     ],
 )

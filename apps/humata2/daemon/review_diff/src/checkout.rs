@@ -141,7 +141,7 @@ impl Checkout {
                 self.tree_of(rev)
             }
             Base::Snapshot { n: None } if self.never_reviewed(context)? => {
-                self.base_tree(&unreviewed_base(), context)
+                self.base_tree(&self.unreviewed_base()?, context)
             }
             Base::Snapshot { n } => {
                 let snapshot = self.snapshot_ref(&context.session, *n)?;
@@ -304,7 +304,7 @@ impl Checkout {
     ) -> Result<RepoDiff, DiffError> {
         let label = if spec.base == (Base::Snapshot { n: None }) && self.never_reviewed(context)? {
             let since = RepoSpec {
-                base: unreviewed_base(),
+                base: self.unreviewed_base()?,
                 ..spec.clone()
             };
             format!("not reviewed yet: {}", crate::diff::label(&since))
@@ -340,6 +340,33 @@ impl Scratch {
     }
 }
 
+pub use humata2_git_head::origin_head;
+
+fn origin_head_in(git: &Git) -> Option<String> {
+    humata2_git_head::origin_head_with(git.program(), git.workdir())
+}
+
+impl Checkout {
+    /// This clone's default branch, which the default preset compares with
+    /// (B5): `origin/HEAD`'s branch, or `origin/main` when `origin/HEAD` isn't
+    /// set and `origin/main` exists.
+    ///
+    /// # Errors
+    ///
+    /// [`DiffError::NoDefaultBranch`] when neither is set; git's errors.
+    pub(crate) fn default_base_blocking(&self) -> Result<String, DiffError> {
+        if let Some(head) = origin_head_in(&self.git) {
+            return Ok(head);
+        }
+        if self.git.resolve("origin/main^{commit}")?.is_some() {
+            return Ok("origin/main".to_owned());
+        }
+        Err(DiffError::NoDefaultBranch {
+            repo: self.path().to_owned(),
+        })
+    }
+}
+
 fn absolute(base: &Path, path: &str) -> PathBuf {
     let path = Path::new(path);
     if path.is_absolute() {
@@ -349,19 +376,26 @@ fn absolute(base: &Path, path: &str) -> PathBuf {
     }
 }
 
-/// Where "Since I last reviewed" starts in a repo never reviewed (D198).
-fn unreviewed_base() -> Base {
-    Base::MergeBase {
-        with: "origin/main".to_owned(),
-    }
-}
-
 impl Checkout {
-    /// Whether this session has no snapshot of the repo yet while
-    /// origin/main resolves, so "Since I last reviewed" shows everything
-    /// since origin/main (D198). Without origin/main the refusal stands.
+    /// Where "Since I last reviewed" starts in a repo never reviewed (D198,
+    /// B5): the repo's default branch.
+    fn unreviewed_base(&self) -> Result<Base, DiffError> {
+        Ok(Base::MergeBase {
+            with: self.default_base_blocking()?,
+        })
+    }
+
+    /// Whether this session has no snapshot of the repo yet and the repo has
+    /// a default branch, so "Since I last reviewed" shows everything since
+    /// that branch (D198). Without one the refusal stands.
     fn never_reviewed(&self, context: &BaseContext) -> Result<bool, DiffError> {
-        Ok(self.snapshots_blocking(&context.session)?.is_empty()
-            && self.git.resolve("origin/main^{commit}")?.is_some())
+        if !self.snapshots_blocking(&context.session)?.is_empty() {
+            return Ok(false);
+        }
+        match self.default_base_blocking() {
+            Ok(_) => Ok(true),
+            Err(DiffError::NoDefaultBranch { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 }

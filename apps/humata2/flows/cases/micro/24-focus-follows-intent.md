@@ -72,7 +72,7 @@ Layer: micro. Platforms: macOS (⌘ keys) first; Linux and web where the focus c
 - **I see (expected):** the page leaves the archived session, and my keys do not go to its terminal.
 - **I see (code):** the session page stays up.
 - **Expected outcome:** the session page leaves; keys reach no terminal of the archived session; focus lands on Home or the sidebar.
-- **Status:** Likely bug. `features/session/src/lib.rs:270-271` defines `Delegate::Left` ("leave its page") and nothing constructs it. A refreshed workspace arrives through `SessionAction::Show` (`features/session/src/lib.rs:738-739`) or `SessionAction::Snapshot` (`features/session/src/lib.rs:806-808`), and neither clears `state.open` for an archived session. Only the local archive path clears it (`features/session/src/lib.rs:1530-1531`). To confirm: archive the open session from a second client and see whether the page leaves.
+- **Status:** Works (real daemon): `desktop/tests/live_flows/lifecycle.rs::a_session_archived_from_another_window_closes_its_page_here` archives the open session through a second client of the daemon, and the page closes. The reducer side is `features/app/tests/nav_bugs.rs::a_session_archived_in_another_window_closes_its_page_here`. (Was a likely bug: no refresh cleared the open page; fixed by BUGS.)
 
 ## Expected outcomes
 
@@ -101,12 +101,12 @@ Layer: micro. Platforms: macOS (⌘ keys) first; Linux and web where the focus c
 | 7. Focus report to a program that asked | Fakes only | `terminal/pane/tests/pane.rs::programs_that_ask_are_told_when_the_pane_gains_and_loses_focus` |
 | Branch: toast appears | Code, no test | `ui/src/overlay_toasts.rs`; `ui/src/overlays.rs:288` |
 | Branch: Inbox request arrives | Code, no test | `features/app/src/route.rs`; `desktop/tests/live_inbox.rs` (`focus: false` only) |
-| Branch: session archived elsewhere | Likely bug | `features/session/src/lib.rs:270-271, 738-739, 806-808` |
+| Branch: session archived elsewhere | Works (real daemon) | `desktop/tests/live_flows/lifecycle.rs::a_session_archived_from_another_window_closes_its_page_here`; `features/app/tests/nav_bugs.rs::a_session_archived_in_another_window_closes_its_page_here` |
 
 ## Gaps and likely bugs
 
-- Likely bug: `features/session/src/lib.rs:270-271` defines `Delegate::Left` but nothing sends it. A session archived elsewhere keeps its page open (see the branch above). Confirm by archiving the open session from a second client.
-- Likely bug (latent, not confirmed by a run): `ui/src/shell.rs:278-282` decides when the terminal may take focus. It checks `state.overlays`, the fork, move, archive and rename state, but not the Desk sheet (`ui/src/overlay_desk.rs:110-112`, `state.desk.sheet_open()`) or the Add machine dialog (`state.add_machine.open`). If the terminal target changes while one of those is open, the shell can move focus into the terminal and away from the dialog. Confirm by opening one of those dialogs and forcing a change of the selected terminal tab from outside the dialog.
+- Fixed (was a likely bug): a session archived elsewhere now closes its page here. See the branch above.
+- Fixed (was a latent likely bug): the Desk sheet and the Add machine dialog keep the keys from a terminal whose target changes: `features/app/tests/key_bugs.rs::a_desk_dialog_or_add_machine_holds_the_keys_from_a_terminal` (fakes).
 - Code, no test: focus back after the Fork and Move dialogs, and focus after a window is switched away and back.
 - Fakes only: the new-session and split tests check the fake daemon's bytes and `focused_group`, not a real shell. Only the lab test (terminal/lab/tests/app.rs) runs real shells, and it covers the non-terminal field case, not palette or dialog returns.
 - Not built: none found for this case. The focus report is built and tested only with a recording PTY.

@@ -263,8 +263,10 @@ impl World {
             .unwrap_or_else(|error| panic!("make the item {title:?}: {error}"))
     }
 
+    /// A move that checks nothing, as someone who hasn't read the item first
+    /// (an agent, another window) makes it.
     async fn move_item(&self, item: &ItemId, status: ItemStatus) {
-        within("move_item", self.daemon.move_item(item, status))
+        within("move_item", self.daemon.move_item(item, status, None))
             .await
             .unwrap_or_else(|error| panic!("move {item} to {status:?}: {error}"));
     }
@@ -340,6 +342,40 @@ async fn a_moved_item_is_in_its_new_column_on_the_next_load() {
 
     world.move_item(&id, ItemStatus::Done).await;
 
+    assert_eq!(listed(&world.load().await, &id).status, ItemStatus::Done);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_move_from_an_old_copy_is_refused_as_a_conflict_until_the_item_is_read_again() {
+    let world = World::start().await;
+    let (channel, _, _) = world.channel().await;
+    let id = world
+        .create_item(Scope::Channel(channel), "Retry failed charges")
+        .await;
+    let old = listed(&world.load().await, &id).clone();
+
+    // Someone else moves it after this copy was read.
+    world.move_item(&id, ItemStatus::InProgress).await;
+
+    let refused = within(
+        "move_item",
+        world.daemon.move_item(&id, ItemStatus::Done, Some(old.revision)),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(DaemonError::Conflict { .. })),
+        "a move from the old copy is a conflict, got {refused:?}"
+    );
+    let current = listed(&world.load().await, &id).clone();
+    assert_eq!(current.status, ItemStatus::InProgress, "the other move stands");
+    assert!(current.revision > old.revision, "the item's revision went up");
+
+    within(
+        "move_item",
+        world.daemon.move_item(&id, ItemStatus::Done, Some(current.revision)),
+    )
+    .await
+    .expect("a move from the current copy lands");
     assert_eq!(listed(&world.load().await, &id).status, ItemStatus::Done);
 }
 

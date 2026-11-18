@@ -20,6 +20,7 @@ faults = ["humata2-durable/faults"]
 
 [dependencies]
 humata2-chunk = { path = "../../chunk" }
+humata2-conversation = { path = "../conversation" }
 humata2-durable = { workspace = true }
 prost = { workspace = true }
 rusqlite = { workspace = true }

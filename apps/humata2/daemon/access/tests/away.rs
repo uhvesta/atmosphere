@@ -253,8 +253,10 @@ fn some_kinds_can_never_be_low_risk() {
         Capability::NetworkReach,
         // Typing into a session runs anything.
         Capability::SessionType,
-        // Never by default.
+        // Ending another session's work.
         Capability::SessionStopOther,
+        // Never by default.
+        Capability::SessionDeleteOther,
         // Needs the Mac.
         Capability::FilesReadOtherMachine,
         Capability::GitPush,

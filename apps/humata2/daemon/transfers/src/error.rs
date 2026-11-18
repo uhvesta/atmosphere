@@ -186,6 +186,9 @@ pub enum TransferError {
     #[error("a transfer needs at least one source; pick something to copy or move")]
     NoSources,
 
+    #[error("a new name is for one source, and {count} were given; they can't all land under it")]
+    NameNeedsOneSource { count: usize },
+
     #[error(
         "transfer {id} is too far along to change: it is finished or already putting files in place"
     )]

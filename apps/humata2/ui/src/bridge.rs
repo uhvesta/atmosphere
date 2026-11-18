@@ -146,8 +146,20 @@ impl Ui {
                         state.files.clone(),
                         state.settings.clone(),
                         state.views.clone(),
+                        state.view_step.clone(),
                         state.desk.clone(),
                         state.machine_page.clone(),
+                    ),
+                    // The open session's status and its machine draw the
+                    // terminal's notices (Lost the connection to …, exited)
+                    // and the pane's offline banner.
+                    (
+                        state
+                            .session
+                            .open
+                            .as_ref()
+                            .and_then(|id| state.workspace.session(id).cloned()),
+                        state.workspace.machines.clone(),
                     ),
                 )
             },
@@ -162,11 +174,19 @@ impl Ui {
                     state.toasts.clone(),
                     state.session.fork.clone(),
                     state.session.moving.clone(),
+                    state.session.continuing.clone(),
                     state.session.archiving.clone(),
+                    state.session.renaming.clone(),
                     state.session.forking,
                     state.session.error.clone(),
                     state.desk.clone(),
-                    state.add_machine.clone(),
+                    // The machine Stop and Start confirms and the Humata
+                    // folder sheet are drawn over the whole window too.
+                    (
+                        state.add_machine.clone(),
+                        state.hosts.clone(),
+                        state.machine_page.clone(),
+                    ),
                 )
             },
             move |_| changed(),

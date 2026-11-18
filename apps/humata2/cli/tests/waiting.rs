@@ -12,6 +12,7 @@ fn presence(accepted: &[Method], in_session: bool) -> pb::error::Kind {
     pb::error::Kind::PresenceRequired(pb::PresenceRequired {
         accepted: accepted.iter().map(|method| *method as i32).collect(),
         caller_in_session_terminal: in_session,
+        tries_left: 0,
     })
 }
 
@@ -37,19 +38,52 @@ async fn presence_is_asked_for_in_the_app_and_the_call_sent_again() {
 }
 
 #[tokio::test]
-async fn a_passphrase_is_typed_at_the_terminal() {
+async fn a_passphrase_is_typed_at_the_terminal_for_a_login() {
+    let home = tempfile::tempdir().unwrap_or_else(|e| panic!("temp dir: {e}"));
+    let environment = humata2_cli::Environment {
+        home: Some(home.path().to_path_buf()),
+        terminal_session: Some(7),
+        ..humata2_cli::Environment::default()
+    };
+    let daemon = FakeDaemon::new();
+    daemon
+        .refuse(
+            rpc::cli_auth::BEGIN_CLI_SESSION,
+            presence(&[Method::ApprovalPassphrase], false),
+        )
+        .reply(
+            rpc::cli_auth::BEGIN_CLI_SESSION,
+            &pb::CliSession {
+                id: "cl_1".into(),
+                token: "0123456789abcdef".into(),
+                ..Default::default()
+            },
+        );
+    let console = FakeConsole::terminal().typing_secret("correct horse");
+    assert_eq!(
+        support::run_as(&environment, &daemon, &console, &["login"]).await,
+        exit::OK
+    );
+    let sent: Vec<pb::BeginCliSessionRequest> = daemon.sent(rpc::cli_auth::BEGIN_CLI_SESSION);
+    assert_eq!(
+        sent[1].presence.as_ref().and_then(|proof| proof.proof.clone()),
+        Some(Proof::ApprovalPassphrase("correct horse".into()))
+    );
+}
+
+#[tokio::test]
+async fn an_answer_refused_for_a_passphrase_is_not_retried_with_one() {
+    // The daemon reads the passphrase only at `humata login`; a passphrase
+    // sent with an answer would be ignored and the answer refused again.
     let daemon = FakeDaemon::new();
     daemon.refuse(
         rpc::inbox::ANSWER_REQUEST,
         presence(&[Method::ApprovalPassphrase], false),
     );
     let console = FakeConsole::terminal().typing_secret("correct horse");
-    assert_eq!(run(&daemon, &console, &["inbox", "approve", "rq_1"]).await, exit::OK);
-    let sent: Vec<pb::AnswerRequestRequest> = daemon.sent(rpc::inbox::ANSWER_REQUEST);
-    assert_eq!(
-        sent[1].presence.as_ref().and_then(|proof| proof.proof.clone()),
-        Some(Proof::ApprovalPassphrase("correct horse".into()))
-    );
+    let exit = run(&daemon, &console, &["inbox", "approve", "rq_1"]).await;
+    assert_eq!(exit, exit::NEEDS_USER);
+    assert_eq!(daemon.sent::<pb::AnswerRequestRequest>(rpc::inbox::ANSWER_REQUEST).len(), 1);
 }
 
 #[tokio::test]
@@ -166,7 +200,10 @@ async fn answering_no_changes_nothing() {
     daemon.reply(rpc::trash::PLAN_EMPTY_TRASH, &plan());
     let console = FakeConsole::terminal().answering(false);
     let exit = run(&daemon, &console, &["--machine", "ma_1", "trash", "empty"]).await;
-    assert_eq!(exit, exit::INTERRUPTED);
+    // Declining is not Ctrl-C (130): scripts tell the two apart.
+    assert_eq!(exit, exit::DECLINED);
+    assert_ne!(exit, exit::INTERRUPTED);
+    assert!(!console.stderr().is_empty(), "a declined run says so on stderr");
     assert!(!daemon.called(rpc::trash::EMPTY_TRASH));
 }
 
@@ -248,7 +285,7 @@ async fn a_terminal_waits_until_the_answer_comes() {
 }
 
 #[tokio::test]
-async fn a_wait_that_ends_unanswered_is_an_error() {
+async fn a_wait_that_ends_unanswered_is_pending_not_a_version_mismatch() {
     let daemon = FakeDaemon::new();
     let keepalive = pb::WaitResponse {
         keepalive: true,
@@ -258,8 +295,18 @@ async fn a_wait_that_ends_unanswered_is_an_error() {
         .reply(rpc::inbox::REQUEST_ACCESS, &pending())
         .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&keepalive]);
     let console = FakeConsole::terminal();
-    assert_ne!(run(&daemon, &console, &ASK_AHEAD).await, exit::OK);
+    assert_eq!(run(&daemon, &console, &ASK_AHEAD).await, exit::PENDING);
     assert_eq!(daemon.sent::<pb::WaitForAnswerRequest>(rpc::inbox::WAIT_FOR_ANSWER).len(), 1);
+    // The error names the request that is still waiting.
+    let json_console = FakeConsole::pipe();
+    let again = FakeDaemon::new();
+    again
+        .reply(rpc::inbox::REQUEST_ACCESS, &pending())
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&pb::WaitResponse { keepalive: true, ..pending() }]);
+    let words: Vec<&str> = ["--json", "--wait", "5"].into_iter().chain(ASK_AHEAD).collect();
+    assert_eq!(run(&again, &json_console, &words).await, exit::PENDING);
+    assert_eq!(json_console.json()["error"]["kind"], "pending");
+    assert_eq!(json_console.json()["error"]["details"]["request"], "rq_9");
 }
 
 #[tokio::test]

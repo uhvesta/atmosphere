@@ -40,7 +40,15 @@ const SCROLLBACK_MAX: usize = 4 * 1024;
 const SCROLLBACK_READ: usize = 64 * 1024;
 /// Between typing the seed and pressing return, so an agent that reads a
 /// paste whole doesn't take the return as part of it.
-const TYPE_PAUSE: Duration = Duration::from_millis(100);
+const TYPE_PAUSE: Duration = Duration::from_millis(400); // D671 (Provisional)
+/// BUG-T1: the seed waits, until the agent has run this long, for it to
+/// read keys itself, then up to `SHOWN_WAIT` for it to show the seed. A
+/// long seed shown as a summary is never seen; return is pressed anyway.
+const KEYS_WAIT: Duration = Duration::from_secs(5);
+const SHOWN_WAIT: Duration = Duration::from_secs(5);
+/// How long a seed waits for the input gate (D762): long enough for the
+/// person to answer the agent's own question.
+const SEED_READY_WAIT: Duration = Duration::from_secs(600);
 
 /// How a fork's handover message starts: it tells the message from a start
 /// fresh one, so a restart types it under the same tag (FK-6, D212).
@@ -99,9 +107,24 @@ enum StartFreshError {
         source: HolderError,
     },
     #[error(
-        "session {session}'s terminal is from an older build and can't take the summary exactly once"
+        "session {session}'s terminal holder is from an older Humata build, so the summary wasn't typed into it. Click Migrate on the \"Migrate the holders\" item in the Inbox, then tell the agent what the old conversation was about"
     )]
-    SeedUnsupported { session: String },
+    SeedOutdated {
+        session: String,
+        #[source]
+        source: HolderError,
+    },
+    /// D762: kept, so the next restart types it once the agent's input is
+    /// ready.
+    #[error(
+        "session {session}'s agent started, but its input wasn't ready within {} minutes, so the summary wasn't typed. Answer what the agent asks on its screen or in the Inbox (such as whether to trust its folder), then tell it what the old conversation was about",
+        SEED_READY_WAIT.as_secs() / 60
+    )]
+    SeedNotReady {
+        session: String,
+        #[source]
+        source: crate::input_gate::InputRefused,
+    },
 }
 
 impl SessionSvc {
@@ -367,7 +390,7 @@ async fn run(
     crate::fault::point("start_fresh.typed");
     // Typed, or a terminal that can't take it: either way nothing types it
     // later. A failure to reach the terminal leaves it for the restart.
-    if !matches!(typed, Err(StartFreshError::Seed { .. })) {
+    if !matches!(typed, Err(StartFreshError::Seed { .. } | StartFreshError::SeedNotReady { .. })) {
         forget_seed(&starter.store, &session, &agent.launch.conversation_id).await;
     }
     match typed {
@@ -502,16 +525,14 @@ async fn retype(store: Arc<Store>, pending: FreshSeed) {
     };
     if !had {
         match type_seed(&agent.launch.holder_socket, &session, &pending.conversation_id, &pending.seed).await {
-            Err(StartFreshError::Seed { .. }) => {
+            Err(StartFreshError::Seed { .. } | StartFreshError::SeedNotReady { .. }) => {
                 crate::log::say!(
                     "humatad2: couldn't type session {session}'s start fresh message after the restart; the next restart tries again"
                 );
                 return;
             }
-            Err(StartFreshError::SeedUnsupported { .. }) => {
-                crate::log::say!(
-                    "humatad2: session {session}'s terminal is from an older build, so its start fresh message isn't typed after the restart; tell the agent what the old conversation was about"
-                );
+            Err(error @ StartFreshError::SeedOutdated { .. }) => {
+                crate::log::say!("humatad2: {error}");
             }
             _ => {}
         }
@@ -600,12 +621,37 @@ async fn type_seed(
     conversation: &str,
     seed: &str,
 ) -> Result<(), StartFreshError> {
-    let seed_error = |source| StartFreshError::Seed {
-        session: session.to_owned(),
-        source,
+    // D753: a holder from before keyed input types nothing; it keeps
+    // running until the session is migrated.
+    let seed_error = |source| match source {
+        HolderError::Outdated { .. } => StartFreshError::SeedOutdated {
+            session: session.to_owned(),
+            source,
+        },
+        source => StartFreshError::Seed {
+            session: session.to_owned(),
+            source,
+        },
     };
     let key = format!("{session}/fresh-{conversation}");
     let text = format!("{} {seed}", SeedKind::of(seed).tag(conversation));
+    // BUG-T1: a return that reaches the agent before it's up and has shown
+    // the seed is taken as part of it, so the seed waits for the one and
+    // the return for the other.
+    humata2_holder::await_keys(socket, KEYS_WAIT).await.map_err(seed_error)?;
+    // D762: not into a question the agent asks on its screen (its folder
+    // trust), and not blind: wait for the person to answer it.
+    let deadline = tokio::time::Instant::now() + SEED_READY_WAIT;
+    while let Err(refused) = crate::input_gate::guard(socket).await {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(StartFreshError::SeedNotReady {
+                session: session.to_owned(),
+                source: refused,
+            });
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let mut watch = humata2_holder::watch_output(socket).await.map_err(seed_error)?;
     for (key, data) in [
         (format!("{key}/text"), text.as_bytes()),
         (format!("{key}/return"), b"\r".as_slice()),
@@ -617,11 +663,12 @@ async fn type_seed(
             .await
             .map_err(seed_error)?
         {
-            KeyedInput::Written | KeyedInput::Repeat => {}
-            KeyedInput::Unsupported => {
-                return Err(StartFreshError::SeedUnsupported {
-                    session: session.to_owned(),
-                });
+            // Typed by an earlier run: shown before the watch began.
+            KeyedInput::Repeat => {}
+            KeyedInput::Written => {
+                if data != b"\r" {
+                    watch.shown(data, SHOWN_WAIT).await.map_err(seed_error)?;
+                }
             }
         }
     }
@@ -740,7 +787,7 @@ pub(super) async fn hand_over(
     seed: &str,
 ) -> Result<(), String> {
     let typed = type_seed(socket, fork, conversation, seed).await;
-    if !matches!(typed, Err(StartFreshError::Seed { .. })) {
+    if !matches!(typed, Err(StartFreshError::Seed { .. } | StartFreshError::SeedNotReady { .. })) {
         forget_seed(store, fork, conversation).await;
     }
     typed.map_err(|error| status::chain(&error))
@@ -756,22 +803,20 @@ pub(super) async fn drop_handover(store: &Arc<Store>, fork: &str, conversation: 
 /// `file` is the parent's conversation, None when its agent keeps none.
 /// Blocking.
 pub(super) fn handover_source(file: Option<&Path>, socket: &Path) -> Source {
-    handover_digest(file, 0, socket).0
+    handover_digest(file, Some(u64::MAX), socket).0
 }
 
 /// The digest a fork's first message holds: of the parent's conversation
-/// before turn `before_turn` (all of it at 0), or else the end of its
-/// saved terminal output. Blocking.
-fn handover_digest(file: Option<&Path>, before_turn: u32, socket: &Path) -> (Source, Option<String>) {
+/// read up to `limit` bytes ([`Handover::read_to`]), or else the end of
+/// its saved terminal output. Blocking.
+fn handover_digest(
+    file: Option<&Path>,
+    limit: Option<u64>,
+    socket: &Path,
+) -> (Source, Option<String>) {
     if let Some(file) = file
         && let Ok(opened) = std::fs::File::open(file)
     {
-        let limit = match before_turn {
-            0 => Some(u64::MAX),
-            turn => humata2_mirror::turns_of(file)
-                .ok()
-                .and_then(|turns| turns.iter().find(|mark| mark.index == turn).map(|mark| mark.offset)),
-        };
         if let Some(limit) = limit
             && let Some(digest) = digest_of(std::io::BufReader::new(std::io::Read::take(opened, limit)))
         {
@@ -791,7 +836,10 @@ pub(super) struct Handover<'a> {
     pub(super) agent: &'a str,
     /// The parent's conversation file, None when its agent keeps none.
     pub(super) file: Option<&'a Path>,
-    pub(super) before_turn: u32,
+    /// How much of `file` is read, in bytes: all of it (`u64::MAX`) from
+    /// now, else up to the start of the turn the fork is before; None when
+    /// that start can't be found, and the terminal's output stands in.
+    pub(super) read_to: Option<u64>,
     /// The parent's terminal, whose saved output stands in for a transcript.
     pub(super) socket: &'a Path,
     /// Where the fork finds the conversation, from its own folder.
@@ -801,7 +849,7 @@ pub(super) struct Handover<'a> {
 /// What a fork handed its parent's conversation is told first (FK-6, D212):
 /// a plain digest and where the transcript is. Blocking.
 pub(super) fn handover_seed(handover: &Handover<'_>) -> String {
-    let (source, digest) = handover_digest(handover.file, handover.before_turn, handover.socket);
+    let (source, digest) = handover_digest(handover.file, handover.read_to, handover.socket);
     let mut seed = format!(
         "{HANDOVER_LEAD} the session \u{201c}{}\u{201d}, which ran {}.",
         handover.title, handover.agent
@@ -866,9 +914,10 @@ fn seed_text(
     seed
 }
 
-/// The digest of a Claude JSONL conversation read from `reader`: every user
-/// message, each capped, and the last few assistant text turns, tool output
-/// left out, in about [`DIGEST_MAX`] bytes. None if it holds neither.
+/// The digest of a conversation read from `reader`, a Claude JSONL file or
+/// a Codex rollout: every user message, each capped, and the last few
+/// assistant text turns, tool output left out, in about [`DIGEST_MAX`]
+/// bytes. None if it holds neither.
 fn digest_of(mut reader: impl BufRead) -> Option<String> {
     let mut users: Vec<String> = Vec::new();
     let mut assistants: std::collections::VecDeque<String> = std::collections::VecDeque::new();
@@ -888,17 +937,16 @@ fn digest_of(mut reader: impl BufRead) -> Option<String> {
         {
             continue;
         }
-        let role = entry.get("type").and_then(Value::as_str);
-        let Some(content) = entry.get("message").and_then(|m| m.get("content")) else {
+        let Some((role, said)) = said_in(&entry) else {
             continue;
         };
-        let said = collapse(&text_of(content));
+        let said = collapse(&said);
         if said.is_empty() {
             continue;
         }
         match role {
-            Some("user") if !is_noise(&said) => users.push(cap_chars(&said, USER_CAP)),
-            Some("assistant") => {
+            "user" if !is_noise(&said) => users.push(cap_chars(&said, USER_CAP)),
+            "assistant" => {
                 assistants.push_back(cap_chars(&said, ASSISTANT_CAP));
                 if assistants.len() > ASSISTANTS_KEPT {
                     assistants.pop_front();
@@ -952,14 +1000,43 @@ fn digest_of(mut reader: impl BufRead) -> Option<String> {
     Some(cap_bytes(digest.trim_end(), DIGEST_MAX))
 }
 
-/// The text of a message's content: a string, or its text blocks. Tool
-/// calls and results are not text.
+/// Who said a line of a conversation, "user" or "assistant", and its text:
+/// a Claude JSONL message, or a Codex rollout's finished prompt
+/// (`UserMessage`) or reply (`AgentMessage`). Codex writes what it injects
+/// as the user (`AGENTS.md`, the environment) only as `response_item`
+/// lines, so those are left out with its other record kinds.
+fn said_in(entry: &Value) -> Option<(&str, String)> {
+    if entry.get("type").and_then(Value::as_str) == Some("event_msg") {
+        let payload = entry.get("payload")?;
+        if payload.get("type").and_then(Value::as_str) != Some("item_completed") {
+            return None;
+        }
+        let item = payload.get("item")?;
+        let role = match item.get("type").and_then(Value::as_str)? {
+            "UserMessage" => "user",
+            "AgentMessage" => "assistant",
+            _ => return None,
+        };
+        return Some((role, text_of(item.get("content")?)));
+    }
+    let role = entry.get("type").and_then(Value::as_str)?;
+    let content = entry.get("message")?.get("content")?;
+    Some((role, text_of(content)))
+}
+
+/// The text of a message's content: a string, or its text blocks (Codex
+/// names a reply's `Text`). Tool calls and results are not text.
 fn text_of(content: &Value) -> String {
     match content {
         Value::String(text) => text.clone(),
         Value::Array(blocks) => blocks
             .iter()
-            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter(|block| {
+                block
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("text"))
+            })
             .filter_map(|block| block.get("text").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join(" "),
@@ -1099,6 +1176,29 @@ mod tests {
         assert_eq!(digest(&[]), None);
     }
 
+    /// A line a Codex rollout writes once a prompt or a reply is done.
+    fn codex(item: &str, block: &str, text: &str) -> String {
+        serde_json::json!({"type":"event_msg","payload":{"type":"item_completed","turn_id":"t1",
+            "item":{"type":item,"content":[{"type":block,"text":text}]}}})
+        .to_string()
+    }
+
+    #[test]
+    fn a_codex_rollout_keeps_its_prompts_and_replies_and_not_what_codex_injected() {
+        let injected = serde_json::json!({"type":"response_item","payload":{"type":"message",
+            "role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /work"}]}})
+        .to_string();
+        let made = digest(&[
+            injected,
+            codex("UserMessage", "text", "Fix the login redirect"),
+            codex("AgentMessage", "Text", "The redirect goes back to the page you came from."),
+        ])
+        .unwrap();
+        assert!(made.contains("Fix the login redirect"), "{made}");
+        assert!(made.contains("The redirect goes back"), "{made}");
+        assert!(!made.contains("AGENTS.md"), "{made}");
+    }
+
     #[test]
     fn plain_tail_drops_escape_sequences() {
         let plain = plain_tail(b"\x1b[31mred\x1b[0m text\x1b]0;title\x07 done\r\n").unwrap();
@@ -1123,7 +1223,7 @@ mod tests {
             title: "Fix login",
             agent: "claude",
             file: Some(&file),
-            before_turn: 0,
+            read_to: Some(u64::MAX),
             socket: &dir.path().join("none.sock"),
             handed,
         });
@@ -1137,12 +1237,14 @@ mod tests {
     fn a_handover_before_a_turn_leaves_out_what_came_from_that_turn_on() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("c.jsonl");
-        std::fs::write(&file, [user("first ask"), user("second ask")].join("\n") + "\n").unwrap();
+        let first = user("first ask");
+        std::fs::write(&file, [first.clone(), user("second ask")].join("\n") + "\n").unwrap();
+        let second_starts = u64::try_from(first.len() + 1).unwrap();
         let seed = handover_seed(&Handover {
             title: "Fix login",
             agent: "claude",
             file: Some(&file),
-            before_turn: 2,
+            read_to: Some(second_starts),
             socket: &dir.path().join("none.sock"),
             handed: Path::new("h.jsonl"),
         });
@@ -1159,7 +1261,7 @@ mod tests {
             title: "Fix login",
             agent: "opencode",
             file: None,
-            before_turn: 0,
+            read_to: Some(u64::MAX),
             socket: &socket,
             handed: Path::new("h.jsonl"),
         });
@@ -1203,6 +1305,7 @@ mod tests {
                 variable_names: Vec::new(),
                 cols: 80,
                 rows: 24,
+                cli_version: None,
             },
             state: AgentState::ResumeFailed {
                 reason: humata2_store::ResumeFailure::AgentExited,

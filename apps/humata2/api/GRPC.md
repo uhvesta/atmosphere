@@ -142,11 +142,11 @@ a machine checks only calls it answers alone, using the host's last
 | Service (file) | Owner | Served on | Notes |
 | --- | --- | --- | --- |
 | DaemonService (daemon) | each daemon | every endpoint | `GetServerInfo.last_start` says what the start brought back (§2.2); `BeginRelay` and `CompleteRelay` let the peer link prove itself to a machine's socket daemon (§8) |
-| ChannelService, ActivityService (channels) | host | host socket; forwarded from machines | Channel records, repos, machines (SL-1) |
-| SessionService (sessions) | host for records; the session's machine for holders, clones, conversation | host socket; forwarded | The host writes the record, then drives the machine through PeerService. `ReadConversation` reads the host's mirror (LD-8). `ReportTurn` is the session's own agent saying what turn it is in, from its hooks (D169): any other caller is refused, an older report than the last one kept is dropped, and repeating the state changes nothing. `Hook` (server stream) is the agent's blocking permission hook (D191): the daemon parses the payload, raises one Inbox card (kind SESSION, the whole command shown, Approve or Deny), sends a keepalive every 15 s and ends with the bytes the hook prints. The card lives only while a stream holds it: the same ask again holds the same card, the last stream dropping withdraws it (CALL_ENDED), Answer all skips it, and it is saved only once answered or withdrawn. At 3590 s it ends with no decision (D192) |
-| TerminalService (terminal) | the session's machine | machine socket for its own sessions; host socket, relayed over the peer link | One HTTP/2 stream per attached tab end to end. `PasteImage` saves a pasted image (32 MiB at most) in the session's own folder on its machine, file 0600, gone with the session, and returns the path there for the client to type as input; a text paste is plain input |
+| ChannelService, ActivityService (channels) | host | host socket; forwarded from machines | Channel records, repos, machines (SL-1). `GetGrid` (CH-9, D764) reads the host's store: a cell per repo × machine counting live sessions with that repo's clone there, its state the repo's main clone or MACHINE_OFFLINE when the host last saw that machine other than ONLINE; CHANNEL_READ, not relayed |
+| SessionService (sessions) | host for records; the session's machine for holders, clones, conversation | host socket; forwarded | The host writes the record, then drives the machine through PeerService. `ReadConversation` reads the host's mirror (LD-8). `SendNote` and `AskSession` (TP-5, D774) type one line naming the sender into another session's running agent once its turn is over (input gate, keyed so a retry types nothing twice); `AskSession` returns the asked session's `AnswerQuestion` (only that session's agent may answer), its decline, or EXPIRED at `timeout_seconds` (0: 30 min). Questions live in the daemon's memory for the asking call; a session on another machine is refused for now. `ReportTurn` is the session's own agent saying what turn it is in, from its hooks (D169): any other caller is refused, an older report than the last one kept is dropped, and repeating the state changes nothing. `Hook` (server stream) is the agent's blocking permission hook (D191): the daemon parses the payload, raises one Inbox card (kind SESSION, the whole command shown, Approve or Deny), sends a keepalive every 15 s and ends with the bytes the hook prints. The card lives only while a stream holds it: the same ask again holds the same card, the last stream dropping withdraws it (CALL_ENDED), Answer all skips it, and it is saved only once answered or withdrawn. At 3590 s it ends with no decision (D192). The event `question` is Copilot's own ask-user form (its `preToolUse` of `ask_user`, D761): a QUESTION card with the whole question and every choice, held the same way, taking a Reply or Deny (Approve refused); the session is NEEDS_INPUT while it waits, and the reply goes back as a `deny` whose reason carries the answer |
+| TerminalService (terminal) | the session's machine | machine socket for its own sessions; host socket, relayed over the peer link | One HTTP/2 stream per attached tab end to end. `PasteImage` saves a pasted image (32 MiB at most) in the session's own folder on its machine, file 0600, gone with the session, and returns the path there for the client to type as input; a text paste is plain input. `Type` replies `queued` (Humata's own queue only), `typed`, `submitted`, `turn_end_uncertain`, and `agent_busy`: true when the text was written while the agent was mid-turn, so the agent may queue it itself, which Humata can't see |
 | FileService (files) | the machine that has the files | machine socket for its own files; host socket, relayed | Every location is a Humata root plus a relative path |
-| TransferService (files) | host | host socket; forwarded | The host drives both ends; chunks pass through it |
+| TransferService (files) | host | host socket; forwarded | The host drives both ends; chunks pass through it. `StartTransferRequest.name` (D769) lands a single source under that name in the destination folder, as `cp a b`; with more than one source it is `not_allowed_here`, and a name with `/`, `.`, `..` or NUL `bad_format`. On a machine's daemon, an agent's StartTransfer naming another machine goes up the Uplink as a `ForwardedCall` with its idempotency key, the unnamed side filled in as that machine (D768) |
 | TrashService (files) | each machine's trash; the host for session records | host socket; forwarded | |
 | TransferEndService (files) | the machine that has the files | machine socket; host socket, relayed whole | The far end of a transfer the host drives: one call per step the engine takes on a local disk (D156). For the user and the host's relayed calls, never an agent |
 | BoardService (boards) | host | host socket; forwarded, or journaled (§9) | |
@@ -155,11 +155,12 @@ a machine checks only calls it answers alone, using the host's last
 | DiffService, CommentService, ViewService, PullRequestReviewService (review) | host for comments, views, drafts, review state; the machine computes diffs | host socket; forwarded; comment and view drafts refused while the host is away (§9.3) | |
 | ReviewChatService (review) | the review session's machine, which keeps the review chat's view state, notes and switches (PR-22–PR-26) | host socket; forwarded | The app reports its view; agents in the review change it through MCP (review_*), each change undoable. Switches off are denied with `SOURCE_REVIEW_SWITCH_OFF` |
 | OperationService (operations) | host | host socket; forwarded | |
-| MachineService, ProviderService, SkillsService (hosts) | host | host socket only for user-only calls; forwarded otherwise | Provider commands run on the Mac or `run_on` (MP-5) |
+| MachineService, ProviderService, SkillsService (hosts) | host | host socket only for user-only calls; forwarded otherwise | Provider commands run on the Mac or `run_on` (MP-5). On a machine's daemon, an agent's `ListMachines` and `GetMachine` go up as `ForwardedCall`s and the host answers as that agent, This Mac first when the channel has it; `host_unreachable` while the host is away; a peer's are refused, and the user's own are `not_built` with a fix that points at the host Mac (D768). MachineService also serves machine scripts (`ListMachineScripts`, `CheckMachineScripts`, `RunMachineScript`, `ListMachineScriptRuns`): rules and scripts are the host owner's files and no call writes them (D687); a machine (peer) can't call them. `PreviewProviderImport` shows a picked file's text, commands and replaced ids and saves nothing; `ImportProvider` (user, present) writes exactly that once, within ten minutes, and is `plan_stale` if the providers file changed (D771) |
 | BridgeService (hosts) | host; the forward's two ends are the session's machine and the Mac | host socket; forwarded from the session's machine | HO-10, HO-11: the only way anything but Humata's own calls crosses the bridge |
-| SettingsService, AgentService, MarkService, ViewStateService (settings) | host | host socket | User-only writes (BOUNDARIES.md §5) |
+| SettingsService, AgentService, MarkService, ViewStateService (settings) | host | host socket | User-only writes (BOUNDARIES.md §5). Every Settings section is built; the portable ones live in the humata home's `config/settings.toml`, skills in `skills-settings.json`, a channel's default agent and retention in the store; a start that names no agent takes the channel's, then Settings' (D770) |
+| RepoService (repos) | host | host socket; forwarded | The repo library (`<state>/repos.db`) and the one repo search (RL-1 to RL-12, D470–D479). `SearchRepos` and `ListRepoLibrary` are global reads (D278), open to agents; `RemoveFromRepoLibrary`, `ForgetRepoLibrary` and `UpdateRepoScope` are user-only, and All of GitHub is never saved as the scope. A GitHub failure is `problem` in the answer, never a failed call (RL-10). `ListRepoOwners` names the orgs the host's `gh` user belongs to, for **+ Org**'s suggestions; it is a global read, and a `gh` failure is `problem` in the answer. `GetRepoScope` and `UpdateRepoScope` read and write `config/repos.toml` on the host. The library never leaves the host (RL-12, D568). On a machine, its agents' `SearchRepos` and `ListRepoLibrary` go up the Uplink as `ForwardedCall`s and run on the host as that agent; while the host is away they are `host_unreachable`, and nothing is kept for later. The other methods, and the user's own calls on a machine, are refused there with a fix that points at the host |
 | EventService (events) | host | host socket; machine socket relays a filtered feed | |
-| SessionCarryService (sessions) | the machine a session leaves or reaches | machine socket; host socket, relayed. Host only | Moving a session (Move): `Pack` freezes the session and packs its work and conversation, `Unpack` lays it down on the new machine, `Release` deletes the old copy once the new one runs, and `Abort` undoes a half-done move. A fork onto another machine packs through the same calls: `CarryPackRequest.fork` (a `CarryFork`: the fork's id, title, kind, turn and typed branch) packs a copy and leaves the parent running (a typed branch git won't take, or one a parent on this Mac already uses, is refused when ForkSession is called; a box parent's taken names are checked at pack), and `CarryPackResponse.branch` and `conversation_id` give the fork's branch and conversation. `PreviewFork` answers, on the parent's machine, the branch a fork onto another machine would get and the bytes it would copy, staging nothing; the host's SessionService.PreviewFork uses it for a fork elsewhere. A context-only fork runs only on its parent's machine, so a fork or preview of one elsewhere is refused (D208). The host keeps a journal of each fork elsewhere at `<state>/carry/forks/<operation>.json`, written at every phase; after a restart it finishes a fork whose record was written and undoes any other one, staged files included. Only the host's relayed calls are honoured, never the user or an agent (D203) |
+| SessionCarryService (sessions) | the machine a session leaves or reaches | machine socket; host socket, relayed. Host only | Moving a session (Move): `Pack` freezes the session and packs its work and conversation, `Unpack` lays it down on the new machine, `Release` deletes the old copy once the new one runs, and `Abort` undoes a half-done move. `Target`, asked of the machine a session goes to before `Pack`, answers where the session's folder will be there as its CLI will record it; `CarryPackRequest.target_folder` hands that to the old machine, which writes a Claude conversation for it before chunking, so the chunks the new machine holds of an earlier copy match (MV-17). A fork onto another machine packs through the same calls: `CarryPackRequest.fork` (a `CarryFork`: the fork's id, title, kind, turn and typed branch) packs a copy and leaves the parent running (a typed branch git won't take, or one a parent on this Mac already uses, is refused when ForkSession is called; a box parent's taken names are checked at pack), and `CarryPackResponse.branch` and `conversation_id` give the fork's branch and conversation. `PreviewFork` answers, on the parent's machine, the branch a fork onto another machine would get and the bytes it would copy, staging nothing; the host's SessionService.PreviewFork uses it for a fork elsewhere. A context-only fork runs only on its parent's machine, so a fork or preview of one elsewhere is refused (D208). The host keeps a journal of each fork elsewhere at `<state>/carry/forks/<operation>.json`, written at every phase; after a restart it finishes a fork whose record was written and undoes any other one, staged files included. `RunReviewGit` runs one `git` in a clone of a pull request review that lives on the machine and answers its exit code and output (PR-4, PR-21): the host keeps the review's records and `gh`, and its heads check, Update the clone and Submit review's line checks look at the machine's clones through it; a review is started there by `StartSessionRequest.review`, which carries each pull request's branch and head. Only the host's relayed calls are honoured, never the user or an agent (D203) |
 | PeerService (peer) | each remote machine | peer link only | §8 |
 
 ## 5. Conventions
@@ -224,6 +225,29 @@ Calls an agent can make that may become Inbox requests take a `reason`
 string. It is shown on the card (IN-9) as the agent's words, marked as such.
 It never changes what is checked.
 
+### 5.8 Agent switches (AGENTSET)
+
+`AgentService` also says which agents the person turned on.
+
+- `AgentDefinition` has `enabled`, `install_when_missing` and `can_install`
+  (the kind has an install command). By default every kind is enabled and
+  nothing is installed; the host's `config/agents.toml` changes that.
+- `ListAgents` lists only enabled kinds, and the plain shell, which is
+  always on. Set `include_disabled` to list the rest, with `enabled = false`.
+- `SetAgentEnabled` changes `enabled` or `install_when_missing` (only the
+  fields set) and answers the definition. User-only: an agent or script is
+  told so and a peer is refused. An unknown agent, the plain shell, or
+  `install_when_missing` on a kind with no install command is `INVALID_ARGUMENT`
+  naming `agent` or `install_when_missing`. A daemon started without a home
+  has nowhere to keep the file and answers `FAILED_PRECONDITION`.
+- A new start of a disabled kind (StartSession, a review, a fork that changes
+  agent, a Desk start) is `FAILED_PRECONDITION`; the fix names Settings >
+  Agents. On the machine that runs the agent, a start whose CLI is not found
+  is `FAILED_PRECONDITION` too, unless "Install when missing" is on, in which
+  case it installs the CLI first; a failed install says what ran and prints the
+  end of its output. Sessions that already exist (resume, restore, move,
+  rebuild) are never refused.
+
 ## 6. Streams
 
 | Stream | Keyed by | Resume |
@@ -287,6 +311,17 @@ daemon's start time, so an `after` from an earlier run, or one older than
 the oldest kept, gets `Resync`. A subscriber that falls more than 1024
 events behind gets `Resync` and goes on from the present. `by` is unset.
 
+Desk events (`Event.desk = 33`, a `DeskSession`; SEAM). A Desk session, plain
+or a channel's own (`channel_desk` set), is told as `Created` or `Updated` with
+the whole session as it is now: folder, access, times, repos, documents,
+versions state and, for a channel's, its channel, target and switches. One that
+left the Desk (deleted, cleaned up, moved into a channel) is told as `Deleted`
+with only `session` set. The event goes on the sessions topic, scoped to the
+session (channel `desk` for a plain one), to whoever may read the session. It
+follows every change that tells the session itself, so a client keeps the Desk
+without listing it again. A session on another machine is told too, from that
+machine's own report of the change.
+
 ### 6.1 Chunks and compression (TR-11, TR-13, D60, D65)
 
 Byte streams travel in chunks of at most 1 MiB (`humata2_chunk::CHUNK_MAX`),
@@ -335,6 +370,15 @@ each compressed on its own so a resumed stream can switch codec mid-file.
   FileService isn't on the peer link yet, so the remote throughput is
   measured only once it is. `TransferService.Upload`, diffs and bug
   reports are not compressed yet.
+- **Chunk reuse in a move (MV-17, D346):** `TransferEndService.HaveChunks`
+  takes a machine's chunk folder (`<channel>/.carry/have`) and SHA-256
+  names, and answers which of them it holds, in one call per 8192 names.
+  A file of 1 MiB or more is cut into fixed 1 MiB chunks, the transfer's
+  own size, so a file that grew at its end shares every whole chunk
+  before its tail. The host sends only the chunks the target lacks;
+  the target rebuilds the file from held and sent chunks and checks
+  each chunk and the whole file's SHA-256. Both machines are at the same
+  release (UP-1); there is no whole-file fallback.
 
 ## 7. Operations and cancellation
 
@@ -352,16 +396,32 @@ once. Its steps have stable keys, shown as the progress list the spec draws.
 - `RetryOperation` reruns a failed operation from its failed step (HO-2,
   MP-20); steps already done are not repeated.
 - Failed steps keep their output tail (MP-20).
+- A push that opens or finds pull requests (`PushAndOpenPullRequests`) ends
+  with `Operation.pull_requests` (field 23): one `PullRequestRef` per repo it
+  pushed, in push order. Its `note` says what the push found about an open
+  pull request it left as it was, such as "PR #3 targets main, so it was not
+  retargeted". Field 22 is reserved (it was a single PR result); a client
+  reads `pull_requests`.
+- A move (`MoveSession`, MV-17) counts bytes on its `copy` step:
+  `done_units` of `total_units` are the bytes carried so far, and
+  `done_units` only rises. Once the step is done, its facts give
+  `sent_bytes`, what crossed between the two machines as sent (after
+  compression), and `reused_bytes`, what the target took from what it
+  already held or fetched from a repo's remote (decimal). A clone whose
+  remote has its history is fetched on the target, so `sent_bytes` is
+  the work the remote lacks, not the clone's `.git`.
 
 | Kind | Step keys | Point of no return | Cancel undoes |
 | --- | --- | --- | --- |
 | START_SESSION | `write_record`, `clone:<repo>`…, `launch`, `verify` | `launch` | Removes clones and the record (never started, so nothing to trash) |
 | FORK_SESSION | `write_record`, `copy_code:<repo>`…, `copy_conversation`, `launch` | `launch` | Same as start; the parent is never touched |
+| CONTINUE_IN_CHANNEL | `write_record`, `clone:<repo>`…, `copy_conversation`, `launch`, `verify` | `launch` | Same as start; the session it continues is never touched |
+| MACHINE_SCRIPT | `step:<n>`, one per step of the rule, in order | none | Stops before the next step; a step already running is killed |
 | MOVE_SESSION | `check_target`, `bundle:<repo>`…, `send`, `prepare_clones`, `copy_conversation`, `stop_old`, `launch_new`, `verify`, `retire_old` | `stop_old` | Deletes what reached the target; the session keeps running where it was |
 | ARCHIVE_SESSION | `commit:<repo>`, `push:<repo>`, `open_pr:<repo>` (when chosen), `stop`, `summarize`, `free_clones` | first `push` | Before: nothing happened. After: finishes; restore undoes |
 | RESTORE_SESSION | `clone:<repo>`…, `import_conversation`, `launch`, `verify` | `launch` | Removes the new clones; stays archived |
 | REBUILD_SESSION | `clone:<repo>` (branch, else last pushed sha), `import_conversation`, `mark_lost`, `launch` | `launch` | Removes the new clones; stays archived |
-| GIVE_OWN_COPY | `clone:<repo>`, `switch` | `switch` | Removes the new clone |
+| GIVE_OWN_COPY | `copy_code:<repo>`…, `move_conversation`, `launch`, `verify` (a fork on another machine: the machine's steps, mirrored; then the host records the new branch, D773) | `move_conversation` | Removes the new folder; the agent goes on in its parent's clones |
 | PUSH_AND_OPEN_PR | per repo `commit`, `push`, `open_pr` | first `push` | Before: nothing. After: finishes the repos already pushed, skips the rest, and says which |
 | ADD_REPO | `clone_main:<machine>`…, `record` | `record` | Removes clones made |
 | ADD_MACHINE | `connect`, `check`, `install`, `start`, `find_agents` | none | Stops the daemon it started and removes the binary it installed |
@@ -447,7 +507,14 @@ by the host over the stdio link the host started.
 - **Relayed calls (D139, D144, D146).** After ProveHost the link relays the
   calls the host may make (terminal, file, trash and diff; session start,
   stop, resume, get, list and branch-name preview; channel create and get;
-  operation get, watch and cancel; the event feed; HistoryService/ReadMirror)
+  operation get, watch and cancel; the event feed; HistoryService/ReadMirror;
+  a Desk folder's versions, `ListDocVersions`, `ReadDocVersion`,
+  `SaveDocVersion` and `RestoreDocVersion` (DV-2 to DV-8); a machine's Desk
+  folders' check and set-up, `CheckDeskFolders` and `MigrateDeskFolders`
+  (D458); and the machine's
+  own Storage page, `MachineService` `GetStorage`, `ClearBuildCache` and
+  `TrimLogs` (LD-13 to LD-15); the host relays those last two groups for the
+  user only, never for an agent)
   to the machine's own socket
   daemon, which runs them as the user's, marked as from the host. Before
   answering Hello the link calls `DaemonService.BeginRelay` on that socket and
@@ -483,6 +550,70 @@ by the host over the stdio link the host started.
   older machine fails Hello with `peer_version_unsupported`; Hosts offers
   Update, which reinstalls `humatad` while holders keep running (PER-5,
   PER-6).
+- Releases (UP-1, D281): Hello carries each side's `BuildInfo`; the bundle
+  id is the sha256 of the release's `bundle.json`. A machine at another
+  release links, but only to be migrated: the host posts a VIP Inbox
+  "Migrate the daemon on <machine>" item, and every launch, resume, attach,
+  typing or session call on that machine fails with `migration_needed` until
+  it is approved. Migrate streams the host's bundle, stages it as
+  `.<name>.next`, and calls `DaemonService.Upgrade`; the machine swaps in
+  place (holders keep running) and links back. A machine reports its own
+  old holders (`MachineToHost.holders`, D378) and the host posts their
+  Migrate item. There is no mixed-version fallback. The fields:
+  - **Which build** (build.proto): `BuildInfo` holds `version`, `bundle`,
+    `own_sha256`, `store_schema`, the bundle's `files` for this platform
+    and the holder and CLI `installed` in the daemon's bin folder (D371).
+    `bundle` is `""` when there is no `bundle.json`, it doesn't parse, or
+    the daemon's own sha256 isn't its platform's entry; `""` matches
+    nothing. A daemon at `""` (dev and test builds) posts no Migrate items
+    and refuses nothing (D290 l). It travels in `ServerInfo.build` (10),
+    `BeginRelayResponse.build` (2, read by the link before `ProveHost`),
+    `HelloRequest.host_build` (7) and `HelloResponse.build` (12).
+  - **The CLI** names its release in the `humata-bundle` metadata, which
+    the relay strips. A call that carries a CLI credential (session, script
+    or login token) or that header, and names another release or none, is
+    refused with `migration_needed` (thing CLI). `GetServerInfo` and
+    `Upgrade` are never refused (D290 m).
+  - **The item** is an `InboxRequest` of kind `REQUEST_KIND_MIGRATE` (8):
+    no requester, always VIP, one per (thing, machine) while pending, kept
+    in the store with no session. It is answered only with Approve, shown
+    as Migrate; Deny, Always, a reply and Allow all/Deny all skip it.
+    Its preview is `MigratePreview` (14): `thing` (`MigrateThing`: daemon,
+    CLI, store, holders, host tools, Desk folders), `machine`, `from`,
+    `to`, `changes`, `keeps_running`, `phase` (WAITING, MIGRATING,
+    FAILED), `last_error`, `waiting_sessions`, and (D379) `steps` (10) and
+    `holders` (11). `steps` are the `MigrateStep`s Migrate runs, each
+    PENDING, DOING, DONE or FAILED; they are set when Migrate is clicked,
+    saved with the item so they survive the daemon's restart, all DONE at
+    arrival, and on a failure the step under way is FAILED. A Holders item
+    has none. `holders` lists each session and shell on an old holder as a
+    `HolderSession` with its `HolderNote` (restarts when idle, restarting,
+    stays until closed). A second detection updates the item in place.
+    Approve returns at once with the item MIGRATING; arrival at the host's
+    release ends it APPROVED ("Migrated to <version>"); a failure keeps it
+    pending as FAILED with `last_error` and Migrate as the retry; a
+    mismatch that goes away by itself withdraws it with
+    `WITHDRAW_REASON_RESOLVED` (9). An older local daemon that can't hold
+    the kind gets an item the app holds itself (D374, D376).
+  - **The refusal** is `Error.migration_needed` (60), a `MigrationNeeded`
+    naming the `thing`, `machine`, the Inbox `request` that fixes it and
+    both builds, with `FAILED_PRECONDITION`. A terminal attach refused
+    after it opened ends its stream with the same error (D377). Reads keep
+    working.
+  - **Upgrade** is `DaemonService.Upgrade{to_bundle, upgrade_id, thing}`,
+    for the user or the host's link only. With the daemon's own bundle as
+    `to_bundle`, it swaps only the differing holder and CLI from their
+    `.next` copies, with no record and no restart (D371). The same
+    `upgrade_id` again answers as the first did. `thing = HOLDERS` swaps
+    nothing: it starts the machine's restart of agent sessions on old
+    holders onto the current one, and asking again while it runs changes
+    nothing (D378).
+  - **Holders on a machine** are reported in `MachineToHost.holders` (12),
+    a `HoldersReport` holding the whole list each time. Its `failed` (2,
+    D501) is why the machine's last restart of an agent failed; the host
+    shows that machine's Holders item FAILED with it and keeps Migrate on
+    offer. The next report without it puts the item back to WAITING, and
+    one listing no old holder ends it.
 
 ## 9. When the host is away
 
@@ -626,6 +757,25 @@ entries at or below the ack. `HelloResponse.journal_high_water` tells the
 host what to expect. If the disk is full, a journaled write fails with
 `disk_full` rather than being dropped.
 
+### 9.8 Views offered on a machine (VW-12, D225, D226)
+
+A session on another machine prepares its views there. When its agent marks
+a view ready (Draft to Waiting), the machine writes a `view.offered` entry
+holding the `PreparedView` to its journal before the agent hears of it.
+If the entry can't be kept, MarkReady fails and the view stays a draft, so
+the agent marks it ready again. Drafts and revisions are never journaled and
+stay on the machine.
+
+The host takes each `view.offered` entry into its own views once, in journal
+order. An entry is left out, logged and acked with nothing written when any
+of these fail: the operation is `view.offered`; the view decodes; its id
+starts with `vw_` and it is Waiting; the host placed its session on that
+machine; and the view's own session made the entry. A store failure holds
+the entry, so it comes again. A view the host already has is never
+overwritten, so what the user answered stands, and only a new view is told
+on the feed (D89). From then on the host owns the view's state: ListViews
+and SetViewState for the session answer from the host.
+
 ## 10. Errors
 
 Every failure is a gRPC status whose details hold one `humata.v1.Error`
@@ -642,8 +792,8 @@ code is for generic handling; clients branch on `Error.kind`, never on text.
 | `PERMISSION_DENIED` | `denied`, `user_only`, `presence_required`, `not_in_channel`, `parent_read_only`, `main_clone_read_only`, `push_refused` |
 | `UNAUTHENTICATED` | `identity_mismatch`, `peer_unproven` (the peer link's handshake: which step failed is in its `reason`) |
 | `ABORTED` | `revision_conflict`, `plan_stale`, `already_answered` |
-| `FAILED_PRECONDITION` | `unpushed_work`, `session_busy`, `agent_lacks_feature`, `resume_failed`, `request_withdrawn`, `user_away`, `pr_closed`, `skill_name_clash`, `login_needs_user`, `host_key_changed`, `not_cancellable`, `journal_entry_rejected`, `linger_unavailable`, `daemon_already_running`, `daemon_not_running`, `repo_not_visible`, `github_cli` (not signed in, missing scope), `provider_identity_invalid` |
-| `UNAVAILABLE` | `machine_offline`, `host_unreachable`, `ssh_failed` |
+| `FAILED_PRECONDITION` | `unpushed_work`, `no_default_branch`, `session_busy`, `agent_lacks_feature`, `resume_failed`, `request_withdrawn`, `user_away`, `pr_closed`, `skill_name_clash`, `login_needs_user`, `host_key_changed`, `host_key_unknown`, `not_cancellable`, `journal_entry_rejected`, `linger_unavailable`, `daemon_already_running`, `daemon_not_running`, `repo_not_visible`, `github_cli` (not signed in, missing scope), `provider_identity_invalid`, `migration_needed` (UP-1, D281: the call would run across releases; it names the thing, the machine, both builds and the Migrate Inbox item that fixes it) |
+| `UNAVAILABLE` | `machine_offline`, `host_unreachable`, `ssh_failed`, `host_needs_migrate` (an add's Operation error: the Linux tools the app brought are newer than This Mac's daemon; its `fix` says to migrate This Mac's daemon, then add again. The app offers Migrate This Mac inline) |
 | `RESOURCE_EXHAUSTED` | `disk_full`, `rate_limited` (its `fix` says to wait until `resets_at`; a token only raises the limit, it doesn't lift this one), `passphrase_locked` (SEC-13: five wrong tries; its `fix` says to wait until `until` or answer from the app, and that trying again early does not shorten the lock) |
 | `OUT_OF_RANGE` | `offset_trimmed` |
 | `UNIMPLEMENTED` | `peer_version_unsupported` |
@@ -652,18 +802,34 @@ code is for generic handling; clients branch on `Error.kind`, never on text.
 | `INTERNAL` | `internal` (incident id and log path, never a stack trace) |
 | `DEADLINE_EXCEEDED`, `CANCELLED` | the transport's own; no `Error` |
 
+A call the rules would ask the user about, on a daemon that can't raise the
+request, is `PERMISSION_DENIED` with kind `denied` and the capability named,
+never a bare `UNIMPLEMENTED`: agents read `UNIMPLEMENTED` with no kind as
+`peer_version_unsupported` (D768). `not_built`'s fix says where the call does
+work (the Humata app on the host Mac) and that updating helps only once a
+newer release builds it.
+
 `host_key_changed` is not retryable and its fix never says "accept the new
 key": it says the key differs from the one pinned, that this is what an
 interception looks like, and how to check the machine's real key before
 `TrustNewHostKey`.
 
 A first add has no pinned key: `AddSshMachine` without
-`trust_host_key_fingerprint` fails at `connect` with `host_key_changed`
-whose `expected_fingerprint` is empty and `presented_fingerprint` is the
-machine's key, for the user to check and confirm by sending the add again
-with that fingerprint. A
-fingerprint that doesn't match what the machine shows fails the same way
-and nothing is sent to it.
+`trust_host_key_fingerprint` fails at `connect` with `host_key_unknown`
+(`HostKeyUnknown`: `algorithm` and `presented_fingerprint`, the SHA256 form).
+That is a key to confirm, not a warning: nothing was pinned or sent, and the
+user checks it and sends the add again with that fingerprint.
+`host_key_changed` is only for a key that differs from one pinned or
+confirmed, and it names both (`expected_fingerprint`, `presented_fingerprint`). A
+fingerprint that doesn't match what the machine shows fails with
+`host_key_changed` (`expected_fingerprint` is the one typed, `presented_fingerprint`
+the machine's) and nothing is sent to it.
+
+`AddSshMachine` (and a provider's create) for a name whose removal was asked
+for and hasn't finished fails with `ABORTED` and no kind, not
+`name_taken`: the name frees itself once the removal ends, so the fix says to
+wait for it and add again (D760). `name_taken` is only for a machine that is
+listed and staying.
 
 ## 11. Versioning
 
@@ -674,7 +840,19 @@ and nothing is sent to it.
   it and treat unknown enum values as UNSPECIFIED.
 - The app and its host daemon ship together; the CLI and `humatad mcp` are
   the same binary as `humatad`, so a machine's clients always match its
-  daemon. Only the peer link spans versions (§8).
+  daemon. Only the peer link spans versions (§8), and only long enough to
+  migrate: any piece found at another release (a daemon, holders, the CLI
+  or host tools) is a Migrate Inbox item, and calls that would run across
+  releases fail with `migration_needed` (UP-1).
+- Stopping (D261, D265): `DaemonService.StopSessions` stops every session
+  on the machine as a shutdown would and keeps them stopped across restarts
+  until `StartSessions`. While stopped, launching, resuming, attaching and
+  typing fail with `FAILED_PRECONDITION`, whose `fix` says to start the
+  sessions first; reads keep working.
+- Machine scripts (D687): `RunMachineScript` returns an Operation of kind
+  `MACHINE_SCRIPT`, and every change of a run is announced as the event
+  payload `MachineScriptRunChanged` (`machine`, `run_id`) on the machines
+  topic; read the run with `ListMachineScriptRuns`. Nothing polls.
 - A breaking change would be `humata.v2`, served beside v1 for one release.
 
 ## 12. What is not here

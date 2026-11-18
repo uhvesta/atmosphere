@@ -9,12 +9,18 @@
 //! line doesn't copy the workspace.
 
 pub mod editor;
+mod continue_in;
 mod conversation;
 mod document;
+mod history;
+mod menu;
 mod message;
 mod tabs;
+pub use menu::{MenuItem, RenameDraft};
+pub use continue_in::ContinueDraft;
 pub use conversation::{Conversation, ConversationRead, ConversationTarget};
 pub use document::{DocumentEntry, DocumentMode, DocumentView, is_markdown};
+pub use history::{CompareDiff, DocCompare, DocHistory, HistoryAction, Position};
 use editor::{CodeMode, CodeView};
 pub use message::QueuedMessage;
 pub use tabs::{GroupWidth, Tab, TabGroup, group_widths};
@@ -23,7 +29,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use humata2_clients::model::{
-    Agent, Archive, ForkKind, Line, MachineId, Session, SessionId, Skill, Speaker, Turn,
+    Agent, Answer, Archive, ForkKind, Line, MachineId, MigrateThing, Request, RequestId, Session,
+    SessionId, Skill, Speaker, Turn,
 };
 use humata2_clients::{ArchivePlan, Clients, DaemonError, ForkOptions, PastTurn, Workspace};
 use serde::{Deserialize, Serialize};
@@ -169,6 +176,55 @@ pub struct ArchiveConfirm {
     pub sending: bool,
 }
 
+/// Why the daemon refused a session action, in a form the page can act on
+/// (D377).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionRefused {
+    /// Something on a machine is at another release than the host's, so the
+    /// action wasn't done until it is migrated.
+    MigrationNeeded {
+        /// What is behind.
+        thing: MigrateThing,
+        /// The machine it is on.
+        machine: MachineId,
+        /// The Migrate item that fixes it, when the daemon named one.
+        request: Option<RequestId>,
+    },
+}
+
+impl SessionRefused {
+    /// The refusal in `error`, if it is one.
+    fn of(error: &DaemonError) -> Option<Self> {
+        match error {
+            DaemonError::MigrationNeeded { thing, machine, request } => {
+                Some(Self::MigrationNeeded {
+                    thing: *thing,
+                    machine: machine.clone(),
+                    request: request.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether `migrations` show what this refusal waits for as migrated.
+    fn fixed_by(&self, migrations: &[Request]) -> bool {
+        let Self::MigrationNeeded { thing, machine, request } = self;
+        migrations.iter().any(|item| {
+            let approved = item.answer == Some(Answer::Approved);
+            match request {
+                Some(id) => &item.id == id && approved,
+                None => {
+                    approved
+                        && item
+                            .migrate()
+                            .is_some_and(|card| card.thing == *thing && card.machine == *machine)
+                }
+            }
+        })
+    }
+}
+
 /// The session pages' state.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionState {
@@ -181,10 +237,10 @@ pub struct SessionState {
     /// Output that arrived after the session's last snapshot, per session
     /// and terminal tab.
     pub live: HashMap<(SessionId, usize), Arc<Vec<Line>>>,
-    /// PTY output received so far, separate for every session and terminal.
-    pub terminal_bytes: HashMap<(SessionId, usize), Arc<Vec<u8>>>,
     /// The group whose plus menu is open.
     pub terminal_menu: Option<usize>,
+    /// The path of the clone whose Info row menu is open (PL-10).
+    pub clone_menu: Option<String>,
     /// Whether the open session's waiting messages are expanded.
     pub queue_expanded: bool,
     /// Queues awaiting explicit retry after a failed delivery.
@@ -198,6 +254,12 @@ pub struct SessionState {
     pub file_contents: BTreeMap<(SessionId, String, String), Result<String, DaemonError>>,
     /// Each session's Conversation tab entries, read from the host's mirror.
     pub conversations: BTreeMap<SessionId, Conversation>,
+    /// The versions of each open Markdown file of a Desk folder that keeps
+    /// them, by session and path (DV-3). Read through `history`.
+    pub histories: BTreeMap<(SessionId, String), DocHistory>,
+    /// The old version Compare with current was asked for (DV-7); the diff
+    /// view takes it as its base.
+    pub compare: Option<DocCompare>,
     /// Whether a message is on its way.
     pub sending: bool,
     /// A fork request is waiting for the client.
@@ -206,13 +268,31 @@ pub struct SessionState {
     pub fork: Option<ForkDraft>,
     /// The Move dialog, if open (MV-1).
     pub moving: Option<MoveDraft>,
+    /// The Continue in another channel dialog, if open (CV-8).
+    pub continuing: Option<ContinueDraft>,
     /// The Archive dialog, when the session holds unpushed work (MV-8).
     pub archiving: Option<ArchiveConfirm>,
+    /// The header's ⋯ menu is open (SE-7).
+    pub menu: bool,
+    /// The Rename dialog, if open (FC-17).
+    pub renaming: Option<RenameDraft>,
     /// What went wrong last, for the page's error banner.
     pub error: Option<String>,
+    /// What the daemon last refused the open session until a migration is
+    /// done; the page draws a Migrate-first notice from it.
+    pub refused: Option<SessionRefused>,
 }
 
 impl SessionState {
+    /// Records why a session action failed: a refusal the page draws as its
+    /// own notice, or an error for the banner.
+    fn fail(&mut self, error: &DaemonError) {
+        match SessionRefused::of(error) {
+            Some(refused) => self.refused = Some(refused),
+            None => self.error = Some(error.to_string()),
+        }
+    }
+
     /// The change a session's editor is on for a file, if it has a cursor.
     #[must_use]
     pub fn change(&self, session: &SessionId, repo: &str, path: &str) -> Option<usize> {
@@ -285,15 +365,6 @@ pub enum SessionAction {
         /// The line.
         line: Line,
     },
-    /// An ordered PTY chunk. Replayed bytes are ignored.
-    TerminalData {
-        session: SessionId,
-        tab: usize,
-        offset: usize,
-        bytes: Vec<u8>,
-    },
-    /// A terminal input/size operation failed.
-    TerminalFailed(DaemonError),
     /// A new snapshot of the session arrived, holding the agent tab's
     /// output so far.
     Snapshot(SessionId),
@@ -314,6 +385,17 @@ pub enum SessionAction {
         split: bool,
         result: Result<(usize, Session), DaemonError>,
     },
+    /// Open or close the menu of the Info clone row at this absolute path.
+    CloneMenu(Option<String>),
+    /// Copy an absolute path (PL-10).
+    CopyClonePath(String),
+    /// Show an absolute path on This Mac in Finder (PL-10).
+    RevealClone(String),
+    /// Finder could not show it; the message says why.
+    RevealFailed(String),
+    /// Start a shell tab of `session`, in `folder`, an absolute path on its
+    /// machine (PL-10, Open terminal here).
+    OpenTerminalIn { session: SessionId, folder: String },
     /// Open the selected Files path as a tab.
     OpenFile,
     /// Text came back from the session's host.
@@ -342,7 +424,8 @@ pub enum SessionAction {
     ShowLaterTurns,
     /// Repeat the open session's failed Conversation read.
     RetryConversation,
-    /// Open an opted-in prepared view in this session.
+    /// Open an opted-in prepared view in this session, by its id (the
+    /// `ViewId`'s string).
     OpenView(String),
     /// Close a tab; its process keeps running.
     CloseTab { group: usize, index: usize },
@@ -488,6 +571,24 @@ pub enum SessionAction {
     CancelMove,
     /// The daemon moved the session, or didn't.
     Moved(Result<(), DaemonError>),
+    /// Open the Continue in another channel dialog for the open session
+    /// (CV-8).
+    StartContinue,
+    /// Pick the channel to continue in.
+    ContinuePick(humata2_clients::model::ChannelId),
+    /// Open or close the "Continue from" list; opening it asks for the
+    /// session's turns.
+    ContinueTurnPicker(bool),
+    /// The session's turns arrived.
+    ContinueTurns(Result<Vec<PastTurn>, DaemonError>),
+    /// Continue from before this turn, or from now with `None` (CV-2).
+    ContinueBeforeTurn(Option<u32>),
+    /// Start the new session.
+    ConfirmContinue,
+    /// Close the dialog.
+    CancelContinue,
+    /// The daemon started the new session, or didn't.
+    Continued(Result<SessionId, DaemonError>),
     /// The daemon said what archiving would lose.
     ArchivePlanned {
         session: SessionId,
@@ -509,14 +610,41 @@ pub enum SessionAction {
     },
     /// Archive the open session.
     Archive,
+    /// Open or close the header's ⋯ menu (SE-7).
+    Menu(bool),
+    /// An item of the ⋯ menu was picked; the menu closes.
+    MenuPick(MenuItem),
+    /// Open the Rename dialog on the open session's title (FC-17).
+    StartRename,
+    /// The title typed in the Rename dialog.
+    RenameTitle(String),
+    /// Whether the branch is renamed from the new title too.
+    RenameBranch(bool),
+    /// Rename the open session as the dialog says.
+    ConfirmRename,
+    /// Close the Rename dialog without renaming.
+    CancelRename,
+    /// The rename finished; on failure the dialog stays with the error.
+    Renamed(Result<(), DaemonError>),
+    /// Stop the open session's agent; the session stays.
+    StopAgent,
     /// Pin or unpin the open session.
     TogglePin,
     /// Mark or unmark the open session very important.
     ToggleVip,
     /// A request finished; on failure its message is shown.
     Done(Result<(), DaemonError>),
+    /// A line typed into a terminal, or a writable attach to one, was
+    /// accepted or refused (D377). Only a "Migrate first" refusal is kept
+    /// here; the terminal view says any other failure itself.
+    Typed(Result<(), DaemonError>),
+    /// The Inbox's Migrate items changed: a refusal they show migrated is
+    /// over.
+    Migrations(Vec<Request>),
     /// Hide the error banner.
     DismissError,
+    /// The History strip and the version bar of a Markdown tab (DV-3 to DV-8).
+    History(HistoryAction),
     /// For the parent.
     Delegate(Delegate),
 }
@@ -525,13 +653,18 @@ pub enum SessionAction {
 #[derive(Clone)]
 pub struct Sessions {
     clients: Clients,
+    /// Messages queued so far, so keys made at one instant differ.
+    queued: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Sessions {
     /// Session pages that talk to `clients`.
     #[must_use]
-    pub const fn new(clients: Clients) -> Self {
-        Self { clients }
+    pub fn new(clients: Clients) -> Self {
+        Self {
+            clients,
+            queued: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
     }
 
     fn send(
@@ -542,8 +675,11 @@ impl Sessions {
     ) -> Effect<SessionAction> {
         let daemon = self.clients.daemon.clone();
         Effect::future(async move {
-            let QueuedMessage::Text(text) = &message;
-            let result = daemon.send(&session, text).await;
+            let text = message.text();
+            let result = match message.key() {
+                Some(key) => daemon.send_keyed(&session, &text, key).await,
+                None => daemon.send(&session, &text).await,
+            };
             SessionAction::Sent {
                 session,
                 index,
@@ -658,7 +794,10 @@ impl Sessions {
             return Effect::none();
         }
         let ended = workspace_session.turn == Turn::Ended
-            && matches!(workspace_session.agent, Agent::Claude | Agent::Copilot);
+            && matches!(
+                workspace_session.agent,
+                Agent::Claude | Agent::Copilot | Agent::OpenCode
+            );
         if !ended || state.views.get(session).is_none_or(|view| view.queue.is_empty()) {
             return Effect::none();
         }
@@ -713,13 +852,25 @@ impl Reducer for Sessions {
     #[allow(clippy::too_many_lines)]
     fn reduce(&self, state: &mut SessionState, action: SessionAction) -> Effect<SessionAction> {
         match action {
+            action @ (SessionAction::Menu(_)
+            | SessionAction::MenuPick(_)
+            | SessionAction::StartRename
+            | SessionAction::RenameTitle(_)
+            | SessionAction::RenameBranch(_)
+            | SessionAction::ConfirmRename
+            | SessionAction::CancelRename
+            | SessionAction::Renamed(_)
+            | SessionAction::StopAgent) => return self.menu(state, action),
+            action @ (SessionAction::StartContinue
+            | SessionAction::ContinuePick(_)
+            | SessionAction::ContinueTurnPicker(_)
+            | SessionAction::ContinueTurns(_)
+            | SessionAction::ContinueBeforeTurn(_)
+            | SessionAction::ConfirmContinue
+            | SessionAction::CancelContinue
+            | SessionAction::Continued(_)) => return self.continue_in(state, action),
+            SessionAction::History(action) => return self.history(state, action),
             SessionAction::Show(workspace) => {
-                for (key, bytes) in &workspace.terminal_bytes {
-                    let current = state.terminal_bytes.entry(key.clone()).or_default();
-                    if bytes.len() > current.len() {
-                        *current = Arc::new(bytes.clone());
-                    }
-                }
                 state.workspace = workspace;
                 let waiting: Vec<_> = state
                     .views
@@ -727,7 +878,8 @@ impl Reducer for Sessions {
                     .filter(|(_, view)| !view.queue.is_empty())
                     .map(|(id, _)| id.clone())
                     .collect();
-                let effects: Vec<_> = waiting.iter().map(|id| self.flush(state, id)).collect();
+                let mut effects: Vec<_> = waiting.iter().map(|id| self.flush(state, id)).collect();
+                effects.extend(self.sync_histories(state));
                 return Effect::merge(effects);
             }
             SessionAction::Restore(views) => state.views = views,
@@ -743,7 +895,10 @@ impl Reducer for Sessions {
                 state.open = Some(id.clone());
                 state.fork = None;
                 state.moving = None;
+                state.continuing = None;
                 state.archiving = None;
+                state.menu = false;
+                state.renaming = None;
                 state.error = None;
                 let unread = state
                     .workspace
@@ -785,26 +940,6 @@ impl Reducer for Sessions {
                     lines.drain(..extra);
                 }
             }
-            SessionAction::TerminalData {
-                session,
-                tab,
-                offset,
-                bytes,
-            } => {
-                let output = state.terminal_bytes.entry((session, tab)).or_default();
-                if offset > output.len() {
-                    state.error = Some(
-                        "Terminal output has a gap. Reconnect this host from Hosts to load its current output."
-                            .into(),
-                    );
-                } else {
-                    let skip = output.len() - offset;
-                    if skip < bytes.len() {
-                        Arc::make_mut(output).extend_from_slice(&bytes[skip..]);
-                    }
-                }
-            }
-            SessionAction::TerminalFailed(error) => state.error = Some(error.to_string()),
             SessionAction::Snapshot(session) => {
                 state.live.remove(&(session, 0));
             }
@@ -897,9 +1032,40 @@ impl Reducer for Sessions {
                         let view = state.views.entry(session).or_default();
                         view.ensure_groups(shells);
                         view.show_tab(Tab::Terminal(tab), group, split);
+                        state.refused = None;
                     }
-                    Err(error) => state.error = Some(error.to_string()),
+                    Err(error) => state.fail(&error),
                 }
+            }
+            SessionAction::CloneMenu(path) => state.clone_menu = path,
+            SessionAction::CopyClonePath(path) => {
+                state.clone_menu = None;
+                self.clients.clipboard.copy(&path);
+                return Effect::send(SessionAction::Delegate(Delegate::Toast("Copied the path".to_owned())));
+            }
+            SessionAction::RevealClone(path) => {
+                state.clone_menu = None;
+                let reveal = self.clients.reveal.clone();
+                return Effect::run(move |send| async move {
+                    if let Err(error) = reveal.reveal(&path) {
+                        send.send(SessionAction::RevealFailed(error.to_string()));
+                    }
+                });
+            }
+            SessionAction::RevealFailed(message) => state.error = Some(message),
+            SessionAction::OpenTerminalIn { session, folder } => {
+                state.clone_menu = None;
+                let group = state.views.get(&session).map_or(0, |view| view.focused_group);
+                let terminals = self.clients.terminals.clone();
+                return Effect::future(async move {
+                    let result = terminals.open_in(&session, Agent::Shell, &folder).await;
+                    SessionAction::TerminalOpened {
+                        session,
+                        group,
+                        split: false,
+                        result,
+                    }
+                });
             }
             SessionAction::OpenFile => {
                 let Some(session) = state.open.clone() else {
@@ -929,7 +1095,11 @@ impl Reducer for Sessions {
                 path,
                 result,
             } => {
-                state.file_contents.insert((session, repo, path), result);
+                let key = (session, repo, path);
+                let changed = state.file_contents.get(&key) != Some(&result);
+                state.file_contents.insert(key.clone(), result);
+                let (session, repo, path) = key;
+                return self.file_loaded_history(state, &session, &repo, &path, changed);
             }
             SessionAction::OpenConversation { session, turn, seq } => {
                 let target = ConversationTarget { turn, seq };
@@ -983,11 +1153,11 @@ impl Reducer for Sessions {
                 let target = conversation.target;
                 return self.read_conversation(session, target, read, first, last);
             }
-            SessionAction::OpenView(title) => {
+            SessionAction::OpenView(id) => {
                 let shells = open_session(state).map_or(0, |s| s.shells.len());
                 if let Some(view) = state.view_mut() {
                     view.ensure_groups(shells);
-                    view.show_tab(Tab::View(title), view.focused_group, false);
+                    view.show_tab(Tab::View(id), view.focused_group, false);
                 }
             }
             SessionAction::CloseTab { group, index } => {
@@ -1194,7 +1364,13 @@ impl Reducer for Sessions {
                     return Effect::none();
                 }
                 view.draft.clear();
-                view.queue.push(QueuedMessage::Text(text));
+                let position = view.queue.len();
+                let serial = self
+                    .queued
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let now = self.clients.clock.now();
+                view.queue
+                    .push(QueuedMessage::new(&id, position, text, now, serial));
                 return self.flush(state, &id);
             }
             SessionAction::SendNow | SessionAction::SendQueued(_) => {
@@ -1215,7 +1391,7 @@ impl Reducer for Sessions {
                 if let Some(view) = state.view_mut()
                     && index < view.queue.len()
                 {
-                    let QueuedMessage::Text(text) = view.queue.remove(index);
+                    let text = view.queue.remove(index).text();
                     let emptied = view.queue.is_empty();
                     if view.draft.trim().is_empty() {
                         view.draft = text;
@@ -1253,6 +1429,7 @@ impl Reducer for Sessions {
                 match result {
                     // The daemon echoes the message as output.
                     Ok(()) => {
+                        state.refused = None;
                         if let Some(view) = state.views.get_mut(&session)
                             && view.queue.get(index) == Some(&message)
                         {
@@ -1265,7 +1442,7 @@ impl Reducer for Sessions {
                     }
                     Err(error) => {
                         state.failed_queues.insert(session.clone());
-                        state.error = Some(error.to_string());
+                        state.fail(&error);
                     }
                 }
             }
@@ -1491,7 +1668,7 @@ impl Reducer for Sessions {
                 title,
                 result,
             } => match result {
-                Ok(plan) if plan.unpushed.is_empty() => {
+                Ok(plan) if plan.unpushed.is_empty() && plan.unsubmitted_drafts == 0 => {
                     return self.archive(session, title, false);
                 }
                 Ok(plan) => {
@@ -1557,9 +1734,21 @@ impl Reducer for Sessions {
                     return self.done(|daemon| daemon.set_vip(&id, vip));
                 }
             }
-            SessionAction::Done(result) => {
-                if let Err(error) = result {
-                    state.error = Some(error.to_string());
+            SessionAction::Done(result) => match result {
+                Ok(()) => state.refused = None,
+                Err(error) => state.fail(&error),
+            },
+            SessionAction::Typed(result) => match result {
+                Ok(()) => state.refused = None,
+                Err(error) => {
+                    if let Some(refused) = SessionRefused::of(&error) {
+                        state.refused = Some(refused);
+                    }
+                }
+            },
+            SessionAction::Migrations(migrations) => {
+                if state.refused.as_ref().is_some_and(|refused| refused.fixed_by(&migrations)) {
+                    state.refused = None;
                 }
             }
             SessionAction::DismissError => state.error = None,

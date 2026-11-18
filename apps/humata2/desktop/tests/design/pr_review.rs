@@ -376,8 +376,9 @@ fn draft_row(look: Look, place: &'static str, who: &'static str, text: &'static 
         .child(button(look, Kind::Secondary, "Drop"))
 }
 
-/// One PR's section: its drafts and its verdict.
-fn pr_section(look: Look, title: &'static str, drafts: Vec<Div>, verdict: usize) -> Div {
+/// One PR's section: its drafts and its verdict, and Add a summary for a PR
+/// whose review has no summary yet.
+fn pr_section(look: Look, title: &'static str, drafts: Vec<Div>, verdict: usize, add_summary: bool) -> Div {
     let last = drafts.len();
     card(look)
         .p(px(10.))
@@ -401,7 +402,8 @@ fn pr_section(look: Look, title: &'static str, drafts: Vec<Div>, verdict: usize)
                 .gap(px(10.))
                 .pt(px(6.))
                 .child(div().text_color(c(look.secondary)).child("Verdict"))
-                .child(segmented(look, &["Comment", "Approve", "Request changes"], verdict)),
+                .child(segmented(look, &["Comment", "Approve", "Request changes"], verdict))
+                .when(add_summary, |row| row.child(div().flex_1()).child(button(look, Kind::Secondary, "Add a summary"))),
         )
 }
 
@@ -417,13 +419,14 @@ pub fn submit_review(look: Look) -> Div {
             draft_row(look, "refund_test.rs:58", "You", "Add a case for three-way splits."),
         ],
         2,
+        false,
     );
-    let ledger = pr_section(look, "acme/ledger #91", vec![draft_row(look, "ledger.rs:33", "Claude Code", "Record the rounded amount, not the requested one.")], 0);
+    let ledger = pr_section(look, "acme/ledger #91", vec![draft_row(look, "ledger.rs:33", "Claude Code", "Record the rounded amount, not the requested one.")], 0, true);
     let summary = div()
         .flex()
         .flex_col()
         .gap(px(4.))
-        .child(label(look, "Summary · drafted by Claude Code"))
+        .child(label(look, "Summary for acme/api #482 · drafted by Claude Code"))
         .child(
             div()
                 .p(px(8.))

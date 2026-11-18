@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::PoisonError;
 use std::time::{Duration, SystemTime};
 
-use humata2_access::{AccessRequest, AnswerError, Decision};
+use humata2_access::{AccessRequest, AnswerError, Capability, Decision};
 use humata2_grpc::humata::v1 as pb;
 use tonic::Status;
 
@@ -263,6 +263,11 @@ impl Inbox {
             }
             return Ok(pb::RequestId { value: id });
         }
+        if asked.capability == Capability::DeskMoveToChannel {
+            // DK-19: a session has one pending move request; a new one
+            // withdraws the old.
+            self.withdraw_moves_of(&state.requests, &session).await?;
+        }
         let id = new_id();
         let decision = self.rule_now(&asked);
         let mut held = Held::new(card(&id, agent, &asked, decision, board));
@@ -277,6 +282,27 @@ impl Inbox {
         );
         state.add(entry);
         Ok(pb::RequestId { value: id })
+    }
+
+    /// Withdraws `session`'s pending requests to move it into a channel, as
+    /// superseded by the one it is asking now. Their calls never run.
+    async fn withdraw_moves_of(&self, requests: &[Entry], session: &str) -> Result<(), Status> {
+        let moves = requests.iter().filter(|entry| {
+            entry.session == session
+                && entry.access.as_ref().is_some_and(|asked| asked.capability == Capability::DeskMoveToChannel)
+        });
+        for entry in moves {
+            let mut next = entry.request.borrow().clone();
+            if next.request.state != pb::RequestState::Pending as i32 {
+                continue;
+            }
+            super::withdraw(&mut next.request, pb::WithdrawReason::Superseded);
+            let current = next.request.clone();
+            self.commit(entry, next, None, "save the withdrawal").await?;
+            entry.run.lock().unwrap_or_else(PoisonError::into_inner).take();
+            self.tell(pb::Change::Updated, &entry.session, &current);
+        }
+        Ok(())
     }
 
     /// A repeat of a call a restart cut off after it was approved runs it

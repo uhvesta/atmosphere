@@ -7,7 +7,8 @@ use humata2_app::{
 };
 use humata2_clients::desk::{self, Document};
 use humata2_clients::model::{MachineId, SessionId};
-use humata2_clients::{Clients, Fakes, Workspace, fixture};
+use humata2_clients::{Clients, FileRoot, Fakes, Folder, Workspace, fixture};
+use humata2_files::FilesAction;
 use humata2_desk::{Delegate, DeskAction as D, NewAction, Sort};
 use tca::{TestClock, TestStore};
 
@@ -305,6 +306,11 @@ fn archiving_a_desk_session_closes_it_and_returns_to_the_desk() {
     let id = SessionId::new("desk-plan-q4");
     let (mut store, fakes) = on_desk_session(&id);
     store.send(A::Session(humata2_session::SessionAction::Archive), |_| {});
+    // Its unkept folder holds files, so Close session asks first (DV-4).
+    let asked = store.state().desk.close.as_ref().map(|dialog| dialog.session.clone());
+    assert_eq!(asked, Some(id.clone()));
+    assert!(fakes.daemon.workspace().desk.sessions[&id].closed.is_none());
+    store.send(A::Desk(D::Close(id.clone())), |_| {});
     store.receive_matching(
         "the close finished",
         |a| matches!(a, A::Desk(D::Changed { result: Ok(()), .. })),
@@ -326,4 +332,64 @@ fn a_desk_session_cannot_be_forked() {
     );
     store.skip_received();
     assert!(store.state().session.fork.is_none());
+}
+
+/// D382: a Desk session has no repository, so Open folder shows its own
+/// folder, on the machine it runs on, in the file manager's active pane.
+#[test]
+fn open_folder_shows_a_desk_sessions_own_folder_in_files() {
+    let id = SessionId::new("desk-brin-rfc");
+    let workspace = desk_workspace();
+    let machine = workspace.session(&id).expect("the fixture's Desk session").machine.clone();
+    let shown = Arc::new(workspace.clone());
+    let (mut store, _fakes) = setup(workspace, Route::Session(id.clone()));
+    store.send(A::Files(FilesAction::Show(shown)), |_| {});
+
+    store.send(A::Desk(D::OpenFolder(id.clone())), |_| {});
+    store.receive_matching(
+        "the Desk asks for the folder",
+        |a| matches!(a, A::Desk(D::Delegate(Delegate::OpenFolder(_)))),
+        |_| {},
+    );
+
+    assert_eq!(store.state().route, Route::Files);
+    let side = store.state().files.active;
+    assert_eq!(
+        store.state().files.pane(side).folder,
+        Some(Folder::root(machine, FileRoot::SessionFolder { session: id })),
+    );
+}
+
+#[test]
+fn a_desk_change_reads_the_desk_again_from_the_daemon() {
+    let id = SessionId::new("desk-plan-q4");
+    let (mut store, _fakes) = setup(desk_workspace(), Route::Desk);
+    store.send(A::Desk(D::Close(id.clone())), |_| {});
+    store.receive_matching(
+        "the Desk read again",
+        |a| matches!(a, A::Loaded(Ok(_))),
+        |_| {},
+    );
+    assert!(store.state().workspace.desk.sessions[&id].closed.is_some());
+}
+
+#[test]
+fn opening_the_desk_page_reads_the_desk_again() {
+    let (mut store, fakes) = setup(desk_workspace(), Route::Home);
+    // Used elsewhere since the app last read the Desk.
+    fakes.daemon.use_desk_session(&SessionId::new("desk-tidy-infra"));
+    store.send(A::Navigate(Route::Desk), |_| {});
+    store.receive_matching(
+        "the Desk read again",
+        |a| matches!(a, A::Loaded(Ok(_))),
+        |_| {},
+    );
+    store.skip_received();
+    let first = store
+        .state()
+        .desk
+        .open()
+        .first()
+        .map(|row| row.session.id.clone());
+    assert_eq!(first, Some(SessionId::new("desk-tidy-infra")));
 }

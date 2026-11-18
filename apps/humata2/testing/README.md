@@ -38,7 +38,10 @@ test. This file says how to run these tools.
   same flows against real daemons.
 - `flow/tests/counter_list.rs` tries each kind of snapshot on a small
   counter-and-list view.
-- `linux/run.sh` runs Bazel test targets in the Linux VM.
+- `linux/run.sh` runs Bazel test targets in the Linux VM: Bazel builds them for
+  Linux here and runs each through `linux/in_vm.sh` (`--run_under`), so test
+  env, args, runfiles and caching work as for any Bazel test. `linux/BATCH.md`
+  is the runbook for the one VM batch.
 
 ## Nothing is shown on screen
 

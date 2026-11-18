@@ -187,6 +187,20 @@ pub enum StartError {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "could not fork the conversation {id}: {source}. Nothing was kept; fork with the code only, \
+         or fork from now once the agent has saved a turn"
+    )]
+    Conversation {
+        id: String,
+        #[source]
+        source: humata2_conversation::ConversationError,
+    },
+    #[error(
+        "this agent's conversation is in a format Humata can't fork; fork with the code only, \
+         or fork it as a handover to another agent"
+    )]
+    NoConversationFormat,
     #[error("could not copy to {path}: {source}; check the disk has space and is writable")]
     Copy {
         path: PathBuf,

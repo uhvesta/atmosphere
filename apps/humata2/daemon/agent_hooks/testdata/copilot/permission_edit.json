@@ -1,0 +1,1 @@
+{"sessionId":"c0p1-session","timestamp":1763251200000,"cwd":"/work/api","hook_event_name":"permissionRequest","toolName":"edit","toolInput":{"path":"/work/api/src/login.rs","old_str":"let a = 1;","new_str":"let a = 2;"}}

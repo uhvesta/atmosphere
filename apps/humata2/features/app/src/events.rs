@@ -10,6 +10,7 @@ impl App {
     pub(super) fn apply(&self, state: &mut AppState, event: Event) -> Effect<AppAction> {
         let workspace = Arc::make_mut(&mut state.workspace);
         let mut snapshot = None;
+        let mut left = false;
         let mut permission_alert = None;
         match event {
             Event::Output { session, tab, line } => {
@@ -18,23 +19,10 @@ impl App {
                     AppAction::Session(SessionAction::Output { session, tab, line }),
                 );
             }
-            Event::TerminalData {
-                session,
-                tab,
-                offset,
-                bytes,
-            } => {
-                return self.child(
-                    state,
-                    AppAction::Session(SessionAction::TerminalData {
-                        session,
-                        tab,
-                        offset,
-                        bytes,
-                    }),
-                );
-            }
             Event::Session(session) => {
+                // Archived from another window: leave its page here.
+                left = session.archived
+                    && state.route == crate::Route::Session(session.id.clone());
                 snapshot = Some(session.id.clone());
                 upsert(&mut workspace.sessions, session, |a, b| a.id == b.id);
             }
@@ -71,13 +59,52 @@ impl App {
                 workspace.items.retain(|item| item.id != id);
                 workspace.item_details.remove(&id);
             }
+            Event::Files { session, change } => return self.files_changed(state, session, change),
+            // GAP (D438): an open search isn't run again when the index
+            // catches up; the next keystroke searches the new entries.
+            Event::HistoryIndexed(_) => return Effect::none(),
+            // DESKWATCH: the Desk follows what the daemon tells, with no reload.
+            Event::Desk(change) => workspace.desk.apply(change),
+            // MACHINESCRIPTS (D686): the open machine page reads its runs again, and so does
+            // Settings > Machines while it is the page shown. Nothing else reads.
+            Event::MachineScriptRun(machine) => {
+                let mut effects = Vec::new();
+                if state.machine_page.machine.as_ref() == Some(&machine) {
+                    effects.push(self.machine_page(
+                        state,
+                        humata2_hosts::MachinePageAction::ScriptRunChanged(machine),
+                    ));
+                }
+                if state.route == crate::Route::Settings
+                    && state.settings.section == humata2_settings::Section::Machines
+                {
+                    effects.push(self.child(
+                        state,
+                        AppAction::Settings(humata2_settings::SettingsAction::Section(
+                            humata2_settings::Section::Machines,
+                        )),
+                    ));
+                }
+                return Effect::merge(effects);
+            }
             Event::Restart(restart) => return self.heard_restart(state, restart),
             Event::ChannelSetup(setup) => return self.heard_setup(state, setup),
             Event::Resync => return self.load(),
         }
         let mut effects = vec![self.show(state)];
+        if left {
+            effects.push(self.handle(
+                state,
+                AppAction::Session(SessionAction::Delegate(humata2_session::Delegate::Left)),
+            ));
+        }
         if let Some(text) = permission_alert {
             effects.push(state.toast(text, &self.clients.clock));
+        }
+        // A session event can be the one that marks the open page a review
+        // after it was arrived at: follow it now.
+        if let Some(id) = snapshot.as_ref().filter(|id| state.route == crate::Route::Session((*id).clone())) {
+            effects.push(self.follow_review(state, id));
         }
         if let Some(id) = snapshot {
             effects.push(self.child(state, AppAction::Session(SessionAction::Snapshot(id))));

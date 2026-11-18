@@ -24,6 +24,10 @@ rust_test(
         name = "terminal_replica" + engine,
         srcs = ["src/replica.rs"],
         crate_name = "terminal_replica",
+        visibility = [
+            "//apps/humata2/terminal/web:__pkg__",
+            "//apps/humata2/ui:__pkg__",
+        ],
         deps = [
             "//apps/humata2/terminal/pane:terminal_pane" + engine,
             "//apps/humata2/terminal/provider",

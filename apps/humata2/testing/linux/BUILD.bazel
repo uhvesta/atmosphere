@@ -1,0 +1,11 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# in_vm.sh is run.sh's --run_under wrapper: it runs one Bazel test inside the
+# humata2-linux VM. This test drives it against a fake limactl, so it runs on
+# any host with no VM.
+sh_test(
+    name = "in_vm_test",
+    srcs = ["in_vm_test.sh"],
+    args = ["$(rootpath :in_vm.sh)"],
+    data = [":in_vm.sh"],
+)

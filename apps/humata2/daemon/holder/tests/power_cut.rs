@@ -99,6 +99,20 @@ async fn print_then_cut(dir: &Path, at: CutAt) -> Vec<u8> {
     .await
     .expect("the holder didn't die at the cut");
     assert!(cut, "the holder ended before it was cut");
+    // The client's connection can close before the cut holder is gone: it
+    // still listens while it undoes what it didn't sync and its SIGKILL
+    // lands. Power comes back only once it is off, so wait for it to exit
+    // (it is this process's child) before a new holder takes the socket.
+    let cut_pid = pid(spawned.pid);
+    tokio::time::timeout(
+        WAIT,
+        tokio::task::spawn_blocking(move || {
+            let _ = rustix::process::waitpid(Some(cut_pid), rustix::process::WaitOptions::empty());
+        }),
+    )
+    .await
+    .expect("the cut holder never exited")
+    .unwrap();
     seen
 }
 
@@ -109,7 +123,10 @@ async fn restart(dir: &Path) -> (u64, Vec<u8>) {
     let saved = read_saved(&saved_scrollback_path(&socket))
         .unwrap()
         .expect("the cut holder left nothing saved");
-    let spawned = spawn(&spec(dir, "exec sleep 60", Vec::new())).unwrap();
+    let spawned = spawn(&spec(dir, "exec sleep 60", Vec::new())).unwrap_or_else(|error| {
+        let log = std::fs::read_to_string(dir.join("holder.log")).unwrap_or_default();
+        panic!("the holder after the cut didn't start: {error}; its log:\n{log}")
+    });
     let attached = attach(&socket, 0).await.unwrap();
     let mut events = attached.events;
     let mut shown = Vec::new();
@@ -176,4 +193,67 @@ async fn a_cut_mid_burst_resumes_past_what_was_sent() {
 #[tokio::test]
 async fn a_cut_after_a_sync_keeps_what_was_synced() {
     check(CutAt::AfterASync).await;
+}
+
+/// Waits until the holder on `socket` says its saved output is synced
+/// through at least `end`.
+async fn synced_to(socket: &Path, end: u64) {
+    let marker = socket.with_extension("synced");
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let synced = std::fs::read_to_string(&marker)
+                .ok()
+                .and_then(|text| text.trim().parse::<u64>().ok());
+            if synced.is_some_and(|synced| synced >= end) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the holder never said its output was synced that far");
+}
+
+#[tokio::test]
+async fn output_the_holder_says_is_synced_survives_a_cut() {
+    let dir = tempfile::Builder::new().prefix("h2c").tempdir_in("/tmp").unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    let env = vec![
+        ("HUMATA2_POWER_CUT_ROOTS".into(), root.clone().into_os_string()),
+        ("HUMATA2_POWER_CUT_SPARE".into(), dir.path().join("spare").into_os_string()),
+    ];
+    let script = "i=0; while [ $i -lt 200 ]; do echo line$i; i=$((i+1)); done; exec sleep 60";
+    let spawned = spawn(&spec(dir.path(), script, env)).unwrap();
+    let socket = root.join("t.sock");
+    let attached = attach(&socket, 0).await.unwrap();
+    let _control = attached.control;
+    let mut events = attached.events;
+    let mut seen = Vec::new();
+    tokio::time::timeout(WAIT, async {
+        while !String::from_utf8_lossy(&seen).contains("line199") {
+            match events.next().await.unwrap() {
+                Some(Event::Output { data, .. }) => seen.extend(data),
+                Some(_) => {}
+                None => panic!("the holder closed the connection before the program printed everything"),
+            }
+        }
+    })
+    .await
+    .expect("the program's output never all arrived");
+
+    synced_to(&socket, seen.len() as u64).await;
+    rustix::process::kill_process(pid(spawned.pid), Signal::USR2).unwrap();
+    tokio::time::timeout(WAIT, async { while let Ok(Some(_)) = events.next().await {} })
+        .await
+        .expect("the holder didn't die at the cut");
+    let (_, shown) = restart(dir.path()).await;
+
+    assert!(
+        shown.len() >= seen.len(),
+        "the holder said {} bytes were synced, but only {} came back after the cut",
+        seen.len(),
+        shown.len()
+    );
+    assert_eq!(&shown[..seen.len()], &seen[..], "what came back after the cut isn't what was printed");
 }

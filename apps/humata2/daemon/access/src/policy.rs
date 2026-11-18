@@ -9,7 +9,10 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use crate::call::{BoardAct, BoardRef, Call, GrantTarget, PathScope, Place, Root, Target};
+use crate::call::{
+    BoardAct, BoardRef, Call, GrantTarget, MachineAction, MachineActionKind, PathScope, Place, Root,
+    Target,
+};
 use crate::capability::{AwayRule, Capability as C, Capability, ChannelRules, Decision, Tier};
 use crate::desk::{is_desk_channel, switch_allows};
 use crate::error::{AnswerError, CheckError, PolicyError};
@@ -138,7 +141,7 @@ impl Policy {
         call: &Call,
         context: &Context,
     ) -> Result<Verdict, CheckError> {
-        let channel = &agent.session.channel;
+        let channel = governing_channel(agent, call);
         let rules = self.rules(channel)?;
         if rules.decision(C::InboxAsk) == Some(Decision::Never) {
             return Ok(never(channel, C::InboxAsk));
@@ -156,7 +159,7 @@ impl Policy {
         if decision == Decision::Never {
             return Ok(never(channel, need.capability));
         }
-        if switch_allows(&agent.kind, need.capability) {
+        if switch_allows(&agent.kind, need.capability, call) {
             return Ok(allowed_now(Source::DeskSwitch));
         }
         if let Some(grant) = self.covering_grant(agent, &need) {
@@ -168,7 +171,7 @@ impl Policy {
             }));
         }
         let reach = reach(call, Some(need.capability), &context.here);
-        Ok(ask(agent, call, need, reach, context, rules, true))
+        Ok(ask(agent, call, need, reach, context, channel, rules, true))
     }
 
     fn check_agent(
@@ -177,7 +180,7 @@ impl Policy {
         call: &Call,
         context: &Context,
     ) -> Result<Verdict, CheckError> {
-        let channel = &agent.session.channel;
+        let channel = governing_channel(agent, call);
         let rules = self.rules(channel)?;
         let away = Some(rules.away());
         let need = match resolve_agent(agent, call)? {
@@ -206,7 +209,7 @@ impl Policy {
         if decision == Decision::Never {
             return Ok(never(channel, need.capability));
         }
-        if switch_allows(&agent.kind, need.capability) {
+        if switch_allows(&agent.kind, need.capability, call) {
             return Ok(carry_out(Source::DeskSwitch, reach, context, away));
         }
         if let Some(grant) = self.covering_grant(agent, &need) {
@@ -215,7 +218,7 @@ impl Policy {
         if decision == Decision::Allow {
             return Ok(carry_out(Source::Rule, reach, context, away));
         }
-        Ok(ask(agent, call, need, reach, context, rules, false))
+        Ok(ask(agent, call, need, reach, context, channel, rules, false))
     }
 
     fn rules(&self, channel: &ChannelId) -> Result<&ChannelRules, CheckError> {
@@ -676,7 +679,7 @@ fn resolve_agent(agent: &Agent, call: &Call) -> Result<Resolved, CheckError> {
 fn read_place(agent: &Agent, place: &Place) -> Resolved {
     let me = &agent.session;
     match &place.root {
-        Root::Outside | Root::Home => refuse(Refusal::OutsideHumataFolders {
+        Root::Outside | Root::Home | Root::Pastes(_) | Root::Received => refuse(Refusal::OutsideHumataFolders {
             machine: place.machine.clone(),
         }),
         Root::Clone(owner) => {
@@ -712,7 +715,13 @@ fn write_place(agent: &Agent, place: &Place) -> Resolved {
         })
     };
     match &place.root {
-        Root::Outside | Root::Home => refuse(Refusal::OutsideHumataFolders {
+        // A send to another machine by name lands in its received/ folder;
+        // as with shared/ there, the session on that machine pulls (D755).
+        Root::Received if place.machine != me.machine => refuse(Refusal::SharedOnOtherMachine {
+            machine: place.machine.clone(),
+            here: me.machine.clone(),
+        }),
+        Root::Outside | Root::Home | Root::Pastes(_) | Root::Received => refuse(Refusal::OutsideHumataFolders {
             machine: place.machine.clone(),
         }),
         Root::MainClone { repo, .. } => refuse(Refusal::MainCloneReadOnly {
@@ -732,7 +741,11 @@ fn write_place(agent: &Agent, place: &Place) -> Resolved {
             } else if place.machine == me.machine {
                 need(C::SharedWrite)
             } else {
-                not_its()
+                // D755: a hard limit, not a rule; the session there pulls.
+                refuse(Refusal::SharedOnOtherMachine {
+                    machine: place.machine.clone(),
+                    here: me.machine.clone(),
+                })
             }
         }
         Root::ChannelFolder(_) => not_its(),
@@ -802,11 +815,37 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
             need(C::ChannelRead)
         }
         (C::ChannelRead | C::GlobalRead, Target::Channel(_) | Target::Global) => need(C::GlobalRead),
+        // A Desk agent belongs to no channel: its asks are filed under the
+        // Desk channel id it carries, which is its own (D182.3).
+        (C::InboxAsk, Target::Channel(channel))
+            if matches!(agent.kind, SessionKind::Desk(_)) && channel == &me.channel =>
+        {
+            need(C::InboxAsk)
+        }
         (
             C::ViewsPrepare | C::ReviewDraft | C::InboxAsk | C::PrReviewStart | C::TrashRestore
             | C::ChannelChange,
             Target::Channel(channel),
         ) => in_channel(agent, channel, need(capability)),
+        // A channel agent proposes for its own channel only; a Desk agent
+        // belongs to no channel and may propose for any (CH-26, D304).
+        (C::ChannelRepoAdd, Target::Channel(channel)) => {
+            if matches!(agent.kind, SessionKind::Desk(_)) {
+                need(C::ChannelRepoAdd)
+            } else {
+                in_channel(agent, channel, need(C::ChannelRepoAdd))
+            }
+        }
+        // Only a Desk session's agent asks to move its own session into a
+        // channel, and the target channel's rule decides (DK-15, D305). A
+        // channel session is already in one.
+        (C::DeskMoveToChannel, Target::Channel(channel)) => {
+            if matches!(agent.kind, SessionKind::Desk(_)) {
+                need(C::DeskMoveToChannel)
+            } else {
+                other_channel(channel)
+            }
+        }
         (C::ChannelCreate, Target::Global) => need(C::ChannelCreate),
         (C::SessionNote | C::SessionType, Target::Session(session)) => {
             if session.id == me.id {
@@ -819,11 +858,11 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
                 )
             }
         }
-        (C::OwnSessionEnd | C::SessionStopOther, Target::Session(session)) => {
+        (C::OwnSessionEnd | C::SessionStopOther | C::SessionDeleteOther, Target::Session(session)) => {
             if session.id == me.id {
                 need(C::OwnSessionEnd)
             } else {
-                in_channel(agent, &session.channel, need(C::SessionStopOther))
+                in_channel(agent, &session.channel, need(capability))
             }
         }
         (C::OwnSessionManage, Target::Session(session)) if session.id == me.id => {
@@ -852,6 +891,7 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
                 channel,
                 machine,
                 agent: kind,
+                fork_of: _,
             },
         ) => {
             let capability = if machine == &me.machine {
@@ -872,7 +912,8 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
             }),
             SessionKind::Ordinary
             | SessionKind::ContextOnlyFork { .. }
-            | SessionKind::Desk(_) => {
+            | SessionKind::Desk(_)
+            | SessionKind::ChannelDesk(_) => {
                 need_exactly(C::GitPush, GrantTarget::RepoBranch(branch.clone()))
             }
         },
@@ -880,7 +921,9 @@ fn use_need(agent: &Agent, capability: Capability, target: &Target) -> Result<Re
         (C::NetworkReach, Target::Network(network)) if network.machine == me.machine => {
             need_exactly(C::NetworkReach, GrantTarget::Network(network.clone()))
         }
-        (C::MachineProvision | C::MachineDestroy, Target::Machine(action)) => need_exactly(
+        // MACHINESCRIPTS (D688): run now has no per-machine action kind; the channel's switch decides.
+        (C::MachineScriptRun, Target::Global | Target::Machine(_)) => need(C::MachineScriptRun),
+        (C::MachineProvision | C::MachineDestroy | C::MachineSessionsStop, Target::Machine(action)) => need_exactly(
             action.action.capability(),
             GrantTarget::MachineAction(action.clone()),
         ),
@@ -900,6 +943,18 @@ fn no_rule(capability: Capability) -> Refusal {
         | Tier::NeverByDefault => Refusal::UserOnly {
             capability: Some(capability),
         },
+    }
+}
+
+/// The channel whose rules decide `call`: the target channel when a Desk
+/// agent asks to move into it (DK-15, D305), else the agent's own.
+fn governing_channel<'a>(agent: &'a Agent, call: &'a Call) -> &'a ChannelId {
+    match call {
+        Call::Use {
+            capability: C::DeskMoveToChannel,
+            target: Target::Channel(channel),
+        } if matches!(agent.kind, SessionKind::Desk(_)) => channel,
+        _ => &agent.session.channel,
     }
 }
 
@@ -950,6 +1005,10 @@ fn reach(call: &Call, capability: Option<Capability>, here: &MachineId) -> Reach
             (_, BoardAct::Add | BoardAct::Edit { .. }) => Reach::ChannelWrite,
         },
         Call::Use { target, .. } => match target {
+            Target::Machine(MachineAction {
+                machine,
+                action: MachineActionKind::StopSessions | MachineActionKind::StartSessions,
+            }) => local_if(machine, Reach::Host),
             Target::Global | Target::Network(_) | Target::Push(_) | Target::Machine(_) => {
                 Reach::Host
             }
@@ -998,10 +1057,11 @@ fn ask(
     need: Need,
     reach: Reach,
     context: &Context,
+    channel: &ChannelId,
     rules: &ChannelRules,
     ahead: bool,
 ) -> Verdict {
-    let channel = agent.session.channel.clone();
+    let channel = channel.clone();
     let capability = need.capability;
     let request = |answer_at| AccessRequest {
         capability,
@@ -1056,6 +1116,8 @@ fn file_hard_limit(call: &Call) -> Option<Refusal> {
         | Root::Shared(_)
         | Root::ChannelFolder(_)
         | Root::Home
+        | Root::Pastes(_)
+        | Root::Received
         | Root::Outside => None,
     };
     match call {

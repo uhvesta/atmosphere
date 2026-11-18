@@ -108,7 +108,9 @@ async fn sigkill_before_holder_ready_preserves_exact_startup_recovery_reservatio
         &wrapper,
         r#"#!/bin/sh
 root=$(dirname "$0")
-printf '%s' "$$" > "$root/paused-pid"
+# Written aside and renamed, so the test never reads it half written.
+printf '%s' "$$" > "$root/paused-pid.part"
+mv "$root/paused-pid.part" "$root/paused-pid"
 while [ ! -f "$root/release" ]; do sleep 0.05; done
 IFS= read -r holder < "$root/real-holder"
 exec "$holder" "$@"

@@ -55,7 +55,7 @@ Layer: micro. Platforms: macOS, Linux.
 9. **I do:** I select text and choose **Edit > Copy** from the menu bar.
    **I see:** The selected text is copied. Pasting shows it.
    **State and events:** The menu item is `input::Copy` (`desktop/src/main.rs:244`). The terminal view has no handler for that action. Its text input handler reports no selected text (`terminal/view/src/view.rs:1541-1557`), so there is nothing for the menu to copy.
-   **Status:** Likely bug. `desktop/src/main.rs:244` routes Copy to an action that the terminal does not handle, and the terminal's input handler returns an empty selection. Confirm: select text in a shell tab, choose **Edit > Copy**, then paste. Expect the old clipboard text, or nothing new.
+   **Status:** Fakes only. The terminal handles Edit > Copy as it does ⌘C, so the selection reaches the clipboard (`terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all`, `terminal/pane/tests/pane.rs::select_all_then_copy_takes_the_whole_history`). No test chooses the menu item in the app on a real shell.
 
 10. **I do:** A program in the shell writes to the clipboard with OSC 52, for example `printf '\033]52;c;aGVsbG8=\007'`.
     **I see:** The clipboard now holds `hello`. Nothing is asked.
@@ -134,7 +134,7 @@ Layer: micro. Platforms: macOS, Linux.
 | 6. Selection in scrollback | Fakes only | `terminal/vt/tests/selection.rs::a_selection_can_reach_into_scrollback` |
 | 7. ⌘C with nothing selected | Code, no test | `terminal/pane/src/host.rs:361-369` |
 | 8. ⌃C with a selection | Fakes only | `terminal/pane/tests/pane.rs::typed_keys_reach_the_program_in_its_encoding` (no selection) |
-| 9. Edit > Copy | Likely bug | `desktop/src/main.rs:244`, `terminal/view/src/view.rs:1541-1557` |
+| 9. Edit > Copy | Fakes only | `terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all`, `terminal/pane/tests/pane.rs::select_all_then_copy_takes_the_whole_history` |
 | 10. OSC 52 write, local | Fakes only | `terminal/pane/tests/pane.rs::titles_bells_and_clipboard_writes_are_told_to_the_app` |
 | Branch: program that takes the mouse | Fakes only | `terminal/pane/tests/pane.rs::programs_that_take_the_mouse_get_it_unless_shift_is_held` |
 | Branch: output while selecting | Code, no test | `terminal/view/src/view.rs:357-364` |
@@ -145,6 +145,6 @@ Layer: micro. Platforms: macOS, Linux.
 ## Gaps and likely bugs
 
 - Not built: a prompt that asks the person before a program reads the clipboard with OSC 52. `terminal/lab/ACCEPTANCE.md` line 129 lists consent for clipboard reads as a host integration still to do. No milestone covers it.
-- Likely bug: Edit > Copy does nothing in a terminal. `desktop/src/main.rs:244` routes to `input::Copy`, which the terminal does not handle, and `terminal/view/src/view.rs:1541-1557` reports no selected text. Confirm as in step 9.
+- Fixed: Edit > Copy copies the terminal's selection (`terminal/view/tests/view.rs::the_edit_menu_copies_pastes_and_selects_all`, Fakes only).
 - Likely bug: the app drops terminal events it does not name, including clipboard read requests. `ui/src/terminals.rs:211` is a catch-all `_ => {}`. The same arm drops bells, title changes and working-directory changes. Confirm by sending an OSC 52 read from a shell and watching that nothing is asked.
 - Note on double-click copy: `:` is a word boundary (`terminal/view/src/selection.rs:10`), so a double-click on a path with a line number copies only the path part. That bug is in micro-12, step 3.

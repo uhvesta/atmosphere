@@ -8,14 +8,17 @@
 //! their terminals are on the old machine, and the agent starts a new one
 //! when it resumes.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
 
+use prost::Message;
 use rusqlite::Connection;
 use rusqlite::types::Value;
 
 use crate::channel_snapshot::{insert_rows, remove_side, rows_of, side_error};
 use crate::store::check_id;
-use crate::{Store, StoreError, schema};
+use crate::{Store, StoreError, blob, proto, schema};
 
 /// A table whose rows belong to a session.
 struct Carried {
@@ -28,17 +31,63 @@ struct Carried {
     /// `(inline column, file column)` of a blob that may live in a file of
     /// the state folder; the side file keeps it inline.
     blob: Option<(&'static str, &'static str)>,
+    /// Columns that hold a path as bytes, which a moved session's import
+    /// rebases (MV-16, D336).
+    paths: &'static [&'static str],
 }
 
 /// Parents come before the tables that reference them.
+///
+/// Every table with a row for the session is here (D336) except the ones that
+/// aren't the session's to move: `last_copies` (the host's answers to a
+/// machine's reads, by request hash) and the Migrate items of
+/// `inbox_requests`, which are about a machine, not a session. A review
+/// session's binding (`review_sessions`, `review_session_prs`) moves with it
+/// (PR-21), so the machine it lands on knows its clones as a review's; the
+/// marks and history of the pull requests' reviewed commits are keyed by
+/// the pull request, not the session, and stay with the host. The rest of `inbox_requests` and the AW-9 summary in
+/// `away_left_out` move with it, so what the agent asked and what the host
+/// left out of its replayed writes are still there where it runs.
+///
+/// A machine that already holds the session's record (`Take::AgentOnly`, the
+/// host) takes only what is the agent's own: its launch, interruptions, the
+/// conversations it left and its fresh seed. Everything the host keeps about
+/// the session itself (Desk rows, fork origin, archive, comments, Inbox,
+/// AW-9 summary) is the host's, and stays.
 const CARRIED: &[Carried] = &[
-    Carried { name: "sessions", scope: "id = ?1", record: true, blob: None },
-    Carried { name: "session_details", scope: "session = ?1", record: true, blob: None },
-    Carried { name: "session_repos", scope: "session = ?1", record: true, blob: None },
-    Carried { name: "agents", scope: "session = ?1", record: false, blob: Some(("launch", "launch_file")) },
-    Carried { name: "interruptions", scope: "session = ?1", record: false, blob: None },
-    Carried { name: "reviews", scope: "session = ?1", record: true, blob: Some(("state", "state_file")) },
-    Carried { name: "views", scope: "session = ?1", record: true, blob: Some(("view", "view_file")) },
+    Carried { name: "sessions", scope: "id = ?1", record: true, blob: None, paths: &["folder"] },
+    Carried { name: "session_details", scope: "session = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "session_repos", scope: "session = ?1", record: true, blob: None, paths: &["path"] },
+    Carried {
+        name: "agents",
+        scope: "session = ?1",
+        record: false,
+        blob: Some(("launch", "launch_file")),
+        paths: &[],
+    },
+    Carried { name: "interruptions", scope: "session = ?1", record: false, blob: None, paths: &[] },
+    Carried { name: "review_sessions", scope: "session = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "review_session_prs", scope: "session = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "reviews", scope: "session = ?1", record: true, blob: Some(("state", "state_file")), paths: &[] },
+    Carried { name: "views", scope: "session = ?1", record: true, blob: Some(("view", "view_file")), paths: &[] },
+    Carried { name: "desk_sessions", scope: "session_id = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "channel_desk_sessions", scope: "session_id = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "previous_conversations", scope: "session_id = ?1", record: false, blob: None, paths: &["path"] },
+    Carried { name: "fresh_seeds", scope: "session_id = ?1", record: false, blob: None, paths: &[] },
+    Carried { name: "fork_origins", scope: "session_id = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "archives", scope: "session_id = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "comments", scope: "session = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "comment_deliveries", scope: "session = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "comment_numbers", scope: "session = ?1", record: true, blob: None, paths: &[] },
+    Carried { name: "doc_comment_records", scope: "session = ?1", record: true, blob: None, paths: &[] },
+    Carried {
+        name: "inbox_requests",
+        scope: "session = ?1 AND migrate_thing IS NULL",
+        record: true,
+        blob: Some(("entry", "entry_file")),
+        paths: &[],
+    },
+    Carried { name: "away_left_out", scope: "session = ?1", record: true, blob: None, paths: &[] },
 ];
 
 /// How much of a snapshot a machine takes in.
@@ -107,12 +156,30 @@ impl Store {
     /// state already holds in those tables are replaced. The side file is
     /// left where it is.
     pub fn import_session(&self, session: &str, side: &Path, take: Take) -> Result<(), StoreError> {
+        self.import_with(session, side, take, &[], false)
+    }
+
+    fn import_with(
+        &self,
+        session: &str,
+        side: &Path,
+        take: Take,
+        moves: &[(PathBuf, PathBuf)],
+        moved: bool,
+    ) -> Result<(), StoreError> {
         check_id(session)?;
         let source = schema::open(side)?;
         let mut tables = Vec::new();
         for table in CARRIED.iter().filter(|table| take == Take::Everything || !table.record) {
-            let (names, rows) = rows_of(&source, table.name, None)
+            let (names, mut rows) = rows_of(&source, table.name, None)
                 .map_err(side_error(side, "read the session's records"))?;
+            rebase_rows(table, &names, &mut rows, moves);
+            if table.name == "agents" {
+                self.rebase_launches(&names, &mut rows, moves)?;
+                if moved {
+                    stop_agents(&names, &mut rows);
+                }
+            }
             tables.push((table, names, rows));
         }
         drop(source);
@@ -141,6 +208,101 @@ impl Store {
             Ok(())
         })?;
         self.inner().sweep().map(drop)
+    }
+
+    /// As [`Store::import_session`], for a session moved to another folder
+    /// or machine (MV-13, MV-16, D336): every path the store keeps for the
+    /// session (`sessions.folder`, `session_repos.path`, the agent launch's
+    /// `folder` and `conversation_file`, `previous_conversations.path`) is
+    /// moved from under the first `from` of `moves` it lies in, by whole
+    /// path components, to under its `to`, in the same transaction. A path
+    /// under no `from` is kept. Blobs the daemon encodes (archive
+    /// summaries, comments, Inbox entries) are carried as they are; the
+    /// launch record is decoded, rebased and encoded again.
+    pub fn import_moved_session(
+        &self,
+        session: &str,
+        side: &Path,
+        take: Take,
+        moves: &[(PathBuf, PathBuf)],
+    ) -> Result<(), StoreError> {
+        self.import_with(session, side, take, moves, true)
+    }
+
+    /// Rebases the folder and conversation file of each agent launch in
+    /// `rows` (the `agents` rows of a side file, launch inline).
+    fn rebase_launches(
+        &self,
+        names: &[String],
+        rows: &mut [Vec<Value>],
+        moves: &[(PathBuf, PathBuf)],
+    ) -> Result<(), StoreError> {
+        let Some(at) = names.iter().position(|name| name == "launch") else {
+            return Ok(());
+        };
+        let inner = self.inner();
+        for row in rows {
+            let Value::Blob(bytes) = &row[at] else { continue };
+            let what = || "an agent's launch record".to_owned();
+            let (version, body) =
+                blob::read(&inner.blobs, &inner.database, Some(bytes.clone()), None, blob::Type::AgentLaunch, what)?;
+            let mut launch = proto::AgentLaunch::decode(body.as_slice()).map_err(|_| StoreError::Damaged {
+                path: inner.database.clone(),
+                what: what(),
+                reason: "how it was launched is unreadable",
+            })?;
+            for path in [&mut launch.folder, &mut launch.conversation_file] {
+                if let Some(moved) = rebase(path, moves) {
+                    *path = moved;
+                }
+            }
+            row[at] = Value::Blob(blob::encode(blob::Type::AgentLaunch, version, &launch.encode_to_vec())?);
+        }
+        Ok(())
+    }
+}
+
+/// Saves a moved session's agent rows as stopped. Its holder runs on the
+/// old machine, so no pid or holder in the row is this machine's: until the
+/// new machine points the agent at a tab of its own, a restart here must not
+/// treat the old machine's holder as one to resume or stop, and an undo must
+/// not take the copy for the session's live one.
+fn stop_agents(names: &[String], rows: &mut [Vec<Value>]) {
+    let column = |name: &str| names.iter().position(|named| named == name);
+    for row in rows {
+        if let Some(cell) = column("state").and_then(|at| row.get_mut(at)) {
+            *cell = Value::Text("stopped".to_owned());
+        }
+        for name in ["holder_pid", "exit_code", "failure"] {
+            if let Some(cell) = column(name).and_then(|at| row.get_mut(at)) {
+                *cell = Value::Null;
+            }
+        }
+    }
+}
+
+/// `path` under the `to` of the first move whose `from` it lies in, by whole
+/// path components.
+fn rebase(path: &[u8], moves: &[(PathBuf, PathBuf)]) -> Option<Vec<u8>> {
+    let path = Path::new(OsStr::from_bytes(path));
+    moves.iter().find_map(|(from, to)| {
+        let rest = path.strip_prefix(from).ok()?;
+        let moved = if rest.as_os_str().is_empty() { to.clone() } else { to.join(rest) };
+        Some(moved.into_os_string().into_vec())
+    })
+}
+
+/// Rebases the path columns of `table`'s rows.
+fn rebase_rows(table: &Carried, names: &[String], rows: &mut [Vec<Value>], moves: &[(PathBuf, PathBuf)]) {
+    for column in table.paths {
+        let Some(at) = names.iter().position(|name| name == column) else { continue };
+        for row in rows.iter_mut() {
+            if let Value::Blob(bytes) = &mut row[at]
+                && let Some(moved) = rebase(bytes, moves)
+            {
+                *bytes = moved;
+            }
+        }
     }
 }
 
@@ -210,6 +372,7 @@ mod tests {
             holder_socket: PathBuf::from("/old/h.sock"),
             holder_pid: 7,
             created_unix_ms: 1,
+            holder_generation: 0,
         };
         let agent = AgentRecord {
             session: session.to_owned(),

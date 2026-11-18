@@ -5,16 +5,94 @@
 //! Each test makes its own daemon in its own temp folder.
 #![cfg(target_os = "macos")]
 
+#[path = "live_flows/away_box.rs"]
+mod away_box;
+#[path = "live_flows/board_drawer.rs"]
+mod board_drawer;
+#[path = "live_flows/board_conflict.rs"]
+mod board_conflict;
+#[path = "live_flows/board_revision.rs"]
+mod board_revision;
+#[path = "live_flows/channel_desk.rs"]
+mod channel_desk;
+#[path = "live_flows/channel_page.rs"]
+mod channel_page;
+#[path = "live_flows/channel_marks.rs"]
+mod channel_marks;
+#[path = "live_flows/continue_in.rs"]
+mod continue_in;
+#[path = "live_flows/desk.rs"]
+mod desk;
+#[path = "live_flows/desk_form.rs"]
+mod desk_form;
+#[path = "live_flows/desk_document.rs"]
+mod desk_document;
+#[path = "live_flows/document.rs"]
+mod document;
 #[path = "live_flows/files.rs"]
 mod files;
 #[path = "live_flows/find.rs"]
 mod find;
+#[path = "live_flows/find_pins.rs"]
+mod find_pins;
+#[path = "live_flows/fork_kinds.rs"]
+mod fork_kinds;
+#[path = "live_flows/ime.rs"]
+mod ime;
+#[path = "live_flows/keys.rs"]
+mod keys;
+#[path = "live_flows/lifecycle.rs"]
+mod lifecycle;
+#[path = "live_flows/link_drop.rs"]
+mod link_drop;
+#[path = "live_flows/navigation_keys.rs"]
+mod navigation_keys;
+#[path = "live_flows/new_channel.rs"]
+mod new_channel;
+#[path = "live_flows/new_channel_sheet.rs"]
+mod new_channel_sheet;
+#[path = "live_flows/queue.rs"]
+mod queue;
+#[path = "live_flows/repo_library.rs"]
+mod repo_library;
+#[path = "live_flows/session_add_repo.rs"]
+mod session_add_repo;
+#[path = "live_flows/channel_add_repo.rs"]
+mod channel_add_repo;
+#[path = "live_flows/remote.rs"]
+mod remote;
+#[path = "live_flows/restart.rs"]
+mod restart;
+#[path = "live_flows/pr_review.rs"]
+mod pr_review;
 #[path = "live_flows/review.rs"]
 mod review;
+#[path = "live_flows/stop_and_start.rs"]
+mod stop_and_start;
+#[path = "live_flows/tabs_and_palette.rs"]
+mod tabs_and_palette;
+#[path = "live_flows/targets.rs"]
+mod targets;
+#[path = "live_flows/views.rs"]
+mod views;
+#[path = "live_flows/views_remote.rs"]
+mod views_remote;
+#[path = "live_flows/terminals.rs"]
+mod terminals;
+#[path = "live_flows/shell_screen.rs"]
+mod shell_screen;
+#[path = "live_flows/two_viewers.rs"]
+mod two_viewers;
+#[path = "live_flows/typing.rs"]
+mod typing;
+#[path = "live_flows/leftovers.rs"]
+mod leftovers;
 #[path = "live_flows/world.rs"]
 mod world;
+#[path = "live_flows/real_vm.rs"]
+mod real_vm;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,9 +113,28 @@ use tokio::runtime::Runtime;
 
 use world::World;
 
+/// The app's shortcut for ⌘`key`: Cmd on macOS, Ctrl+Shift elsewhere (D318).
+fn app_key(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("cmd-{key}")
+    } else {
+        format!("ctrl-shift-{key}")
+    }
+}
+
 const DEADLINE: Duration = Duration::from_secs(60);
 
+/// The longest one pass of a settle runs the app's queued work. The app
+/// is never idle while a program floods its terminal (`yes`), so a drain
+/// until parked would never end and no wait would reach its deadline.
+/// Normal work drains in milliseconds; the rest is left for the next pass.
+const DRAIN_BUDGET: Duration = Duration::from_secs(2);
+
+/// The case's runtime. Every case makes one first, so this is where its
+/// watch begins: a case still running past the limit fails there, whatever
+/// it made its daemon with (`leftovers.rs`).
 fn runtime() -> Runtime {
+    leftovers::case_begins();
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -50,36 +147,13 @@ fn runtime() -> Runtime {
 struct Heard {
     /// The last few events, summed up.
     recent: VecDeque<String>,
-    /// Terminal bytes by (session, tab): how many, and the last of them.
-    bytes: BTreeMap<(String, usize), (usize, Vec<u8>)>,
 }
 
 const RECENT: usize = 40;
-const TAIL: usize = 400;
 
 impl Heard {
     fn hear(&mut self, event: &Event) {
         let summary = match event {
-            Event::TerminalData {
-                session,
-                tab,
-                offset,
-                bytes,
-            } => {
-                let (count, tail) = self
-                    .bytes
-                    .entry((session.as_str().to_owned(), *tab))
-                    .or_default();
-                *count += bytes.len();
-                tail.extend_from_slice(bytes);
-                let extra = tail.len().saturating_sub(TAIL);
-                tail.drain(..extra);
-                format!(
-                    "TerminalData {} tab {tab} at {offset}: {} bytes",
-                    session.as_str(),
-                    bytes.len()
-                )
-            }
             Event::Session(session) => format!(
                 "Session {} {:?} status {:?} recovery {:?}",
                 session.id.as_str(),
@@ -100,12 +174,6 @@ impl Heard {
         for line in self.recent.iter().rev() {
             text.push_str(&format!("  {line}\n"));
         }
-        for ((session, tab), (count, tail)) in &self.bytes {
-            text.push_str(&format!(
-                "terminal {session} tab {tab}: {count} bytes, ending {:?}\n",
-                String::from_utf8_lossy(tail)
-            ));
-        }
         text
     }
 }
@@ -118,6 +186,14 @@ struct App<'r> {
     ui: Rc<Ui>,
     daemon: Arc<dyn Daemon>,
     heard: Arc<Mutex<Heard>>,
+    /// The thread that opened the app: the one gpui wakes when work comes
+    /// in from another thread, and the one the waits park (D399).
+    thread: std::thread::ThreadId,
+    /// The window's view, for what only it reaches (D484).
+    shell: gpui_kit::Entity<humata2_ui::Shell>,
+    /// How many drains stopped at [`DRAIN_BUDGET`] with work still queued,
+    /// for a timeout's diagnosis.
+    unfinished_drains: usize,
 }
 
 impl<'r> App<'r> {
@@ -127,6 +203,9 @@ impl<'r> App<'r> {
         {
             let daemon = daemon.clone();
             let heard = heard.clone();
+            // Every event from the host wakes a wait: what it looks at may
+            // be the host's, not the app's (D399).
+            let waiter = std::thread::current();
             runtime.spawn(async move {
                 let Ok(mut events) = daemon.events().await else {
                     return;
@@ -135,6 +214,7 @@ impl<'r> App<'r> {
                     if let Ok(mut heard) = heard.lock() {
                         heard.hear(&event);
                     }
+                    waiter.unpark();
                 }
             });
         }
@@ -151,7 +231,7 @@ impl<'r> App<'r> {
             focus: false,
             ..WindowOptions::default()
         };
-        let (window, _shell) = cx
+        let (window, shell) = cx
             .update(|cx| humata2_ui::open(cx, &ui, options))
             .expect("the window opens");
         let mut app = Self {
@@ -161,6 +241,9 @@ impl<'r> App<'r> {
             ui,
             daemon,
             heard,
+            thread: std::thread::current().id(),
+            shell,
+            unfinished_drains: 0,
         };
         app.settle();
         app
@@ -176,13 +259,25 @@ impl<'r> App<'r> {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             });
-            self.cx.run_until_parked();
+            self.drain();
         }
         self.cx
             .update_window(self.window, |_, window, cx| {
                 humata2_engine::frame::natural_frame(window, cx);
             })
             .expect("the window stays open");
+    }
+
+    /// Runs the app's queued work until none is left, as
+    /// `run_until_parked` does, or until [`DRAIN_BUDGET`] passes.
+    fn drain(&mut self) {
+        let until = Instant::now() + DRAIN_BUDGET;
+        while self.cx.background_executor().tick() {
+            if Instant::now() >= until {
+                self.unfinished_drains += 1;
+                return;
+            }
+        }
     }
 
     fn play(&mut self, action: &Action) {
@@ -194,6 +289,11 @@ impl<'r> App<'r> {
 
     fn click(&mut self, role: Role, label: &str) {
         self.play(&Action::Click(Target::new(role, label)));
+    }
+
+    /// Moves the pointer over a control that may show only while hovered.
+    fn hover(&mut self, role: Role, label: &str) {
+        self.play(&Action::Hover(Target::new(role, label)));
     }
 
     fn type_text(&mut self, text: &str) {
@@ -227,18 +327,37 @@ impl<'r> App<'r> {
     }
 
     /// Settles until `done` holds or the deadline passes.
-    fn wait_until(&mut self, what: &str, mut done: impl FnMut(&mut Self) -> bool) {
-        let until = Instant::now() + DEADLINE;
+    fn wait_until(&mut self, what: &str, done: impl FnMut(&mut Self) -> bool) {
+        self.wait_within(what, DEADLINE, done);
+    }
+
+    /// Settles until `done` holds or `deadline` passes. Between looks the
+    /// thread parks until something wakes it (D399): gpui, when another
+    /// thread hands the app work; an event from the host; an agent's
+    /// conversation write. What `done` looks at must come with one of them.
+    /// It also wakes every 16 ms, a display's frame tick, so work waiting
+    /// for the next frame (a terminal's flood, a batch a frame) gets one.
+    fn wait_within(&mut self, what: &str, deadline: Duration, mut done: impl FnMut(&mut Self) -> bool) {
+        assert_eq!(
+            std::thread::current().id(),
+            self.thread,
+            "waits run on the thread that opened the app, which is the one woken"
+        );
+        let until = Instant::now() + deadline;
         loop {
             self.settle();
             if done(self) {
                 return;
             }
-            if Instant::now() >= until {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
                 let why = self.diagnose();
                 panic!("timed out waiting for {what}\n{why}");
             }
-            std::thread::sleep(Duration::from_millis(100));
+            // A display draws about every 16 ms whether or not anything
+            // woke us: work waiting for the next frame (a terminal's full
+            // batch) needs one.
+            std::thread::park_timeout(left.min(Duration::from_millis(16)));
         }
     }
 
@@ -263,13 +382,6 @@ impl<'r> App<'r> {
                     session.recovery
                 ));
             }
-            for ((session, tab), bytes) in &state.session.terminal_bytes {
-                text.push_str(&format!(
-                    "app terminal {} tab {tab}: {} bytes\n",
-                    session.as_str(),
-                    bytes.len()
-                ));
-            }
             text
         });
         if let Ok(heard) = self.heard.lock() {
@@ -289,6 +401,13 @@ impl<'r> App<'r> {
                 }
             }
             Err(error) => text.push_str(&format!("daemon load failed: {error}\n")),
+        }
+        if self.unfinished_drains > 0 {
+            text.push_str(&format!(
+                "{} drains stopped after {} s each with the app's work still queued: something kept it busy\n",
+                self.unfinished_drains,
+                DRAIN_BUDGET.as_secs()
+            ));
         }
         text.push_str(&format!("view:\n{}\n", self.view()));
         text
@@ -319,13 +438,26 @@ async fn channel_with_repo(world: &World, clients: &Clients, name: &str) -> (Cha
 /// agent has taken its first message.
 async fn running_session(world: &World, clients: &Clients, title: &str, first: &str) -> SessionId {
     let (channel, repo) = channel_with_repo(world, clients, "payments").await;
+    session_in(world, clients, &channel, repo, title, first).await
+}
+
+/// Starts a session in `channel` through the daemon and waits until the
+/// agent has taken its first message.
+async fn session_in(
+    world: &World,
+    clients: &Clients,
+    channel: &ChannelId,
+    repo: String,
+    title: &str,
+    first: &str,
+) -> SessionId {
     let mac = World::this_mac(clients)
         .await
         .expect("the workspace has This Mac");
     let id = clients
         .daemon
         .create_session(
-            &channel,
+            channel,
             Agent::Claude,
             &mac,
             title,
@@ -337,17 +469,58 @@ async fn running_session(world: &World, clients: &Clients, title: &str, first: &
         )
         .await
         .expect("create the session");
-    let until = Instant::now() + DEADLINE;
-    while !world.conversation_text().contains(first) {
-        assert!(Instant::now() < until, "the agent never got its first message");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    agent_has(world, first).await;
     id
+}
+
+/// Waits until an agent's conversation holds `first`, woken by each write
+/// to it (D399). The daemon clones a session's repos before it launches
+/// the agent, so once this returns the clones are there (D441).
+async fn agent_has(world: &World, first: &str) {
+    let until = tokio::time::Instant::now() + DEADLINE;
+    while !world.conversation_text().contains(first) {
+        let woke = tokio::time::timeout_at(until, world.wrote()).await;
+        assert!(woke.is_ok(), "the agent never got its first message");
+    }
 }
 
 async fn session_now(daemon: &Arc<dyn Daemon>, id: &SessionId) -> Option<Session> {
     let workspace = daemon.load().await.ok()?;
     workspace.sessions.iter().find(|s| &s.id == id).cloned()
+}
+
+/// D399: work a tokio task hands the app wakes a parked wait. Waits park
+/// with no clock between looks, so this is what keeps them from sleeping
+/// to their deadline.
+#[test]
+fn work_handed_to_the_app_from_another_thread_wakes_a_wait() {
+    let runtime = runtime();
+    let (_world, clients) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        (world, clients)
+    });
+    let mut app = App::open(&runtime, clients);
+    let ran = Rc::new(std::cell::Cell::new(false));
+    let (give, take) = tokio::sync::oneshot::channel::<()>();
+    {
+        let ran = ran.clone();
+        app.cx.update(|cx| {
+            cx.foreground_executor()
+                .spawn(async move {
+                    if take.await.is_ok() {
+                        ran.set(true);
+                    }
+                })
+                .detach();
+        });
+    }
+    // Handed over once the wait below has parked, from a tokio worker.
+    runtime.spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = give.send(());
+    });
+    app.wait_until("the app to run the work it was handed", |_| ran.get());
 }
 
 /// 26.2: New session, a title, the defaults, a first message, Start session.
@@ -376,7 +549,7 @@ fn a_session_started_from_new_session_runs_and_answers_its_first_message() {
     // New session opens the sheet on the first channel and This Mac. The
     // sidebar and the Home page both have a "New session" button, so this
     // takes the shortcut, as a person can.
-    app.play(&Action::Key("secondary-n".to_owned()));
+    app.play(&Action::Key(app_key("n")));
     assert!(
         app.ui
             .read(|state| matches!(state.overlays.last(), Some(Overlay::NewSession(_)))),
@@ -456,6 +629,56 @@ fn after_a_reboot_the_session_is_running_again_in_its_conversation() {
         session.recovery,
         Some(Recovery::Recoverable { .. })
     ));
+    drop(app);
+    drop(world);
+}
+
+/// The app quits and starts again against the same daemon: the session's
+/// tab reattaches the holder it had (the agent did not start again), and
+/// shows what the agent printed while no app was attached.
+#[test]
+fn after_the_app_restarts_the_session_tab_shows_what_was_printed_while_it_was_gone() {
+    let runtime = runtime();
+    let (world, id, clients) = runtime.block_on(async {
+        let world = World::start().await.expect("start the daemon");
+        let clients = world.clients().await.expect("connect");
+        let id = running_session(&world, &clients, "Fix the ledger", "before the restart").await;
+        (world, id, clients)
+    });
+    let mut app = App::open(&runtime, clients);
+    app.show_session(&id);
+    app.wait_until("the agent's first answer in its terminal", |app| {
+        app.view().contains("got: before the restart")
+    });
+    drop(app);
+
+    // No app is attached now: a bare client types a line the agent answers.
+    let clients = runtime.block_on(async {
+        let clients = world.clients().await.expect("connect again");
+        clients
+            .terminals
+            .write(&id, 0, "while the app was gone")
+            .await
+            .expect("type into the tab");
+        clients
+    });
+    let until = tokio::time::Instant::now() + DEADLINE;
+    while !world.conversation_text().contains("while the app was gone") {
+        let woke = runtime.block_on(async { tokio::time::timeout_at(until, world.wrote()).await });
+        assert!(woke.is_ok(), "the agent never got the line typed while the app was gone");
+    }
+
+    let mut app = App::open(&runtime, clients);
+    app.show_session(&id);
+    app.wait_until("the answer printed while the app was gone", |app| {
+        app.view().contains("got: while the app was gone")
+    });
+    let view = app.view();
+    assert!(view.contains("got: before the restart"), "the screen kept what came before");
+    assert!(
+        view.contains("agent up --session-id") && !view.contains("agent up --resume"),
+        "the same agent is still running, not a new one"
+    );
     drop(app);
     drop(world);
 }

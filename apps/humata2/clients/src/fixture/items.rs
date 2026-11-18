@@ -10,6 +10,7 @@ pub(super) fn items() -> Vec<Item> {
         depends_on: depends.iter().map(|id| ItemId::new(*id)).collect(),
         session: None,
         parent: None,
+        revision: 0,
     };
     let web = || Scope::Channel(ChannelId::new("web"));
     let api = || Scope::Channel(ChannelId::new("api"));

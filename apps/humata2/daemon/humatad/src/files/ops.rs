@@ -281,8 +281,10 @@ fn was(target: &Target) -> pb::EntityRef {
         Some(Root::ChannelShared(shared)) => shared.channel.clone().map(Entity::Channel),
         Some(Root::ChannelFolder(folder)) => folder.channel.clone().map(Entity::Channel),
         Some(Root::MainClone(main)) => main.channel.clone().map(Entity::Channel),
+        Some(Root::SessionPastes(pastes)) => pastes.session.clone().map(Entity::Session),
+        Some(Root::SessionFolder(folder)) => folder.session.clone().map(Entity::Session),
         // The home folder belongs to no session or channel.
-        Some(Root::Home(_)) => None,
+        Some(Root::Home(_) | Root::Received(_)) => None,
         None => None,
     };
     pb::EntityRef { entity }
@@ -439,6 +441,15 @@ fn list(target: &Target, size: usize, token: &str) -> Result<pb::ListDirectoryRe
     })
 }
 
+/// Puts the folder's entries on disk after a make or rename in it. Best
+/// effort: the change is already made, and a failure here only means a
+/// power cut right now could undo it.
+fn sync_parent(path: &std::path::Path) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::File::open(parent).and_then(|folder| folder.sync_all());
+    }
+}
+
 fn make_folder(target: &Target) -> Result<pb::FileEntry, Status> {
     if target.is_root() {
         let path = target.existing()?;
@@ -449,7 +460,7 @@ fn make_folder(target: &Target) -> Result<pb::FileEntry, Status> {
     match fs::symlink_metadata(&path) {
         Ok(_) => return Err(name_taken(&target.shown, &target.shown)),
         Err(error) if error.kind() == ErrorKind::NotFound => match fs::create_dir(&path) {
-            Ok(()) => {}
+            Ok(()) => sync_parent(&path),
             // Made by someone else a moment ago: the name is taken.
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 return Err(name_taken(&target.shown, &target.shown));
@@ -473,6 +484,7 @@ fn rename(target: &Target, new_name: &str) -> Result<pb::FileEntry, Status> {
         return Err(name_taken(new_name, new_name));
     }
     fs::rename(&from, &to).map_err(|error| io_failure(&error, "rename", &from))?;
+    sync_parent(&to);
     let meta = fs::symlink_metadata(&to).map_err(|error| io_failure(&error, "read", &to))?;
     let mut location = target.location.clone();
     location.path = match target.location.path.rsplit_once('/') {

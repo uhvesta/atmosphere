@@ -34,14 +34,20 @@ use tokio_stream::Stream;
 use tonic::{Code, Request, Response, Status};
 
 use crate::events::{Feed, Scope};
+use crate::remote_work::call_failed;
 use crate::guard::Guard;
 use crate::identity::{self, AgentCaller, Caller};
 use crate::status;
 
+mod bases;
 mod comments;
+mod default_branch;
+mod pull_requests;
+mod replay;
 mod sink;
 mod views;
 
+pub(crate) use pull_requests::{PR_REVIEWS_FOLDER, PullRequests, binding};
 pub(crate) use sink::{CommentSink, TerminalSink};
 
 /// At most this many lines of a selection go back with review_context.
@@ -129,6 +135,8 @@ struct SessionReview {
     comments_kept: Mutex<comments::Kept>,
     /// Held while the comments are saved, so saves land in order.
     comments_saving: tokio::sync::Mutex<()>,
+    /// The user's writes of files under way, which a look at the comments waits out.
+    user_writes: comments::Writes,
     /// Each change the comments' saves make, for WatchComments (D161).
     comment_feed: CommentFeed,
 }
@@ -175,6 +183,52 @@ impl Review {
                 sink,
             }),
         }
+    }
+
+    /// PR-10: the ref each of `keys` is compared with when `base` is each
+    /// pull request's base, or a spec puts a repo on it; empty for every other
+    /// base.
+    async fn pull_request_bases(
+        &self,
+        record: &SessionRecord,
+        base: &pb::DiffBase,
+        keys: &[String],
+    ) -> Result<BTreeMap<String, String>, Status> {
+        let asks = match &base.base {
+            Some(pb::diff_base::Base::PullRequestBase(_)) => true,
+            Some(pb::diff_base::Base::Spec(spec)) => spec.repos.iter().any(|own| {
+                matches!(
+                    own.base.as_ref().and_then(|base| base.base.as_ref()),
+                    Some(pb::diff_spec_base::Base::PullRequestBase(_))
+                )
+            }),
+            _ => false,
+        };
+        if !asks {
+            return Ok(BTreeMap::new());
+        }
+        let store = self.inner.store.clone();
+        let machine = self.inner.machine.clone();
+        let (session, folder, keys) = (record.id.clone(), record.folder.clone(), keys.to_vec());
+        blocking(move || {
+            pull_requests::pull_request_bases_blocking(&store, &machine, &session, &folder, &keys)
+        })
+        .await?
+    }
+
+    /// `base` for `keys` of a session on another machine, with each pull
+    /// request base written out as the ref the host resolved: the host keeps
+    /// the review's pull requests, the machine computing the diff doesn't.
+    async fn written_out(
+        &self,
+        record: &SessionRecord,
+        base: Option<&pb::DiffBase>,
+        keys: &[String],
+    ) -> Result<pb::DiffBase, Status> {
+        let base = base.cloned().unwrap_or_default();
+        let pr_bases = self.pull_request_bases(record, &base, keys).await?;
+        wire::with_pull_request_bases(&base, keys, |repo| pr_bases.get(repo).cloned())
+            .map_err(|error| wire_failed("base", &error))
     }
 
     /// The session `id` names, from the store.
@@ -379,6 +433,9 @@ async fn repo_keys(inner: &Inner, record: &SessionRecord, asked: &[pb::RepoRef])
                 .collect()
         })
         .unwrap_or_default();
+    if let Some(machine) = pull_requests::machine_of(&record.id) {
+        return Err(not_here(&machine));
+    }
     let folder = record.folder.clone();
     blocking(move || {
         let entries = std::fs::read_dir(&folder).map_err(|error| {
@@ -399,6 +456,50 @@ async fn repo_keys(inner: &Inner, record: &SessionRecord, asked: &[pb::RepoRef])
     .await?
 }
 
+/// Every repo the session's start recorded, as [`repo_keys`] names them,
+/// for a session whose clones are on another machine and so can't be
+/// listed here.
+async fn recorded_keys(inner: &Inner, record: &SessionRecord) -> Result<Vec<String>, Status> {
+    let mut keys: Vec<String> = inner
+        .store
+        .session_detail(&record.id)
+        .map_err(|error| status::store(error, &inner.machine, "read the session's repositories"))?
+        .map(|detail| {
+            detail
+                .repos
+                .into_iter()
+                .map(|repo| {
+                    if repo.owner.is_empty() {
+                        repo.name
+                    } else {
+                        format!("{}/{}", repo.owner, repo.name)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    keys.sort();
+    keys.dedup();
+    Ok(keys)
+}
+
+/// D736: of a session on another machine, the host forwards only GetDiff
+/// and GetFileDiff; everything else that reads its clones is refused, so
+/// none of it reads the host's empty placement of the folder.
+fn not_here(machine: &str) -> Status {
+    status::failure(
+        Code::Unimplemented,
+        pb::Error {
+            message: format!(
+                "this session runs on {machine}, and Mark reviewed, review plans and line notes don't work yet for a session on another machine"
+            ),
+            fix: "use the Diff panel and comments, which do work here; Mark reviewed and review plans work for sessions on this machine".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
 /// The folder of a repo's clone: its name, without the owner.
 fn folder_name(key: &str) -> &str {
     key.rsplit_once('/').map_or(key, |(_, name)| name)
@@ -406,6 +507,9 @@ fn folder_name(key: &str) -> &str {
 
 /// The session's clones of `keys`, opened.
 async fn clones(record: &SessionRecord, keys: &[String]) -> Result<Clones, Status> {
+    if let Some(machine) = pull_requests::machine_of(&record.id) {
+        return Err(not_here(&machine));
+    }
     let folder = record.folder.clone();
     let keys = keys.to_vec();
     blocking(move || {
@@ -432,7 +536,32 @@ impl pb::diff_service_server::DiffService for Review {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let (record, session) = self.session(request.session.as_ref())?;
-        let keys = repo_keys(&self.inner, &record, &request.repos).await?;
+        if let Some((machine, relayed)) = pull_requests::relayed_for(&record.id) {
+            let keys = if request.repos.is_empty() {
+                recorded_keys(&self.inner, &record).await?
+            } else {
+                repo_keys(&self.inner, &record, &request.repos).await?
+            };
+            self.require_read(&caller, &session, &keys)?;
+            let base = self.written_out(&record, request.base.as_ref(), &keys).await?;
+            let sent = pb::GetDiffRequest {
+                base: Some(base),
+                ..request
+            };
+            return relayed?
+                .diff()
+                .get_diff(Request::new(sent))
+                .await
+                .map_err(|status| Status::from(call_failed(&machine, "compute the session's diff", status)));
+        }
+        // A spec is checked against every repo of the session, then cut down to
+        // the repos asked for (B2).
+        let session_keys = repo_keys(&self.inner, &record, &[]).await?;
+        let keys = if request.repos.is_empty() {
+            session_keys.clone()
+        } else {
+            repo_keys(&self.inner, &record, &request.repos).await?
+        };
         self.require_read(&caller, &session, &keys)?;
         let base = request.base.unwrap_or_default();
         let clones = clones(&record, &keys).await?;
@@ -440,7 +569,17 @@ impl pb::diff_service_server::DiffService for Review {
             Some(pb::diff_base::Base::OtherSession(other)) => {
                 self.other_session_spec(&caller, &clones, &keys, other).await?
             }
-            _ => wire::spec_for_base(&base, &keys, |_| None).map_err(|error| wire_failed("base", &error))?,
+            _ => {
+                let defaults = clones
+                    .default_bases(&wire::repos_needing_default(&base, &keys))
+                    .await
+                    .map_err(|error| default_branch::default_failed(&error, &keys))?;
+                let pr_bases = self.pull_request_bases(&record, &base, &keys).await?;
+                wire::spec_for_base(&base, &keys, &session_keys, &defaults, |repo| {
+                    pr_bases.get(repo).cloned()
+                })
+                .map_err(|error| wire_failed("base", &error))?
+            }
         };
         let diffs = clones.diff(&spec, &context_of(&record)).await.map_err(|error| diff_failed(&error))?;
         let review = self.review(&record.id)?;
@@ -476,12 +615,39 @@ impl pb::diff_service_server::DiffService for Review {
         }
         let keys = repo_keys(&self.inner, &record, std::slice::from_ref(&repo)).await?;
         self.require_read(&caller, &session, &keys)?;
+        if let Some((machine, relayed)) = pull_requests::relayed_for(&record.id) {
+            let base = self.written_out(&record, request.base.as_ref(), &keys).await?;
+            let sent = pb::GetFileDiffRequest {
+                base: Some(base),
+                ..request
+            };
+            return relayed?
+                .diff()
+                .get_file_diff(Request::new(sent))
+                .await
+                .map_err(|status| Status::from(call_failed(&machine, "compute the file's diff", status)));
+        }
         let base = request.base.clone().unwrap_or_default();
-        let spec = wire::spec_for_base(&base, &keys, |_| None).map_err(|error| wire_failed("base", &error))?;
+        let session_keys = repo_keys(&self.inner, &record, &[]).await?;
         let clones = clones(&record, &keys).await?;
+        let defaults = clones
+            .default_bases(&wire::repos_needing_default(&base, &keys))
+            .await
+            .map_err(|error| default_branch::default_failed(&error, &keys))?;
+        let pr_bases = self.pull_request_bases(&record, &base, &keys).await?;
+        let spec = wire::spec_for_base(&base, &keys, &session_keys, &defaults, |repo| {
+            pr_bases.get(repo).cloned()
+        })
+        .map_err(|error| wire_failed("base", &error))?;
         let key = wire::repo_key(&repo);
         let checkout = clones.get(&key).map_err(|error| diff_failed(&error))?.clone();
-        let repo_spec = spec.repos.first().cloned().ok_or_else(|| status::missing("file.repo"))?;
+        // The file's own repo's spec (RV-31), never another repo's.
+        let repo_spec = spec
+            .repos
+            .iter()
+            .find(|own| own.repo == key)
+            .cloned()
+            .ok_or_else(|| status::missing("file.repo"))?;
         let matching = Matching::from(&repo_spec);
         // The file list the hunks belong to: the trees the client was
         // shown, or the spec as it is now.
@@ -550,6 +716,7 @@ impl pb::diff_service_server::DiffService for Review {
             }
         }
         let mut snapshots = Vec::with_capacity(keys.len());
+        let mut taken = Vec::with_capacity(keys.len());
         for key in &keys {
             let checkout = clones.get(key).map_err(|error| diff_failed(&error))?;
             let tree = trees.get(folder_name(key)).cloned();
@@ -558,6 +725,27 @@ impl pb::diff_service_server::DiffService for Review {
                 .await
                 .map_err(|error| diff_failed(&error))?;
             snapshots.push(wire::snapshot_to_pb(key, &snapshot));
+            taken.push((key.clone(), snapshot.n));
+        }
+        // A9, D299: in a pull request review this marks every commit up to
+        // the head too, and keeps the snapshot it was marked at past RV-30's
+        // last 20.
+        let (store, machine) = (self.inner.store.clone(), self.inner.machine.clone());
+        let (id, folder) = (record.id.clone(), record.folder.clone());
+        let actor = identity::actor(&caller);
+        let whole = blocking(move || {
+            pull_requests::mark_whole_pr_blocking(&store, &machine, &id, &folder, &taken, &actor)
+        })
+        .await??;
+        for (key, snapshot) in keys.iter().zip(&mut snapshots) {
+            if whole.iter().any(|(marked, n)| marked == key && *n == snapshot.n) {
+                let checkout = clones.get(key).map_err(|error| diff_failed(&error))?;
+                checkout
+                    .pin(record.id.clone(), snapshot.n, true)
+                    .await
+                    .map_err(|error| diff_failed(&error))?;
+                snapshot.pinned = true;
+            }
         }
         let answer = pb::MarkReviewedResponse { snapshots };
         if remember(&review, idempotency, Answer::Marked(answer.clone())) {
@@ -583,6 +771,25 @@ impl pb::diff_service_server::DiffService for Review {
             snapshots.extend(kept.iter().map(|snapshot| wire::snapshot_to_pb(key, snapshot)));
         }
         Ok(Response::new(pb::ListReviewedSnapshotsResponse { snapshots }))
+    }
+
+    async fn list_bases(&self, request: Request<pb::ListBasesRequest>) -> Result<Response<pb::ListBasesResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let (record, session) = self.session(request.session.as_ref())?;
+        let repo = request.repo.ok_or_else(|| status::missing("repo"))?;
+        bases::list(self, &caller, &record, &session, &repo).await.map(Response::new)
+    }
+
+    async fn find_default_branch(
+        &self,
+        request: Request<pb::FindDefaultBranchRequest>,
+    ) -> Result<Response<pb::FindDefaultBranchResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let (record, session) = self.session(request.session.as_ref())?;
+        let repo = request.repo.ok_or_else(|| status::missing("repo"))?;
+        default_branch::find(self, &caller, &record, &session, &repo).await.map(Response::new)
     }
 }
 
@@ -740,11 +947,21 @@ impl pb::review_chat_service_server::ReviewChatService for Review {
 }
 
 /// The review chat's notes for the user (PR-23): CreateComment with the
-/// `note` destination, and EditComment and DropComment on those notes; and
-/// the user's own comments for the agent (`comments`), whose ids are
-/// `<session>/c-<n>`. Pull request drafts aren't built yet.
+/// `note` destination, and EditComment and DropComment on those notes; the
+/// user's own comments for the agent (`comments`), whose ids are
+/// `<session>/c-<n>`; and drafts for a review's pull requests, made with the
+/// `pull_request` destination or from a note by MakeNoteADraft (D284).
 #[tonic::async_trait]
 impl pb::comment_service_server::CommentService for Review {
+    /// D284: the note becomes a draft in place, same id, author and anchor.
+    async fn make_note_a_draft(
+        &self,
+        request: Request<pb::MakeNoteADraftRequest>,
+    ) -> Result<Response<pb::Comment>, Status> {
+        let caller = identity::caller(&request)?;
+        self.make_note_a_draft_of(&caller, request.into_inner()).await.map(Response::new)
+    }
+
     /// The review chat's notes, which have no status (they are never sent),
     /// so a status filter lists none of them, and the user's comments.
     async fn list_comments(
@@ -763,6 +980,8 @@ impl pb::comment_service_server::CommentService for Review {
                 .chat
                 .notes()
                 .filter(|note| request.file.as_ref().is_none_or(|file| on_file(&note.note.file, file)))
+                // A note made a draft (D284) is listed once, as the draft.
+                .filter(|note| lock(&review.comments).comment(&note.id).is_none())
                 .map(|note| note_comment(note, &record.id))
                 .collect()
         } else {
@@ -789,14 +1008,17 @@ impl pb::comment_service_server::CommentService for Review {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let destination = request.destination.as_ref().and_then(|destination| destination.destination.as_ref());
-        if matches!(destination, Some(pb::comment_destination::Destination::Terminal(_))) {
+        if matches!(
+            destination,
+            Some(
+                pb::comment_destination::Destination::Terminal(_)
+                    | pb::comment_destination::Destination::PullRequest(_)
+            )
+        ) {
             return self.create_user_comment(&caller, request).await.map(Response::new);
         }
-        let is_note = matches!(destination, Some(pb::comment_destination::Destination::Note(_)));
-        if !is_note {
-            return Err(status::not_built(
-                "humata.v1.CommentService.CreateComment for a pull request",
-            ));
+        if destination.is_none() {
+            return Err(status::missing("destination"));
         }
         let asked = request.session.clone().or_else(|| own_session(&caller));
         let (record, session) = self.session(asked.as_ref())?;
@@ -859,7 +1081,7 @@ impl pb::comment_service_server::CommentService for Review {
     async fn edit_comment(&self, request: Request<pb::EditCommentRequest>) -> Result<Response<pb::Comment>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        if comments::is_user_id(request.id.as_ref()) {
+        if self.is_ledger_id(&caller, request.id.as_ref()) {
             return self.edit_user_comment(&caller, request).await.map(Response::new);
         }
         let (record, session, id) = self.note_session(&caller, request.id.as_ref())?;
@@ -893,7 +1115,7 @@ impl pb::comment_service_server::CommentService for Review {
     ) -> Result<Response<pb::DropCommentResponse>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        if comments::is_user_id(request.id.as_ref()) {
+        if self.is_ledger_id(&caller, request.id.as_ref()) {
             return self.drop_user_comment(&caller, request).await.map(Response::new);
         }
         let (record, session, id) = self.note_session(&caller, request.id.as_ref())?;
@@ -1709,6 +1931,7 @@ fn diff_failed(error: &DiffError) -> Status {
         | DiffError::NoSnapshot { .. }
         | DiffError::SnapshotMissing { .. }
         | DiffError::NotAFork
+        | DiffError::NoDefaultBranch { .. }
         | DiffError::OtherSession { .. } => (
             Code::FailedPrecondition,
             pb::error::Kind::InvalidField(pb::InvalidField {

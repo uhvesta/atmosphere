@@ -2,10 +2,10 @@
 //! drafts and offers alike.
 
 use prost::Message;
-use rusqlite::{Row, params};
+use rusqlite::{OptionalExtension, Row, Transaction, params};
 
 use crate::proto::View as ViewProto;
-use crate::store::check_id;
+use crate::store::{Inner, check_id};
 use crate::{Store, StoreError, ViewRecord, blob};
 
 /// The blob version a view is kept as.
@@ -33,6 +33,47 @@ fn stored(row: &Row<'_>) -> rusqlite::Result<Stored> {
 }
 
 const COLUMNS: &str = "id, session, prepared_unix_ms, updated_unix_ms, view, view_file";
+
+/// Writes `view`'s row inside `transaction` unless a row with its id is
+/// there, and says whether it did. A row that is there is never changed: its
+/// state and keys are the user's and the agent's to move. The caller has
+/// checked the ids.
+pub(crate) fn insert_if_absent(
+    inner: &Inner,
+    transaction: &Transaction<'_>,
+    view: &ViewRecord,
+) -> Result<bool, StoreError> {
+    let doing = "save a prepared view";
+    let known = transaction
+        .query_row("SELECT 1 FROM views WHERE id = ?1", [view.id.as_str()], |_| Ok(()))
+        .optional()
+        .map_err(inner.failed(doing))?;
+    if known.is_some() {
+        return Ok(false);
+    }
+    let body = ViewProto {
+        view: view.view.clone(),
+        keys: view.keys.clone(),
+    };
+    let encoded = blob::encode(blob::Type::View, VIEW_VERSION, &body.encode_to_vec())?;
+    let placed = blob::place(&inner.blobs, encoded)?;
+    transaction
+        .execute(
+            "INSERT INTO views (id, session, prepared_unix_ms, updated_unix_ms, view, view_file)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (id) DO NOTHING",
+            params![
+                view.id,
+                view.session,
+                view.prepared_unix_ms,
+                view.updated_unix_ms,
+                placed.inline(),
+                placed.file()
+            ],
+        )
+        .map(|rows| rows > 0)
+        .map_err(inner.failed(doing))
+}
 
 impl Store {
     /// Saves a view, replacing one with its id. Its session must be saved.

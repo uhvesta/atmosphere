@@ -63,7 +63,14 @@ pub(crate) fn item(wire: &pb::BoardItem) -> Item {
         depends_on: wire.depends_on.iter().map(|edge| item_id(edge.id.as_ref())).collect(),
         session: wire.sessions.first().map(|id| SessionId::new(id.value.clone())),
         parent: None,
+        revision: wire.revision.as_ref().map_or(0, |revision| revision.value),
     }
+}
+
+/// The revision a write is checked against: none when the caller never saw
+/// a numbered one.
+fn expected(seen: Option<u64>) -> Option<pb::Revision> {
+    seen.filter(|value| *value > 0).map(|value| pb::Revision { value })
 }
 
 fn item_id(id: Option<&pb::BoardItemId>) -> ItemId {
@@ -250,7 +257,12 @@ impl Shared {
         }
     }
 
-    pub(crate) async fn move_item(&self, id: &ItemId, to: ItemStatus) -> Result<(), DaemonError> {
+    pub(crate) async fn move_item(
+        &self,
+        id: &ItemId,
+        to: ItemStatus,
+        seen: Option<u64>,
+    ) -> Result<(), DaemonError> {
         let Some(wire_column) = column(to) else {
             return Err(DaemonError::Refused {
                 what: "Moving the item".to_owned(),
@@ -263,7 +275,7 @@ impl Shared {
                 id: wire_id(id),
                 column: wire_column as i32,
                 after: None,
-                expected_revision: None,
+                expected_revision: expected(seen),
                 reason: String::new(),
             })
             .await
@@ -271,15 +283,26 @@ impl Shared {
         Ok(())
     }
 
-    pub(crate) async fn create_item(&self, scope: &Scope, title: &str) -> Result<ItemId, DaemonError> {
+    pub(crate) async fn create_item(
+        &self,
+        scope: &Scope,
+        title: &str,
+        status: ItemStatus,
+    ) -> Result<ItemId, DaemonError> {
         const WHAT: &str = "The new board item";
+        let Some(wire_column) = column(status) else {
+            return Err(DaemonError::Refused {
+                what: WHAT.to_owned(),
+                reason: format!("the board has no {} column. Pick another column", status.name()),
+            });
+        };
         let reply = self
             .boards()
             .create_item(pb::CreateItemRequest {
                 idempotency_key: fresh_key(),
                 board: Some(board_ref(scope)),
                 title: title.to_owned(),
-                column: pb::BoardColumn::ToDo as i32,
+                column: wire_column as i32,
                 ..pb::CreateItemRequest::default()
             })
             .await
@@ -295,13 +318,22 @@ impl Shared {
             })
     }
 
-    async fn patch_item(&self, id: &ItemId, patch: pb::ItemPatch, what: &str) -> Result<(), DaemonError> {
+    /// `seen` is the revision the person saw; the dependency and session
+    /// edits that call this pass `None` because they add or remove one
+    /// member and never overwrite what another change set.
+    async fn patch_item(
+        &self,
+        id: &ItemId,
+        patch: pb::ItemPatch,
+        seen: Option<u64>,
+        what: &str,
+    ) -> Result<(), DaemonError> {
         self.boards()
             .update_item(pb::UpdateItemRequest {
                 idempotency_key: fresh_key(),
                 id: wire_id(id),
                 patch: Some(patch),
-                expected_revision: None,
+                expected_revision: expected(seen),
                 reason: String::new(),
             })
             .await
@@ -324,7 +356,7 @@ impl Shared {
             }
         };
         let what = if add { "Adding the dependency" } else { "Removing the dependency" };
-        self.patch_item(id, patch, what).await
+        self.patch_item(id, patch, None, what).await
     }
 
     pub(crate) async fn set_item_session(
@@ -345,7 +377,7 @@ impl Shared {
                 ..pb::ItemPatch::default()
             }
         };
-        self.patch_item(id, patch, "Changing the item's sessions").await
+        self.patch_item(id, patch, None, "Changing the item's sessions").await
     }
 
     /// SE-3: a session started from an item works on it, and starts it.
@@ -355,7 +387,7 @@ impl Shared {
         let _ = self.set_item_session(id, session, true).await;
         if let Ok(reply) = current {
             if matches!(status(reply.into_inner().column), ItemStatus::Backlog | ItemStatus::Todo) {
-                let _ = self.move_item(id, ItemStatus::InProgress).await;
+                let _ = self.move_item(id, ItemStatus::InProgress, None).await;
             }
         }
     }

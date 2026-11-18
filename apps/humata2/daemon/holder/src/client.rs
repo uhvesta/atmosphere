@@ -18,7 +18,14 @@ use crate::protocol::{
     CHUNK, ClientFrame, FrameError, MAX_KEY, MAX_KEYED, ServerFrame, VERSION, Welcome, read_frame,
 };
 use crate::server::check_socket_path;
+use crate::shown::Shown;
 
+/// The holder's first line, once the OS has it running: before that, the
+/// wait is the OS's (exec, code-signature checks of a new binary), which a
+/// loaded machine can stretch far past our own start-up.
+const STARTED: &str = "started";
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// Its second, once it listens: this part is ours.
 const READY: &str = "ready";
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -117,26 +124,40 @@ fn spawn_with_persistence(
     };
     let (said, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let read = std::io::BufReader::new(stdout).read_line(&mut line);
-        let _ = said.send(read.is_ok() && line.trim_end() == READY);
-    });
-    match heard.recv_timeout(READY_TIMEOUT) {
-        Ok(true) => {}
-        Ok(false) | Err(RecvTimeoutError::Disconnected) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(start_failed());
+        let mut lines = std::io::BufReader::new(stdout).lines();
+        for wanted in [STARTED, READY] {
+            let heard = matches!(lines.next(), Some(Ok(line)) if line == wanted);
+            if said.send(heard).is_err() || !heard {
+                return;
+            }
         }
-        Err(RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(HolderError::StartTimeout {
+    });
+    for (timeout, timed_out) in [
+        (
+            LAUNCH_TIMEOUT,
+            HolderError::LaunchTimeout {
+                holder: spec.holder.clone(),
+                log: spec.log.clone(),
+                seconds: LAUNCH_TIMEOUT.as_secs(),
+            },
+        ),
+        (
+            READY_TIMEOUT,
+            HolderError::StartTimeout {
                 holder: spec.holder.clone(),
                 log: spec.log.clone(),
                 seconds: READY_TIMEOUT.as_secs(),
-            });
-        }
+            },
+        ),
+    ] {
+        let failed = match heard.recv_timeout(timeout) {
+            Ok(true) => continue,
+            Ok(false) | Err(RecvTimeoutError::Disconnected) => start_failed(),
+            Err(RecvTimeoutError::Timeout) => timed_out,
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(failed);
     }
     // Reaps the holder when it ends, if the caller is still running.
     std::thread::spawn(move || {
@@ -210,10 +231,26 @@ pub async fn attach(socket: &Path, from: u64) -> Result<Attachment, HolderError>
     })
 }
 
-/// Asks the holder at `socket` to end its program and stop.
+/// How long a shutdown waits for the holder at its socket to answer, from
+/// connecting to its welcome. A holder that's stopped or wedged doesn't
+/// answer, and a shutdown must not wait on it for ever.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
+
+/// Asks the holder at `socket` to end its program and stop. Gives up after
+/// `SHUTDOWN_WAIT` with `HolderError::ShutdownTimeout`, and leaves the
+/// holder running: its caller ends it by its pid.
 pub async fn shutdown(socket: &Path) -> Result<(), HolderError> {
-    let mut attachment = attach(socket, u64::MAX).await?;
-    attachment.control.shutdown().await
+    let ask = async {
+        let mut attachment = attach(socket, u64::MAX).await?;
+        attachment.control.shutdown().await
+    };
+    tokio::time::timeout(SHUTDOWN_WAIT, ask)
+        .await
+        .map_err(|source| HolderError::ShutdownTimeout {
+            socket: socket.to_owned(),
+            seconds: SHUTDOWN_WAIT.as_secs(),
+            source,
+        })?
 }
 
 /// What typing a keyed input did.
@@ -223,9 +260,6 @@ pub enum KeyedInput {
     Written,
     /// Input with this key was typed before; nothing was typed now.
     Repeat,
-    /// The holder was started by an older build that can't do keyed
-    /// input. Nothing was typed, and it can't say what was typed before.
-    Unsupported,
 }
 
 /// Whether a keyed input was typed, as the holder remembers it.
@@ -239,8 +273,6 @@ pub enum KeyState {
     /// terminal and an empty memory, and has a different `holder`. It
     /// remembers the last 256 keys: ask about recent ones.
     NotArrived { holder: u64 },
-    /// The holder was started by an older build and can't say.
-    Unsupported,
 }
 
 /// Types `data` into the holder at `socket` once for `key`, on a
@@ -248,7 +280,9 @@ pub enum KeyState {
 /// whole and types it in one go, then remembers `key`. Sending a key it
 /// has already typed types nothing and answers `Repeat`. If the
 /// connection breaks, nothing may have been typed or all of it may: ask
-/// `key_arrived`.
+/// `key_arrived`. A holder from a build before keyed input is
+/// [`HolderError::Outdated`]: nothing was typed, it keeps running, and its
+/// session needs migrating before it takes typing.
 pub async fn keyed_input(
     socket: &Path,
     key: &str,
@@ -269,7 +303,12 @@ pub async fn keyed_input(
     // Asking first tells a holder that can't do this, which closes the
     // connection on a frame it doesn't know, from one that can.
     match ask(&mut events, &mut control, key).await? {
-        None => return older_holder(socket).await.map(|()| KeyedInput::Unsupported),
+        None => {
+            older_holder(socket).await?;
+            return Err(HolderError::Outdated {
+                socket: socket.to_owned(),
+            });
+        }
         Some(Answer { arrived: true, .. }) => return Ok(KeyedInput::Repeat),
         Some(Answer { arrived: false, .. }) => {}
     }
@@ -295,7 +334,8 @@ pub async fn keyed_input(
     }
 }
 
-/// Asks the holder at `socket` whether the keyed input `key` was typed.
+/// Asks the holder at `socket` whether the keyed input `key` was typed. A
+/// holder from a build before keyed input is [`HolderError::Outdated`].
 pub async fn key_arrived(socket: &Path, key: &str) -> Result<KeyState, HolderError> {
     check_key(key)?;
     let mut attachment = attach(socket, u64::MAX).await?;
@@ -310,9 +350,322 @@ pub async fn key_arrived(socket: &Path, key: &str) -> Result<KeyState, HolderErr
         }) => KeyState::NotArrived { holder: instance },
         None => {
             older_holder(socket).await?;
-            KeyState::Unsupported
+            return Err(HolderError::Outdated {
+                socket: socket.to_owned(),
+            });
         }
     })
+}
+
+/// How long after it started `type_then_return` waits for the program to
+/// read keys itself: an agent's CLI starting cold on a loaded machine
+/// takes seconds. One that keeps line editing on (a shell's `read`) holds
+/// up only text typed while it's starting.
+const KEYS_LIMIT: Duration = Duration::from_secs(5);
+/// How long `type_then_return` waits for the program to show the text
+/// before it holds the return back.
+const SHOWN_LIMIT: Duration = Duration::from_secs(15);
+
+/// Whether the program in a holder reads keys itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadsKeys {
+    Yes,
+    /// The terminal still edits lines itself: the program had run for the
+    /// time given, or ended, before it turned that off.
+    NotYet,
+}
+
+/// Waits until the program in the holder at `socket` reads keys itself:
+/// it has turned the terminal's line editing off, as a full-screen program
+/// does once it's up. Text typed before then is echoed and held by the
+/// terminal, not by the program. A program still editing lines once it
+/// has run for `starting` is taken to keep doing so: one that has run that
+/// long gets no wait at all.
+pub async fn await_keys(socket: &Path, starting: Duration) -> Result<ReadsKeys, HolderError> {
+    let starting_ms = u32::try_from(starting.as_millis()).unwrap_or(u32::MAX);
+    let Attachment {
+        mut events,
+        mut control,
+        ..
+    } = attach(socket, u64::MAX).await?;
+    let asked = control.send(ClientFrame::AwaitKeys { starting_ms }).await;
+    let answer = match asked {
+        Ok(()) => events.reply().await,
+        Err(_) => Ok(None),
+    };
+    match answer {
+        Ok(Some(ServerFrame::KeysRead { ready: true })) => Ok(ReadsKeys::Yes),
+        Ok(Some(ServerFrame::KeysRead { ready: false })) => Ok(ReadsKeys::NotYet),
+        Ok(Some(ServerFrame::Refused { message })) => Err(HolderError::Refused {
+            socket: socket.to_owned(),
+            message,
+        }),
+        Ok(Some(_)) => Err(events.protocol("it answered a question with something else")),
+        // An older holder closes the connection on a frame it doesn't know.
+        // Nothing is typed into it: the upgrade's "Migrate the holders"
+        // item moves its session onto the current holder (D373).
+        Ok(None) | Err(HolderError::Lost { .. }) => {
+            older_holder(socket).await?;
+            Err(HolderError::Outdated {
+                socket: socket.to_owned(),
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// The output a holder prints from when this was made, to tell when the
+/// program shows text typed after it.
+pub struct OutputWatch {
+    events: Events,
+    /// Kept open: the holder stops sending output once a client's side
+    /// closes.
+    control: Control,
+    /// A wait was cut off part way through a frame: what follows can't be
+    /// read.
+    torn: bool,
+}
+
+/// Starts watching the output of the holder at `socket` from now on.
+pub async fn watch_output(socket: &Path) -> Result<OutputWatch, HolderError> {
+    let Attachment {
+        events, control, ..
+    } = attach(socket, u64::MAX).await?;
+    Ok(OutputWatch {
+        events,
+        control,
+        torn: false,
+    })
+}
+
+impl OutputWatch {
+    /// Waits, for up to `limit`, until the output since the watch began
+    /// shows the end of `text` as a person would read it on the screen.
+    /// Returns whether it did: `false` when the limit passed or the
+    /// program ended first. Text with nothing visible counts as shown.
+    pub async fn shown(&mut self, text: &[u8], limit: Duration) -> Result<bool, HolderError> {
+        let Some(mut seen) = Shown::new(text) else {
+            return Ok(true);
+        };
+        if self.torn {
+            return Ok(false);
+        }
+        match tokio::time::timeout(limit, look_for(&mut self.events, &mut seen)).await {
+            Ok(shown) => shown,
+            Err(_) => {
+                self.torn = true;
+                Ok(false)
+            }
+        }
+    }
+}
+
+/// Reads output until `seen` sees its text (`true`) or the program ends.
+async fn look_for(events: &mut Events, seen: &mut Shown) -> Result<bool, HolderError> {
+    loop {
+        match events.next().await? {
+            Some(Event::Output { data, .. }) => {
+                if seen.push(&data) {
+                    return Ok(true);
+                }
+            }
+            Some(Event::Exited { .. }) | None => return Ok(false),
+            Some(_) => {}
+        }
+    }
+}
+
+/// What became of the return [`type_then_return`] was to press.
+#[derive(Debug)]
+pub enum Typed {
+    /// The program showed the text, and return was pressed after it.
+    Submitted,
+    /// The program didn't show the text in time, as one that first asks a
+    /// question of its own (Copilot's folder trust) doesn't: return wasn't
+    /// pressed, since it would answer that question for the person
+    /// (BUG-T1b). [`HeldReturn::once_shown`] presses it once the program
+    /// shows the text.
+    Held(HeldReturn),
+}
+
+/// A return held back until the program shows the text typed before it.
+pub struct HeldReturn {
+    /// Reads the program's output until it shows the text (`true`) or
+    /// ends; `None` once the program has ended.
+    shown: Option<tokio::task::JoinHandle<Result<bool, HolderError>>>,
+    control: Control,
+    pause: Duration,
+}
+
+impl HeldReturn {
+    /// Waits up to `limit` for the program to show the text, as it does
+    /// once the person has answered its question, then presses return after
+    /// the pause. Returns whether it pressed it: not when the program ended
+    /// or the limit passed first.
+    pub async fn once_shown(&mut self, limit: Duration) -> Result<bool, HolderError> {
+        let Some(shown) = self.shown.as_mut() else {
+            return Ok(false);
+        };
+        let Ok(looked) = tokio::time::timeout(limit, shown).await else {
+            return Ok(false);
+        };
+        // Done looking either way: a finished task isn't polled again.
+        self.shown = None;
+        match looked {
+            Ok(Ok(true)) => {}
+            Ok(Err(error)) => return Err(error),
+            Ok(Ok(false)) | Err(_) => return Ok(false),
+        }
+        tokio::time::sleep(self.pause).await;
+        self.control.input(2, b"\r").await?;
+        Ok(true)
+    }
+
+    /// Whether waiting is over: the text was shown and its return pressed,
+    /// or the program ended.
+    pub fn done(&self) -> bool {
+        self.shown.is_none()
+    }
+}
+
+/// Whether a program's input is clear to type into now, as the daemon's
+/// screen check says; `false` while it asks a question of its own or its
+/// screen can't be read.
+pub type Ready = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync,
+>;
+
+/// How often [`deliver`] asks whether the input is clear again.
+const READY_EVERY: Duration = Duration::from_millis(500);
+
+/// Sees `text` submitted into the holder at `socket` within `limit`, after
+/// [`type_then_return`] held its return (`held`) or never typed it (`None`,
+/// as when the input wasn't clear). With `ready`, it types only once the
+/// input is clear, and types the text again, once, when the input is clear
+/// but the text still isn't shown after a bounded wait: the program dropped
+/// what was typed while it asked. Without `ready` nothing tells a dropped
+/// text from one still held behind a question, so it only presses return
+/// once the text shows. Returns whether the text was submitted.
+pub async fn deliver(
+    socket: &Path,
+    text: &[u8],
+    pause: Duration,
+    mut held: Option<HeldReturn>,
+    ready: Option<Ready>,
+    limit: Duration,
+) -> Result<bool, HolderError> {
+    let deadline = tokio::time::Instant::now() + limit;
+    let left = || deadline.saturating_duration_since(tokio::time::Instant::now());
+    let mut typings = u8::from(held.is_some());
+    loop {
+        let Some(waiting) = held.as_mut() else {
+            if let Some(ready) = &ready {
+                while !ready().await {
+                    if left().is_zero() {
+                        return Ok(false);
+                    }
+                    tokio::time::sleep(READY_EVERY.min(left())).await;
+                }
+            }
+            typings += 1;
+            match type_then_return(socket, text, pause).await? {
+                Typed::Submitted => return Ok(true),
+                Typed::Held(next) => held = Some(next),
+            }
+            continue;
+        };
+        let Some(ready) = &ready else {
+            return waiting.once_shown(left()).await;
+        };
+        // Watch for the text while the program asks.
+        loop {
+            if waiting.once_shown(READY_EVERY.min(left())).await? {
+                return Ok(true);
+            }
+            if waiting.done() || left().is_zero() {
+                return Ok(false);
+            }
+            if ready().await {
+                break;
+            }
+        }
+        // The input is clear: the text shows soon if the program kept it.
+        if waiting.once_shown(SHOWN_LIMIT.min(left())).await? {
+            return Ok(true);
+        }
+        if waiting.done() || left().is_zero() {
+            return Ok(false);
+        }
+        if typings >= 2 {
+            return waiting.once_shown(left()).await;
+        }
+        held = None;
+    }
+}
+
+impl std::fmt::Debug for HeldReturn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeldReturn")
+            .field("socket", &self.control.socket)
+            .field("pause", &self.pause)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for HeldReturn {
+    fn drop(&mut self) {
+        if let Some(shown) = &self.shown {
+            shown.abort();
+        }
+    }
+}
+
+/// Types `text` into the holder at `socket`, then presses return as a key
+/// of its own, the way a person does: once the program reads keys itself,
+/// has shown the text (or the summary it shows a long paste as), and
+/// `pause` has passed after that. An agent's CLI takes a return that
+/// reaches it with the text, as one starting up and reading both at once
+/// does, as part of a paste and doesn't submit it. A program that hasn't
+/// shown the text after a bounded wait gets no return: it may be asking
+/// something of its own, which a return would answer (BUG-T1b).
+pub async fn type_then_return(
+    socket: &Path,
+    text: &[u8],
+    pause: Duration,
+) -> Result<Typed, HolderError> {
+    await_keys(socket, KEYS_LIMIT).await?;
+    let OutputWatch {
+        mut events,
+        mut control,
+        ..
+    } = watch_output(socket).await?;
+    let looking = Shown::new(text);
+    // Read in a task of its own, as reading isn't cancel-safe: a held
+    // return goes on reading where this wait stopped.
+    let mut shown = tokio::spawn(async move {
+        match looking {
+            Some(mut looking) => look_for(&mut events, &mut looking).await,
+            None => Ok(true),
+        }
+    });
+    control.input(1, text).await?;
+    let waited = tokio::time::timeout(SHOWN_LIMIT, &mut shown).await;
+    let shown = match waited {
+        Ok(Ok(Ok(true))) => {
+            tokio::time::sleep(pause).await;
+            control.input(2, b"\r").await?;
+            return Ok(Typed::Submitted);
+        }
+        Ok(Ok(Err(error))) => return Err(error),
+        // The program ended: nothing will show the text.
+        Ok(Ok(Ok(false)) | Err(_)) => None,
+        Err(_) => Some(shown),
+    };
+    Ok(Typed::Held(HeldReturn {
+        shown,
+        control,
+        pause,
+    }))
 }
 
 /// A holder's answer about a key.
@@ -386,7 +739,11 @@ impl Events {
             Some(ServerFrame::InputWritten { seq }) => Some(Event::InputWritten { seq }),
             Some(ServerFrame::Refused { message }) => Some(Event::Refused { message }),
             Some(ServerFrame::Welcome(_)) => return Err(self.protocol("it welcomed twice")),
-            Some(ServerFrame::KeyedWritten { .. } | ServerFrame::KeyAnswer { .. }) => {
+            Some(
+                ServerFrame::KeyedWritten { .. }
+                | ServerFrame::KeyAnswer { .. }
+                | ServerFrame::KeysRead { .. },
+            ) => {
                 return Err(self.protocol("it answered keyed input on the events connection"));
             }
         })

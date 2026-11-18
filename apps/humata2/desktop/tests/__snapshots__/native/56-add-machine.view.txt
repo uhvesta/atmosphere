@@ -33,7 +33,7 @@ Navigation "Sidebar"
 Splitter "Resize the sidebar"
 Button "Add a machine…"
 Dialog "Add machine" focused
-  #input-4294967318 focused
+  #input focused
     TextInput "or type a host" value="" placeholder="or type a host" focused
   Button "Host"
   List "Steps"

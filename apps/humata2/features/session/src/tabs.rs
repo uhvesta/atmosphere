@@ -10,7 +10,8 @@ pub enum Tab {
     Terminal(usize),
     /// A text file in one of this session's clones.
     File { repo: String, path: String },
-    /// An agent-prepared view the person chose to open.
+    /// An agent-prepared view the person chose to open, by its id (the
+    /// `ViewId`'s string).
     View(String),
     /// The session's read-only conversation from the host's mirror, one per
     /// session (D186).

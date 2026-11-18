@@ -9,11 +9,15 @@ mod hosts;
 mod inbox;
 mod login;
 mod looking;
+mod machine_scripts;
 mod opencode;
+// REPOS
+mod repos;
 mod search;
 mod sessions;
 mod settings;
 mod streams;
+mod terminal_replies;
 mod turn;
 
 use humata2_proto::humata::v1 as pb;
@@ -23,7 +27,7 @@ use serde_json::Value as Json;
 use crate::args::*;
 use crate::call::{Ctx, Done};
 use crate::console::Console;
-use crate::daemon::{Daemon, Rpc};
+use crate::daemon::{Daemon, Rpc, rpc};
 use crate::error::CliError;
 
 /// Every page of a list, as one reply: the first page's fields with
@@ -104,6 +108,17 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
     match command {
         Command::Status => looking::status(ctx).await,
         Command::Whoami => looking::whoami(ctx).await,
+        Command::Stop { reason } => {
+            let request = pb::StopSessionsRequest {
+                // The same id on a retry makes it the same stop.
+                stop_id: uuid::Uuid::new_v4().to_string(),
+                reason: reason.unwrap_or_default(),
+                via: pb::StopVia::Cli as i32,
+                ..Default::default()
+            };
+            ctx.change(rpc::daemon::STOP_SESSIONS, &request).await
+        }
+        Command::Start => ctx.change(rpc::daemon::START_SESSIONS, &pb::StartSessionsRequest {}).await,
         Command::Ls { all } => looking::ls(ctx, all).await,
         Command::Channels => looking::channels(ctx).await,
         Command::Channel(command) => looking::channel(ctx, command).await,
@@ -165,6 +180,7 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
         Command::Pinned { command } => hosts::pinned(ctx, command).await,
         Command::Sessions(command) => search::sessions(ctx, command).await,
         Command::Desk(command) => desk::desk(ctx, command).await,
+        Command::Repos(command) => repos::repos(ctx, command).await, // REPOS
         Command::Report(command) => hosts::report(ctx, command).await,
         Command::Doctor(DoctorCommand::Restarts(args)) => doctor::restarts(ctx, args).await,
         Command::Turn { state } => turn::turn(ctx, state, std::time::SystemTime::now()).await,
@@ -173,7 +189,8 @@ pub async fn run<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, command: Command) -
             conversation,
             state,
             program,
-        } => opencode::opencode(ctx, conversation, state, program).await,
+            model,
+        } => opencode::opencode(ctx, conversation, state, program, model).await,
     }
 }
 
@@ -189,6 +206,8 @@ pub fn operation(command: &Command) -> &'static str {
     match command {
         Command::Status => "daemon.status",
         Command::Whoami => "daemon.whoami",
+        Command::Stop { .. } => "daemon.stop_sessions",
+        Command::Start => "daemon.start_sessions",
         Command::Ls { .. } => "session.list",
         Command::Channels => "channel.list",
         Command::Channel(command) => match command {
@@ -225,6 +244,7 @@ pub fn operation(command: &Command) -> &'static str {
         }
         Command::Session(command) => match command {
             SessionCommand::Queue { .. } => "terminal.list_queued",
+            SessionCommand::Tabs { .. } => "terminal.list_tabs",
             SessionCommand::SendNow { .. } => "terminal.send_queued_now",
             SessionCommand::Start { .. } => "session.start",
             SessionCommand::Fork { .. } => "session.fork",
@@ -239,9 +259,11 @@ pub fn operation(command: &Command) -> &'static str {
             SessionCommand::Repo(SessionRepoCommand::Add { .. }) => "session.add_repo",
             SessionCommand::Repo(SessionRepoCommand::Drop { .. }) => "session.drop_repo",
             SessionCommand::OwnCopy { .. } => "session.own_copy",
+            SessionCommand::Continue { .. } => "session.continue_in_channel",
             SessionCommand::Push { .. } => "session.push",
             SessionCommand::Note { .. } => "session.note",
             SessionCommand::Ask { .. } => "session.ask",
+            SessionCommand::Answer { .. } => "session.answer",
             SessionCommand::Type { .. } => "session.type",
             SessionCommand::Read { .. } => "session.read",
         },
@@ -329,15 +351,28 @@ pub fn operation(command: &Command) -> &'static str {
             HostCommand::Reconnect { .. } => "machine.reconnect",
             HostCommand::Remove { .. } => "machine.remove",
             HostCommand::Forget { .. } => "machine.forget",
+            HostCommand::Root {
+                path: None,
+                default_root: false,
+                ..
+            } => "machine.get",
             HostCommand::Root { .. } => "machine.change_root",
             HostCommand::VmTier { .. } => "machine.set_vm_tier",
             HostCommand::Storage { .. } => "machine.storage",
             HostCommand::ClearBuildCache { .. } => "machine.clear_build_cache",
             HostCommand::TrimLogs { .. } => "machine.trim_logs",
+            HostCommand::Stop { .. } => "machine.stop_sessions",
+            HostCommand::Start { .. } => "machine.start_sessions",
             HostCommand::Vars { .. } => "host.list_variables",
             HostCommand::Var(VarCommand::Set { .. }) => "host.set_variable",
             HostCommand::Var(VarCommand::Rm { .. }) => "host.remove_variable",
             HostCommand::TrustKey { .. } => "host.trust_new_key",
+            HostCommand::Script(command) => match command {
+                ScriptCommand::List { .. } => "machine.script_list",
+                ScriptCommand::Check => "machine.script_check",
+                ScriptCommand::Run { .. } => "machine.script_run",
+                ScriptCommand::Log { .. } => "machine.script_log",
+            },
         },
         Command::Provider(command) => match command {
             ProviderCommand::Ls => "providers.list",
@@ -375,6 +410,15 @@ pub fn operation(command: &Command) -> &'static str {
         },
         Command::Sessions(SessionsCommand::Search { .. }) => "session.search",
         Command::Desk(DeskCommand::Keep { .. }) => "desk.keep_folder",
+        // REPOS
+        Command::Repos(command) => match command {
+            ReposCommand::Search { .. } => "repo.search",
+            ReposCommand::List => "repo.library",
+            ReposCommand::Remove { .. } => "repo.remove",
+            ReposCommand::ForgetAll => "repo.forget",
+            ReposCommand::Scope(RepoScopeCommand::Show) => "repo.scope",
+            ReposCommand::Scope(RepoScopeCommand::Set { .. }) => "repo.update_scope",
+        },
         Command::Report(command) => match command {
             ReportCommand::Record { .. } => "report.record",
             ReportCommand::Stop => "report.stop",
@@ -511,6 +555,7 @@ pub(crate) mod parse {
         Ok(pb::PullRequestRef {
             repo: Some(repo),
             number,
+            note: String::new(),
         })
     }
 

@@ -29,6 +29,15 @@ project.
   `bazel test <targets>`, in the background. Design goldens:
   `bazel run //apps/humata2/desktop:design_test_record`. Never cargo, never
   `bazel clean` or `shutdown`. Repin with `CARGO_BAZEL_REPIN=1 bazel mod tidy`.
+- **Gate target set (2026-11-17):** run `//apps/humata2/...` with `--test_tag_filters=-manual`, and never list `manual` targets explicitly.
+  - **Terminal live targets:** these are `manual` and/or `external`. Run them in a separate batch with `--strategy=TestRunner=local` and these `--test_env` values:
+    - `TERMINAL_LAB_SSH_CONFIG=~/.lima/h2-terminal-c1/ssh.config`, `TERMINAL_LAB_SSH_HOST=lima-h2-terminal-c1`, `TERMINAL_LAB_SSH_HOLDER=/tmp/h2-terminal-holder`
+    - `TERMINAL_CODEX_BIN`, `TERMINAL_CLAUDE_BIN`, `TERMINAL_COPILOT_BIN`
+    - `TERMINAL_LAB_NODE`, `TERMINAL_LAB_NVIM`, `TERMINAL_LAB_REPO`, `TERMINAL_LAB_ZSH_HOME`
+    - `TERMINAL_VM_LINUX_HOLDER` (an aarch64 ELF holder)
+    - `TERMINAL_VM_IMAGE`, the cached Lima image under ~/Library/Caches/lima/download, because HOME under Bazel isn't the owner's.
+  - **Linux holder:** `--config=linux_arm64` writes it to the same bazel-out path as the Mac holder. Copy it out right after building and check it with `file`.
+  - **Not run:** demo:milestone_test, linux_browser_test and demo:fixture_runtime_test, which are cut scope (D485).
 - **Commit:** explicit paths only, never `git commit -a`, never bare
   `git stash`. Shared docs with others' hunks: stage via `git hash-object -w`
   + `git update-index --cacheinfo`. Message "Humata 2 (minion <lane>): …",

@@ -31,13 +31,32 @@ Read the result:
   with the step that failed, the problem and the files it needed (a
   conversation file, its folder, saved terminal output) and whether each is
   there.
-- `operations` and `stuck`: work the restart found half done, as it ended
-  (finished, undone, stuck with a reason).
+- `operations`, `stuck` and `owed`: work the restart found half done, each
+  with its `kind` (`start`, `relaunch`, `move`, `fork`, `remote_start`,
+  `archive`, `rebuild`, `forget`, `remove_machine`, `delete_channel`,
+  `restore_channel`, `desk_move`, `comment_send` and others; a kind you
+  don't know is still real work, so read its `step` and `detail`), its
+  `state` and a `detail`. What each state means and what you do:
+  - `finished`: carried on to its end. Nothing to do.
+  - `undone`: rolled back on purpose, and `detail` says why. The work did
+    not happen; nothing is lost. Tell the user what did not happen and, if
+    they still want it, that they can ask for it again.
+  - `stuck`: neither finished nor undone, and `detail` says what to do next
+    (it is worded as the fix). Do what it says if the user can (for
+    example end an old terminal by hand), say so to the user, and note
+    that the next start tries again. Never redo the work yourself by hand.
+  - `pending` (listed under `owed`): it has no end line, so the restart
+    didn't get to settle it, or it waits for something (`detail` says
+    what). Treat it as still owed: wait for the next start or the thing it
+    waits for, then run the doctor again. If it is still pending then, put
+    it in the diagnosis.
+  - any other state: a newer Humata wrote it. It is also listed under
+    `owed`; report it as written and put it in the diagnosis.
 - `repairs`: what can be done, each with a stable id. `safe: true` repairs
   can't lose anything. `safe: false` ones can; they have ids like
   `start-fresh:<session>`.
 
-If nothing is listed under `not_brought_back` or `stuck`, say so and stop.
+If nothing is listed under `not_brought_back`, `stuck` or `owed`, say so and stop.
 
 ## 2. Work out the cause
 

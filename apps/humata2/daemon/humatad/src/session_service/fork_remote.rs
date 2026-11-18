@@ -221,6 +221,16 @@ impl SessionSvc {
             return Ok(None);
         }
         Self::refuse_peer(caller)?;
+        // D331: a machine this host has never linked is an unknown value of
+        // `machine`, not a channel it is missing from.
+        if !carry.is_host(&to) && !remote.knows(&to) {
+            return Err(status::invalid_field(
+                "machine",
+                Problem::UnknownValue,
+                format!("this host has no machine {to} linked to fork onto"),
+                "pick a machine that is linked to the session's channel (the app's Machines page lists them; an agent can ask the user with inbox_ask which one), or leave machine empty to fork where the parent runs",
+            ));
+        }
 
         let copy = match pb::ForkKind::try_from(request.kind) {
             Ok(pb::ForkKind::CodeAndContext) => pb::ForkKind::CodeAndContext,
@@ -312,6 +322,7 @@ impl SessionSvc {
                 channel: ChannelId::new(channel.id.as_str()),
                 machine: MachineId::new(to.as_str()),
                 agent: AgentId::new(parent.record.agent.as_str()),
+                fork_of: Some(humata2_access::SessionId::new(parent.record.id.as_str())),
             },
             approved,
         )? {
@@ -325,6 +336,8 @@ impl SessionSvc {
         }
         if request.before_turn != 0 && carry.is_host(&from) {
             self.check_turn(&parent, request.before_turn).await?;
+        } else if copy != pb::ForkKind::CodeOnly && carry.is_host(&from) {
+            self.check_context(&parent).await?;
         }
         let title = clean_title(&request.title)?;
         let title = if title.is_empty() {
@@ -480,6 +493,7 @@ impl SessionSvc {
             placing: AtomicBool::new(false),
             recorded: AtomicBool::new(false),
             staged: Mutex::new(String::new()),
+            branch: Mutex::new(String::new()),
         };
         tokio::spawn(async move { forker.run().await });
         Ok(Some(Gated::Done(operation)))
@@ -587,6 +601,9 @@ struct Forker {
     recorded: AtomicBool,
     /// `sessions/<name>`, once the pack named it.
     staged: Mutex<String>,
+    /// The fork's branch as the pack named it; empty before, and in a
+    /// restart's recovery, which never records a fork.
+    branch: Mutex<String>,
 }
 
 impl Forker {
@@ -603,9 +620,93 @@ impl Forker {
                     })));
                 }
             }
-            Err(failure) => self.undo(failure).await,
+            Err(failure) => {
+                if !self.undo(failure).await {
+                    // The target couldn't be reached to take its copy back
+                    // (a cut machine): the journal stays, and the copy is
+                    // taken back once the link is up again.
+                    tokio::spawn(self.take_back_when_linked());
+                    return;
+                }
+            }
         }
         self.carry.fork_done(&self.operation).await;
+    }
+
+    /// Asks again for what an undo couldn't take back, once the machines'
+    /// links are up. A failure leaves the journal, so the next start of this
+    /// daemon tries once more.
+    async fn take_back_when_linked(self) {
+        // A link can still read up for a moment after its machine is cut, so
+        // a failed try waits for the link to go down and come up again.
+        const TRIES: usize = 5;
+        for _ in 0..TRIES {
+            for machine in [&self.from, &self.to] {
+                if !self.carry.is_host(machine) && super::move_recover::wait_up(self.carry.links(), machine).await.is_err() {
+                    crate::log::say!(
+                        "humatad2: the fork {} of session {} couldn't be taken back from {machine}, and {machine} was forgotten. Nothing was deleted; look at the fork's folder on that machine",
+                        self.session, self.parent.id
+                    );
+                    return;
+                }
+            }
+            match self.take_back().await {
+                Ok(()) => {
+                    self.svc.tell.session(&self.parent.id, pb::Change::Updated, None).await;
+                    self.carry.fork_done(&self.operation).await;
+                    return;
+                }
+                // The target's restart brought the fork's agent back before
+                // its copy could be taken back: the fork stands, as a restart
+                // here finishes one whose record was written.
+                Err(error) if error.code() == Code::AlreadyExists => {
+                    // Cut before the host's record was written, the kept
+                    // fork would be a copy no session here claims.
+                    if !self.recorded.load(Ordering::SeqCst) {
+                        let folder = self.fork_folder();
+                        let name = folder.rsplit('/').next().unwrap_or_default().to_owned();
+                        let branch = self.branch.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                        if let Err(error) = self.save_record(&branch, &name).await {
+                            crate::log::say!(
+                                "humatad2: the fork {} of session {} runs again on {}, but its record here couldn't be saved: {}. Nothing was deleted; check this machine's disk, then start humatad2 again so it records or reports the fork",
+                                self.session,
+                                self.parent.id,
+                                self.to,
+                                status::chain(&error)
+                            );
+                            return;
+                        }
+                        self.reached("recorded").await;
+                    }
+                    crate::log::say!(
+                        "humatad2: the fork {} of session {} was cut short, but its agent already runs again on {}, so it was kept",
+                        self.session, self.parent.id, self.to
+                    );
+                    self.unstage_target().await;
+                    self.svc.tell.session(&self.session, pb::Change::Created, None).await;
+                    publish_family(&self.svc.tell, &self.parent.id, None).await;
+                    self.carry.fork_done(&self.operation).await;
+                    return;
+                }
+                Err(error) => {
+                    crate::log::say!(
+                        "humatad2: couldn't take back the cut fork {} yet: {}. It is tried again when the link comes back",
+                        self.operation,
+                        status::chain(&error)
+                    );
+                    for machine in [&self.from, &self.to] {
+                        if !self.carry.is_host(machine) {
+                            let mut state = self.carry.links().watch(machine);
+                            let _ = state.wait_for(|now| !matches!(now, crate::host_relay::LinkState::Up { .. })).await;
+                        }
+                    }
+                }
+            }
+        }
+        crate::log::say!(
+            "humatad2: gave up taking back the cut fork {} after {TRIES} tries. Nothing was deleted; the next start of humatad2 tries again",
+            self.operation
+        );
     }
 
     /// Journals that the fork reached `phase`, so a restart can finish or
@@ -666,6 +767,7 @@ impl Forker {
         let name = packed.folder.rsplit('/').next().unwrap_or_default().to_owned();
         let folder = format!("sessions/{name}");
         *self.staged.lock().unwrap_or_else(PoisonError::into_inner) = folder.clone();
+        *self.branch.lock().unwrap_or_else(PoisonError::into_inner) = packed.branch.clone();
         self.reached("packed").await;
         self.step("copy", self.copy(&packed, &folder)).await?;
         self.reached("copied").await;
@@ -737,6 +839,14 @@ impl Forker {
     /// The host's own record of a fork that lives on a box, then the
     /// agent's start there.
     async fn record_and_launch(&self, branch: &str, name: &str) -> Result<(), Status> {
+        self.save_record(branch, name).await?;
+        self.reached("recorded").await;
+        self.resume().await
+    }
+
+    /// Saves the host's records of the fork: its session and start when it
+    /// lives on a box, and what it was forked from.
+    async fn save_record(&self, branch: &str, name: &str) -> Result<(), Status> {
         let folder = self.svc.starter.layout.session(&self.channel.folder, name);
         let origin = ForkOrigin {
             session_id: self.session.clone(),
@@ -784,9 +894,7 @@ impl Forker {
             store.put_fork_origin(&origin)
         })
         .await?
-        .map_err(|error| status::store(error, &self.svc.machine, "save the fork"))?;
-        self.reached("recorded").await;
-        self.resume().await
+        .map_err(|error| status::store(error, &self.svc.machine, "save the fork"))
     }
 
     /// Starts the fork's agent on the target through its own ResumeSession,
@@ -834,9 +942,10 @@ impl Forker {
     /// A fork that failed: what it put on the target and what it staged is
     /// taken back, and the operation ends FAILED naming the step. The
     /// parent was never touched.
-    async fn undo(&self, failure: Failure) {
+    /// Whether everything the fork put anywhere was taken back.
+    async fn undo(&self, failure: Failure) -> bool {
         let Failure { step, status: cause } = failure;
-        let _ = self.take_back().await;
+        let taken_back = self.take_back().await.is_ok();
         let why = status::error_of(&cause);
         let reason = why
             .as_ref()
@@ -863,6 +972,7 @@ impl Forker {
         if let Some(progress) = self.take_progress() {
             progress.fail(error);
         }
+        taken_back
     }
 
     /// Takes back what the fork put on the target and what it staged on
@@ -870,20 +980,24 @@ impl Forker {
     /// part that couldn't be taken back; the rest is still tried.
     async fn take_back(&self) -> Result<(), Status> {
         let mut first = Ok(());
+        // A copy on the target that couldn't be taken back keeps the host's
+        // record of it, so it is never left with no session claiming it.
+        let mut copy_kept = false;
         if self.placing.load(Ordering::SeqCst) {
             let folder = self.fork_folder();
-            first = first.and(
-                self.carry
-                    .abort_new(&self.to, &self.operation, &self.session, &self.at_to, &folder)
-                    .await,
-            );
+            let taken = self
+                .carry
+                .abort_new(&self.to, &self.operation, &self.session, &self.at_to, &folder)
+                .await;
+            copy_kept = taken.is_err();
+            first = first.and(taken);
         }
         let staging = self
             .carry
             .abort(&self.from, &self.operation, &self.parent.id, &self.at_from, "", false)
             .await;
         first = first.and(staging);
-        if self.recorded.load(Ordering::SeqCst) {
+        if self.recorded.load(Ordering::SeqCst) && !copy_kept {
             let (store, id) = (self.svc.starter.store.clone(), self.session.clone());
             let removed = blocking(move || store.remove_session(&id))
                 .await?
@@ -1003,6 +1117,7 @@ async fn recover_fork(svc: SessionSvc, carry: Carry, journal: ForkJournal) -> Re
         placing: AtomicBool::new(placing),
         recorded: AtomicBool::new(true),
         staged: Mutex::new(journal.folder.clone()),
+        branch: Mutex::new(String::new()),
     };
     if journal.phase == "recorded" {
         // The fork is made; only its agent's start may be owed. One that

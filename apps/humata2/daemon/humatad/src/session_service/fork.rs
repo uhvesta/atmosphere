@@ -11,8 +11,7 @@ use std::sync::Arc;
 
 use humata2_access::{AgentId, Capability, ChannelId, MachineId, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_mirror::{MirrorError, turns_of};
-use humata2_sessions::{ForkCopy, ForkRequest, Starter, handover_file};
+use humata2_sessions::{ForkCopy, ForkRequest, Starter, TurnsError, handover_file};
 use humata2_store::TabRecord;
 use pb::invalid_field::Problem;
 use tokio::sync::oneshot;
@@ -173,12 +172,28 @@ impl SessionSvc {
                 checked.before_turn,
                 handover_file(&fork),
             );
+            let kind = self.starter.agents.get(&agent).ok().cloned();
+            let (home, folder) = (self.starter.home.clone(), checked.parent.record.folder.clone());
+            let id = checked
+                .parent
+                .agent
+                .as_ref()
+                .map(|record| record.launch.conversation_id.clone());
             let text = blocking(move || {
+                // From now all of the conversation is read; before a turn, up
+                // to where its format says that turn starts.
+                let read_to = match (before_turn, file.as_deref(), kind, id) {
+                    (0, ..) => Some(u64::MAX),
+                    (turn, Some(file), Some(kind), Some(id)) => {
+                        kind.turn_start(&home, &folder, &id, file, turn)
+                    }
+                    _ => None,
+                };
                 start_fresh::handover_seed(&Handover {
                     title: &title,
                     agent: &agent,
                     file: file.as_deref(),
-                    before_turn,
+                    read_to,
                     socket: &socket,
                     handed: &handed,
                 })
@@ -305,6 +320,17 @@ impl SessionSvc {
             .map(|parent| parent.value.clone())
             .filter(|parent| !parent.is_empty())
             .ok_or_else(|| status::missing("parent"))?;
+        // D670: a fork of an agent whose CLI picked its own conversation id
+        // forks the conversation it wrote, not the placeholder.
+        let (store, agents, home, key) = (
+            self.starter.store.clone(),
+            self.starter.agents.clone(),
+            self.starter.home.clone(),
+            parent_id.clone(),
+        );
+        if let Err(error) = blocking(move || agents.learn_conversation(&store, &home, &key)).await? {
+            return Err(status::store(error, &self.machine, "learn the parent's conversation"));
+        }
         let parent = self.load(&parent_id).await?;
         let copy = match pb::ForkKind::try_from(request.kind) {
             Ok(pb::ForkKind::CodeAndContext) => ForkCopy::CodeAndContext,
@@ -341,6 +367,10 @@ impl SessionSvc {
                 "pick one of the agents the new-session dialog lists, or leave agent empty to run the parent's",
             ));
         }
+        // SEAM: AGENTSET: a fork that changes agent starts one, so it must be on.
+        if agent != parent.record.agent {
+            crate::agent_gate::enabled(&self.starter.agents, &agent)?;
+        }
         let handover = self
             .starter
             .hands_over(&parent.record.agent, &agent, copy)
@@ -348,12 +378,22 @@ impl SessionSvc {
                 let (code, failure) = start_error(&error);
                 status::failure(code, failure)
             })?;
-        if request
+        // Reaching here, the remote path took no part: this host has no
+        // link to the machine asked for, so it can't be a linked one.
+        if let Some(machine) = request
             .machine
             .as_ref()
-            .is_some_and(|machine| !machine.value.is_empty() && machine.value != self.machine)
-            || self.lives_elsewhere(&parent.record).is_some()
+            .filter(|machine| !machine.value.is_empty() && machine.value != self.machine)
+            && self.lives_elsewhere(&parent.record).is_none()
         {
+            return Err(status::invalid_field(
+                "machine",
+                Problem::UnknownValue,
+                format!("this host has no machine {} linked to fork onto", machine.value),
+                "pick a machine that is linked to the session's channel (the app's Machines page lists them; an agent can ask the user with inbox_ask which one), or leave machine empty to fork where the parent runs",
+            ));
+        }
+        if self.lives_elsewhere(&parent.record).is_some() {
             return Err(not_built_part(FORK_SESSION, "a fork on another machine"));
         }
         let (store, id) = (self.starter.store.clone(), parent_id.clone());
@@ -376,6 +416,7 @@ impl SessionSvc {
                 channel: ChannelId::new(channel.id.as_str()),
                 machine: MachineId::new(self.machine.as_str()),
                 agent: AgentId::new(agent.as_str()),
+                fork_of: Some(humata2_access::SessionId::new(parent.record.id.as_str())),
             },
             approved,
         )? {
@@ -383,6 +424,8 @@ impl SessionSvc {
         }
         if request.before_turn != 0 {
             self.check_turn(&parent, request.before_turn).await?;
+        } else if copy != ForkCopy::CodeOnly {
+            self.check_context(&parent).await?;
         }
         let title = clean_title(&request.title)?;
         let title = if title.is_empty() {
@@ -425,26 +468,44 @@ impl SessionSvc {
         }))
     }
 
+    /// What any fork that carries the conversation needs, from now as from
+    /// before a turn (CV-3): a conversation its adapter doesn't refuse as
+    /// unsupported, so the refusal comes before anything is made. A
+    /// conversation that can't be read for another reason is left to the
+    /// copy, as before.
+    pub(super) async fn check_context(&self, parent: &Loaded) -> Result<(), Status> {
+        match self.session_turns(parent).await? {
+            Err(error @ TurnsError::Unsupported { .. }) => {
+                Err(lacks_context_fork(&parent.record.agent, &error))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// What a fork before turn `turn` (above 0) needs: an agent whose
-    /// conversation turns can be read, and a turn the session has. Turn 1 is
-    /// the first prompt, so nothing comes before it to carry (D181).
+    /// conversation turns its adapter reads (`session_turns`), and a turn the
+    /// session has. Turn 1 is the first prompt, so nothing comes before it to
+    /// carry (D181). A conversation the adapter doesn't support (CV-3) is
+    /// refused as the agent lacking the fork.
     pub(super) async fn check_turn(&self, parent: &Loaded, turn: u32) -> Result<(), Status> {
         let agent = &parent.record.agent;
-        let reads = self
-            .starter
-            .agents
-            .get(agent)
-            .is_ok_and(|kind| kind.conversation_format.reads_turns());
-        if !reads {
-            return Err(failed(
-                Code::FailedPrecondition,
-                &ForkError::NoReadableTurns {
-                    agent: agent.clone(),
-                },
-                "fork from now, with before_turn 0, or use an agent whose conversation is Claude's JSONL",
-                None,
-            ));
-        }
+        let turns = match self.session_turns(parent).await? {
+            Ok(Some(turns)) => turns,
+            Ok(None) => {
+                return Err(failed(
+                    Code::FailedPrecondition,
+                    &ForkError::NoReadableTurns {
+                        agent: agent.clone(),
+                    },
+                    "fork from now, with before_turn 0, or use an agent whose conversation Humata reads (Claude Code, Codex or Copilot)",
+                    None,
+                ));
+            }
+            Err(error @ TurnsError::Unsupported { .. }) => {
+                return Err(lacks_context_fork(agent, &error));
+            }
+            Err(error) => return Err(turns_failed(&error)),
+        };
         if turn == 1 {
             return Err(status::invalid_field(
                 "before_turn",
@@ -453,16 +514,6 @@ impl SessionSvc {
                 "use CODE_ONLY for a fresh agent, or fork from now with before_turn 0",
             ));
         }
-        let path = parent
-            .agent
-            .as_ref()
-            .map(|agent| agent.launch.conversation_file.clone());
-        let turns = match path {
-            Some(path) => blocking(move || turns_of(&path))
-                .await?
-                .map_err(|error| turns_failed(&error))?,
-            None => Vec::new(),
-        };
         if turns.iter().any(|mark| mark.index == turn) {
             return Ok(());
         }
@@ -478,8 +529,24 @@ impl SessionSvc {
     }
 }
 
+/// A conversation its adapter doesn't support (CV-3), as a fork that would
+/// carry it is refused: the agent lacks a fork with context.
+fn lacks_context_fork(agent: &str, error: &TurnsError) -> Status {
+    failed(
+        Code::FailedPrecondition,
+        error,
+        "fork with CODE_ONLY for a fresh agent; nothing was changed",
+        Some(pb::error::Kind::AgentLacksFeature(pb::AgentLacksFeature {
+            agent: Some(pb::AgentId {
+                value: agent.to_owned(),
+            }),
+            feature: pb::agent_lacks_feature::Feature::ContextFork as i32,
+        })),
+    )
+}
+
 /// A conversation whose turns couldn't be read, as the API answers it.
-fn turns_failed(error: &MirrorError) -> Status {
+fn turns_failed(error: &TurnsError) -> Status {
     failed(
         Code::Unavailable,
         error,

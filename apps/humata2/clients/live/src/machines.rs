@@ -10,10 +10,11 @@ use std::time::Duration;
 use humata2_clients::machines::{
     AddEvent, AddFailure, AddOutcome, AddRequest, AddStream, AddTarget, Choices, ClashChoice,
     ChannelFolder, GhLogin, LoginEvent, LoginReason, LoginStream, LoginTarget, MachineDetail, MachineHealth,
-    Machines, OperationId, PromptKind, Provider, ProviderParam, Reach, SkillClash, SkillsPreview, StepKind,
-    StepStatus, StepUpdate, UnattendedMethod, short_version,
+    MachineScripts, Machines, OperationId, PromptKind, Provider, ProviderParam, Reach, ScriptOutcome, ScriptRuleView,
+    ScriptRun, ScriptStepRun, ScriptStepView, SkillClash, SkillsPreview, Started, StepKind, StepStatus, StepUpdate,
+    UnattendedMethod, short_version,
 };
-use humata2_clients::model::{MachineId, SessionId};
+use humata2_clients::model::{ChannelId, MachineId, MachineStop, RootPlan, SessionId};
 use humata2_clients::{DaemonError, Reply};
 use humata2_grpc::humata::v1 as pb;
 use humata2_grpc::humata::v1::{
@@ -25,6 +26,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Status};
 
 use crate::connection::{LiveDaemon, Shared, Wire, fresh_key, not_in_this_release};
+use crate::local_time::LocalNow;
 
 const PAGE_SIZE: u32 = 200;
 const POLL: Duration = Duration::from_millis(100);
@@ -95,6 +97,33 @@ fn failure(shared: &Shared, status: &Status, what: &str) -> DaemonError {
 fn machine_id(machine: &MachineId) -> Option<pb::MachineId> {
     Some(pb::MachineId {
         value: machine.as_str().to_owned(),
+    })
+}
+
+/// D261: the host's own machine is stopped by its own daemon, which keeps
+/// the record and re-execs; there is no link to deliver it over, so the
+/// stop is in force once it answers.
+fn stop_this_machine(shared: Arc<Shared>) -> Reply<MachineStop> {
+    Box::pin(async move {
+        const WHAT: &str = "Stopping this Mac's sessions";
+        let reply = shared
+            .daemon_info()
+            .stop_sessions(pb::StopSessionsRequest {
+                // The daemon makes the id; the app sends one stop per confirm.
+                stop_id: String::new(),
+                reason: String::new(),
+                via: pb::StopVia::App as i32,
+                by_machine: String::new(),
+            })
+            .await
+            .map_err(|status| failure(&shared, &status, WHAT))?
+            .into_inner();
+        let stopped = reply.stopped.ok_or_else(|| DaemonError::Refused {
+            what: WHAT.to_owned(),
+            reason: "the daemon answered without the stop it made. Reload This Mac's page to see whether its sessions stopped before trying again".to_owned(),
+        })?;
+        let now = crate::local_time::LocalNow::read();
+        Ok(crate::map::machine_stop(&stopped, true, &now))
     })
 }
 
@@ -214,6 +243,75 @@ fn succeeded(operation: &pb::Operation, what: &str) -> Result<(), DaemonError> {
                 .as_ref()
                 .map_or_else(|| "it didn't finish. Try again".to_owned(), words),
         }),
+    }
+}
+
+// --- Machine scripts (MACHINESCRIPTS, D686, D687) ------------------------
+
+fn script_outcome_of(value: i32) -> ScriptOutcome {
+    match pb::MachineScriptOutcome::try_from(value) {
+        Ok(pb::MachineScriptOutcome::Passed) => ScriptOutcome::Passed,
+        Ok(pb::MachineScriptOutcome::Failed) => ScriptOutcome::Failed,
+        Ok(pb::MachineScriptOutcome::TimedOut) => ScriptOutcome::TimedOut,
+        Ok(pb::MachineScriptOutcome::Skipped) => ScriptOutcome::Skipped,
+        // A run the host hasn't ended, or one this app doesn't know: shown as going.
+        Ok(pb::MachineScriptOutcome::Running | pb::MachineScriptOutcome::Unspecified) | Err(_) => {
+            ScriptOutcome::Running
+        }
+    }
+}
+
+fn script_run_of(run: &pb::MachineScriptRun, now: &LocalNow) -> ScriptRun {
+    let started_ms = run
+        .started_at
+        .as_ref()
+        .map_or(0, |at| at.seconds.saturating_mul(1000).saturating_add(i64::from(at.nanos / 1_000_000)));
+    ScriptRun {
+        id: run.id.clone(),
+        machine: MachineId::new(run.machine.as_ref().map(|machine| machine.value.clone()).unwrap_or_default()),
+        rule: run.rule.clone(),
+        trigger: run.trigger.clone(),
+        session: run.session.as_ref().map(|session| SessionId::new(session.value.clone())),
+        at: now.clock(started_ms),
+        took_ms: run.took_ms,
+        outcome: script_outcome_of(run.outcome),
+        steps: run
+            .steps
+            .iter()
+            .map(|step| ScriptStepRun {
+                index: step.index,
+                kind: step.kind.clone(),
+                label: step.label.clone(),
+                outcome: script_outcome_of(step.outcome),
+                exit: step.exit,
+                tail: step.tail.clone(),
+                error: step.error.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn script_rule_of(rule: &pb::MachineScriptRule) -> ScriptRuleView {
+    ScriptRuleView {
+        name: rule.name.clone(),
+        triggers: rule.triggers.clone(),
+        machines: rule.machines.clone(),
+        once: rule.once,
+        steps: rule
+            .steps
+            .iter()
+            .map(|step| ScriptStepView { kind: step.kind.clone(), label: step.label.clone() })
+            .collect(),
+    }
+}
+
+fn scripts_of(reply: &pb::ListMachineScriptsResponse, warnings: Vec<String>, now: &LocalNow) -> MachineScripts {
+    MachineScripts {
+        rules: reply.rules.iter().map(script_rule_of).collect(),
+        last_runs: reply.last_runs.iter().map(|run| script_run_of(run, now)).collect(),
+        script_names: reply.scripts.clone(),
+        problem: reply.problem.as_ref().map(words),
+        warnings,
     }
 }
 
@@ -355,10 +453,19 @@ fn root(error: &pb::Error) -> &pb::Error {
 /// The step an add stopped at: the failed one, or the last one the dialog
 /// shows that was reached.
 fn failed_step(operation: &pb::Operation) -> (StepKind, Option<&pb::OperationStep>) {
+    // An add undoes what it did after a failure, so the step that failed may
+    // read Undone by now (its output kept): then it is the last of the add's
+    // own steps that ran and wasn't finished.
     let failed = operation
         .steps
         .iter()
-        .find(|step| step_state_of(step) == pb::StepState::Failed);
+        .find(|step| step_state_of(step) == pb::StepState::Failed)
+        .or_else(|| {
+            operation.steps.iter().rev().find(|step| {
+                kind_of(&step.key).is_some()
+                    && matches!(step_state_of(step), pb::StepState::Running | pb::StepState::Undone)
+            })
+        });
     let mut before = None;
     for step in &operation.steps {
         if failed.is_some_and(|failed| std::ptr::eq(failed, step)) {
@@ -409,13 +516,20 @@ fn outcome_of_failure(operation: &pb::Operation) -> AddOutcome {
     let (step, failed) = failed_step(operation);
     let tail = failed.map(|step| step.output_tail.as_str()).unwrap_or_default();
     match &root(&error).kind {
-        Some(pb::error::Kind::HostKeyChanged(key)) if !key.presented_fingerprint.is_empty() => {
+        // A first sighting is the one key the Confirm card offers. A key that differs from one
+        // already pinned or confirmed is no Confirm card: confirming would replace that key, and
+        // the card can't show which one it replaces. The daemon's own words, which say someone
+        // may be intercepting, are what the dialog shows.
+        Some(pb::error::Kind::HostKeyUnknown(key)) if !key.presented_fingerprint.is_empty() => {
             return AddOutcome::HostKey {
                 fingerprint: key.presented_fingerprint.clone(),
             };
         }
         Some(pb::error::Kind::LoginNeedsUser(needs)) => {
             return AddOutcome::NeedsLogin { reason: login_reason(needs, tail, root(&error)) };
+        }
+        Some(pb::error::Kind::HostNeedsMigrate(needs)) => {
+            return AddOutcome::NeedsMigrate { platform: needs.platform.clone(), what: words(root(&error)) };
         }
         _ => {}
     }
@@ -980,6 +1094,13 @@ impl Machines for LiveMachines {
                 // Reach rules aren't served: empty rather than guessed.
                 sessions,
                 rules: Vec::new(),
+                stop: machine
+                    .sessions_stopped
+                    .as_ref()
+                    .map(|stopped| {
+                        let now = crate::local_time::LocalNow::read();
+                        crate::map::machine_stop(stopped, machine.stop_delivered, &now)
+                    }),
             })
         })
     }
@@ -1094,6 +1215,166 @@ impl Machines for LiveMachines {
             Ok(())
         })
     }
+
+    fn stop_sessions(&self, machine: &MachineId) -> Reply<MachineStop> {
+        let shared = self.shared.clone();
+        if *machine == shared.machine {
+            return stop_this_machine(shared);
+        }
+        let request = pb::StopMachineSessionsRequest {
+            machine: machine_id(machine),
+            // The host makes the id; the app sends one stop per confirm.
+            stop_id: String::new(),
+            reason: String::new(),
+            via: pb::StopVia::App as i32,
+        };
+        Box::pin(async move {
+            const WHAT: &str = "Stopping the machine's sessions";
+            let reply = machine_service(&shared)
+                .stop_machine_sessions(request)
+                .await
+                .map_err(|status| failure(&shared, &status, WHAT))?
+                .into_inner();
+            let stopped = reply.stopped.ok_or_else(|| DaemonError::Refused {
+                what: WHAT.to_owned(),
+                reason: "the host answered without the stop it made. Reload the machine's page to see whether its sessions stopped before trying again".to_owned(),
+            })?;
+            let now = crate::local_time::LocalNow::read();
+            Ok(crate::map::machine_stop(&stopped, reply.delivered, &now))
+        })
+    }
+
+    fn start_sessions(&self, machine: &MachineId) -> Reply<Started> {
+        let shared = self.shared.clone();
+        if *machine == shared.machine {
+            // D265: this machine's own daemon starts its sessions.
+            return Box::pin(async move {
+                shared
+                    .daemon_info()
+                    .start_sessions(pb::StartSessionsRequest {})
+                    .await
+                    .map_err(|status| failure(&shared, &status, "Starting this Mac's sessions"))?;
+                Ok(Started { cancelled: false })
+            });
+        }
+        let request = pb::StartMachineSessionsRequest { machine: machine_id(machine) };
+        Box::pin(async move {
+            let reply = machine_service(&shared)
+                .start_machine_sessions(request)
+                .await
+                .map_err(|status| failure(&shared, &status, "Starting the machine's sessions"))?
+                .into_inner();
+            Ok(Started { cancelled: reply.cancelled })
+        })
+    }
+
+    fn scripts(&self, machine: Option<&MachineId>) -> Reply<MachineScripts> {
+        let shared = self.shared.clone();
+        let request = pb::ListMachineScriptsRequest { machine: machine.and_then(machine_id) };
+        Box::pin(async move {
+            let reply = machine_service(&shared)
+                .list_machine_scripts(request)
+                .await
+                .map_err(|status| failure(&shared, &status, "Reading the machine scripts"))?
+                .into_inner();
+            // The warnings come from the check; a failed check leaves the list without them.
+            let warnings = machine_service(&shared)
+                .check_machine_scripts(pb::CheckMachineScriptsRequest {})
+                .await
+                .map(|checked| checked.into_inner().warnings)
+                .unwrap_or_default();
+            Ok(scripts_of(&reply, warnings, &LocalNow::read()))
+        })
+    }
+
+    fn run_script(&self, machine: &MachineId, rule: &str, session: Option<&SessionId>) -> Reply<()> {
+        const WHAT: &str = "Running the machine script";
+        let shared = self.shared.clone();
+        let request = pb::RunMachineScriptRequest {
+            idempotency_key: fresh_key(),
+            machine: machine_id(machine),
+            rule: rule.to_owned(),
+            session: session.map(|session| pb::SessionId { value: session.as_str().to_owned() }),
+        };
+        Box::pin(async move {
+            let operation = machine_service(&shared)
+                .run_machine_script(request)
+                .await
+                .map_err(|status| failure(&shared, &status, WHAT))?
+                .into_inner();
+            let done = follow(&shared, operation, WHAT, |_| {}).await?;
+            succeeded(&done, WHAT)
+        })
+    }
+
+    fn script_runs(&self, machine: &MachineId, rule: Option<&str>, limit: u32) -> Reply<Vec<ScriptRun>> {
+        let shared = self.shared.clone();
+        let request = pb::ListMachineScriptRunsRequest {
+            machine: machine_id(machine),
+            rule: rule.unwrap_or_default().to_owned(),
+            limit,
+        };
+        Box::pin(async move {
+            let reply = machine_service(&shared)
+                .list_machine_script_runs(request)
+                .await
+                .map_err(|status| failure(&shared, &status, "Reading the machine script runs"))?
+                .into_inner();
+            let now = LocalNow::read();
+            Ok(reply.runs.iter().map(|run| script_run_of(run, &now)).collect())
+        })
+    }
+
+    fn plan_change_root(&self, machine: &MachineId, root: &str) -> Reply<RootPlan> {
+        const WHAT: &str = "Planning the change of the Humata folder";
+        let shared = self.shared.clone();
+        let request = pb::PlanChangeRootRequest { id: machine_id(machine), root: root.to_owned() };
+        let machine = machine.clone();
+        Box::pin(async move {
+            let plan = machine_service(&shared)
+                .plan_change_root(request)
+                .await
+                .map_err(|status| failure(&shared, &status, WHAT))?
+                .into_inner();
+            let token = plan.token.map(|token| token.value).filter(|value| !value.is_empty()).ok_or_else(|| {
+                DaemonError::Refused {
+                    what: WHAT.to_owned(),
+                    reason: "the daemon answered without a plan to apply. Try Plan again".to_owned(),
+                }
+            })?;
+            Ok(RootPlan {
+                machine,
+                token,
+                old_root: plan.old_root,
+                new_root: plan.new_root,
+                channels: plan.channels.into_iter().map(|channel| ChannelId::new(channel.value)).collect(),
+                running: plan.running.into_iter().map(|session| SessionId::new(session.value)).collect(),
+            })
+        })
+    }
+
+    fn change_root(&self, plan: &RootPlan, move_channels: bool) -> Reply<()> {
+        const WHAT: &str = "Changing the Humata folder";
+        let shared = self.shared.clone();
+        let request = pb::ChangeRootRequest {
+            idempotency_key: fresh_key(),
+            id: machine_id(&plan.machine),
+            root: plan.new_root.clone(),
+            // The app is the person: no presence proof is sent.
+            presence: None,
+            plan: Some(pb::PlanToken { value: plan.token.clone() }),
+            move_channels,
+        };
+        Box::pin(async move {
+            let operation = machine_service(&shared)
+                .change_root(request)
+                .await
+                .map_err(|status| failure(&shared, &status, WHAT))?
+                .into_inner();
+            let done = follow(&shared, operation, WHAT, |_| {}).await?;
+            succeeded(&done, WHAT)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1119,12 +1400,103 @@ mod tests {
         }
     }
 
+    fn wire_run(outcome: pb::MachineScriptOutcome, step: pb::MachineScriptStepRun) -> pb::MachineScriptRun {
+        pb::MachineScriptRun {
+            id: "run-1".to_owned(),
+            machine: Some(pb::MachineId { value: "devbox-1".to_owned() }),
+            rule: "set-up-tools".to_owned(),
+            trigger: "added".to_owned(),
+            outcome: outcome as i32,
+            steps: vec![step],
+            ..pb::MachineScriptRun::default()
+        }
+    }
+
+    fn wire_step(outcome: pb::MachineScriptOutcome, tail: &[&str]) -> pb::MachineScriptStepRun {
+        pb::MachineScriptStepRun {
+            index: 2,
+            kind: "run".to_owned(),
+            label: "setup.sh".to_owned(),
+            outcome: outcome as i32,
+            exit: Some(1),
+            tail: tail.iter().map(|line| (*line).to_owned()).collect(),
+            ..pb::MachineScriptStepRun::default()
+        }
+    }
+
+    const NOW_FOR_SCRIPTS: LocalNow = LocalNow { unix_ms: 1_700_000_000_000, utc_offset_s: 0 };
+
+    #[test]
+    fn a_failed_script_run_keeps_the_failed_steps_exit_and_output() {
+        let wire = wire_run(
+            pb::MachineScriptOutcome::Failed,
+            wire_step(pb::MachineScriptOutcome::Failed, &["a", "b"]),
+        );
+
+        let run = script_run_of(&wire, &NOW_FOR_SCRIPTS);
+
+        assert_eq!(run.outcome, ScriptOutcome::Failed);
+        assert_eq!(run.machine, MachineId::new("devbox-1"));
+        let (step, tail) = run.failure_tail().expect("the failed step");
+        assert_eq!((step.index, step.exit), (2, Some(1)));
+        assert_eq!(tail, ["a".to_owned(), "b".to_owned()]);
+    }
+
+    #[test]
+    fn every_script_outcome_the_host_names_maps_to_one_the_page_knows() {
+        use pb::MachineScriptOutcome as O;
+        assert_eq!(script_outcome_of(O::Passed as i32), ScriptOutcome::Passed);
+        assert_eq!(script_outcome_of(O::TimedOut as i32), ScriptOutcome::TimedOut);
+        assert_eq!(script_outcome_of(O::Skipped as i32), ScriptOutcome::Skipped);
+        assert_eq!(script_outcome_of(O::Running as i32), ScriptOutcome::Running);
+        // A value from a newer host is shown as going rather than as a result it isn't.
+        assert_eq!(script_outcome_of(999), ScriptOutcome::Running);
+    }
+
+    #[test]
+    fn a_rules_file_the_host_cant_use_comes_through_as_its_problem_with_the_fix() {
+        let reply = pb::ListMachineScriptsResponse {
+            problem: Some(pb::Error {
+                message: "rule 2 names a script that isn't there.".to_owned(),
+                fix: "Add it to ~/.humata2/scripts.".to_owned(),
+                ..pb::Error::default()
+            }),
+            ..pb::ListMachineScriptsResponse::default()
+        };
+
+        let scripts = scripts_of(&reply, vec![], &NOW_FOR_SCRIPTS);
+
+        assert!(scripts.rules.is_empty());
+        let problem = scripts.problem.expect("a problem");
+        assert!(problem.contains("rule 2") && problem.contains("~/.humata2/scripts"));
+    }
+
+    #[test]
+    fn a_rule_keeps_its_triggers_machines_and_steps_in_order() {
+        let rule = pb::MachineScriptRule {
+            name: "set-up-tools".to_owned(),
+            triggers: vec!["added".to_owned(), "connected".to_owned()],
+            machines: vec!["devbox-1".to_owned()],
+            once: true,
+            steps: vec![
+                pb::MachineScriptStep { kind: "run".to_owned(), label: "setup.sh".to_owned() },
+                pb::MachineScriptStep { kind: "send".to_owned(), label: "/restart".to_owned() },
+            ],
+        };
+
+        let view = script_rule_of(&rule);
+
+        assert_eq!(view.triggers, ["added", "connected"]);
+        assert!(view.once);
+        assert_eq!(view.steps.iter().map(|step| step.kind.as_str()).collect::<Vec<_>>(), ["run", "send"]);
+    }
+
     #[test]
     fn an_unknown_host_key_asks_to_confirm_the_fingerprint_it_presented() {
         let error = pb::Error {
-            kind: Some(pb::error::Kind::HostKeyChanged(pb::HostKeyChanged {
+            kind: Some(pb::error::Kind::HostKeyUnknown(pb::HostKeyUnknown {
                 machine: None,
-                expected_fingerprint: String::new(),
+                algorithm: "ssh-ed25519".to_owned(),
                 presented_fingerprint: "SHA256:abc".to_owned(),
             })),
             ..Default::default()
@@ -1135,6 +1507,25 @@ mod tests {
             AddOutcome::HostKey {
                 fingerprint: "SHA256:abc".to_owned()
             }
+        );
+    }
+
+    #[test]
+    fn a_host_key_that_differs_from_the_one_expected_is_not_offered_for_confirming() {
+        let error = pb::Error {
+            message: "presents another key".to_owned(),
+            kind: Some(pb::error::Kind::HostKeyChanged(pb::HostKeyChanged {
+                machine: None,
+                expected_fingerprint: "SHA256:old".to_owned(),
+                presented_fingerprint: "SHA256:new".to_owned(),
+            })),
+            ..Default::default()
+        };
+        let operation = failed_add(vec![step("connect", pb::StepState::Failed, "")], error);
+        assert!(
+            matches!(outcome_of_failure(&operation), AddOutcome::Failed(_)),
+            "{:?}",
+            outcome_of_failure(&operation)
         );
     }
 
@@ -1160,6 +1551,24 @@ mod tests {
                 }
             }
         );
+    }
+
+    #[test]
+    fn a_host_behind_the_app_stops_the_add_with_its_platform_and_words() {
+        let error = pb::Error {
+            message: "The daemon is older.".to_owned(),
+            fix: "Migrate it.".to_owned(),
+            kind: Some(pb::error::Kind::HostNeedsMigrate(pb::HostNeedsMigrate {
+                platform: "linux-x86_64".to_owned(),
+            })),
+            ..Default::default()
+        };
+        let operation = failed_add(vec![step("install", pb::StepState::Failed, "")], error);
+        let AddOutcome::NeedsMigrate { platform, what } = outcome_of_failure(&operation) else {
+            panic!("expected the add to need a migrate");
+        };
+        assert_eq!(platform, "linux-x86_64");
+        assert!(!what.is_empty());
     }
 
     #[test]
@@ -1213,6 +1622,27 @@ mod tests {
         assert!(failure.what.contains("Free some disk."));
         assert!(failure.what.contains("no space left"));
         assert_eq!(failure.fix, None);
+    }
+
+    #[test]
+    fn a_failed_step_the_undo_took_back_is_still_the_one_that_failed() {
+        let operation = failed_add(
+            vec![
+                step("connect", pb::StepState::Done, ""),
+                step("check", pb::StepState::Done, ""),
+                step("install", pb::StepState::Undone, "read-only"),
+                step("start", pb::StepState::Waiting, ""),
+                step("find_agents", pb::StepState::Waiting, ""),
+                step("uninstall", pb::StepState::Skipped, ""),
+                step("forget", pb::StepState::Done, ""),
+            ],
+            pb::Error::default(),
+        );
+        let AddOutcome::Failed(failure) = outcome_of_failure(&operation) else {
+            panic!("expected a failure");
+        };
+        assert_eq!(failure.step, StepKind::Install);
+        assert!(failure.what.contains("read-only"));
     }
 
     #[test]

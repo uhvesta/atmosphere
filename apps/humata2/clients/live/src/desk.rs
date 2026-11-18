@@ -3,11 +3,12 @@
 //! workspace ([`Shared::load_desk`]). Moves to another machine are not in
 //! this release (D182.2) and still answer [`DaemonError::NotServedYet`].
 
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_clients::desk::{
-    Access, CleanUp, CleanUpRow, Closed, DeskClient, DeskData, DeskSession, Document, Folder,
-    FolderChoice, LastUsed, NewDeskSession,
+    Access, ChannelDeskSession, CleanUp, CleanUpRow, Closed, DeskClient, DeskData, DeskSession,
+    Document, Folder, FolderChoice, LastUsed, NewChannelDesk, NewDeskSession, Switch, Switches,
 };
 use humata2_clients::model::{ChannelId, MachineId, SessionId};
 use humata2_clients::{DaemonError, Reply};
@@ -117,6 +118,87 @@ fn desk_session(wire: &pb::DeskSession, now: i64) -> Option<DeskSession> {
         last_used,
         closed,
         unpushed: (!wire.held_work.is_empty()).then(|| wire.held_work.clone()),
+        has_versions: wire.has_versions,
+        doc_head: wire.doc_head.clone(),
+        version_count: wire.version_count,
+        holds_files: wire.holds_files,
+    })
+}
+
+fn switches_of(wire: &pb::ChannelDeskSwitches) -> Switches {
+    Switches {
+        read_files: wire.read_files,
+        send_notes: wire.send_notes,
+        type_into_terminal: wire.type_into_terminal,
+        start_and_fork: wire.start_and_fork,
+        stop_and_archive: wire.stop_and_archive,
+        change_board_items: wire.change_board_items,
+    }
+}
+
+fn switches_wire(switches: Switches) -> pb::ChannelDeskSwitches {
+    pb::ChannelDeskSwitches {
+        read_files: switches.read_files,
+        send_notes: switches.send_notes,
+        type_into_terminal: switches.type_into_terminal,
+        start_and_fork: switches.start_and_fork,
+        stop_and_archive: switches.stop_and_archive,
+        change_board_items: switches.change_board_items,
+    }
+}
+
+fn blocked_switch(value: i32) -> Option<Switch> {
+    match pb::ChannelDeskSwitch::try_from(value).ok()? {
+        pb::ChannelDeskSwitch::Unspecified => None,
+        pb::ChannelDeskSwitch::ReadFiles => Some(Switch::ReadFiles),
+        pb::ChannelDeskSwitch::SendNotes => Some(Switch::SendNotes),
+        pb::ChannelDeskSwitch::TypeIntoTerminal => Some(Switch::TypeIntoTerminal),
+        pb::ChannelDeskSwitch::StartAndFork => Some(Switch::StartAndFork),
+        pb::ChannelDeskSwitch::StopAndArchive => Some(Switch::StopAndArchive),
+        pb::ChannelDeskSwitch::ChangeBoardItems => Some(Switch::ChangeBoardItems),
+    }
+}
+
+/// One channel Desk session as the app's model, through [`desk_session`].
+/// `None` when the daemon named no session or sent no channel Desk part.
+fn channel_desk_session(wire: &pb::DeskSession, now: i64) -> Option<ChannelDeskSession> {
+    let desk = desk_session(wire, now)?;
+    let part = wire.channel_desk.as_ref()?;
+    let target = map::session_id(part.target.as_ref());
+    Some(ChannelDeskSession {
+        desk,
+        channel: map::channel_id(part.channel.as_ref()),
+        target: (!target.as_str().is_empty()).then_some(target),
+        switches: part.switches.as_ref().map_or_else(Switches::default, switches_of),
+        blocked: part.blocked.iter().filter_map(|value| blocked_switch(*value)).collect(),
+        target_gone: part.target_gone,
+        documents: wire.documents.clone(),
+        document_lines: wire
+            .document_lines
+            .iter()
+            .map(|(name, lines)| (name.clone(), *lines))
+            .collect(),
+    })
+}
+
+/// A Desk event's session as the app's change: a deletion names only the
+/// session. `None` when the daemon named no session.
+pub(crate) fn change(
+    change: i32,
+    wire: &pb::DeskSession,
+) -> Option<humata2_clients::desk::DeskChange> {
+    use humata2_clients::desk::DeskChange;
+    if change == pb::Change::Deleted as i32 {
+        let id = map::session_id(wire.session.as_ref());
+        return (!id.as_str().is_empty()).then_some(DeskChange::Gone(id));
+    }
+    let now = now_ms();
+    if wire.channel_desk.is_some() {
+        return channel_desk_session(wire, now).map(DeskChange::ChannelSession);
+    }
+    desk_session(wire, now).map(|desk| DeskChange::Session {
+        desk,
+        documents: wire.documents.clone(),
     })
 }
 
@@ -131,10 +213,10 @@ fn clean_up_row(row: &pb::DeskCleanUpRow) -> CleanUpRow {
 impl Shared {
     /// Every Desk session on this machine, open and closed. A daemon that
     /// doesn't serve the Desk yet has none, rather than failing the load.
-    pub(crate) async fn load_desk(&self) -> Result<DeskData, DaemonError> {
+    pub(crate) async fn load_desk(&self, channels: &[ChannelId]) -> Result<DeskData, DaemonError> {
         let reply = match self
             .desk()
-            .list_desk_sessions(pb::ListDeskSessionsRequest {})
+            .list_desk_sessions(pb::ListDeskSessionsRequest::default())
             .await
         {
             Ok(reply) => reply.into_inner(),
@@ -166,11 +248,155 @@ impl Shared {
             })
             .flatten()
             .collect();
+        let channel_sessions = self.load_channel_desks(channels, now).await?;
         Ok(DeskData {
             sessions,
             documents,
+            channel_sessions,
             ..DeskData::default()
         })
+    }
+
+    /// Every channel's own Desk sessions, open and closed (CD-2): one
+    /// listing per channel, since the plain listing leaves them out.
+    async fn load_channel_desks(
+        &self,
+        channels: &[ChannelId],
+        now: i64,
+    ) -> Result<BTreeMap<SessionId, ChannelDeskSession>, DaemonError> {
+        let mut found = BTreeMap::new();
+        for channel in channels {
+            let reply = match self
+                .desk()
+                .list_desk_sessions(pb::ListDeskSessionsRequest {
+                    channel: Some(pb::ChannelId {
+                        value: channel.as_str().to_owned(),
+                    }),
+                    target: None,
+                })
+                .await
+            {
+                Ok(reply) => reply.into_inner(),
+                Err(status) if status.code() == tonic::Code::Unimplemented => return Ok(found),
+                Err(status) => return Err(self.error(&status, "A channel's Desk")),
+            };
+            for wire in &reply.sessions {
+                if let Some(session) = channel_desk_session(wire, now) {
+                    found.insert(session.desk.session.clone(), session);
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    async fn list_channel_desk(
+        &self,
+        channel: &ChannelId,
+    ) -> Result<Vec<ChannelDeskSession>, DaemonError> {
+        let reply = self
+            .desk()
+            .list_desk_sessions(pb::ListDeskSessionsRequest {
+                channel: Some(pb::ChannelId {
+                    value: channel.as_str().to_owned(),
+                }),
+                target: None,
+            })
+            .await
+            .map_err(|status| self.error(&status, "A channel's Desk"))?
+            .into_inner();
+        let now = now_ms();
+        Ok(reply
+            .sessions
+            .iter()
+            .filter_map(|wire| channel_desk_session(wire, now))
+            .collect())
+    }
+
+    async fn list_target_desk(
+        &self,
+        target: &SessionId,
+    ) -> Result<Vec<ChannelDeskSession>, DaemonError> {
+        let reply = self
+            .desk()
+            .list_desk_sessions(pb::ListDeskSessionsRequest {
+                channel: None,
+                target: Some(session_wire(target)),
+            })
+            .await
+            .map_err(|status| self.error(&status, "The Desk sessions looking after a session"))?
+            .into_inner();
+        let now = now_ms();
+        Ok(reply
+            .sessions
+            .iter()
+            .filter_map(|wire| channel_desk_session(wire, now))
+            .collect())
+    }
+
+    async fn start_channel_desk(&self, new: NewChannelDesk) -> Result<SessionId, DaemonError> {
+        const WHAT: &str = "Starting a channel desk session";
+        let reply = self
+            .desk()
+            .start_desk_session(pb::StartDeskSessionRequest {
+                idempotency_key: fresh_key(),
+                title: new.title,
+                agent: Some(pb::AgentId {
+                    value: self.agents.name(new.agent),
+                }),
+                machine: Some(pb::MachineId {
+                    value: new.machine.as_str().to_owned(),
+                }),
+                channel: Some(pb::ChannelId {
+                    value: new.channel.as_str().to_owned(),
+                }),
+                target: new.target.as_ref().map(session_wire),
+                switches: Some(switches_wire(new.switches)),
+                ..Default::default()
+            })
+            .await
+            .map_err(|status| self.error(&status, WHAT))?
+            .into_inner();
+        let id = map::session_id(reply.session.as_ref());
+        if id.as_str().is_empty() {
+            return Err(DaemonError::Refused {
+                what: WHAT.to_owned(),
+                reason: "the daemon didn't name the session it started. Reload to see whether it exists".to_owned(),
+            });
+        }
+        Ok(id)
+    }
+
+    async fn set_channel_switches(
+        &self,
+        session: &SessionId,
+        switches: Switches,
+    ) -> Result<(), DaemonError> {
+        self.desk()
+            .set_desk_access(pb::SetDeskAccessRequest {
+                session: Some(session_wire(session)),
+                access: None,
+                switches: Some(switches_wire(switches)),
+            })
+            .await
+            .map_err(|status| self.error(&status, "Changing a channel desk session's switches"))?;
+        Ok(())
+    }
+
+    async fn set_channel_target(
+        &self,
+        session: &SessionId,
+        target: Option<&SessionId>,
+    ) -> Result<(), DaemonError> {
+        self.desk()
+            .set_desk_target(pb::SetDeskTargetRequest {
+                session: Some(session_wire(session)),
+                target: target.map(session_wire),
+            })
+            .await
+            .map_err(|status| {
+                self.error(&status, "Changing what a channel desk session looks after")
+            })?;
+        Ok(())
     }
 
     async fn add_desk_repo(&self, session: &SessionId, repo: &str) -> Result<(), DaemonError> {
@@ -232,10 +458,8 @@ impl Shared {
             .collect::<Result<Vec<_>, _>>()?;
         // A scratch folder is named by the daemon from the title, so no name
         // is sent for it.
-        let picked_path = match new.folder {
-            FolderChoice::Picked { path } => path,
-            FolderChoice::Scratch { .. } => String::new(),
-        };
+        // Nobody picks a folder (D451, D460): the daemon places the session.
+        let FolderChoice::Scratch { .. } = new.folder;
         let reply = self
             .desk()
             .start_desk_session(pb::StartDeskSessionRequest {
@@ -248,10 +472,13 @@ impl Shared {
                 machine: Some(pb::MachineId {
                     value: new.machine.as_str().to_owned(),
                 }),
-                picked_path,
+                picked_path: String::new(),
                 repos,
                 access: Some(access_wire(new.access)),
                 first_message: String::new(),
+                channel: None,
+                target: None,
+                switches: None,
             })
             .await
             .map_err(|status| self.error(&status, WHAT))?
@@ -272,6 +499,7 @@ impl Shared {
             .close_desk_session(pb::CloseDeskSessionRequest {
                 idempotency_key: fresh_key(),
                 session: Some(session_wire(session)),
+                ..Default::default()
             })
             .await
             .map_err(|status| self.error(&status, WHAT))?;
@@ -307,6 +535,7 @@ impl Shared {
             .set_desk_access(pb::SetDeskAccessRequest {
                 session: Some(session_wire(session)),
                 access: Some(access_wire(access)),
+                switches: None,
             })
             .await
             .map_err(|status| self.error(&status, "Changing a desk session's access"))?;
@@ -450,9 +679,121 @@ impl DeskClient for LiveDaemon {
         later("Moving a desk session to another machine")
     }
 
+    fn list_versions(
+        &self,
+        session: &SessionId,
+        path: &str,
+    ) -> Reply<humata2_clients::docs::DocVersions> {
+        let shared = self.shared.clone();
+        let (session, path) = (session.clone(), path.to_owned());
+        Box::pin(async move { shared.list_doc_versions(&session, &path).await })
+    }
+
+    fn read_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<humata2_clients::docs::VersionText> {
+        let shared = self.shared.clone();
+        let (session, path, id) = (session.clone(), path.to_owned(), id.to_owned());
+        Box::pin(async move { shared.read_doc_version(&session, &path, &id).await })
+    }
+
+    fn save_version(
+        &self,
+        session: &SessionId,
+        message: &str,
+    ) -> Reply<humata2_clients::docs::DocVersion> {
+        let shared = self.shared.clone();
+        let (session, message) = (session.clone(), message.to_owned());
+        Box::pin(async move { shared.save_doc_version(&session, &message).await })
+    }
+
+    fn restore_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<humata2_clients::docs::Restored> {
+        let shared = self.shared.clone();
+        let (session, path, id) = (session.clone(), path.to_owned(), id.to_owned());
+        Box::pin(async move { shared.restore_doc_version(&session, &path, &id).await })
+    }
+
+    fn diff_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<humata2_clients::docs::VersionDiff> {
+        let shared = self.shared.clone();
+        let (session, path, id) = (session.clone(), path.to_owned(), id.to_owned());
+        Box::pin(async move { shared.diff_doc_version(&session, &path, &id).await })
+    }
+
     fn set_access(&self, session: &SessionId, access: Access) -> Reply<()> {
         let shared = self.shared.clone();
         let session = session.clone();
         Box::pin(async move { shared.set_desk_access(&session, access).await })
+    }
+
+    fn channel_sessions(&self, channel: &ChannelId) -> Reply<Vec<ChannelDeskSession>> {
+        let shared = self.shared.clone();
+        let channel = channel.clone();
+        Box::pin(async move { shared.list_channel_desk(&channel).await })
+    }
+
+    fn target_sessions(&self, target: &SessionId) -> Reply<Vec<ChannelDeskSession>> {
+        let shared = self.shared.clone();
+        let target = target.clone();
+        Box::pin(async move { shared.list_target_desk(&target).await })
+    }
+
+    fn start_channel(&self, new: NewChannelDesk) -> Reply<SessionId> {
+        let shared = self.shared.clone();
+        Box::pin(async move { shared.start_channel_desk(new).await })
+    }
+
+    fn set_switches(&self, session: &SessionId, switches: Switches) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.set_channel_switches(&session, switches).await })
+    }
+
+    fn set_target(&self, session: &SessionId, target: Option<&SessionId>) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        let target = target.cloned();
+        Box::pin(async move { shared.set_channel_target(&session, target.as_ref()).await })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel_wire(documents: &[&str], lines: &[(&str, u32)]) -> pb::DeskSession {
+        pb::DeskSession {
+            session: Some(pb::SessionId {
+                value: "se_1".to_owned(),
+            }),
+            documents: documents.iter().map(|name| (*name).to_owned()).collect(),
+            document_lines: lines
+                .iter()
+                .map(|(name, count)| ((*name).to_owned(), *count))
+                .collect(),
+            channel_desk: Some(pb::ChannelDesk::default()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_channel_desk_session_carries_the_daemons_line_counts_by_file() {
+        let wire = channel_wire(&["a.md", "b.md"], &[("a.md", 3)]);
+        let shown = channel_desk_session(&wire, 0).expect("a channel Desk session");
+        let expected: BTreeMap<String, u32> = [("a.md".to_owned(), 3)].into_iter().collect();
+        assert_eq!(shown.document_lines, expected);
+        assert_eq!(shown.documents, vec!["a.md".to_owned(), "b.md".to_owned()]);
     }
 }

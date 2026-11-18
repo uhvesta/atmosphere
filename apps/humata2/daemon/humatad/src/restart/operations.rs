@@ -130,6 +130,7 @@ fn append(inner: &mut Inner, path: &Path, lines: &[String]) -> Result<(), Operat
         return Ok(());
     }
     if inner.file.is_none() {
+        let first = !path.exists();
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -139,6 +140,16 @@ fn append(inner: &mut Inner, path: &Path, lines: &[String]) -> Result<(), Operat
                 path: path.to_owned(),
                 source,
             })?;
+        if first && let Some(folder) = path.parent() {
+            // The file's entry must survive a power cut too; later lines
+            // only need the file's own sync.
+            File::open(folder).and_then(|folder| folder.sync_all()).map_err(|source| {
+                OperationsError::Open {
+                    path: path.to_owned(),
+                    source,
+                }
+            })?;
+        }
         inner.file = Some(file);
     }
     let Some(file) = inner.file.as_mut() else {

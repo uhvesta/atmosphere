@@ -306,7 +306,7 @@ impl Fixture {
         let host = self.process.as_ref().unwrap().id();
         // Enumerate only numeric ownership first; inspect argv only for this host's descendants.
         let output = Command::new("ps")
-            .args(["-axo", "pid=,ppid="])
+            .args(["-A", "-o", "pid=,ppid="])
             .output()
             .unwrap();
         let pairs: Vec<(u32, u32)> = String::from_utf8(output.stdout)

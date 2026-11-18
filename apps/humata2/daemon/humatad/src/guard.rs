@@ -205,16 +205,16 @@ impl Guard {
         let context = self.context_for(caller);
         let mut policy = lock(&self.policy);
         // A Desk agent belongs to no channel: the policy answers it with
-        // the new-channel rules, and nothing is added for it (D182.3).
+        // the new-channel rules, and nothing is added for it (D182.3),
+        // except the channel its move asks to go into, whose rule decides.
         if let Caller::Agent(agent) = caller
-            && !matches!(agent.session_kind(), SessionKind::Desk(_))
-            && policy.channel_rules(&agent.session.channel).is_none()
-            && let Err(error) = policy.add_channel(agent.session.channel.clone())
+            && let Some(channel) = rules_channel(agent, call)
+            && policy.channel_rules(&channel).is_none()
+            && let Err(error) = policy.add_channel(channel.clone())
         {
             return Err(status::internal(
                 format!(
-                    "couldn't load channel {}'s access rules: {}",
-                    agent.session.channel,
+                    "couldn't load channel {channel}'s access rules: {}",
                     status::chain(&error)
                 ),
                 "",
@@ -284,6 +284,26 @@ impl Guard {
             Checked::Allowed => Ok(()),
             Checked::Ask(request) => Err(status::needs_approval(request.capability)),
         }
+    }
+}
+
+/// The channel whose rules judge an agent's call and must be loaded first:
+/// its own channel, or for a Desk agent only the channel its move asks to go
+/// into (D182.3, D305).
+fn rules_channel(
+    agent: &crate::identity::AgentCaller,
+    call: &Call,
+) -> Option<humata2_access::ChannelId> {
+    match (agent.session_kind(), call) {
+        (
+            SessionKind::Desk(_),
+            Call::Use {
+                capability: Capability::DeskMoveToChannel,
+                target: humata2_access::Target::Channel(channel),
+            },
+        ) => Some(channel.clone()),
+        (SessionKind::Desk(_), _) => None,
+        _ => Some(agent.session.channel.clone()),
     }
 }
 
@@ -402,10 +422,15 @@ pub(crate) fn capability(capability: Capability) -> pb::Capability {
         C::MachineProvision => P::MachineProvision,
         C::TrashRestore => P::TrashRestore,
         C::ChannelCreate => P::ChannelCreate,
+        C::ChannelRepoAdd => P::ChannelRepoAdd,
         C::NetworkReach => P::NetworkReach,
+        C::DeskMoveToChannel => P::DeskMoveToChannel,
         C::SessionStopOther => P::SessionStopOther,
+        C::SessionDeleteOther => P::SessionDeleteOther,
+        C::MachineSessionsStop => P::MachineSessionsStop,
         C::ChannelChange => P::ChannelChange,
         C::MachineDestroy => P::MachineDestroy,
+        C::MachineScriptRun => P::MachineScriptRun,
         C::InboxAnswer => P::InboxAnswer,
         C::AccessChange => P::AccessChange,
         C::SettingsChange => P::SettingsChange,

@@ -1,0 +1,1 @@
+{"sessionId":"c0p1-session","timestamp":1794967800000,"cwd":"/work/api","toolName":"ask_user","toolArgs":"{\"message\":\"Which environment should I deploy to?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"string\",\"title\":\"Environment\",\"enum\":[\"staging\",\"production\"]}},\"required\":[\"target\"]}}"}

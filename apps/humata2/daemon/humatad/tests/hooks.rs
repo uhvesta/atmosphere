@@ -23,6 +23,11 @@ use tonic::Streaming;
 const CLAUDE_BASH: &str = r#"{"session_id":"abc123","transcript_path":"/t.jsonl","cwd":"/work/api","permission_mode":"default","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"npm test -- --watch=false","description":"Run the test suite"}}"#;
 /// Copilot's permissionRequest payload (agent_hooks/testdata/copilot).
 const COPILOT_SHELL: &str = r#"{"sessionId":"c0p1","timestamp":1763251200000,"cwd":"/work/api","hook_event_name":"permissionRequest","toolName":"bash","toolInput":{"command":"rm -rf build","description":"Clean the build folder"}}"#;
+/// Copilot's preToolUse payload for its ask-user form with two choices
+/// (agent_hooks/testdata/copilot/ask_user_choices.json; D761).
+const COPILOT_ASK: &str = r#"{"sessionId":"c0p1","timestamp":1794967800000,"cwd":"/work/api","toolName":"ask_user","toolArgs":{"message":"Which environment should I deploy to?","requestedSchema":{"type":"object","properties":{"target":{"type":"string","title":"Environment","enum":["staging","production"]}},"required":["target"]}}}"#;
+/// Copilot's preToolUse payload for another tool: not a question.
+const COPILOT_PRE_BASH: &str = r#"{"sessionId":"c0p1","timestamp":1794967810000,"cwd":"/work/api","toolName":"bash","toolArgs":{"command":"ls"}}"#;
 /// Claude's Stop payload: not a permission ask.
 const CLAUDE_STOP: &str = r#"{"session_id":"abc123","hook_event_name":"Stop","stop_hook_active":false}"#;
 
@@ -197,6 +202,35 @@ impl Fixture {
             .await
             .expect("open the Hook stream")
             .into_inner()
+    }
+
+    /// Holds the Hook stream for the agent's ask-user form (D761).
+    async fn hold_question(&self, token: &str, payload: &str) -> Streaming<pb::HookReply> {
+        pb::session_service_client::SessionServiceClient::new(self.daemon.channel().await)
+            .hook(as_agent(
+                pb::HookRequest {
+                    agent: "copilot".to_owned(),
+                    event: "question".to_owned(),
+                    payload: payload.as_bytes().to_vec(),
+                },
+                token,
+            ))
+            .await
+            .expect("open the Hook stream")
+            .into_inner()
+    }
+
+    async fn status(&self) -> pb::SessionStatus {
+        common::get_session(&self.daemon, &self.session).await.status()
+    }
+
+    /// Waits until the session no longer needs you.
+    async fn wait_not_needing_you(&self) {
+        let deadline = Instant::now() + WAIT;
+        while self.status().await == pb::SessionStatus::NeedsInput {
+            assert!(Instant::now() < deadline, "the session still needs you");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// The user sets Settings › Agents › Ask for permission in the Inbox
@@ -469,4 +503,83 @@ async fn asks_go_to_the_inbox_by_default() {
             .expect("read the settings")
             .into_inner();
     assert_eq!(shown.agents.map(|agents| agents.permissions_in_agent), Some(false));
+}
+
+fn reply(text: &str) -> pb::request_answer::Answer {
+    pb::request_answer::Answer::Reply(pb::Reply {
+        text: text.to_owned(),
+    })
+}
+
+fn question_of(request: &pb::InboxRequest) -> pb::QuestionPreview {
+    match request.preview.as_ref().and_then(|preview| preview.preview.as_ref()) {
+        Some(pb::request_preview::Preview::Question(question)) => question.clone(),
+        other => panic!("not a question card: {other:?}"),
+    }
+}
+
+/// D761: Copilot's ask-user form raises one Inbox question with all of it,
+/// the session needs you while it waits, and the reply reaches Copilot.
+#[tokio::test(flavor = "multi_thread")]
+async fn copilots_ask_user_form_is_an_inbox_question_and_the_reply_reaches_it() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    assert_ne!(fix.status().await, pb::SessionStatus::NeedsInput);
+    let mut stream = fix.hold_question(&token, COPILOT_ASK).await;
+
+    let card = fix.wait_pending(1).await.remove(0);
+    assert_eq!(card.kind, pb::RequestKind::Question as i32);
+    let question = question_of(&card);
+    assert!(question.question.contains("Which environment should I deploy to?"));
+    assert_eq!(question.choices, ["staging", "production"]);
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::NeedsInput).await;
+
+    let id = card.id.clone().expect("card has an id");
+    // A question takes a reply, not an approval.
+    assert!(fix.answer(&id, approve()).await.is_err());
+    fix.answer(&id, reply("staging")).await.expect("reply to the question");
+    let printed: Value = serde_json::from_slice(&last_reply(&mut stream).await).expect("JSON");
+    assert_eq!(printed["permissionDecision"], "deny");
+    assert!(printed["permissionDecisionReason"].as_str().expect("string").contains("staging"));
+    assert_eq!(fix.request(&id).await.state, pb::RequestState::Answered as i32);
+    fix.wait_not_needing_you().await;
+}
+
+/// D761: declining the question tells Copilot so and ends the wait.
+#[tokio::test(flavor = "multi_thread")]
+async fn declining_copilots_question_tells_it_and_ends_the_wait() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    let mut stream = fix.hold_question(&token, COPILOT_ASK).await;
+    let card = fix.wait_pending(1).await.remove(0);
+    fix.answer(card.id.as_ref().expect("card has an id"), deny("not today"))
+        .await
+        .expect("decline the question");
+    let printed: Value = serde_json::from_slice(&last_reply(&mut stream).await).expect("JSON");
+    assert_eq!(printed["permissionDecision"], "deny");
+    assert!(printed["permissionDecisionReason"].as_str().expect("string").contains("not today"));
+    fix.wait_not_needing_you().await;
+}
+
+/// D761: a question whose hook lets go is withdrawn, and the session no
+/// longer needs you; another tool's preToolUse raises nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_whose_hook_lets_go_is_withdrawn_and_another_tool_raises_none() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    let mut other = fix.hold_question(&token, COPILOT_PRE_BASH).await;
+    assert!(last_reply(&mut other).await.is_empty());
+    assert!(fix.pending().await.is_empty());
+
+    let stream = fix.hold_question(&token, COPILOT_ASK).await;
+    let card = fix.wait_pending(1).await.remove(0);
+    let id = card.id.clone().expect("card has an id");
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::NeedsInput).await;
+    drop(stream);
+    let deadline = Instant::now() + WAIT;
+    while fix.request(&id).await.state != pb::RequestState::Withdrawn as i32 {
+        assert!(Instant::now() < deadline, "the question was never withdrawn");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    fix.wait_not_needing_you().await;
 }

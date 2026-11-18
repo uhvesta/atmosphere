@@ -6,6 +6,9 @@
 //! The same holds for the last good copy (PER-31): a power cut while it's
 //! saved or restored leaves a store that opens whole, from the copy or
 //! from what it replaced.
+//! And for the copy an upgrade keeps before it changes the schema (D281g):
+//! a cut while it's taken leaves the database as it was, and a cut while
+//! it's put back is finished by putting it back again.
 //!
 //! The writer is this test binary run again with `power_cut_child`
 //! selected, in the mode its env var names; that test does nothing
@@ -129,6 +132,12 @@ fn power_cut_child() {
         }
         "restore" => {
             Store::open_or_restore(store_root(&dir)).unwrap();
+        }
+        "upgrade_copy" => {
+            Store::copy_before_upgrade(store_root(&dir), "to_2.0.5").unwrap();
+        }
+        "upgrade_restore" => {
+            Store::restore_upgrade_copy(store_root(&dir), "to_2.0.5").unwrap();
         }
         other => panic!("no power cut mode {other}"),
     }
@@ -404,5 +413,58 @@ fn a_power_cut_part_way_through_a_restore_is_finished_when_the_store_opens_again
         // Restored once: opening again finds nothing to do.
         let (_, again) = Store::open_or_restore(&root).unwrap();
         assert!(again.is_none(), "{stop_at}");
+    }
+}
+
+/// Sets the schema number of the closed database in `root`, so this
+/// build's database stands in for an older build's (D281g).
+fn set_schema(root: &Path, version: i64) {
+    let connection = rusqlite::Connection::open(root.join("state.sqlite")).unwrap();
+    connection.pragma_update(None, "user_version", version).unwrap();
+}
+
+/// A closed store at [`store_root`] at the schema before this build's,
+/// holding session `se_a` titled "old".
+fn older_store(dir: &Path) -> PathBuf {
+    let root = store_root(dir);
+    Store::open(&root).unwrap().put_session(&session("se_a", "old")).unwrap();
+    set_schema(&root, humata2_store::SCHEMA_VERSION - 1);
+    root
+}
+
+#[test]
+fn a_power_cut_while_the_pre_upgrade_copy_is_taken_leaves_the_database_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = older_store(dir.path());
+    cut_at(dir.path(), "upgrade_copy", "store.upgrade_copy.copied", std::slice::from_ref(&root));
+
+    // The upgrade takes its copy again, and it holds what was there.
+    let copy = Store::copy_before_upgrade(&root, "to_2.0.5").unwrap().unwrap();
+    assert_eq!(copy.schema, humata2_store::SCHEMA_VERSION - 1);
+    Store::restore_upgrade_copy(&root, "to_2.0.5").unwrap();
+
+    set_schema(&root, humata2_store::SCHEMA_VERSION);
+    let store = Store::open(&root).unwrap();
+    assert_eq!(store.session("se_a").unwrap(), Some(session("se_a", "old")));
+    assert_eq!(partials(&root), Vec::<PathBuf>::new());
+}
+
+#[test]
+fn a_power_cut_while_the_pre_upgrade_copy_is_put_back_is_finished_by_putting_it_back_again() {
+    for stop_at in ["store.upgrade_restore.copied", "store.upgrade_restore.moved"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = older_store(dir.path());
+        Store::copy_before_upgrade(&root, "to_2.0.5").unwrap().unwrap();
+        set_schema(&root, humata2_store::SCHEMA_VERSION);
+        Store::open(&root).unwrap().put_session(&session("se_a", "upgraded")).unwrap();
+        cut_at(dir.path(), "upgrade_restore", stop_at, std::slice::from_ref(&root));
+
+        let restored = Store::restore_upgrade_copy(&root, "to_2.0.5").unwrap();
+
+        assert!(restored.replaced_kept_at.is_file(), "{stop_at}: the replaced database wasn't kept");
+        set_schema(&root, humata2_store::SCHEMA_VERSION);
+        let store = Store::open(&root).unwrap();
+        assert_eq!(store.session("se_a").unwrap(), Some(session("se_a", "old")), "{stop_at}");
+        assert_eq!(partials(&root), Vec::<PathBuf>::new(), "{stop_at}");
     }
 }

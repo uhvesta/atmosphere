@@ -8,27 +8,28 @@
 //! A holder does the same hangup itself on SIGTERM, with its own 2 s
 //! timer; the sweep does it first so that whatever had to be killed is
 //! always the sweep's kill, and counted as one.
+//!
+//! The process table and the signals are the holder crate's
+//! ([`humata2_holder::process`]); ending one holder by its pid is
+//! [`humata2_holder::shutdown_or_end`].
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use rustix::process::{Pid, Signal, getpgrp, kill_process, kill_process_group};
-use tokio::time::{Instant, sleep};
+use humata2_holder::process::{KILL_WAIT, Snapshot, own_group, send, send_group, settle_until};
+use rustix::process::Signal;
+
+// The names a holder may have when this daemon starts `holder`; the holder
+// crate knows them.
+pub(crate) use humata2_holder::process::holder_names;
 
 /// How long a holder's programs get to end once hung up on, and how long
-/// a holder gets to end once sent SIGTERM: the 2 s a holder gives its
-/// program itself.
+/// a holder gets to end once sent SIGTERM, before they are killed: the 2 s
+/// a holder gives its program itself.
 pub(crate) const GRACE: Duration = Duration::from_secs(2);
-/// The names a holder's process may have: the holder this daemon starts,
-/// and its test build's, which a daemon of either build may find left.
-const HOLDER_NAMES: [&str; 2] = ["humata2_holder", "humata2_holder_faults"];
-/// How long the holders and groups get to end once they have been killed.
-const KILL_WAIT: Duration = Duration::from_secs(1);
-/// How often the process list is taken while waiting for things to end.
-const POLL: Duration = Duration::from_millis(20);
 
 /// The holders of one machine to end, and how long they get to end.
 #[derive(Debug)]
@@ -42,18 +43,6 @@ pub(crate) struct Sweep {
     /// The process names a live pid may have to count as a holder. A pid
     /// with any other name is stale (reused) and is never signalled.
     pub(crate) programs: Vec<OsString>,
-}
-
-/// The names a holder may have when this daemon starts `holder`: its file
-/// name, and those of the holder builds.
-pub(crate) fn holder_names(holder: &Path) -> Vec<OsString> {
-    let mut names: Vec<OsString> = HOLDER_NAMES.iter().map(OsString::from).collect();
-    if let Some(name) = holder.file_name()
-        && !names.iter().any(|known| known.as_os_str() == name)
-    {
-        names.push(name.to_os_string());
-    }
-    names
 }
 
 /// What a sweep did.
@@ -98,9 +87,11 @@ pub(crate) enum SweepError {
         #[source]
         source: std::io::Error,
     },
-    #[error("couldn't list the running processes with `ps`: {source}; check that `ps` runs for this user, then stop again")]
+    #[error(
+        "couldn't list the running processes with `ps`: {source}; check that `ps` runs for this user, then stop again"
+    )]
     ListProcesses {
-        #[source]
+        #[from]
         source: std::io::Error,
     },
 }
@@ -176,7 +167,7 @@ impl Sweep {
             snapshot = settle(&live, names, KILL_WAIT).await?;
         }
 
-        let left = snapshot.left(&live, names);
+        let left = still_alive(&snapshot, &live, names);
         let ended = live
             .into_iter()
             .zip(killed)
@@ -205,13 +196,14 @@ impl Sweep {
         };
         let own = std::process::id();
         let mut found = Vec::new();
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            .map_err(|source| SweepError::ReadFolder {
-                path: self.holders.clone(),
-                source,
-            })?
+        while let Some(entry) =
+            entries
+                .next_entry()
+                .await
+                .map_err(|source| SweepError::ReadFolder {
+                    path: self.holders.clone(),
+                    source,
+                })?
         {
             let path = entry.path();
             if path.extension() != Some(OsStr::new("pid")) {
@@ -243,24 +235,49 @@ struct Live {
     groups: BTreeSet<u32>,
 }
 
+/// The pids of the holders in `live`.
+fn pids_of(live: &[Live]) -> Vec<u32> {
+    live.iter().map(|holder| holder.pid).collect()
+}
+
+/// The process groups under the holders in `live`.
+fn groups_of(live: &[Live]) -> BTreeSet<u32> {
+    live.iter()
+        .flat_map(|holder| holder.groups.iter().copied())
+        .collect()
+}
+
+/// The pids still alive of the holders in `live`, and of the processes in
+/// their groups.
+fn still_alive(snapshot: &Snapshot, live: &[Live], names: &[OsString]) -> Vec<u32> {
+    snapshot.members(&pids_of(live), &groups_of(live), names)
+}
+
 /// Takes the process list until no holder in `live` and no group under one
 /// has a live process, or until `within` has passed, and returns the last
 /// list taken.
-async fn settle(live: &[Live], names: &[OsString], within: Duration) -> Result<Snapshot, SweepError> {
-    settle_until(live, within, |snapshot| snapshot.anything_alive(live, names)).await
-}
-
-/// As [`settle`], for the groups under the holders only.
-async fn settle_groups(live: &[Live], within: Duration) -> Result<Snapshot, SweepError> {
-    settle_until(live, within, |snapshot| {
-        live.iter()
-            .flat_map(|holder| &holder.groups)
-            .any(|group| snapshot.group_alive(*group))
+async fn settle(
+    live: &[Live],
+    names: &[OsString],
+    within: Duration,
+) -> Result<Snapshot, SweepError> {
+    settle_while(live, within, |snapshot| {
+        !still_alive(snapshot, live, names).is_empty()
     })
     .await
 }
 
-async fn settle_until(
+/// As [`settle`], for the groups under the holders only.
+async fn settle_groups(live: &[Live], within: Duration) -> Result<Snapshot, SweepError> {
+    let groups = groups_of(live);
+    settle_while(live, within, |snapshot| {
+        groups.iter().any(|group| snapshot.group_alive(*group))
+    })
+    .await
+}
+
+/// As [`settle_until`], and a list of nothing to wait for is taken once.
+async fn settle_while(
     live: &[Live],
     within: Duration,
     waiting: impl Fn(&Snapshot) -> bool,
@@ -268,176 +285,16 @@ async fn settle_until(
     if live.is_empty() {
         return Ok(Snapshot::default());
     }
-    let deadline = Instant::now() + within;
-    loop {
-        let snapshot = Snapshot::take().await?;
-        if !waiting(&snapshot) || Instant::now() >= deadline {
-            return Ok(snapshot);
-        }
-        sleep(POLL).await;
-    }
-}
-
-/// The process list, as `ps` reports it.
-#[derive(Default)]
-struct Snapshot {
-    rows: Vec<Row>,
-}
-
-struct Row {
-    pid: u32,
-    ppid: u32,
-    pgid: u32,
-    zombie: bool,
-    /// The file name of the process's command, without its directory.
-    name: OsString,
-}
-
-impl Snapshot {
-    async fn take() -> Result<Self, SweepError> {
-        let output = tokio::process::Command::new("ps")
-            .args(["-A", "-o", "pid=,ppid=,pgid=,stat=,comm="])
-            .output()
-            .await
-            .map_err(|source| SweepError::ListProcesses { source })?;
-        if !output.status.success() {
-            return Err(SweepError::ListProcesses {
-                source: std::io::Error::other(format!(
-                    "ps exited with code {:?}",
-                    output.status.code()
-                )),
-            });
-        }
-        let text = String::from_utf8_lossy(&output.stdout);
-        Ok(Self {
-            rows: text.lines().filter_map(parse_row).collect(),
-        })
-    }
-
-    /// Whether `pid` is a live process with one of `names`. A zombie has
-    /// ended.
-    fn is_holder(&self, pid: u32, names: &[OsString]) -> bool {
-        self.rows
-            .iter()
-            .any(|row| row.pid == pid && !row.zombie && names.contains(&row.name))
-    }
-
-    fn group_alive(&self, group: u32) -> bool {
-        self.rows
-            .iter()
-            .any(|row| row.pgid == group && !row.zombie)
-    }
-
-    fn anything_alive(&self, live: &[Live], names: &[OsString]) -> bool {
-        live.iter().any(|holder| {
-            self.is_holder(holder.pid, names)
-                || holder.groups.iter().any(|group| self.group_alive(*group))
-        })
-    }
-
-    /// The process groups of the processes under `holder`, which are the
-    /// holder's own children and everything they started. Our own group,
-    /// the holder's (it is ended on its own, after its programs) and the
-    /// system's (0 and 1) are never noted.
-    fn groups_under(&self, holder: u32, own: Option<u32>) -> BTreeSet<u32> {
-        let holder_group = self.rows.iter().find(|row| row.pid == holder).map(|row| row.pgid);
-        let mut children: HashMap<u32, Vec<&Row>> = HashMap::new();
-        for row in &self.rows {
-            children.entry(row.ppid).or_default().push(row);
-        }
-        let mut groups = BTreeSet::new();
-        let mut seen = HashSet::from([holder]);
-        let mut queue = vec![holder];
-        while let Some(parent) = queue.pop() {
-            for child in children.get(&parent).into_iter().flatten() {
-                if seen.insert(child.pid) {
-                    queue.push(child.pid);
-                }
-                if child.pgid > 1 && Some(child.pgid) != own && Some(child.pgid) != holder_group {
-                    groups.insert(child.pgid);
-                }
-            }
-        }
-        groups
-    }
-
-    /// The pids of the holders and the group processes still alive.
-    fn left(&self, live: &[Live], names: &[OsString]) -> Vec<u32> {
-        let groups: BTreeSet<u32> = live
-            .iter()
-            .flat_map(|holder| holder.groups.iter().copied())
-            .collect();
-        let mut pids = BTreeSet::new();
-        for row in self.rows.iter().filter(|row| !row.zombie) {
-            let holder_alive = names.contains(&row.name)
-                && live.iter().any(|holder| holder.pid == row.pid);
-            if holder_alive || groups.contains(&row.pgid) {
-                pids.insert(row.pid);
-            }
-        }
-        pids.into_iter().collect()
-    }
-}
-
-/// One `ps` line: `pid ppid pgid stat comm`, where comm is the rest of the
-/// line (it may hold spaces, and is a full path on macOS).
-fn parse_row(line: &str) -> Option<Row> {
-    let (pid, rest) = split_field(line)?;
-    let (ppid, rest) = split_field(rest)?;
-    let (pgid, rest) = split_field(rest)?;
-    let (stat, comm) = split_field(rest)?;
-    let comm = comm.trim_end();
-    if comm.is_empty() {
-        return None;
-    }
-    Some(Row {
-        pid: pid.parse().ok()?,
-        ppid: ppid.parse().ok()?,
-        pgid: pgid.parse().ok()?,
-        zombie: stat.starts_with('Z'),
-        name: Path::new(comm)
-            .file_name()
-            .unwrap_or(OsStr::new(comm))
-            .to_os_string(),
-    })
-}
-
-/// The first whitespace-free field of `text`, and the text after it.
-fn split_field(text: &str) -> Option<(&str, &str)> {
-    let text = text.trim_start();
-    let end = text.find(char::is_whitespace)?;
-    Some((&text[..end], text[end..].trim_start()))
-}
-
-/// Our own process group, which a sweep never signals.
-fn own_group() -> Option<u32> {
-    u32::try_from(getpgrp().as_raw_pid()).ok()
-}
-
-fn to_pid(raw: u32) -> Option<Pid> {
-    i32::try_from(raw).ok().and_then(Pid::from_raw)
-}
-
-/// Sends `sig` to `pid`. A process that has already ended is fine. One that
-/// refuses to end stays in the sweep's `left`, so nothing is reported gone
-/// that isn't.
-fn send(pid: u32, sig: Signal) {
-    if let Some(pid) = to_pid(pid) {
-        let _ = kill_process(pid, sig);
-    }
-}
-
-fn send_group(group: u32, sig: Signal) {
-    if let Some(group) = to_pid(group) {
-        let _ = kill_process_group(group, sig);
-    }
+    Ok(settle_until(within, waiting).await?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use std::process::{Child, Command};
+    use tokio::time::{Instant, sleep};
 
     /// A sweep over `dir`, whose holders are `sh` processes.
     fn sweep_in(dir: &Path, grace: Duration) -> Sweep {
@@ -472,12 +329,7 @@ mod tests {
 
     /// Whether `pid` is a process that hasn't ended. A zombie has.
     async fn alive(pid: u32) -> bool {
-        Snapshot::take()
-            .await
-            .expect("ps runs")
-            .rows
-            .iter()
-            .any(|row| row.pid == pid && !row.zombie)
+        Snapshot::take().await.expect("ps runs").is_alive(pid)
     }
 
     async fn wait_for_file(path: &Path) {
@@ -562,11 +414,9 @@ mod tests {
             .parse()
             .expect("child pid parses");
         let snapshot = Snapshot::take().await.expect("ps runs");
-        assert!(
-            snapshot
-                .rows
-                .iter()
-                .any(|row| row.pid == child && row.pgid == child),
+        assert_eq!(
+            snapshot.group_of(child),
+            Some(child),
             "the program must be in a group of its own for this test"
         );
 
@@ -630,25 +480,12 @@ mod tests {
         write_pid(dir.path(), "x.pid", pid);
         reap(holder);
 
-        let swept = sweep_in(dir.path(), GRACE)
-            .run()
-            .await
-            .expect("sweep runs");
+        let swept = sweep_in(dir.path(), GRACE).run().await.expect("sweep runs");
         assert_eq!(swept.ended.len(), 1);
         assert_eq!(swept.ended[0].how, How::Ended);
         assert!(swept.left.is_empty());
         wait_for_exit(child).await;
         wait_for_exit(pid).await;
-    }
-
-    #[test]
-    fn a_holder_of_either_build_or_the_configured_name_counts() {
-        let names = holder_names(Path::new("/opt/bin/my_holder"));
-        for name in ["humata2_holder", "humata2_holder_faults", "my_holder"] {
-            assert!(names.contains(&OsString::from(name)), "{name}: {names:?}");
-        }
-        let names = holder_names(Path::new("/opt/bin/humata2_holder"));
-        assert_eq!(names.len(), 2, "{names:?}");
     }
 
     #[tokio::test]
@@ -659,10 +496,7 @@ mod tests {
         done.wait().expect("true ends");
         write_pid(dir.path(), "x.pid", pid);
 
-        let swept = sweep_in(dir.path(), GRACE)
-            .run()
-            .await
-            .expect("sweep runs");
+        let swept = sweep_in(dir.path(), GRACE).run().await.expect("sweep runs");
         assert!(swept.ended.is_empty());
         assert!(swept.left.is_empty());
     }
@@ -678,15 +512,11 @@ mod tests {
         reap(other);
         write_pid(dir.path(), "x.pid", pid);
 
-        let swept = sweep_in(dir.path(), GRACE)
-            .run()
-            .await
-            .expect("sweep runs");
+        let swept = sweep_in(dir.path(), GRACE).run().await.expect("sweep runs");
         assert!(swept.ended.is_empty());
         assert!(alive(pid).await, "a process with another name is untouched");
 
-        kill_process(to_pid(pid).expect("pid is positive"), Signal::KILL)
-            .expect("the test stops its own sleep");
+        send(pid, Signal::KILL);
         wait_for_exit(pid).await;
     }
 

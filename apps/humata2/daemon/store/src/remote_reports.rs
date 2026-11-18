@@ -19,6 +19,8 @@ pub struct RemoteReportRow {
     pub pointers_at_ms: Option<i64>,
     pub reported_unix_ms: i64,
     pub last_seen_unix_ms: Option<i64>,
+    /// The machine's read mark for the session as last reported (CH-16, D396).
+    pub unread: bool,
 }
 
 impl Store {
@@ -33,8 +35,8 @@ impl Store {
                     .execute(
                         "INSERT INTO remote_session_reports
                              (machine, session, reported, exit_code, problem, pointers,
-                              pointers_at_ms, reported_unix_ms, last_seen_unix_ms)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                              pointers_at_ms, reported_unix_ms, last_seen_unix_ms, unread)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                          ON CONFLICT (machine, session) DO UPDATE SET
                              reported = excluded.reported,
                              exit_code = excluded.exit_code,
@@ -42,7 +44,8 @@ impl Store {
                              pointers = excluded.pointers,
                              pointers_at_ms = excluded.pointers_at_ms,
                              reported_unix_ms = excluded.reported_unix_ms,
-                             last_seen_unix_ms = excluded.last_seen_unix_ms",
+                             last_seen_unix_ms = excluded.last_seen_unix_ms,
+                             unread = excluded.unread",
                         params![
                             row.machine,
                             row.session,
@@ -52,7 +55,8 @@ impl Store {
                             row.pointers,
                             row.pointers_at_ms,
                             row.reported_unix_ms,
-                            row.last_seen_unix_ms
+                            row.last_seen_unix_ms,
+                            row.unread
                         ],
                     )
                     .map(drop)
@@ -66,7 +70,7 @@ impl Store {
             .read("read the remote sessions' last reports", |connection| {
                 let mut statement = connection.prepare(
                     "SELECT machine, session, reported, exit_code, problem, pointers,
-                            pointers_at_ms, reported_unix_ms, last_seen_unix_ms
+                            pointers_at_ms, reported_unix_ms, last_seen_unix_ms, unread
                      FROM remote_session_reports ORDER BY machine, session",
                 )?;
                 statement
@@ -81,6 +85,7 @@ impl Store {
                             pointers_at_ms: row.get(6)?,
                             reported_unix_ms: row.get(7)?,
                             last_seen_unix_ms: row.get(8)?,
+                            unread: row.get(9)?,
                         })
                     })?
                     .collect()

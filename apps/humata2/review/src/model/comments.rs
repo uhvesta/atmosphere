@@ -15,7 +15,7 @@ use std::hash::{BuildHasher, Hasher};
 
 use serde::{Deserialize, Serialize};
 
-use super::anchor::{Anchor, LineRange, Placement, place};
+use super::anchor::{Anchor, LineRange, Placement, passage_gone, place};
 use super::message::{Part, compose};
 use super::review::{FileKey, SessionId, Side};
 use crate::error::{DeliveryError, ReviewError};
@@ -651,7 +651,9 @@ impl CommentBook {
 
     /// The file changed: each comment on it follows its quoted lines, using
     /// the `(number, text)` lines of each side now. A comment whose lines
-    /// are gone is outdated if unsent, or addressed if the agent had it.
+    /// changed is outdated if unsent, or addressed if the agent had it. One
+    /// the agent had whose passage is gone was addressed by nothing, so it
+    /// goes back to a detached draft to re-attach and send again (SM-16).
     pub fn reanchor(
         &mut self,
         file: &FileKey,
@@ -674,10 +676,15 @@ impl CommentBook {
                     comment.anchor.base = base.to_owned();
                 }
                 Placement::Outdated => {
-                    if comment.status == Status::Sent {
-                        comment.status = Status::Addressed;
-                    } else {
+                    let anchor = &comment.anchor;
+                    if comment.status != Status::Sent {
                         comment.outdated = true;
+                    } else if passage_gone(&anchor.quoted, anchor.lines, lines) {
+                        comment.status = Status::Draft;
+                        comment.delivery = None;
+                        comment.outdated = true;
+                    } else {
+                        comment.status = Status::Addressed;
                     }
                 }
             }

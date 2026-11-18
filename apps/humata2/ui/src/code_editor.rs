@@ -235,6 +235,7 @@ impl Commenting {
             quoted: vec![text.to_owned()],
             base: None,
             detached: false,
+            outdated: false,
         };
         let pending = self.reattach.borrow_mut().take();
         let action = match pending {
@@ -345,8 +346,17 @@ fn comments_under(
                 .collect();
             if let Some(open) = editing.filter(|_| box_at == Some(index)) {
                 elements.push(
-                    comment_cards::open_box(ui, look, &session.id, &open.anchor, &input, agent)
-                        .into_any_element(),
+                    comment_cards::open_box(
+                        ui,
+                        look,
+                        &session.id,
+                        &open.anchor,
+                        &input,
+                        agent,
+                        &open.text,
+                        &comment_cards::offers(state, &session.id, &open.anchor.repo),
+                    )
+                    .into_any_element(),
                 );
             }
             elements

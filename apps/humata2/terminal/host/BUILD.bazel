@@ -107,6 +107,7 @@ rust_test(
         "TERMINAL_VM_DRIVER": "$(rootpath :tests/vm_fixture.sh)",
     },
     tags = [
+        "external",
         "local",
         "manual",
         "no-sandbox",

@@ -27,6 +27,14 @@ fn comment(n: u64, state: CommentDeliveryState) -> CommentRecord {
     }
 }
 
+/// Review chat note `note-<n>` made a draft in place (D284).
+fn note(n: u64) -> CommentRecord {
+    CommentRecord {
+        id: format!("note-{n}"),
+        ..comment(n, CommentDeliveryState::None)
+    }
+}
+
 fn delivery(n: u64, state: CommentDeliveryState) -> CommentDeliveryRecord {
     CommentDeliveryRecord {
         key: format!("d-{n}"),
@@ -157,12 +165,17 @@ fn comments_need_their_session_a_wellformed_id_and_go_with_the_session() {
     assert!(matches!(refused, Err(StoreError::NoSession { id }) if id == "se_gone"));
 
     store.put_session(&session("se_a")).unwrap();
-    let odd = CommentRecord {
-        id: "note-1".to_owned(),
-        ..comment(1, CommentDeliveryState::None)
-    };
-    let refused = store.apply_comments(&CommentChange { put: vec![odd], ..change("se_a") });
-    assert!(matches!(refused, Err(StoreError::InvalidId { .. })));
+    for id in ["x-1", "c-", "note-one", "d-1"] {
+        let odd = CommentRecord {
+            id: id.to_owned(),
+            ..comment(1, CommentDeliveryState::None)
+        };
+        let refused = store.apply_comments(&CommentChange {
+            put: vec![odd],
+            ..change("se_a")
+        });
+        assert!(matches!(refused, Err(StoreError::InvalidId { .. })), "{id}");
+    }
     assert_eq!(store.comments("se_a").unwrap(), SessionComments::default());
 
     store
@@ -176,4 +189,59 @@ fn comments_need_their_session_a_wellformed_id_and_go_with_the_session() {
     store.remove_session("se_a").unwrap();
     assert_eq!(store.comments("se_a").unwrap(), SessionComments::default());
     assert_eq!(store.sessions_with_sending_comments().unwrap(), Vec::<String>::new());
+}
+
+#[test]
+fn a_note_made_a_draft_is_saved_under_its_own_id_and_reads_back_before_comments() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    store.put_session(&session("se_a")).unwrap();
+    store
+        .apply_comments(&CommentChange {
+            put: vec![
+                comment(2, CommentDeliveryState::None),
+                note(10),
+                comment(1, CommentDeliveryState::None),
+                note(3),
+            ],
+            numbers: CommentNumbers {
+                last_comment: 2,
+                last_delivery: 0,
+            },
+            ..change("se_a")
+        })
+        .unwrap();
+    drop(store);
+
+    let store = Store::open(dir.path()).unwrap();
+    let saved = store.comments("se_a").unwrap();
+    assert_eq!(
+        saved.comments,
+        vec![
+            note(3),
+            note(10),
+            comment(1, CommentDeliveryState::None),
+            comment(2, CommentDeliveryState::None),
+        ]
+    );
+    assert_eq!(
+        saved.numbers.last_comment, 2,
+        "a note spends none of the comments' numbers"
+    );
+
+    store
+        .apply_comments(&CommentChange {
+            removed: vec!["note-3".to_owned()],
+            numbers: saved.numbers,
+            ..change("se_a")
+        })
+        .unwrap();
+    let ids: Vec<String> = store
+        .comments("se_a")
+        .unwrap()
+        .comments
+        .into_iter()
+        .map(|comment| comment.id)
+        .collect();
+    assert_eq!(ids, ["note-10", "c-1", "c-2"]);
 }

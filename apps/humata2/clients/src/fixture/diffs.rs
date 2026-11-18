@@ -1,4 +1,4 @@
-use crate::model::{Comment, DiffLine, FileDiff, LineKind, RepoDiff, SessionId};
+use crate::model::{Comment, DiffLine, FileDiff, LineKind, RepoBases, RepoDiff, SessionId};
 
 pub(super) fn lines(spec: &[(LineKind, &str)], start: u32) -> Vec<DiffLine> {
     let mut old = start;
@@ -29,6 +29,81 @@ pub(super) fn lines(spec: &[(LineKind, &str)], start: u32) -> Vec<DiffLine> {
             }
         })
         .collect()
+}
+
+/// What the dummy data changed in `repo` against `branch`, where that is not
+/// main. acme/api against release/2.4 has files of its own (VIEWS C1). `None`
+/// for a repository and branch the data doesn't model.
+pub(crate) fn against(repo: &str, branch: &str) -> Option<Vec<FileDiff>> {
+    use LineKind::{Added, Context, Hunk, Removed};
+    match (repo, branch) {
+        ("acme/api", "release/2.4") => {
+            let token = FileDiff {
+                path: "src/token.rs".to_owned(),
+                added: 5,
+                removed: 0,
+                lines: lines(
+                    &[
+                        (Hunk, "@@ -0,0 +1,5 @@"),
+                        (Added, "//! Access tokens and their refresh."),
+                        (Added, ""),
+                        (Added, "pub struct Token {"),
+                        (Added, "    pub value: String,"),
+                        (Added, "}"),
+                    ],
+                    0,
+                ),
+            };
+            let client = FileDiff {
+                path: "src/client.rs".to_owned(),
+                added: 1,
+                removed: 1,
+                lines: lines(
+                    &[
+                        (Hunk, "@@ -44,3 +44,3 @@ impl Client {"),
+                        (Context, "    pub fn base_url(&self) -> &str {"),
+                        (Removed, "        &self.base"),
+                        (Added, "        &self.base_url"),
+                        (Context, "    }"),
+                    ],
+                    43,
+                ),
+            };
+            let docs = FileDiff {
+                path: "docs/auth.md".to_owned(),
+                added: 3,
+                removed: 0,
+                lines: lines(
+                    &[
+                        (Hunk, "@@ -0,0 +1,3 @@"),
+                        (Added, "# Auth"),
+                        (Added, ""),
+                        (Added, "Tokens refresh once per 401."),
+                    ],
+                    0,
+                ),
+            };
+            Some(vec![token, client, docs])
+        }
+        _ => None,
+    }
+}
+
+/// The branches a repository has on its remote as the fake's clone last
+/// fetched them, the default branch first (VIEWS C3). acme/api has three more
+/// than main; a repository the data doesn't model has main alone.
+pub(crate) fn bases(repo: &str) -> RepoBases {
+    let others: &[&str] = match repo {
+        "acme/api" => &["release/2.4", "release/2.3", "feat/ledger-v2"],
+        _ => &[],
+    };
+    RepoBases {
+        branches: std::iter::once("main")
+            .chain(others.iter().copied())
+            .map(str::to_owned)
+            .collect(),
+        default_branch: "main".to_owned(),
+    }
 }
 
 pub(super) fn diffs() -> Vec<RepoDiff> {

@@ -46,6 +46,18 @@ pub(super) enum Pending {
         /// a retry only asks the machine to let go.
         cleared: bool,
     },
+    /// `session` is being restored on this Mac from `machine` while it is
+    /// linked: its conversation and agent are taken in, then the record is
+    /// switched. Kept before anything is taken in. A restart that finds the
+    /// archive row still here takes back what was taken in; one that finds
+    /// it gone lets the machine's copy go (PER-28).
+    Restore {
+        session: String,
+        machine: String,
+        channel: String,
+        /// The restore's operation, which named what was staged.
+        operation: String,
+    },
 }
 
 /// Why a follow-up couldn't be kept on disk.
@@ -70,12 +82,13 @@ impl Pending {
         match self {
             Self::Reconcile { .. } => "reconcile",
             Self::Release { .. } => "release",
+            Self::Restore { .. } => "restore",
         }
     }
 
     pub(super) fn session(&self) -> &str {
         match self {
-            Self::Reconcile { session, .. } | Self::Release { session, .. } => session,
+            Self::Reconcile { session, .. } | Self::Release { session, .. } | Self::Restore { session, .. } => session,
         }
     }
 
@@ -113,6 +126,18 @@ impl Pending {
                 "kept": kept,
                 "cleared": cleared,
             }),
+            Self::Restore {
+                session,
+                machine,
+                channel,
+                operation,
+            } => json!({
+                "kind": self.kind(),
+                "session": session,
+                "machine": machine,
+                "channel": channel,
+                "operation": operation,
+            }),
         }
     }
 
@@ -144,6 +169,12 @@ impl Pending {
                 restored: value.get("restored").and_then(restored_of),
                 kept: text("kept"),
                 cleared: value.get("cleared").and_then(Value::as_bool).unwrap_or(false),
+            }),
+            "restore" => Some(Self::Restore {
+                session: text("session")?,
+                machine: text("machine")?,
+                channel: text("channel")?,
+                operation: text("operation")?,
             }),
             _ => None,
         }
@@ -214,7 +245,7 @@ fn path_of(folder: &Path, pending: &Pending) -> PathBuf {
 
 /// Keeps `pending` on disk in `folder`. Blocking.
 pub(super) fn write(folder: &Path, pending: &Pending) -> Result<(), PendingError> {
-    std::fs::create_dir_all(folder).map_err(|source| PendingError::Folder {
+    make_dirs(folder).map_err(|source| PendingError::Folder {
         path: folder.to_owned(),
         source,
     })?;
@@ -223,9 +254,14 @@ pub(super) fn write(folder: &Path, pending: &Pending) -> Result<(), PendingError
     humata2_store::write_atomic(&path, &bytes).map_err(|source| PendingError::Write { path, source })
 }
 
+/// Whether `pending`'s file is in `folder`. Blocking.
+pub(super) fn exists(folder: &Path, pending: &Pending) -> bool {
+    path_of(folder, pending).is_file()
+}
+
 /// `pending` is done or moot; its file goes. Blocking.
 pub(super) fn remove(folder: &Path, pending: &Pending) {
-    let _ = std::fs::remove_file(path_of(folder, pending));
+    let _ = remove_durably(&path_of(folder, pending));
 }
 
 /// The conversation a restore here is about to resume, kept beside its
@@ -237,7 +273,7 @@ fn resume_path(folder: &Path, session: &str) -> PathBuf {
 
 /// Keeps the conversation `lines`, written for `old_folder`. Blocking.
 pub(super) fn write_resume(folder: &Path, session: &str, old_folder: &str, lines: &[u8]) -> Result<(), PendingError> {
-    std::fs::create_dir_all(folder).map_err(|source| PendingError::Folder {
+    make_dirs(folder).map_err(|source| PendingError::Folder {
         path: folder.to_owned(),
         source,
     })?;
@@ -250,7 +286,7 @@ pub(super) fn write_resume(folder: &Path, session: &str, old_folder: &str, lines
 
 /// The kept conversation of `session` is done or moot. Blocking.
 pub(super) fn remove_resume(folder: &Path, session: &str) {
-    let _ = std::fs::remove_file(resume_path(folder, session));
+    let _ = remove_durably(&resume_path(folder, session));
 }
 
 /// Every kept conversation: the session, the folder it was written for and
@@ -302,6 +338,33 @@ pub(super) fn read_all(folder: &Path) -> Vec<Pending> {
         }
     }
     found
+}
+
+/// Makes `folder` and its missing parents, and puts each new folder's entry
+/// in its parent on disk, so a power cut can't take the folder back.
+fn make_dirs(folder: &Path) -> std::io::Result<()> {
+    let missing: Vec<&Path> = folder
+        .ancestors()
+        .take_while(|found| !found.as_os_str().is_empty() && std::fs::symlink_metadata(found).is_err())
+        .collect();
+    humata2_durable::create_dir_all(folder, 0o700)?;
+    for found in missing {
+        match found.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => humata2_durable::sync_dir(parent)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Removes `path` and puts the removal on disk, so a finished follow-up's
+/// file can't come back after a power cut and run again.
+fn remove_durably(path: &Path) -> std::io::Result<()> {
+    humata2_durable::remove_file(path)?;
+    match path.parent() {
+        Some(parent) => humata2_durable::sync_dir(parent),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -471,6 +534,45 @@ mod tests {
         remove(&store, &release);
         let left = read_all(&store);
         assert!(matches!(left.as_slice(), [Pending::Reconcile { .. }]), "{left:?}");
+    }
+
+    #[test]
+    fn a_restore_reads_back_as_written_and_apart_from_its_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let restore = Pending::Restore {
+            session: "se_1".to_owned(),
+            machine: "box-1".to_owned(),
+            channel: "ch_1".to_owned(),
+            operation: "op_1".to_owned(),
+        };
+        write(&store, &restore).unwrap();
+        write(&store, &release(None, None)).unwrap();
+        remove(&store, &release(None, None));
+        let left = read_all(&store);
+        let [Pending::Restore { session, machine, channel, operation }] = left.as_slice() else {
+            panic!("{left:?}");
+        };
+        assert_eq!(
+            (session.as_str(), machine.as_str(), channel.as_str(), operation.as_str()),
+            ("se_1", "box-1", "ch_1", "op_1")
+        );
+    }
+
+    #[test]
+    fn a_follow_up_kept_in_folders_not_made_yet_is_read_back_and_gone_once_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("a").join("b").join("store");
+        let restore = Pending::Restore {
+            session: "se_1".to_owned(),
+            machine: "box-1".to_owned(),
+            channel: "ch_1".to_owned(),
+            operation: "op_1".to_owned(),
+        };
+        write(&store, &restore).unwrap();
+        assert_eq!(read_all(&store).len(), 1);
+        remove(&store, &restore);
+        assert!(read_all(&store).is_empty());
     }
 }
 

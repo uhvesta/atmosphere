@@ -38,6 +38,7 @@ TEST_DEPS = [
     )
     for test in [
         "flows",
+        "pixels",
         "rendering",
         "selection",
         "snapshots",

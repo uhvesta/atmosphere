@@ -1,6 +1,6 @@
 # NEWCH: New channel lets me pick repos from gh and machines, as drawn
 
-- **Status:** done (this commit, 2026-11-16; found by the POLISH coach comparing frame 44): batches 1 and 2 green at gate_b3 and gate_b5; picks in D272–D280
+- **Status:** done (48e1c866, 2026-11-16)
 - **Depends on:** MACH (machines and their online state), FL (channel creation and clone progress), REVIEW* (shares ui/src/ and the look_test budget; can't close until REVIEW's frames are green)
 - **Unblocks:** V1
 - **Layer:** L4 · **Lane:** UI + clients (+ a daemon read if gh repos aren't served yet)

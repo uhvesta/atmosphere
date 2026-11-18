@@ -1,9 +1,9 @@
 use std::fs;
 use std::io::ErrorKind;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-use humata2_durable::{create_dir_all, sync_dir};
+use humata2_durable::{create_dir_all, rename, sync_dir};
 
 /// Bytes in the files under `path`, not following links.
 pub(crate) fn tree_size(path: &Path) -> std::io::Result<u64> {
@@ -72,4 +72,22 @@ pub(crate) fn remove_all(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
         other => other,
     }
+}
+
+/// Renames like [`rename`], also a folder its owner can't write, which
+/// can't be moved into another folder as it is: it is made writable for
+/// the move and given its mode back after. A crash between the two leaves
+/// it writable by its owner.
+pub(crate) fn rename_keeping_mode(from: &Path, to: &Path) -> std::io::Result<()> {
+    let meta = fs::symlink_metadata(from)?;
+    if !meta.is_dir() || meta.mode() & 0o200 != 0 {
+        return rename(from, to);
+    }
+    let mode = meta.mode() & 0o7777;
+    fs::set_permissions(from, fs::Permissions::from_mode(mode | 0o200))?;
+    if let Err(error) = rename(from, to) {
+        let _ = fs::set_permissions(from, fs::Permissions::from_mode(mode));
+        return Err(error);
+    }
+    fs::set_permissions(to, fs::Permissions::from_mode(mode))
 }

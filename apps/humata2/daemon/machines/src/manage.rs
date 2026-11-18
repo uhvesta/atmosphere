@@ -25,7 +25,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -35,13 +35,15 @@ use crate::enroll::{self, Key};
 use crate::error::{KnownHostsError, NameError, QuoteError, Remedy, RunError, SetupError, ValuesError};
 use crate::hosts::{EntryState, HostEntry, Hosts, HostsError, ProviderMachine};
 use crate::identity::{SshAccess, SshTarget};
-use crate::install::{Builds, InstalledFile};
+use crate::install::Builds;
 use crate::known_hosts;
-use crate::link::Link;
+use crate::link::{Link, BIN_DIR};
 use crate::name::MachineName;
 use crate::provider::{Action, Provider, Reach};
-use crate::runner::{Exit, Invocation, Output, Runner};
+use crate::quote;
+use crate::runner::{Exit, Invocation, Output, Purpose, Runner};
 use crate::setup::{self, Progress, RetryPolicy, Setup};
+use crate::stack_config::{self, StackConfig, StackConfigError};
 
 /// How many output lines a failed step keeps (MP-20).
 const TAIL_LINES: usize = 40;
@@ -248,6 +250,12 @@ pub enum ManageError {
         "a machine named {machine} is already added. Pick another name, or remove {machine} first"
     )]
     NameTaken { machine: String },
+    /// The name is still the machine's whose removal was asked for and
+    /// hasn't finished (it may be waiting for the machine to come back).
+    #[error(
+        "{machine} is still being removed, so its name isn't free yet. Wait for the removal to finish (Hosts shows it until then; one waiting for the machine finishes once the machine is back or Humata restarts), then add it again. Picking another name adds it now, but that is a second machine, not this one added again"
+    )]
+    BeingRemoved { machine: String },
     #[error("there is no machine named {machine}. List the machines to see their names")]
     NotFound { machine: String },
     #[error(
@@ -259,9 +267,14 @@ pub enum ManageError {
     )]
     NotReady { machine: String },
     #[error(
-        "{machine} presents host key {fingerprint}, which Humata hasn't seen before. Compare it with the machine's own (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on it), then add the machine again with this fingerprint to trust it"
+        "{machine} presents its {algorithm} host key, {fingerprint}, which Humata hasn't seen before. Compare it with the machine's own (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on it), then add the machine again with this fingerprint to trust it"
     )]
-    HostKeyUnconfirmed { machine: String, fingerprint: String },
+    HostKeyUnconfirmed {
+        machine: String,
+        /// The key type, such as `ssh-ed25519`.
+        algorithm: String,
+        fingerprint: String,
+    },
     #[error(
         "{machine} presents host key {presented}, not the {expected} you confirmed, so nothing was sent to it. Someone may be intercepting the connection: check the fingerprint on the machine itself before trusting a different key"
     )]
@@ -270,7 +283,7 @@ pub enum ManageError {
         expected: String,
         presented: String,
     },
-    #[error("{step:?} failed on {machine}: {source}")]
+    #[error("{step:?} failed on {machine}")]
     Step {
         machine: String,
         step: OpStep,
@@ -379,10 +392,32 @@ pub enum ManageError {
         "Humata lost how to reach {machine} (its provider's link is missing from the machine list). Remove the machine and add it again"
     )]
     ProviderLinkLost { machine: String },
+    #[error(
+        "`{name}` can't be a variable name for a machine script. Use capital letters, digits and `_`, not starting with a digit"
+    )]
+    BadEnvName { name: String },
     #[error(transparent)]
     Hosts(#[from] HostsError),
     #[error(transparent)]
     KnownHosts(#[from] KnownHostsError),
+}
+
+/// What a machine script runs (MACHINESCRIPTS).
+#[derive(Clone, PartialEq, Eq)]
+pub enum ScriptBody {
+    /// A bash script, sent on stdin.
+    Bash(Arc<[u8]>),
+    /// The machine's own `humata` with these arguments.
+    Humata(Vec<String>),
+}
+
+impl std::fmt::Debug for ScriptBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bash(bytes) => write!(f, "Bash({} bytes)", bytes.len()),
+            Self::Humata(words) => f.debug_tuple("Humata").field(words).finish(),
+        }
+    }
 }
 
 /// Where the machine list and Humata's own `known_hosts` live, and the ssh
@@ -408,6 +443,9 @@ pub struct Machines {
     peer_keys: PathBuf,
     retry: RetryPolicy,
     busy: Mutex<BTreeSet<String>>,
+    /// Machines whose removal was asked for and hasn't ended: an add of
+    /// the same name is told so, not that the name is taken.
+    removing: Mutex<BTreeSet<String>>,
 }
 
 /// Marks a machine busy until dropped.
@@ -434,6 +472,7 @@ impl Machines {
             peer_keys: config.peer_keys,
             retry: config.retry,
             busy: Mutex::new(BTreeSet::new()),
+            removing: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -441,10 +480,52 @@ impl Machines {
         Ok(self.hosts.list()?)
     }
 
+    /// Makes `root` the folder new channels use on `machine` (FC-10).
+    /// Channels already there stay where they are.
+    pub fn set_root(&self, machine: &str, root: &str) -> Result<(), ManageError> {
+        if self.hosts.set_root(machine, root)? {
+            Ok(())
+        } else {
+            Err(ManageError::NotFound {
+                machine: machine.to_owned(),
+            })
+        }
+    }
+
     pub fn get(&self, machine: &str) -> Result<HostEntry, ManageError> {
         self.hosts.get(machine)?.ok_or_else(|| ManageError::NotFound {
             machine: machine.to_owned(),
         })
+    }
+
+    /// Pins the host key `machine` presents now in place of the one pinned,
+    /// when its fingerprint is `fingerprint`, the one the user checked on the
+    /// machine itself (MP-9). A machine that presents another key (one that
+    /// changed again, or an interception) fails with
+    /// [`ManageError::HostKeyMismatch`] and nothing is pinned.
+    pub fn trust_new_host_key(&self, machine: &str, fingerprint: &str, runner: &dyn Runner) -> Result<(), ManageError> {
+        let _busy = self.claim(machine)?;
+        let entry = self.get(machine)?;
+        let link = need_link(self.link_if_any(&entry)?, &entry)?;
+        let presented = Setup::existing(link.clone(), &self.known_hosts)
+            .scan_host_key(runner)
+            .map_err(|failure| ManageError::Step {
+                machine: machine.to_owned(),
+                step: OpStep::Connect,
+                output_tail: failure.output_tail,
+                remedies: failure.remedies,
+                source: failure.error,
+            })?;
+        let expected = fingerprint.trim();
+        if expected != presented.fingerprint() {
+            return Err(ManageError::HostKeyMismatch {
+                machine: machine.to_owned(),
+                expected: expected.to_owned(),
+                presented: presented.fingerprint().to_owned(),
+            });
+        }
+        known_hosts::pin(&self.known_hosts, link.machine(), &presented)?;
+        Ok(())
     }
 
     /// Checks `request` without touching any machine: the host parses, the
@@ -461,9 +542,7 @@ impl Machines {
             value: name.clone(),
             source,
         })?;
-        if self.hosts.get(machine.as_str())?.is_some() {
-            return Err(ManageError::NameTaken { machine: name });
-        }
+        self.name_free(machine.as_str())?;
         let root = match request.root.trim() {
             "" => DEFAULT_ROOT.to_owned(),
             root => root.to_owned(),
@@ -484,7 +563,6 @@ impl Machines {
             state: EntryState::Adding,
             os: String::new(),
             arch: String::new(),
-            staged: Vec::new(),
             undo_pending: false,
             provider: None,
         };
@@ -535,11 +613,7 @@ impl Machines {
         provider
             .environment(&machine, &values)
             .map_err(|source| ManageError::Params { source })?;
-        if self.hosts.get(machine.as_str())?.is_some() {
-            return Err(ManageError::NameTaken {
-                machine: machine.as_str().to_owned(),
-            });
-        }
+        self.name_free(machine.as_str())?;
         Ok(PlannedCreate {
             machine,
             provider: provider.clone(),
@@ -574,7 +648,6 @@ impl Machines {
             state: EntryState::Adding,
             os: String::new(),
             arch: String::new(),
-            staged: Vec::new(),
             undo_pending: false,
             provider: Some(ProviderMachine {
                 id: plan.provider.id().to_owned(),
@@ -788,9 +861,35 @@ impl Machines {
     /// user's presence: removes humatad2 and its service from the machine,
     /// forgets the host key, drops the entry.
     pub fn remove(&self, machine: &str, drive: &mut Drive<'_>) -> Result<(), ManageError> {
-        let _busy = self.claim(machine)?;
-        let entry = self.get(machine)?;
-        self.remove_claimed(machine, entry, drive)
+        let result = self.claim(machine).and_then(|_busy| {
+            let entry = self.get(machine)?;
+            self.remove_claimed(machine, entry, drive)
+        });
+        // One that couldn't reach the machine is still `Removing` in
+        // hosts.json, which `name_free` reads.
+        lock_set(&self.removing).remove(machine);
+        result
+    }
+
+    /// Notes that removing `machine` was asked for and [`Self::remove`] will
+    /// run, so an add of its name until then is told it is being removed.
+    pub fn removing(&self, machine: &str) {
+        lock_set(&self.removing).insert(machine.to_owned());
+    }
+
+    /// `name` can be added: no machine has it, or a removal still holds it.
+    fn name_free(&self, name: &str) -> Result<(), ManageError> {
+        let Some(entry) = self.hosts.get(name)? else {
+            return Ok(());
+        };
+        if entry.state == EntryState::Removing || lock_set(&self.removing).contains(name) {
+            return Err(ManageError::BeingRemoved {
+                machine: name.to_owned(),
+            });
+        }
+        Err(ManageError::NameTaken {
+            machine: name.to_owned(),
+        })
     }
 
     /// LD-12: forgets a machine that is lost, on this host only, without
@@ -846,7 +945,7 @@ impl Machines {
     }
 
     pub(crate) fn claim(&self, machine: &str) -> Result<BusyGuard<'_>, ManageError> {
-        let mut busy = self.busy.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut busy = lock_set(&self.busy);
         if !busy.insert(machine.to_owned()) {
             return Err(ManageError::Busy {
                 machine: machine.to_owned(),
@@ -880,6 +979,97 @@ impl Machines {
             machine: machine.to_owned(),
             source,
         })
+    }
+
+    /// Puts `config`, the host's stack settings, on `machine` unless its
+    /// copy is already that (D411), over the same SSH path that installs the
+    /// tools. For a link that has just come up; setup does the same when it
+    /// installs. Blocks while the machine answers.
+    pub fn push_stack_config(
+        &self,
+        machine: &str,
+        config: &StackConfig,
+        runner: &dyn Runner,
+    ) -> Result<(), StackConfigError> {
+        let on = |source: ManageError| StackConfigError::Machine {
+            machine: machine.to_owned(),
+            source: Box::new(source),
+        };
+        let entry = self.get(machine).map_err(on)?;
+        let link = need_link(self.link_if_any(&entry).map_err(on)?, &entry).map_err(on)?;
+        stack_config::push(&link, runner, config)
+    }
+
+    /// The one-off command that runs `humatad2 stop` on `machine` (STOP,
+    /// D262), for a stop the peer link can't carry.
+    pub fn stop_sessions_command(
+        &self,
+        machine: &str,
+        stop_id: &str,
+        by: &str,
+        reason: &str,
+    ) -> Result<Invocation, ManageError> {
+        let entry = self.get(machine)?;
+        let link = need_link(self.link_if_any(&entry)?, &entry)?;
+        link.stop_sessions(stop_id, by, reason).map_err(|source| ManageError::Quote {
+            machine: machine.to_owned(),
+            source,
+        })
+    }
+
+    /// The command that runs a machine script on `machine` (MACHINESCRIPTS):
+    /// a bash script streamed on stdin to `bash -l -s -- args`, or the
+    /// machine's own `humata` with the arguments. `env` is exported first;
+    /// its names must look like `[A-Z_][A-Z0-9_]*`. The command is killed
+    /// after `timeout`.
+    pub fn machine_script(
+        &self,
+        machine: &str,
+        body: &ScriptBody,
+        args: &[String],
+        env: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<Invocation, ManageError> {
+        let entry = self.get(machine)?;
+        let link = need_link(self.link_if_any(&entry)?, &entry)?;
+        let quoted = |source| ManageError::Quote {
+            machine: machine.to_owned(),
+            source,
+        };
+        let mut script = String::new();
+        if !env.is_empty() {
+            script.push_str("export");
+            for (name, value) in env {
+                if !is_env_name(name) {
+                    return Err(ManageError::BadEnvName { name: name.clone() });
+                }
+                script.push(' ');
+                script.push_str(name);
+                script.push('=');
+                script.push_str(&quote::quote("a variable value", value).map_err(quoted)?);
+            }
+            script.push_str("; ");
+        }
+        let stdin = match body {
+            ScriptBody::Bash(bytes) => {
+                script.push_str("exec bash -l -s --");
+                for arg in args {
+                    script.push(' ');
+                    script.push_str(&quote::quote("a script argument", arg).map_err(quoted)?);
+                }
+                Some(Arc::clone(bytes))
+            }
+            ScriptBody::Humata(words) => {
+                script.push_str(&format!("exec \"$HOME/{BIN_DIR}/humata\""));
+                for word in words.iter().chain(args) {
+                    script.push(' ');
+                    script.push_str(&quote::quote("a humata argument", word).map_err(quoted)?);
+                }
+                None
+            }
+        };
+        link.script(&script, Purpose::MachineScript, Some(timeout), stdin)
+            .map_err(quoted)
     }
 
     /// The link to `entry`'s machine: from the provider's record, or the
@@ -932,6 +1122,7 @@ impl Machines {
                 drive,
                 ManageError::HostKeyUnconfirmed {
                     machine,
+                    algorithm: presented.algorithm().to_owned(),
                     fingerprint: presented.fingerprint().to_owned(),
                 },
             ),
@@ -1142,6 +1333,15 @@ fn machine_name(entry: &HostEntry) -> Result<MachineName, ManageError> {
     })
 }
 
+/// Whether `name` is a variable name a script may get: `[A-Z_][A-Z0-9_]*`.
+fn is_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_uppercase() || first == '_')
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 fn need_link(link: Option<Link>, entry: &HostEntry) -> Result<Link, ManageError> {
     link.ok_or_else(|| ManageError::ProviderLinkLost {
         machine: entry.name.clone(),
@@ -1169,11 +1369,6 @@ fn registered(mut entry: HostEntry, ready: &setup::Ready) -> HostEntry {
     entry.undo_pending = false;
     entry.os = ready.facts.platform.os.to_string();
     entry.arch = ready.facts.platform.arch.to_string();
-    entry.staged = ready
-        .staged
-        .iter()
-        .map(|file: &InstalledFile| file.file_name().to_owned())
-        .collect();
     entry
 }
 
@@ -1269,6 +1464,10 @@ fn name_from_host(host: &str) -> String {
         .take(63)
         .collect();
     name.trim_matches('-').to_owned()
+}
+
+fn lock_set(set: &Mutex<BTreeSet<String>>) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+    set.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]

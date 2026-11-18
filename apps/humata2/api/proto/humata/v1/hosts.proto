@@ -52,9 +52,26 @@ service MachineService {
   rpc SetHostVariable(SetHostVariableRequest) returns (SetHostVariableResponse);
   // HO-7, HO-13 Remove. User-only.
   rpc RemoveHostVariable(RemoveHostVariableRequest) returns (SetHostVariableResponse);
-  // MP-9 after Error.host_key_changed. User-only, with presence: accepting
+  // MP-9 after Error.host_key_unknown or Error.host_key_changed. User-only, with presence: accepting
   // a changed key is how an interception would get in.
   rpc TrustNewHostKey(TrustNewHostKeyRequest) returns (Machine);
+  // D262: stops every session on a machine. The stop is kept and sent when
+  // the machine can't be reached now. User-only, with presence.
+  rpc StopMachineSessions(StopMachineSessionsRequest) returns (StopMachineSessionsResponse);
+  // D265: starts them again, or cancels a stop the machine never got.
+  rpc StartMachineSessions(StartMachineSessionsRequest) returns (StartMachineSessionsResponse);
+  // SEAM (MACHINESCRIPTS, D687): the rules in machine-scripts.toml, the script
+  // names in the scripts folder and each rule's last run per machine.
+  rpc ListMachineScripts(ListMachineScriptsRequest) returns (ListMachineScriptsResponse);
+  // SEAM (D687): reads and checks the rules file and script names; never
+  // changes either. Every problem is listed.
+  rpc CheckMachineScripts(CheckMachineScriptsRequest) returns (CheckMachineScriptsResponse);
+  // SEAM (D687, D688): runs a rule on a machine now, trigger "manual" or the
+  // session's own trigger when `session` is set. An agent needs
+  // MACHINE_SCRIPT_RUN (Never by default).
+  rpc RunMachineScript(RunMachineScriptRequest) returns (Operation);
+  // SEAM (D686, D687): the host's run log, newest first.
+  rpc ListMachineScriptRuns(ListMachineScriptRunsRequest) returns (ListMachineScriptRunsResponse);
 }
 
 service ProviderService {
@@ -190,6 +207,12 @@ message Machine {
   bool vm_tier = 16;
   string root = 17;
   Revision revision = 18;
+  // D261, D262: the host's copy of the stop of this machine's sessions;
+  // unset while they run.
+  SessionsStopped sessions_stopped = 19;
+  // The stop reached the machine. False: it is kept and sent when the
+  // machine links.
+  bool stop_delivered = 20;
 }
 
 message ListMachinesRequest { PageRequest page = 1; }
@@ -250,8 +273,8 @@ message AddSshMachineRequest {
   // Default ~/Humata (FC-10).
   string root = 4;
   // MP-9 on first contact: the fingerprint the user confirmed. Empty, the
-  // add fails at `connect` with Error.host_key_changed naming the key the
-  // machine presents (expected empty); add again with it to trust that key.
+  // add fails at `connect` with Error.host_key_unknown naming the key the
+  // machine presents; add again with it to trust that key.
   // Set and different from what the machine presents, nothing is sent.
   string trust_host_key_fingerprint = 5;
 }
@@ -435,7 +458,7 @@ message SetHostVariableResponse {
 message TrustNewHostKeyRequest {
   IdempotencyKey idempotency_key = 1;
   MachineId id = 2;
-  // The fingerprint from Error.host_key_changed, so the user accepts the key
+  // The fingerprint from Error.host_key_unknown or Error.host_key_changed, so the user accepts the key
   // they were shown and not one that changed again since.
   string new_fingerprint = 3;
   PresenceProof presence = 4;
@@ -674,3 +697,130 @@ message ResolveSkillClashRequest {
 }
 
 message ResolveSkillClashResponse {}
+
+message StopMachineSessionsRequest {
+  MachineId machine = 1;
+  // Makes a repeated stop act once; a new one is made when empty.
+  string stop_id = 2;
+  string reason = 3;
+  StopVia via = 4;
+}
+
+message StopMachineSessionsResponse {
+  SessionsStopped stopped = 1;
+  // The machine took the stop. False: the host keeps it and sends it when
+  // the machine links.
+  bool delivered = 2;
+}
+
+message StartMachineSessionsRequest { MachineId machine = 1; }
+
+message StartMachineSessionsResponse {
+  // True when the machine never got the stop, so the start only cancelled it.
+  bool cancelled = 1;
+}
+
+// ----- SEAM (MACHINESCRIPTS, D680-D688): machine scripts. -----
+// Rules and scripts are the owner's files on the host; no call writes them.
+
+// One rule of ~/.humata2/config/machine-scripts.toml, as checked.
+message MachineScriptRule {
+  string name = 1;
+  // "added", "connected", "upgraded", "session-arrived" or "session-leaving".
+  repeated string triggers = 2;
+  // Machine names; empty means every machine.
+  repeated string machines = 3;
+  bool once = 4;
+  repeated MachineScriptStep steps = 5;
+}
+
+message MachineScriptStep {
+  // "run", "humata", "start" or "send".
+  string kind = 1;
+  // What the step does, as the page shows it: the script name, the humata
+  // arguments, the agent kind and channel, or the text typed.
+  string label = 2;
+}
+
+message ListMachineScriptsRequest {
+  // Unset: every machine.
+  MachineId machine = 1;
+}
+
+message ListMachineScriptsResponse {
+  repeated MachineScriptRule rules = 1;
+  // The last run of each rule on each machine it ran on.
+  repeated MachineScriptRun last_runs = 2;
+  // File names in the scripts folder.
+  repeated string scripts = 3;
+  // Set when the rules file can't be used; `rules` is then empty. Its `fix`
+  // says what to change in the file.
+  Error problem = 4;
+}
+
+message CheckMachineScriptsRequest {}
+
+message CheckMachineScriptsResponse {
+  bool valid = 1;
+  // Each one names the rule or line and how to fix it.
+  repeated string problems = 2;
+  // Things that don't stop a rule, such as a machine name that isn't a
+  // machine yet.
+  repeated string warnings = 3;
+}
+
+message RunMachineScriptRequest {
+  IdempotencyKey idempotency_key = 1;
+  MachineId machine = 2;
+  string rule = 3;
+  // Run as that session's trigger (session-arrived or session-leaving rules).
+  SessionId session = 4;
+}
+
+message ListMachineScriptRunsRequest {
+  MachineId machine = 1;
+  // Only this rule; empty means every rule.
+  string rule = 2;
+  // 0 means the daemon's default (the whole log, at most 50 a machine).
+  uint32 limit = 3;
+}
+
+message ListMachineScriptRunsResponse {
+  repeated MachineScriptRun runs = 1;
+}
+
+message MachineScriptRun {
+  string id = 1;
+  MachineId machine = 2;
+  string rule = 3;
+  // "added", "connected", "upgraded", "session-arrived", "session-leaving" or "manual".
+  string trigger = 4;
+  SessionId session = 5;
+  google.protobuf.Timestamp started_at = 6;
+  uint64 took_ms = 7;
+  MachineScriptOutcome outcome = 8;
+  repeated MachineScriptStepRun steps = 9;
+}
+
+enum MachineScriptOutcome {
+  MACHINE_SCRIPT_OUTCOME_UNSPECIFIED = 0;
+  MACHINE_SCRIPT_OUTCOME_PASSED = 1;
+  MACHINE_SCRIPT_OUTCOME_FAILED = 2;
+  MACHINE_SCRIPT_OUTCOME_TIMED_OUT = 3;
+  MACHINE_SCRIPT_OUTCOME_SKIPPED = 4;
+  MACHINE_SCRIPT_OUTCOME_RUNNING = 5;
+}
+
+message MachineScriptStepRun {
+  uint32 index = 1;
+  string kind = 2;
+  string label = 3;
+  MachineScriptOutcome outcome = 4;
+  // The exit status, when the step ran a program that ended.
+  optional int32 exit = 5;
+  // The last 40 lines of output.
+  repeated string tail = 6;
+  // Why the step failed or was skipped, in words.
+  string error = 7;
+  uint64 took_ms = 8;
+}

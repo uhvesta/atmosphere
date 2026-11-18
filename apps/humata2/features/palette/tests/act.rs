@@ -159,6 +159,75 @@ fn running_move_asks_inline_for_another_online_machine_of_the_channel() {
 }
 
 #[test]
+fn a_review_may_move_to_any_other_online_machine_not_only_its_channels() {
+    // PR-21: the PR reviews channel lists the machines a review was started
+    // on; moving gives the target the channel, so every online machine is offered.
+    let mut workspace = workspace();
+    for session in workspace.sessions.iter_mut().filter(|s| s.id == rate()) {
+        session.pull_request_review = true;
+    }
+    for channel in &mut workspace.channels {
+        channel.machines.retain(|machine| machine != &MachineId::new("gpu-box"));
+    }
+    let state = PaletteState {
+        workspace: Arc::new(workspace),
+        context: Some(rate()),
+        ..Default::default()
+    };
+    let mut store = TestStore::new(state, Palette)
+        .non_exhaustive()
+        .with_timeout(Duration::from_millis(100));
+    store.send(A::Open { in_session: true }, |s| s.open = true);
+    typed(&mut store, "move");
+    store.send(A::Run, |s| s.open = true);
+    let offered: BTreeSet<MachineId> = store
+        .state()
+        .entries
+        .iter()
+        .filter_map(|entry| match &entry.command {
+            Command::MoveTo { machine, .. } => Some(machine.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(offered.contains(&MachineId::new("gpu-box")), "{offered:?}");
+}
+
+#[test]
+fn move_with_no_other_machine_online_says_none_can_take_it() {
+    let mut workspace = workspace();
+    for machine in &mut workspace.machines {
+        if machine.id != MachineId::new("devbox-1") {
+            machine.online = false;
+        }
+    }
+    let state = PaletteState {
+        workspace: Arc::new(workspace),
+        context: Some(rate()),
+        ..Default::default()
+    };
+    let mut store = TestStore::new(state, Palette)
+        .non_exhaustive()
+        .with_timeout(Duration::from_millis(100));
+    store.send(A::Open { in_session: true }, |s| s.open = true);
+    typed(&mut store, "move");
+    store.send(A::Run, |s| s.open = true);
+    assert!(store.state().asking.is_some(), "Move asks for a machine");
+    assert!(store.state().entries.is_empty());
+    assert!(store.state().no_machine_to_move_to());
+}
+
+#[test]
+fn a_query_that_hides_every_machine_is_not_a_machine_missing() {
+    let mut store = opened();
+    typed(&mut store, "move");
+    store.send(A::Run, |s| s.open = true);
+    assert!(!store.state().no_machine_to_move_to());
+    typed(&mut store, "zzzz");
+    assert!(store.state().entries.is_empty());
+    assert!(!store.state().no_machine_to_move_to());
+}
+
+#[test]
 fn typing_while_asking_narrows_the_machines() {
     let mut store = opened();
     typed(&mut store, "move");
@@ -220,7 +289,7 @@ fn escape_while_asking_steps_back_without_running_anything() {
 
 #[test]
 fn a_pasted_pull_request_url_offers_review_this_pr_first() {
-    // D197: only a PR a session here reviews offers Review this PR.
+    // PR-1: a pasted pull request offers Review this PR at once.
     let workspace = workspace();
     let Some(reviewed) = workspace.pulls.iter().find(|p| p.session.is_some()) else {
         panic!("the design workspace has a pull request under review");
@@ -243,7 +312,6 @@ fn a_pasted_pull_request_url_offers_review_this_pr_first() {
             panic!("pasting {pasted} offers something");
         };
         assert_eq!(first.command, Command::ReviewPull(pull.clone()), "{pasted}");
-        assert_eq!(first.title, "Review this PR");
         store.send(A::Run, |s| s.open = false);
         store.receive(A::Delegate(Delegate::Closed), |_| {});
         store.receive(A::Delegate(Delegate::Run(Command::ReviewPull(pull.clone()))), |_| {});

@@ -1,11 +1,10 @@
 //! The in-memory file manager behaves as the real one is meant to.
-use std::future::Future;
 use std::path::PathBuf;
 use std::task::{Context, Poll, Waker};
 
 use humata2_clients::model::{MachineId, SessionId};
 use humata2_clients::{
-    FakeFileManager, FileManager, FileManagerError, Folder, StorageAction, StorageKind, StorageRow, TransferMode,
+    FakeFileManager, FileManager, FileManagerError, Folder, ItemLanding, Landing, StorageAction, StorageKind, StorageRow, TransferMode,
     TransferPhase,
 };
 
@@ -29,6 +28,92 @@ fn home(machine: &MachineId) -> Folder {
 }
 fn names(items: &[&str]) -> Vec<String> {
     items.iter().map(|name| (*name).to_owned()).collect()
+}
+
+#[test]
+fn keep_both_gives_a_taken_name_a_number_before_its_extension_and_keeps_the_old_one() {
+    let fake = FakeFileManager::default()
+        .with_tree(&home(&mac()), &[("a.txt", Some(5)), ("dir", None)])
+        .with_tree(&home(&gpu()), &[("a.txt", Some(1)), ("dir", None)]);
+    let id = block(fake.start_transfer_keep_both(&home(&mac()), names(&["a.txt", "dir"]), &home(&gpu()), TransferMode::Copy))
+        .unwrap_or_else(|error| panic!("{error}"));
+    fake.finish(&id);
+    let mut found = fake.names_in(&home(&gpu()));
+    found.sort();
+    assert_eq!(found, names(&["a-2.txt", "a.txt", "dir", "dir-2"]));
+}
+
+#[test]
+fn keep_both_twice_numbers_the_second_arrival_three() {
+    let fake = FakeFileManager::default()
+        .with_tree(&home(&mac()), &[("a.txt", Some(5))])
+        .with_tree(&home(&gpu()), &[("a.txt", Some(1))]);
+    for _ in 0..2 {
+        let id = block(fake.start_transfer_keep_both(&home(&mac()), names(&["a.txt"]), &home(&gpu()), TransferMode::Copy))
+            .unwrap_or_else(|error| panic!("{error}"));
+        fake.finish(&id);
+    }
+    let mut found = fake.names_in(&home(&gpu()));
+    found.sort();
+    assert_eq!(found, names(&["a-2.txt", "a-3.txt", "a.txt"]));
+}
+
+fn tray_row(fake: &FakeFileManager, id: &humata2_clients::model::TransferId) -> humata2_clients::TransferRow {
+    block(fake.transfers())
+        .expect("the tray answers")
+        .into_iter()
+        .find(|row| &row.id == id)
+        .expect("the tray lists the transfer")
+}
+
+#[test]
+fn a_finished_keep_both_row_says_what_name_it_was_saved_as() {
+    let fake = FakeFileManager::default()
+        .with_tree(&home(&mac()), &[("a.txt", Some(5))])
+        .with_tree(&home(&gpu()), &[("a.txt", Some(1))]);
+    let id = block(fake.start_transfer_keep_both(&home(&mac()), names(&["a.txt"]), &home(&gpu()), TransferMode::Copy))
+        .unwrap_or_else(|error| panic!("{error}"));
+    fake.finish(&id);
+    let row = tray_row(&fake, &id);
+    assert_eq!(
+        row.outcomes,
+        vec![ItemLanding { name: "a.txt".to_owned(), landing: Landing::SavedAs("a-2.txt".to_owned()) }]
+    );
+}
+
+#[test]
+fn a_keep_both_of_the_same_bytes_copies_nothing_and_says_it_was_already_there() {
+    let fake = FakeFileManager::default()
+        .with_tree(&home(&mac()), &[("a.txt", Some(5))])
+        .with_tree(&home(&gpu()), &[("a.txt", Some(5))]);
+    let id = block(fake.start_transfer_keep_both(&home(&mac()), names(&["a.txt"]), &home(&gpu()), TransferMode::Copy))
+        .unwrap_or_else(|error| panic!("{error}"));
+    fake.finish(&id);
+    assert_eq!(fake.names_in(&home(&gpu())), names(&["a.txt"]));
+    let row = tray_row(&fake, &id);
+    assert_eq!(row.phase, TransferPhase::Done);
+    assert_eq!(
+        row.outcomes,
+        vec![ItemLanding { name: "a.txt".to_owned(), landing: Landing::AlreadyThere }]
+    );
+}
+
+#[test]
+fn keep_both_without_a_clash_keeps_the_name() {
+    let fake = FakeFileManager::default().with_tree(&home(&mac()), &[("a.txt", Some(5))]);
+    let id = block(fake.start_transfer_keep_both(&home(&mac()), names(&["a.txt"]), &home(&gpu()), TransferMode::Copy))
+        .unwrap_or_else(|error| panic!("{error}"));
+    fake.finish(&id);
+    assert_eq!(fake.names_in(&home(&gpu())), names(&["a.txt"]));
+}
+
+#[test]
+fn a_plain_transfer_still_refuses_a_taken_name() {
+    let fake = FakeFileManager::default()
+        .with_tree(&home(&mac()), &[("a.txt", Some(5))])
+        .with_tree(&home(&gpu()), &[("a.txt", Some(1))]);
+    let result = block(fake.start_transfer(&home(&mac()), names(&["a.txt"]), &home(&gpu()), TransferMode::Copy));
+    assert_eq!(result, Err(FileManagerError::NameTaken { name: "a.txt".to_owned() }));
 }
 
 #[test]

@@ -12,7 +12,9 @@ use humata2_clients::machines::{
     PromptKind,
     Machines, OperationId, Provider, SshHost, StepKind, StepStatus, StepUpdate, UnattendedMethod,
 };
-use humata2_clients::model::MachineId;
+use humata2_clients::model::{
+    Answer, MachineId, MigrateFailure, MigratePhase, MigrateThing, Request, RequestId,
+};
 use tca::{Effect, Reducer, StreamEnd};
 
 const PROGRESS: &str = "add-machine-progress";
@@ -127,6 +129,32 @@ pub struct Unattended {
     pub version: Option<String>,
 }
 
+/// Where an add blocked by This Mac's daemon being behind this app is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MigrateStage {
+    /// Waiting for the person to migrate.
+    Blocked,
+    /// The Migrate item was approved; the add runs again when it is migrated.
+    Migrating(RequestId),
+    /// The migrate failed or didn't start; it can be tried again.
+    Failed(MigrateFailure),
+}
+
+/// What the dialog says when an add waits for This Mac's daemon to be migrated (D752).
+const HELD_BEHIND_MIGRATE: &str = "This Mac's daemon is at another release than this app. Migrate This Mac first; the add runs once it is migrated.";
+
+/// An add that stopped because This Mac's daemon is behind this app (UP-1, D370).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostMigrate {
+    /// The platform the tools are for; empty when the add waited for a Migrate item before it
+    /// ran (D752).
+    pub platform: String,
+    /// The daemon's words: what stopped and how to fix it.
+    pub what: String,
+    /// Where the migrate is.
+    pub stage: MigrateStage,
+}
+
 /// The dialog's state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AddMachineState {
@@ -164,6 +192,10 @@ pub struct AddMachineState {
     pub unattended: Option<Unattended>,
     /// What went wrong that the card doesn't cover, as text for the view.
     pub error: Option<String>,
+    /// The add stopped behind This Mac's daemon; the dialog offers Migrate This Mac.
+    pub migrate: Option<HostMigrate>,
+    /// This Mac's daemon Migrate items, as the parent last sent them.
+    pub migrations: Vec<Request>,
 }
 
 impl AddMachineState {
@@ -181,6 +213,39 @@ impl AddMachineState {
             Some(Choice::Host(host)) if !host.trim().is_empty() => Some(host.trim()),
             _ => None,
         }
+    }
+
+    /// The Migrate item the Migrate This Mac button approves: shown only while the add is
+    /// blocked and not migrating, and a waiting or failed item for This Mac's daemon exists.
+    #[must_use]
+    pub fn migrate_offer(&self) -> Option<RequestId> {
+        let blocked = self.migrate.as_ref()?;
+        if matches!(blocked.stage, MigrateStage::Migrating(_)) {
+            return None;
+        }
+        self.migrations
+            .iter()
+            .find(|request| {
+                request.answer.is_none()
+                    && request.migrate().is_some_and(|card| {
+                        card.thing == MigrateThing::Daemon
+                            && matches!(card.phase, MigratePhase::Waiting | MigratePhase::Failed(_))
+                    })
+            })
+            .map(|request| request.id.clone())
+    }
+
+    /// How an add would wait behind This Mac's daemon: a Daemon Migrate item not yet answered
+    /// means that daemon is at another release than this app (D752).
+    fn this_mac_unmigrated(&self) -> Option<MigrateStage> {
+        let item = self.migrations.iter().find(|request| {
+            request.answer.is_none()
+                && request.migrate().is_some_and(|card| card.thing == MigrateThing::Daemon)
+        })?;
+        Some(match item.migrate().map(|card| &card.phase) {
+            Some(MigratePhase::Migrating) => MigrateStage::Migrating(item.id.clone()),
+            _ => MigrateStage::Blocked,
+        })
     }
 
     /// Who the login talks to (D167): the provider's id, or `ssh` for a plain SSH host.
@@ -217,6 +282,8 @@ impl AddMachineState {
 pub enum Delegate {
     /// A machine was added: select it.
     Added(MachineId),
+    /// Approve this Migrate item, the one the Inbox shows, as its Migrate button does.
+    Migrate(RequestId),
     /// Say this in a toast.
     Toast(String),
 }
@@ -281,6 +348,10 @@ pub enum AddMachineAction {
     CallFinished(Result<(), DaemonError>),
     /// Making it unattended finished.
     UnattendedFinished(Result<(), DaemonError>),
+    /// Migrate This Mac: approve the Migrate item through the parent.
+    MigrateThisMac,
+    /// From the parent: This Mac's daemon Migrate items, with the phase each shows.
+    Migrations(Vec<Request>),
     /// For the parent.
     Delegate(Delegate),
 }
@@ -321,6 +392,46 @@ impl AddMachine {
             AddMachineAction::ProgressEnded,
         )
         .cancellable(PROGRESS, true)
+    }
+
+    /// Runs the add again from the same inputs, after This Mac's daemon was migrated.
+    fn rerun(&self, state: &mut AddMachineState) -> Effect<AddMachineAction> {
+        state.migrate = None;
+        let Some(request) = Self::request(state, None) else {
+            return Effect::none();
+        };
+        state.running = true;
+        state.operation = None;
+        state.steps.clear();
+        state.failure = None;
+        state.error = None;
+        self.follow(request)
+    }
+
+    /// Follows the Migrate item the person approved: migrated runs the add again,
+    /// a failure (or an item that went back to waiting) is shown.
+    fn after_migrations(&self, state: &mut AddMachineState) -> Effect<AddMachineAction> {
+        let Some(HostMigrate { stage: MigrateStage::Migrating(id), .. }) = &state.migrate else {
+            return Effect::none();
+        };
+        let Some(item) = state.migrations.iter().find(|request| &request.id == id) else {
+            return Effect::none();
+        };
+        if item.answer == Some(Answer::Approved) {
+            return self.rerun(state);
+        }
+        let failure = match item.migrate().map(|card| &card.phase) {
+            Some(MigratePhase::Failed(failure)) => Some(failure.clone()),
+            Some(MigratePhase::Waiting) if item.answer.is_none() => Some(MigrateFailure {
+                message: "The migrate didn't start.".to_owned(),
+                fix: "Open the Migrate item in the Inbox to see why, then try again.".to_owned(),
+            }),
+            _ => None,
+        };
+        if let (Some(failure), Some(migrate)) = (failure, state.migrate.as_mut()) {
+            migrate.stage = MigrateStage::Failed(failure);
+        }
+        Effect::none()
     }
 
     fn call(&self, call: humata2_clients::Reply<()>) -> Effect<AddMachineAction> {
@@ -457,6 +568,19 @@ impl Reducer for AddMachine {
                 state.host_key = None;
                 state.login_offer = None;
                 state.error = None;
+                state.migrate = None;
+                // This Mac's daemon waiting for its Migrate item is at another release than
+                // this app, and nothing runs across releases (UP-1, D752): the add waits behind
+                // Migrate This Mac and runs again once that item is migrated.
+                if let Some(stage) = state.this_mac_unmigrated() {
+                    state.running = false;
+                    state.migrate = Some(HostMigrate {
+                        platform: String::new(),
+                        what: HELD_BEHIND_MIGRATE.to_owned(),
+                        stage,
+                    });
+                    return Effect::none();
+                }
                 return self.follow(request);
             }
             A::Progress(event) => {
@@ -486,6 +610,9 @@ impl Reducer for AddMachine {
                             }
                             AddOutcome::HostKey { fingerprint } => state.host_key = Some(fingerprint),
                             AddOutcome::NeedsLogin { reason } => state.login_offer = Some(reason),
+                            AddOutcome::NeedsMigrate { platform, what } => {
+                                state.migrate = Some(HostMigrate { platform, what, stage: MigrateStage::Blocked });
+                            }
                         }
                     }
                 }
@@ -697,6 +824,19 @@ impl Reducer for AddMachine {
                         login.finishing = false;
                     }
                 }
+            }
+            A::MigrateThisMac => {
+                let Some(id) = state.migrate_offer() else {
+                    return Effect::none();
+                };
+                if let Some(migrate) = &mut state.migrate {
+                    migrate.stage = MigrateStage::Migrating(id.clone());
+                }
+                return Effect::send(A::Delegate(Delegate::Migrate(id)));
+            }
+            A::Migrations(items) => {
+                state.migrations = items;
+                return self.after_migrations(state);
             }
             A::Delegate(_) => {}
         }

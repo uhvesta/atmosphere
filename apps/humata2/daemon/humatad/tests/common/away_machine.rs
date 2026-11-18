@@ -135,6 +135,7 @@ impl AwayMachine {
                 idempotency_key: None,
                 session: Some(session(ASKER)),
                 repo: None,
+                folder: String::new(),
             })
             .await
             .unwrap()

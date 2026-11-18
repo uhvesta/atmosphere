@@ -22,7 +22,7 @@ use humata2_store::{
 
 use crate::agents::{AgentKind, LaunchPlan};
 use crate::error::{AgentError, GitError, StartError};
-use crate::fork::{copy_clone, forget_note, note_copy_at};
+use crate::fork::{copy_clone, copy_durably, forget_note, note_copy_at};
 use crate::layout::partial;
 use crate::names::Branch;
 use crate::setup::unix_ms;
@@ -85,6 +85,14 @@ pub enum OwnCopyError {
     },
     #[error("session {session}'s terminal is still running after it was asked to stop")]
     HolderAnswers { session: String },
+    #[error(
+        "session {session}'s terminal didn't take its shutdown and couldn't be ended by its pid either, so its agent was left running in the parent's code"
+    )]
+    EndHolder {
+        session: String,
+        #[source]
+        source: humata2_holder::EndError,
+    },
     #[error("couldn't start session {session}'s agent again in its own copy")]
     Resume {
         session: String,
@@ -174,7 +182,12 @@ impl Starter {
                 discard(&folder).await;
                 // An agent whose holder still answers never stopped, so it
                 // is left alone.
-                if running && !matches!(error, OwnCopyError::HolderAnswers { .. }) {
+                if running
+                    && !matches!(
+                        error,
+                        OwnCopyError::HolderAnswers { .. } | OwnCopyError::EndHolder { .. }
+                    )
+                {
                     self.restart_in_parent(&plan, env).await;
                 }
                 return Err(error);
@@ -314,8 +327,16 @@ impl Starter {
             self.put_agent_state(plan, AgentState::Resuming).await?;
             let socket = plan.agent.launch.holder_socket.clone();
             // A holder that is already gone is as stopped as one asked to stop.
-            let _ = humata2_holder::shutdown(&socket).await;
-            // Shutdown is only asked for: give the holder a moment to go.
+            // Its pid file names it while it runs; the record is the fallback.
+            if let AgentState::Running { holder_pid } = plan.agent.state {
+                let pid = humata2_holder::holder_pid(&socket).unwrap_or(holder_pid);
+                if let Err(source) = humata2_holder::shutdown_or_end(&socket, pid).await {
+                    // It still runs: its record says so again.
+                    self.put_agent_state(plan, plan.agent.state).await?;
+                    return Err(OwnCopyError::EndHolder { session: fork, source });
+                }
+            }
+            // Shut down, or ended by its pid: give the holder a moment to go.
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
             while humata2_holder::attach(&socket, u64::MAX).await.is_ok() {
                 if tokio::time::Instant::now() >= deadline {
@@ -328,7 +349,7 @@ impl Starter {
         }
         let launch = plan
             .kind
-            .launch(&self.home, folder, &plan.agent.launch.conversation_id);
+            .launch_with_model(&self.home, folder, &plan.agent.launch.conversation_id, plan.detail.model.as_deref());
         let from = plan.agent.launch.conversation_file.clone();
         let to = launch.conversation_file.clone();
 
@@ -353,7 +374,7 @@ impl Starter {
         progress("move_conversation");
 
         let (built, dest) = (partial(folder), folder.to_owned());
-        if let Err(source) = blocking(move || fs::rename(built, dest)).await? {
+        if let Err(source) = blocking(move || place_folder(&built, &dest)).await? {
             remove_copy(&from, &to).await;
             return Err(OwnCopyError::Copy {
                 path: folder.to_owned(),
@@ -490,18 +511,27 @@ fn copy_conversation(from: &Path, to: &Path) -> Result<(), OwnCopyError> {
         return fs::metadata(from).map(drop).map_err(missing);
     }
     if let Some(dir) = to.parent() {
-        fs::create_dir_all(dir).map_err(|source| OwnCopyError::Copy {
+        humata2_durable::create_dir_all(dir, 0o755).map_err(|source| OwnCopyError::Copy {
             path: dir.to_owned(),
             source,
         })?;
     }
-    fs::copy(from, to).map(drop).map_err(|source| match source.kind() {
-        io::ErrorKind::NotFound => missing(source),
-        _ => OwnCopyError::Copy {
-            path: to.to_owned(),
-            source,
-        },
+    let source = fs::File::open(from).map_err(missing)?;
+    copy_durably(source, to).map_err(|source| OwnCopyError::Copy {
+        path: to.to_owned(),
+        source,
     })
+}
+
+/// Puts the folder built at `built` on disk, then renames it to `dest` and
+/// puts the rename on disk, so a power cut leaves `dest` whole or absent.
+fn place_folder(built: &Path, dest: &Path) -> io::Result<()> {
+    crate::git::sync_tree(built)?;
+    humata2_durable::rename(built, dest)?;
+    match dest.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => humata2_durable::sync_dir(parent),
+        _ => Ok(()),
+    }
 }
 
 /// Removes the copy of a conversation made for the new folder, when there is
@@ -542,6 +572,46 @@ mod tests {
     use super::*;
     use crate::git::git;
     use crate::work::tests::origin_and_clone;
+
+    /// The worker of the power-cut test below: this test binary run again
+    /// with this test selected; it does nothing otherwise.
+    #[cfg(faults_build)]
+    #[test]
+    fn power_cut_child() {
+        let (Ok(built), Ok(dest)) = (
+            std::env::var("HUMATA2_FOLDER_BUILT"),
+            std::env::var("HUMATA2_FOLDER_DEST"),
+        ) else {
+            return;
+        };
+        place_folder(Path::new(&built), Path::new(&dest)).unwrap();
+        humata2_durable::cut("after the folder is placed");
+    }
+
+    #[cfg(faults_build)]
+    #[test]
+    fn a_folder_placed_for_an_own_copy_is_whole_after_a_power_cut() {
+        use std::os::unix::process::ExitStatusExt;
+        let dir = tempfile::Builder::new().prefix("h2pc").tempdir_in("/tmp").unwrap();
+        let home = dir.path().join("home");
+        let built = home.join("sessions/fork.partial");
+        fs::create_dir_all(&built).unwrap();
+        fs::write(built.join("work.txt"), "unstaged\n").unwrap();
+        let dest = home.join("sessions/fork");
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["own_copy::tests::power_cut_child", "--exact", "--nocapture", "--test-threads=1"])
+            .env("HUMATA2_FOLDER_BUILT", &built)
+            .env("HUMATA2_FOLDER_DEST", &dest)
+            .env("HUMATA2_POWER_CUT_ROOTS", &home)
+            .env("HUMATA2_POWER_CUT_SPARE", dir.path().join("spare"))
+            .env_remove("TESTBRIDGE_TEST_ONLY")
+            .status()
+            .unwrap();
+
+        assert_eq!(status.signal(), Some(9), "the worker didn't stop at the cut: {status}");
+        assert_eq!(fs::read_to_string(dest.join("work.txt")).unwrap(), "unstaged\n");
+    }
 
     fn branch_of(dir: &Path) -> String {
         git(Some(dir), &["symbolic-ref", "--short", "HEAD"])

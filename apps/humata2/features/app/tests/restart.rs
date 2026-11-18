@@ -36,6 +36,51 @@ fn first_session(workspace: &Workspace) -> SessionId {
     workspace.sessions[0].id.clone()
 }
 
+
+/// The daemon brought its sessions back before the app connected, so no
+/// restart event comes: the first load tells it, and a later load of the
+/// same restart doesn't tell it again (D390).
+#[test]
+fn a_restart_the_first_load_brings_is_told_once() {
+    let mut workspace = fixture::design();
+    workspace.restarts = vec![restart("devbox-1", &["a"], 1)];
+    let (clients, _) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    let state = AppState::launch(&clients);
+    let mut store = TestStore::new(state, App::new(clients)).non_exhaustive();
+    let quiet = {
+        let mut quiet = workspace.clone();
+        quiet.restarts.clear();
+        let (clients, _) = Clients::fake(quiet.clone(), Arc::new(TestClock::new()));
+        let mut control = TestStore::new(AppState::launch(&clients), App::new(clients)).non_exhaustive();
+        control.send(A::Loaded(Ok(quiet)), |_| {});
+        let told = control.state().toasts.len();
+        control.skip_received();
+        told
+    };
+    store.send(A::Loaded(Ok(workspace.clone())), |_| {});
+    let told = store.state().toasts.len();
+    assert_eq!(told, quiet + 1, "the loaded restart is told");
+    store.send(A::Loaded(Ok(workspace)), |_| {});
+    assert_eq!(store.state().toasts.len(), told, "a reload doesn't tell it again");
+    store.skip_received();
+}
+
+/// A restart heard as an event first isn't told again when the load that
+/// follows brings it.
+#[test]
+fn a_restart_heard_before_the_load_is_not_told_twice() {
+    let mut workspace = fixture::design();
+    workspace.restarts.clear();
+    let (mut store, _) = setup(workspace.clone());
+    let heard = restart("devbox-1", &["a"], 0);
+    store.send(A::Event(Event::Restart(heard.clone())), |_| {});
+    let told = store.state().toasts.len();
+    workspace.restarts = vec![heard];
+    store.send(A::Loaded(Ok(workspace)), |_| {});
+    assert_eq!(store.state().toasts.len(), told);
+    store.skip_received();
+}
+
 #[test]
 fn hearing_a_restart_keeps_it_and_tells_the_person() {
     let (mut store, _) = setup(fixture::design());

@@ -9,6 +9,9 @@
 mod deferred;
 mod forwarded;
 mod kept;
+mod host_asks;
+mod migrate;
+mod migrated;
 pub(crate) mod permission;
 mod relay;
 mod replay;
@@ -45,6 +48,9 @@ use relay::{Relayed, Relays};
 
 /// How often a wait says it is still waiting (MCP.md §5).
 const KEEPALIVE: Duration = Duration::from_secs(15);
+/// D158.7: how long a session stays Needs you after a pending return or a
+/// wait that ended with no answer, for the agent's next wait to come.
+const ASK_GAP: Duration = Duration::from_secs(30);
 
 /// The most choices a question offers.
 const CHOICES_MAX: usize = 4;
@@ -66,6 +72,9 @@ pub(crate) struct Inbox {
     /// On a machine: the host's link, where a wait on a request the host holds
     /// goes up (D268). Set once the link's parts are made.
     forwarder: std::sync::OnceLock<Arc<Forwarder>>,
+    /// What carries out a click on a Migrate item (UP-1). Set once the
+    /// host's Migrate items are made.
+    migrator: std::sync::OnceLock<crate::upgrade::items::Approver>,
 }
 
 #[derive(Default)]
@@ -74,6 +83,11 @@ struct State {
     /// The request each asking session's idempotency key made.
     keys: HashMap<String, String>,
 }
+
+/// `REQUEST_KIND_MIGRATE` (D281): a needed update outlives a stop, so the
+/// stop's sweep leaves it pending. Becomes `pb::RequestKind::Migrate` once
+/// UPGRADE adds it to the proto.
+const MIGRATE_KIND: i32 = 8;
 
 struct Entry {
     id: String,
@@ -93,6 +107,9 @@ struct Entry {
     /// An agent's permission hook holds it (D191): Approve or Deny only,
     /// left out of Answer all, and withdrawn once no hook holds it.
     permission: bool,
+    /// Its reply must be one of the card's choices (D767): a question the
+    /// agent asks on its screen takes only the answers the screen offers.
+    only_choices: bool,
 }
 
 impl Entry {
@@ -113,6 +130,7 @@ impl Entry {
             request: watch::channel(held).0,
             run: std::sync::Mutex::new(None),
             permission: false,
+            only_choices: false,
         }
     }
 }
@@ -148,7 +166,51 @@ impl Held {
 
     /// Whether a wait on this request has more to wait for.
     fn waiting(&self) -> bool {
-        self.request.state == pb::RequestState::Pending as i32 || self.running
+        self.pending() || self.running
+    }
+
+    /// Whether the request still waits for the user's answer.
+    fn pending(&self) -> bool {
+        self.request.state == pb::RequestState::Pending as i32
+    }
+}
+
+/// Keeps `session` Needs you for [`ASK_GAP`] while its request stays
+/// pending, for the agent's next wait on it (D158.7). Ends at once when the
+/// request is answered or withdrawn.
+fn hold_through_gap(session: &str, mut answers: watch::Receiver<Held>) {
+    if !answers.borrow().pending() {
+        return;
+    }
+    // A runtime shutting down has no gap to keep.
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let asking = crate::session_service::Asking::hold(session);
+    // From when the wait ended, not from when the task is first run.
+    let ends = tokio::time::Instant::now() + ASK_GAP;
+    runtime.spawn(async move {
+        let _asking = asking;
+        let gap = tokio::time::sleep_until(ends);
+        tokio::pin!(gap);
+        loop {
+            if !answers.borrow_and_update().pending() {
+                return;
+            }
+            tokio::select! {
+                () = &mut gap => return,
+                changed = answers.changed() => if changed.is_err() { return },
+            }
+        }
+    });
+}
+
+/// Starts the gap after a wait when the wait ends, however it ends.
+struct Gap(String, watch::Receiver<Held>);
+
+impl Drop for Gap {
+    fn drop(&mut self) {
+        hold_through_gap(&self.0, self.1.clone());
     }
 }
 
@@ -177,6 +239,7 @@ impl Inbox {
             state: Mutex::new(state),
             relays: Arc::new(Relays::new()),
             forwarder: std::sync::OnceLock::new(),
+            migrator: std::sync::OnceLock::new(),
         }
     }
 
@@ -327,7 +390,10 @@ impl Inbox {
         &self,
         reason: pb::WithdrawReason,
     ) -> Result<(), Status> {
-        self.withdraw_pending_where(reason, |_| true).await
+        self.withdraw_pending_where(reason, |entry| {
+            entry.request.borrow().request.kind != MIGRATE_KIND && !host_asks::is_host_ask(entry)
+        })
+        .await
     }
 
     async fn withdraw_pending_where(
@@ -336,6 +402,9 @@ impl Inbox {
         which: impl Fn(&Entry) -> bool,
     ) -> Result<(), Status> {
         let state = self.state.lock().await;
+        // One that can't be saved doesn't stop the others being withdrawn:
+        // the first failure is what the caller hears, after the rest.
+        let mut failed = None;
         for entry in state.requests.iter().filter(|entry| which(entry)) {
             let mut next = entry.request.borrow().clone();
             if next.request.state != pb::RequestState::Pending as i32 {
@@ -343,8 +412,13 @@ impl Inbox {
             }
             withdraw(&mut next.request, reason);
             let current = next.request.clone();
-            self.commit(entry, next, None, "save the withdrawal")
-                .await?;
+            if let Err(error) = self
+                .commit(entry, next, None, "save the withdrawal")
+                .await
+            {
+                failed.get_or_insert(error);
+                continue;
+            }
             entry
                 .run
                 .lock()
@@ -352,7 +426,7 @@ impl Inbox {
                 .take();
             self.tell(pb::Change::Updated, &entry.session, &current);
         }
-        Ok(())
+        failed.map_or(Ok(()), Err)
     }
 
     /// Tells the feed of `session`'s request as it now stands.
@@ -467,7 +541,11 @@ impl Inbox {
         use pb::request_answer::Answer as A;
         let id = &entry.id;
         if entry.permission {
-            return permission::decide(id, answer);
+            return permission::decide(current, id, answer, entry.only_choices);
+        }
+        // UP-1: a Migrate item takes Migrate and nothing else.
+        if let Some(refused) = crate::upgrade::items::refuse_answer(current, &answer) {
+            return Err(refused);
         }
         let decided = |state, answer, grant| Decided {
             state,
@@ -555,6 +633,18 @@ impl Inbox {
             if expected.value != actual.value {
                 return Err(revision_conflict(&id, expected, actual));
             }
+        }
+        // D348: a request the host raised for itself, about no session, takes
+        // Approve (run its call) or Deny and nothing else.
+        if host_asks::is_host_ask(entry) {
+            return self.answer_host_ask(entry, caller, user, answer);
+        }
+        // UP-1: Migrate on a Migrate item is carried out, not decided here:
+        // the item stays pending, shown as Migrating, until the machine is
+        // at the new release. Held no longer than it takes to mark it.
+        if crate::upgrade::items::is_migrate(&current) && matches!(answer, pb::request_answer::Answer::Approve(_)) {
+            drop(state);
+            return self.migrate_approved(&id).await;
         }
         if current.journal.is_some() {
             let relayed = self.relay(entry, &current, caller, user, answer)?;
@@ -820,6 +910,11 @@ impl pb::inbox_service_server::InboxService for Inbox {
                 .requests
                 .iter()
                 .find(|entry| entry.id == id.value && sees(&caller, entry));
+            // UP-1, D290: an Answer all never migrates anything.
+            let entry = entry.filter(|entry| {
+                !crate::upgrade::items::is_migrate(&entry.request.borrow().request)
+                    && !host_asks::is_host_ask(entry)
+            });
             // A permission card is one tool call, approved one at a time.
             let Some(entry) = entry.filter(|entry| !entry.permission) else {
                 skipped.push(id);
@@ -933,6 +1028,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
             &entry.session,
             &entry.request.borrow().request,
         );
+        hold_through_gap(&entry.session, entry.request.subscribe());
         state.add(entry);
         Ok(Response::new(reply))
     }
@@ -1071,6 +1167,7 @@ impl pb::inbox_service_server::InboxService for Inbox {
                     &entry.session,
                     &entry.request.borrow().request,
                 );
+                hold_through_gap(&entry.session, entry.request.subscribe());
                 state.add(entry);
                 Ok(Response::new(reply))
             })
@@ -1098,7 +1195,16 @@ impl pb::inbox_service_server::InboxService for Inbox {
         };
         let wait = Duration::from_secs(u64::from(request.wait_seconds));
         let (sender, receiver) = mpsc::channel(4);
+        // D158.7: an agent waiting on its own request needs you meanwhile,
+        // and through the gap before its next wait.
+        let asker = match &caller {
+            Caller::Agent(agent) if answers.borrow().pending() => Some(agent.session.id.to_string()),
+            _ => None,
+        };
+        let asking = asker.as_deref().map(crate::session_service::Asking::hold);
         tokio::spawn(async move {
+            let _asking = asking;
+            let _gap = asker.map(|session| Gap(session, answers.clone()));
             let deadline = tokio::time::sleep(wait);
             tokio::pin!(deadline);
             let mut keepalive = tokio::time::interval(KEEPALIVE);
@@ -1352,6 +1458,8 @@ fn describe(target: &GrantTarget) -> String {
                 K::Remove => "remove",
                 K::Forget => "forget",
                 K::Delete => "delete",
+                K::StopSessions => "stop all sessions on",
+                K::StartSessions => "start all sessions on",
             };
             format!("{verb} machine {}", action.machine)
         }
@@ -1393,8 +1501,12 @@ fn kind_of(capability: Capability) -> pb::RequestKind {
         | C::SessionStartOtherMachine
         | C::SessionMove
         | C::SessionStopOther
+        | C::SessionDeleteOther
+        | C::DeskMoveToChannel
         | C::GitPush => pb::RequestKind::Session,
-        C::MachineProvision | C::MachineDestroy => pb::RequestKind::Machine,
+        C::MachineProvision | C::MachineDestroy | C::MachineSessionsStop | C::MachineScriptRun => {
+            pb::RequestKind::Machine
+        },
         _ => pb::RequestKind::Channel,
     }
 }
@@ -2003,6 +2115,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stop_withdraws_a_pending_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = host_holding(directory.path(), BOUND, card("rq_1", pb::RequestState::Pending)).await;
+        inbox
+            .withdraw_all_pending(pb::WithdrawReason::MachineStopped)
+            .await
+            .unwrap();
+        assert_eq!(state_of(&inbox).await, pb::RequestState::Withdrawn);
+    }
+
+    #[tokio::test]
+    async fn a_stop_leaves_a_pending_migrate_item_pending() {
+        let directory = tempfile::tempdir().unwrap();
+        let migrate = pb::InboxRequest {
+            kind: MIGRATE_KIND,
+            ..card("rq_1", pb::RequestState::Pending)
+        };
+        let inbox = host_holding(directory.path(), BOUND, migrate).await;
+        inbox
+            .withdraw_all_pending(pb::WithdrawReason::MachineStopped)
+            .await
+            .unwrap();
+        assert_eq!(state_of(&inbox).await, pb::RequestState::Pending);
+    }
+
+    #[tokio::test]
     async fn an_answer_to_a_request_the_machine_withdrew_is_request_withdrawn() {
         let directory = tempfile::tempdir().unwrap();
         let inbox = host_holding(directory.path(), BOUND, card("rq_1", pb::RequestState::Pending)).await;
@@ -2083,5 +2221,47 @@ mod tests {
         // A passphrase-less user on the machine itself is not.
         let local = inbox.present_user(&Caller::User(UserVia::App)).unwrap();
         assert!(!local.on_host());
+    }
+
+    /// Lets the gap's task see what changed.
+    async fn settle() {
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pending_ask_holds_needs_you_through_the_gap_and_an_answer_ends_it() {
+        let session = "se_gap_answer";
+        let (request, answers) = watch::channel(Held::new(card("rq_1", pb::RequestState::Pending)));
+        hold_through_gap(session, answers);
+        assert!(crate::session_service::turns_asking(session));
+        tokio::time::advance(ASK_GAP / 2).await;
+        settle().await;
+        assert!(crate::session_service::turns_asking(session), "still in the gap");
+        request.send_replace(Held::new(card("rq_1", pb::RequestState::Approved)));
+        settle().await;
+        assert!(!crate::session_service::turns_asking(session), "the answer ends it");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_gap_with_no_next_wait_runs_out() {
+        let session = "se_gap_out";
+        let (_request, answers) = watch::channel(Held::new(card("rq_2", pb::RequestState::Pending)));
+        hold_through_gap(session, answers);
+        assert!(crate::session_service::turns_asking(session));
+        tokio::time::advance(ASK_GAP + Duration::from_secs(1)).await;
+        // A sleep lets the timer driver turn, so the gap's own timer fires.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        settle().await;
+        assert!(!crate::session_service::turns_asking(session));
+    }
+
+    #[tokio::test]
+    async fn a_settled_request_holds_nothing() {
+        let session = "se_gap_settled";
+        let (_request, answers) = watch::channel(Held::new(card("rq_3", pb::RequestState::Denied)));
+        hold_through_gap(session, answers);
+        assert!(!crate::session_service::turns_asking(session));
     }
 }

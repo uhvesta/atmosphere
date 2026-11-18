@@ -12,7 +12,7 @@
 //! holder's pid, so a launch or a resume (a new holder) starts them over,
 //! and the saved hook state is cleared by the store at the same moment.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -160,6 +160,13 @@ impl Quieting {
         };
         self.quiet
     }
+
+    /// A hook said working at `now`: the quiet is counted from here, as
+    /// though the agent had just written (D733).
+    pub(super) fn rearm(&mut self, now: Instant) {
+        self.last_output = now;
+        self.quiet = Quiet::Talking;
+    }
 }
 
 /// One running agent's inputs.
@@ -175,6 +182,9 @@ struct Entry {
     resumed: bool,
     /// False for an agent with no turns (SE-21): it shows no turn.
     timed: bool,
+    /// Counts the working reports taken up, so the output watch restarts
+    /// its quiet clock at each (D733).
+    armed: u64,
 }
 
 impl Entry {
@@ -192,12 +202,19 @@ struct Inner {
     agents: HashMap<String, Entry>,
     /// Hooks heard while an agent launches or resumes, for `enter`.
     pending: HashMap<String, (Hook, i64)>,
+    /// D158.7: how many holds each session's agent has on its own pending
+    /// Inbox requests (a wait for the answer, or the gap after one).
+    asks: HashMap<String, u32>,
+    /// Sessions whose asking started or stopped, for the feed to hear of.
+    asks_told: HashSet<String>,
 }
 
 struct Registry {
     inner: Mutex<Inner>,
     /// Counts every status change, for a tab that shows its agent's.
     changes: watch::Sender<u64>,
+    /// Counts every time a session starts or stops asking.
+    asks: watch::Sender<u64>,
     sources: OnceLock<HashMap<String, pb::TurnEndSource>>,
     hooks: OnceLock<HooksFile>,
 }
@@ -205,6 +222,7 @@ struct Registry {
 static REGISTRY: LazyLock<Registry> = LazyLock::new(|| Registry {
     inner: Mutex::default(),
     changes: watch::channel(0).0,
+    asks: watch::channel(0).0,
     sources: OnceLock::new(),
     hooks: OnceLock::new(),
 });
@@ -253,12 +271,94 @@ fn unix_ns() -> i64 {
 /// The status of `session`'s running agent in `holder_pid`: what its hooks
 /// and its output say, WORKING when nothing is known yet.
 pub(crate) fn running(session: &str, holder_pid: u32) -> pb::SessionStatus {
-    REGISTRY
-        .lock()
+    let inner = REGISTRY.lock();
+    if inner.asks.contains_key(session) {
+        return pb::SessionStatus::NeedsInput;
+    }
+    inner
         .agents
         .get(session)
         .filter(|entry| entry.holder_pid == holder_pid)
         .map_or(pb::SessionStatus::Working, Entry::status)
+}
+
+/// Whether `session`'s agent is waiting on its own pending Inbox request,
+/// or is in the gap before its next wait on it (D158.7). Its running agent
+/// shows NEEDS_INPUT meanwhile, whatever its turn.
+pub(crate) fn asking(session: &str) -> bool {
+    REGISTRY.lock().asks.contains_key(session)
+}
+
+/// One hold on `session`'s Needs you while its agent waits on its own
+/// request (D158.7). The session asks while any hold is kept.
+pub(crate) struct Asking {
+    session: String,
+}
+
+impl Asking {
+    pub(crate) fn hold(session: &str) -> Self {
+        let started = {
+            let mut inner = REGISTRY.lock();
+            let holds = inner.asks.entry(session.to_owned()).or_insert(0);
+            *holds += 1;
+            let started = *holds == 1;
+            if started {
+                inner.asks_told.insert(session.to_owned());
+            }
+            started
+        };
+        if started {
+            REGISTRY.asks.send_modify(|count| *count += 1);
+            REGISTRY.bump();
+        }
+        Self {
+            session: session.to_owned(),
+        }
+    }
+}
+
+impl Drop for Asking {
+    fn drop(&mut self) {
+        let stopped = {
+            let mut inner = REGISTRY.lock();
+            let stopped = match inner.asks.get_mut(&self.session) {
+                Some(holds) if *holds > 1 => {
+                    *holds -= 1;
+                    false
+                }
+                Some(_) => {
+                    inner.asks.remove(&self.session);
+                    true
+                }
+                None => false,
+            };
+            if stopped {
+                inner.asks_told.insert(self.session.clone());
+            }
+            stopped
+        };
+        if stopped {
+            REGISTRY.asks.send_modify(|count| *count += 1);
+            REGISTRY.bump();
+        }
+    }
+}
+
+/// Tells the feed of each session whose agent starts or stops asking, for
+/// as long as the daemon runs. Start it once.
+pub(crate) fn tell_asks(tell: super::Tell) {
+    let mut asks = REGISTRY.asks.subscribe();
+    tokio::spawn(async move {
+        loop {
+            let told: Vec<String> = REGISTRY.lock().asks_told.drain().collect();
+            for session in told {
+                tell.running_session(&session).await;
+            }
+            if asks.changed().await.is_err() {
+                return;
+            }
+        }
+    });
 }
 
 /// Counts up whenever any running agent's status changes.
@@ -303,6 +403,7 @@ pub(super) fn enter(
             quiet: Quiet::Talking,
             resumed: false,
             timed,
+            armed: 0,
         };
         let now = unix_ns();
         let pending = inner
@@ -383,16 +484,46 @@ pub(super) fn set_quiet(session: &str, holder_pid: u32, quiet: Quiet) -> bool {
 
 /// The agent's hook said `hook` in a report made at `at`. Dropped when an
 /// older report arrives after a newer one. Says whether the status changed.
+/// A working report counts as output now: WORKING lasts until
+/// [`NET_AFTER`] of quiet after it, however long the agent was quiet before
+/// (D733).
 fn set_hook(session: &str, holder_pid: u32, hook: Hook, at: i64) -> bool {
-    REGISTRY
-        .change(session, holder_pid, |entry| {
-            if at > entry.hook_at {
-                entry.hook = Some(hook);
-                entry.hook_at = at;
-                entry.resumed = false;
+    let changed = REGISTRY.change(session, holder_pid, |entry| {
+        let applies = at > entry.hook_at;
+        if applies {
+            let rearm = hook == Hook::Working && entry.hook != Some(Hook::Working);
+            entry.hook = Some(hook);
+            entry.hook_at = at;
+            entry.resumed = false;
+            if rearm && entry.timed {
+                entry.quiet = Quiet::Talking;
+                entry.armed += 1;
+                return true;
             }
-        })
-        .is_some_and(|(changed, ())| changed)
+        }
+        false
+    });
+    match changed {
+        Some((changed, armed)) => {
+            if armed && !changed {
+                // The watch's clock restarts even when the status doesn't move.
+                REGISTRY.bump();
+            }
+            changed
+        }
+        None => false,
+    }
+}
+
+/// How many working reports `session`'s launch in `holder_pid` has taken
+/// up; `None` with no entry for it.
+pub(super) fn armed(session: &str, holder_pid: u32) -> Option<u64> {
+    REGISTRY
+        .lock()
+        .agents
+        .get(session)
+        .filter(|entry| entry.holder_pid == holder_pid)
+        .map(|entry| entry.armed)
 }
 
 /// Drops the inputs of `session`'s launch in `holder_pid`, once it exited.
@@ -508,7 +639,11 @@ impl SessionSvc {
         }
 
         let (store, key) = (self.starter.store.clone(), session.clone());
+        let (agents, home) = (self.starter.agents.clone(), self.starter.home.clone());
         let read = blocking(move || -> Result<Option<(AgentState, Option<(i32, i64)>)>, StoreError> {
+            // D670: a kind whose CLI picks its own conversation id has
+            // written it by its first turn; learn it so resume finds it.
+            agents.learn_conversation(&store, &home, &key)?;
             let Some(agent) = store.agent(&key)? else {
                 return Ok(None);
             };
@@ -796,6 +931,22 @@ mod tests {
     }
 
     #[test]
+    fn a_session_asking_needs_input_until_its_last_hold_goes() {
+        let session = "turns-unit-asks";
+        enter(session, 4, Some((Hook::Working, 1)), true);
+        assert_eq!(running(session, 4), S::Working);
+        let wait = Asking::hold(session);
+        let gap = Asking::hold(session);
+        assert!(asking(session));
+        assert_eq!(running(session, 4), S::NeedsInput);
+        drop(wait);
+        assert_eq!(running(session, 4), S::NeedsInput, "one hold is left");
+        drop(gap);
+        assert!(!asking(session));
+        assert_eq!(running(session, 4), S::Working);
+    }
+
+    #[test]
     fn an_older_report_arriving_late_is_dropped() {
         let session = "turns-unit-b";
         enter(session, 1, None, true);
@@ -842,6 +993,37 @@ mod tests {
         assert_eq!(running(session, 2), S::RunningUnknownTurn);
         set_hook(session, 2, Hook::Idle, 9);
         assert_eq!(running(session, 2), S::RunningUnknownTurn);
+    }
+
+    #[test]
+    fn a_working_report_after_a_long_quiet_shows_working_until_quiet_again() {
+        let session = "turns-unit-armed";
+        enter(session, 12, None, true);
+        set_quiet(session, 12, Quiet::Quiet);
+        set_quiet(session, 12, Quiet::Long);
+        assert_eq!(running(session, 12), S::ProbablyIdle);
+        let before = armed(session, 12);
+        assert!(set_hook(session, 12, Hook::Working, 1));
+        assert_eq!(running(session, 12), S::Working);
+        assert_ne!(armed(session, 12), before, "the watch restarts its quiet clock");
+        // Quiet for long after the report: probably idle again.
+        set_quiet(session, 12, Quiet::Quiet);
+        assert!(set_quiet(session, 12, Quiet::Long));
+        assert_eq!(running(session, 12), S::ProbablyIdle);
+        // A repeat of working is no new report.
+        let now = armed(session, 12);
+        set_hook(session, 12, Hook::Working, 2);
+        assert_eq!(armed(session, 12), now);
+        assert_eq!(running(session, 12), S::ProbablyIdle);
+    }
+
+    #[tokio::test]
+    async fn a_rearmed_clock_counts_the_quiet_from_the_report() {
+        let start = Instant::now();
+        let mut quieting = Quieting::new(start - NET_AFTER * 2, true);
+        quieting.rearm(start);
+        assert_eq!(quieting.quiet, Quiet::Talking);
+        assert_eq!(quieting.last_output, start);
     }
 
     #[test]

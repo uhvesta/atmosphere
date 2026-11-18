@@ -18,7 +18,6 @@ use humata2_review::comments::CommentsSaved;
 use humata2_session::SessionView;
 use humata2_settings::Preferences;
 use humata2_sidebar::Folding;
-use humata2_views::Decisions;
 use serde::{Deserialize, Serialize};
 
 use crate::Route;
@@ -55,8 +54,6 @@ pub struct SavedUi {
     pub comments: CommentsSaved,
     /// Recent palette picks.
     pub recent: Vec<Command>,
-    /// Prepared views decided on.
-    pub views: Decisions,
     /// The selected machine in Hosts.
     pub selected_host: Option<MachineId>,
     /// Hosts that answered.

@@ -93,6 +93,12 @@ pub enum DiffError {
     UnknownRepo { repo: String, known: Vec<String> },
 
     #[error(
+        "{} has no default branch to compare with: the clone doesn't know which branch its remote calls default, and there is no `origin/main`. Use Find the default branch, which asks the remote, or compare against a branch you pick",
+        repo.display()
+    )]
+    NoDefaultBranch { repo: PathBuf },
+
+    #[error(
         "couldn't {what} in {}; check that the folder is writable and the disk has free space. The repository's own index and refs are untouched",
         path.display()
     )]

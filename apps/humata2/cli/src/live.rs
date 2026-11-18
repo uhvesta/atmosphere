@@ -2,11 +2,13 @@
 //! as they are, so one client serves every method (D15).
 
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use humata2_proto::humata::v1 as pb;
 use hyper_util::rt::TokioIo;
 use prost::Message;
 use prost::bytes::{Buf, BufMut};
+use sha2::{Digest, Sha256};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -24,10 +26,34 @@ use crate::principal::Principal;
 /// image is up to 32 MiB, GRPC.md §4).
 const MESSAGE_MAX_BYTES: usize = 64 << 20;
 
+/// The gRPC metadata that names the release this CLI is (UP-1, D290 m).
+const BUNDLE_HEADER: &str = "humata-bundle";
+
+/// The response header a read answered from a machine's copy carries: when
+/// the host answered it, RFC 3339 in UTC (AW-7, D227).
+const STALE_HEADER: &str = "humata-stale-as-of";
+
+/// The sha256 (lowercase hex) of the `bundle.json` beside this executable,
+/// which names the release it is. None when there is no such file or it
+/// can't be read: the calls then name no release, and a daemon at a
+/// release refuses them.
+fn bundle_id() -> Option<AsciiMetadataValue> {
+    let folder = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let bytes = std::fs::read(folder.join("bundle.json")).ok()?;
+    let hex: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    MetadataValue::try_from(hex).ok()
+}
+
 pub struct LiveDaemon {
     socket: PathBuf,
     channel: Channel,
     token: Option<(&'static str, AsciiMetadataValue)>,
+    bundle: Option<AsciiMetadataValue>,
+    /// The last [`STALE_HEADER`] a reply carried.
+    stale_as_of: Mutex<Option<String>>,
 }
 
 impl LiveDaemon {
@@ -60,6 +86,8 @@ impl LiveDaemon {
             socket,
             channel,
             token,
+            bundle: bundle_id(),
+            stale_as_of: Mutex::new(None),
         })
     }
 
@@ -79,6 +107,9 @@ impl LiveDaemon {
         if let Some((header, value)) = &self.token {
             request.metadata_mut().insert(*header, value.clone());
         }
+        if let Some(bundle) = &self.bundle {
+            request.metadata_mut().insert(BUNDLE_HEADER, bundle.clone());
+        }
         request
     }
 }
@@ -90,7 +121,21 @@ impl Daemon for LiveDaemon {
             .unary(self.request(request), PathAndQuery::from_static(rpc.path), Raw)
             .await
             .map_err(|status| refused(rpc, &status))?;
+        if let Some(at) = response
+            .metadata()
+            .get(STALE_HEADER)
+            .and_then(|value| value.to_str().ok())
+        {
+            *self.stale_as_of.lock().unwrap_or_else(PoisonError::into_inner) = Some(at.to_owned());
+        }
         Ok(response.into_inner())
+    }
+
+    fn stale_as_of(&self) -> Option<String> {
+        self.stale_as_of
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     async fn server_stream(&self, rpc: Rpc, request: Vec<u8>) -> Result<Replies, DaemonError> {

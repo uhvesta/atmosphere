@@ -30,6 +30,7 @@ _ZIG_SHA256 = "75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d"
 # for. None builds for this Mac.
 _TARGETS = [
     ("macos_aarch64", None),
+    ("macos_x86_64", "x86_64-macos"),
     ("linux_aarch64", "aarch64-linux-musl"),
     ("linux_x86_64", "x86_64-linux-musl"),
 ]
@@ -52,6 +53,7 @@ exports_files(["LICENSE"], visibility = ["@@//apps/humata2:__subpackages__"])
     )
     for platform in [
         "macos_aarch64",
+        "macos_x86_64",
         "linux_aarch64",
         "linux_x86_64",
     ]
@@ -67,6 +69,7 @@ exports_files(["LICENSE"], visibility = ["@@//apps/humata2:__subpackages__"])
     )
     for os, cpu in [
         ("macos", "aarch64"),
+        ("macos", "x86_64"),
         ("linux", "aarch64"),
         ("linux", "x86_64"),
     ]
@@ -77,10 +80,11 @@ alias(
     actual = select(
         {
             ":macos_aarch64": ":libghostty_vt_macos_aarch64",
+            ":macos_x86_64": ":libghostty_vt_macos_x86_64",
             ":linux_aarch64": ":libghostty_vt_linux_aarch64",
             ":linux_x86_64": ":libghostty_vt_linux_x86_64",
         },
-        no_match_error = ("libghostty-vt is built for macOS on arm64 and Linux on " +
+        no_match_error = ("libghostty-vt is built for macOS and Linux on " +
                           "arm64 and x86_64 only. Build for one of those platforms, " +
                           "or add the target to _TARGETS in " +
                           "//apps/humata2/terminal/vt:libghostty_vt.bzl."),

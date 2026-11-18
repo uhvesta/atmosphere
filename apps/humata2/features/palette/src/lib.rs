@@ -93,6 +93,13 @@ pub enum Command {
     Fork,
     /// Archive the open session.
     Archive,
+    /// Rename the open session; the Rename dialog opens (FC-17).
+    RenameSession,
+    /// Continue the open session in another channel; the Continue dialog
+    /// opens (CV-8).
+    ContinueInChannel,
+    /// Stop the open session's agent; the session stays (SE-7).
+    StopAgent,
     /// Open a channel.
     Channel(ChannelId),
     /// Open a session.
@@ -139,8 +146,17 @@ pub enum Command {
         /// Where it goes.
         machine: MachineId,
     },
-    /// Review a GitHub pull request.
+    /// Review a GitHub pull request: open the session reviewing it, or the
+    /// Review a pull request dialog with it pasted (PR-1).
     ReviewPull(PullRef),
+    /// Add a pasted repo to a channel: opens its Add a GitHub repo sheet
+    /// with the repo in the field (RL-5, KP-4).
+    AddRepoToChannel {
+        /// The channel on screen.
+        channel: ChannelId,
+        /// `owner/name`.
+        repo: String,
+    },
     /// Open a Settings section.
     SettingsSection(Section),
     /// Open Settings at a row, in its section.
@@ -369,6 +385,16 @@ impl Reducer for Palette {
 }
 
 impl PaletteState {
+    /// Whether Move is asking for a machine and none can take the session:
+    /// no other machine it may go to is online, whatever is typed (MV-1).
+    #[must_use]
+    pub fn no_machine_to_move_to(&self) -> bool {
+        match &self.asking {
+            Some(Ask::MoveSession { session, .. }) => self.machine_entries(session, "").is_empty(),
+            None => false,
+        }
+    }
+
     /// How many rows the cursor walks: the entries, then the hits and the
     /// "more" row, which are not shown while the palette asks inline.
     fn rows(&self) -> usize {
@@ -419,7 +445,10 @@ impl PaletteState {
         }
         if !matches!(
             command,
-            Command::MoveTo { .. } | Command::Pin { .. } | Command::Vip { .. }
+            Command::MoveTo { .. }
+                | Command::Pin { .. }
+                | Command::Vip { .. }
+                | Command::AddRepoToChannel { .. }
         ) {
             self.recent.retain(|recent| recent != &command);
             self.recent.insert(0, command.clone());
@@ -459,7 +488,11 @@ impl PaletteState {
         let Some(current) = self.workspace.session(session) else {
             return Vec::new();
         };
-        let candidates: Vec<&Machine> = if humata2_clients::desk::is_desk(current) {
+        // A Desk session works in the same place on every machine, and a
+        // review's channel is Humata's own (PR-21): the move gives the machine
+        // it, so any online machine may be picked.
+        let any_machine = humata2_clients::desk::is_desk(current) || current.pull_request_review;
+        let candidates: Vec<&Machine> = if any_machine {
             self.workspace.machines.iter().collect()
         } else {
             self.workspace.channel_machines(&current.channel).collect()
@@ -482,32 +515,71 @@ impl PaletteState {
             .collect()
     }
 
-    /// Whether a session here already reviews `pull`.
-    fn reviewed(&self, pull: &PullRef) -> bool {
-        self.workspace.pulls.iter().any(|p| {
-            p.session.is_some()
-                && p.number == pull.number
-                && p.repo == format!("{}/{}", pull.owner, pull.repo)
-        })
+    /// What a pasted repo (`owner/name` or a GitHub address) offers: adding it
+    /// to the channel on screen, and the sessions already in it (KP-4). A pull
+    /// request address is not a repo here.
+    fn repo_entries(&self, query: &str) -> Vec<(i64, Entry)> {
+        if pull_ref(query).is_some() || pull_number(query).is_some() {
+            return Vec::new();
+        }
+        let Ok(repo) = humata2_clients::github::parse_repo_text(query) else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        if let Some(channel) = &self.channel {
+            found.push((
+                i64::MAX,
+                Entry {
+                    command: Command::AddRepoToChannel {
+                        channel: channel.clone(),
+                        repo: repo.clone(),
+                    },
+                    title: format!("Add {repo} to this channel\u{2026}"),
+                    hint: "Repo".to_owned(),
+                },
+            ));
+        }
+        let working = self
+            .workspace
+            .sessions
+            .iter()
+            .filter(|session| !session.archived && session.repo.eq_ignore_ascii_case(&repo))
+            .take(5);
+        for session in working {
+            found.push((
+                i64::MAX - 1,
+                Entry {
+                    command: Command::Session(session.id.clone()),
+                    title: session.title.clone(),
+                    hint: repo.clone(),
+                },
+            ));
+        }
+        found
     }
 
     /// Every command, channel, session and file the query matches, with
     /// its score; the pull request entries come first when the query is one.
     fn command_entries(&self, query: &str) -> Vec<(i64, Entry)> {
         let mut scored: Vec<(i64, Entry)> = Vec::new();
-        // D197: until the Review a pull request dialog exists, Review this PR
-        // only opens the session already reviewing it, so other PRs offer nothing.
-        if let Some(pull) = pull_ref(query).filter(|pull| self.reviewed(pull)) {
-            let hint = format!("{}/{} #{}", pull.owner, pull.repo, pull.number);
+        // PR-1 (reverses D197): a pasted pull request offers Review this PR at
+        // once, from the parsed text. The app opens the session already
+        // reviewing it, else the Review a pull request dialog.
+        if let Some(pull) = pull_ref(query) {
+            let title = format!(
+                "Review this PR \u{b7} {}/{} #{}",
+                pull.owner, pull.repo, pull.number
+            );
             scored.push((
                 i64::MAX,
                 Entry {
                     command: Command::ReviewPull(pull),
-                    title: "Review this PR".to_owned(),
-                    hint,
+                    title,
+                    hint: "Pull request".to_owned(),
                 },
             ));
         }
+        scored.extend(self.repo_entries(query));
         if let Some(number) = pull_number(query) {
             scored.push((
                 i64::MAX,
@@ -570,6 +642,9 @@ impl PaletteState {
             Command::MoveSession
                 | Command::Fork
                 | Command::Archive
+                | Command::RenameSession
+                | Command::ContinueInChannel
+                | Command::StopAgent
                 | Command::TerminalFullScreen
                 | Command::TogglePanel
         ) && !query.is_empty()
@@ -737,11 +812,37 @@ impl PaletteState {
                 .as_ref()
                 .and_then(|id| self.workspace.session(id))
                 .is_some_and(|session| !session.archived);
+            let open = self.context.as_ref().and_then(|id| self.workspace.session(id));
             if live {
                 entries.push(Entry {
                     command: Command::MoveSession,
                     title: "Move session to another machine…".to_owned(),
                     hint: "⌥⌘M".to_owned(),
+                });
+                entries.push(Entry {
+                    command: Command::RenameSession,
+                    title: "Rename this session…".to_owned(),
+                    hint: String::new(),
+                });
+            }
+            // CV-8: the Desk isn't a channel, so a Desk session has no
+            // Continue, as its session menu has none.
+            if live && !on_desk {
+                entries.push(Entry {
+                    command: Command::ContinueInChannel,
+                    title: "Continue in another channel…".to_owned(),
+                    hint: String::new(),
+                });
+            }
+            if live
+                && open.is_some_and(|session| {
+                    !matches!(session.status, humata2_clients::model::Status::Exited { .. })
+                })
+            {
+                entries.push(Entry {
+                    command: Command::StopAgent,
+                    title: "Stop this session's agent".to_owned(),
+                    hint: String::new(),
                 });
             }
         }

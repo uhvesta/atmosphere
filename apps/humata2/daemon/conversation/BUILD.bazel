@@ -1,0 +1,267 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+# Conversation storage layout discovery for the installed CLIs. Each target
+# runs the real CLI twice against a loopback model server inside a throwaway
+# HOME, then writes <cli>_layout.json and sample/<cli>/ testdata to
+# $TEST_UNDECLARED_OUTPUTS_DIR. Manual, macOS only, never in CI:
+#   bazel test //apps/humata2/daemon/conversation:claude_layout_test \
+#     --test_env=TERMINAL_CLAUDE_BIN=/absolute/path/to/claude --test_output=all
+# (TERMINAL_CODEX_BIN and TERMINAL_COPILOT_BIN for the others.) An unset
+# variable skips the test with a message.
+
+# Real-CLI fixtures (ROAM X1)
+[
+    sh_test(
+        name = cli + "_layout_test",
+        timeout = "moderate",
+        srcs = ["fixtures/" + cli + "_layout.sh"],
+        data = [
+            "fixtures/" + cli + "_layout.py",
+            "fixtures/common.py",
+        ],
+        tags = [
+            "external",
+            "manual",
+            "no-sandbox",
+            "real-cli",
+        ],
+        target_compatible_with = ["@platforms//os:macos"],
+    )
+    for cli in [
+        "claude",
+        "codex",
+        "copilot",
+    ]
+]
+
+# Real-CLI fork, carry and resume fixtures (ROAM X2): a three-turn conversation
+# in folder A, a hand fork before turn 2, a carry to folder B under another
+# HOME, and for Codex an in-place rewrite. Each writes <cli>_roam.json (facts
+# answered yes / no / not testable) to $TEST_UNDECLARED_OUTPUTS_DIR. Manual:
+#   bazel test //apps/humata2/daemon/conversation:codex_roam_fixture \
+#     --test_env=TERMINAL_CODEX_BIN=/absolute/path/to/codex --test_output=all
+[
+    sh_test(
+        name = cli + "_roam_fixture",
+        timeout = "moderate",
+        srcs = ["fixtures/" + cli + "_roam.sh"],
+        data = [
+            "fixtures/" + cli + "_roam.py",
+            "fixtures/common.py",
+            "fixtures/roam_common.py",
+        ],
+        tags = [
+            "external",
+            "manual",
+            "no-sandbox",
+            "real-cli",
+        ],
+        target_compatible_with = ["@platforms//os:macos"],
+    )
+    for cli in [
+        "claude",
+        "codex",
+        "copilot",
+    ]
+]
+
+# Real-CLI fork-and-resume fixtures: one prompt asks the CLI to remember a
+# word in a throwaway HOME, fork_helper forks that conversation through
+# Humata's adapter into a new id and folder, and the CLI resumes the fork with
+# its own resume command (claude --resume, codex exec resume, copilot
+# --session-id). The test fails when the CLI refuses the fork;
+# <cli>_fork_resume.json records whether the reply names the word. Loopback
+# model server, no credentials. Manual, macOS only:
+#   bazel test //apps/humata2/daemon/conversation:codex_fork_resume_test \
+#     --test_env=TERMINAL_CODEX_BIN=/absolute/path/to/codex --test_output=all
+rust_binary(
+    name = "fork_helper",
+    testonly = True,
+    srcs = ["fixtures/fork_helper.rs"],
+    deps = [
+        ":conversation",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+[
+    sh_test(
+        name = cli + "_fork_resume_test",
+        timeout = "moderate",
+        srcs = ["fixtures/fork_resume.sh"],
+        args = [cli],
+        data = [
+            "fixtures/claude_roam.py",
+            "fixtures/codex_roam.py",
+            "fixtures/common.py",
+            "fixtures/copilot_roam.py",
+            "fixtures/fork_resume.py",
+            "fixtures/roam_common.py",
+            ":fork_helper",
+        ],
+        tags = [
+            "external",
+            "manual",
+            "no-sandbox",
+            "real-cli",
+        ],
+        target_compatible_with = ["@platforms//os:macos"],
+    )
+    for cli in [
+        "claude",
+        "codex",
+        "copilot",
+    ]
+]
+
+# Real-CLI facts the first fork and carry fixtures left open (ROAM round 3):
+# tool calls and a subagent, /compact, an interactive process with /rewind,
+# a multi-line name, YAML quoting of a branch, a detached head, and whether
+# the CLI reads a recorded branch back. Writes copilot_roam2.json and scrubbed
+# testdata to $TEST_UNDECLARED_OUTPUTS_DIR. Manual:
+#   bazel test //apps/humata2/daemon/conversation:copilot_roam2_fixture \
+#     --test_env=TERMINAL_COPILOT_BIN=/absolute/path/to/copilot --test_output=all
+sh_test(
+    name = "copilot_roam2_fixture",
+    timeout = "long",
+    srcs = ["fixtures/copilot_roam2.sh"],
+    data = [
+        "fixtures/common.py",
+        "fixtures/copilot_roam.py",
+        "fixtures/copilot_roam2.py",
+        "fixtures/roam_common.py",
+    ],
+    tags = [
+        "external",
+        "manual",
+        "no-sandbox",
+        "real-cli",
+    ],
+    target_compatible_with = ["@platforms//os:macos"],
+)
+
+# Each agent CLI's own conversation files (CV-1–CV-7, D307): list a
+# conversation's turns, fork it before a turn into a new id, and pack and
+# place it for a carry to another home and folder. Synchronous, no gRPC; it
+# knows only the CLIs' files. humata2_sessions' fork and carry call it.
+rust_library(
+    name = "conversation",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_conversation",
+    visibility = [
+        "//apps/humata2/daemon/humatad:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+        "//apps/humata2/daemon/store:__pkg__",
+    ],
+    deps = [
+        "@crates//:rusqlite",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+    ],
+)
+
+rust_test(
+    name = "conversation_unit_test",
+    crate = ":conversation",
+    deps = ["@crates//:tempfile"],
+)
+
+# The Claude adapter on hand-written JSONL in temp homes; the real ~/.claude
+# is never read.
+rust_test(
+    name = "claude_test",
+    srcs = ["tests/claude.rs"],
+    compile_data = glob(["testdata/claude/*.jsonl"]),
+    data = glob(["testdata/**"]),
+    deps = [
+        ":conversation",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+# The Codex adapter on rollouts built from the real-CLI layout sample, in temp
+# homes; the real ~/.codex is never read and no SQLite file is written.
+rust_test(
+    name = "codex_test",
+    srcs = ["tests/codex.rs"],
+    compile_data = glob(["testdata/codex/*.jsonl"]),
+    data = glob(["testdata/**"]),
+    deps = [
+        ":conversation",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+# CV-1..CV-4, CV-7: the Copilot adapter on session-state folders built
+# from the real-CLI layout fixture (Copilot CLI 1.0.112-0), in temp homes;
+# the real ~/.copilot is never read and its session-store.db is never
+# written.
+rust_test(
+    name = "copilot_test",
+    srcs = ["tests/copilot.rs"],
+    compile_data = glob(["testdata/copilot/**"]),
+    data = glob(["testdata/**"]),
+    deps = [
+        ":conversation",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+# ROAM round 3: the Copilot adapter on what the real CLI (1.0.113-1) wrote for
+# tool calls and a subagent, /compact, an interactive process with /rewind, a
+# multi-line name and a detached head, in temp homes; the real ~/.copilot is
+# never read.
+rust_test(
+    name = "copilot_captured_test",
+    srcs = ["tests/copilot_captured.rs"],
+    compile_data = glob(["testdata/copilot/**"]),
+    data = glob(["testdata/**"]),
+    deps = [
+        ":conversation",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+# MV-16: a Codex conversation moved on the same machine is rewritten in
+# place and the CLI's thread index row follows it (a fixture state_5.sqlite
+# in a temp CODEX_HOME), and a carry onto a new clone names its head.
+rust_test(
+    name = "codex_roam_test",
+    srcs = ["tests/codex_roam.rs"],
+    compile_data = glob(["testdata/codex/*.jsonl"]),
+    data = glob(["testdata/**"]),
+    deps = [
+        ":conversation",
+        "@crates//:rusqlite",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+# MV-16: a Claude conversation carried with its own files from the config
+# dir (file-history, todos, plans), under CLAUDE_CONFIG_DIR, leaving another
+# conversation of the folder, and found through a linked folder.
+rust_test(
+    name = "claude_roam_test",
+    srcs = ["tests/claude_roam.rs"],
+    compile_data = glob(["testdata/claude/*.jsonl"]),
+    data = glob(["testdata/**"]),
+    deps = [
+        ":conversation",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

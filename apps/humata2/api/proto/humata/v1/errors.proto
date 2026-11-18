@@ -8,6 +8,7 @@ package humata.v1;
 
 import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
+import "humata/v1/build.proto";
 import "humata/v1/capabilities.proto";
 import "humata/v1/common.proto";
 
@@ -45,6 +46,9 @@ message Error {
     PushRefused push_refused = 30;
     SshFailed ssh_failed = 31;
     HostKeyChanged host_key_changed = 32;
+    // MP-9 first contact: a key Humata has never pinned. Nothing was pinned or
+    // sent; this is a key to confirm, not a warning.
+    HostKeyUnknown host_key_unknown = 59;
     ChecksumMismatch checksum_mismatch = 33;
     ResumeFailed resume_failed = 34;
     AgentLacksFeature agent_lacks_feature = 35;
@@ -71,6 +75,15 @@ message Error {
     PeerUnproven peer_unproven = 56;
     ApprovalPending approval_pending = 57;
     DependencyLoop dependency_loop = 58;
+    // UP-1, D281: the call would run across releases.
+    MigrationNeeded migration_needed = 60;
+    // MACHINESCRIPTS w4c (UP-1, D370): adding a machine needs This Mac's
+    // daemon migrated first. The Inbox's Migrate item fixes it.
+    HostNeedsMigrate host_needs_migrate = 61;
+    // Frame 98: a repository's clone doesn't know its remote's default
+    // branch, so the default base can't be read. DiffService's
+    // FindDefaultBranch asks the remote for it.
+    NoDefaultBranch no_default_branch = 62;
     // A bug in Humata. The only kind without a fix the person can apply;
     // it names the log to attach to a report.
     Internal internal = 99;
@@ -166,6 +179,10 @@ message PresenceRequired {
   // True when the caller runs inside a Humata-held terminal: no method
   // works there (BOUNDARIES.md §2.3).
   bool caller_in_session_terminal = 2;
+  // After a wrong approval passphrase (SEC-13): how many more wrong tries
+  // the machine allows before its prompt locks. 0 when no passphrase was
+  // tried.
+  uint32 tries_left = 3;
 }
 
 // A caller presented a session token that doesn't belong to its process
@@ -327,9 +344,20 @@ message SshFailed {
 
 // The fix never says just "accept the new key": it says that if the machine
 // wasn't rebuilt someone may be intercepting, and only then how to re-pin.
+// Only for a key that differs from one Humata has pinned or the person
+// confirmed; both fingerprints are set (SHA256:…).
 message HostKeyChanged {
   MachineId machine = 1;
   string expected_fingerprint = 2;
+  string presented_fingerprint = 3;
+}
+
+// A first sighting of a machine's host key. The person compares
+// `presented_fingerprint` with the machine's own key and adds the machine
+// again with it. `algorithm` is the key type, such as `ssh-ed25519`.
+message HostKeyUnknown {
+  MachineId machine = 1;
+  string algorithm = 2;
   string presented_fingerprint = 3;
 }
 
@@ -362,6 +390,9 @@ message AgentLacksFeature {
     FEATURE_CONTEXT_FORK = 1;
     FEATURE_RESUME = 2;
     FEATURE_TURN_SIGNAL = 3;
+    // The agent's conversation can't be carried to another folder or
+    // machine (CV-3, CV-7): Copilot for now.
+    FEATURE_CONVERSATION_MOVE = 4;
   }
   AgentId agent = 1;
   Feature feature = 2;
@@ -557,4 +588,30 @@ message StepFailed {
 message Internal {
   string incident_id = 1;
   string log_path = 2;
+}
+
+// What would run across releases, and the Inbox item that brings it to
+// the host's release, when there is one.
+message MigrationNeeded {
+  MigrateThing thing = 1;
+  MachineId machine = 2;
+  RequestId request = 3;
+  BuildInfo from = 4;
+  BuildInfo to = 5;
+}
+
+// Adding a machine installs tool sets the app carries, but This Mac's
+// daemon still runs the older release, so the add stopped before anything
+// was installed on the machine. The fix: migrate the daemon on This Mac
+// (the Migrate Inbox item), then add the machine again.
+// The clone of `repo` has neither origin/HEAD nor origin/main, so there is
+// no default branch to compare with. The fix: DiffService.FindDefaultBranch
+// for that repository, or a base that names a branch.
+message NoDefaultBranch {
+  RepoRef repo = 1;
+}
+
+message HostNeedsMigrate {
+  // The platform the tools are for, such as "linux-x86_64".
+  string platform = 1;
 }

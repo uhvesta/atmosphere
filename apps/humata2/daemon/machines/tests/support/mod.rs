@@ -91,12 +91,13 @@ impl Builds for FakeBuilds {
     }
 }
 
-/// A fake humatad2, holder and `humata`.
+/// A fake humatad2, holder, `humata` and `stack`.
 pub fn payloads() -> Vec<Payload> {
     vec![
         Payload::new(InstalledFile::Humatad, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 1\n"[..])),
         Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 2\n"[..])),
+        Payload::new(InstalledFile::Stack, Arc::from(&b"#!/bin/sh\nexit 3\n"[..])),
     ]
 }
 
@@ -109,8 +110,6 @@ pub struct CheckFacts {
     pub systemd: bool,
     pub cron: bool,
     pub installed: Vec<(InstalledFile, String)>,
-    pub staged: Vec<(InstalledFile, String)>,
-    pub holders: bool,
 }
 
 impl Default for CheckFacts {
@@ -123,8 +122,6 @@ impl Default for CheckFacts {
             systemd: true,
             cron: true,
             installed: Vec::new(),
-            staged: Vec::new(),
-            holders: false,
         }
     }
 }
@@ -142,10 +139,6 @@ impl CheckFacts {
             yes(self.cron),
             yes(self.cron),
         );
-        out.push_str(&format!("humata2.holders={}\n", yes(self.holders)));
-        for (file, sha) in &self.staged {
-            out.push_str(&format!("humata2.staged.{}={sha}\n", file.file_name()));
-        }
         for file in InstalledFile::ALL {
             let sha = self
                 .installed

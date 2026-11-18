@@ -16,14 +16,40 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
 
-use crate::atomic::create_dir;
+use crate::atomic::{create_dir, sweep_partials};
+use crate::store::{DATABASE, check_id};
 use crate::{StoreError, fault};
 use crate::schema::SCHEMA_VERSION;
 
 /// The copy's name in the state folder.
 pub(crate) const LAST_GOOD: &str = "last-good.sqlite";
 
+/// The folder of pre-upgrade copies, one `<name>.sqlite` each.
+const UPGRADE_COPIES: &str = "upgrade-copies";
+
+/// Where the folders that keep a database an upgrade replaced are named:
+/// `upgraded-<unix ms>`.
+const UPGRADED: &str = "upgraded-";
+
 static COPIES: AtomicU64 = AtomicU64::new(0);
+
+/// The copy of the database an upgrade keeps before it changes the schema (D281g).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpgradeCopy {
+    pub path: PathBuf,
+    /// Its schema version.
+    pub schema: i64,
+    pub taken_unix_ms: i64,
+}
+
+/// What putting a pre-upgrade copy back did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpgradeRestored {
+    /// The schema version put back.
+    pub schema: i64,
+    /// Where the database it replaced was moved.
+    pub replaced_kept_at: PathBuf,
+}
 
 /// A last good copy on disk.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,7 +117,7 @@ pub(crate) fn save(connection: &Connection, root: &Path) -> Result<LastGood, Sto
         std::process::id(),
         COPIES.fetch_add(1, Ordering::Relaxed)
     ));
-    let saved = save_to(connection, &temp, &path, root);
+    let saved = save_to(connection, &temp, &path, root, "store.last_good.copied", SCHEMA_VERSION);
     if saved.is_err() {
         let _ = humata2_durable::remove_file(&temp);
     }
@@ -102,7 +128,17 @@ pub(crate) fn save(connection: &Connection, root: &Path) -> Result<LastGood, Sto
     })
 }
 
-fn save_to(connection: &Connection, temp: &Path, path: &Path, root: &Path) -> Result<(), StoreError> {
+/// Copies `connection`'s database to `temp`, checks the copy against
+/// `expected` as its schema version, and renames it to `path` in `root`.
+/// `point` names the fault point a crash can hit just before the rename.
+fn save_to(
+    connection: &Connection,
+    temp: &Path,
+    path: &Path,
+    root: &Path,
+    point: &str,
+    expected: i64,
+) -> Result<(), StoreError> {
     let Some(temp_text) = temp.to_str() else {
         return Err(StoreError::Snapshot {
             path: path.to_owned(),
@@ -116,7 +152,7 @@ fn save_to(connection: &Connection, temp: &Path, path: &Path, root: &Path) -> Re
             doing: "copy the database",
             source,
         })?;
-    let problem = check(temp);
+    let problem = check(temp, expected);
     if let Some(problem) = problem {
         return Err(StoreError::Snapshot {
             path: path.to_owned(),
@@ -127,7 +163,7 @@ fn save_to(connection: &Connection, temp: &Path, path: &Path, root: &Path) -> Re
         let mut options = OpenOptions::new();
         options.read(true).write(true).mode(0o600);
         humata2_durable::File::open(&options, temp)?.sync_all()?;
-        fault::point("store.last_good.copied");
+        fault::point(point);
         humata2_durable::rename(temp, path)?;
         humata2_durable::sync_dir(root)
     })();
@@ -138,8 +174,8 @@ fn save_to(connection: &Connection, temp: &Path, path: &Path, root: &Path) -> Re
 }
 
 /// What's wrong with the database at `path`, if anything: SQLite's own
-/// check, and a schema this build reads.
-fn check(path: &Path) -> Option<String> {
+/// check, and a schema version of `expected`.
+fn check(path: &Path, expected: i64) -> Option<String> {
     let opened = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY);
     let connection = match opened {
         Ok(connection) => connection,
@@ -150,8 +186,8 @@ fn check(path: &Path) -> Option<String> {
         return problems;
     }
     match connection.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0)) {
-        Ok(SCHEMA_VERSION) => None,
-        Ok(found) => Some(format!("its schema is version {found}, not {SCHEMA_VERSION}")),
+        Ok(found) if found == expected => None,
+        Ok(found) => Some(format!("its schema is version {found}, not {expected}")),
         Err(error) => Some(format!("its schema version is unreadable: {error}")),
     }
 }
@@ -172,14 +208,32 @@ pub(crate) fn integrity(connection: &Connection, pragma: &str) -> Option<String>
     }
 }
 
-/// The blob files the last good copy in `root` names, so a sweep keeps
-/// them. Empty when there's no copy or it can't be read.
+/// The blob files the last good copy and each pre-upgrade copy in `root`
+/// name, so a sweep keeps them. A copy in progress ends in `.partial` and
+/// isn't read.
 pub(crate) fn copy_files(root: &Path) -> HashSet<String> {
-    let path = root.join(LAST_GOOD);
+    let mut files = database_files(&root.join(LAST_GOOD));
+    if let Ok(entries) = fs::read_dir(root.join(UPGRADE_COPIES)) {
+        for entry in entries.filter_map(Result::ok) {
+            let is_copy = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".sqlite") && !name.starts_with('.'));
+            if is_copy {
+                files.extend(database_files(&entry.path()));
+            }
+        }
+    }
+    files
+}
+
+/// The blob files the database at `path` names. Empty when there's no
+/// database or it can't be read.
+fn database_files(path: &Path) -> HashSet<String> {
     if !path.exists() {
         return HashSet::new();
     }
-    let Ok(connection) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+    let Ok(connection) = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
         return HashSet::new();
     };
     // One query per table: a copy taken before a table existed still names
@@ -256,7 +310,7 @@ pub(crate) fn finish_restore(root: &Path, database: &Path) -> Result<Option<Rest
         return Ok(None);
     }
     let copy = root.join(LAST_GOOD);
-    let kept = match newest_damaged(root) {
+    let kept = match newest_kept(root, DAMAGED) {
         Some(kept) => kept,
         None => {
             let kept = root.join(format!("{DAMAGED}{}", now_unix_ms()));
@@ -275,6 +329,154 @@ pub(crate) fn finish_restore(root: &Path, database: &Path) -> Result<Option<Rest
     Ok(Some(restored(&copy, damaged, damage)))
 }
 
+impl crate::Store {
+    /// Keeps a copy of the database in `root` as `name` before an upgrade
+    /// changes its schema, so a failed upgrade can put it back (D281g).
+    /// None when there's no database, or it's already at this build's
+    /// schema, so nothing needs keeping. A database newer than this build
+    /// is refused.
+    ///
+    /// The store must not be open while this runs: the copy is of the
+    /// database as it is on disk.
+    pub fn copy_before_upgrade(root: impl AsRef<Path>, name: &str) -> Result<Option<UpgradeCopy>, StoreError> {
+        let root = root.as_ref();
+        check_id(name)?;
+        let database = root.join(DATABASE);
+        if !database.exists() {
+            return Ok(None);
+        }
+        let connection = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(
+            |source| StoreError::Open {
+                path: database.clone(),
+                source,
+            },
+        )?;
+        let schema: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|source| StoreError::Database {
+                path: database.clone(),
+                doing: "read the schema version",
+                source,
+            })?;
+        if schema == SCHEMA_VERSION {
+            return Ok(None);
+        }
+        if schema > SCHEMA_VERSION {
+            return Err(StoreError::SchemaTooNew {
+                path: database,
+                found: schema,
+                supported: SCHEMA_VERSION,
+            });
+        }
+        let folder = root.join(UPGRADE_COPIES);
+        create_dir(&folder)?;
+        sweep_partials(&folder)?;
+        let path = upgrade_copy_path(root, name);
+        let temp = folder.join(format!(
+            ".{name}.sqlite.{}-{}.partial",
+            std::process::id(),
+            COPIES.fetch_add(1, Ordering::Relaxed)
+        ));
+        let saved = save_to(&connection, &temp, &path, &folder, "store.upgrade_copy.copied", schema);
+        if saved.is_err() {
+            let _ = humata2_durable::remove_file(&temp);
+        }
+        saved.map_err(|error| match error {
+            StoreError::Snapshot { path, problem } => StoreError::UpgradeCopyCheck { path, problem },
+            other => other,
+        })?;
+        let taken_unix_ms = mtime_unix_ms(&path).unwrap_or_else(now_unix_ms);
+        Ok(Some(UpgradeCopy {
+            path,
+            schema,
+            taken_unix_ms,
+        }))
+    }
+
+    /// Puts the pre-upgrade copy `name` back in place of the database in
+    /// `root`, keeping the database it replaces in an `upgraded-<ms>`
+    /// folder (D281g). A copy a crash cut short after the database moved
+    /// aside is finished instead. If the last good copy is of another
+    /// schema, it's replaced by this copy first, so the older build
+    /// restores its own schema and not the newer one's. Fails with
+    /// [`StoreError::NoUpgradeCopy`] when `name` was never taken or was
+    /// dropped.
+    ///
+    /// The store must not be open while this runs. Running it again after
+    /// it succeeded puts the copy back again.
+    pub fn restore_upgrade_copy(root: impl AsRef<Path>, name: &str) -> Result<UpgradeRestored, StoreError> {
+        let root = root.as_ref();
+        check_id(name)?;
+        let copy = upgrade_copy_path(root, name);
+        if !copy.exists() {
+            return Err(StoreError::NoUpgradeCopy { path: copy });
+        }
+        let schema = schema_of(&copy)?;
+        let database = root.join(DATABASE);
+        let database_name = file_name(&database);
+        let temp = upgrade_restore_temp(root, &database_name);
+        if !database.exists() && temp.exists() {
+            // A cut came after the database moved aside: finish the put-back.
+            place(&temp, &database, root)?;
+            let kept = match newest_kept(root, UPGRADED) {
+                Some(kept) => kept,
+                None => {
+                    let kept = root.join(format!("{UPGRADED}{}", now_unix_ms()));
+                    create_dir(&kept)?;
+                    kept
+                }
+            };
+            return Ok(UpgradeRestored {
+                schema,
+                replaced_kept_at: kept.join(&database_name),
+            });
+        }
+        let last_good = root.join(LAST_GOOD);
+        if last_good.exists() && schema_of(&last_good).ok() != Some(schema) {
+            let temp_last = root.join(format!(".{LAST_GOOD}.upgrade.partial"));
+            copy_of_copy(&copy, &temp_last, &last_good)?;
+            place(&temp_last, &last_good, root)?;
+        }
+        copy_of_copy(&copy, &temp, &database)?;
+        fault::point("store.upgrade_restore.copied");
+        let kept = root.join(format!("{UPGRADED}{}", now_unix_ms()));
+        create_dir(&kept)?;
+        let replaced_kept_at = kept.join(&database_name);
+        move_aside(root, &database, &replaced_kept_at)?;
+        fault::point("store.upgrade_restore.moved");
+        place(&temp, &database, root)?;
+        Ok(UpgradeRestored {
+            schema,
+            replaced_kept_at,
+        })
+    }
+
+    /// Removes the pre-upgrade copy `name` in `root` once the upgrade has
+    /// settled, so a later put-back is refused. Dropping a copy that's
+    /// already gone does nothing. The blob files it named go at the next
+    /// open.
+    ///
+    /// The store must not be open while this runs.
+    pub fn drop_upgrade_copy(root: impl AsRef<Path>, name: &str) -> Result<(), StoreError> {
+        let root = root.as_ref();
+        check_id(name)?;
+        let copy = upgrade_copy_path(root, name);
+        match humata2_durable::remove_file(&copy) {
+            Ok(()) => {}
+            Err(source) if source.kind() == ErrorKind::NotFound => {}
+            Err(source) => return Err(StoreError::Remove { path: copy, source }),
+        }
+        let folder = root.join(UPGRADE_COPIES);
+        if folder.exists() {
+            humata2_durable::sync_dir(&folder).map_err(|source| StoreError::Remove {
+                path: folder,
+                source,
+            })?;
+        }
+        Ok(())
+    }
+}
+
 /// Where the damaged databases restores moved aside are kept, by when.
 const DAMAGED: &str = "damaged-";
 
@@ -286,14 +488,55 @@ fn restore_temp(root: &Path, name: &std::ffi::OsStr) -> PathBuf {
     root.join(format!(".{}.restore.partial", name.to_string_lossy()))
 }
 
-/// The newest folder a restore kept a damaged database in.
-fn newest_damaged(root: &Path) -> Option<PathBuf> {
+fn upgrade_restore_temp(root: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    root.join(format!(".{}.upgrade-restore.partial", name.to_string_lossy()))
+}
+
+/// Where the pre-upgrade copy called `name` is kept.
+fn upgrade_copy_path(root: &Path, name: &str) -> PathBuf {
+    root.join(UPGRADE_COPIES).join(format!("{name}.sqlite"))
+}
+
+/// The schema version of the database at `path`, read without changing it.
+fn schema_of(path: &Path) -> Result<i64, StoreError> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|source| {
+        StoreError::Open {
+            path: path.to_owned(),
+            source,
+        }
+    })?;
+    connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|source| StoreError::Database {
+            path: path.to_owned(),
+            doing: "read the schema version",
+            source,
+        })
+}
+
+/// Finishes putting a pre-upgrade copy back that a crash cut short after
+/// the database was moved aside: the database is missing and the copy of
+/// the copy is beside it, so it's placed. [`Store::open`](crate::Store::open)
+/// calls this before it sweeps the folder's partial writes, so an open
+/// between the cut and the retry doesn't create an empty database. Does
+/// nothing otherwise.
+pub(crate) fn finish_upgrade_restore(root: &Path, database: &Path) -> Result<(), StoreError> {
+    let temp = upgrade_restore_temp(root, &file_name(database));
+    if database.exists() || !temp.exists() {
+        return Ok(());
+    }
+    place(&temp, database, root)
+}
+
+/// The newest folder under `root` named with `prefix` and a time, which a
+/// restore kept a database in.
+fn newest_kept(root: &Path, prefix: &str) -> Option<PathBuf> {
     fs::read_dir(root)
         .ok()?
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name();
-            let at: u64 = name.to_str()?.strip_prefix(DAMAGED)?.parse().ok()?;
+            let at: u64 = name.to_str()?.strip_prefix(prefix)?.parse().ok()?;
             Some((at, entry.path()))
         })
         .max_by_key(|(at, _)| *at)

@@ -396,6 +396,7 @@ async fn agent_token_in(daemon: &Daemon, session: pb::SessionId) -> (String, Att
             idempotency_key: None,
             session: Some(session),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()
@@ -1278,6 +1279,56 @@ async fn the_user_lists_every_offered_view_newest_first_without_naming_a_session
         3,
         "an agent naming no session gets its own, its draft included"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_view_marked_not_now_leaves_the_users_list_of_offers() {
+    let (daemon, _clone) = daemon_with_clone().await;
+    let (token, _attach) = agent_token(&daemon).await;
+    let mut views = views(&daemon).await;
+    let mut ids = Vec::new();
+    for title in ["Keep it", "Not now"] {
+        let made = views
+            .prepare_view(as_agent(walkthrough(title, "refund.rs"), &token))
+            .await
+            .unwrap()
+            .into_inner();
+        views
+            .mark_ready(as_agent(
+                pb::MarkReadyRequest {
+                    idempotency_key: None,
+                    id: made.id.clone(),
+                },
+                &token,
+            ))
+            .await
+            .unwrap();
+        ids.push(made.id.unwrap());
+    }
+    views
+        .set_view_state(set_state(&ids[1], pb::ViewState::NotNow))
+        .await
+        .unwrap();
+
+    // The user's offers are ListViews naming no session (VW-5); naming the
+    // session is its Journal, which keeps every view (VW-10).
+    let offers: Vec<String> = views
+        .list_views(Request::new(pb::ListViewsRequest::default()))
+        .await
+        .unwrap()
+        .into_inner()
+        .views
+        .into_iter()
+        .map(|view| view.title)
+        .collect();
+    assert_eq!(offers, vec!["Keep it"]);
+    let mut journal: Vec<String> = list_views(&daemon, None)
+        .await
+        .into_iter()
+        .map(|(_, title, _)| title)
+        .collect();
+    journal.sort();
+    assert_eq!(journal, vec!["Keep it", "Not now"], "the Journal keeps the view");
 }
 
 async fn feed(daemon: &Daemon, request: Request<pb::SubscribeRequest>) -> tonic::Streaming<pb::Event> {

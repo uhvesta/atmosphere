@@ -1,6 +1,6 @@
 # AWAY: Keep working with the host closed
 
-- **Status:** done (lane AWAY, closed 2026-11-16)
+- **Status:** done (48e1c866, 2026-11-16)
 - **Depends on:**
   - MACH: away mode is machines without the host
   - ASK: a machine judges requests against a copy of the rules

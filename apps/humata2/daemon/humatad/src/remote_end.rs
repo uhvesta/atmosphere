@@ -13,9 +13,10 @@
 //! the engine turns into a transfer waiting for the machine (FM-8, FM-13).
 //! [`resume_when_back`] tells the service when a link comes up again.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -116,6 +117,10 @@ fn unix_ms_of(stamp: Option<&Timestamp>) -> i64 {
 struct Shared {
     links: OnceLock<Links>,
     failed_on: Mutex<BTreeMap<String, u64>>,
+    /// Bytes of chunks written to a machine, as they went on the wire.
+    sent: AtomicU64,
+    /// Bytes of chunks read from a machine, as they came on the wire.
+    received: AtomicU64,
 }
 
 impl Shared {
@@ -197,6 +202,16 @@ impl RemoteEnd {
     /// The machines' links, once they exist. The first call wins.
     pub(crate) fn use_links(&self, links: Links) {
         let _ = self.shared.links.set(links);
+    }
+
+    /// Bytes of chunks written to machines so far, after compression.
+    pub(crate) fn sent_bytes(&self) -> u64 {
+        self.shared.sent.load(Ordering::Relaxed)
+    }
+
+    /// Bytes of chunks read from machines so far, after compression.
+    pub(crate) fn received_bytes(&self) -> u64 {
+        self.shared.received.load(Ordering::Relaxed)
     }
 
     /// Whether `machine`'s link is a newer one than any a call of this end
@@ -414,6 +429,19 @@ impl End for RemoteEnd {
             .map_err(|status| self.failed(&call, &status, "look at", path))
     }
 
+    fn have_chunks(&self, folder: &Path, sha256: &[String]) -> Result<Vec<String>, EndError> {
+        let call = self.call(folder)?;
+        let request = pb::HaveChunksRequest {
+            location: Some(call.location.clone()),
+            sha256: sha256.to_vec(),
+        };
+        let mut client = Self::ends(&call);
+        self.runtime
+            .block_on(client.have_chunks(Request::new(request)))
+            .map(|answer| answer.into_inner().sha256)
+            .map_err(|status| self.failed(&call, &status, "look at", folder))
+    }
+
     fn make_folder(&self, path: &Path, mode: u32) -> Result<(), EndError> {
         let call = self.call(path)?;
         let request = pb::MakeFolderRequest {
@@ -622,6 +650,7 @@ impl RemoteRead {
                 )
             })?;
             let last = chunk.last;
+            self.shared.received.fetch_add(chunk.data.len() as u64, Ordering::Relaxed);
             self.buffer = self.decoder.decode(header, chunk.data).map_err(io::Error::other)?;
             self.at = 0;
             if !self.buffer.is_empty() {
@@ -743,6 +772,7 @@ impl Sink for RemoteSink {
                 .encoder
                 .encode(piece.to_vec())
                 .map_err(|error| self.io(status::chain(&error)))?;
+            self.shared.sent.fetch_add(chunk.data.len() as u64, Ordering::Relaxed);
             let message = pb::WriteAtMessage {
                 message: Some(pb::write_at_message::Message::Chunk(pb::FileChunk {
                     offset: self.start + self.sent,
@@ -817,11 +847,38 @@ fn message_len(message: &pb::WriteAtMessage) -> u64 {
 pub(crate) struct RouterEnd {
     local: Arc<dyn End>,
     remote: Arc<RemoteEnd>,
+    /// What a plan leaves out while a move copies a session (MV-17).
+    skipped: Mutex<HashMap<PathBuf, Skipped>>,
+}
+
+/// Files, and whole folders, a plan leaves out.
+#[derive(Default)]
+struct Skipped {
+    files: HashSet<PathBuf>,
+    trees: Vec<PathBuf>,
 }
 
 impl RouterEnd {
     pub(crate) fn new(local: Arc<dyn End>, remote: Arc<RemoteEnd>) -> Self {
-        Self { local, remote }
+        Self {
+            local,
+            remote,
+            skipped: Mutex::default(),
+        }
+    }
+
+    /// From now until [`RouterEnd::unskip`], a plan of `source` leaves out
+    /// `files` and everything under `trees`.
+    pub(crate) fn skip(&self, source: PathBuf, files: Vec<PathBuf>, trees: Vec<PathBuf>) {
+        let skipped = Skipped {
+            files: files.into_iter().collect(),
+            trees,
+        };
+        self.skipped.lock().unwrap_or_else(PoisonError::into_inner).insert(source, skipped);
+    }
+
+    pub(crate) fn unskip(&self, source: &Path) {
+        self.skipped.lock().unwrap_or_else(PoisonError::into_inner).remove(source);
     }
 
     fn pick(&self, path: &Path) -> &dyn End {
@@ -846,7 +903,21 @@ impl End for RouterEnd {
     }
 
     fn plan(&self, source: &Path) -> Result<Vec<Entry>, EndError> {
-        self.pick(source).plan(source)
+        let entries = self.pick(source).plan(source)?;
+        let held = self.skipped.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(skipped) = held.get(source) else {
+            return Ok(entries);
+        };
+        Ok(entries
+            .into_iter()
+            .filter(|entry| {
+                if entry.rel.is_empty() {
+                    return true;
+                }
+                let path = source.join(&entry.rel);
+                !skipped.files.contains(&path) && !skipped.trees.iter().any(|tree| path.starts_with(tree))
+            })
+            .collect())
     }
 
     fn open_read(&self, path: &Path, offset: u64) -> Result<Box<dyn Read + Send>, EndError> {
@@ -859,6 +930,10 @@ impl End for RouterEnd {
 
     fn exists(&self, path: &Path) -> Result<bool, EndError> {
         self.pick(path).exists(path)
+    }
+
+    fn have_chunks(&self, folder: &Path, sha256: &[String]) -> Result<Vec<String>, EndError> {
+        self.pick(folder).have_chunks(folder, sha256)
     }
 
     fn make_folder(&self, path: &Path, mode: u32) -> Result<(), EndError> {
@@ -929,6 +1004,37 @@ pub(crate) fn source_path(placed: &Placed, here: &str) -> Result<PathBuf, Status
 }
 
 impl RemoteEnd {
+    /// Where `location`, a file in a session's pastes on another machine, is
+    /// on that machine's disk (D335). Blocks: call it off the runtime.
+    pub(crate) fn locate(&self, location: &pb::FileLocation) -> Result<String, Status> {
+        let machine = location.machine.as_ref().map_or("", |machine| machine.value.as_str());
+        let call = match self.call(&virtual_path(machine, location)) {
+            Ok(call) => call,
+            Err(EndError::Offline { machine: name }) => {
+                return Err(status::failure(
+                    Code::Unavailable,
+                    status::error(
+                        format!("{name} went out of reach before it said where the pasted file is"),
+                        "the file is in the session's pastes there; paste it again once the machine is back",
+                        pb::error::Kind::MachineOffline(pb::MachineOffline {
+                            machine: Some(pb::MachineId { value: name.clone() }),
+                            machine_name: name,
+                            since: None,
+                        }),
+                    ),
+                ));
+            }
+            Err(error) => return Err(status::internal(status::chain(&error), "")),
+        };
+        let request = pb::EndPathRequest {
+            location: Some(call.location.clone()),
+        };
+        let mut client = Self::ends(&call);
+        self.runtime
+            .block_on(client.locate(Request::new(request)))
+            .map(|answer| answer.into_inner().path)
+    }
+
     /// The engine's path for a destination folder on another machine,
     /// which must exist there. A machine that can't be asked (its link is
     /// down) is trusted: the transfer is accepted and waits for it.

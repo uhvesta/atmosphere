@@ -12,11 +12,13 @@
 
 use std::collections::BTreeMap;
 
-use crate::daemon::Reply;
-use crate::model::{Agent, ChannelId, MachineId, Session, SessionId};
+use crate::daemon::{DaemonError, Reply};
+use crate::model::{
+    AccessRule, Agent, ChannelId, Machine, MachineId, RuleSetting, Session, SessionId,
+};
 
-/// The Humata root the fakes use on every machine (FC-1).
-pub const ROOT: &str = "~/Humata";
+/// A machine's Humata folder until someone changes it (PL-1, FC-1).
+pub const DEFAULT_ROOT: &str = "~/Humata";
 
 /// The folder under a machine's root that holds scratch folders. No channel
 /// may take this name (DK-2).
@@ -85,7 +87,23 @@ pub fn folder_name(title: &str) -> String {
 /// Where the scratch folder called `name` sits under the default root.
 #[must_use]
 pub fn scratch_path(name: &str) -> String {
-    format!("{ROOT}/{FOLDER}/{name}")
+    scratch_path_in(DEFAULT_ROOT, name)
+}
+
+/// Where the scratch folder called `name` sits under `root`.
+#[must_use]
+pub fn scratch_path_in(root: &str, name: &str) -> String {
+    format!("{root}/{FOLDER}/{name}")
+}
+
+/// `machine`'s Humata folder among `machines`; the default root when the
+/// machine is not listed.
+#[must_use]
+pub fn root_of<'a>(machines: &'a [Machine], machine: &MachineId) -> &'a str {
+    machines
+        .iter()
+        .find(|found| &found.id == machine)
+        .map_or(DEFAULT_ROOT, |found| found.root.as_str())
 }
 
 /// Where a Desk session works (DK-2).
@@ -190,6 +208,39 @@ pub struct DeskSession {
     /// "acme/api: 2 commits on port-cron never pushed". Shown only where it
     /// blocks deleting the folder (FC-9, DK-11).
     pub unpushed: Option<String>,
+    /// The folder is a versions repository (DV-1). False for a picked folder
+    /// and for one made before versions, until it is migrated.
+    pub has_versions: bool,
+    /// The folder's newest commit, empty when it has none. It changes when
+    /// anyone commits, so a changed value means the versions are stale
+    /// (DV-5).
+    pub doc_head: String,
+    /// How many versions the folder holds; 0 when it keeps none or none
+    /// is saved yet (DV-5).
+    pub version_count: u32,
+    /// The folder holds a file outside its clones and `.git` (DV-4).
+    pub holds_files: bool,
+}
+
+impl DeskSession {
+    /// A session just started: open, nothing in its clones, the default
+    /// access, and no versions yet.
+    #[must_use]
+    pub fn fresh(session: SessionId, folder: Folder, last_used: LastUsed) -> Self {
+        Self {
+            session,
+            folder,
+            repos: Vec::new(),
+            access: Access::default(),
+            last_used,
+            closed: None,
+            unpushed: None,
+            has_versions: false,
+            doc_head: String::new(),
+            version_count: 0,
+            holds_files: false,
+        }
+    }
 }
 
 /// A markdown file in a Desk session's folder (DK-5).
@@ -216,6 +267,283 @@ pub struct DeskData {
     /// repository: the repository's default branch, since a Desk session has
     /// no branch of its own (DK-3).
     pub clone_branches: BTreeMap<(SessionId, String), String>,
+    /// Every channel's own Desk session, open and closed, by session
+    /// (CD-1). They are in no channel's Sessions tree and not in
+    /// [`DeskData::sessions`], which is the plain Desk.
+    pub channel_sessions: BTreeMap<SessionId, ChannelDeskSession>,
+}
+
+/// One change to the Desk, as a daemon tells it (DESKWATCH).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeskChange {
+    /// A plain Desk session as it is now.
+    Session {
+        /// The session's Desk record.
+        desk: DeskSession,
+        /// The Markdown files in its folder, by name.
+        documents: Vec<String>,
+    },
+    /// A channel's own Desk session as it is now, with its channel, target
+    /// and files.
+    ChannelSession(ChannelDeskSession),
+    /// The session left the Desk: deleted, or moved into a channel.
+    Gone(SessionId),
+}
+
+impl DeskData {
+    /// Applies one change told by the daemon, in place. A session's files
+    /// keep their place in the list; a session that is not there yet adds
+    /// its files at the end.
+    pub fn apply(&mut self, change: DeskChange) {
+        match change {
+            DeskChange::Session { desk, documents } => {
+                let id = desk.session.clone();
+                self.set_documents(&id, documents);
+                self.sessions.insert(id, desk);
+            }
+            DeskChange::ChannelSession(found) => {
+                self.channel_sessions
+                    .insert(found.desk.session.clone(), found);
+            }
+            DeskChange::Gone(id) => {
+                self.sessions.remove(&id);
+                self.channel_sessions.remove(&id);
+                self.documents.retain(|document| document.session != id);
+                self.folder_bytes.remove(&id);
+            }
+        }
+    }
+
+    fn documents_of(&self, session: &SessionId) -> Vec<String> {
+        self.documents
+            .iter()
+            .filter(|document| &document.session == session)
+            .map(|document| document.path.clone())
+            .collect()
+    }
+
+    fn set_documents(&mut self, session: &SessionId, paths: Vec<String>) {
+        let at = self
+            .documents
+            .iter()
+            .position(|document| &document.session == session)
+            .unwrap_or(self.documents.len());
+        self.documents.retain(|document| &document.session != session);
+        let at = at.min(self.documents.len());
+        for (offset, path) in paths.into_iter().enumerate() {
+            self.documents.insert(
+                at + offset,
+                Document {
+                    session: session.clone(),
+                    path,
+                },
+            );
+        }
+    }
+
+    /// What changed from `before` to this Desk, as the changes a daemon
+    /// would have told: the sessions that left first, then those added or
+    /// changed.
+    pub(crate) fn changes_since(&self, before: &Self) -> Vec<DeskChange> {
+        let mut changes: Vec<DeskChange> = before
+            .sessions
+            .keys()
+            .filter(|id| !self.sessions.contains_key(*id))
+            .chain(
+                before
+                    .channel_sessions
+                    .keys()
+                    .filter(|id| !self.channel_sessions.contains_key(*id)),
+            )
+            .map(|id| DeskChange::Gone(id.clone()))
+            .collect();
+        for (id, desk) in &self.sessions {
+            let documents = self.documents_of(id);
+            if before.sessions.get(id) != Some(desk) || before.documents_of(id) != documents {
+                changes.push(DeskChange::Session {
+                    desk: desk.clone(),
+                    documents,
+                });
+            }
+        }
+        for (id, found) in &self.channel_sessions {
+            if before.channel_sessions.get(id) != Some(found) {
+                changes.push(DeskChange::ChannelSession(found.clone()));
+            }
+        }
+        changes
+    }
+}
+
+/// One of a channel Desk session's management switches (CD-3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Switch {
+    /// Read the target's files, or every session's in the channel.
+    ReadFiles,
+    /// Send notes and questions.
+    SendNotes,
+    /// Type into a terminal.
+    TypeIntoTerminal,
+    /// Start and fork sessions.
+    StartAndFork,
+    /// Stop and archive sessions.
+    StopAndArchive,
+    /// Change anyone's items on the channel board.
+    ChangeBoardItems,
+}
+
+impl Switch {
+    /// Every switch, in the order the dialog and the Info panel list them.
+    pub const ALL: [Self; 6] = [
+        Self::ReadFiles,
+        Self::SendNotes,
+        Self::TypeIntoTerminal,
+        Self::StartAndFork,
+        Self::StopAndArchive,
+        Self::ChangeBoardItems,
+    ];
+
+    /// The switch in words.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ReadFiles => "Read its files",
+            Self::SendNotes => "Send notes and questions",
+            Self::TypeIntoTerminal => "Type into its terminal",
+            Self::StartAndFork => "Start and fork sessions",
+            Self::StopAndArchive => "Stop and archive sessions",
+            Self::ChangeBoardItems => "Change anyone's items on the channel board",
+        }
+    }
+
+    /// The channel's access rows (IN-17) a switch applies after. A row set
+    /// to Never still refuses, so the switch shows as blocked (CD-3).
+    #[must_use]
+    pub const fn capabilities(self) -> &'static [&'static str] {
+        match self {
+            Self::ReadFiles => &["files_read_other_session", "files_read_other_machine"],
+            Self::SendNotes => &["session_note"],
+            Self::TypeIntoTerminal => &["session_type"],
+            Self::StartAndFork => &["session_start_same_machine", "session_start_other_machine"],
+            Self::StopAndArchive => &["session_stop_other"],
+            Self::ChangeBoardItems => &["channel_board_edit_others"],
+        }
+    }
+}
+
+/// The switches a channel's rules block: those with a row set to Never,
+/// whether the switch is on or off.
+#[must_use]
+pub fn blocked_by(rules: &[AccessRule]) -> Vec<Switch> {
+    Switch::ALL
+        .into_iter()
+        .filter(|switch| {
+            rules.iter().any(|rule| {
+                rule.setting == Some(RuleSetting::Never)
+                    && switch.capabilities().contains(&rule.capability.as_str())
+            })
+        })
+        .collect()
+}
+
+/// A channel Desk session's six switches (CD-3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Switches {
+    /// Read its files.
+    pub read_files: bool,
+    /// Send notes and questions.
+    pub send_notes: bool,
+    /// Type into its terminal.
+    pub type_into_terminal: bool,
+    /// Start and fork sessions.
+    pub start_and_fork: bool,
+    /// Stop and archive sessions.
+    pub stop_and_archive: bool,
+    /// Change anyone's items on the channel board.
+    pub change_board_items: bool,
+}
+
+impl Default for Switches {
+    /// The first two on, the rest off (CD-3).
+    fn default() -> Self {
+        Self {
+            read_files: true,
+            send_notes: true,
+            type_into_terminal: false,
+            start_and_fork: false,
+            stop_and_archive: false,
+            change_board_items: false,
+        }
+    }
+}
+
+impl Switches {
+    /// Whether `switch` is on.
+    #[must_use]
+    pub const fn get(self, switch: Switch) -> bool {
+        match switch {
+            Switch::ReadFiles => self.read_files,
+            Switch::SendNotes => self.send_notes,
+            Switch::TypeIntoTerminal => self.type_into_terminal,
+            Switch::StartAndFork => self.start_and_fork,
+            Switch::StopAndArchive => self.stop_and_archive,
+            Switch::ChangeBoardItems => self.change_board_items,
+        }
+    }
+
+    /// These switches with `switch` set to `on`.
+    #[must_use]
+    pub const fn with(mut self, switch: Switch, on: bool) -> Self {
+        match switch {
+            Switch::ReadFiles => self.read_files = on,
+            Switch::SendNotes => self.send_notes = on,
+            Switch::TypeIntoTerminal => self.type_into_terminal = on,
+            Switch::StartAndFork => self.start_and_fork = on,
+            Switch::StopAndArchive => self.stop_and_archive = on,
+            Switch::ChangeBoardItems => self.change_board_items = on,
+        }
+        self
+    }
+}
+
+/// What a channel's own Desk session knows beyond a plain Desk session
+/// (CD-1 to CD-5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChannelDeskSession {
+    /// Its folder, access, last use and whether it is closed.
+    pub desk: DeskSession,
+    /// The channel it looks after.
+    pub channel: ChannelId,
+    /// The session it looks after; `None` for the whole channel.
+    pub target: Option<SessionId>,
+    /// Its switches.
+    pub switches: Switches,
+    /// The switches the channel's rules set to Never.
+    pub blocked: Vec<Switch>,
+    /// The target went while the folder held Markdown files (CD-5).
+    pub target_gone: bool,
+    /// The Markdown files directly in its folder, by name.
+    pub documents: Vec<String>,
+    /// How many lines each of `documents` has, by name, where the daemon
+    /// says (frame 94's "54 lines"). A file with no entry shows no count.
+    pub document_lines: BTreeMap<String, u32>,
+}
+
+/// What New desk session on a channel's Desk asks for (CD-6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewChannelDesk {
+    /// The channel it looks after.
+    pub channel: ChannelId,
+    /// The session it looks after; `None` for the whole channel.
+    pub target: Option<SessionId>,
+    /// Its title.
+    pub title: String,
+    /// What it runs: an agent, or [`Agent::Shell`] for a plain terminal.
+    pub agent: Agent,
+    /// The machine it runs on.
+    pub machine: MachineId,
+    /// Its switches.
+    pub switches: Switches,
 }
 
 /// Which folder a new Desk session gets (DK-14).
@@ -226,11 +554,6 @@ pub enum FolderChoice {
     Scratch {
         /// The folder's name, such as `plan-q4`.
         name: String,
-    },
-    /// A folder on the machine that the person picked.
-    Picked {
-        /// Its path there.
-        path: String,
     },
 }
 
@@ -305,6 +628,22 @@ pub enum Operation {
     Move,
     /// [`DeskClient::set_access`].
     SetAccess,
+    /// [`DeskClient::start_channel`].
+    StartChannel,
+    /// [`DeskClient::set_switches`].
+    SetSwitches,
+    /// [`DeskClient::set_target`].
+    SetTarget,
+    /// [`DeskClient::list_versions`].
+    ListVersions,
+    /// [`DeskClient::read_version`].
+    ReadVersion,
+    /// [`DeskClient::save_version`].
+    SaveVersion,
+    /// [`DeskClient::restore_version`].
+    RestoreVersion,
+    /// [`DeskClient::diff_version`].
+    DiffVersion,
 }
 
 /// What the app asks a daemon to do with Desk sessions. Each change shows
@@ -358,4 +697,88 @@ pub trait DeskClient: Send + Sync + 'static {
 
     /// Changes the session's Agent access switches (DK-4).
     fn set_access(&self, session: &SessionId, access: Access) -> Reply<()>;
+
+    /// A channel's open and closed Desk sessions (CD-2). A daemon that
+    /// doesn't serve a channel's Desk answers [`DaemonError::NotServedYet`].
+    fn channel_sessions(&self, channel: &ChannelId) -> Reply<Vec<ChannelDeskSession>> {
+        let what = format!("The Desk of channel {channel}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+
+    /// The open channel Desk sessions looking after `target` (CD-2), for its
+    /// Info panel. A daemon that doesn't serve a channel's Desk answers
+    /// [`DaemonError::NotServedYet`].
+    fn target_sessions(&self, target: &SessionId) -> Reply<Vec<ChannelDeskSession>> {
+        let what = format!("The Desk sessions looking after {target}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+
+    /// Starts a channel Desk session on the channel's Desk tab (CD-6).
+    /// Closing one is [`DeskClient::close`], which asks the daemon to send
+    /// its folder to the trash at once (CD-4).
+    fn start_channel(&self, new: NewChannelDesk) -> Reply<SessionId> {
+        let what = format!("Starting the channel desk session {}", new.title);
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+
+    /// Changes a channel Desk session's switches (CD-3).
+    fn set_switches(&self, session: &SessionId, switches: Switches) -> Reply<()> {
+        let what = format!("Changing the switches of {session}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+
+    /// Changes which session a channel Desk session looks after (CD-5): one
+    /// of its channel's sessions, or `None` for the whole channel. It ends
+    /// "Target gone" and does not restart a session the daemon stopped. A
+    /// daemon that doesn't serve a channel's Desk answers
+    /// [`DaemonError::NotServedYet`].
+    fn set_target(&self, session: &SessionId, _target: Option<&SessionId>) -> Reply<()> {
+        let what = format!("Changing what {session} looks after");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+
+    /// The versions of a Markdown file in the session's Desk folder, newest
+    /// first, and whether the folder holds changes no version has (DV-2,
+    /// DV-3). `path` is relative to the folder.
+    fn list_versions(
+        &self,
+        session: &SessionId,
+        path: &str,
+    ) -> Reply<crate::docs::DocVersions>;
+
+    /// One version's text and the comments recorded with it (DV-6).
+    fn read_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<crate::docs::VersionText>;
+
+    /// Save version (DV-5): saves every change in the folder as a version.
+    /// An empty message becomes "Saved by you". Refused when nothing
+    /// changed.
+    fn save_version(
+        &self,
+        session: &SessionId,
+        message: &str,
+    ) -> Reply<crate::docs::DocVersion>;
+
+    /// Restore as new version (DV-8): saves unsaved changes first, then
+    /// makes the version's text the file's newest. Refused when the file
+    /// already has that text.
+    fn restore_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<crate::docs::Restored>;
+
+    /// A version of a Markdown file against the file as it is now, as the
+    /// daemon diffs them (DV-7). Refused for a version the file doesn't have.
+    fn diff_version(
+        &self,
+        session: &SessionId,
+        path: &str,
+        id: &str,
+    ) -> Reply<crate::docs::VersionDiff>;
 }

@@ -4,6 +4,7 @@
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
+use std::time::Duration;
 
 use humata2_chunk::{ChunkError, Codec, Decoder, Encoder, Header};
 use humata2_proto::humata::v1 as pb;
@@ -11,12 +12,14 @@ use prost::Message;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
+use tokio::time::{Instant, sleep_until};
 
 use crate::call::{Ctx, Done, decode};
 use crate::console::Console;
 use crate::daemon::{Daemon, DaemonError, rpc};
 use crate::error::CliError;
 use crate::as_json;
+use super::terminal_replies::ReplyFilter;
 
 /// Ctrl-]: leaves an attached terminal or a login, as telnet does
 /// (provisional: CLI.md doesn't name a key).
@@ -30,6 +33,10 @@ const DEFAULT_WINDOW: u64 = 1 << 20;
 
 /// The gRPC status a stream's own `failed` message is reported with.
 const UNKNOWN: i32 = 2;
+
+/// How long bytes that might start a terminal reply wait for the rest of it
+/// before they are typed as keystrokes. A lone Esc key is typed this late.
+const HOLD: Duration = Duration::from_millis(50);
 
 /// A live terminal can't be one JSON object.
 pub(super) fn no_json<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result<(), CliError> {
@@ -82,11 +89,16 @@ pub(super) async fn attach<D: Daemon, C: Console>(
         ..open
     })));
     let mut decoder = Decoder::new();
+    ctx.dry_run_guard(rpc::terminal::ATTACH)?;
     let mut replies = ctx.daemon.bidi_stream(rpc::terminal::ATTACH, requests).await?;
     ctx.note("Attached. Ctrl-] detaches.");
     let mut input_seq = 0;
+    let mut filter = ReplyFilter::new();
+    // When the filter holds bytes: the moment they are typed if no more input comes first.
+    let mut idle_at: Option<Instant> = None;
     loop {
-        tokio::select! {
+        // What to type, and whether to stop after typing it.
+        let (typed, stop) = tokio::select! {
             reply = replies.recv() => {
                 let Some(reply) = reply else { break };
                 let reply: pb::AttachServerMessage = decode(rpc::terminal::ATTACH, &reply?)?;
@@ -122,25 +134,42 @@ pub(super) async fn attach<D: Daemon, C: Console>(
                     }
                     Some(Server::State(_) | Server::InputAccepted(_)) | None => {}
                 }
+                continue;
             }
             keys = keyboard.input.recv() => {
-                let Some(keys) = keys else { break };
-                let detach = keys.iter().position(|byte| *byte == DETACH);
-                let typed = &keys[..detach.unwrap_or(keys.len())];
-                if !typed.is_empty() && !read_only {
-                    input_seq += 1;
-                    let input = pb::TerminalInput { data: typed.to_vec(), input_seq };
-                    if send.send(message(Client::Input(input))).await.is_err() {
-                        break;
+                match keys {
+                    Some(keys) => {
+                        let mut typed = filter.push(&keys);
+                        idle_at = filter.holding().then(|| Instant::now() + HOLD);
+                        match typed.iter().position(|byte| *byte == DETACH) {
+                            Some(at) => {
+                                typed.truncate(at);
+                                (typed, true)
+                            }
+                            None => (typed, false),
+                        }
                     }
+                    None => (filter.flush(), true),
                 }
-                if detach.is_some() {
-                    break;
-                }
+            }
+            _ = sleep_until(idle_at.unwrap_or_else(Instant::now)), if idle_at.is_some() => {
+                idle_at = None;
+                (filter.flush(), false)
             }
             Some((cols, rows)) = keyboard.resizes.recv() => {
                 let _ = send.send(message(Client::Resize(pb::TerminalResize { cols, rows, ..Default::default() }))).await;
+                continue;
             }
+        };
+        if !typed.is_empty() && !read_only {
+            input_seq += 1;
+            let input = pb::TerminalInput { data: typed, input_seq };
+            if send.send(message(Client::Input(input))).await.is_err() {
+                break;
+            }
+        }
+        if stop {
+            break;
         }
     }
     drop(keyboard);
@@ -157,6 +186,21 @@ pub(super) async fn provider_login<D: Daemon, C: Console>(
     use pb::login_server_message::Message as Server;
 
     no_json(ctx)?;
+    if ctx.flags.dry_run {
+        let open = pb::LoginOpen {
+            target: Some(pb::login_open::Target::Machine(machine)),
+            cols: 0,
+            rows: 0,
+        };
+        return ctx
+            .change(
+                rpc::provider::INTERACTIVE_LOGIN,
+                &pb::LoginClientMessage {
+                    message: Some(Client::Open(open)),
+                },
+            )
+            .await;
+    }
     let mut keyboard = ctx
         .console
         .keyboard()
@@ -176,6 +220,7 @@ pub(super) async fn provider_login<D: Daemon, C: Console>(
     };
     let _ = send.try_send(message(Client::Open(open)));
     let rpc = rpc::provider::INTERACTIVE_LOGIN;
+    ctx.dry_run_guard(rpc)?;
     let mut replies = ctx.daemon.bidi_stream(rpc, requests).await?;
     ctx.note("Logging in. Ctrl-] gives up.");
     let mut ready = None;
@@ -290,7 +335,18 @@ pub(super) async fn put<D: Daemon, C: Console>(
         size,
         sha256,
         replace,
+        expected_sha256: None,
     };
+    if ctx.flags.dry_run {
+        return ctx
+            .change(
+                rpc::files::WRITE_FILE,
+                &pb::WriteFileMessage {
+                    message: Some(Part::Header(header)),
+                },
+            )
+            .await;
+    }
     let (send, requests) = mpsc::channel(2);
     let header = pb::WriteFileMessage {
         message: Some(Part::Header(header)),
@@ -300,6 +356,7 @@ pub(super) async fn put<D: Daemon, C: Console>(
     let codec = upload_codec(ctx).await;
     let reader = tokio::task::spawn_blocking(move || send_chunks(&path, size, codec, &send));
     let rpc = rpc::files::WRITE_FILE;
+    ctx.dry_run_guard(rpc)?;
     let reply = ctx.daemon.client_stream(rpc, requests).await;
     // A local read failure explains a refused upload better than the
     // daemon's size or hash mismatch does.

@@ -52,6 +52,32 @@ pub(crate) async fn hold_point(name: &str) {
 #[inline(always)]
 pub(crate) async fn hold_point(_name: &str) {}
 
+/// As [`hold_point`] for code already on a blocking thread, and for a point
+/// reached many times: `HUMATA2_HOLD_AT=name@n` holds the nth time it is
+/// reached (`name` alone, the first). Only the calling thread waits, so the
+/// runtime's workers go on serving. Test daemons only.
+#[cfg(any(feature = "admin", feature = "faults"))]
+pub(crate) fn hold_blocking(name: &str) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static REACHED: AtomicU64 = AtomicU64::new(0);
+    let Ok(wanted) = std::env::var("HUMATA2_HOLD_AT") else { return };
+    let (point, nth) = match wanted.split_once('@') {
+        Some((point, nth)) => (point, nth.parse().unwrap_or(1)),
+        None => (wanted.as_str(), 1),
+    };
+    if point != name || REACHED.fetch_add(1, Ordering::SeqCst) + 1 != nth {
+        return;
+    }
+    if let Ok(fifo) = std::env::var("HUMATA2_HOLD_FIFO") {
+        let _ = std::fs::File::open(fifo);
+    }
+}
+
+#[cfg(not(any(feature = "admin", feature = "faults")))]
+#[inline(always)]
+pub(crate) fn hold_blocking(_name: &str) {}
+
 /// Test builds only: SIGUSR2 stops the daemon as a power cut would, with
 /// what it wrote and didn't sync undone (see humata2_durable). Needs a
 /// running tokio runtime.
@@ -87,6 +113,7 @@ mod tests {
                 .build()
                 .expect("a runtime")
                 .block_on(hold_point("ignored-point"));
+            hold_blocking("ignored-point");
             std::fs::write(done, b"past").expect("the run says it got past");
             return;
         }

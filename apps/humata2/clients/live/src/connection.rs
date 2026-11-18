@@ -4,14 +4,13 @@
 use std::collections::BTreeMap;
 use std::error::Error as _;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use humata2_clients::DaemonError;
-use humata2_clients::model::{Agent, ChannelId, MachineId};
+use humata2_clients::model::{Agent, ChannelId, MachineId, MigrateThing, RequestId};
 use humata2_grpc::humata::v1 as pb;
 use humata2_grpc::humata::v1::{
-    access_service_client::AccessServiceClient, board_service_client::BoardServiceClient, inbox_service_client::InboxServiceClient,
+    access_service_client::AccessServiceClient, agent_service_client::AgentServiceClient, board_service_client::BoardServiceClient, inbox_service_client::InboxServiceClient,
     channel_service_client::ChannelServiceClient, comment_service_client::CommentServiceClient,
     daemon_service_client::DaemonServiceClient, desk_service_client::DeskServiceClient, diff_service_client::DiffServiceClient,
     event_service_client::EventServiceClient, operation_service_client::OperationServiceClient,
@@ -30,7 +29,6 @@ use tonic::{Code, Request, Status};
 use crate::events::Subscriber;
 use crate::map::AgentNames;
 use crate::recorded::{Call, Observer, Recorded};
-use crate::terminals::Attach;
 
 /// Replies and requests can be large (a snapshot, a pasted image).
 const MESSAGE_MAX_BYTES: usize = 64 << 20;
@@ -142,19 +140,13 @@ pub(crate) struct State {
     pub(crate) subscribed: bool,
     /// Each session's tabs, in the app's order.
     pub(crate) tabs: BTreeMap<String, Vec<pb::Tab>>,
-    /// Open attaches by (session, tab).
-    pub(crate) attaches: BTreeMap<(String, String), Arc<Attach>>,
-    /// Every tab the app has opened, by (session, tab index), with the
-    /// size it last asked for: what is attached again once its session
-    /// runs again.
-    pub(crate) wanted: BTreeMap<(String, usize), Option<(u16, u16)>>,
-    /// Where each tab's output stands, by (session, tab index): see
-    /// `Placed`.
-    pub(crate) placed: BTreeMap<(String, usize), Placed>,
     /// Whether this host's restart report has been pushed or loaded.
     pub(crate) restart_known: bool,
     /// Whether a server-info read for the restart report is in flight.
     pub(crate) restart_reading: bool,
+    /// Whether a cue to read it came while a read was in flight, which may
+    /// have started before the daemon published the report.
+    pub(crate) restart_again: bool,
     /// The channel name of each setup (operation id), for its events.
     pub(crate) setup_names: BTreeMap<String, String>,
     /// The channel each setup (operation id) makes, so a retry can name it.
@@ -163,36 +155,35 @@ pub(crate) struct State {
     pub(crate) inbox: crate::inbox::Seen,
     /// The last Clean up list answered, with the token CleanUpDesk checks.
     pub(crate) desk_plan: Option<crate::desk::HeldPlan>,
+    /// Each moving session (by id) with the move being watched for it.
+    pub(crate) moves: BTreeMap<String, crate::events::Move>,
+    /// The session this client views, held open on the daemon (D392).
+    pub(crate) viewing: Option<crate::read_marks::Viewing>,
 }
 
-/// How a tab's output offsets, as its holders number them, map onto the
-/// bytes the app keeps for it. The app's offsets have no gaps and start at
-/// 0 with the first byte it got; a holder's may start later (it kept only
-/// the last of its output) and jump (a holder resumed after a reboot
-/// numbers its output from past what the one before it may have sent).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Placed {
-    /// How far the app's offsets lag the holder's: holder offset minus app
-    /// offset.
-    pub(crate) lag: u64,
-    /// The holder offset the app's bytes end at.
-    pub(crate) end: u64,
-}
-
-impl Placed {
-    /// Where bytes at holder offset `at` go in the app's offsets, and how
-    /// many of their first bytes the app already has (all of them when
-    /// they end before `end`). A jump past `end` is closed up, so what
-    /// follows a gap is shown rather than dropped.
-    pub(crate) fn place(&mut self, at: u64, len: u64) -> (u64, u64) {
-        if at > self.end {
-            self.lag += at - self.end;
-            self.end = at;
+impl State {
+    /// A cue that the restart report may be there now. True when the caller
+    /// should read it; a cue during a read is kept for [`Self::restart_read_ended`].
+    pub(crate) fn restart_cue(&mut self) -> bool {
+        if self.restart_known {
+            return false;
         }
-        let skip = (self.end - at).min(len);
-        let app = self.end - self.lag;
-        self.end = self.end.max(at + len);
-        (app, skip)
+        if self.restart_reading {
+            self.restart_again = true;
+            return false;
+        }
+        self.restart_reading = true;
+        true
+    }
+
+    /// A read of the report ended; `known` is whether it found the daemon's
+    /// answer. True when it must be read again: it wasn't known, and a cue
+    /// came while that read was in flight.
+    pub(crate) fn restart_read_ended(&mut self, known: bool) -> bool {
+        self.restart_known |= known;
+        let again = std::mem::take(&mut self.restart_again) && !self.restart_known;
+        self.restart_reading = again;
+        again
     }
 }
 
@@ -201,11 +192,26 @@ pub(crate) struct Shared {
     pub(crate) agents: AgentNames,
     /// This machine's id as the app knows it.
     pub(crate) machine: MachineId,
-    pub(crate) generation: AtomicU64,
+    /// What the daemon said about itself when the app connected.
+    facts: DaemonFacts,
     state: Mutex<State>,
     /// The runtime it connected on. The app polls the client's futures on
     /// its own executor, so whatever needs tokio (tasks, timers) goes here.
     runtime: tokio::runtime::Handle,
+}
+
+/// What a daemon said about itself when the app connected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DaemonFacts {
+    /// The machine it runs on.
+    pub machine: MachineId,
+    /// Its version, as it reported it.
+    pub version: String,
+    /// Whether it says which build it is. An older daemon (before UPGRADE)
+    /// doesn't, and can't hold a Migrate item (D374).
+    pub reports_build: bool,
+    /// The bundle id of its build; empty when it reports none.
+    pub bundle: String,
 }
 
 /// The app's daemon client over one socket. Cheap to clone.
@@ -248,16 +254,31 @@ impl LiveDaemon {
             .machine
             .filter(|machine| !machine.value.is_empty())
             .ok_or(ConnectError::NoMachine { socket })?;
+        let machine = MachineId::new(machine.value);
+        let facts = DaemonFacts {
+            machine: machine.clone(),
+            version: info.daemon_version.clone(),
+            reports_build: info.build.is_some(),
+            bundle: info.build.as_ref().map(|build| build.bundle.clone()).unwrap_or_default(),
+        };
         Ok(Self {
             shared: Arc::new(Shared {
                 wire,
                 agents,
-                machine: MachineId::new(machine.value),
-                generation: AtomicU64::new(0),
+                machine,
+                facts,
                 state: Mutex::new(State::default()),
                 runtime: tokio::runtime::Handle::current(),
             }),
         })
+    }
+}
+
+impl LiveDaemon {
+    /// What the daemon said about itself when the app connected.
+    #[must_use]
+    pub fn facts(&self) -> &DaemonFacts {
+        &self.shared.facts
     }
 }
 
@@ -299,6 +320,12 @@ impl Shared {
 
     pub(crate) fn access(&self) -> AccessServiceClient<Wire> {
         AccessServiceClient::new(self.wire.clone())
+            .max_decoding_message_size(MESSAGE_MAX_BYTES)
+            .max_encoding_message_size(MESSAGE_MAX_BYTES)
+    }
+
+    pub(crate) fn agents(&self) -> AgentServiceClient<Wire> {
+        AgentServiceClient::new(self.wire.clone())
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
             .max_encoding_message_size(MESSAGE_MAX_BYTES)
     }
@@ -363,6 +390,11 @@ impl Shared {
     }
 }
 
+/// The idempotency key with this `value`: the same value is the same mutation.
+pub(crate) fn key_of(value: String) -> Option<pb::IdempotencyKey> {
+    Some(pb::IdempotencyKey { value })
+}
+
 /// A fresh idempotency key for one mutation.
 pub(crate) fn fresh_key() -> Option<pb::IdempotencyKey> {
     Some(pb::IdempotencyKey {
@@ -397,10 +429,9 @@ struct Any {
     value: Vec<u8>,
 }
 
-/// The daemon's own words for a failure: the `humata.v1.Error` in the
-/// status details, else the status message.
-fn daemon_words(status: &Status) -> String {
-    let error = RpcStatus::decode(status.details())
+/// The `humata.v1.Error` in a status's details, when it carries one.
+pub(crate) fn daemon_error(status: &Status) -> Option<pb::Error> {
+    RpcStatus::decode(status.details())
         .ok()
         .and_then(|wrapper| {
             wrapper
@@ -408,18 +439,73 @@ fn daemon_words(status: &Status) -> String {
                 .into_iter()
                 .find(|any| any.type_url.ends_with("/humata.v1.Error"))
         })
-        .and_then(|any| pb::Error::decode(any.value.as_slice()).ok());
-    match error {
+        .and_then(|any| pb::Error::decode(any.value.as_slice()).ok())
+}
+
+/// A `migration_needed` error (UP-1, D281, errors.proto kind 60) as the
+/// app's, naming what is behind and the Migrate item that fixes it.
+fn migration_needed(error: &pb::Error, machine: &MachineId) -> Option<DaemonError> {
+    let Some(pb::error::Kind::MigrationNeeded(needed)) = &error.kind else {
+        return None;
+    };
+    let thing = match pb::MigrateThing::try_from(needed.thing).unwrap_or(pb::MigrateThing::Unspecified) {
+        pb::MigrateThing::Cli => MigrateThing::Cli,
+        pb::MigrateThing::Store => MigrateThing::Store,
+        pb::MigrateThing::Holders => MigrateThing::Holders,
+        pb::MigrateThing::HostTools => MigrateThing::HostTools,
+        pb::MigrateThing::DeskFolders => MigrateThing::DeskFolders,
+        pb::MigrateThing::Daemon | pb::MigrateThing::Unspecified => MigrateThing::Daemon,
+    };
+    Some(DaemonError::MigrationNeeded {
+        thing,
+        machine: needed
+            .machine
+            .as_ref()
+            .filter(|named| !named.value.is_empty())
+            .map_or_else(|| machine.clone(), |named| MachineId::new(named.value.clone())),
+        request: needed
+            .request
+            .as_ref()
+            .filter(|named| !named.value.is_empty())
+            .map(|named| RequestId::new(named.value.clone())),
+    })
+}
+
+/// The daemon's own words for a failure: the `humata.v1.Error` in the
+/// status details, else the status message.
+fn daemon_words(status: &Status) -> String {
+    match daemon_error(status) {
         Some(error) if !error.fix.is_empty() => format!("{} {}", error.message, error.fix),
         Some(error) => error.message,
         None => status.message().to_owned(),
     }
 }
 
-/// How a gRPC status becomes a [`DaemonError`]: NOT_FOUND is NotFound,
-/// UNAVAILABLE and transport failures are Offline, the rest is Refused with
-/// the daemon's words.
+/// Whether the daemon refused because the thing changed after the revision
+/// the caller named.
+fn is_revision_conflict(status: &Status) -> bool {
+    daemon_error(status)
+        .is_some_and(|error| matches!(error.kind, Some(pb::error::Kind::RevisionConflict(_))))
+}
+
+/// How a gRPC status becomes a [`DaemonError`]: `migration_needed` is
+/// MigrationNeeded, NOT_FOUND is NotFound,
+/// UNAVAILABLE and transport failures are Offline, a revision conflict is
+/// Conflict, the rest is Refused with the daemon's words.
 pub(crate) fn status_error(status: &Status, what: &str, machine: &MachineId) -> DaemonError {
+    if let Some(needed) = daemon_error(status).and_then(|error| migration_needed(&error, machine)) {
+        return needed;
+    }
+    if let Some(pb::error::Kind::NoDefaultBranch(missing)) = daemon_error(status).and_then(|error| error.kind) {
+        let repo = missing.repo.unwrap_or_default();
+        return DaemonError::NoDefaultBranch {
+            repo: if repo.owner.is_empty() {
+                repo.name
+            } else {
+                format!("{}/{}", repo.owner, repo.name)
+            },
+        };
+    }
     let transport = status
         .source()
         .is_some_and(|source| source.is::<tonic::transport::Error>());
@@ -433,6 +519,10 @@ pub(crate) fn status_error(status: &Status, what: &str, machine: &MachineId) -> 
         _ if transport => DaemonError::Offline {
             machine: machine.clone(),
         },
+        _ if is_revision_conflict(status) => DaemonError::Conflict {
+            what: what.to_owned(),
+            reason: daemon_words(status),
+        },
         _ => DaemonError::Refused {
             what: what.to_owned(),
             reason: daemon_words(status),
@@ -443,6 +533,26 @@ pub(crate) fn status_error(status: &Status, what: &str, machine: &MachineId) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cue_during_a_read_that_found_nothing_reads_again() {
+        let mut state = State::default();
+        assert!(state.restart_cue());
+        // An event arrives while that read is in flight; it may have begun before the daemon had the report.
+        assert!(!state.restart_cue());
+        assert!(state.restart_read_ended(false), "the cue that came during the read isn't lost");
+        assert!(!state.restart_read_ended(false), "with no new cue, it waits for the next one");
+        assert!(state.restart_cue());
+    }
+
+    #[test]
+    fn a_known_report_is_never_read_again() {
+        let mut state = State::default();
+        assert!(state.restart_cue());
+        assert!(!state.restart_cue());
+        assert!(!state.restart_read_ended(true));
+        assert!(!state.restart_cue());
+    }
 
     #[test]
     fn grpc_codes_map_to_daemon_errors() {
@@ -464,28 +574,34 @@ mod tests {
     }
 
     #[test]
-    fn a_holder_that_starts_late_is_placed_from_zero() {
-        let mut placed = Placed::default();
-        assert_eq!(placed.place(5_000, 10), (0, 0));
-        assert_eq!(placed.place(5_010, 4), (10, 0));
-    }
-
-    #[test]
-    fn output_after_a_jump_follows_what_came_before() {
-        let mut placed = Placed::default();
-        assert_eq!(placed.place(0, 100), (0, 0));
-        // A holder resumed after a reboot numbers on from past the old end.
-        assert_eq!(placed.place(1_048_676, 20), (100, 0));
-        assert_eq!(placed.place(1_048_696, 5), (120, 0));
-    }
-
-    #[test]
-    fn output_the_app_has_is_skipped() {
-        let mut placed = Placed::default();
-        assert_eq!(placed.place(0, 100), (0, 0));
-        // Replayed from the start: all of it is had.
-        assert_eq!(placed.place(0, 100).1, 100);
-        // Overlapping the end: only the new part goes on.
-        assert_eq!(placed.place(90, 20), (100, 10));
+    fn a_migration_needed_error_maps_to_the_item_that_fixes_it() {
+        let error = pb::Error {
+            message: "behind".into(),
+            fix: "migrate".into(),
+            kind: Some(pb::error::Kind::MigrationNeeded(pb::MigrationNeeded {
+                thing: pb::MigrateThing::Daemon as i32,
+                machine: Some(pb::MachineId { value: "ma_2".into() }),
+                request: Some(pb::RequestId { value: "rq_9".into() }),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let wrapper = RpcStatus {
+            code: Code::FailedPrecondition as i32,
+            message: "behind".into(),
+            details: vec![Any {
+                type_url: "type.googleapis.com/humata.v1.Error".into(),
+                value: error.encode_to_vec(),
+            }],
+        };
+        let status = Status::with_details(Code::FailedPrecondition, "behind", wrapper.encode_to_vec().into());
+        assert_eq!(
+            status_error(&status, "the call", &MachineId::new("ma_1")),
+            DaemonError::MigrationNeeded {
+                thing: MigrateThing::Daemon,
+                machine: MachineId::new("ma_2"),
+                request: Some(RequestId::new("rq_9")),
+            }
+        );
     }
 }

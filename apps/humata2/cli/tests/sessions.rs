@@ -6,6 +6,14 @@ use humata2_cli::{exit, rpc};
 use humata2_proto::humata::v1 as pb;
 use support::{FakeConsole, FakeDaemon, run};
 
+fn tab(id: &str, kind: pb::tab::Kind) -> pb::Tab {
+    pb::Tab {
+        id: Some(pb::TabId { value: id.into() }),
+        kind: kind as i32,
+        ..Default::default()
+    }
+}
+
 fn repo(owner: &str, name: &str) -> pb::RepoRef {
     pb::RepoRef {
         owner: owner.into(),
@@ -44,7 +52,7 @@ async fn start_sends_everything_it_was_given() {
 }
 
 #[tokio::test]
-async fn start_needs_a_machine() {
+async fn start_needs_a_machine_when_the_daemon_names_none_either() {
     let daemon = FakeDaemon::new();
     let console = FakeConsole::pipe();
     let exit = run(&daemon, &console, &["--json", "--channel", "ch_1", "session", "start"]).await;
@@ -103,6 +111,66 @@ async fn a_session_is_found_by_its_title() {
 }
 
 #[tokio::test]
+async fn attach_without_a_tab_attaches_when_the_session_has_an_agent_tab() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::terminal::LIST_TABS,
+        &pb::ListTabsResponse {
+            tabs: vec![
+                tab("tb_shell", pb::tab::Kind::Shell),
+                tab("tb_agent", pb::tab::Kind::Agent),
+            ],
+        },
+    );
+    let console = FakeConsole::pipe();
+    let exit = run(&daemon, &console, &["attach", "se_1"]).await;
+    assert_eq!(exit, exit::OK);
+    let looked_up: pb::ListTabsRequest = daemon.only(rpc::terminal::LIST_TABS);
+    assert_eq!(looked_up.session, support::session("se_1"));
+    assert!(daemon.called(rpc::terminal::ATTACH));
+}
+
+/// No agent tab and two shells: nothing to pick, so attach stops before it attaches.
+#[tokio::test]
+async fn attach_without_a_tab_stops_when_the_tab_is_ambiguous() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::terminal::LIST_TABS,
+        &pb::ListTabsResponse {
+            tabs: vec![
+                tab("tb_a", pb::tab::Kind::Shell),
+                tab("tb_b", pb::tab::Kind::Shell),
+            ],
+        },
+    );
+    let console = FakeConsole::pipe();
+    let exit = run(&daemon, &console, &["attach", "se_1"]).await;
+    assert_eq!(exit, exit::PRECONDITION);
+    assert!(!daemon.called(rpc::terminal::ATTACH));
+}
+
+/// `session tabs` prints the daemon's tab list as JSON, ids included.
+#[tokio::test]
+async fn session_tabs_prints_the_tabs() {
+    let daemon = FakeDaemon::new();
+    daemon.reply(
+        rpc::terminal::LIST_TABS,
+        &pb::ListTabsResponse {
+            tabs: vec![
+                tab("tb_agent", pb::tab::Kind::Agent),
+                tab("tb_shell", pb::tab::Kind::Shell),
+            ],
+        },
+    );
+    let console = FakeConsole::pipe();
+    let exit = run(&daemon, &console, &["--json", "session", "tabs", "se_1"]).await;
+    assert_eq!(exit, exit::OK);
+    let printed = console.json();
+    assert_eq!(printed["result"]["tabs"][0]["id"], "tb_agent");
+    assert_eq!(printed["result"]["tabs"][1]["id"], "tb_shell");
+}
+
+#[tokio::test]
 async fn fork_dry_run_previews_without_forking() {
     let daemon = FakeDaemon::new();
     let console = FakeConsole::pipe();
@@ -150,6 +218,123 @@ async fn fork_sends_a_typed_branch() {
     assert_eq!(exit, exit::OK);
     let sent: pb::ForkSessionRequest = daemon.only(rpc::session::FORK_SESSION);
     assert_eq!(sent.branch, "me/try-b");
+}
+
+/// The fork's agent and turn go to the daemon as given; none leaves them to it.
+#[tokio::test]
+async fn fork_sends_the_agent_and_the_turn() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "session", "fork", "se_1", "--kind", "code-only", "--agent", "codex", "--before-turn", "3"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+    let sent: pb::ForkSessionRequest = daemon.only(rpc::session::FORK_SESSION);
+    assert_eq!(sent.agent, Some(pb::AgentId { value: "codex".to_owned() }));
+    assert_eq!(sent.before_turn, 3);
+}
+
+#[tokio::test]
+async fn fork_without_an_agent_or_turn_leaves_both_to_the_daemon() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(&daemon, &console, &["--json", "session", "fork", "se_1", "--kind", "code-only"]).await;
+    assert_eq!(exit, exit::OK);
+    let sent: pb::ForkSessionRequest = daemon.only(rpc::session::FORK_SESSION);
+    assert_eq!(sent.agent, None);
+    assert_eq!(sent.before_turn, 0);
+}
+
+/// The copy mode reads as `--copy` with short names, and `--kind` keeps working.
+#[tokio::test]
+async fn fork_copy_takes_each_mode() {
+    for (arguments, expected) in [
+        (["--copy", "code-and-context"], pb::ForkKind::CodeAndContext),
+        (["--copy", "code"], pb::ForkKind::CodeOnly),
+        (["--copy", "context"], pb::ForkKind::ContextOnly),
+        (["--kind", "context-only"], pb::ForkKind::ContextOnly),
+    ] {
+        let daemon = FakeDaemon::new();
+        let console = FakeConsole::pipe();
+        let mut line = vec!["--json", "session", "fork", "se_1"];
+        line.extend(arguments);
+        assert_eq!(run(&daemon, &console, &line).await, exit::OK, "{arguments:?}");
+        let sent: pb::ForkSessionRequest = daemon.only(rpc::session::FORK_SESSION);
+        assert_eq!(sent.kind, expected as i32, "{arguments:?}");
+    }
+}
+
+/// A turn before the second can't be forked before.
+#[tokio::test]
+async fn fork_before_turn_one_is_refused_and_nothing_forks() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "session", "fork", "se_1", "--kind", "code-only", "--before-turn", "1"],
+    )
+    .await;
+    assert_eq!(exit, exit::USAGE);
+    assert!(!daemon.called(rpc::session::FORK_SESSION));
+}
+
+/// CV-8: the session, the target channel and the turn go to the daemon as given.
+#[tokio::test]
+async fn continue_sends_the_session_channel_and_turn() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "--channel", "ch_2", "session", "continue", "se_1", "--before-turn", "4"],
+    )
+    .await;
+    assert_eq!(exit, exit::OK);
+    let sent: pb::ContinueInChannelRequest = daemon.only(rpc::session::CONTINUE_IN_CHANNEL);
+    assert_eq!(sent.session, support::session("se_1"));
+    assert_eq!(sent.channel, support::channel("ch_2"));
+    assert_eq!(sent.before_turn, 4);
+    assert!(sent.idempotency_key.is_some_and(|key| !key.value.is_empty()));
+}
+
+/// CV-8: no turn means the whole conversation, from now.
+#[tokio::test]
+async fn continue_without_a_turn_takes_the_whole_conversation() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(&daemon, &console, &["--json", "session", "continue", "se_1", "--channel", "ch_2"]).await;
+    assert_eq!(exit, exit::OK);
+    let sent: pb::ContinueInChannelRequest = daemon.only(rpc::session::CONTINUE_IN_CHANNEL);
+    assert_eq!(sent.before_turn, 0);
+}
+
+/// CV-8: without a target channel nothing is sent; there is no default.
+#[tokio::test]
+async fn continue_needs_a_channel() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(&daemon, &console, &["--json", "session", "continue", "se_1"]).await;
+    assert_eq!(exit, exit::USAGE);
+    assert!(!daemon.called(rpc::session::CONTINUE_IN_CHANNEL));
+}
+
+/// CV-2: turn 1 is the first prompt, so nothing comes before it.
+#[tokio::test]
+async fn continue_before_the_first_turn_is_a_usage_error() {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let exit = run(
+        &daemon,
+        &console,
+        &["--json", "--channel", "ch_2", "session", "continue", "se_1", "--before-turn", "1"],
+    )
+    .await;
+    assert_eq!(exit, exit::USAGE);
+    assert!(!daemon.called(rpc::session::CONTINUE_IN_CHANNEL));
 }
 
 #[tokio::test]
@@ -257,8 +442,60 @@ async fn type_at_turn_end_waits_for_the_turn() {
     run(&daemon, &console, &["--json", "session", "type", "se_1", "now please"]).await;
     let sent: Vec<pb::TypeRequest> = daemon.sent(rpc::terminal::TYPE);
     assert_eq!(sent[0].when, pb::type_request::When::TurnEnds as i32);
-    assert_eq!(sent[0].text, "run the tests");
+    assert_eq!(sent[0].text, "run the tests\n");
     assert_eq!(sent[1].when, pb::type_request::When::Now as i32);
+}
+
+async fn typed_text(args: &[&str]) -> String {
+    let daemon = FakeDaemon::new();
+    let console = FakeConsole::pipe();
+    let mut all = vec!["--json", "session", "type", "se_1"];
+    all.extend_from_slice(args);
+    assert_eq!(run(&daemon, &console, &all).await, exit::OK);
+    daemon.only::<pb::TypeRequest>(rpc::terminal::TYPE).text
+}
+
+#[tokio::test]
+async fn type_presses_enter_after_the_text_by_default() {
+    assert_eq!(typed_text(&["run the tests"]).await, "run the tests\n");
+    // Empty text is Enter alone.
+    assert_eq!(typed_text(&[""]).await, "\n");
+}
+
+#[tokio::test]
+async fn type_never_presses_enter_twice() {
+    assert_eq!(typed_text(&["run the tests\n"]).await, "run the tests\n");
+    assert_eq!(typed_text(&["run the tests\r"]).await, "run the tests\r");
+}
+
+#[tokio::test]
+async fn type_with_no_submit_types_the_text_as_it_is() {
+    assert_eq!(typed_text(&["run the tests", "--no-submit"]).await, "run the tests");
+    assert_eq!(typed_text(&["a\n", "--no-submit"]).await, "a\n");
+}
+
+#[tokio::test]
+async fn type_says_whether_the_daemon_submitted_it() {
+    for (submitted, agent_busy) in [(true, false), (false, false), (true, true)] {
+        let daemon = FakeDaemon::new();
+        daemon.reply(
+            rpc::terminal::TYPE,
+            &pb::TypeResponse {
+                typed: true,
+                submitted,
+                agent_busy,
+                ..Default::default()
+            },
+        );
+        let console = FakeConsole::pipe();
+        let exit = run(&daemon, &console, &["--json", "session", "type", "se_1", "hi"]).await;
+        assert_eq!(exit, exit::OK);
+        let printed = console.json();
+        assert_eq!(printed["result"]["typed"], true);
+        assert_eq!(printed["result"]["submitted"], submitted);
+        assert_eq!(printed["result"]["agent_busy"], agent_busy);
+        assert!(printed["result"]["queued"].is_null());
+    }
 }
 
 #[tokio::test]

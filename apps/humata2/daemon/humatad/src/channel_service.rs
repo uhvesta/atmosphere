@@ -33,11 +33,20 @@ use crate::status;
 
 mod add;
 mod delete;
-mod gh_repos;
+// REPOS (RL-5): the repo search reuses CH-3's listing.
+pub(crate) mod gh_repos;
 pub(crate) use delete::{finish_restore, pick_place};
+pub(crate) use move_folder::{MoveError, carry_conversations, rewrite_folders};
 mod known;
+mod library_adds;
+mod move_folder;
 mod remove_machine;
 mod remove_machine_apply;
+mod follow_rename;
+// CH-9 (D764): the Repos and machines grid.
+mod grid;
+mod rename_ask;
+mod rename_folder;
 
 /// Every channel `caller` may read.
 async fn readable_channels(
@@ -145,6 +154,33 @@ where
     answer_gated_showing(inbox, caller, key, type_name, first, None, again).await
 }
 
+/// Answers a plan call whose body ran as `first`. A plan only reads, so it
+/// never asks (D730, decided by Fable): a rule of Never still refuses
+/// it, but one of Ask answers the plan as Allow does, and the call that acts
+/// on it is the one that waits in the Inbox, so approving that runs the
+/// action. `again` runs the body with `approved` set.
+pub(crate) async fn answer_plan<T, Fut>(
+    first: Result<Gated<T>, Status>,
+    again: impl FnOnce() -> Fut,
+) -> Result<Response<T>, Status>
+where
+    Fut: Future<Output = Result<Gated<T>, Status>>,
+{
+    let done = match first? {
+        Gated::Done(done) => done,
+        Gated::Ask(_) => match again().await? {
+            Gated::Done(done) => done,
+            Gated::Ask(_) => {
+                return Err(status::internal(
+                    "a plan the rule allows was sent to Ask me a second time",
+                    "plan it again",
+                ));
+            }
+        },
+    };
+    Ok(Response::new(done))
+}
+
 /// [`answer_gated`] whose card, when the rule says Ask, previews `card`
 /// rather than the capability (IN-10).
 pub(crate) async fn answer_gated_showing<T, Fut>(
@@ -209,6 +245,11 @@ pub(crate) struct ChannelSvc {
     deletes: Arc<delete::State>,
     /// The host's SessionService, which moves and archives the sessions of a machine being removed (CH-8); set once.
     sessions: Arc<std::sync::OnceLock<crate::session_service::SessionSvc>>,
+    /// The Desk service, which closes a deleted channel's Desk sessions
+    /// (CH-24); set once.
+    desk: Arc<std::sync::OnceLock<crate::desk_service::channel_desk_close::DeskHandle>>,
+    /// The host's repo library, which hears of every repo whose add worked (RL-1); set once.
+    library: library_adds::Slot,
 }
 
 impl ChannelSvc {
@@ -235,12 +276,19 @@ impl ChannelSvc {
             plans: Arc::default(),
             deletes: Arc::default(),
             sessions: Arc::default(),
+            desk: Arc::default(),
+            library: Arc::default(),
         }
     }
 
     /// Gives RemoveMachine the SessionService that moves and archives the sessions of the machine it removes. Once.
     pub(crate) fn use_sessions(&self, sessions: crate::session_service::SessionSvc) {
         let _ = self.sessions.set(sessions);
+    }
+
+    /// Lets a delete close the channel's Desk sessions first (CH-24).
+    pub(crate) fn use_desk(&self, desk: crate::desk_service::channel_desk_close::DeskHandle) {
+        let _ = self.desk.set(desk);
     }
 
     fn gate(
@@ -438,6 +486,8 @@ impl ChannelSvc {
                 }));
             }
         }
+        // REPOS (RL-1): the repos this call made ready go to the repo library.
+        let adds = (self.library.clone(), self.starter.clone(), library_adds::ready_keys(&channel));
         // The operation ends once, when the local clones and every machine's setup
         // have: the first failure fails it; a machine that was removed while its
         // setup waited counts as done (D150).
@@ -455,6 +505,10 @@ impl ChannelSvc {
                     None,
                 ))
             });
+            // REPOS (RL-1): what the local clones made ready is recorded, whatever the other machines do.
+            let (library, starter, was_ready) = adds;
+            let channel_id = id.clone();
+            let _ = blocking(move || library_adds::record_new_ready(&library, &starter, &channel_id, &was_ready)).await;
             for remote in remotes {
                 let ended = match remote.await {
                     Ok(MachineOutcome::Failed(error)) => Err(error),
@@ -524,41 +578,18 @@ impl ChannelSvc {
             return Ok(Gated::Ask(asked));
         }
         let expected = request.expected_revision.map(|revision| revision.value);
+        let found = self.find(&id).await?;
+        if let Some(folder) = self.folder_for(&found, &name)? {
+            let confirmed = request.confirm_running || approved;
+            let channel = self
+                .rename_moving(caller, found, name, folder, expected, confirmed)
+                .await?;
+            self.rename_on_machines(&channel, confirmed).await?;
+            return Ok(Gated::Done(self.show(channel).await?));
+        }
         let (store, renaming, shown) = (self.starter.store.clone(), id.clone(), name.clone());
         let renamed = blocking(move || store.rename_channel(&renaming, &shown, expected)).await?;
-        let channel = match renamed {
-            Ok(channel) => channel,
-            Err(StoreError::NoChannel { .. } | StoreError::InvalidId { .. }) => {
-                return Err(no_channel(&id));
-            }
-            Err(StoreError::StaleChannel {
-                expected, actual, ..
-            }) => {
-                return Err(status::failure(
-                    Code::Aborted,
-                    pb::Error {
-                        message: format!(
-                            "the channel is at revision {actual}, not {expected} as the change was made against"
-                        ),
-                        fix: "read the channel again, check the name still needs changing, and send the change again".to_owned(),
-                        retry: None,
-                        kind: Some(pb::error::Kind::RevisionConflict(pb::RevisionConflict {
-                            kind: pb::EntityKind::Channel as i32,
-                            id,
-                            expected: Some(pb::Revision { value: expected }),
-                            actual: Some(pb::Revision { value: actual }),
-                        })),
-                    },
-                ));
-            }
-            Err(error) => {
-                return Err(status::store(
-                    error,
-                    &self.machine,
-                    "save the channel's new name",
-                ));
-            }
-        };
+        let channel = renamed.map_err(|error| self.rename_failed(error, &id))?;
         let (feed, store, named, by) = (
             self.operations.feed(),
             self.starter.store.clone(),
@@ -569,7 +600,32 @@ impl ChannelSvc {
             tell_channel(&feed, &store, &named, pb::Change::Updated, Some(by));
         })
         .await;
+        self.rename_on_machines(&channel, request.confirm_running || approved).await?;
         Ok(Gated::Done(self.show(channel).await?))
+    }
+
+    /// What a failed rename of channel `id` answers.
+    fn rename_failed(&self, error: StoreError, id: &str) -> Status {
+        match error {
+            StoreError::NoChannel { .. } | StoreError::InvalidId { .. } => no_channel(id),
+            StoreError::StaleChannel { expected, actual, .. } => status::failure(
+                Code::Aborted,
+                pb::Error {
+                    message: format!(
+                        "the channel is at revision {actual}, not {expected} as the change was made against"
+                    ),
+                    fix: "read the channel again, check the name still needs changing, and send the change again".to_owned(),
+                    retry: None,
+                    kind: Some(pb::error::Kind::RevisionConflict(pb::RevisionConflict {
+                        kind: pb::EntityKind::Channel as i32,
+                        id: id.to_owned(),
+                        expected: Some(pb::Revision { value: expected }),
+                        actual: Some(pb::Revision { value: actual }),
+                    })),
+                },
+            ),
+            error => status::store(error, &self.machine, "save the channel's new name"),
+        }
     }
 
     fn machines(&self, wanted: &[pb::MachineId]) -> Result<Vec<String>, Status> {
@@ -683,6 +739,7 @@ fn channel_pb(channel: &ChannelRecord, live_sessions: u32) -> pb::Channel {
             value: channel.revision,
         }),
         created_at: Some(timestamp_ms(channel.created_unix_ms)),
+        is_pr_reviews: channel.folder == crate::review::PR_REVIEWS_FOLDER,
         ..pb::Channel::default()
     }
 }
@@ -1034,7 +1091,9 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         }
     }
 
-    /// Changes the name shown; the folder keeps its name (FC-1).
+    /// Changes the name shown and moves the channel's folder to the new
+    /// name's (MV-16, D314): its sessions stop, and resume in their new
+    /// folders, after a rename the person confirmed if one is in a turn.
     async fn rename_channel(
         &self,
         request: Request<pb::RenameChannelRequest>,
@@ -1165,16 +1224,7 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let first = self.plan_remove_machine_of(&caller, request.clone(), false).await;
-        let (me, who) = (self.clone(), caller.clone());
-        answer_gated(
-            &self.inbox,
-            &caller,
-            None,
-            "humata.v1.RemoveChannelMachinePlan",
-            first,
-            move || async move { me.plan_remove_machine_of(&who, request, true).await },
-        )
-        .await
+        answer_plan(first, || self.plan_remove_machine_of(&caller, request, true)).await
     }
 
     /// Takes a machine out of a channel once each of its sessions was moved or archived (CH-8, LD-10).
@@ -1203,9 +1253,21 @@ impl pb::channel_service_server::ChannelService for ChannelSvc {
 
     async fn get_grid(
         &self,
-        _request: Request<pb::GetGridRequest>,
+        request: Request<pb::GetGridRequest>,
     ) -> Result<Response<pb::ChannelGrid>, Status> {
-        Err(status::not_built("humata.v1.ChannelService.GetGrid"))
+        let caller = identity::caller(&request)?;
+        let request = request.into_inner();
+        let first = self.grid_of(&caller, request.clone(), false).await;
+        let (me, who) = (self.clone(), caller.clone());
+        answer_gated(
+            &self.inbox,
+            &caller,
+            None,
+            "humata.v1.ChannelGrid",
+            first,
+            move || async move { me.grid_of(&who, request, true).await },
+        )
+        .await
     }
 
     async fn plan_delete_channel(

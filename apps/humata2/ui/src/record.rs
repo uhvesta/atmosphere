@@ -1426,6 +1426,8 @@ mod tests {
             detail: String::new(),
             last_seen: "now".to_owned(),
             lost_at: None,
+            stop: None,
+            root: "~/Humata".to_owned(),
         };
         let mut session = fixture::standard().sessions.remove(0);
         session.machine = machine.id.clone();

@@ -20,7 +20,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use humata2_access::{ChannelId, DeskAccess, MachineId, SessionId, SessionKind, SessionRef};
+use humata2_access::{
+    ChannelDeskAccess, ChannelId, DeskAccess, MachineId, SessionId, SessionKind, SessionRef,
+};
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::{SessionRecord, Store, StoreError, write_atomic};
 use sha2::{Digest, Sha256};
@@ -102,6 +104,16 @@ pub(crate) struct AgentCaller {
     /// `None` for a session on a channel. Set by [`AgentCaller::resolve_fork`]
     /// on every call, so a switch changed by the user applies from the next call.
     pub(crate) desk: Option<DeskAccess>,
+    /// `Some(push_allowed)` for a pull request review session (PR-7, PR-8).
+    /// Set by [`AgentCaller::resolve_fork`] on every call, so the user's
+    /// change applies from the next call.
+    pub(crate) review_push: Option<bool>,
+    /// What the channel Desk session this agent runs in may do on top of
+    /// its channel's rules (CD-3, D306); `None` for any other session. Set
+    /// by [`AgentCaller::resolve_fork`] on every call, which also files the
+    /// agent under that channel, so a switch the user changes applies from
+    /// the next call.
+    pub(crate) channel_desk: Option<ChannelDeskAccess>,
 }
 
 impl AgentCaller {
@@ -113,6 +125,8 @@ impl AgentCaller {
             method: String::new(),
             context_only_parent: None,
             desk: None,
+            review_push: None,
+            channel_desk: None,
         }
     }
 
@@ -122,11 +136,26 @@ impl AgentCaller {
     pub(crate) fn resolve_fork(mut self, store: &Store) -> Result<Self, StoreError> {
         self.context_only_parent = context_only_parent(store, self.session.id.as_str())?;
         self.desk = desk_access(store, self.session.id.as_str())?;
+        if let Some((channel, access)) =
+            crate::desk_service::channel_desk::access_of(store, self.session.id.as_str())?
+        {
+            self.session.channel = channel;
+            self.channel_desk = Some(access);
+        }
+        self.review_push = store
+            .review_session(self.session.id.as_str())?
+            .map(|review| review.push_allowed);
         Ok(self)
     }
 
     /// The kind of session the policy judges this agent's calls by.
     pub(crate) fn session_kind(&self) -> SessionKind {
+        if let Some(push_allowed) = self.review_push {
+            return SessionKind::Review { push_allowed };
+        }
+        if let Some(access) = &self.channel_desk {
+            return SessionKind::ChannelDesk(access.clone());
+        }
         if let Some(access) = self.desk {
             return SessionKind::Desk(access);
         }
@@ -274,14 +303,27 @@ struct AddedAgentMayCall;
 #[derive(Clone, Copy, Debug)]
 struct OpenToAnyone;
 
+/// Marks a call to [`STOP_SESSIONS_PATH`] that carried no credential at
+/// all and came from a process outside every Humata session: a person
+/// typing `humata stop` on the machine (D263). Set by `authenticate` only.
+#[derive(Clone, Copy, Debug)]
+struct OutsideSessions;
+
+/// The path of the one method that takes a caller outside every session
+/// with no credential.
+const STOP_SESSIONS_PATH: &str = "/humata.v1.DaemonService/StopSessions";
+
 /// The methods `OpenToAnyone` covers, as (service, method).
-const OPEN_TO_ANYONE: [(&str, &str); 4] = [
+const OPEN_TO_ANYONE: [(&str, &str); 5] = [
     (pb::daemon_service_server::SERVICE_NAME, "WhoAmI"),
     (pb::cli_auth_service_server::SERVICE_NAME, "BeginCliSession"),
     // D144: the peer link proves itself on a connection that has no
     // credential yet; neither call grants anything alone.
     (pb::daemon_service_server::SERVICE_NAME, "BeginRelay"),
     (pb::daemon_service_server::SERVICE_NAME, "CompleteRelay"),
+    // D263: `humata stop` on the machine itself needs no login; the
+    // handler decides who the caller is and what each may do.
+    (pb::daemon_service_server::SERVICE_NAME, "StopSessions"),
 ];
 
 /// Marks `request` when its method is open to anyone. Runs before
@@ -380,6 +422,12 @@ pub(crate) fn caller_if_any<T>(request: &Request<T>) -> Result<Option<Caller>, S
     }
 }
 
+/// True when the call had no credential and came from outside every Humata
+/// session, on a method that takes such a caller (`StopSessions`).
+pub(crate) fn outside_every_session<T>(request: &Request<T>) -> bool {
+    request.extensions().get::<OutsideSessions>().is_some()
+}
+
 /// The process at the other end of the call's socket, when the kernel
 /// said. Read when the connection was accepted.
 pub(crate) fn peer_pid<T>(request: &Request<T>) -> Option<i32> {
@@ -452,7 +500,7 @@ const SOCKET_VAR: &str = "HUMATA_SOCKET";
 /// daemon's socket, so `humata` run there reaches this daemon even when it
 /// serves on a socket other than the default one.
 pub(crate) fn tab_env(token: String, socket: &Path) -> Vec<(OsString, OsString)> {
-    vec![
+    let mut env = vec![
         (OsString::from(humata2_mcp::TOKEN_VAR), OsString::from(token)),
         // The tab's shell starts in another folder than the daemon did.
         (
@@ -461,7 +509,40 @@ pub(crate) fn tab_env(token: String, socket: &Path) -> Vec<(OsString, OsString)>
                 .unwrap_or_else(|_| socket.to_owned())
                 .into_os_string(),
         ),
-    ]
+    ];
+    // D748: `humata` is found by name in every session tab.
+    if let Some(path) = tools_path(std::env::var_os(PATH_VAR)) {
+        env.push((OsString::from(PATH_VAR), path));
+    }
+    env
+}
+
+/// The variable a tab's programs are found on.
+pub(crate) const PATH_VAR: &str = "PATH";
+
+/// The folder Humata's own tools (`humata`) are in, put first on every
+/// session tab's `PATH` (D748). Set once, at the daemon's start.
+static TOOLS_FOLDER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Names the folder Humata's tools are in for every tab started from now.
+pub(crate) fn set_tools_folder(folder: &Path) {
+    let _ = TOOLS_FOLDER.set(folder.to_owned());
+}
+
+/// `path` with Humata's tools folder first, when the daemon named one.
+pub(crate) fn tools_path(path: Option<OsString>) -> Option<OsString> {
+    with_tools_first(TOOLS_FOLDER.get()?, path)
+}
+
+/// `path` (a `PATH` value) with `tools` first and nowhere else; just
+/// `tools` when there is no `path`. None if `tools` can't be on a `PATH`
+/// (it holds a `:`).
+fn with_tools_first(tools: &Path, path: Option<OsString>) -> Option<OsString> {
+    let rest: Vec<PathBuf> = path
+        .as_deref()
+        .map(|path| std::env::split_paths(path).filter(|entry| entry != tools).collect())
+        .unwrap_or_default();
+    std::env::join_paths(std::iter::once(tools.to_owned()).chain(rest)).ok()
 }
 
 /// What a token minted for a tab says its holder is (SE-29, SEC-8).
@@ -854,6 +935,11 @@ impl Authenticate {
         let session = request.metadata().get(TOKEN_HEADER);
         let login = request.metadata().get(LOGIN_HEADER);
         let script = request.metadata().get(SCRIPT_HEADER);
+        let stop_sessions = request
+            .extensions()
+            .get::<MethodPath>()
+            .is_some_and(|path| path.0 == STOP_SESSIONS_PATH);
+        let mut outside = false;
         let caller = match (session, script, login) {
             (Some(value), _, _) => match value
                 .to_str()
@@ -923,7 +1009,11 @@ impl Authenticate {
                     Err(unusable) => return Err(status::login_unusable(&unusable)),
                 }
             }
-            (None, None, None) => self.without_credential(pid, app),
+            (None, None, None) => {
+                let caller = self.without_credential(pid, app);
+                outside = caller.is_none() && stop_sessions && !self.in_a_session(pid);
+                caller
+            }
         };
         match caller {
             Some(caller) => {
@@ -931,6 +1021,9 @@ impl Authenticate {
             }
             None if open => {
                 request.extensions_mut().insert(Unauthenticated);
+                if outside {
+                    request.extensions_mut().insert(OutsideSessions);
+                }
             }
             None => return Err(status::unauthenticated()),
         }
@@ -1005,6 +1098,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tabs_path_starts_with_humatas_tools_and_keeps_the_rest_once() {
+        let tools = Path::new("/opt/humata/bin");
+        let path = with_tools_first(tools, Some(OsString::from("/usr/bin:/opt/humata/bin:/bin"))).unwrap();
+        assert_eq!(path, "/opt/humata/bin:/usr/bin:/bin");
+        assert_eq!(with_tools_first(tools, None).unwrap(), "/opt/humata/bin");
+        assert_eq!(with_tools_first(Path::new("/a:b"), None), None, "a folder with a colon can't be on PATH");
+    }
     use crate::terminal_session::tests::Fake;
 
     #[test]
@@ -1091,6 +1193,7 @@ mod tests {
                 holder_socket: PathBuf::new(),
                 holder_pid,
                 created_unix_ms: 0,
+                holder_generation: 0,
             })
             .unwrap();
     }
@@ -1261,6 +1364,7 @@ mod tests {
                 holder_socket: PathBuf::new(),
                 holder_pid: 0,
                 created_unix_ms: 0,
+                holder_generation: 0,
             })
             .unwrap();
 

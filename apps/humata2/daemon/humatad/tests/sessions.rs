@@ -166,6 +166,25 @@ async fn a_started_session_has_its_clone_on_a_branch_named_from_its_title() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_started_session_tells_its_own_folder_and_the_clones_inside_it() {
+    let (daemon, world) = start_world().await;
+    world.remote("acme", "api");
+    let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (id, _) = start_session(&daemon, &channel, "Fix login").await;
+    let session = wait_status(&daemon, &id, Status::Working).await;
+
+    let folder = PathBuf::from(&session.folder);
+    assert!(folder.is_absolute(), "{folder:?}");
+    assert!(folder.is_dir(), "{folder:?}");
+    let clone = PathBuf::from(&session.repos[0].path);
+    assert!(clone.is_absolute(), "{clone:?}");
+    assert!(clone.starts_with(&folder), "{clone:?} is outside {folder:?}");
+    assert!(clone.is_dir(), "{clone:?}");
+    // GetSession says the same as the list.
+    assert_eq!(get_session(&daemon, &id).await.folder, session.folder);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn typed_input_reaches_the_agent_and_a_reattach_replays_it() {
     let fix = Fixture::new().await;
     let tab = fix.tab().await;
@@ -345,10 +364,12 @@ async fn stopping_ends_the_agent_and_resuming_brings_it_back_in_its_conversation
         .unwrap()
         .into_inner();
 
-    assert_eq!(stopped.status, Status::Idle as i32);
+    // A stopped agent has no holder, so it shows as exited, which offers
+    // Resume (session_status in session_service.rs).
+    assert_eq!(stopped.status, Status::Exited as i32);
     assert_eq!(
         get_session(&fix.daemon, &id).await.status,
-        Status::Idle as i32
+        Status::Exited as i32
     );
     let deadline = tokio::time::Instant::now() + common::WAIT;
     while holders.iter().any(holder_answers) {
@@ -456,6 +477,7 @@ async fn shell_token(fix: &Fixture) -> String {
             idempotency_key: None,
             session: Some(fix.id()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()
@@ -635,4 +657,46 @@ async fn an_agents_rename_that_a_rule_sends_to_ask_runs_once_the_user_approves()
     assert_eq!(waited.result_type, "humata.v1.Session");
     let renamed = <pb::Session as prost::Message>::decode(waited.result.as_slice()).unwrap();
     assert_eq!(renamed.title, "Renamed by agent");
+}
+
+/// D757: the after-move mode is the move's own. A caller that sends it for
+/// a session that never moved gets the strict resume: a lost conversation
+/// is a failed resume, never a fresh agent in its place.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_after_move_resume_of_a_session_that_never_moved_does_not_start_it_fresh() {
+    let (mut daemon, world) = start_world().await;
+    world.remote("acme", "api");
+    let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
+    let (id, _) = start_session(&daemon, &channel, "Fix login").await;
+    let session = wait_status(&daemon, &id, Status::Working).await;
+    let tabs: Vec<_> = stored_tabs(&daemon.state)
+        .into_iter()
+        .filter(|tab| tab.session.as_deref() == Some(id.value.as_str()))
+        .collect();
+    daemon.kill();
+    kill_holders(&tabs).await;
+    std::fs::remove_file(world.conversation(&session.conversation_id)).unwrap();
+    daemon.restart().await;
+    wait_status(&daemon, &id, Status::ResumeFailed).await;
+
+    let asked = daemon
+        .session_service()
+        .await
+        .resume_session(pb::ResumeSessionRequest {
+            idempotency_key: None,
+            id: Some(id.clone()),
+            mode: pb::resume_session_request::Mode::AfterMove as i32,
+        })
+        .await;
+
+    if let Ok(answer) = asked {
+        let operation = finished(&daemon, &answer.into_inner()).await;
+        assert_ne!(operation.state, pb::OperationState::Succeeded as i32, "{operation:?}");
+    }
+    let after = get_session(&daemon, &id).await;
+    assert_eq!(after.status, Status::ResumeFailed as i32, "{after:?}");
+    assert!(
+        !world.conversation(&session.conversation_id).exists(),
+        "a fresh agent was started for a session that never moved"
+    );
 }

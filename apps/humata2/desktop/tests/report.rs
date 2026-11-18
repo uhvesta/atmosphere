@@ -26,9 +26,34 @@ use humata2_ui::record::{Recorder, RpcCall, state_text};
 use tca::TestClock;
 use tokio::runtime::Runtime;
 
-/// ⇧⌘R and ⇧⌘S, as flows write keys (`secondary` is ⌘ on macOS).
-const RECORD: &str = "shift-secondary-r";
-const SNAPSHOT: &str = "shift-secondary-s";
+/// ⇧⌘R and ⇧⌘S as the app binds them: Cmd on macOS, Ctrl+Alt+Shift
+/// elsewhere (D318).
+#[cfg(target_os = "macos")]
+const RECORD: &str = "shift-cmd-r";
+#[cfg(target_os = "macos")]
+const SNAPSHOT: &str = "shift-cmd-s";
+#[cfg(not(target_os = "macos"))]
+const RECORD: &str = "ctrl-alt-shift-r";
+#[cfg(not(target_os = "macos"))]
+const SNAPSHOT: &str = "ctrl-alt-shift-s";
+
+/// The app's shortcut for ⌘`key`: Cmd on macOS, Ctrl+Shift elsewhere.
+fn app_key(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("cmd-{key}")
+    } else {
+        format!("ctrl-shift-{key}")
+    }
+}
+
+/// How a recording spells the gesture of pressing [`app_key`]`(key)`.
+fn recorded_app_key(key: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("secondary-{key}")
+    } else {
+        format!("secondary-shift-{key}")
+    }
+}
 
 /// The app headless on the standard fakes, with a recorder saving reports
 /// in `reports` (when given).
@@ -143,7 +168,7 @@ impl App {
         assert!(self.recording(), "the shortcut starts a recording");
         assert!(self.ui.recorder().is_recording());
         self.click(Role::Link, "Inbox");
-        self.press("secondary-k");
+        self.press(&app_key("k"));
         self.type_text(typed);
         self.press(RECORD);
         assert!(!self.recording(), "the shortcut stops it again");
@@ -161,7 +186,7 @@ impl App {
     /// Opens the palette, types `query` and presses Enter, then lets the
     /// frames pass that a report command waits for.
     fn palette(&mut self, query: &str) {
-        self.press("secondary-k");
+        self.press(&app_key("k"));
         self.type_text(query);
         self.press("enter");
         self.frames(4);
@@ -627,7 +652,7 @@ fn palette_records_and_stops() {
     assert!(app.recording(), "the palette starts a recording");
     assert!(app.ui.recorder().is_recording());
     app.click(Role::Link, "Inbox");
-    app.press("secondary-k");
+    app.press(&app_key("k"));
     app.type_text("hello");
     app.press("escape");
     app.palette("stop recording");
@@ -673,7 +698,7 @@ fn palette_records_and_stops() {
         .iter()
         .filter(|event| {
             matches!(event, Event::Interaction(i)
-                if matches!(&i.gesture, Gesture::Key { key, .. } if key == "secondary-k"))
+                if matches!(&i.gesture, Gesture::Key { key, .. } if *key == recorded_app_key("k")))
         })
         .count();
     assert_eq!(opens, 1, "only the palette opened in the middle is kept, not the stop's");

@@ -49,7 +49,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Channel;
 use tonic::{Request, Streaming};
 
-const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 const BOX: &str = "box-1";
 /// The host redials after a backoff of 5 s, then 10 s while dials fail.
 const REDIAL: Duration = Duration::from_secs(60);
@@ -275,7 +275,7 @@ impl Host {
         // The first add stops at the host key; its operation names the key.
         let first = machines.add_ssh_machine(request("")).await.unwrap().into_inner();
         let ended = self.watch_last(&first).await;
-        let Some(pb::error::Kind::HostKeyChanged(key)) = ended.error.and_then(|error| error.kind) else {
+        let Some(pb::error::Kind::HostKeyUnknown(key)) = ended.error.and_then(|error| error.kind) else {
             panic!("the first add asks for the host key to be confirmed");
         };
         let added = machines.add_ssh_machine(request(&key.presented_fingerprint)).await.unwrap().into_inner();

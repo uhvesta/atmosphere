@@ -32,7 +32,7 @@ use rustix::termios::Winsize;
 use thiserror::Error;
 
 use crate::enroll::{self, Key};
-use crate::error::{QuoteError, RunError, TakeoverError, ValuesError};
+use crate::error::{end_said, output_block, QuoteError, RunError, TakeoverError, ValuesError};
 use crate::hosts::{EntryState, HostEntry, HostsError, ProviderMachine, StoredLink};
 use crate::identity::{SshAccess, SshTarget};
 use crate::install::{self, Builds};
@@ -107,8 +107,9 @@ pub enum LoginError {
     #[error("the login to {machine} was cancelled; nothing was changed")]
     Cancelled { machine: MachineName },
     #[error(
-        "the login to {machine} ended{} before it finished; the end of its output is below. Open it interactively again and finish the login, then press Done only when you see a shell prompt",
-        .exit.map(|how| format!(" ({how})")).unwrap_or_default()
+        "the login to {machine} ended{} before it finished; {}. Open it interactively again and finish the login, then press Done only when you see a shell prompt",
+        .exit.map(|how| format!(" ({how})")).unwrap_or_default(),
+        end_said(.output_tail)
     )]
     Ended {
         machine: MachineName,
@@ -118,15 +119,17 @@ pub enum LoginError {
     #[error(transparent)]
     Takeover(#[from] TakeoverError),
     #[error(
-        "couldn't write the enrollment key on {machine} over the login; the end of the terminal's output is below. Check that its home folder is writable, then open the login again"
+        "couldn't write the enrollment key on {machine} over the login; {}. Check that its home folder is writable, then open the login again",
+        end_said(.output_tail)
     )]
     Enrollment {
         machine: MachineName,
         output_tail: String,
     },
     #[error(
-        "the terminal to {machine} printed nothing for {} seconds while Humata was installing its tools there; the end of its output is below. Check that the shell you logged in to is a POSIX shell that reads what is typed, then open the login again",
-        .waited.as_secs()
+        "the terminal to {machine} printed nothing for {} seconds while Humata was installing its tools there; {}. Check that the shell you logged in to is a POSIX shell that reads what is typed, then open the login again",
+        .waited.as_secs(),
+        end_said(.output_tail)
     )]
     Stalled {
         machine: MachineName,
@@ -171,7 +174,7 @@ pub enum LoginError {
         "{machine}'s SSH host key isn't pinned in Humata's own known_hosts, and a key added to its authorized_keys can't be trusted without it. Give the provider an `identity` command with `ssh.host_key`, or keep the provider's cached token instead"
     )]
     HostKeyNotPinned { machine: String },
-    #[error("couldn't create a key pair for {machine}: `ssh-keygen` ended with {exit}. Check that ssh-keygen is installed; the output is below:\n{output_tail}")]
+    #[error("couldn't create a key pair for {machine}: `ssh-keygen` ended with {exit}. Check that ssh-keygen is installed; {}", output_block(.output_tail))]
     KeyGen {
         machine: String,
         exit: Exit,
@@ -184,7 +187,8 @@ pub enum LoginError {
         source: io::Error,
     },
     #[error(
-        "couldn't add Humata's key to {machine}'s authorized_keys ({exit}). The machine must be reachable without a person now: log in again if the connect asks for one, then make it unattended. Output:\n{output_tail}"
+        "couldn't add Humata's key to {machine}'s authorized_keys ({exit}). The machine must be reachable without a person now: log in again if the connect asks for one, then make it unattended. {}",
+        output_block(.output_tail)
     )]
     Authorize {
         machine: String,
@@ -192,7 +196,8 @@ pub enum LoginError {
         output_tail: String,
     },
     #[error(
-        "{machine} still can't be reached without a person ({exit}), so it was left as it was. If Humata added a key to the machine's authorized_keys and couldn't remove it again, delete the line ending `humata2:{machine}` there yourself. Output:\n{output_tail}"
+        "{machine} still can't be reached without a person ({exit}), so it was left as it was. If Humata added a key to the machine's authorized_keys and couldn't remove it again, delete the line ending `humata2:{machine}` there yourself. {}",
+        output_block(.output_tail)
     )]
     StillNeedsLogin {
         machine: String,
@@ -813,6 +818,7 @@ impl LoginSession {
                     }
                     TakeoverAction::MakeLocalRaw => self.terminal.make_raw()?,
                     TakeoverAction::SendFile(payload) => self.terminal.write(payload.bytes())?,
+                    TakeoverAction::SendBundle(bundle) => self.terminal.write(&bundle)?,
                     TakeoverAction::Ready { platform, leftover } => {
                         let mut wrote = false;
                         if let (Some(dir), Some(key)) = (plan.enroll_into, enrolled.take()) {
@@ -1188,7 +1194,6 @@ pub fn register(
                 state: EntryState::Ready,
                 os: platform.os.to_string(),
                 arch: platform.arch.to_string(),
-                staged: Vec::new(),
                 undo_pending: false,
                 provider: Some(ProviderMachine {
                     id: provider.id().to_owned(),
@@ -1700,7 +1705,6 @@ mod unattended_tests {
                 state: EntryState::Ready,
                 os: "linux".to_owned(),
                 arch: "x86_64".to_owned(),
-                staged: Vec::new(),
                 undo_pending: false,
                 provider: Some(ProviderMachine {
                     id: "corp".to_owned(),
@@ -1842,5 +1846,44 @@ mod unattended_tests {
         unregister(&world.machines, &name, false).unwrap();
         assert!(world.machines.get("box-2").is_err());
         assert!(!is_interactive(world.machines.hosts_file(), "box-2"));
+    }
+}
+
+#[cfg(test)]
+mod quiet_failure_tests {
+    use super::*;
+
+    fn machine() -> MachineName {
+        MachineName::new("box-1").unwrap()
+    }
+
+    #[test]
+    fn a_login_failure_with_no_output_promises_none() {
+        let quiet = [
+            LoginError::Ended { machine: machine(), exit: Some(Exit::Code(1)), output_tail: String::new() },
+            LoginError::Enrollment { machine: machine(), output_tail: String::new() },
+            LoginError::Stalled { machine: machine(), waited: Duration::from_secs(90), output_tail: String::new() },
+            LoginError::KeyGen { machine: "box-1".to_owned(), exit: Exit::Code(1), output_tail: String::new() },
+            LoginError::Authorize { machine: "box-1".to_owned(), exit: Exit::Code(1), output_tail: String::new() },
+            LoginError::StillNeedsLogin {
+                machine: "box-1".to_owned(),
+                exit: Exit::Code(255),
+                output_tail: String::new(),
+                undone: false,
+            },
+        ];
+        for error in quiet {
+            assert!(!error.to_string().contains("below"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_login_failure_with_output_still_says_where_the_output_is() {
+        let error = LoginError::Ended {
+            machine: machine(),
+            exit: Some(Exit::Code(1)),
+            output_tail: "login: permission denied\n".to_owned(),
+        };
+        assert!(error.to_string().contains("below"), "{error}");
     }
 }

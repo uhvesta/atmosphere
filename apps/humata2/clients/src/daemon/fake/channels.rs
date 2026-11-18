@@ -1,6 +1,8 @@
 use super::FakeDaemon;
+use super::repos as library;
 use crate::daemon::{DaemonError, Event, Operation, Reply};
 use crate::model::{Channel, ChannelId, MachineId};
+use crate::repos::RepoPlace;
 
 pub(super) fn github_repos(daemon: &FakeDaemon, query: &str) -> Reply<Vec<String>> {
     let query = query.to_owned();
@@ -47,6 +49,9 @@ pub(super) fn create_channel(
             }
             super::setup::start(inner, &name, &repos, &machines)?;
             let id = ChannelId::new(name.clone());
+            for repo in &repos {
+                library::record(inner, repo, RepoPlace::Channel(id.to_string()));
+            }
             inner.workspace.channels.push(Channel {
                 id: id.clone(),
                 name: name.clone(),

@@ -87,6 +87,9 @@ operations! {
     ReviewDraftDrop => "review_draft_drop", "review.draft_drop";
     /// `PullRequestReviewService.DraftSummary`.
     ReviewSummaryDraft => "review_summary_draft", "review.summary_draft";
+    /// `PullRequestReviewService.ListPullRequestCommits` of a pull request
+    /// in the caller's review.
+    ReviewCommits => "review_commits", "review.commits";
     /// `ReviewChatService.GetReviewContext` of the caller's review.
     ReviewContext => "review_context", "review.context";
     /// `ReviewChatService.FocusReview`.
@@ -108,6 +111,10 @@ operations! {
     CommentReply => "comment_reply", "comment.reply";
     /// `CommentService.ResolveComment` with a reply.
     CommentResolve => "comment_resolve", "comment.resolve";
+    /// `DeskService.ListDocVersions` of a Desk session's folder (DV-9).
+    DocVersionsList => "doc_versions_list", "doc.versions_list";
+    /// `DeskService.ReadDocVersion` (DV-9).
+    DocVersionRead => "doc_version_read", "doc.version_read";
     /// `FileService.ListDirectory`.
     FilesList => "files_list", "file.list";
     /// `FileService.ReadFile`.
@@ -158,6 +165,8 @@ operations! {
     SessionStart => "session_start", "session.start";
     /// `SessionService.ForkSession` of the caller.
     SessionFork => "session_fork", "session.fork";
+    /// `SessionService.ContinueInChannel` of the caller (CV-8).
+    SessionContinueInChannel => "session_continue_in_channel", "session.continue_in_channel";
     /// `BridgeService.OpenPortForward`.
     NetworkConnect => "network_connect", "bridge.connect";
     /// `SessionService.RenameSession` of the caller.
@@ -177,6 +186,8 @@ operations! {
     SessionDelete => "session_delete", "session.delete";
     /// `SessionService.MoveSession`.
     SessionMove => "session_move", "session.move";
+    /// `DeskService.MoveDeskSessionToChannel` of the caller's own Desk session.
+    DeskSessionMoveToChannel => "desk_session_move_to_channel", "desk.move_to_channel";
     /// `SessionService.PlanPush` and `PushAndOpenPullRequests`.
     SessionPush => "session_push", "session.push";
     /// `PullRequestReviewService.StartReview`.
@@ -217,6 +228,12 @@ operations! {
     MachineForget => "machine_forget", "machine.forget";
     /// `ProviderService.DeleteWhatWasMade`.
     MachineDelete => "machine_delete", "machine.delete";
+    // REPOS
+    /// `RepoService.SearchRepos`: the library, then GitHub within the scope
+    /// (RL-11).
+    RepoSearch => "repo_search", "repo.search";
+    /// `RepoService.ListRepoLibrary`.
+    RepoLibrary => "repo_library", "repo.library";
 }
 
 impl Operation {
@@ -268,11 +285,13 @@ pub(crate) fn input_schema(operation: Operation) -> Schema {
     definition(operation).input
 }
 
-/// The `tools/list` result: every tool, never a user-only one.
-pub(crate) fn list() -> Value {
+/// The `tools/list` result: every tool the daemon runs (`serves`), never a
+/// user-only one.
+pub(crate) fn list(serves: impl Fn(Operation) -> bool) -> Value {
     let output = output_schema();
     let tools: Vec<Value> = Operation::ALL
         .iter()
+        .filter(|operation| serves(**operation))
         .map(|operation| {
             let definition = definition(*operation);
             json!({
@@ -328,10 +347,15 @@ pub(crate) fn capability_name(capability: Capability) -> &'static str {
         Capability::MachineProvision => "machine_provision",
         Capability::TrashRestore => "trash_restore",
         Capability::ChannelCreate => "channel_create",
+        Capability::ChannelRepoAdd => "channel_repo_add",
         Capability::NetworkReach => "network_reach",
+        Capability::DeskMoveToChannel => "desk_move_to_channel",
         Capability::SessionStopOther => "session_stop_other",
+        Capability::SessionDeleteOther => "session_delete_other",
+        Capability::MachineSessionsStop => "machine_sessions_stop",
         Capability::ChannelChange => "channel_change",
         Capability::MachineDestroy => "machine_destroy",
+        Capability::MachineScriptRun => "machine_script_run",
         Capability::InboxAnswer => "inbox_answer",
         Capability::AccessChange => "access_change",
         Capability::SettingsChange => "settings_change",
@@ -424,6 +448,11 @@ fn relative_path() -> Schema {
     string().describe("A path relative to the root")
 }
 
+/// Whose folder a doc tool reads: the caller's own unless it names one.
+fn doc_location() -> Schema {
+    object(vec![opt("session", session().describe("Default: your session"))])
+}
+
 fn location() -> Schema {
     one_of(vec![
         object(vec![
@@ -449,8 +478,17 @@ fn location() -> Schema {
             req("path", relative_path()),
             opt("machine", machine().describe("Default: your machine")),
         ]),
+        object(vec![
+            req("root", one_of_strings(["session_folder"])),
+            opt(
+                "session",
+                session().describe("The session whose own folder holds the file (a Desk session's documents). Default: your session"),
+            ),
+            req("path", relative_path()),
+            opt("machine", machine().describe("Default: your machine")),
+        ]),
     ])
-    .describe("A file or folder: in a clone, shared/, the channel folder or a main clone (read-only)")
+    .describe("A file or folder: in a clone, shared/, the channel folder, a main clone (read-only) or a session's own folder")
 }
 
 fn on_existing() -> Schema {
@@ -589,6 +627,8 @@ fn grant_target() -> Schema {
                         "remove",
                         "forget",
                         "delete",
+                        "stop_sessions",
+                        "start_sessions",
                     ]),
                 ),
             ]),
@@ -698,9 +738,9 @@ fn definition(operation: Operation) -> Definition {
             "Add an item to a board. Your session board and your channel's board need no approval; the Global board and other channels' boards go to the user's Inbox.",
             Effect::Create,
             asks(vec![
-                req("board", board()),
+                opt("board", board().describe("Default: your session board")),
                 req("title", title()),
-                opt("column", column().describe("Default: backlog")),
+                opt("column", column().describe("Default: to_do")),
                 opt("description", string().max_length(20_000)),
                 opt("sessions", array(session()).describe("The sessions working on it")),
                 opt(
@@ -810,6 +850,11 @@ fn definition(operation: Operation) -> Definition {
                 req("pr", string().describe("owner/repo#number")),
                 req("summary", string()),
             ]),
+        ),
+        Op::ReviewCommits => define(
+            "The commits of one of this review's pull requests, oldest first, with which ones the user marked reviewed, which marks a force push carried to the same patch, and the history of marks. Only the user marks commits.",
+            Effect::Read,
+            object(vec![req("pr", string().describe("owner/repo#number"))]),
         ),
         Op::ReviewContext => define(
             "What the user is looking at in this review: the diff spec, the open file, the visible lines and selection, the order and groups, Viewed files and your notes.",
@@ -924,6 +969,20 @@ fn definition(operation: Operation) -> Definition {
                 req("reply", string().max_length(4000)),
             ]),
         ),
+        Op::DocVersionsList => define(
+            "List the versions of a file in a Desk session's folder, newest first, and whether the folder has changes no version holds. Your own session's folder needs no approval; another session's needs the user's rule.",
+            Effect::Read,
+            object(vec![req("path", relative_path()), opt("location", doc_location())]),
+        ),
+        Op::DocVersionRead => define(
+            "Read one version of a file in a Desk session's folder: its text and, when they were recorded, the comments it had. Take the version id from doc_versions_list.",
+            Effect::Read,
+            object(vec![
+                req("path", relative_path()),
+                req("version", string().describe("A version id from doc_versions_list")),
+                opt("location", doc_location()),
+            ]),
+        ),
         Op::FilesList => define(
             "List a folder. Your own clones, shared/ and the channel folder need no approval; another session's or another machine's go to the user's Inbox.",
             Effect::Read,
@@ -965,6 +1024,30 @@ fn definition(operation: Operation) -> Definition {
                 opt("last_turn", integer().at_least(0)),
                 opt("page_token", page_token()),
             ]),
+        ),
+        // REPOS
+        Op::RepoSearch => reaching_out(define(
+            "Search the user's repo library, then GitHub: library repos first, most recently used first, then what gh finds within the user's saved scope. Name owners, or set all_of_github, to widen this one call; that is never saved and you cannot change the saved scope. A GitHub failure comes back as problem, with the library still answered.",
+            Effect::Read,
+            asks(vec![
+                req("query", string().max_length(200)),
+                opt(
+                    "owners",
+                    array(string().describe("A GitHub user or organization, such as acme"))
+                        .max_items(20)
+                        .describe("Search these owners for this call instead of the saved scope"),
+                ),
+                opt(
+                    "all_of_github",
+                    boolean().describe("Search all of GitHub for this call; not with owners"),
+                ),
+                opt("page_token", page_token()),
+            ]),
+        )),
+        Op::RepoLibrary => define(
+            "List the user's repo library, most recently used first, with where each repo was last used.",
+            Effect::Read,
+            asks(vec![]),
         ),
         Op::FileWrite => define(
             "Create or replace one file in your own clone or shared/. A replaced file goes to the trash.",
@@ -1073,9 +1156,14 @@ fn definition(operation: Operation) -> Definition {
             asks(vec![req("session", session()), req("question", string())]),
         ),
         Op::SessionType => define(
-            "Type text into another session's terminal as one bracketed paste. Usually asks the user first.",
+            "Type text into another session's terminal and press Enter; submit: false leaves it in the input. Usually asks the user first.",
             Effect::Create,
-            asks(vec![req("session", session()), req("text", string()), opt("when", when())]),
+            asks(vec![
+                req("session", session()),
+                req("text", string()),
+                opt("submit", boolean()),
+                opt("when", when()),
+            ]),
         ),
         Op::SessionStart => define(
             "Start a new session in your channel. Usually asks the user first.",
@@ -1099,12 +1187,29 @@ fn definition(operation: Operation) -> Definition {
                     "kind",
                     one_of_strings(["code_and_context", "code_only", "context_only"]),
                 ),
+                opt("agent", string().describe("The fork's agent; default: this session's agent")),
+                opt(
+                    "before_turn",
+                    integer().range(2, 1_000_000).describe("Fork from just before this turn; default: from now"),
+                ),
                 opt(
                     "repos",
                     array(repo()).describe("Default: all of this session's repos"),
                 ),
                 opt("title", title()),
                 opt("first_message", string()),
+                req("reason", reason()),
+            ]),
+        ),
+        Op::SessionContinueInChannel => define(
+            "Start a new session in another channel that goes on from a copy of this session's conversation; this session stays as it is. Usually asks the user first; the card shows the channel and the turn.",
+            Effect::Create,
+            asks(vec![
+                req("channel", string().describe("A channel id from channels_list; not this session's own channel, nor the Desk")),
+                opt(
+                    "before_turn",
+                    integer().range(2, 1_000_000).describe("Go on from just before this turn; default: the whole conversation"),
+                ),
                 req("reason", reason()),
             ]),
         ),
@@ -1138,10 +1243,10 @@ fn definition(operation: Operation) -> Definition {
             asks(vec![]),
         ),
         Op::SessionStop => session_end(
-            "Stop a session; your own without session. Your own usually asks the user first; another session's is refused unless the user changed the rule.",
+            "Stop a session; your own without session. Usually asks the user first, for your own session and for another's.",
         ),
         Op::SessionArchive => session_end(
-            "Archive a session; your own without session. Your own usually asks the user first; another session's is refused unless the user changed the rule.",
+            "Archive a session; your own without session. Usually asks the user first, for your own session and for another's.",
         ),
         Op::SessionDelete => session_end(
             "Delete a session; your own without session. Your own usually asks the user first; another session's is refused unless the user changed the rule.",
@@ -1152,6 +1257,20 @@ fn definition(operation: Operation) -> Definition {
             asks(vec![
                 opt("session", session().describe("Default: your own session")),
                 req("machine", machine()),
+                req("reason", reason()),
+            ]),
+        ),
+        Op::DeskSessionMoveToChannel => define(
+            "Move your Desk session into a channel: its folder becomes a session folder there, each repository on a new branch with your uncommitted work, and repositories the channel lacks are added to it. Asks the user first, under that channel's rule.",
+            Effect::Change,
+            asks(vec![
+                req("channel", string().describe("A channel id from channels_list")),
+                opt(
+                    "branch",
+                    string()
+                        .max_length(200)
+                        .describe("The branch to put the work on; default: one from the session's title"),
+                ),
                 req("reason", reason()),
             ]),
         ),
@@ -1245,7 +1364,7 @@ fn definition(operation: Operation) -> Definition {
             asks(vec![req("name", string())]),
         ),
         Op::ChannelAddRepo => define(
-            "Add a repository to your channel. Refused unless the user changed the rule.",
+            "Propose adding a GitHub repository (owner and name; never a local path) to your channel, or to any channel from the Desk. The user is asked first, so give a reason.",
             Effect::Change,
             asks(vec![req("repo", repo())]),
         ),

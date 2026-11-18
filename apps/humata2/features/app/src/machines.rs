@@ -5,6 +5,7 @@
 use humata2_clients::model::Agent;
 use humata2_clients::{FileRoot, Folder};
 use humata2_files::FilesAction;
+use humata2_inbox::InboxAction;
 use humata2_hosts::add::{AddMachine, AddMachineAction, Delegate as AddDelegate};
 use humata2_hosts::page::{Delegate as PageDelegate, MachinePage, MachinePageAction};
 use humata2_hosts::HostsAction;
@@ -38,6 +39,8 @@ impl App {
                 self.switch(state, Route::Hosts)
             }
             AddDelegate::Toast(text) => state.toast(text, &clock),
+            // The Inbox's own Migrate click, on the item the dialog names.
+            AddDelegate::Migrate(request) => self.child(state, AppAction::Inbox(InboxAction::Migrate(request))),
         };
         effect.and(asked)
     }
@@ -102,6 +105,11 @@ impl App {
                     AppAction::Settings(SettingsAction::Section(Section::Access)),
                 );
                 Effect::merge([go, section])
+            }
+            PageDelegate::OpenInInbox(request) => {
+                let go = self.navigate(state, Route::Inbox);
+                let select = self.child(state, AppAction::Inbox(InboxAction::Select(request)));
+                Effect::merge([go, select])
             }
             PageDelegate::Toast(text) => state.toast(text, &clock),
         };

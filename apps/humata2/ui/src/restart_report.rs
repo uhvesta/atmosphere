@@ -150,7 +150,7 @@ pub(crate) fn home_groups(ui: &Rc<Ui>, state: &AppState, look: Look) -> Vec<Div>
             format!("Idle after the restart · {}", groups.idle.len()),
             "home-idle-after-restart",
             &groups.idle,
-            |_| "Was mid-turn when its host restarted. Tell it to continue.".to_owned(),
+            |_| "Came back idle after its host restarted. If it was working, tell it to continue.".to_owned(),
             look,
         ));
     }

@@ -5,6 +5,9 @@
 //! agent starts (MCP.md), a client of that socket.
 
 mod access_service;
+mod agent_gate;
+mod agent_service;
+mod agent_switches;
 mod attach;
 mod away;
 mod board_service;
@@ -25,14 +28,18 @@ mod files;
 mod grant_target;
 mod guard;
 mod history_service;
+mod holder_end;
 mod holders;
 mod host_relay;
+mod host_vars;
 mod identity;
 mod inbox;
+mod input_gate;
 mod last_good;
 mod link_proof;
 mod log;
 mod login_service;
+mod machine_scripts;
 mod machine_service;
 mod mark_service;
 mod mcp;
@@ -45,17 +52,24 @@ mod peer_link;
 mod peer_reports;
 mod peer_skills;
 mod provider_service;
+mod read_marks;
+mod ready;
 mod settings_service;
 mod relay;
 mod relay_auth;
 mod remote_end;
 mod remote_terminal;
 mod remote_work;
+// REPOS (RL-5): the repo library and the one repo search.
+mod repo_service;
 mod restart;
 mod review;
 mod rules_kept;
+mod screen_ask;
+mod screen_question;
 mod script_tokens;
 mod serve;
+mod start_message;
 mod session_service;
 mod skills_service;
 mod status;
@@ -64,9 +78,11 @@ mod storage;
 mod sync;
 mod terminal;
 mod terminal_session;
+mod terminal_uuid;
 mod transfer_end_service;
 mod transfer_service;
 mod trash_service;
+mod upgrade;
 
 use std::process::ExitCode;
 
@@ -92,6 +108,9 @@ enum Command {
     /// Serves MCP on stdin and stdout for the agent of the session whose
     /// token is in HUMATA_SESSION_TOKEN.
     Mcp(mcp::McpArgs),
+    /// Stops this machine's sessions, even when its daemon doesn't answer
+    /// (D262).
+    Stop(stop::cli::StopArgs),
 }
 
 fn main() -> ExitCode {
@@ -108,6 +127,7 @@ fn main() -> ExitCode {
                     Command::Serve(args) => serve::run(args).await,
                     Command::Bridge(args) => bridge::run(args).await,
                     Command::Mcp(args) => mcp::run(args).await,
+                    Command::Stop(args) => stop::cli::run(args).await,
                 }
             });
             // Dropping the runtime would wait for a blocking read of stdin

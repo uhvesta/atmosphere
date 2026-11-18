@@ -4,6 +4,29 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command as Proc
 use terminal_provider::{CODEX_RESUME_V1, ResumePolicy, ResumeRegistry};
 const SESSION: &str = "019a83ae-6368-72f5-90bc-5799b82886a1";
 const FORK: &str = "019a83ae-6368-72f5-90bc-5799b82886a2";
+/// How long a launch may take before a test gives up. Generous: a loaded
+/// gate can starve process start for seconds, and a real hang still fails
+/// well inside Bazel's test timeout.
+pub(crate) const LAUNCH_WAIT: Duration = Duration::from_secs(60);
+/// What a fixture folder holds, for a failed wait: its entries, the agent's
+/// launch rows and the tail of every holder log.
+pub(crate) fn launch_evidence(root: &Path) -> String {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let wanted = name == "launches" || path.extension().is_some_and(|ext| ext == "log");
+        match fs::read(&path) {
+            Ok(bytes) if wanted => {
+                let tail = &bytes[bytes.len().saturating_sub(2_000)..];
+                found.push(format!("{name}:\n{}", String::from_utf8_lossy(tail)));
+            }
+            _ => found.push(name),
+        }
+    }
+    found.sort();
+    format!("{} holds: {}", root.display(), found.join("; "))
+}
 struct Fixture {
     directory: tempfile::TempDir,
 }
@@ -92,7 +115,7 @@ exec /bin/sh -i
         .unwrap()
     }
     async fn launched(&self, count: usize) -> Vec<String> {
-        tokio::time::timeout(Duration::from_secs(8), async {
+        tokio::time::timeout(LAUNCH_WAIT, async {
             loop {
                 let rows = fs::read_to_string(self.root().join("launches"))
                     .unwrap_or_default()
@@ -106,7 +129,12 @@ exec /bin/sh -i
             }
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|_| {
+            panic!(
+                "the agent fixture did not launch {count} time(s) within {LAUNCH_WAIT:?}; {}",
+                launch_evidence(self.root())
+            )
+        })
     }
 }
 impl Drop for Fixture {

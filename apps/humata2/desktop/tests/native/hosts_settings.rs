@@ -117,6 +117,20 @@ fn permission_requests_can_use_the_agents_own_prompt() {
         app.ui.read(|state| state.settings.asks_in_inbox),
         Some(true)
     );
+    // D725: the Agents card of switches sits above, so the toggle is below
+    // the fold; scroll the settings page down to reach it.
+    app.draw();
+    app.cx
+        .update_window(app.window, |_, window, cx| {
+            window.scroll(
+                "settings-content",
+                gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+                cx,
+            );
+        })
+        .expect("window stays open");
+    app.settle();
+    app.draw();
     app.click("settings-asks-in-inbox");
     assert_eq!(
         app.ui.read(|state| state.settings.asks_in_inbox),

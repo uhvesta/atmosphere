@@ -50,8 +50,9 @@ async fn a_new_channel_gets_its_folders_and_a_main_clone() {
     );
 }
 
+/// D314: renaming a channel moves its folder to the new name's.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_channel_is_found_again_and_renaming_keeps_its_folder() {
+async fn a_channel_is_found_again_and_renaming_moves_its_folder() {
     let (daemon, world) = start_world().await;
     world.remote("acme", "api");
     let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
@@ -82,20 +83,16 @@ async fn a_channel_is_found_again_and_renaming_keeps_its_folder() {
             id: Some(id_of(&channel)),
             name: "Billing".to_owned(),
             expected_revision: None,
+            confirm_running: false,
         })
         .await
         .unwrap()
         .into_inner();
 
     assert_eq!(renamed.name, "Billing");
-    assert_eq!(renamed.folder, channel.folder);
-    assert!(
-        world
-            .channels
-            .join(&channel.folder)
-            .join("main/api")
-            .is_dir()
-    );
+    assert_eq!(renamed.folder, "billing", "the folder follows the name");
+    assert!(world.channels.join("billing").join("main/api").is_dir());
+    assert!(!world.channels.join(&channel.folder).exists(), "nothing is left at the old folder");
     let listed = list(&daemon).await;
     assert_eq!(
         listed
@@ -265,6 +262,7 @@ async fn session_token(daemon: &common::Daemon, session: &pb::SessionId) -> Stri
             idempotency_key: None,
             session: Some(session.clone()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()

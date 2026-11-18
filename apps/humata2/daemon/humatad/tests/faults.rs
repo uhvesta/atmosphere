@@ -47,6 +47,7 @@ fn fork_request(parent: &pb::SessionId) -> pb::ForkSessionRequest {
         model: String::new(),
         machine: None,
         branch: String::new(),
+        reason: String::new(),
     }
 }
 

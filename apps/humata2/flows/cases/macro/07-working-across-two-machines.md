@@ -49,8 +49,8 @@ Layer: macro. Platforms: macOS, Linux, web. (The keys shown are the macOS ones; 
    **State and events:** Input is held by the daemon during the move. It is not sent to This Mac's old holder.
    **Status:** Works (real daemon). `daemon/humatad/tests/move_session.rs::a_moving_session_s_terminal_is_read_only_until_it_resumes`.
 
-8. **I do:** Open the file manager on box-1, select `notes/plan.md`, press Copy, and pick This Mac's `payments` folder as the destination.
-   **I see:** A transfer appears in the transfers tray. When it ends, `plan.md` is in the folder on This Mac, with the same bytes. The file on box-1 is still there.
+8. **I do:** Open the file manager on box-1, select `notes/plan.md`, press **Copy to ▸** and pick This Mac.
+   **I see:** A transfer appears in the transfers tray. When it ends, `plan.md` is in #payments' shared folder on This Mac (PL-3), with the same bytes. The file on box-1 is still there.
    **State and events:** The transfer is a copy. Its source on box-1 is left as it was.
    **Status:** Code, no test. The copy from a machine to This Mac has no test. The nearest tests are `daemon/humatad/tests/remote_transfers.rs::a_move_from_a_machine_puts_the_source_in_that_machines_trash_only_once_it_is_done` (a move in that direction, Works real daemon) and `daemon/humatad/tests/remote_transfers.rs::a_folder_copied_from_one_machine_to_another_arrives_whole` (a copy between two boxes).
 

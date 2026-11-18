@@ -223,11 +223,21 @@ fn focused(element: &ElementSnapshot) -> Result<bool, ViewError> {
 }
 
 pub(crate) fn leaf(element: &ElementSnapshot) -> String {
-    element
-        .path()
-        .last()
-        .map(ToString::to_string)
-        .unwrap_or_default()
+    element.path().last().map(stable_id).unwrap_or_default()
+}
+
+/// An element's own id as a snapshot shows it. An id made from an entity
+/// (gpui-component's text inputs are `("input", entity)`) leaves the
+/// entity's number out: it counts the entities made before it, so it
+/// changes whenever anything else makes one.
+fn stable_id(id: &ElementId) -> String {
+    match id {
+        ElementId::View(_) => "view".to_owned(),
+        // Entity ids carry a slot version in their high half, so they are
+        // never below 2^32; the counters apps put in ids are.
+        ElementId::NamedInteger(name, number) if *number >> 32 != 0 => name.to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn describe_path(element: &ElementSnapshot) -> String {
@@ -235,5 +245,20 @@ fn describe_path(element: &ElementSnapshot) -> String {
     match (element.role(), element.label()) {
         (Some(role), Some(label)) => format!("the {role:?} {label:?} ({})", path.join(" > ")),
         _ => format!("the element at {}", path.join(" > ")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui_kit::EntityId;
+
+    #[test]
+    fn ids_made_from_entities_leave_the_entity_out() {
+        let entity = (1u64 << 32) | 37;
+        assert_eq!(stable_id(&ElementId::NamedInteger("input".into(), entity)), "input");
+        assert_eq!(stable_id(&ElementId::View(EntityId::from(entity))), "view");
+        assert_eq!(stable_id(&ElementId::NamedInteger("row".into(), 3)), "row-3");
+        assert_eq!(stable_id(&ElementId::Name("terminal-pane".into())), "terminal-pane");
     }
 }

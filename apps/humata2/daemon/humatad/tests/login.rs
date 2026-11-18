@@ -29,7 +29,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Request, Streaming};
 
-const FILES: [&str; 3] = ["humatad2", "humata2_holder", "humata"];
+const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 
 /// A tools bundle for linux-x86_64, which the fake `uname` claims to be.
 /// Its humatad2 runs the real one, so the peer link really comes up.
@@ -457,6 +457,7 @@ async fn daemon_with_agent() -> (Daemon, String) {
                 value: SESSION.to_owned(),
             }),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()

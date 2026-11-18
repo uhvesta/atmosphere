@@ -5,11 +5,15 @@ rust_library(
     srcs = glob(["src/*.rs"]),
     crate_name = "terminal_wire",
     visibility = [
+        "//apps/humata2/clients:__pkg__",
+        "//apps/humata2/clients/live:__pkg__",
+        "//apps/humata2/clients/terminal_link:__pkg__",
         "//apps/humata2/terminal/client:__pkg__",
         "//apps/humata2/terminal/demo:__pkg__",
         "//apps/humata2/terminal/host:__pkg__",
         "//apps/humata2/terminal/session:__pkg__",
         "//apps/humata2/terminal/web:__pkg__",
+        "//apps/humata2/ui:__pkg__",
     ],
     deps = [
         "//apps/humata2/terminal/codec",

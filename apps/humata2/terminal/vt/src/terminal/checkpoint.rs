@@ -94,6 +94,57 @@ impl Terminal {
         Ok(bytes)
     }
 
+    /// As [`Terminal::checkpoint`], but a checkpoint over `max_bytes` drops
+    /// the oldest history until it fits instead of failing. Returns the
+    /// bytes and how many history rows were dropped (0 when it fit as it
+    /// was). `history_lines` and `history_bytes` are the limits the history
+    /// is normally kept under; they are put back afterwards, so the history
+    /// grows again from what is left. It fails with
+    /// [`Error::CheckpointTooLarge`] only when the screen alone, with no
+    /// history, doesn't fit.
+    pub fn checkpoint_trimmed(
+        &mut self,
+        max_bytes: usize,
+        history_lines: usize,
+        history_bytes: usize,
+    ) -> Result<(Vec<u8>, usize), Error> {
+        match self.checkpoint(max_bytes) {
+            Err(Error::CheckpointTooLarge { .. }) => {}
+            other => return other.map(|bytes| (bytes, 0)),
+        }
+        let before = self.scrollback_rows();
+        let mut rows = before;
+        let mut fitted = None;
+        // Lowering the history limit evicts its oldest pages; stop as soon
+        // as it has no effect and erase what is left instead.
+        while rows > 0 && fitted.is_none() {
+            self.set_scrollback_limits(rows / 2, history_bytes)?;
+            let now = self.scrollback_rows();
+            if now >= rows {
+                break;
+            }
+            rows = now;
+            match self.checkpoint(max_bytes) {
+                Ok(bytes) => fitted = Some(bytes),
+                Err(Error::CheckpointTooLarge { .. }) => {}
+                Err(error) => {
+                    self.set_scrollback_limits(history_lines, history_bytes)?;
+                    return Err(error);
+                }
+            }
+        }
+        if fitted.is_none() && rows > 0 {
+            // CSI 3 J: erase the history.
+            self.feed(b"\x1b[3J");
+        }
+        self.set_scrollback_limits(history_lines, history_bytes)?;
+        let bytes = match fitted {
+            Some(bytes) => bytes,
+            None => self.checkpoint(max_bytes)?,
+        };
+        Ok((bytes, before.saturating_sub(self.scrollback_rows())))
+    }
+
     /// Restore an opaque checkpoint, with fresh local callbacks/encoders and
     /// no historical title, clipboard, bell or PTY reply side effects.
     /// The binary envelope uses fixed-width little-endian values on every OS.

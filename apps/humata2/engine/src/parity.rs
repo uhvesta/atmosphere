@@ -127,7 +127,12 @@ impl Pair {
     /// [`FrameError::Unsettled`] or [`FrameError::WindowGone`].
     pub fn settle(&self, cx: &mut HeadlessAppContext) -> Result<(), FrameError> {
         for window in [self.subject, self.reference] {
-            frame::settle(cx, window, |cx: &mut HeadlessAppContext| cx.run_until_parked(), 12)?;
+            frame::settle(
+                cx,
+                window,
+                |cx: &mut HeadlessAppContext| cx.run_until_parked(),
+                12,
+            )?;
         }
         Ok(())
     }
@@ -319,7 +324,10 @@ impl fmt::Display for Report {
                     "- {kind}: subject only {subject_only:?}, reference only {reference_only:?}"
                 )?,
                 Mismatch::PictureSize { subject, reference } => {
-                    writeln!(f, "- picture size: subject {subject:?}, reference {reference:?}")?;
+                    writeln!(
+                        f,
+                        "- picture size: subject {subject:?}, reference {reference:?}"
+                    )?;
                 }
                 Mismatch::Pixels { differing, first } => {
                     writeln!(f, "- {differing} pixels differ, the first at {first:?}")?;
@@ -409,8 +417,16 @@ pub fn compare(
     } else {
         let mut differing = 0;
         let mut first = None;
-        for (index, (a, b)) in s.rgba.chunks_exact(4).zip(r.rgba.chunks_exact(4)).enumerate() {
-            if a.iter().zip(b).any(|(a, b)| a.abs_diff(*b) > channel_tolerance) {
+        for (index, (a, b)) in s
+            .rgba
+            .chunks_exact(4)
+            .zip(r.rgba.chunks_exact(4))
+            .enumerate()
+        {
+            if a.iter()
+                .zip(b)
+                .any(|(a, b)| a.abs_diff(*b) > channel_tolerance)
+            {
                 differing += 1;
                 if first.is_none() {
                     let index = u32::try_from(index).unwrap_or(u32::MAX);
@@ -472,7 +488,10 @@ fn without_entity_ids(debug: &str) -> String {
     let mut out = String::with_capacity(marked.len());
     let mut digits = String::new();
     let flush = |digits: &mut String, out: &mut String| {
-        if digits.parse::<u64>().map_or(digits.len() > 10, |n| n >= 1 << 32) {
+        if digits
+            .parse::<u64>()
+            .map_or(digits.len() > 10, |n| n >= 1 << 32)
+        {
             out.push('_');
         } else {
             out.push_str(digits);
@@ -530,10 +549,13 @@ mod tests {
 
     #[test]
     fn ids_made_from_entities_compare_by_shape_and_small_numbers_stay() {
-        let subject = r#"[View(EntityId(5v1)), Name("21474836678"), NamedInteger("row", 3)] 873.5px"#;
-        let reference = r#"[View(EntityId(9v1)), Name("30064771233"), NamedInteger("row", 3)] 873.5px"#;
+        let subject =
+            r#"[View(EntityId(5v1)), Name("21474836678"), NamedInteger("row", 3)] 873.5px"#;
+        let reference =
+            r#"[View(EntityId(9v1)), Name("30064771233"), NamedInteger("row", 3)] 873.5px"#;
         assert_eq!(without_entity_ids(subject), without_entity_ids(reference));
-        let other_row = r#"[View(EntityId(9v1)), Name("30064771233"), NamedInteger("row", 4)] 873.5px"#;
+        let other_row =
+            r#"[View(EntityId(9v1)), Name("30064771233"), NamedInteger("row", 4)] 873.5px"#;
         assert_ne!(without_entity_ids(subject), without_entity_ids(other_row));
         let moved = r#"[View(EntityId(9v1)), Name("30064771233"), NamedInteger("row", 3)] 874.5px"#;
         assert_ne!(without_entity_ids(subject), without_entity_ids(moved));

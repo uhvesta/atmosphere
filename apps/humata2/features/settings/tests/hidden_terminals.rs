@@ -1,0 +1,40 @@
+//! The "free memory of hidden terminals" switch: on at first, toggles, and
+//! is found by the palette in General.
+use humata2_clients::{Clients, fixture};
+use humata2_settings::{Preferences, Row, Section, Settings, SettingsAction as A, SettingsState};
+use std::sync::Arc;
+use tca::{TestClock, TestStore};
+
+fn store() -> TestStore<Settings> {
+    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    TestStore::new(SettingsState::default(), Settings::new(clients))
+}
+
+#[test]
+fn hidden_terminals_are_freed_by_default() {
+    assert!(Preferences::default().free_hidden_terminals);
+}
+
+#[test]
+fn toggling_turns_it_off_and_back_on() {
+    let mut store = store();
+    store.send(A::ToggleFreeHiddenTerminals, |s| {
+        s.preferences.free_hidden_terminals = false
+    });
+    store.send(A::ToggleFreeHiddenTerminals, |s| {
+        s.preferences.free_hidden_terminals = true
+    });
+    store.finish();
+}
+
+#[test]
+fn the_row_is_in_general_and_reachable_from_the_palette() {
+    assert_eq!(Row::FreeHiddenTerminals.section(), Section::General);
+    assert!(Row::ALL.contains(&Row::FreeHiddenTerminals));
+    let mut store = store();
+    store.send(A::Reveal(Row::FreeHiddenTerminals), |s| {
+        s.section = Section::General;
+        s.revealed = Some(Row::FreeHiddenTerminals);
+    });
+    store.finish();
+}

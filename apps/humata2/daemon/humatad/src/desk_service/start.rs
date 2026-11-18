@@ -8,8 +8,9 @@ use humata2_sessions::{DeskFolder, DeskStart};
 use humata2_store::TabRecord;
 use tonic::{Code, Status};
 
+use super::remote::{Assigned, Kind, Plan};
 use super::view;
-use super::{DeskSvc, failed_precondition, load, start_failure};
+use super::{DeskSvc, load, start_failure};
 use crate::channel_service::{blocking, failed};
 use crate::identity::{self, Caller};
 use crate::operations::{Progress, Started};
@@ -32,19 +33,23 @@ impl DeskSvc {
         &self,
         caller: &Caller,
         request: pb::StartDeskSessionRequest,
+        assigned: Option<Assigned>,
     ) -> Result<pb::StartDeskSessionResponse, Status> {
-        if let Some(machine) = request
-            .machine
-            .as_ref()
-            .map(|machine| machine.value.as_str())
-            .filter(|machine| !machine.is_empty())
-            && machine != self.machine
-        {
-            return Err(failed_precondition(
-                format!("machine {machine} isn't this one, and Desk sessions can only start on this machine until other machines are built (MACH), so nothing was started"),
-                "leave machine unset, or name this machine, and start the Desk session again",
+        // D451, D460: nobody picks a folder. A new session is placed by the
+        // roots, so a request that names one is refused whole (an older app
+        // is told why instead of having the field dropped), before anything
+        // is looked up or made.
+        if !request.picked_path.trim().is_empty() {
+            return Err(status::invalid_field(
+                "picked_path",
+                pb::invalid_field::Problem::NotAllowedHere,
+                "a new Desk session is placed by Humata in its Desk folder, so it can't be started in a folder you picked",
+                "leave picked_path empty; Humata makes the session's folder itself, and an older Desk session in a folder you picked keeps working where it is",
             ));
         }
+        // MV-17: another machine takes the start, the host's relay carrying it.
+        let remote = self.remote_machine(request.machine.as_ref())?;
+        let original = request.clone();
         let title = clean_title(&request.title)?;
         let title = if title.is_empty() {
             "Session".to_owned()
@@ -52,11 +57,22 @@ impl DeskSvc {
             title
         };
         let agent = self.agent(request.agent.as_ref())?;
-        let folder = match request.picked_path.trim() {
-            "" => DeskFolder::Scratch,
-            path => DeskFolder::Picked(path.to_owned()),
-        };
         let access = request.access.unwrap_or_default();
+        if let Some(assigned) = &assigned
+            && let Some(known) = self.known_start(&assigned.id).await?
+        {
+            return Ok(known);
+        }
+        if let Some((machine, work)) = remote {
+            let plan = Plan {
+                machine,
+                work,
+                kind: Kind::Plain { access },
+                title,
+                agent,
+            };
+            return self.start_remote(caller, plan, original).await;
+        }
 
         if let Some(operation) = self
             .operations
@@ -64,7 +80,10 @@ impl DeskSvc {
         {
             return self.answered(operation).await;
         }
-        let id = format!("se_{}", uuid::Uuid::new_v4().simple());
+        let id = assigned.as_ref().map_or_else(
+            || format!("se_{}", uuid::Uuid::new_v4().simple()),
+            |assigned| assigned.id.clone(),
+        );
         let steps: Vec<(String, String)> = STEPS
             .iter()
             .map(|(key, title)| ((*key).to_owned(), (*title).to_owned()))
@@ -93,8 +112,7 @@ impl DeskSvc {
             model: Some(request.model).filter(|model| !model.is_empty()),
             first_message: Some(request.first_message).filter(|message| !message.is_empty()),
             machine: self.machine.clone(),
-            folder,
-            state: self.state.clone(),
+            folder: DeskFolder::Scratch,
             repos: request
                 .repos
                 .iter()
@@ -106,8 +124,17 @@ impl DeskSvc {
             cols: COLS,
             rows: ROWS,
         };
+        let added: Vec<(String, String)> = start.repos.clone();
         match self.run(start, &progress).await {
             Ok(()) => {
+                // REPOS (RL-1): the repos a Desk session started with are used on the Desk.
+                let channels = self.channels.clone();
+                let _ = blocking(move || {
+                    for (owner, name) in &added {
+                        channels.record_added(owner, name, &humata2_repo_library::Place::Desk);
+                    }
+                })
+                .await;
                 progress.set_step("verify", pb::StepState::Done, None);
                 progress.succeed(Some(pb::operation::Result::Session(pb::SessionId {
                     value: id.clone(),
@@ -148,7 +175,7 @@ impl DeskSvc {
 
     /// The response for a start that already happened: its session, its
     /// operation and its Desk row.
-    async fn answered(&self, operation: pb::Operation) -> Result<pb::StartDeskSessionResponse, Status> {
+    pub(super) async fn answered(&self, operation: pb::Operation) -> Result<pb::StartDeskSessionResponse, Status> {
         let key = operation
             .id
             .as_ref()
@@ -195,6 +222,8 @@ impl DeskSvc {
             .map(|agent| agent.value.clone())
             .filter(|agent| !agent.is_empty())
             .unwrap_or_else(|| self.default_agent.clone());
+        // SEAM: AGENTSET: a Desk start of a kind that is off is refused.
+        crate::agent_gate::enabled(&self.starter.agents, &name)?;
         self.starter.agents.get(&name).map(|_| name.clone()).map_err(|error| {
             failed(
                 Code::InvalidArgument,

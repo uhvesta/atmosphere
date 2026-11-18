@@ -29,6 +29,27 @@ async fn initialize_names_the_server_humata_and_offers_tools() {
     assert!(result["capabilities"]["tools"].is_object());
 }
 
+/// MCP.md §1, D743, D748: the agent is told what the tools do, never where
+/// the session's repos, clones or folder are, nor their branches.
+#[tokio::test]
+async fn initialize_instructions_say_what_the_tools_do_and_name_no_path_or_branch() {
+    let daemon = FakeDaemon::new();
+    let mut client = Client::start(&daemon);
+
+    let reply = client
+        .request(json!(1), "initialize", json!({ "protocolVersion": "2025-06-18" }))
+        .await;
+
+    let instructions = reply["result"]["instructions"].as_str().expect("instructions");
+    for tool in ["board_", "review_", "inbox_request", "inbox_ask", "humata --help"] {
+        assert!(instructions.contains(tool), "{tool}: {instructions}");
+    }
+    assert!(!instructions.contains('/'), "no path: {instructions}");
+    for word in ["branch", "clone", "folder", "worktree"] {
+        assert!(!instructions.to_lowercase().contains(word), "{word}: {instructions}");
+    }
+}
+
 /// MCP.md §1
 #[tokio::test]
 async fn initialize_with_an_unknown_version_answers_with_the_newest_one_it_speaks() {

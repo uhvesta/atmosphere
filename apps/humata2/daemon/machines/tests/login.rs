@@ -36,6 +36,7 @@ fn fake_files() -> Vec<Payload> {
         Payload::new(InstalledFile::Humatad, Arc::from(humatad.as_bytes())),
         Payload::new(InstalledFile::Holder, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
         Payload::new(InstalledFile::Cli, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
+        Payload::new(InstalledFile::Stack, Arc::from(&b"#!/bin/sh\nexit 0\n"[..])),
     ]
 }
 

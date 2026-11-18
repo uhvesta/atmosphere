@@ -43,6 +43,13 @@ struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    // Says it is running before anything slow, so the starter can tell a
+    // launch the OS is slow to make from a start-up of ours that is stuck.
+    {
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "started");
+        let _ = stdout.flush();
+    }
     // Leaves the starter's session, so a hang-up there doesn't reach the
     // holder. Already a session leader is fine.
     let _ = rustix::process::setsid();

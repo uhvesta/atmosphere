@@ -75,6 +75,7 @@ fn hello() -> pb::HelloRequest {
         nonce: HOST_NONCE.to_vec(),
         sync_marker: String::new(),
         chunk_codecs: Vec::new(),
+        host_build: None,
     }
 }
 

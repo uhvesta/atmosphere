@@ -63,8 +63,9 @@ Button "Expand terminal"
 Button "Toggle side panel"
 Button "Session actions"
 Toolbar "Desk folder"
+  Status "Kept"
+  Button "Copy path"
   Button "Machine: devbox-1"
-  text "~/Humata/desk/brin-rfc"
   Button "Remove acme/ledger"
   Button "Remove acme/api"
   Button "Add repo"
@@ -77,6 +78,15 @@ RadioGroup "Show the file as"
   RadioButton "Preview" selected
   RadioButton "Source"
   RadioButton "Side by side"
+Region "Versions"
+  Button "Older version" disabled
+  Button "Newer version" disabled
+  Button "History ▾" disabled
+  #doc-version-message
+    #input
+      TextInput "What changed? (optional)" value="" placeholder="What changed? (optional)"
+  Button "Save version"
+  Region "No versions yet"
 Document "rfc-brin.md preview"
   Document "rfc-brin.md"
     Heading "Heading 1, level 1"

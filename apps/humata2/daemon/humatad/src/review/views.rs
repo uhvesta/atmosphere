@@ -6,12 +6,13 @@
 //! the calls that made it, so a restart keeps views and a repeated call
 //! acts once.
 
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use humata2_access::{Call, Capability, SessionRef, Target};
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
-use humata2_review_diff::wire;
+use humata2_review_diff::{NoteState, NoteTarget, wire};
 use humata2_store::{SessionRecord, StoreError, ViewRecord};
 use pb::invalid_field::Problem;
 use prost::Message;
@@ -19,6 +20,7 @@ use tonic::{Code, Status};
 
 use super::{Review, blocking, idempotency, own_session};
 use crate::events::Scope;
+use crate::guard::Checked;
 use crate::identity::{self, Caller};
 use crate::status;
 
@@ -193,6 +195,30 @@ impl Review {
         if offered {
             held.view.state = pb::ViewState::Waiting as i32;
             held.bump();
+            // VW-12: on a machine, the offer is kept for the host before the
+            // agent hears of it. Nothing is saved when it can't be kept, so
+            // the agent marks it ready again. Drafts and revisions are never
+            // journaled.
+            let link = self.inner.guard.host_link();
+            if !link.on_host() {
+                let seq = crate::away::record_view_journal(&self.inner.store, &link, &record.id, &held.view)
+                    .await
+                    .map_err(|error| {
+                        status::internal(
+                            format!(
+                                "this view wasn't offered and will not reach the Mac: {}",
+                                status::chain(&error)
+                            ),
+                            "",
+                        )
+                    })?;
+                held.view.journal = Some(pb::JournalPosition {
+                    machine: Some(pb::MachineId {
+                        value: self.inner.machine.clone(),
+                    }),
+                    seq,
+                });
+            }
         } else if key.is_none() {
             return Ok(held.view);
         }
@@ -200,7 +226,8 @@ impl Review {
         self.put(held, key, told, caller).await
     }
 
-    /// ListViews: a session's views, newest first. Drafts only to the
+    /// ListViews: a session's views, newest first. With `include_forks`, the
+    /// views of its forks and their forks too (VW-10). Drafts only to the
     /// session's own agent (VW-14). With no session, the user gets every
     /// session's offered views, and an agent its own session's.
     pub(super) async fn list_prepared(
@@ -219,16 +246,71 @@ impl Review {
         };
         let (record, session) = self.session(Some(&asked))?;
         self.require(caller, &Call::ReadSession(session))?;
-        let own = own_session(caller).is_some_and(|own| own.value == record.id);
-        // A session's forks aren't known to this daemon's store yet, so
-        // include_forks lists the session's own views.
-        let views = self
-            .views_of(&record.id)?
-            .into_iter()
-            .filter(|held| own || held.state() != pb::ViewState::Draft)
-            .map(|held| held.view)
-            .collect();
+        let mut sessions = vec![record.id.clone()];
+        if request.include_forks {
+            sessions.extend(self.forks_below(&record.id, caller)?);
+        }
+        let mut listed = Vec::new();
+        for id in &sessions {
+            let own = own_session(caller).is_some_and(|own| own.value == *id);
+            listed.extend(
+                self.views_of(id)?
+                    .into_iter()
+                    .filter(|held| own || held.state() != pb::ViewState::Draft),
+            );
+        }
+        listed.sort_by(|a, b| {
+            (b.record.prepared_unix_ms, &b.record.id).cmp(&(a.record.prepared_unix_ms, &a.record.id))
+        });
+        let views = listed.into_iter().map(|held| held.view).collect();
+        let views = self.recheck_plans(caller, views).await;
         Ok(pb::ListViewsResponse { views, page: None })
+    }
+
+    /// The forks of `root` and their forks, each once, that `caller` may
+    /// read; one it may not read is left out, not refused, as a board's is.
+    /// The walk is over the store's fork origins, and a cycle in them ends
+    /// it.
+    fn forks_below(&self, root: &str, caller: &Caller) -> Result<Vec<String>, Status> {
+        let origins = self
+            .inner
+            .store
+            .fork_origins()
+            .map_err(|error| status::store(error, &self.inner.machine, "list the forks"))?;
+        let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+        for origin in &origins {
+            children
+                .entry(origin.parent.as_str())
+                .or_default()
+                .push(origin.session_id.as_str());
+        }
+        let mut seen: HashSet<&str> = HashSet::from([root]);
+        let mut todo = vec![root];
+        let mut forks = Vec::new();
+        while let Some(at) = todo.pop() {
+            for &child in children.get(at).into_iter().flatten() {
+                if seen.insert(child) {
+                    todo.push(child);
+                    forks.push(child);
+                }
+            }
+        }
+        let mut readable = Vec::new();
+        for fork in forks {
+            // A fork this store no longer holds has no views to list.
+            let Ok((_, session)) = self.session(Some(&pb::SessionId {
+                value: fork.to_owned(),
+            })) else {
+                continue;
+            };
+            if matches!(
+                self.inner.guard.check(caller, &Call::ReadSession(session)),
+                Ok(Checked::Allowed)
+            ) {
+                readable.push(fork.to_owned());
+            }
+        }
+        Ok(readable)
     }
 
     /// Every session's offered views on this daemon, newest first.
@@ -243,7 +325,9 @@ impl Review {
             offered.extend(
                 self.views_of(&session.id)?
                     .into_iter()
-                    .filter(|held| held.state() != pb::ViewState::Draft),
+                    // VW-5: Not now hides the offer; the view stays in the
+                    // Journal.
+                    .filter(|held| !matches!(held.state(), pb::ViewState::Draft | pb::ViewState::NotNow)),
             );
         }
         offered.sort_by(|a, b| {
@@ -619,4 +703,89 @@ fn now() -> (Timestamp, i64) {
         nanos: i32::try_from(since.subsec_nanos()).unwrap_or(0),
     };
     (at, i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
+
+impl Review {
+    /// Each review plan of `views` with its notes read against the files
+    /// as they are now (RV-34): a note whose lines only moved is shown at
+    /// its new lines, one whose lines changed is marked outdated. The
+    /// store keeps the plan as it was prepared. A plan whose clones can't
+    /// be read now is listed as prepared.
+    async fn recheck_plans(
+        &self,
+        caller: &Caller,
+        views: Vec<pb::PreparedView>,
+    ) -> Vec<pb::PreparedView> {
+        let mut checked = Vec::with_capacity(views.len());
+        for mut view in views {
+            // Each plan is read against its own session's clones: with
+            // include_forks a fork's plan is listed beside the session's.
+            if let Some(pb::prepared_view::Content::ReviewPlan(plan)) = &view.content
+                && let Ok((record, session)) = self.session(view.session.as_ref())
+                && let Ok(plan) = self.rechecked_plan(caller, &record, &session, plan).await
+            {
+                view.content = Some(pb::prepared_view::Content::ReviewPlan(plan));
+            }
+            checked.push(view);
+        }
+        checked
+    }
+
+    async fn rechecked_plan(
+        &self,
+        caller: &Caller,
+        record: &SessionRecord,
+        session: &SessionRef,
+        plan: &pb::ReviewPlan,
+    ) -> Result<pb::ReviewPlan, Status> {
+        if plan.notes.is_empty() {
+            return Ok(plan.clone());
+        }
+        let mut stored = wire::stored_plan_from_pb(plan)
+            .map_err(|error| status::internal(format!("a stored review plan didn't read back: {error}"), ""))?;
+        let asked: Vec<pb::RepoRef> = stored.spec.repos.iter().map(|repo| wire::repo_ref(&repo.repo)).collect();
+        let keys = super::repo_keys(&self.inner, record, &asked).await?;
+        self.require_read(caller, session, &keys)?;
+        let clones = super::clones(record, &keys).await?;
+        let diffs = clones
+            .diff(&stored.spec, &super::context_of(record))
+            .await
+            .map_err(|error| super::diff_failed(&error))?;
+        let mut states: Vec<Option<NoteState>> = vec![None; stored.notes.len()];
+        for diff in &diffs {
+            let checkout = clones.get(&diff.repo).map_err(|error| super::diff_failed(&error))?.clone();
+            let found = checkout
+                .note_states(diff.clone(), stored.notes.clone())
+                .await
+                .map_err(|error| super::diff_failed(&error))?;
+            for (state, found) in states.iter_mut().zip(found) {
+                if state.is_none() {
+                    *state = found;
+                }
+            }
+        }
+        let mut outdated = Vec::with_capacity(states.len());
+        for (note, state) in stored.notes.iter_mut().zip(&states) {
+            outdated.push(match state {
+                Some(NoteState::Current { first, last }) => {
+                    match &mut note.target {
+                        NoteTarget::Lines {
+                            first: was_first,
+                            last: was_last,
+                            ..
+                        } => {
+                            *was_first = *first;
+                            *was_last = *last;
+                        }
+                        NoteTarget::Hunk { line, .. } => *line = *first,
+                        NoteTarget::File => {}
+                    }
+                    false
+                }
+                Some(NoteState::Outdated | NoteState::Gone) => true,
+                Some(NoteState::OnFile) | None => false,
+            });
+        }
+        Ok(wire::plan_to_pb(&stored, &outdated))
+    }
 }

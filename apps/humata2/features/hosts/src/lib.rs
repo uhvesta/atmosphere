@@ -4,9 +4,15 @@
 //!
 //! Which hosts were connected is saved; after a restart a host that was
 //! connected but doesn't answer says so next to its Connect button.
+//!
+//! A machine whose sessions are stopped reads "Sessions stopped" and its
+//! row's one action is Start sessions (frame 74), which opens the same
+//! Start confirm the machine's page has (frame 75). The confirm is this
+//! page's own: one machine at a time, kept here rather than in the page.
 
 pub mod add;
 pub mod page;
+pub mod scripts;
 
 pub use add::{AddMachine, AddMachineAction, AddMachineState};
 pub use page::{MachinePage, MachinePageAction, MachinePageState};
@@ -14,10 +20,40 @@ pub use page::{MachinePage, MachinePageAction, MachinePageState};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use humata2_clients::machines::MachineDetail;
-use humata2_clients::model::{MachineId, Recovery, SessionId};
+use humata2_clients::machines::{MachineDetail, Started};
+use humata2_clients::model::{MachineId, Recovery, RootPlan, SessionId};
 use humata2_clients::{Clients, DaemonError, Workspace};
 use tca::{Effect, Reducer};
+
+/// The sheet that changes a machine's Humata folder (PL-1, FC-10, ST-5),
+/// opened by Change… in Settings › Machines. It holds what is typed, the plan
+/// the daemon made for it, and the change while it runs. Nothing moves until
+/// a choice is made on a plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootChange {
+    /// The machine.
+    pub machine: MachineId,
+    /// The folder as typed; it starts as the machine's current root.
+    pub text: String,
+    /// A plan is being made for the text.
+    pub planning: bool,
+    /// What the daemon found under the old root, for the text as it was
+    /// when asked; dropped when the text changes.
+    pub plan: Option<RootPlan>,
+    /// The change was sent and is awaited.
+    pub running: bool,
+    /// Why the last plan or change failed, in the daemon's words.
+    pub error: Option<String>,
+}
+
+impl RootChange {
+    /// Whether Move them can be chosen: a plan is shown and no session runs
+    /// in the channels it would move.
+    #[must_use]
+    pub fn can_move(&self) -> bool {
+        !self.running && self.plan.as_ref().is_some_and(|plan| plan.running.is_empty())
+    }
+}
 
 /// The hosts page's state.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -36,6 +72,12 @@ pub struct HostsState {
     pub errors: BTreeMap<MachineId, String>,
     /// What each machine's daemon last reported (HO-4); kept when a later read fails.
     pub health: BTreeMap<MachineId, MachineDetail>,
+    /// The machine whose Start confirm is open (frame 75).
+    pub start_confirm: Option<MachineId>,
+    /// Machines whose start was sent and is awaited.
+    pub starting: BTreeSet<MachineId>,
+    /// The Change… sheet for a machine's Humata folder, when open.
+    pub root_change: Option<RootChange>,
 }
 
 impl HostsState {
@@ -58,6 +100,9 @@ pub enum Delegate {
     OpenSession(SessionId),
     /// Say this in a toast.
     Toast(String),
+    /// A machine's Humata folder was changed to this one; the app's copy of
+    /// the machine follows without waiting for the daemon's event.
+    RootChanged(MachineId, String),
 }
 
 /// What happens on the hosts page.
@@ -77,6 +122,35 @@ pub enum HostsAction {
     Connected(MachineId, Result<Vec<(SessionId, Recovery)>, DaemonError>),
     /// A machine's health was read.
     Health(MachineId, Result<MachineDetail, DaemonError>),
+    /// A stopped machine's Start sessions: opens the Start confirm. Does
+    /// nothing for a machine whose sessions run.
+    StartSessions(MachineId),
+    /// The confirm's Start sessions.
+    ConfirmStart,
+    /// The confirm's Cancel: closes it, sends nothing.
+    DismissStart,
+    /// A start finished; a failure shows on the machine's row as a connect
+    /// failure does.
+    SessionsStarted(MachineId, Result<Started, DaemonError>),
+    /// Change… on a machine's Humata folder: opens the sheet with the
+    /// current root typed in. Nothing is asked of the daemon yet.
+    OpenRoot(MachineId),
+    /// The folder field changed; a plan made for other text is dropped.
+    RootText(String),
+    /// Plan: asks what changing to the typed folder would reach.
+    PlanRoot,
+    /// A plan came back for the machine and the text that was asked.
+    RootPlanned(MachineId, String, Result<RootPlan, DaemonError>),
+    /// Move them (`move_channels`) or Use for new channels only: applies the
+    /// shown plan. Moving is ignored while sessions run in the channels.
+    ApplyRoot {
+        /// Whether to move the plan's channels into the new root.
+        move_channels: bool,
+    },
+    /// The change finished for the machine, to the root named.
+    RootApplied(MachineId, String, Result<(), DaemonError>),
+    /// Closes the sheet; ignored while a change runs.
+    DismissRoot,
     /// For the parent.
     Delegate(Delegate),
 }
@@ -178,6 +252,124 @@ impl Reducer for Hosts {
                     Err(error) => {
                         state.errors.insert(machine, error.to_string());
                     }
+                }
+            }
+            HostsAction::StartSessions(machine) => {
+                let stopped = state.workspace.machine(&machine).is_some_and(|found| found.stop.is_some());
+                if stopped && !state.starting.contains(&machine) {
+                    state.start_confirm = Some(machine);
+                }
+            }
+            HostsAction::DismissStart => state.start_confirm = None,
+            HostsAction::ConfirmStart => {
+                let Some(machine) = state.start_confirm.take() else {
+                    return Effect::none();
+                };
+                if !state.starting.insert(machine.clone()) {
+                    return Effect::none();
+                }
+                state.errors.remove(&machine);
+                let call = self.clients.machines.start_sessions(&machine);
+                return Effect::future(async move { HostsAction::SessionsStarted(machine, call.await) });
+            }
+            HostsAction::SessionsStarted(machine, result) => {
+                state.starting.remove(&machine);
+                match result {
+                    Ok(_) => {
+                        if let Some(detail) = state.health.get_mut(&machine) {
+                            detail.stop = None;
+                        }
+                    }
+                    Err(error) => {
+                        state.errors.insert(machine, error.to_string());
+                    }
+                }
+            }
+            HostsAction::OpenRoot(machine) => {
+                if let Some(found) = state.workspace.machine(&machine) {
+                    state.root_change = Some(RootChange {
+                        text: found.root.clone(),
+                        machine,
+                        planning: false,
+                        plan: None,
+                        running: false,
+                        error: None,
+                    });
+                }
+            }
+            HostsAction::RootText(text) => {
+                if let Some(sheet) = state.root_change.as_mut().filter(|sheet| !sheet.running) {
+                    sheet.text = text;
+                    sheet.plan = None;
+                    sheet.error = None;
+                }
+            }
+            HostsAction::PlanRoot => {
+                let Some(sheet) = state.root_change.as_mut() else {
+                    return Effect::none();
+                };
+                let root = sheet.text.trim().to_owned();
+                if sheet.running || sheet.planning || root.is_empty() {
+                    return Effect::none();
+                }
+                sheet.planning = true;
+                sheet.plan = None;
+                sheet.error = None;
+                let machine = sheet.machine.clone();
+                let call = self.clients.machines.plan_change_root(&machine, &root);
+                return Effect::future(async move { HostsAction::RootPlanned(machine, root, call.await) });
+            }
+            HostsAction::RootPlanned(machine, root, result) => {
+                if let Some(sheet) = state.root_change.as_mut().filter(|sheet| sheet.machine == machine) {
+                    sheet.planning = false;
+                    // A plan for text that has since changed is not the one to show.
+                    if sheet.text.trim() == root {
+                        match result {
+                            Ok(plan) => sheet.plan = Some(plan),
+                            Err(error) => sheet.error = Some(error.to_string()),
+                        }
+                    }
+                }
+            }
+            HostsAction::ApplyRoot { move_channels } => {
+                let Some(sheet) = state.root_change.as_mut() else {
+                    return Effect::none();
+                };
+                if sheet.running || (move_channels && !sheet.can_move()) {
+                    return Effect::none();
+                }
+                let Some(plan) = sheet.plan.clone() else {
+                    return Effect::none();
+                };
+                sheet.running = true;
+                sheet.error = None;
+                let call = self.clients.machines.change_root(&plan, move_channels);
+                return Effect::future(async move {
+                    HostsAction::RootApplied(plan.machine, plan.new_root, call.await)
+                });
+            }
+            HostsAction::RootApplied(machine, root, result) => {
+                let Some(sheet) = state.root_change.as_mut().filter(|sheet| sheet.machine == machine) else {
+                    return Effect::none();
+                };
+                match result {
+                    Ok(()) => {
+                        state.root_change = None;
+                        let workspace = Arc::make_mut(&mut state.workspace);
+                        if let Some(found) = workspace.machines.iter_mut().find(|found| found.id == machine) {
+                            found.root.clone_from(&root);
+                        }
+                        return Effect::send(HostsAction::Delegate(Delegate::RootChanged(machine, root)));
+                    }
+                    Err(error) => {
+                        sheet.running = false;
+                        sheet.error = Some(error.to_string());
+                    }
+                }
+            }
+            HostsAction::DismissRoot => {
+                if state.root_change.as_ref().is_some_and(|sheet| !sheet.running) {
+                    state.root_change = None;
                 }
             }
             HostsAction::Delegate(_) => {}

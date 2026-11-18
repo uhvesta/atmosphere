@@ -7,7 +7,9 @@ use std::collections::HashSet;
 use std::fs;
 
 use humata2_revive::Env;
-use humata2_store::{MainClone, SessionRecord, StartStep, Store, StoreError};
+use humata2_store::{
+    AgentRecord, MainClone, SessionDetail, SessionRecord, StartStep, Store, StoreError, TabRecord,
+};
 
 use crate::error::StartError;
 use crate::layout::partial;
@@ -56,6 +58,28 @@ impl Leftovers {
                 .collect(),
         })
     }
+
+    /// The sessions among these whose start `recover` will finish or undo:
+    /// those whose start hadn't reached its end, and those saved but cut
+    /// off before their start was recorded. Read with [`Leftovers::read`],
+    /// before the daemon listens, so the restart report can name each one
+    /// as owed before it is written (D241).
+    pub fn cut_starts(&self, store: &Store) -> Result<Vec<String>, StoreError> {
+        let details = store.session_details()?;
+        let (sessions, agents, tabs) = (store.sessions()?, store.agents()?, store.tabs()?);
+        let mut cut: Vec<String> = details
+            .iter()
+            .filter(|detail| detail.start != StartStep::Done && self.sessions.contains(&detail.session))
+            .map(|detail| detail.session.clone())
+            .collect();
+        cut.extend(
+            sessions
+                .iter()
+                .filter(|session| self.sessions.contains(&session.id) && unrecorded(session, &details, &agents, &tabs))
+                .map(|session| session.id.clone()),
+        );
+        Ok(cut)
+    }
 }
 
 /// Finishes or undoes every unfinished channel setup and session start
@@ -73,6 +97,29 @@ pub async fn recover(starter: &Starter, env: Env<'_>, left: &Leftovers) -> Vec<R
 /// session start's partials are one folder deeper and are left alone. Best
 /// effort: nothing is reported, and a channel with no sessions folder has
 /// nothing to remove.
+/// The copy notes in `folder` when they are all it holds, each named as
+/// the note it is (a note cut while written is its `.tmp`); `None` when
+/// the folder holds anything else, or nothing.
+fn copy_notes_only(folder: &std::path::Path) -> Option<Vec<std::path::PathBuf>> {
+    let mut entries = fs::read_dir(folder).ok()?;
+    let only = entries.next()?.ok()?;
+    if entries.next().is_some() || only.file_name() != ".humata" {
+        return None;
+    }
+    let mut notes = Vec::new();
+    for entry in fs::read_dir(only.path()).ok()? {
+        let name = entry.ok()?.file_name();
+        let name = name.to_str()?;
+        if !name.starts_with("fork-copy-") {
+            return None;
+        }
+        notes.push(only.path().join(name.strip_suffix(".tmp").unwrap_or(name)));
+    }
+    notes.sort();
+    notes.dedup();
+    (!notes.is_empty()).then_some(notes)
+}
+
 async fn remove_own_copy_partials(starter: &Starter) {
     let this = starter.clone();
     let Ok(Ok(channels)) = blocking(move || this.store.channels()).await else {
@@ -105,8 +152,16 @@ async fn remove_own_copy_partials(starter: &Starter) {
                     // copy cut before its records were saved. Only its note
                     // says so; any other folder has none.
                     let note = crate::own_copy::own_copy_note(&entry.path());
-                    if note.exists() && crate::fork::remove_noted_copy(&note).is_ok() {
-                        let _ = fs::remove_dir_all(entry.path());
+                    if note.exists() {
+                        if crate::fork::remove_noted_copy(&note).is_ok() {
+                            let _ = fs::remove_dir_all(entry.path());
+                        }
+                    } else if let Some(notes) = copy_notes_only(&entry.path()) {
+                        // A continue cut after its copy note and before its
+                        // records: the folder holds the note and nothing else.
+                        if notes.iter().all(|note| crate::fork::remove_noted_copy(note).is_ok()) {
+                            let _ = fs::remove_dir_all(entry.path());
+                        }
                     }
                 }
             }
@@ -214,10 +269,22 @@ async fn recover_sessions(
         let id = session.id.clone();
         let this = starter.clone();
         let forked = blocking(move || this.store.fork_origin(&id)).await;
-        if agent.is_none() && matches!(forked, Ok(Ok(Some(_)))) {
+        let is_fork = matches!(forked, Ok(Ok(Some(_))));
+        // A session continued from another one (CV-8) keeps its conversation
+        // copy noted until its agent starts.
+        let note = crate::fork::copy_note(&session.folder, &session.id);
+        let continued = blocking(move || note.exists()).await.unwrap_or(false);
+        if agent.is_none() && (is_fork || continued) {
             // A fork's code is a copy of its parent's, so cloning the rest
-            // from main would make something else: take it back.
-            let reason = "its fork was cut short before its agent started".to_owned();
+            // from main would make something else: take it back. A
+            // continued session without its conversation would be another
+            // session than the one asked for: take it back too.
+            let reason = if is_fork {
+                "its fork was cut short before its agent started".to_owned()
+            } else {
+                "it was cut short while copying another session's conversation, before its agent started"
+                    .to_owned()
+            };
             done.push(match starter.undo(&session).await {
                 Ok(()) => Recovery::SessionUndone {
                     session: session.id,
@@ -231,7 +298,11 @@ async fn recover_sessions(
             continue;
         }
         let outcome = if agent.is_some() {
-            // The launch was recorded, and revive has brought it back.
+            // The launch was recorded, and revive has brought it back. The
+            // agent record names any conversation copy now, so its note goes
+            // as it does after a launch that wasn't cut.
+            let (folder, id) = (session.folder.clone(), session.id.clone());
+            let _ = blocking(move || crate::fork::forget_note(&crate::fork::copy_note(&folder, &id))).await;
             let mut detail = detail;
             starter.set_step(&mut detail, StartStep::Done).await
         } else {
@@ -291,6 +362,18 @@ async fn finish(
         .map(|_| ())
 }
 
+/// Whether `session` was saved and then cut off before its start was
+/// recorded: no detail, agent or tab, and a folder missing or empty.
+fn unrecorded(session: &SessionRecord, details: &[SessionDetail], agents: &[AgentRecord], tabs: &[TabRecord]) -> bool {
+    let has = details.iter().any(|d| d.session == session.id)
+        || agents.iter().any(|a| a.session == session.id)
+        || tabs
+            .iter()
+            .any(|t| t.session.as_deref() == Some(session.id.as_str()));
+    let empty = std::fs::read_dir(&session.folder).map_or(true, |mut d| d.next().is_none());
+    !has && empty
+}
+
 /// A session saved but cut off before its start was recorded has no
 /// detail, agent or tab, and its folder is missing or empty: nothing
 /// else could have made it, so it is removed.
@@ -316,13 +399,7 @@ async fn remove_unrecorded(
         .into_iter()
         .filter(|session| left.sessions.contains(&session.id))
     {
-        let has = details.iter().any(|d| d.session == session.id)
-            || agents.iter().any(|a| a.session == session.id)
-            || tabs
-                .iter()
-                .any(|t| t.session.as_deref() == Some(session.id.as_str()));
-        let empty = std::fs::read_dir(&session.folder).map_or(true, |mut d| d.next().is_none());
-        if has || !empty {
+        if !unrecorded(&session, details, &agents, &tabs) {
             continue;
         }
         done.push(match starter.undo(&session).await {
@@ -335,5 +412,65 @@ async fn remove_unrecorded(
                 reason: error.to_string(),
             },
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: &str, folder: &std::path::Path) -> SessionRecord {
+        SessionRecord {
+            id: id.to_owned(),
+            channel: "desk".to_owned(),
+            machine: String::new(),
+            title: id.to_owned(),
+            agent: "claude".to_owned(),
+            folder: folder.to_owned(),
+            created_unix_ms: 1,
+        }
+    }
+
+    fn detail(id: &str, start: StartStep) -> SessionDetail {
+        SessionDetail {
+            session: id.to_owned(),
+            repos: Vec::new(),
+            model: None,
+            first_message: None,
+            start,
+            operation: None,
+            revision: 1,
+        }
+    }
+
+    /// The sessions recovery will finish or undo are named, and no others:
+    /// not a finished start, not an unrecorded session whose folder holds
+    /// someone's work, not a session made after the leftovers were read.
+    #[test]
+    fn the_starts_recovery_will_finish_or_undo_are_named_and_no_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("state")).unwrap();
+        let folders = dir.path().join("folders");
+        for (id, step) in [("se_cut", Some(StartStep::Launching)), ("se_done", Some(StartStep::Done)), ("se_bare", None), ("se_used", None)] {
+            let folder = folders.join(id);
+            fs::create_dir_all(&folder).unwrap();
+            if id == "se_used" {
+                fs::write(folder.join("notes.md"), "mine\n").unwrap();
+            }
+            store.put_session(&session(id, &folder)).unwrap();
+            if let Some(step) = step {
+                store.put_session_detail(&detail(id, step)).unwrap();
+            }
+        }
+        let left = Leftovers::read(&store).unwrap();
+        let later = folders.join("se_later");
+        fs::create_dir_all(&later).unwrap();
+        store.put_session(&session("se_later", &later)).unwrap();
+        store.put_session_detail(&detail("se_later", StartStep::Recorded)).unwrap();
+
+        let mut cut = left.cut_starts(&store).unwrap();
+        cut.sort();
+
+        assert_eq!(cut, vec!["se_bare".to_owned(), "se_cut".to_owned()]);
     }
 }

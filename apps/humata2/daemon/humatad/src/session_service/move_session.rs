@@ -24,23 +24,24 @@
 //! runs on the old machine and finished once it runs on the new one (see
 //! `move_recover.rs`).
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use humata2_access::{Capability, Target};
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{AgentState, ChannelRecord, SessionRecord};
+use humata2_store::{AgentState, ChannelRecord, DeskFolderKind, SessionRecord, StoreError};
 use pb::invalid_field::Problem;
 use tokio::sync::{OwnedMutexGuard, watch};
 use tonic::{Code, Status};
 
-use super::{Gated, Loaded, SessionSvc, busy, run_resume};
-use crate::carry::{Carry, Journaled, Place};
+use super::{Gated, Loaded, SessionSvc, busy, busy_running, run_resume};
+use crate::carry::{Carry, Chunks, Journaled, Place, SessionCopy, Tally};
 use crate::channel_service::{blocking, failed};
+use crate::holder_end;
 use crate::identity::{self, Caller, UserVia};
 use crate::operations::{Progress, Started};
-use crate::remote_work::{HostOp, RemoteWork};
+use crate::remote_work::{HostOp, MachineOutcome, RemoteWork, channel_steps};
 use crate::status;
 
 const MOVE_SESSION: &str = "humata.v1.SessionService.MoveSession";
@@ -73,12 +74,24 @@ enum MoveError {
     NotMovable { folder: String },
     #[error("the agent stopped by the move didn't start again on {machine}")]
     NotResumed { machine: String },
+    #[error("{machine} couldn't be given the PR reviews channel that review {session} lives in: {reason}")]
+    ReviewChannelNotMade {
+        session: String,
+        machine: String,
+        reason: String,
+    },
+    #[error("{machine} was removed from Humata while the PR reviews channel was being set up on it for review {session}")]
+    ReviewMachineRemoved { session: String, machine: String },
 }
 
 /// Sessions with a move running on this daemon, and a count that moves
 /// each time one starts or ends, for terminals to show it (MV-4).
 struct MovingSet {
-    sessions: Mutex<HashSet<String>>,
+    /// How many holders each session has: the running move, and a recovery that
+    /// still has to start its agent again.
+    sessions: Mutex<HashMap<String, usize>>,
+    /// Each session's running move: where it goes and the operation that moves it (MV-4).
+    runs: Mutex<HashMap<String, MoveRun>>,
     changes: watch::Sender<u64>,
 }
 
@@ -86,6 +99,7 @@ fn moving() -> &'static MovingSet {
     static MOVING: OnceLock<MovingSet> = OnceLock::new();
     MOVING.get_or_init(|| MovingSet {
         sessions: Mutex::default(),
+        runs: Mutex::default(),
         changes: watch::channel(0).0,
     })
 }
@@ -94,17 +108,42 @@ impl MovingSet {
     fn set(&self, session: &str, on: bool) {
         let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
         if on {
-            sessions.insert(session.to_owned());
-        } else {
-            sessions.remove(session);
+            *sessions.entry(session.to_owned()).or_default() += 1;
+        } else if let Some(count) = sessions.get_mut(session) {
+            *count -= 1;
+            if *count == 0 {
+                sessions.remove(session);
+            }
         }
         drop(sessions);
         self.changes.send_modify(|count| *count += 1);
     }
 
     fn has(&self, session: &str) -> bool {
-        self.sessions.lock().unwrap_or_else(PoisonError::into_inner).contains(session)
+        self.sessions.lock().unwrap_or_else(PoisonError::into_inner).contains_key(session)
     }
+}
+
+/// The move a session's running holder belongs to: where it goes and the
+/// operation that moves it (MV-4). Kept while the move runs.
+#[derive(Clone)]
+struct MoveRun {
+    to: String,
+    operation: String,
+}
+
+/// Forgets a session's move once no holder of the session is left.
+fn forget_run(session: &str) {
+    let mut runs = moving().runs.lock().unwrap_or_else(PoisonError::into_inner);
+    if !moving().has(session) {
+        runs.remove(session);
+    }
+}
+
+/// The move a session's running holder belongs to, while it runs.
+fn moving_run(session: &str) -> Option<MoveRun> {
+    let run = moving().runs.lock().unwrap_or_else(PoisonError::into_inner).get(session).cloned()?;
+    moving().has(session).then_some(run)
 }
 
 /// Whether a move of `session` runs on this daemon now: its terminal is
@@ -120,11 +159,16 @@ pub(crate) fn moving_changes() -> watch::Receiver<u64> {
 
 /// A session's place in the set of those being moved, for as long as the
 /// move runs.
-pub(super) struct Moving(String);
+pub(crate) struct Moving(String);
 
 impl Moving {
-    pub(super) fn begin(session: &str) -> Self {
+    pub(crate) fn begin(session: &str, to: &str, operation: &str) -> Self {
         moving().set(session, true);
+        let run = MoveRun {
+            to: to.to_owned(),
+            operation: operation.to_owned(),
+        };
+        moving().runs.lock().unwrap_or_else(PoisonError::into_inner).insert(session.to_owned(), run);
         Self(session.to_owned())
     }
 }
@@ -132,14 +176,35 @@ impl Moving {
 impl Drop for Moving {
     fn drop(&mut self) {
         moving().set(&self.0, false);
+        forget_run(&self.0);
     }
 }
 
 /// Shows a session whose move is running as Moving (MV-4), whatever else is
-/// known of it.
+/// known of it, with the machine it moves to and the move's operation. Neither
+/// is set once the move has ended.
 pub(super) fn show_moving(session: &mut pb::Session) {
-    if session.id.as_ref().is_some_and(|id| is_moving(&id.value)) {
+    let run = session.id.as_ref().and_then(|id| moving_run(&id.value));
+    if let Some(run) = run {
         session.status = pb::SessionStatus::Moving as i32;
+        session.moving_to = Some(pb::MachineId { value: run.to });
+        session.running_operation = Some(pb::OperationId { value: run.operation });
+    } else {
+        session.moving_to = None;
+        session.running_operation = None;
+    }
+}
+
+/// Refuses input to a session whose move runs on this daemon (MV-4): the
+/// refusal names the session and the move, which must finish first.
+pub(crate) fn refuse_input_while_moving(session: &str) -> Result<(), Status> {
+    match moving_run(session) {
+        Some(run) => Err(busy_running(
+            session,
+            &format!("moving to {}", run.to),
+            Some(run.operation.as_str()),
+        )),
+        None => Ok(()),
     }
 }
 
@@ -151,6 +216,9 @@ fn machine_of(record: &SessionRecord, here: &str) -> String {
         record.machine.clone()
     }
 }
+
+// MACHINESCRIPTS (D681): the move's script triggers.
+mod scripts;
 
 impl SessionSvc {
     /// Gives the host's SessionService the means to move sessions. Once.
@@ -175,6 +243,8 @@ impl SessionSvc {
             .map(|machine| machine.value)
             .filter(|machine| !machine.is_empty())
             .ok_or_else(|| status::missing("to"))?;
+        // UP-1, D281 e, bug 34: nothing moves to a machine at another release.
+        crate::upgrade::gate::machine_ready(&self.migrations, &pb::MachineId { value: to.clone() })?;
         let loaded = self.load(&id).await?;
         if let Some(asked) = self.gate(
             caller,
@@ -190,7 +260,8 @@ impl SessionSvc {
         let (Some(carry), Some(remote)) = (self.carry.get().cloned(), self.remote.clone()) else {
             return Err(status::not_built(MOVE_SESSION));
         };
-        let channel = self.find_channel(&loaded.record.channel).await?;
+        let home = self.home_of(&loaded.record).await?;
+        let channel = home.channel.clone();
         let from = machine_of(&loaded.record, &self.machine);
         if from == to {
             return Err(status::invalid_field(
@@ -204,7 +275,12 @@ impl SessionSvc {
                 "pick another machine of the channel to move it to",
             ));
         }
-        if !channel.machines.iter().any(|machine| machine == &to) {
+        // UP-1: nothing moves to a machine at another release.
+        crate::upgrade::gate::machine_ready(&self.migrations, &pb::MachineId { value: to.clone() })?;
+        // A review's channel is Humata's own (PR-21): the machine is given it
+        // by the move, in its check, so it needn't be one of its machines yet.
+        let review = loaded.review.is_some();
+        if home.limited && !review && !channel.machines.iter().any(|machine| machine == &to) {
             return Err(failed(
                 Code::FailedPrecondition,
                 &MoveError::NotInChannel {
@@ -229,16 +305,7 @@ impl SessionSvc {
         let Ok(held) = self.lifecycle.lock_of(&id).try_lock_owned() else {
             return Err(busy(&id, "being moved, archived or restored"));
         };
-        let folder = relative_folder(&loaded.record, &self.starter.layout.sessions(&channel.folder)).ok_or_else(|| {
-            failed(
-                Code::FailedPrecondition,
-                &MoveError::NotMovable {
-                    folder: loaded.record.folder.display().to_string(),
-                },
-                "only a session Humata started in a channel can move",
-                None,
-            )
-        })?;
+        let folder = home.folder.clone();
 
         let steps: Vec<(String, String)> = STEPS
             .iter()
@@ -275,6 +342,7 @@ impl SessionSvc {
             session: id,
             title: loaded.record.title.clone(),
             record: loaded.record,
+            review,
             channel,
             at_from,
             at_to,
@@ -290,6 +358,76 @@ impl SessionSvc {
         };
         tokio::spawn(async move { mover.run(held).await });
         Ok(Gated::Done(operation))
+    }
+}
+
+/// Where a session lives in the channels tree, for a move (MV-16, MV-17).
+struct Home {
+    /// The channel a carry names: the session's own, or the channels folder
+    /// itself for a Desk session.
+    channel: ChannelRecord,
+    /// The session's folder under the channel's folder: `sessions/<name>`,
+    /// `desk/<name>` or `<channel folder>/desk/<name>`.
+    folder: String,
+    /// Only the channel's machines may take it (a channel session).
+    limited: bool,
+}
+
+impl SessionSvc {
+    /// Where `record`'s session lives, by what kind of session it is: a
+    /// channel session under its channel, a plain Desk session in the Desk,
+    /// a channel's Desk session in that channel's Desk. A Desk session works
+    /// in the same place on every machine, so any linked machine may take it.
+    async fn home_of(&self, record: &SessionRecord) -> Result<Home, Status> {
+        let not_movable = || {
+            failed(
+                Code::FailedPrecondition,
+                &MoveError::NotMovable {
+                    folder: record.folder.display().to_string(),
+                },
+                "only a session Humata started in a channel, or in a scratch folder of a Desk, can move; a folder you picked stays where it is",
+                None,
+            )
+        };
+        if record.channel != humata2_sessions::DESK_CHANNEL {
+            let channel = self.find_channel(&record.channel).await?;
+            let folder = relative_folder(record, &self.starter.layout.sessions(&channel.folder)).ok_or_else(not_movable)?;
+            return Ok(Home {
+                channel,
+                folder,
+                limited: true,
+            });
+        }
+        let (store, id) = (self.starter.store.clone(), record.id.clone());
+        let (plain, own) = blocking(move || -> Result<_, StoreError> { Ok((store.desk(&id)?, store.channel_desk(&id)?)) })
+            .await?
+            .map_err(|error| status::store(error, &self.machine, "look up the Desk session"))?;
+        let name = record
+            .folder
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(not_movable)?;
+        let folder = match (plain, own) {
+            (_, Some(row)) => format!("{}/desk/{name}", self.find_channel(&row.channel).await?.folder),
+            (Some(row), None) if matches!(row.kind, DeskFolderKind::Scratch { .. }) => format!("desk/{name}"),
+            _ => return Err(not_movable()),
+        };
+        let channel = ChannelRecord {
+            id: humata2_sessions::CHANNELS_ROOT.to_owned(),
+            name: "Desk".to_owned(),
+            folder: String::new(),
+            branch_prefix: None,
+            default_agent: String::new(),
+            repos: Vec::new(),
+            machines: Vec::new(),
+            revision: 0,
+            created_unix_ms: 0,
+        };
+        Ok(Home {
+            channel,
+            folder,
+            limited: false,
+        })
     }
 }
 
@@ -327,6 +465,9 @@ struct Mover {
     session: String,
     title: String,
     record: SessionRecord,
+    /// The session is a pull request review: its target is given the PR
+    /// reviews channel before anything is copied (PR-21).
+    review: bool,
     channel: ChannelRecord,
     from: String,
     to: String,
@@ -350,7 +491,7 @@ struct Mover {
 
 impl Mover {
     async fn run(self, held: OwnedMutexGuard<()>) {
-        let moving = Moving::begin(&self.session);
+        let moving = Moving::begin(&self.session, &self.to, &self.operation);
         self.tell().await;
         self.reached("started").await;
         match self.go().await {
@@ -359,7 +500,11 @@ impl Mover {
                 // staged files is gone too; a link that is down then gets
                 // the clean-up when it comes back (D207).
                 match self.unstage_target().await {
-                    Ok(()) => self.carry.journal_done(&self.operation).await,
+                    Ok(()) => {
+                        self.carry.journal_done(&self.operation).await;
+                        // A clean-up that must wait is finished by `recover`, which fires this then.
+                        self.script_arrived();
+                    }
                     Err(_) => self.recover_later("switched"),
                 }
                 if let Some(progress) = self.take_progress() {
@@ -435,7 +580,7 @@ impl Mover {
         self.step("pause", async { Ok(()) }).await?;
         self.go_on("pack")?;
         let packed = self
-            .step("pack", self.carry.pack(&self.from, &self.operation, &self.session))
+            .step("pack", self.pack_session())
             .await?;
         self.agent_ran.store(packed.agent_running, Ordering::SeqCst);
         self.reached("packed").await;
@@ -482,8 +627,84 @@ impl Mover {
         if past { Ok(()) } else { Err(cancelled_at("resume")) }
     }
 
-    /// The new machine has nothing under the folder's name.
+    /// A review's target machine holds the PR reviews channel, with a main
+    /// clone of each repository, as a review started there would have made
+    /// it, and is one of the channel's machines (PR-4, PR-21). The host has
+    /// them already. Nothing of the session is touched.
+    async fn prepare_review_target(&self) -> Result<(), Status> {
+        if !self.review || self.carry.is_host(&self.to) {
+            return Ok(());
+        }
+        let repos: Vec<pb::RepoRef> = self
+            .channel
+            .repos
+            .iter()
+            .map(|repo| pb::RepoRef {
+                owner: repo.owner.clone(),
+                name: repo.name.clone(),
+            })
+            .collect();
+        let steps = channel_steps(&self.to, &repos);
+        let target = pb::EntityRef {
+            entity: Some(pb::entity_ref::Entity::Channel(pb::ChannelId {
+                value: self.channel.id.clone(),
+            })),
+        };
+        let Started::New(progress) =
+            self.svc
+                .operations
+                .start_steps(&self.caller, pb::OperationKind::StartPrReview, target, &steps, false, None)?
+        else {
+            return Err(status::internal("a channel setup without a key was taken for a repeat", ""));
+        };
+        let host = Arc::new(HostOp::new(progress));
+        let create = pb::CreateChannelRequest {
+            idempotency_key: None,
+            name: self.channel.name.clone(),
+            repos,
+            machines: Vec::new(),
+        };
+        let ended = match self.remote.create_channel_on(&self.to, &self.channel.id, create, host.clone()).await {
+            MachineOutcome::Ready => Ok(()),
+            MachineOutcome::Failed(error) => Err(failed(
+                Code::FailedPrecondition,
+                &MoveError::ReviewChannelNotMade {
+                    session: self.session.clone(),
+                    machine: self.to.clone(),
+                    reason: error.message,
+                },
+                "check that the machine is online, has git, and can reach GitHub to clone the repositories, then move the review again; nothing was changed",
+                None,
+            )),
+            MachineOutcome::Gone => Err(failed(
+                Code::FailedPrecondition,
+                &MoveError::ReviewMachineRemoved {
+                    session: self.session.clone(),
+                    machine: self.to.clone(),
+                },
+                "add the machine again from the Machines page, or move the review to another machine",
+                None,
+            )),
+        };
+        if let Some(progress) = host.take() {
+            match &ended {
+                Ok(()) => progress.succeed(None),
+                Err(status) => progress.fail(status::error_of(status).unwrap_or_else(|| pb::Error {
+                    message: status.message().to_owned(),
+                    fix: String::new(),
+                    retry: None,
+                    kind: None,
+                })),
+            }
+        }
+        ended?;
+        self.svc.add_machine_to(&self.channel, &self.to, &self.caller).await
+    }
+
+    /// The new machine can hold the session, and has nothing under the
+    /// folder's name.
     async fn check(&self) -> Result<(), Status> {
+        self.prepare_review_target().await?;
         if self.carry.exists(&self.at_to, &self.folder).await? {
             return Err(failed(
                 Code::FailedPrecondition,
@@ -498,23 +719,66 @@ impl Mover {
         Ok(())
     }
 
-    /// The session's folder, then the staged files, onto the new machine.
+    /// The session's folder, then the staged files, onto the new machine,
+    /// leaving out what the new machine rebuilds or holds (MV-17). The copy
+    /// step counts the bytes it carries, and says what crossed and what was
+    /// reused once it is done.
     async fn copy(&self, packed: &pb::CarryPackResponse) -> Result<(), Status> {
         let pass = self.pass.fetch_add(1, Ordering::SeqCst);
-        self.carry
-            .copy(
-                &format!("{}_{pass}_folder", self.operation),
-                (&self.at_from, &packed.folder),
-                (&self.at_to, "sessions"),
-            )
-            .await?;
-        self.carry
-            .copy(
-                &format!("{}_{pass}_stage", self.operation),
-                (&self.at_from, &packed.stage),
-                (&self.at_to, &format!("{}/{}/in", humata2_sessions::CARRY_DIR, self.operation)),
-            )
-            .await
+        let units = self
+            .progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(Progress::units);
+        let tally = Arc::new(Tally::default());
+        if let Some(units) = units.clone() {
+            let tally = tally.clone();
+            self.carry.hear(&self.operation, move |snapshot| {
+                tally.note(snapshot);
+                units.set("copy", tally.done(), tally.total());
+            });
+        }
+        // The chunks of big files count too, as each is sent or reused.
+        let chunks: Option<Arc<dyn Fn(Chunks) + Send + Sync>> = units.clone().map(|units| {
+            let tally = tally.clone();
+            let tell: Arc<dyn Fn(Chunks) + Send + Sync> = Arc::new(move |event: Chunks| {
+                tally.chunks(event);
+                units.set("copy", tally.done(), tally.total());
+            });
+            tell
+        });
+        let before = self.carry.crossed(&self.to);
+        let copied = self
+            .carry
+            .copy_session(SessionCopy {
+                id: format!("{}_{pass}", self.operation),
+                from: &self.at_from,
+                to: &self.at_to,
+                folder: &packed.folder,
+                stage: &packed.stage,
+                into: format!("{}/{}/in", humata2_sessions::CARRY_DIR, self.operation),
+                chunks,
+            })
+            .await;
+        self.carry.unhear(&self.operation);
+        let copied = copied?;
+        if let Some(units) = units {
+            let whole = tally.total();
+            units.set("copy", whole, whole);
+            units.add_fact("copy", "sent_bytes", self.carry.crossed(&self.to).saturating_sub(before));
+            units.add_fact("copy", "reused_bytes", copied.reused_bytes);
+            units.add_fact("copy", "chunk_bytes", copied.chunk_bytes);
+        }
+        Ok(())
+    }
+
+    /// Packs the session on the old machine, its conversation written for
+    /// the folder the new machine will put it in, which that machine says
+    /// (MV-17): what it holds of an earlier copy then matches.
+    async fn pack_session(&self) -> Result<pb::CarryPackResponse, Status> {
+        let target = self.carry.target(&self.to, &self.channel.id, &self.folder).await?;
+        self.carry.pack_for(&self.from, &self.operation, &self.session, &target).await
     }
 
     async fn unpack(&self) -> Result<(), Status> {
@@ -528,8 +792,10 @@ impl Mover {
     /// leaves it running), the session is packed again to see that nothing
     /// changed while it ran, and the new agent starts in its conversation.
     async fn hand_over(&self, digest: &str) -> Result<(), Status> {
+        // MACHINESCRIPTS (D681): the old machine's leaving rules, a minute at most; never fails the move.
+        self.script_leaving().await;
         self.stop_old().await?;
-        let again = self.carry.pack(&self.from, &self.operation, &self.session).await?;
+        let again = self.pack_session().await?;
         if again.digest != digest {
             // The agent wrote while it was being copied. It is stopped now,
             // so what is copied this time is all of it.
@@ -558,15 +824,17 @@ impl Mover {
         let Some(mut agent) = loaded.agent else {
             return Ok(());
         };
-        if !matches!(agent.state, AgentState::Running { .. }) {
+        let AgentState::Running { holder_pid } = agent.state else {
             return Ok(());
-        }
-        if let Err(error) = humata2_holder::shutdown(&agent.launch.holder_socket).await {
-            crate::log::say!(
-                "humatad2: stopping session {}'s terminal for a move: {}",
-                self.session,
-                status::chain(&error)
-            );
+        };
+        if let Err(error) = holder_end::shut_or_end(
+            &agent.launch.holder_socket,
+            holder_pid,
+            &format!("session {}'s terminal", self.session),
+        )
+        .await
+        {
+            crate::log::say!("humatad2: a move of session {}: {error}", self.session);
         }
         agent.state = AgentState::Stopped;
         agent.updated_unix_ms = super::now_ms();
@@ -600,7 +868,7 @@ impl Mover {
         };
         let mut watch = progress.watch();
         if self.carry.is_host(machine) {
-            let loaded: Loaded = self.svc.load(&self.session).await?;
+            let loaded = Loaded { moved: Some(super::MOVED), ..self.svc.load(&self.session).await? };
             tokio::spawn(run_resume(
                 self.svc.starter.clone(),
                 self.svc.tell.clone(),
@@ -614,6 +882,7 @@ impl Mover {
                 id: Some(pb::SessionId {
                     value: self.session.clone(),
                 }),
+                mode: pb::resume_session_request::Mode::AfterMove as i32,
                 ..pb::ResumeSessionRequest::default()
             };
             let host = Arc::new(HostOp::new(progress));
@@ -662,6 +931,10 @@ impl Mover {
         self.svc.rebase_mirror(&self.session, &self.to, None).await;
         let mut record = self.record.clone();
         record.machine.clone_from(&self.to);
+        if self.channel.id == humata2_sessions::CHANNELS_ROOT {
+            // A Desk session's folder is where the machine keeps it.
+            record.folder = self.folder_after().await?;
+        }
         let store = self.svc.starter.store.clone();
         blocking(move || store.put_session(&record))
             .await?
@@ -670,6 +943,38 @@ impl Mover {
             self.remote.forget_session(&self.from, &self.session).await;
         }
         Ok(())
+    }
+
+    /// Where the session's folder is on the new machine, for a Desk session,
+    /// whose host record names it: the host's own place, or the one the
+    /// machine says it took the session into.
+    async fn folder_after(&self) -> Result<std::path::PathBuf, Status> {
+        if self.carry.is_host(&self.to) {
+            return Ok(self.svc.starter.layout.channel(&self.channel.folder).join(&self.folder));
+        }
+        let (store, id) = (self.svc.starter.store.clone(), self.session.clone());
+        let own = blocking(move || store.channel_desk(&id))
+            .await?
+            .map_err(|error| status::store(error, &self.svc.machine, "look up the channel's Desk session"))?;
+        let asked = pb::ListDeskSessionsRequest {
+            channel: own.map(|row| pb::ChannelId { value: row.channel }),
+            target: None,
+        };
+        let relayed = self.remote.relayed(&self.to).map_err(Status::from)?;
+        let call = crate::host_relay::assigned(asked, None).map_err(Status::from)?;
+        let listed = relayed.desk().list_desk_sessions(call).await?.into_inner();
+        listed
+            .sessions
+            .into_iter()
+            .find(|shown| shown.session.as_ref().is_some_and(|session| session.value == self.session))
+            .and_then(|shown| shown.folder)
+            .map(|folder| std::path::PathBuf::from(folder.path))
+            .ok_or_else(|| {
+                status::internal(
+                    format!("{} didn't say where session {} works now", self.to, self.session),
+                    "",
+                )
+            })
     }
 
     /// The old machine's copy goes to its trash. The session already runs on
@@ -747,11 +1052,16 @@ impl Mover {
             .abort(&self.from, &self.operation, &self.session, &self.at_from, &self.folder, false)
             .await;
         let mut left = String::new();
+        // The old agent was stopped and didn't start again: the journal says
+        // so, and the host starts it once both machines' links are up; a
+        // restart's report names the session if that fails too (MV-14, MV-17).
+        let mut resume_pending = false;
         if self.stopped.load(Ordering::SeqCst)
             && let Err(error) = self.resume_on(&self.from).await
         {
+            resume_pending = true;
             left = format!(
-                " Its agent was stopped for the move and didn't start again on {}: {}. Resume it from the session's menu.",
+                " Its agent was stopped for the move and didn't start again on {}: {}. Humata tries again once the machines are linked; or resume it from the session's menu.",
                 self.from,
                 error.message()
             );
@@ -759,12 +1069,18 @@ impl Mover {
         // Only a copy that began on the new machine needs its journal kept for
         // a restart to take back; otherwise the journal keeps the phase it had,
         // which says nothing reached the new machine.
-        if placed {
+        if resume_pending {
+            // `unpacked` is the phase whose recovery takes the copy back and
+            // starts the old agent again; the agent only stops after a copy.
+            self.journal("unpacked").await;
+            self.recover_resume_later();
+        } else if placed {
             self.journal("aborted").await;
         }
-        if taken_back {
+        // With a resume pending the journal stays until the retry settles it.
+        if taken_back && !resume_pending {
             self.carry.journal_done(&self.operation).await;
-        } else {
+        } else if !resume_pending {
             // The new machine keeps a stopped copy until its link is back;
             // the journal stays so the host takes it back then (D207).
             self.recover_later("aborted");
@@ -827,17 +1143,8 @@ pub(super) async fn recover(
     held: OwnedMutexGuard<()>,
 ) -> Result<(), Status> {
     let loaded = svc.load(&journal.session).await?;
-    let channel = svc.find_channel(&loaded.record.channel).await?;
-    let folder = relative_folder(&loaded.record, &svc.starter.layout.sessions(&channel.folder)).ok_or_else(|| {
-        failed(
-            Code::FailedPrecondition,
-            &MoveError::NotMovable {
-                folder: loaded.record.folder.display().to_string(),
-            },
-            "only a session Humata started in a channel can move",
-            None,
-        )
-    })?;
+    let home = svc.home_of(&loaded.record).await?;
+    let (channel, folder) = (home.channel, home.folder);
     let place = |machine: &str| Place {
         machine: machine.to_owned(),
         channel: channel.id.clone(),
@@ -851,6 +1158,7 @@ pub(super) async fn recover(
         operation: journal.operation.clone(),
         session: journal.session.clone(),
         title: loaded.record.title.clone(),
+        review: loaded.review.is_some(),
         record: loaded.record,
         at_from: place(&journal.from),
         at_to: place(&journal.to),
@@ -872,6 +1180,10 @@ pub(super) async fn recover(
     };
     if outcome.is_ok() {
         mover.carry.journal_done(&mover.operation).await;
+        // MACHINESCRIPTS (D681): a move finished by recovery has arrived too.
+        if matches!(journal.phase.as_str(), "resumed" | "switched") {
+            mover.script_arrived();
+        }
     }
     drop(held);
     outcome
@@ -919,6 +1231,23 @@ impl Mover {
         );
     }
 
+    /// The old agent didn't start again after an undo: the journal's
+    /// recovery runs once both links are up, and the session shows Moving
+    /// until it has.
+    fn recover_resume_later(&self) {
+        self.svc.recover_when_linked(
+            Journaled {
+                operation: self.operation.clone(),
+                session: self.session.clone(),
+                from: self.from.clone(),
+                to: self.to.clone(),
+                phase: "unpacked".to_owned(),
+                agent_ran: true,
+            },
+            Some(Moving::begin(&self.session, &self.to, &self.operation)),
+        );
+    }
+
     /// The agent was never taken over by the new machine: whatever started
     /// there stops, the new machine's copy is taken back and the agent runs
     /// on the old one again. `handing_over` says the old agent may have been
@@ -928,7 +1257,13 @@ impl Mover {
             // An agent the resume started there stops before its copy goes.
             let started_there = self.stop_on(&self.to).await;
             if handing_over {
-                started_there?;
+                match started_there {
+                    // The new machine holds no record of the session, as when it
+                    // was cut before it took the copy in: no agent runs there,
+                    // and its folder still has to be taken back.
+                    Err(status) if status.code() == Code::NotFound => {}
+                    other => other?,
+                }
             }
         }
         let (incoming, staged) = self.take_copy_back().await;

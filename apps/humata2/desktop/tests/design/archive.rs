@@ -232,6 +232,7 @@ pub fn delete_channel(look: Look) -> Div {
                 .child(div().pt(px(4.)).child(label(look, "Also in the channel")))
                 .child(secondary(look, "Archived sessions: 2 (Currency codes, Webhook retries)"))
                 .child(secondary(look, "Board items: 14"))
+                .child(secondary(look, "Desk sessions: 2 (1 on devbox-1). They close on their own machines; a machine that is offline closes them when it links."))
                 .child(secondary(look, "Pending Inbox requests: 2, withdrawn"))
                 .child(
                     div()

@@ -324,6 +324,24 @@ async fn put_then_cat_returns_the_same_three_mebibytes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn cat_reads_a_file_in_the_sessions_own_folder_and_refuses_a_path_out_of_it() {
+    let world = world().await;
+    // D382: the session's folder is the one its record names, outside every
+    // clone; the clone folder sits inside it here.
+    let own = world.clone.parent().expect("the clone has a parent").to_owned();
+    std::fs::write(own.join("rfc.md"), b"hello").unwrap();
+    let at = |path: &str| format!("{}:folder/{SESSION}/{path}", world.machine);
+
+    let cat = world.ok(&["files", "cat", &at("rfc.md")]);
+    let (code, json) = world.run(&["files", "cat", &at("../rfc.md")]);
+
+    assert_eq!(cat["bytes"], 5, "{cat}");
+    assert_eq!(cat["sha256"], sha256(b"hello"));
+    assert_ne!(code, SUCCESS, "{json}");
+    assert_eq!(json["error"]["kind"], "outside_humata_folders", "{json}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn cp_from_the_session_clone_to_shared_arrives_with_identical_bytes() {
     let world = world().await;
     let bytes = noise(5, 3 << 20);
@@ -418,4 +436,45 @@ async fn a_location_with_dot_dot_fails_as_outside_the_folders_and_changes_nothin
     }
     assert_eq!(names(&world.channel), before_channel);
     assert_eq!(names(&world.shared), before_shared);
+}
+
+/// Agents-14 steps 7 and 8: a dry run prints the plan and empties nothing;
+/// `--plan` with the printed token empties what the plan said.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dry_run_empties_nothing_and_its_printed_plan_empties_the_trash() {
+    let world = world().await;
+    std::fs::write(world.shared.join("old.bin"), noise(4, 8192)).unwrap();
+    world.ok(&["files", "rm", &world.shared_at("old.bin")]);
+
+    let (code, planned) = world.run(&["--machine", &world.machine, "--dry-run", "trash", "empty"]);
+
+    assert_eq!(code, SUCCESS, "{planned}");
+    assert_eq!(planned["outcome"], "planned", "{planned}");
+    assert_eq!(planned["result"]["items"], 1, "{planned}");
+    let token = planned["result"]["token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no plan token in {planned}"))
+        .to_owned();
+    let still = world.ok(&["--machine", &world.machine, "trash"]);
+    assert_eq!(still["items"].as_array().unwrap().len(), 1, "{still}");
+
+    world.ok(&["--machine", &world.machine, "--plan", &token, "trash", "empty"]);
+
+    let after = world.ok(&["--machine", &world.machine, "trash"]);
+    assert!(after["items"].as_array().unwrap().is_empty(), "{after}");
+}
+
+/// Agents-14 step 9: with no one to confirm it and no `--yes`, emptying
+/// the trash is refused as usage and the trash keeps its items.
+#[tokio::test(flavor = "multi_thread")]
+async fn emptying_the_trash_with_no_one_to_confirm_it_is_refused_and_keeps_it() {
+    let world = world().await;
+    std::fs::write(world.shared.join("kept.bin"), noise(5, 4096)).unwrap();
+    world.ok(&["files", "rm", &world.shared_at("kept.bin")]);
+
+    let (code, refused) = world.run(&["--machine", &world.machine, "trash", "empty"]);
+
+    assert_eq!(code, USAGE, "{refused}");
+    let still = world.ok(&["--machine", &world.machine, "trash"]);
+    assert_eq!(still["items"].as_array().unwrap().len(), 1, "{still}");
 }

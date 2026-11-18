@@ -120,9 +120,9 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Expected outcome:** The queued text is not typed. It goes only when the turn ends or when I send it (SE-23).
 
-**What the code does:** The live client maps every status except Working to `Turn::Ended` (`clients/live/src/map.rs:289-292`). Needs you accepts input, so `flush` (`features/session/src/lib.rs:673-678`) sends the queued text for Claude. The text is typed into the permission prompt.
+**What the code does:** The live client maps Needs you to a turn still running (`clients/live/src/map.rs`, the session's `turn`), so `flush` holds the text.
 
-**Status:** Likely bug. Confirm by queueing text during a turn, letting Claude ask for a permission, and checking whether the text reaches the prompt. No test covers it.
+**Status:** Fakes only (fixed): `clients/live/src/map.rs::only_a_reported_idle_ends_the_turn` maps a needs-input status to a running turn, and `features/session/tests/queue.rs::a_hook_turn_end_delivers_waiting_messages_but_running_and_uncertain_do_not` holds messages while the turn runs. (Was a likely bug; fixed by BUGS.)
 
 ### OpenCode with a queued message
 
@@ -134,9 +134,9 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Expected outcome:** The built-in agents table says OpenCode's turns come from hooks (`daemon/sessions/src/agents.rs:116`), and the comment on `flush` says hook-backed agents send at turn end. So the expected outcome is an automatic send at turn end.
 
-**What the code does:** `flush` matches only Claude and Copilot (`features/session/src/lib.rs:673-674`). SPEC SE-21 says OpenCode uses the output fallback. The spec and the table disagree, and the code follows neither.
+**What the code does:** `flush` sends at a reported turn end for Claude, Copilot and OpenCode (`features/session/src/lib.rs`). OpenCode's turn end comes from its server's events (D201), as the built-in table and SPEC SE-21 say (D524).
 
-**Status:** Likely bug. Decide which is right, then align the code, the table and SE-21.
+**Status:** Fakes only (fixed): `features/session/tests/queue.rs::an_opencode_turn_end_from_its_hooks_delivers_waiting_messages`. On the fallback an OpenCode turn is only Probably idle, which never sends on its own (`features/session/tests/queue.rs::a_copilot_whose_turn_end_is_not_sure_keeps_its_messages_waiting`). SPEC SE-21 agrees (D524).
 
 ### Copilot with the output fallback
 
@@ -144,13 +144,13 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **I do:** Nothing.
 
-**I see:** The queued message is typed about 3 s after the output stops.
+**I see:** The queued message waits in the bar until I press **Send now**.
 
 **Expected outcome:** SE-23 says fallback detection needs an explicit Send.
 
-**What the code does:** Probably idle maps to `Turn::Ended` (`clients/live/src/map.rs:289-292`), and `flush` sends for Copilot at Ended (`features/session/src/lib.rs:673-674`). Copilot is not in the built-in agents table (D169). The default `turn_end` is output (`daemon/sessions/src/agents.rs:406`), so Copilot is on the fallback unless its agent entry says `hooks`.
+**What the code does:** Probably idle maps to `Turn::Uncertain` (`clients/live/src/map.rs`), and `flush` sends only at `Turn::Ended`, so the text waits for Send now.
 
-**Status:** Likely bug.
+**Status:** Fakes only (fixed): `features/session/tests/queue.rs::a_copilot_whose_turn_end_is_not_sure_keeps_its_messages_waiting`; on a real `humatad2`, `desktop/tests/live_flows/queue.rs::messages_typed_mid_turn_wait_can_be_shown_and_removed_and_the_rest_reaches_the_agent` holds the queue while the turn is only Probably idle. (Was a likely bug; fixed by BUGS.)
 
 ### A turn end the app is unsure of
 
@@ -162,9 +162,9 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Expected outcome:** Held text waits, and the app says it is unsure.
 
-**What the code does:** The live client never makes `Turn::Uncertain`. It yields only `Running` or `Ended` (`clients/live/src/map.rs:289-292`). `Uncertain` is set only in fixtures (`clients/src/fixture/sessions.rs:45`). In the live app, this branch is unreachable.
+**What the code does:** The live client maps Probably idle to `Turn::Uncertain` (`clients/live/src/map.rs`, the session's `turn`), so the live app holds the text.
 
-**Status:** Likely bug. The uncertain branch is tested only with fakes.
+**Status:** Works (real daemon): `desktop/tests/live_flows/queue.rs::messages_typed_mid_turn_wait_can_be_shown_and_removed_and_the_rest_reaches_the_agent` queues on a real `humatad2` whose agent has no hook, so its turn is only Probably idle, and nothing is sent until Send now. The mapping is `clients/live/src/map.rs::only_a_reported_idle_ends_the_turn`. (Was a likely bug; fixed by BUGS.)
 
 ### Two-line message sent to a terminal
 
@@ -172,13 +172,13 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **I do:** Press **Send now**.
 
-**I see:** Each line is submitted on its own, if the agent reads the newline as Enter.
+**I see:** The message arrives as one paste, then one Enter.
 
 **Expected outcome:** SE-23 says whole messages use serialized bracketed paste, never raw bytes.
 
-**What the code does:** The live client sends the text plus `\r` as one `Type` request (`clients/live/src/daemon.rs:702-716`). The daemon types raw bytes with no bracketed paste (`daemon/humatad/src/terminal.rs:1158-1160`). `DECISIONS.md` item 12 records this as a recommendation to switch.
+**What the code does:** The live client wraps a message of several lines in bracketed paste, then Enter, and strips a paste end from inside it (`clients/live/src/message.rs`, `typed`). The daemon types those bytes as they are.
 
-**Status:** Likely bug. `features/session/tests/queue.rs::fallback_and_plain_shell_messages_wait_for_an_explicit_send` uses a two-line message but checks only the queue, not the bytes.
+**Status:** Fakes only (fixed): `clients/live/src/message.rs::several_lines_go_as_one_paste_then_enter` and `clients/live/src/message.rs::text_cannot_end_the_paste_early`, unit tests of the live client. No real-daemon test reads the bytes the shell gets. (Was a likely bug; fixed by BUGS.)
 
 ### The app closes while a send is in flight
 
@@ -190,9 +190,9 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Expected outcome:** The message is not sent twice.
 
-**What the code does:** The app keeps a sent message in its saved queue until the reply arrives (`features/session/src/lib.rs:705`). Each send gets a new idempotency key (`clients/live/src/connection.rs:323-327`), so the daemon cannot match the retry. On relaunch, the Claude session at Ended sends the message again, and the text is typed twice.
+**What the code does:** The app keeps a sent message in its saved queue until the reply arrives (`features/session/src/lib.rs`), and the message keeps one idempotency key across a restart. The daemon notes the key before it types (D337, D426), so a retry with it is not typed again.
 
-**Status:** Likely bug. Confirm by killing the app between the `Type` request and its reply, then counting the lines the shell receives.
+**Status:** Works (real daemon): `daemon/humatad/tests/terminal.rs::a_keyed_type_retried_after_a_restart_is_not_typed_again` retries a keyed type after a restart and it is not typed again; `features/session/tests/queue.rs::a_queued_message_sent_again_after_a_restart_is_typed_once` sends the saved message again with the same key. (Was a likely bug; fixed by BUGS.)
 
 ### The app restarts with messages waiting
 
@@ -220,8 +220,8 @@ Layer: agents. Platforms: macOS, Linux, web.
 - [ ] Send now types one message and removes it only after the daemon acknowledges it.
 - [ ] An offline session keeps its messages, and a send refuses with a message that says how to resume.
 - [ ] A failed send keeps the message, shows an error, and does not retry on its own.
-- [ ] A held message is not typed into a permission prompt (Likely bug; see the branch).
-- [ ] A held message is typed once, even if the app quits during a send (Likely bug; see the branch).
+- [x] A held message is not typed into a permission prompt (`clients/live/src/map.rs::only_a_reported_idle_ends_the_turn`).
+- [x] A held message is typed once, even if the app quits during a send (`daemon/humatad/tests/terminal.rs::a_keyed_type_retried_after_a_restart_is_not_typed_again`; `features/session/tests/queue.rs::a_queued_message_sent_again_after_a_restart_is_typed_once`).
 
 ## Status summary
 
@@ -239,12 +239,12 @@ Layer: agents. Platforms: macOS, Linux, web.
 | 10. Send now a held message | Fakes only | same test |
 | 11. Offline send keeps the queue | Fakes only | `features/session/tests/queue.rs::offline_send_preserves_the_queue_and_remove_only_changes_the_open_session` |
 | 12. Failed send keeps the queue | Fakes only | `features/session/tests/queue.rs::a_failed_selected_message_returns_to_its_original_session_after_navigation`; `desktop/tests/native/queue.rs::a_failed_queued_message_stays_visible_for_retry` |
-| Branch: agent asks for approval | Likely bug | `clients/live/src/map.rs:289-292`; `features/session/src/lib.rs:673-678` |
-| Branch: OpenCode | Likely bug | `features/session/src/lib.rs:673-674`; `daemon/sessions/src/agents.rs:116` |
-| Branch: Copilot on the fallback | Likely bug | `clients/live/src/map.rs:289-292`; `daemon/sessions/src/agents.rs:406` |
-| Branch: uncertain turn end | Likely bug | `clients/live/src/map.rs:289-292`; `clients/src/fixture/sessions.rs:45` |
-| Branch: two-line message | Likely bug | `clients/live/src/daemon.rs:702-716`; `daemon/humatad/src/terminal.rs:1158-1160` |
-| Branch: app closes mid-send | Likely bug | `features/session/src/lib.rs:705`; `clients/live/src/connection.rs:323-327` |
+| Branch: agent asks for approval | Fakes only (fixed) | `clients/live/src/map.rs::only_a_reported_idle_ends_the_turn`; `features/session/tests/queue.rs::a_hook_turn_end_delivers_waiting_messages_but_running_and_uncertain_do_not` |
+| Branch: OpenCode | Fakes only (fixed) | `features/session/tests/queue.rs::an_opencode_turn_end_from_its_hooks_delivers_waiting_messages`; D524 |
+| Branch: Copilot on the fallback | Works (real daemon) | `desktop/tests/live_flows/queue.rs::messages_typed_mid_turn_wait_can_be_shown_and_removed_and_the_rest_reaches_the_agent`; `features/session/tests/queue.rs::a_copilot_whose_turn_end_is_not_sure_keeps_its_messages_waiting` |
+| Branch: uncertain turn end | Works (real daemon) | `desktop/tests/live_flows/queue.rs::messages_typed_mid_turn_wait_can_be_shown_and_removed_and_the_rest_reaches_the_agent`; `clients/live/src/map.rs::only_a_reported_idle_ends_the_turn` |
+| Branch: two-line message | Fakes only (fixed) | `clients/live/src/message.rs::several_lines_go_as_one_paste_then_enter`; `clients/live/src/message.rs::text_cannot_end_the_paste_early` |
+| Branch: app closes mid-send | Works (real daemon) | `daemon/humatad/tests/terminal.rs::a_keyed_type_retried_after_a_restart_is_not_typed_again`; `features/session/tests/queue.rs::a_queued_message_sent_again_after_a_restart_is_typed_once` |
 | Branch: app restarts with messages | Code, no test | `features/app/src/saved.rs`; `features/app/src/lib.rs:227`; `features/app/tests/messages.rs::string_queues_saved_before_comment_messages_still_load` (Fakes only) |
 
 ## Gaps and likely bugs
@@ -259,12 +259,12 @@ Layer: agents. Platforms: macOS, Linux, web.
 
 **Likely bugs**
 
-- A queued message is typed into a Claude permission prompt (Needs you counts as Ended in `clients/live/src/map.rs:289-292`, and `flush` sends for Claude at `features/session/src/lib.rs:673`).
-- OpenCode never auto-sends, although the built-in table makes it hook-backed (`daemon/sessions/src/agents.rs:116`). SPEC SE-21 says otherwise.
-- Copilot on the output fallback auto-sends after 3 s of quiet, which SE-23 forbids.
-- `Turn::Uncertain` never reaches the live app, so the uncertain hold runs only in fakes (`clients/live/src/map.rs:289-292`).
-- Multi-line messages are typed raw, not as bracketed paste, which SE-23 requires (`clients/live/src/daemon.rs:702-716`; `daemon/humatad/src/terminal.rs:1158-1160`).
-- An app that quits during a send can type the message twice, because each send gets a new idempotency key (`clients/live/src/connection.rs:323-327`).
+- Fixed (was a likely bug): a queued message waits while Claude asks for a permission (`clients/live/src/map.rs::only_a_reported_idle_ends_the_turn`).
+- Fixed (was a likely bug): OpenCode sends held messages at a reported turn end (`features/session/tests/queue.rs::an_opencode_turn_end_from_its_hooks_delivers_waiting_messages`), as SPEC SE-21 says (D524).
+- Fixed (was a likely bug): Copilot on the output fallback holds its messages (`features/session/tests/queue.rs::a_copilot_whose_turn_end_is_not_sure_keeps_its_messages_waiting`).
+- Fixed (was a likely bug): the live app holds on an uncertain turn end (`desktop/tests/live_flows/queue.rs::messages_typed_mid_turn_wait_can_be_shown_and_removed_and_the_rest_reaches_the_agent`).
+- Fixed (was a likely bug): multi-line messages go as one bracketed paste (`clients/live/src/message.rs::several_lines_go_as_one_paste_then_enter`).
+- Fixed (was a likely bug): a send retried after a restart types once (`daemon/humatad/tests/terminal.rs::a_keyed_type_retried_after_a_restart_is_not_typed_again`).
 - The MCP refusal for `turn_end` says "update Humata on this machine; until then, do this from the app" (`daemon/humatad/src/status.rs:131-140`). No update adds this feature, and an agent cannot do it from the app. The message should say to send now or ask the user, as AGENTS.md asks.
 - The comment on `Submit` says "send now if the turn ended, else queue" (`features/session/src/lib.rs:432`). The code queues at turn end for every agent except Claude and Copilot.
 - `api/MCP.md:251` documents `session_type` as returning `{typed, queued_id?}`. The code also returns `turn_end_uncertain` (`daemon/humatad/src/mcp.rs:1008`). The doc should list it, or the field should go.

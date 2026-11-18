@@ -98,3 +98,15 @@ filegroup(
     )
     for engine, gpui_kit in ENGINES.items()
 ]
+
+[
+    rust_test(
+        name = "drag" + engine + "_test",
+        srcs = ["tests/drag.rs"],
+        deps = [
+            ":flow" + engine,
+            gpui_kit,
+        ],
+    )
+    for engine, gpui_kit in ENGINES.items()
+]

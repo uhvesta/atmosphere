@@ -126,7 +126,7 @@ fn crashed_ssh_frontend_fixture() {
 }
 fn tunnel_process(root: &std::path::Path) -> Option<u32> {
     let output = std::process::Command::new("ps")
-        .args(["-axo", "pid=,command="])
+        .args(["-ww", "-A", "-o", "pid=,args="])
         .output()
         .unwrap();
     String::from_utf8_lossy(&output.stdout)

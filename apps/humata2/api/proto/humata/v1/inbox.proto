@@ -9,6 +9,7 @@ package humata.v1;
 
 import "google/protobuf/timestamp.proto";
 import "humata/v1/access.proto";
+import "humata/v1/build.proto";
 import "humata/v1/capabilities.proto";
 import "humata/v1/common.proto";
 import "humata/v1/errors.proto";
@@ -116,6 +117,13 @@ enum WithdrawReason {
   WITHDRAW_REASON_ITEM_DELETED = 7;
   // D264: the machine's sessions were stopped.
   WITHDRAW_REASON_MACHINE_STOPPED = 8;
+  // UP-1: what it asked for came about another way (a Migrate item
+  // whose machine is at the host's release again).
+  WITHDRAW_REASON_RESOLVED = 9;
+  // DK-19: a newer request to move the same Desk session took its place.
+  WITHDRAW_REASON_SUPERSEDED = 10;
+  // DK-18: the session moved from the Desk into a channel.
+  WITHDRAW_REASON_SESSION_MOVED = 11;
 }
 
 enum RequestKind {
@@ -127,6 +135,9 @@ enum RequestKind {
   REQUEST_KIND_QUESTION = 5;  // a question for the user
   REQUEST_KIND_CHANNEL = 6;
   REQUEST_KIND_MACHINE = 7;
+  // UP-1, D281: no requester, always VIP, answered only with Approve
+  // (Migrate): never Deny, Always, a reply or an Approve-all.
+  REQUEST_KIND_MIGRATE = 8;
 }
 
 // IN-9 item 7.
@@ -196,6 +207,7 @@ message RequestPreview {
     NetworkPreview network = 11;
     PushPreview push = 12;
     AccessAheadPreview access_ahead = 13;
+    MigratePreview migrate = 14;
   }
 }
 
@@ -303,6 +315,9 @@ message CrossMachineCopyPreview {
   string destination_path = 4;
   uint64 bytes = 5;
   uint32 files = 6;
+  // D467: where the copy lands in words after the machine's name, e.g.
+  // "shared" or "api clone"; empty when it has no short name.
+  string destination_place = 7;
 }
 
 message MessagePreview {
@@ -322,6 +337,69 @@ message MovePreview {
   MachineId from = 2;
   MachineId to = 3;
   uint64 bytes = 4;
+}
+
+enum MigratePhase {
+  MIGRATE_PHASE_UNSPECIFIED = 0;
+  MIGRATE_PHASE_WAITING = 1;
+  MIGRATE_PHASE_MIGRATING = 2;
+  MIGRATE_PHASE_FAILED = 3;
+}
+
+// UP-1, D281: "Migrate the daemon on gpu". One per (thing, machine)
+// while pending, showing what the machine is now.
+message MigratePreview {
+  MigrateThing thing = 1;
+  MachineId machine = 2;
+  // What it is now, and the host's build it would become.
+  BuildInfo from = 3;
+  BuildInfo to = 4;
+  repeated string changes = 5;
+  repeated string keeps_running = 6;
+  MigratePhase phase = 7;
+  // Set when phase is FAILED.
+  Error last_error = 8;
+  repeated SessionId waiting_sessions = 9;
+  // D379: what Migrate does, one line per step, in order. Set when Migrate is
+  // clicked and empty before; a Holders item has none.
+  repeated MigrateStep steps = 10;
+  // D379: a Holders item's sessions and shells on old holders, each with what
+  // happens to it. waiting_sessions (9) stays filled with the agent rows.
+  repeated HolderSession holders = 11;
+}
+
+message MigrateStep {
+  string label = 1;
+  MigrateStepState state = 2;
+}
+
+enum MigrateStepState {
+  MIGRATE_STEP_STATE_UNSPECIFIED = 0;
+  MIGRATE_STEP_STATE_PENDING = 1;
+  MIGRATE_STEP_STATE_DOING = 2;
+  MIGRATE_STEP_STATE_DONE = 3;
+  // The step that failed; the steps after it stay pending.
+  MIGRATE_STEP_STATE_FAILED = 4;
+}
+
+// One holder still on an old release's holder file.
+message HolderSession {
+  // Empty for a shell tab.
+  SessionId session = 1;
+  string title = 2;
+  HolderNote note = 3;
+}
+
+enum HolderNote {
+  HOLDER_NOTE_UNSPECIFIED = 0;
+  // An agent with turns: Migrate restarts it at its next idle moment.
+  HOLDER_NOTE_RESTARTS_WHEN_IDLE = 1;
+  // Its restart is under way now.
+  HOLDER_NOTE_RESTARTING = 2;
+  // A shell: it stays on its holder until it is closed.
+  HOLDER_NOTE_STAYS_UNTIL_CLOSED = 3;
+  // An agent that tells no turns, so it has no idle moment to restart at.
+  HOLDER_NOTE_NO_IDLE_MOMENT = 4;
 }
 
 message RequestAnswer {

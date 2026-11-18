@@ -99,6 +99,26 @@ fn a_copilot_sandbox_bypass_raises_no_card() {
 }
 
 #[test]
+fn a_file_edit_ask_is_an_edit_and_a_shell_ask_is_a_command() {
+    const COPILOT_EDIT: &[u8] = include_bytes!("../testdata/copilot/permission_edit.json");
+    for (agent, payload) in [
+        (Agent::Copilot, COPILOT_EDIT),
+        (Agent::Claude, CLAUDE_EDIT),
+        (Agent::Codex, CODEX_PATCH),
+    ] {
+        assert!(parse_permission(agent, payload).expect("an ask").edits_files, "{agent:?}");
+    }
+    for (agent, payload) in [
+        (Agent::Copilot, COPILOT_SHELL),
+        (Agent::Claude, CLAUDE_BASH),
+        (Agent::Codex, CODEX_BASH),
+        (Agent::Claude, CLAUDE_MCP),
+    ] {
+        assert!(!parse_permission(agent, payload).expect("an ask").edits_files, "{agent:?}");
+    }
+}
+
+#[test]
 fn a_payload_over_the_cap_raises_no_card() {
     let mut huge = br#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":""#.to_vec();
     huge.extend(std::iter::repeat_n(b'a', 2 * 1024 * 1024));

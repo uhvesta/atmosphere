@@ -4,7 +4,7 @@ use std::sync::Arc;
 use humata2_clients::desk::{self, DeskSession, Folder};
 use humata2_clients::model::{Agent, Session};
 use humata2_clients::{FakeDaemon, Operation, Workspace, fixture};
-use humata2_desk::{Delegate, Desk, DeskAction as A, DeskState, FolderPick, NewAction as N};
+use humata2_desk::{Delegate, Desk, DeskAction as A, DeskState, NewAction as N};
 use tca::{TestClock, TestStore};
 
 fn store(workspace: Workspace) -> (TestStore<Desk>, FakeDaemon) {
@@ -87,6 +87,33 @@ fn the_dialog_previews_the_path_the_folder_will_get() {
 }
 
 #[test]
+fn the_preview_counts_a_folder_the_daemon_reports_by_its_full_path() {
+    // A live daemon names a Desk folder by its full path under the machine's
+    // root, not the short ~/Humata form the dialog shows.
+    let mut workspace = fixture::design();
+    fixture::desk(&mut workspace);
+    for record in workspace.desk.sessions.values_mut() {
+        if let Folder::Scratch { path, .. } = &mut record.folder {
+            if let Some(rest) = path.strip_prefix(desk::DEFAULT_ROOT) {
+                *path = format!("/Users/me/Humata{rest}");
+            }
+        }
+    }
+    let (mut store, _fake) = store(workspace);
+    store.send(A::StartNew { agent: Agent::Claude }, |_| {});
+    store.send(A::New(N::Title("Plan Q4".to_owned())), |_| {});
+    assert_eq!(
+        store.state().scratch_preview(),
+        Some(desk::scratch_path("plan-q4-2"))
+    );
+    store.send(A::New(N::Title("Write notes".to_owned())), |_| {});
+    assert_eq!(
+        store.state().scratch_preview(),
+        Some(desk::scratch_path("write-notes"))
+    );
+}
+
+#[test]
 fn a_blank_title_names_the_folder_after_the_title_it_will_get() {
     let (mut store, fake) = store(fixture::empty());
     store.send(A::StartNew { agent: Agent::Codex }, |_| {});
@@ -98,43 +125,6 @@ fn a_blank_title_names_the_folder_after_the_title_it_will_get() {
     started(&mut store);
     let (_, record) = find(&fake, "New Codex session");
     assert_eq!(record.folder.path(), desk::scratch_path("new-codex-session"));
-}
-
-#[test]
-fn a_picked_folder_starts_where_it_was_picked() {
-    let (mut store, fake) = store(fixture::empty());
-    store.send(A::StartNew { agent: Agent::Claude }, |_| {});
-    store.send(A::New(N::Title("Tidy notes".to_owned())), |_| {});
-    store.send(A::New(N::Folder(FolderPick::Picked)), |_| {});
-    store.send(A::New(N::Path("~/notes".to_owned())), |_| {});
-    store.send(A::New(N::Start), |_| {});
-    started(&mut store);
-
-    let (_, record) = find(&fake, "Tidy notes");
-    assert_eq!(
-        record.folder,
-        Folder::Picked {
-            path: "~/notes".to_owned()
-        }
-    );
-}
-
-#[test]
-fn a_picked_folder_without_a_path_is_an_error_and_nothing_starts() {
-    let (mut store, fake) = store(fixture::empty());
-    store.send(A::StartNew { agent: Agent::Claude }, |_| {});
-    store.send(A::New(N::Title("Tidy notes".to_owned())), |_| {});
-    store.send(A::New(N::Folder(FolderPick::Picked)), |_| {});
-    store.send(A::New(N::Path("   ".to_owned())), |_| {});
-    store.send(A::New(N::Start), |_| {});
-    store.skip_received();
-
-    let Some(form) = store.state().new.as_ref() else {
-        panic!("the form stays open");
-    };
-    assert!(form.error.is_some());
-    assert!(!form.starting);
-    assert!(fake.workspace().desk.sessions.is_empty());
 }
 
 #[test]

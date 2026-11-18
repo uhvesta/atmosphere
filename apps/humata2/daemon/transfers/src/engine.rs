@@ -31,8 +31,22 @@ pub enum OnExisting {
     Fail,
     /// The replaced one goes to the trash.
     Replace,
-    /// "name 2", "name 3"... before the extension.
+    /// `name-2`, `name-3`... before the extension (FC-14).
     KeepBoth,
+}
+
+/// Where one source ended up in the destination folder (PL-13).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Landing {
+    /// Under its own name, or not placed yet.
+    #[default]
+    AsAsked,
+    /// The name was taken, so it was kept beside it under this name (FC-14).
+    SavedAs(String),
+    /// A file with the same bytes was already there under that name, so
+    /// nothing new was written. A folder counts only when every file in it
+    /// matches.
+    AlreadyThere,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +96,12 @@ pub enum Problem {
     },
 }
 
+/// One path part a file can land under: not empty, `.` or `..`, and
+/// without `/` or NUL.
+pub(crate) fn plain_name(name: &str) -> bool {
+    !(name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\0'))
+}
+
 #[derive(Debug, Clone)]
 pub struct Item {
     /// Absolute; the caller already checked it is allowed.
@@ -117,6 +137,8 @@ pub struct Snapshot {
     pub version: u64,
     pub caller_data: String,
     pub upload: bool,
+    /// One per entry of `sources`: where it landed once the transfer is done.
+    pub landings: Vec<Landing>,
 }
 
 pub type Listener = Arc<dyn Fn(&Snapshot) + Send + Sync>;
@@ -259,9 +281,9 @@ fn numbered(name: &str, n: u32) -> String {
     let path = Path::new(name);
     match (path.file_stem(), path.extension()) {
         (Some(stem), Some(ext)) => {
-            format!("{} {n}.{}", stem.to_string_lossy(), ext.to_string_lossy())
+            format!("{}-{n}.{}", stem.to_string_lossy(), ext.to_string_lossy())
         }
-        _ => format!("{name} {n}"),
+        _ => format!("{name}-{n}"),
     }
 }
 
@@ -370,14 +392,28 @@ impl Transfers {
     /// Reads the journals and recovers what a crash cut short.
     pub fn open(config: Config) -> Result<Arc<Self>, TransferError> {
         let folder = config.journal.clone();
+        // Every folder this makes, not only the journal folder, stays only
+        // once its own parent is synced: a power cut takes an unsynced
+        // `carry/` back, and with it the journals other parts keep beside
+        // `carry/transfers` (a move's or a fork's), so nothing is recovered.
+        let missing: Vec<PathBuf> = folder
+            .ancestors()
+            .take_while(|found| !found.as_os_str().is_empty() && std::fs::symlink_metadata(found).is_err())
+            .map(Path::to_owned)
+            .collect();
         humata2_durable::create_dir_all(&folder, 0o700).map_err(|source| {
             TransferError::JournalRead {
                 path: folder.clone(),
                 source,
             }
         })?;
-        if let Some(parent) = folder.parent() {
-            let _ = humata2_durable::sync_dir(parent);
+        for made in &missing {
+            if let Some(parent) = made.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+                humata2_durable::sync_dir(parent).map_err(|source| TransferError::JournalRead {
+                    path: made.clone(),
+                    source,
+                })?;
+            }
         }
         let read_failed = |source| TransferError::JournalRead {
             path: folder.clone(),
@@ -442,23 +478,16 @@ impl Transfers {
         Ok(this)
     }
 
-    /// Forgets the oldest finished transfers beyond the newest 200.
+    /// Forgets the oldest finished transfers beyond the newest 200, except
+    /// those that may still own staging on their destination (see
+    /// [`expired`]). Looks at nothing on either end: those may be offline.
     fn prune(&self) {
         let mut shared = self.lock();
-        let mut finished: Vec<(i64, String)> = shared
-            .slots
-            .values()
-            .filter(|s| {
-                !s.running
-                    && matches!(s.rec.phase, Phase::Done | Phase::Failed | Phase::Cancelled)
-            })
-            .map(|s| (s.rec.now_unix_ms, s.rec.id.clone()))
-            .collect();
-        if finished.len() <= KEEP_FINISHED {
+        let gone = expired(&shared.slots);
+        if gone.is_empty() {
             return;
         }
-        finished.sort_by(|a, b| b.cmp(a));
-        for (_, id) in finished.split_off(KEEP_FINISHED) {
+        for id in gone {
             shared.slots.remove(&id);
             let _ = humata2_durable::remove_file(&self.journal_path(&id));
         }
@@ -481,6 +510,14 @@ impl Transfers {
 
     /// Starts a transfer; the same id again returns what exists.
     pub fn start(self: &Arc<Self>, request: Request) -> Result<Snapshot, TransferError> {
+        self.start_as(request, None)
+    }
+
+    /// Starts a transfer whose one source lands under `name` in the
+    /// destination, as `cp a b` makes a new file b (D769). The caller
+    /// checked that `name` is one path part. With more than one source the
+    /// name is refused, since they can't all take it.
+    pub fn start_as(self: &Arc<Self>, request: Request, name: Option<String>) -> Result<Snapshot, TransferError> {
         if !valid_id(&request.id) {
             return Err(TransferError::BadId { id: request.id });
         }
@@ -498,7 +535,18 @@ impl Transfers {
                 name: name.to_string_lossy().into_owned(),
                 source: Some(item.path.clone()),
                 shown: item.shown.clone(),
+                landed: Landing::AsAsked,
             });
+        }
+        if let Some(name) = name {
+            if !plain_name(&name) {
+                return Err(TransferError::BadName { name });
+            }
+            let count = tops.len();
+            let [top] = tops.as_mut_slice() else {
+                return Err(TransferError::NameNeedsOneSource { count });
+            };
+            top.name = name;
         }
         let rec = Record {
             id: request.id.clone(),
@@ -1064,7 +1112,10 @@ impl Transfers {
         let rec = self.read(id, |r| r.clone())?;
         let end = &self.config.destination;
         let staging = staging_path(&rec.destination, id);
-        for top in &rec.tops {
+        if !rec.direct {
+            self.finish_folders(&rec, &staging)?;
+        }
+        for (index, top) in rec.tops.iter().enumerate() {
             let from = match (&top.source, rec.direct) {
                 (Some(path), true) => path.clone(),
                 _ => staging.join(&top.name),
@@ -1072,8 +1123,36 @@ impl Transfers {
             if !end.exists(&from).map_err(dst)? {
                 continue;
             }
-            let target = self.choose_target(&rec, &top.name)?;
+            let (target, landing) = self.choose_target(&rec, &top.name, &from)?;
+            if landing != top.landed {
+                // Journaled before the rename, so a crash after it still
+                // remembers where the name landed.
+                self.update(id, true, |s| {
+                    if let Some(top) = s.rec.tops.get_mut(index) {
+                        top.landed = landing.clone();
+                    }
+                })?;
+            }
+            if landing == Landing::AlreadyThere {
+                // Nothing new is written. A one-disk move still takes the
+                // source away, into the trash like any other moved source.
+                if rec.direct {
+                    end.trash(&from, "already at the destination", rec.now_unix_ms)
+                        .map_err(dst)?;
+                }
+                continue;
+            }
             end.rename(&from, &target).map_err(dst)?;
+            // A top folder gets its mode once in place; a crash in between
+            // leaves it writable by its owner.
+            let folder = rec
+                .files
+                .iter()
+                .find(|f| f.top == index && f.entry.rel.is_empty() && f.entry.kind == Kind::Folder);
+            if let Some(folder) = folder {
+                end.finish_file(&target, folder.entry.mode, folder.entry.modified_unix_ms)
+                    .map_err(dst)?;
+            }
             point("transfer.commit.renamed");
         }
         end.sync_folder(&rec.destination).map_err(dst)?;
@@ -1117,7 +1196,37 @@ impl Transfers {
         Ok(())
     }
 
-    fn choose_target(&self, rec: &Record, name: &str) -> Result<PathBuf, Halt> {
+    /// Gives every staged folder below a top its source's exact mode and
+    /// time, deepest first, so a read-only folder is set only once all it
+    /// holds is written (VF-59). Repeating it after a crash is harmless.
+    /// The tops are set as they are put in place.
+    fn finish_folders(&self, rec: &Record, staging: &Path) -> Result<(), Halt> {
+        let end = &self.config.destination;
+        let mut staged = Vec::with_capacity(rec.tops.len());
+        for top in &rec.tops {
+            staged.push(end.exists(&staging.join(&top.name)).map_err(dst)?);
+        }
+        // The plan lists a folder before what it holds, so backwards is
+        // deepest first.
+        for file in rec.files.iter().rev() {
+            let entry = &file.entry;
+            if entry.kind != Kind::Folder || entry.rel.is_empty() {
+                continue;
+            }
+            let (Some(top), Some(true)) = (rec.tops.get(file.top), staged.get(file.top).copied()) else {
+                continue;
+            };
+            let path = with_rel(&staging.join(&top.name), &entry.rel);
+            end.finish_file(&path, entry.mode, entry.modified_unix_ms)
+                .map_err(dst)?;
+        }
+        Ok(())
+    }
+
+    /// Where `name` goes in the destination folder, and how it got there.
+    /// `from` is the finished copy, read by KeepBoth to tell a name taken by
+    /// other bytes (kept under `-2`) from one taken by the same bytes.
+    fn choose_target(&self, rec: &Record, name: &str, from: &Path) -> Result<(PathBuf, Landing), Halt> {
         let end = &self.config.destination;
         let target = rec.destination.join(name);
         match rec.on_existing {
@@ -1127,28 +1236,188 @@ impl Transfers {
                         path: target.display().to_string(),
                     }));
                 }
-                Ok(target)
+                Ok((target, Landing::AsAsked))
             }
             OnExisting::Replace => {
                 if end.exists(&target).map_err(dst)? {
                     end.trash(&target, "replaced by a transfer", rec.now_unix_ms)
                         .map_err(dst)?;
                 }
-                Ok(target)
+                Ok((target, Landing::AsAsked))
             }
             OnExisting::KeepBoth => {
                 if !end.exists(&target).map_err(dst)? {
-                    return Ok(target);
+                    return Ok((target, Landing::AsAsked));
+                }
+                if self.same_bytes(from, &target)? {
+                    return Ok((target, Landing::AlreadyThere));
                 }
                 for n in 2u32.. {
-                    let candidate = rec.destination.join(numbered(name, n));
+                    let kept = numbered(name, n);
+                    let candidate = rec.destination.join(&kept);
                     if !end.exists(&candidate).map_err(dst)? {
-                        return Ok(candidate);
+                        return Ok((candidate, Landing::SavedAs(kept)));
                     }
                 }
-                Ok(target)
+                Ok((target, Landing::AsAsked))
             }
         }
+    }
+
+    /// Whether the trees at `a` and `b` on the destination end hold the same
+    /// names and bytes: same entries, sizes and link targets, and for every
+    /// file the same SHA-256 (size first, so unequal files are never read). A tree
+    /// with no file or link in it is never the same.
+    fn same_bytes(&self, a: &Path, b: &Path) -> Result<bool, Halt> {
+        let end = &self.config.destination;
+        let mut left = end.plan(a).map_err(dst)?;
+        let mut right = end.plan(b).map_err(dst)?;
+        if left.len() != right.len() {
+            return Ok(false);
+        }
+        left.sort_by(|x, y| x.rel.cmp(&y.rel));
+        right.sort_by(|x, y| x.rel.cmp(&y.rel));
+        // A folder with nothing but folders in it has no bytes to be the
+        // same, so it is kept beside the other rather than called a copy.
+        let mut compared = false;
+        for (l, r) in left.iter().zip(&right) {
+            if l.rel != r.rel || l.kind != r.kind || l.size != r.size || l.link_target != r.link_target {
+                return Ok(false);
+            }
+            compared |= l.kind != Kind::Folder;
+            if l.kind == Kind::File {
+                let one = end.hash(&with_rel(a, &l.rel), l.size).map_err(dst)?;
+                let two = end.hash(&with_rel(b, &r.rel), r.size).map_err(dst)?;
+                if one != two {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(compared)
+    }
+}
+/// Whether a failed transfer may still own staging on its destination: one
+/// that planned a copy or took an upload made a staging folder there, and a
+/// failure (its machine offline, a name in the way) leaves it for the
+/// resume or the cancel that removes it.
+fn owns_staging(rec: &Record) -> bool {
+    rec.upload.is_some() || (rec.planned && !rec.direct)
+}
+
+/// The finished transfers to forget: the oldest beyond the newest 200 of
+/// those whose journal is the last trace of them. A failed transfer that
+/// may still own staging is kept, so its staging is never orphaned; it goes
+/// once it is cancelled, which removes the staging first.
+fn expired(slots: &HashMap<String, Slot>) -> Vec<String> {
+    let mut finished: Vec<(i64, String)> = slots
+        .values()
+        .filter(|s| {
+            !s.running
+                && match s.rec.phase {
+                    Phase::Done | Phase::Cancelled => true,
+                    Phase::Failed => !owns_staging(&s.rec),
+                    _ => false,
+                }
+        })
+        .map(|s| (s.rec.now_unix_ms, s.rec.id.clone()))
+        .collect();
+    if finished.len() <= KEEP_FINISHED {
+        return Vec::new();
+    }
+    finished.sort_by(|a, b| b.cmp(a));
+    finished.split_off(KEEP_FINISHED).into_iter().map(|(_, id)| id).collect()
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    fn record(id: &str, phase: Phase, problem: Option<Problem>, planned: bool, at: i64) -> Record {
+        Record {
+            id: id.to_owned(),
+            tops: Vec::new(),
+            destination: PathBuf::from("/dest"),
+            destination_shown: "dest".to_owned(),
+            mode: Mode::Copy,
+            on_existing: OnExisting::Fail,
+            caller_data: String::new(),
+            now_unix_ms: at,
+            upload: None,
+            phase,
+            problem,
+            planned,
+            direct: false,
+            files: Vec::new(),
+            file_index: 0,
+            offset: 0,
+            confirmed: 0,
+            done_bytes: 0,
+            total_bytes: 0,
+            done_files: 0,
+            total_files: 0,
+            version: 1,
+        }
+    }
+
+    fn slots(records: Vec<Record>) -> HashMap<String, Slot> {
+        records
+            .into_iter()
+            .map(|rec| {
+                (
+                    rec.id.clone(),
+                    Slot {
+                        rec,
+                        want: Want::Run,
+                        running: false,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn offline() -> Option<Problem> {
+        Some(Problem::Offline {
+            machine: "devbox".to_owned(),
+        })
+    }
+
+    /// Past the newest 200, the oldest finished transfers go.
+    #[test]
+    fn the_oldest_finished_transfers_past_the_newest_200_are_forgotten() {
+        let all = (0..205)
+            .map(|n| record(&format!("t{n}"), Phase::Done, None, true, n))
+            .collect();
+        let mut gone = expired(&slots(all));
+        gone.sort();
+        let mut want: Vec<String> = (0..5).map(|n| format!("t{n}")).collect();
+        want.sort();
+        assert_eq!(gone, want);
+    }
+
+    /// A failed transfer that waits for its machine still owns its staging
+    /// there: it is kept however old it is.
+    #[test]
+    fn a_transfer_waiting_for_its_machine_is_never_forgotten() {
+        let mut all: Vec<Record> = (0..205)
+            .map(|n| record(&format!("t{}", n + 1), Phase::Done, None, true, i64::from(n) + 1))
+            .collect();
+        all.push(record("waiting", Phase::Failed, offline(), true, 0));
+        let gone = expired(&slots(all));
+        assert!(!gone.contains(&"waiting".to_owned()));
+        assert_eq!(gone.len(), 5);
+    }
+
+    /// A failed transfer whose staging was made is kept for whatever it
+    /// failed on; one that never planned made none, and goes like a done one.
+    #[test]
+    fn a_failed_transfer_is_forgotten_only_when_it_made_no_staging() {
+        let mut all: Vec<Record> = (0..200)
+            .map(|n| record(&format!("t{}", n + 2), Phase::Done, None, true, i64::from(n) + 2))
+            .collect();
+        all.push(record("staged", Phase::Failed, None, true, 0));
+        all.push(record("unplanned", Phase::Failed, None, false, 1));
+        let gone = expired(&slots(all));
+        assert_eq!(gone, vec!["unplanned".to_owned()]);
     }
 }
 

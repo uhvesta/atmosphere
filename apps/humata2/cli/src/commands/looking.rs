@@ -35,10 +35,11 @@ async fn me<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result<Json, CliError
         .raw(rpc::daemon::WHO_AM_I, &pb::WhoAmIRequest {})
         .await?;
     let reply: pb::WhoAmIResponse = decode(rpc::daemon::WHO_AM_I, &bytes)?;
-    let agent = matches!(
-        reply.actor.as_ref().and_then(|actor| actor.actor.as_ref()),
-        Some(pb::actor::Actor::Agent(_))
-    );
+    let session = match reply.actor.as_ref().and_then(|actor| actor.actor.as_ref()) {
+        Some(pb::actor::Actor::Agent(agent)) => Some(agent.session.clone()),
+        _ => None,
+    };
+    let agent = session.is_some();
     let tier = match ctx.principal {
         _ if agent => "agent",
         Principal::Script { .. } => "script",
@@ -47,8 +48,43 @@ async fn me<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>) -> Result<Json, CliError
     let mut result = as_json::encoded(rpc::daemon::WHO_AM_I.response, &bytes);
     if let Json::Object(fields) = &mut result {
         fields.insert("tier".into(), json!(tier));
+        // D748: an agent learns where its session's clones are by asking.
+        if let Some(Some(session)) = session
+            && let Some(clones) = clones(ctx, session).await
+        {
+            fields.extend(clones);
+        }
     }
     Ok(result)
+}
+
+/// The session's folder and its clones (repo, path, branch), for an agent
+/// that asks who it is. None when the session can't be read, as for an
+/// agent added to a session, whose token asks only who it is: whoami
+/// answers without them.
+async fn clones<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    session: pb::SessionId,
+) -> Option<serde_json::Map<String, Json>> {
+    let record: pb::Session = ctx
+        .call(rpc::session::GET_SESSION, &pb::GetSessionRequest { id: Some(session) })
+        .await
+        .ok()?;
+    let clones: Vec<Json> = record
+        .repos
+        .iter()
+        .map(|clone| {
+            json!({
+                "repo": clone.repo.as_ref().map(|repo| format!("{}/{}", repo.owner, repo.name)),
+                "path": clone.path,
+                "branch": clone.branch,
+            })
+        })
+        .collect();
+    let mut fields = serde_json::Map::new();
+    fields.insert("folder".into(), json!(record.folder));
+    fields.insert("clones".into(), Json::Array(clones));
+    Some(fields)
 }
 
 pub(super) async fn ls<D: Daemon, C: Console>(
@@ -95,16 +131,17 @@ pub(super) async fn channel<D: Daemon, C: Console>(
                 repos,
                 machines: ctx.machines_flag().await?,
             };
-            reply(ctx, rpc::channel::CREATE_CHANNEL, &request).await
+            ctx.change(rpc::channel::CREATE_CHANNEL, &request).await
         }
-        ChannelCommand::Rename { channel, name } => {
+        ChannelCommand::Rename { channel, name, confirm_running } => {
             let request = pb::RenameChannelRequest {
                 idempotency_key: ctx.key(),
                 id: Some(ctx.channel(&channel).await?),
                 name,
                 expected_revision: None,
+                confirm_running,
             };
-            reply(ctx, rpc::channel::RENAME_CHANNEL, &request).await
+            ctx.change(rpc::channel::RENAME_CHANNEL, &request).await
         }
         ChannelCommand::Repo(ChannelRepoCommand::Add { channel, repo }) => {
             let request = pb::AddRepoRequest {
@@ -112,7 +149,7 @@ pub(super) async fn channel<D: Daemon, C: Console>(
                 channel: Some(ctx.channel(&channel).await?),
                 repo: Some(resolve::repo(&repo)?),
             };
-            reply(ctx, rpc::channel::ADD_REPO, &request).await
+            ctx.change(rpc::channel::ADD_REPO, &request).await
         }
         ChannelCommand::Repo(ChannelRepoCommand::Rm { channel, repo }) => {
             let channel = Some(ctx.channel(&channel).await?);
@@ -140,7 +177,7 @@ pub(super) async fn channel<D: Daemon, C: Console>(
                 channel: Some(ctx.channel(&channel).await?),
                 machine: Some(ctx.machine(&machine).await?),
             };
-            reply(ctx, rpc::channel::ADD_MACHINE, &request).await
+            ctx.change(rpc::channel::ADD_MACHINE, &request).await
         }
         ChannelCommand::Machine(ChannelMachineCommand::Rm { channel, machine }) => {
             let channel = Some(ctx.channel(&channel).await?);
@@ -309,14 +346,14 @@ pub(super) async fn ops<D: Daemon, C: Console>(
                 id: operation(id),
                 idempotency_key: ctx.key(),
             };
-            reply(ctx, rpc::operation::CANCEL_OPERATION, &request).await
+            ctx.change(rpc::operation::CANCEL_OPERATION, &request).await
         }
         (Some(OpsCommand::Retry { id }), _) => {
             let request = pb::RetryOperationRequest {
                 id: operation(id),
                 idempotency_key: ctx.key(),
             };
-            reply(ctx, rpc::operation::RETRY_OPERATION, &request).await
+            ctx.change(rpc::operation::RETRY_OPERATION, &request).await
         }
         (None, Some(id)) => {
             let request = pb::GetOperationRequest { id: operation(id) };

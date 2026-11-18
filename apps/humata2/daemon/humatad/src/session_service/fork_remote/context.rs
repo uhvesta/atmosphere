@@ -90,6 +90,7 @@ fn asked_request(parent: &str, operation: &str, ask: &ContextAsk) -> pb::ForkSes
         model: ask.model.clone(),
         machine: None,
         branch: String::new(),
+        reason: String::new(),
     }
 }
 

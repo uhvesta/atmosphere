@@ -32,6 +32,7 @@ use crate::link_proof::{
 };
 use crate::relay::Relay;
 use crate::status;
+use crate::upgrade::build::Release;
 
 use pb::peer_unproven::Reason;
 
@@ -71,11 +72,18 @@ pub(crate) struct Handshake {
     /// comes from it, and the host's proof is handed to it.
     relay: Relay,
     booted_at: Timestamp,
+    /// This link's own release, which Hello reports when the machine's
+    /// daemon gives none (UP-1, D281). Set by `with_build`.
+    build: Option<Release>,
     phase: Mutex<Phase>,
     host_proof_wrong: AtomicBool,
     /// Whether the link's one Uplink was opened.
     uplink_opened: AtomicBool,
     close: Notify,
+    /// Set once the link is ending, whatever the reason. The host's Uplink
+    /// ends with it, so the link's shutdown, which waits for every call it
+    /// serves, isn't held open by a stream the host keeps.
+    ending: tokio::sync::watch::Sender<bool>,
 }
 
 impl Handshake {
@@ -91,10 +99,12 @@ impl Handshake {
             compression,
             relay,
             booted_at: attach::now(),
+            build: None,
             phase: Mutex::new(Phase::Fresh),
             host_proof_wrong: AtomicBool::new(false),
             uplink_opened: AtomicBool::new(false),
             close: Notify::new(),
+            ending: tokio::sync::watch::Sender::new(false),
         }
     }
 
@@ -103,9 +113,46 @@ impl Handshake {
         &self.relay
     }
 
+    /// Reports `build` as this link's own release, for Hello's fallback (UP-1,
+    /// D281).
+    pub(crate) fn with_build(self, build: Release) -> Self {
+        Self {
+            build: Some(build),
+            ..self
+        }
+    }
+
+    /// The stop of this machine's sessions, if there is one (D262): read
+    /// from the stop record in the state folder, which the key file is in,
+    /// so the host is told even while the machine's daemon is down.
+    fn sessions_stopped(&self) -> Option<pb::SessionsStopped> {
+        let state = self.key_file.parent()?;
+        match crate::stop::StopFolder::new(state).read() {
+            Ok(crate::stop::StopState::Stopped(record)) => Some(crate::stop::boot::to_pb(&record)),
+            Ok(crate::stop::StopState::Running | crate::stop::StopState::Starting(_)) => None,
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: couldn't tell the host whether this machine is stopped: {}",
+                    status::chain(&error)
+                );
+                None
+            }
+        }
+    }
+
     /// Resolves once a wrong host proof means the link must close.
     pub(crate) async fn closing(&self) {
         self.close.notified().await;
+    }
+
+    /// The link is ending: its connection to the machine's daemon is gone,
+    /// the host hung up, a stop signal came, or the host's proof was wrong.
+    /// A link whose daemon is gone can relay nothing more (the relay has one
+    /// connection, proved once), so the host's Uplink ends too. The link's
+    /// process then exits, and the host dials a new link whose Hello and
+    /// reports come from the daemon that runs now.
+    pub(crate) fn end(&self) {
+        self.ending.send_replace(true);
     }
 
     /// Whether the link closed because the host's proof was wrong.
@@ -270,6 +317,12 @@ impl pb::peer_service_server::PeerService for Peer {
             host_nonce: hello.nonce,
             machine_nonce,
         };
+        // UP-1, D281: the build the socket daemon gave BeginRelay, which is
+        // what this machine is; this link's own release when none did.
+        let build = handshake
+            .relay
+            .build()
+            .or_else(|| handshake.build.as_ref().map(Release::info));
         Ok(Response::new(pb::HelloResponse {
             machine: Some(pb::MachineId {
                 value: handshake.machine.clone(),
@@ -288,6 +341,8 @@ impl pb::peer_service_server::PeerService for Peer {
             chunk_codecs: handshake.compression.offered(Link::Remote {
                 bytes_per_second: None,
             }),
+            sessions_stopped: handshake.sessions_stopped(),
+            build,
         }))
     }
 
@@ -390,6 +445,7 @@ impl pb::peer_service_server::PeerService for Peer {
         let from_host = request.into_inner();
         let (to_host, stream) = tokio::sync::mpsc::channel(1);
         let relay = self.handshake.relay.clone();
+        let mut ending = self.handshake.ending.subscribe();
         tokio::spawn(async move {
             // The daemon's PeerUplink is open before the host sees Resume.
             let (to_daemon, daemon_inbox) = tokio::sync::mpsc::channel::<pb::HostToMachine>(16);
@@ -406,7 +462,16 @@ impl pb::peer_service_server::PeerService for Peer {
             // reporter is stopped once the carrying ends, which also drops
             // its hold on `to_host`.
             let reporter = tokio::spawn(report_sessions(relay, to_host.clone()));
-            carry_uplink(from_host, to_daemon, daemon, &to_host).await;
+            // A link that is ending ends the host's Uplink with it.
+            tokio::select! {
+                () = carry_uplink(from_host, to_daemon, daemon, &to_host) => {}
+                // The value it waited for is let go at once: it is no use
+                // here, and holding it would keep the task from moving
+                // between threads.
+                () = async {
+                    let _ = ending.wait_for(|ending| *ending).await;
+                } => {}
+            }
             reporter.abort();
             let _ = reporter.await;
             // Dropping `to_host` ends the host's Uplink; dropping
@@ -927,6 +992,8 @@ fn session_reports(session: &pb::Session, at: Timestamp) -> Vec<pb::MachineToHos
             session: Some(id.clone()),
             status: session.status,
             exit_code: session.exit_code,
+            // CH-16, D394: the host shows the machine's read mark.
+            unread: session.unread,
             ..pb::SessionStatusReport::default()
         })),
     }];
@@ -985,8 +1052,8 @@ async fn list_all(
 /// subscribe to the socket daemon's session events first, so nothing
 /// between the listing and the subscription is missed, then one status
 /// report per session and an `UplinkAck` that ends the snapshot, then one
-/// report per session event. A resync means every session is reported
-/// again. Nothing here polls (TR-7). Without a proven relay it sends
+/// report per session event, and per catch-up of a session's history
+/// (N1). A resync means every session is reported again. Nothing here polls (TR-7). Without a proven relay it sends
 /// nothing; it ends when the subscription or the Uplink does.
 async fn report_sessions(
     relay: Relay,
@@ -1044,6 +1111,23 @@ async fn report_sessions(
                     continue;
                 }
                 if send_reports(&to_host, &session).await.is_err() {
+                    return;
+                }
+            }
+            // N1: the machine's mirror read more of a session's
+            // conversation, which its agent may write after the session's
+            // last event. A report on the session has the host read it too
+            // (D189), with nothing polled.
+            Some(pb::event::Payload::HistoryIndexed(indexed)) => {
+                let Some(id) = indexed.session else {
+                    continue;
+                };
+                let shown = match sessions.get_session(Request::new(pb::GetSessionRequest { id: Some(id) })).await {
+                    Ok(shown) => shown.into_inner(),
+                    // Gone since: there is nothing to report.
+                    Err(_) => continue,
+                };
+                if send_reports(&to_host, &shown).await.is_err() {
                     return;
                 }
             }
@@ -1105,11 +1189,12 @@ async fn next_daemon_message(
 /// Carries the host's messages to the daemon's PeerUplink and the daemon's
 /// to the host, until the host's side ends. The host's end (or a failure of
 /// it) returns, which drops `to_daemon` and so ends the daemon's requests.
-/// The link outlives the machine's daemon: a daemon that stops or restarts
-/// ends its PeerUplink, but not the host's Uplink, so the host doesn't see
-/// the machine lost (the daemon counts the host away until the next link).
-/// Only a newer link replacing this one (`Aborted`) ends the host's Uplink,
-/// with that status.
+/// A PeerUplink that ends by itself doesn't end the host's Uplink: the
+/// daemon counts the host away until the next link. Only a newer link
+/// replacing this one (`Aborted`) ends the host's Uplink from here, with
+/// that status. A daemon that stops or restarts also takes the link's relay
+/// with it, and the link ends then (`Handshake::end`), so the host dials a
+/// link to the daemon that runs next.
 async fn carry_uplink(
     mut from_host: Streaming<pb::HostToMachine>,
     to_daemon: tokio::sync::mpsc::Sender<pb::HostToMachine>,
@@ -1141,7 +1226,7 @@ async fn carry_uplink(
                 Ok(None) => daemon = None,
                 Err(failure) => {
                     crate::log::say!(
-                        "humatad2: this machine's daemon ended the peer link's uplink, so it counts its host away until the host links again; the link itself stays up: {}",
+                        "humatad2: this machine's daemon ended the peer link's uplink, so it counts its host away until the host links again: {}",
                         failure.message()
                     );
                     daemon = None;

@@ -16,6 +16,7 @@ use tonic::{Code, Status};
 const SESSION: &str = "se_find";
 const EMPTY: &str = "se_find_empty";
 const PLAIN: &str = "se_find_plain";
+const DESK: &str = "se_find_desk";
 
 struct World {
     daemon: Daemon,
@@ -93,7 +94,19 @@ async fn world() -> World {
     let plain_parent = dir.path().join("plain-session");
     store.put_session(&record(PLAIN, &plain_parent)).unwrap();
     store.put_session_detail(&detail(PLAIN, &["docs"])).unwrap();
+    let desk = dir.path().join("desk-session");
+    store
+        .put_session(&SessionRecord {
+            channel: "desk".to_owned(),
+            ..record(DESK, &desk)
+        })
+        .unwrap();
+    store.put_session_detail(&detail(DESK, &["ledger"])).unwrap();
     drop(store);
+
+    write(&desk.join("rfc.md"), "# RFC\n");
+    write(&desk.join("notes/bench.md"), "bench\n");
+    repo_with(&desk.join("ledger"), &["schema.sql"]);
 
     repo_with(
         &dir.path().join("api"),
@@ -287,4 +300,36 @@ async fn a_query_that_is_too_long_is_refused() {
     assert_eq!(field, "query");
     assert_eq!(problem, pb::invalid_field::Problem::OutOfRange);
     assert_eq!(error.code(), Code::InvalidArgument);
+}
+
+/// D382: a Desk session's own folder holds its documents, outside every
+/// clone. They are found first, under the folder's root, and the clone in
+/// the folder is found once, as a clone.
+#[tokio::test]
+async fn a_desk_sessions_own_files_are_found_before_its_clones_and_only_once() {
+    let world = world().await;
+    let response = find_in(&world.daemon, DESK, "", None).await.unwrap();
+    let found: Vec<String> = response
+        .entries
+        .iter()
+        .map(|entry| {
+            let location = entry.location.as_ref().unwrap();
+            match &location.root {
+                Some(pb::file_location::Root::SessionFolder(_)) => format!("folder:{}", location.path),
+                Some(pb::file_location::Root::SessionClone(clone)) => {
+                    format!("{}:{}", clone.repo.as_ref().unwrap().name, location.path)
+                }
+                other => panic!("an unexpected root: {other:?}"),
+            }
+        })
+        .collect();
+    let mut own: Vec<&String> = found.iter().filter(|path| path.starts_with("folder:")).collect();
+    own.sort();
+    assert_eq!(own, ["folder:notes/bench.md", "folder:rfc.md"], "{found:?}");
+    assert!(found[0].starts_with("folder:") && found[1].starts_with("folder:"), "{found:?}");
+    assert!(found.contains(&"ledger:schema.sql".to_owned()), "{found:?}");
+    assert!(
+        !found.iter().any(|path| path.starts_with("folder:ledger")),
+        "the clone isn't listed again through the folder: {found:?}"
+    );
 }

@@ -1,6 +1,8 @@
 //! The Desk's dummy data: frames 34, 36 and 55 of the design.
 
-use crate::desk::{Access, Closed, DeskSession, Document, FOLDER, Folder, LastUsed};
+use crate::desk::{
+    Access, ChannelDeskSession, Closed, DeskSession, Document, FOLDER, Folder, LastUsed, Switches,
+};
 use crate::model::{
     Agent, ChannelId, Item, ItemDetails, ItemId, ItemKind, ItemStatus, Line, Preview,
     RequestKind, Scope, Session, SessionFile, SessionId, Speaker, Status,
@@ -48,6 +50,70 @@ const Q4_PLAN: &str = "# Q4 board plan
 - Review the plan on Friday.
 ";
 
+/// The channel Desk of frames 91 and 95: Payments' Desk has two sessions,
+/// one for the whole channel and one for the migration session. Not part of
+/// [`design`](super::design): a test adds it.
+pub fn channel_desk(workspace: &mut Workspace) {
+    let channel = ChannelId::new("payments-rewrite");
+    let rows = [
+        (
+            "cdesk-triage",
+            "Triage flaky tests",
+            Agent::Claude,
+            "this-mac",
+            Status::Working,
+            None,
+            "Today 13:10",
+            vec!["flaky-report.md", "retry-plan.md"],
+        ),
+        (
+            "cdesk-backfill",
+            "Watch the backfill",
+            Agent::Codex,
+            "devbox-1",
+            Status::Idle,
+            Some("ledger"),
+            "Today 11:52",
+            Vec::new(),
+        ),
+    ];
+    for (order, (id, title, agent, machine, status, target, label, documents)) in
+        rows.into_iter().enumerate()
+    {
+        workspace
+            .sessions
+            .push(session(id, title, agent, machine, status));
+        let name = title.to_lowercase().replace(' ', "-");
+        workspace.desk.channel_sessions.insert(
+            SessionId::new(id),
+            ChannelDeskSession {
+                desk: DeskSession::fresh(
+                    SessionId::new(id),
+                    Folder::Scratch {
+                        path: format!("~/Humata/payments-rewrite/desk/{name}"),
+                        kept: false,
+                    },
+                    LastUsed {
+                        order: u64::try_from(order).unwrap_or(0) + 1,
+                        label: label.to_owned(),
+                    },
+                ),
+                channel: channel.clone(),
+                target: target.map(SessionId::new),
+                switches: Switches::default(),
+                blocked: Vec::new(),
+                target_gone: false,
+                document_lines: documents
+                    .iter()
+                    .zip([54_u32, 23])
+                    .map(|(name, lines)| ((*name).to_owned(), lines))
+                    .collect(),
+                documents: documents.into_iter().map(str::to_owned).collect(),
+            },
+        );
+    }
+}
+
 /// A Desk session's [`Session`]: in the Desk's channel, with no repository
 /// and no branch (DK-12).
 pub(crate) fn session(
@@ -94,6 +160,10 @@ fn add(workspace: &mut Workspace, entry: Entry) {
         id.clone(),
         DeskSession {
             session: id.clone(),
+            has_versions: entry.folder.is_scratch(),
+            doc_head: String::new(),
+            version_count: 0,
+            holds_files: false,
             folder: entry.folder,
             repos: entry.repos.iter().map(|repo| (*repo).to_owned()).collect(),
             access: Access::default(),
@@ -139,7 +209,7 @@ fn lines(text: &[(Speaker, &str)]) -> Vec<Line> {
 fn plan_q4_terminal() -> Vec<Line> {
     use Speaker::{Agent as A, System as S};
     lines(&[
-        (S, "~/Humata/desk/plan-q4 $ claude"),
+        (S, "plan-q4 $ claude"),
         (
             A,
             "> Plan Q4 for payments: add the backfill follow-ups, and make a",
@@ -224,6 +294,7 @@ fn plan_q4_items(workspace: &mut Workspace, session: &SessionId) {
             depends_on: depends_on.map(ItemId::new).into_iter().collect(),
             session: None,
             parent: None,
+            revision: 0,
         });
         workspace.item_details.insert(
             id,
@@ -407,6 +478,11 @@ pub fn desk(workspace: &mut Workspace) {
             (session.clone(), String::new(), path.to_owned()),
             text.to_owned(),
         );
+    }
+    for document in &workspace.desk.documents {
+        if let Some(record) = workspace.desk.sessions.get_mut(&document.session) {
+            record.holds_files = true;
+        }
     }
     // Frame 38: the shell tab of BRIN rollout RFC, and what its Files panel
     // lists: the notes and the two clones `humata desk add` made.

@@ -18,17 +18,61 @@ use crate::console::Console;
 use crate::daemon::{Daemon, DaemonError, ReportRequest, Rpc, rpc};
 use crate::error::CliError;
 
+/// Where a machine keeps Humata's folders until it is changed (PL-1).
+const DEFAULT_ROOT: &str = "~/Humata";
+
+/// `listed` (a ListMachines reply) with this machine in it, first, unless
+/// the daemon listed it already (D672 (Provisional)).
+fn with_this_machine(mut listed: Json, this: &pb::MachineId) -> Json {
+    let machine = crate::as_json::typed(
+        "humata.v1.Machine",
+        &pb::Machine {
+            id: Some(this.clone()),
+            name: "This Mac".to_owned(),
+            is_this_mac: true,
+            reachability: pb::Reachability::Online as i32,
+            ..Default::default()
+        },
+    );
+    if !listed.is_object() {
+        listed = json!({});
+    }
+    let Some(fields) = listed.as_object_mut() else {
+        return listed;
+    };
+    let machines = fields.entry("machines").or_insert_with(|| json!([]));
+    if let Some(list) = machines.as_array_mut() {
+        // An id prints as its bare value (as_json folds one-value messages).
+        let id_of = |entry: &Json| entry.get("id").and_then(Json::as_str).map(str::to_owned);
+        // A machine's agent gets the host's list, where the host is This
+        // Mac already (D768); its own machine is listed under its name.
+        let named = |entry: &Json| {
+            id_of(entry).as_deref() == Some(this.value.as_str()) || entry.get("is_this_mac") == Some(&Json::Bool(true))
+        };
+        if !list.iter().any(named) {
+            list.insert(0, machine);
+        }
+    }
+    listed
+}
+
 pub(super) async fn host<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     command: HostCommand,
 ) -> Result<Done, CliError> {
     let key = ctx.key();
     match command {
-        HostCommand::Ls => pages(ctx, rpc::machine::LIST_MACHINES, "machines", |page| {
-            pb::ListMachinesRequest { page }
-        })
-        .await
-        .map(Done::reply),
+        HostCommand::Ls => {
+            let listed = pages(ctx, rpc::machine::LIST_MACHINES, "machines", |page| {
+                pb::ListMachinesRequest { page }
+            })
+            .await?;
+            // D672 (Provisional): the daemon lists the machines it was
+            // given, never the one it runs on, so a single machine saw an
+            // empty list and no id to start a session on.
+            let this = ctx.this_machine().await?;
+            Ok(Done::reply(with_this_machine(listed, &this)))
+        }
         HostCommand::Show { machine } => {
             let request = pb::GetMachineRequest {
                 id: Some(ctx.machine(&machine).await?),
@@ -49,6 +93,9 @@ pub(super) async fn host<D: Daemon, C: Console>(
                 // Without it a first add stops at the host's key and names it.
                 trust_host_key_fingerprint: trust_host_key.unwrap_or_default(),
             };
+            if ctx.flags.dry_run {
+                return ctx.change(rpc::machine::ADD_SSH_MACHINE, &request).await;
+            }
             let started = ctx.raw(rpc::machine::ADD_SSH_MACHINE, &request).await?;
             follow(ctx, rpc::machine::ADD_SSH_MACHINE, &started)
                 .await
@@ -58,7 +105,7 @@ pub(super) async fn host<D: Daemon, C: Console>(
             let request = pb::ReconnectMachineRequest {
                 id: Some(ctx.machine(&machine).await?),
             };
-            reply(ctx, rpc::machine::RECONNECT_MACHINE, &request).await
+            ctx.change(rpc::machine::RECONNECT_MACHINE, &request).await
         }
         HostCommand::Remove { machine } => {
             let id = Some(ctx.machine(&machine).await?);
@@ -106,9 +153,21 @@ pub(super) async fn host<D: Daemon, C: Console>(
         HostCommand::Root {
             machine,
             path,
+            default_root,
             move_channels,
         } => {
             let id = Some(ctx.machine(&machine).await?);
+            let path = match (path, default_root) {
+                (Some(path), _) => path,
+                (None, true) => DEFAULT_ROOT.to_owned(),
+                (None, false) => {
+                    let detail: pb::MachineDetail = ctx
+                        .call(rpc::machine::GET_MACHINE, &pb::GetMachineRequest { id })
+                        .await?;
+                    let root = detail.machine.map(|machine| machine.root).unwrap_or_default();
+                    return Ok(Done::reply(json!({ "root": root })));
+                }
+            };
             ctx.planned(
                 rpc::machine::PLAN_CHANGE_ROOT,
                 &pb::PlanChangeRootRequest {
@@ -133,14 +192,12 @@ pub(super) async fn host<D: Daemon, C: Console>(
         HostCommand::VmTier { machine, state } => {
             let id = Some(ctx.machine(&machine).await?);
             let on = values::on(state);
-            ctx.present_json(rpc::machine::SET_VM_TIER, |presence| pb::SetVmTierRequest {
+            ctx.change_present(rpc::machine::SET_VM_TIER, |presence| pb::SetVmTierRequest {
                 idempotency_key: key.clone(),
                 id: id.clone(),
                 on,
                 presence,
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         HostCommand::Storage { machine } => {
             let request = pb::GetStorageRequest {
@@ -159,14 +216,29 @@ pub(super) async fn host<D: Daemon, C: Console>(
                 path,
                 confirm_running,
             };
-            reply(ctx, rpc::machine::CLEAR_BUILD_CACHE, &request).await
+            ctx.change(rpc::machine::CLEAR_BUILD_CACHE, &request).await
         }
         HostCommand::TrimLogs { machine } => {
             let request = pb::TrimLogsRequest {
                 idempotency_key: key,
                 id: Some(ctx.machine(&machine).await?),
             };
-            reply(ctx, rpc::machine::TRIM_LOGS, &request).await
+            ctx.change(rpc::machine::TRIM_LOGS, &request).await
+        }
+        HostCommand::Stop { machine, reason } => {
+            let request = pb::StopMachineSessionsRequest {
+                machine: Some(ctx.machine(&machine).await?),
+                stop_id: String::new(),
+                reason: reason.unwrap_or_default(),
+                via: pb::StopVia::Cli as i32,
+            };
+            ctx.change(rpc::machine::STOP_MACHINE_SESSIONS, &request).await
+        }
+        HostCommand::Start { machine } => {
+            let request = pb::StartMachineSessionsRequest {
+                machine: Some(ctx.machine(&machine).await?),
+            };
+            ctx.change(rpc::machine::START_MACHINE_SESSIONS, &request).await
         }
         HostCommand::Vars { machine } => {
             let request = pb::ListHostVariablesRequest {
@@ -190,7 +262,7 @@ pub(super) async fn host<D: Daemon, C: Console>(
             }
             let id = Some(ctx.machine(&machine).await?);
             let value = secret(ctx, &format!("Value of {name}: "))?;
-            ctx.present_json(rpc::machine::SET_HOST_VARIABLE, |presence| {
+            ctx.change_present(rpc::machine::SET_HOST_VARIABLE, |presence| {
                 pb::SetHostVariableRequest {
                     idempotency_key: key.clone(),
                     id: id.clone(),
@@ -198,39 +270,35 @@ pub(super) async fn host<D: Daemon, C: Console>(
                     value: value.clone(),
                     presence,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         HostCommand::Var(VarCommand::Rm { machine, name }) => {
             let id = Some(ctx.machine(&machine).await?);
-            ctx.present_json(rpc::machine::REMOVE_HOST_VARIABLE, |presence| {
+            ctx.change_present(rpc::machine::REMOVE_HOST_VARIABLE, |presence| {
                 pb::RemoveHostVariableRequest {
                     idempotency_key: key.clone(),
                     id: id.clone(),
                     name: name.clone(),
                     presence,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         HostCommand::TrustKey {
             machine,
             fingerprint,
         } => {
             let id = Some(ctx.machine(&machine).await?);
-            ctx.present_json(rpc::machine::TRUST_NEW_HOST_KEY, |presence| {
+            ctx.change_present(rpc::machine::TRUST_NEW_HOST_KEY, |presence| {
                 pb::TrustNewHostKeyRequest {
                     idempotency_key: key.clone(),
                     id: id.clone(),
                     new_fingerprint: fingerprint.clone(),
                     presence,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
+        // SEAM (MACHINESCRIPTS, D687).
+        HostCommand::Script(command) => super::machine_scripts::script(ctx, command).await,
     }
 }
 
@@ -273,16 +341,14 @@ pub(super) async fn provider<D: Daemon, C: Console>(
                     &pb::GetProvidersConfigRequest {},
                 )
                 .await?;
-            ctx.present_json(rpc::provider::SET_PROVIDERS_CONFIG, |presence| {
+            ctx.change_present(rpc::provider::SET_PROVIDERS_CONFIG, |presence| {
                 pb::SetProvidersConfigRequest {
                     idempotency_key: key.clone(),
                     toml: toml.clone(),
                     expected_revision: current.revision,
                     presence,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         ProviderCommand::Import { file } => {
             let preview = pb::PreviewProviderImportRequest {
@@ -324,6 +390,9 @@ pub(super) async fn provider<D: Daemon, C: Console>(
                 name,
                 params,
             };
+            if ctx.flags.dry_run {
+                return ctx.change(rpc::provider::CREATE_MACHINE, &request).await;
+            }
             let started = ctx.raw(rpc::provider::CREATE_MACHINE, &request).await?;
             follow(ctx, rpc::provider::CREATE_MACHINE, &started)
                 .await
@@ -380,16 +449,21 @@ async fn action<D: Daemon, C: Console>(
 ) -> Result<Done, CliError> {
     let key = ctx.key();
     let machine = Some(ctx.machine(machine).await?);
+    let build = |presence| pb::RunProviderActionRequest {
+        idempotency_key: key.clone(),
+        machine: machine.clone(),
+        action: action as i32,
+        remove: None,
+        presence,
+    };
+    // Status only reads; starting and stopping change the machine.
+    if ctx.flags.dry_run && action != pb::ProviderAction::Status {
+        return ctx
+            .change_present(rpc::provider::RUN_PROVIDER_ACTION, build)
+            .await;
+    }
     let started = ctx
-        .present(rpc::provider::RUN_PROVIDER_ACTION, |presence| {
-            pb::RunProviderActionRequest {
-                idempotency_key: key.clone(),
-                machine: machine.clone(),
-                action: action as i32,
-                remove: None,
-                presence,
-            }
-        })
+        .present(rpc::provider::RUN_PROVIDER_ACTION, build)
         .await?;
     follow(ctx, rpc::provider::RUN_PROVIDER_ACTION, &started)
         .await
@@ -402,7 +476,7 @@ async fn action<D: Daemon, C: Console>(
 /// a script branches on the same `error.kind` and exit code as for any
 /// refusal. One still running when the wait ends is printed as it is; ask
 /// `humata ops <id>` for the rest.
-async fn follow<D: Daemon, C: Console>(
+pub(super) async fn follow<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     rpc: Rpc,
     started: &[u8],
@@ -559,7 +633,7 @@ pub(super) async fn bridge<D: Daemon, C: Console>(
                 idempotency_key: ctx.key(),
                 id: forward,
             };
-            reply(ctx, rpc::bridge::CLOSE_PORT_FORWARD, &request).await
+            ctx.change(rpc::bridge::CLOSE_PORT_FORWARD, &request).await
         }
     }
 }
@@ -594,7 +668,7 @@ pub(super) async fn agents<D: Daemon, C: Console>(
     let key = ctx.key();
     match command {
         AgentsCommand::Ls => {
-            reply(ctx, rpc::agents::LIST_AGENTS, &pb::ListAgentsRequest {}).await
+            reply(ctx, rpc::agents::LIST_AGENTS, &pb::ListAgentsRequest::default()).await
         }
         AgentsCommand::Add { name, fields } => {
             if fields.launch.is_none() {
@@ -605,17 +679,20 @@ pub(super) async fn agents<D: Daemon, C: Console>(
                 ..Default::default()
             };
             apply(&mut agent, fields);
-            ctx.present_json(rpc::agents::ADD_AGENT, |presence| pb::AddAgentRequest {
+            ctx.change_present(rpc::agents::ADD_AGENT, |presence| pb::AddAgentRequest {
                 idempotency_key: key.clone(),
                 agent: Some(agent.clone()),
                 presence,
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         AgentsCommand::Edit { agent: name, fields } => {
             let listed: pb::ListAgentsResponse = ctx
-                .call(rpc::agents::LIST_AGENTS, &pb::ListAgentsRequest {})
+                .call(
+                    rpc::agents::LIST_AGENTS,
+                    &pb::ListAgentsRequest {
+                        include_disabled: true,
+                    },
+                )
                 .await?;
             let id_of = |agent: &pb::AgentDefinition| {
                 agent.id.as_ref().map(|id| id.value.clone()).unwrap_or_default()
@@ -643,14 +720,12 @@ pub(super) async fn agents<D: Daemon, C: Console>(
             };
             apply(&mut agent, fields);
             let revision = agent.revision;
-            ctx.present_json(rpc::agents::UPDATE_AGENT, |presence| pb::UpdateAgentRequest {
+            ctx.change_present(rpc::agents::UPDATE_AGENT, |presence| pb::UpdateAgentRequest {
                 idempotency_key: key.clone(),
                 agent: Some(agent.clone()),
                 expected_revision: revision,
                 presence,
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
     }
 }
@@ -721,7 +796,7 @@ pub(super) async fn mark<D: Daemon, C: Console>(
         pinned,
         vip,
     };
-    reply(ctx, rpc::marks::SET_MARKS, &request).await
+    ctx.change(rpc::marks::SET_MARKS, &request).await
 }
 
 pub(super) async fn pinned<D: Daemon, C: Console>(
@@ -743,7 +818,7 @@ pub(super) async fn pinned<D: Daemon, C: Console>(
                 order,
                 expected_revision: current.revision,
             };
-            reply(ctx, rpc::marks::REORDER_PINNED, &request).await
+            ctx.change(rpc::marks::REORDER_PINNED, &request).await
         }
     }
 }

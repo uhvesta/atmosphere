@@ -1,0 +1,26 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The branch a clone's origin/HEAD names. One job, std only, so the session
+# clones (daemon/sessions, which knows nothing about gRPC) and the review
+# diffs (daemon/review_diff) ask the same lookup.
+rust_library(
+    name = "git_head",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_git_head",
+    visibility = [
+        "//apps/humata2/daemon/review_diff:__pkg__",
+        "//apps/humata2/daemon/sessions:__pkg__",
+    ],
+)
+
+rust_test(
+    name = "git_head_unit_test",
+    crate = ":git_head",
+    deps = ["@crates//:tempfile"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

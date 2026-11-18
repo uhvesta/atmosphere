@@ -15,7 +15,9 @@ use humata2_clients::machines::{
     LoginEvent, LoginReason, LoginTarget, MachineDetail, MachineHealth, OperationId, PromptKind, Reach, ReachRule,
     ChannelFolder, Provider, SkillsPreview, SshHost, StepKind, StepStatus, StepUpdate, UnattendedMethod,
 };
-use humata2_clients::model::{Agent, Capability, ChannelId, MachineId, RuleSetting, SessionId};
+use humata2_clients::model::{
+    Agent, Capability, ChannelId, MachineId, MachineStop, RuleSetting, SessionId, StoppedBy,
+};
 use humata2_clients::{Clients, DaemonError, fixture};
 use humata2_engine::Resources;
 use humata2_hosts::page::MachinePageAction;
@@ -543,6 +545,7 @@ fn devbox_detail() -> MachineDetail {
             rule("files_read_other_machine", "Read files on other machines", RuleSetting::Allow),
             rule("git_push", "Push its branch or open a pull request", RuleSetting::Ask),
         ],
+        stop: None,
     }
 }
 
@@ -561,7 +564,7 @@ fn clicking_a_machine_in_the_sidebar_opens_its_page_with_the_detail() {
     assert!(app.shows(Role::Heading, "devbox-1"));
     assert!(app.shows(Role::Button, "Ledger schema migration"));
     assert!(app.shows(Role::Button, "Upgrade Postgres 17"));
-    assert!(app.shows(Role::ListItem, "~/Humata/infra/"));
+    assert!(app.shows(Role::ListItem, "# infra"));
     assert!(app.shows(Role::Group, "Health"));
 }
 
@@ -637,6 +640,86 @@ fn cancelling_the_skills_preview_syncs_nothing() {
     app.click(Role::Button, "Cancel");
     assert!(!app.shows(Role::Dialog, "Sync skills"));
     assert!(!app.fake.calls().iter().any(|call| matches!(call, Call::SyncSkills(_))));
+}
+
+// ---- Stop all sessions ------------------------------------------------------------
+
+fn stopped_at(delivered: bool) -> MachineStop {
+    MachineStop { stop_id: "stop-1".to_owned(), at: "14:02".to_owned(), by: StoppedBy::You, delivered }
+}
+
+fn stop_of_page(app: &App) -> Option<MachineStop> {
+    app.ui.read(|s| s.machine_page.detail.as_ref().and_then(|detail| detail.stop.clone()))
+}
+
+#[test]
+fn stop_all_sessions_asks_first_and_stops_only_when_confirmed() {
+    let mut app = App::new();
+    open_devbox(&mut app);
+    app.click(Role::Button, "More");
+    app.click(Role::Button, "Stop all sessions\u{2026}");
+    assert!(app.shows(Role::Dialog, "Stop all sessions"));
+    assert!(
+        !app.fake.calls().contains(&Call::StopSessions(id("devbox-1"))),
+        "opening the confirm stops nothing",
+    );
+
+    app.click(Role::Button, "Cancel");
+    assert!(!app.shows(Role::Dialog, "Stop all sessions"));
+    assert!(!app.fake.calls().contains(&Call::StopSessions(id("devbox-1"))));
+
+    app.click(Role::Button, "More");
+    app.click(Role::Button, "Stop all sessions\u{2026}");
+    app.click(Role::Button, "Stop all sessions");
+    assert!(app.fake.calls().contains(&Call::StopSessions(id("devbox-1"))));
+    assert!(!app.shows(Role::Dialog, "Stop all sessions"));
+    assert!(stop_of_page(&app).is_some_and(|stop| stop.delivered), "the page reloads to show the stop");
+    assert!(app.shows(Role::Status, "Sessions stopped"));
+    assert!(app.shows(Role::Button, "Start sessions"));
+
+    // Stopped, the menu no longer offers to stop them again.
+    app.click(Role::Button, "More");
+    assert!(!app.shows(Role::Button, "Stop all sessions\u{2026}"));
+}
+
+#[test]
+fn while_stopped_open_a_shell_is_refused_with_a_note() {
+    let mut app = App::new();
+    app.fake.set_stop(&id("devbox-1"), Some(stopped_at(true)));
+    open_devbox(&mut app);
+    assert!(app.shows(Role::Status, "Sessions stopped"));
+    app.click(Role::Button, "Open a shell");
+    assert!(app.shows(Role::Status, "Start sessions first"));
+    assert!(app.ui.read(|s| s.overlay().is_none()), "no session sheet opens");
+}
+
+#[test]
+fn start_sessions_asks_first_and_starts_only_when_confirmed() {
+    let mut app = App::new();
+    app.fake.set_stop(&id("devbox-1"), Some(stopped_at(true)));
+    open_devbox(&mut app);
+    app.click(Role::Button, "Start sessions");
+    assert!(app.shows(Role::Dialog, "Start sessions"));
+    assert!(!app.fake.calls().contains(&Call::StartSessions(id("devbox-1"))));
+
+    app.send(AppAction::MachinePage(MachinePageAction::ConfirmSessions));
+    assert!(app.fake.calls().contains(&Call::StartSessions(id("devbox-1"))));
+    assert_eq!(stop_of_page(&app), None);
+    assert!(!app.shows(Role::Status, "Sessions stopped"));
+}
+
+#[test]
+fn a_stop_that_has_not_reached_the_machine_is_cancelled_without_a_confirm() {
+    let mut app = App::new();
+    app.fake.set_stop(&id("devbox-1"), Some(stopped_at(false)));
+    open_devbox(&mut app);
+    assert!(app.shows(Role::Status, "Stop not delivered"));
+    assert!(app.shows(Role::Button, "Reconnect now"));
+
+    app.click(Role::Button, "Cancel stop");
+    assert!(app.fake.calls().contains(&Call::StartSessions(id("devbox-1"))));
+    assert_eq!(stop_of_page(&app), None);
+    assert!(!app.shows(Role::Status, "Stop not delivered"));
 }
 
 // ---- The Hosts page's card --------------------------------------------------------

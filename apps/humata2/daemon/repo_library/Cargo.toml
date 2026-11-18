@@ -1,0 +1,19 @@
+[package]
+name = "humata2-repo-library"
+description = "Humata 2's repo library on the host, the default repo search scope in config/repos.toml, and the one repo search's merge."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata2_repo_library"
+path = "src/lib.rs"
+
+[dependencies]
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

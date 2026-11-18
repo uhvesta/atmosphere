@@ -83,6 +83,38 @@ fn a_moved_conversation_is_mirrored_once_and_what_follows_is_added() {
 }
 
 #[test]
+fn a_turn_after_a_second_move_is_mirrored() {
+    let (dir, mirror) = open();
+    let old = mirrored_on_old(dir.path(), &mirror);
+    let new = dir.path().join("new.jsonl");
+    carried(&old, &new);
+    mirror.rebase_source("se_1", NEW, None).unwrap();
+    sync(&mirror, NEW, &new);
+    append_lines(&new, &[user("second turn", &at(2)), says("second answer", &at(3))]);
+    sync(&mirror, NEW, &new);
+
+    // Moved back: the file written there carries all four entries.
+    let back = dir.path().join("back.jsonl");
+    fs::copy(&new, &back).unwrap();
+    mirror.rebase_source("se_1", OLD, None).unwrap();
+    sync(&mirror, OLD, &back);
+    append_lines(&back, &[user("third turn", &at(4)), says("third answer", &at(5))]);
+    sync(&mirror, OLD, &back);
+
+    assert_eq!(
+        texts(&entries(&mirror, "se_1")),
+        [
+            "fix /old/place/api",
+            "done in /old/place/api",
+            "second turn",
+            "second answer",
+            "third turn",
+            "third answer"
+        ]
+    );
+}
+
+#[test]
 fn the_machine_a_session_left_is_no_longer_read() {
     let (dir, mirror) = open();
     let old = mirrored_on_old(dir.path(), &mirror);

@@ -104,6 +104,7 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
     /// id, or waits for the answer when `--wait` or a terminal says to, and
     /// returns what the approved call returned.
     pub async fn raw(&self, rpc: Rpc, request: &impl Message) -> Result<Vec<u8>, CliError> {
+        self.dry_run_guard(rpc)?;
         match self.daemon.unary(rpc, request.encode_to_vec()).await {
             Ok(bytes) => Ok(bytes),
             Err(DaemonError::Refused {
@@ -161,7 +162,15 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             }
             return answered_result(rpc, message);
         }
-        Err(DaemonError::Ended { rpc: rpc.path }.into())
+        // The stream closed with no answer: the request is still pending.
+        Err(CliError::Pending { request })
+    }
+
+    /// Under `--dry-run`, refuses a call that isn't read-only before it is
+    /// sent: a change that reaches here has no plan of its own, so it must
+    /// not be sent at all (fail closed).
+    pub fn dry_run_guard(&self, rpc: Rpc) -> Result<(), CliError> {
+        dry_run_refusal(self.flags.dry_run, rpc)
     }
 
     /// One call, its reply decoded.
@@ -194,7 +203,7 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             },
             other => return other,
         };
-        let proof = self.proof(&needed)?;
+        let proof = self.proof(rpc, &needed)?;
         self.raw(rpc, &build(Some(proof))).await
     }
 
@@ -208,7 +217,11 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         Ok(as_json::encoded(rpc.response, &bytes))
     }
 
-    fn proof(&self, needed: &pb::PresenceRequired) -> Result<pb::PresenceProof, CliError> {
+    /// The proof to retry `rpc` with. The approval passphrase is only read
+    /// by the daemon at `humata login` (SEC-13: log in with it, then run
+    /// `humata inbox`); every other call ignores a passphrase sent with it,
+    /// so asking for one there would only be refused again.
+    fn proof(&self, rpc: Rpc, needed: &pb::PresenceRequired) -> Result<pb::PresenceProof, CliError> {
         use pb::presence_proof::Proof;
         use pb::presence_required::Method;
         let accepted: Vec<Method> = needed
@@ -229,7 +242,8 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
                 proof: Some(Proof::ConfirmInApp(pb::ConfirmInApp {})),
             });
         }
-        if accepted.contains(&Method::ApprovalPassphrase) && self.interactive() {
+        let logging_in = rpc.path == rpc::cli_auth::BEGIN_CLI_SESSION.path;
+        if accepted.contains(&Method::ApprovalPassphrase) && logging_in && self.interactive() {
             let passphrase = self
                 .console
                 .secret("Approval passphrase: ")
@@ -274,6 +288,29 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
         }
         self.confirm(&shown)?;
         Ok(Done::reply(execute(token(&plan)).await?))
+    }
+
+    /// A change the daemon takes no plan for (`inbox approve`, `review start`,
+    /// `channel repo add`): with `--dry-run` it prints the request it would
+    /// send, as a plan, and sends nothing; otherwise it sends the request.
+    pub async fn change(&self, rpc: Rpc, request: &impl Message) -> Result<Done, CliError> {
+        if self.flags.dry_run {
+            return Ok(would_send(rpc, request));
+        }
+        self.json(rpc, request).await.map(Done::reply)
+    }
+
+    /// As [`Self::change`], for a request that carries a presence proof: the
+    /// plan is the request without one.
+    pub async fn change_present<Req: Message>(
+        &self,
+        rpc: Rpc,
+        build: impl Fn(Option<pb::PresenceProof>) -> Req,
+    ) -> Result<Done, CliError> {
+        if self.flags.dry_run {
+            return Ok(would_send(rpc, &build(None)));
+        }
+        self.present_json(rpc, build).await.map(Done::reply)
     }
 
     /// The CLI's own check after printing a plan: never presence, and
@@ -344,11 +381,9 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
             }
         }
         if reply.state == pending {
-            // A bounded wait that ran out leaves the request waiting.
-            if self.flags.wait.is_some() {
-                return Err(CliError::Pending { request });
-            }
-            return Err(DaemonError::Ended { rpc: rpc.path }.into());
+            // A wait that ran out, or a stream that closed with no answer,
+            // leaves the request waiting.
+            return Err(CliError::Pending { request });
         }
         Ok(reply)
     }
@@ -425,5 +460,153 @@ fn method_name(method: pb::presence_required::Method) -> &'static str {
         Method::ConfirmInApp => "confirm_in_app",
         Method::CliLogin => "cli_login",
         Method::ApprovalPassphrase => "approval_passphrase",
+    }
+}
+
+/// The calls `--dry-run` may send: reads, plans and waits, by name. Anything
+/// else is a change, and `--dry-run` refuses it (see [`dry_run_refusal`]).
+const READ_ONLY: &[Rpc] = &[
+    rpc::daemon::GET_SERVER_INFO,
+    rpc::daemon::WHO_AM_I,
+    rpc::access::GET_CHANNEL_RULES,
+    rpc::access::LIST_GRANTS,
+    rpc::access::EXPLAIN,
+    rpc::cli_auth::LIST_CLI_SESSIONS,
+    rpc::cli_auth::LIST_SCRIPT_TOKENS,
+    rpc::audit::LIST_AUDIT,
+    rpc::board::LIST_ITEMS,
+    rpc::board::GET_ITEM_HISTORY,
+    rpc::channel::GET_CHANNEL,
+    rpc::channel::LIST_CHANNELS,
+    rpc::channel::PLAN_REMOVE_REPO,
+    rpc::channel::PLAN_REMOVE_MACHINE,
+    rpc::channel::GET_GRID,
+    rpc::channel::PLAN_DELETE_CHANNEL,
+    rpc::activity::LIST_ACTIVITY,
+    rpc::events::SUBSCRIBE,
+    rpc::files::LIST_DIRECTORY,
+    rpc::files::READ_FILE,
+    rpc::files::FIND_FILES,
+    rpc::transfer::LIST_TRANSFERS,
+    rpc::trash::LIST_TRASH,
+    rpc::trash::PLAN_EMPTY_TRASH,
+    rpc::machine::LIST_MACHINES,
+    rpc::machine::GET_MACHINE,
+    rpc::machine::PLAN_REMOVE_MACHINE,
+    rpc::machine::PLAN_FORGET_MACHINE,
+    rpc::machine::PLAN_CHANGE_ROOT,
+    rpc::machine::GET_STORAGE,
+    rpc::machine::LIST_HOST_VARIABLES,
+    rpc::machine::LIST_MACHINE_SCRIPTS,
+    rpc::machine::CHECK_MACHINE_SCRIPTS,
+    rpc::machine::LIST_MACHINE_SCRIPT_RUNS,
+    rpc::provider::LIST_PROVIDERS,
+    rpc::provider::GET_PROVIDERS_CONFIG,
+    rpc::provider::PREVIEW_PROVIDER_IMPORT,
+    rpc::skills::PREVIEW_SKILLS_SYNC,
+    rpc::bridge::LIST_PORT_FORWARDS,
+    rpc::inbox::LIST_REQUESTS,
+    rpc::inbox::GET_REQUEST,
+    rpc::inbox::WAIT_FOR_ANSWER,
+    rpc::operation::GET_OPERATION,
+    rpc::operation::WATCH_OPERATION,
+    rpc::operation::LIST_OPERATIONS,
+    rpc::diff::GET_DIFF,
+    rpc::comment::LIST_COMMENTS,
+    rpc::review::RESOLVE_PULL_REQUEST,
+    rpc::review::PLAN_SUBMIT,
+    rpc::view::LIST_VIEWS,
+    rpc::session::LIST_SESSIONS,
+    rpc::session::GET_SESSION,
+    rpc::session::PREVIEW_FORK,
+    rpc::session::PLAN_ARCHIVE,
+    rpc::session::PLAN_DELETE,
+    rpc::session::PLAN_DROP_REPO,
+    rpc::session::PLAN_PUSH,
+    rpc::session::READ_CONVERSATION,
+    rpc::settings::GET_SETTINGS,
+    rpc::settings::GET_CHANNEL_SETTINGS,
+    rpc::agents::LIST_AGENTS,
+    rpc::marks::LIST_PINNED,
+    rpc::history::SEARCH_SESSIONS,
+    rpc::history::READ_TURNS,
+    rpc::repos::SEARCH_REPOS,
+    rpc::repos::LIST_REPO_LIBRARY,
+    rpc::repos::GET_REPO_SCOPE,
+    rpc::terminal::LIST_QUEUED,
+    rpc::terminal::LIST_TABS,
+];
+
+/// Whether `--dry-run` (when `dry_run` is on) may send `rpc`: only the
+/// read-only calls. Any other call is refused, so an unplanned change can't
+/// slip through a command that forgot its own dry-run check.
+fn dry_run_refusal(dry_run: bool, rpc: Rpc) -> Result<(), CliError> {
+    if !dry_run || READ_ONLY.iter().any(|read| read.path == rpc.path) {
+        return Ok(());
+    }
+    Err(CliError::DryRunWouldSend {
+        method: rpc.path.to_owned(),
+        request: as_json::request_name(rpc.path).unwrap_or_default(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MADE_UP: Rpc = Rpc {
+        path: "/humata.v1.DaemonService/Frobnicate",
+        response: "humata.v1.FrobnicateResponse",
+    };
+
+    #[test]
+    fn every_read_only_call_passes_under_dry_run() {
+        for read in READ_ONLY {
+            assert!(dry_run_refusal(true, *read).is_ok(), "{} refused", read.path);
+        }
+    }
+
+    #[test]
+    fn every_other_call_is_refused_under_dry_run_and_sends_nothing() {
+        for call in rpc::ALL {
+            if READ_ONLY.iter().any(|read| read.path == call.path) {
+                continue;
+            }
+            let refused = dry_run_refusal(true, *call);
+            assert!(
+                matches!(refused, Err(CliError::DryRunWouldSend { ref method, .. }) if method == call.path),
+                "{} was not refused",
+                call.path
+            );
+        }
+    }
+
+    #[test]
+    fn a_made_up_change_is_refused_under_dry_run() {
+        assert!(matches!(
+            dry_run_refusal(true, MADE_UP),
+            Err(CliError::DryRunWouldSend { .. })
+        ));
+    }
+
+    #[test]
+    fn every_call_passes_without_dry_run() {
+        assert!(dry_run_refusal(false, MADE_UP).is_ok());
+        for call in rpc::ALL {
+            assert!(dry_run_refusal(false, *call).is_ok(), "{} refused", call.path);
+        }
+    }
+}
+
+/// The plan for a change with no plan of its own: the method it would call
+/// and the request, as JSON.
+fn would_send(rpc: Rpc, request: &impl Message) -> Done {
+    let name = as_json::request_name(rpc.path).unwrap_or_default();
+    Done {
+        result: serde_json::json!({
+            "method": rpc.path,
+            "request": as_json::typed(&name, request),
+        }),
+        outcome: Outcome::Planned,
     }
 }

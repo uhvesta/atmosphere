@@ -286,6 +286,7 @@ fn asking_ahead_grants_what_always_let_would() {
             channel: payments(),
             machine: the_box(),
             agent: AgentId::new("claude"),
+            fork_of: None,
         },
     );
     let a_agent = humata2_access::Agent {
@@ -319,6 +320,7 @@ fn asking_ahead_grants_what_always_let_would() {
             channel: payments(),
             machine: the_box(),
             agent: AgentId::new("codex"),
+            fork_of: None,
         },
     );
     assert!(asks_again(&check(&policy, &as_agent(a()), &other_agent, &on_mac())));

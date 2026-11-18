@@ -74,6 +74,20 @@ pub struct Anchor {
     pub base: Option<String>,
     /// The passage is gone: the comment offers Re-attach or Drop (SM-7).
     pub detached: bool,
+    /// The lines changed since the comment was written (PR-16, PR-26): a
+    /// note stays at its old lines, and a pull request draft can't be posted
+    /// until it is re-attached or dropped.
+    pub outdated: bool,
+}
+
+/// Whether lines in repository `anchor` can carry a draft for a pull
+/// request of `pull` (`owner/name`). Repositories are keyed `owner/name`,
+/// or the bare name when the session's clone has no owner (D624, D732):
+/// the same key matches, and so does a bare name equal to the pull
+/// request's name part. Another owner's repository of that name does not.
+#[must_use]
+pub fn repo_holds_pull(anchor: &str, pull: &str) -> bool {
+    anchor == pull || (!anchor.contains('/') && pull.rsplit_once('/').is_some_and(|(_, name)| name == anchor))
 }
 
 /// Where a comment is in its life (SM-11).
@@ -90,6 +104,28 @@ pub enum Status {
     Addressed,
     /// Dealt with; hidden unless Show resolved is on (SM-12, SM-17).
     Resolved,
+    /// A pull request draft that GitHub took (PR-14). Its link is
+    /// [`Comment::posted_url`]; it is never edited or deleted here.
+    Posted,
+}
+
+/// Where a comment goes (SM-9, PR-9, PR-23, D284).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Destination {
+    /// Typed into the session's main agent (SM-9).
+    #[default]
+    Terminal,
+    /// A note from the review chat, shown under its lines and never posted
+    /// (PR-23). "Make it a draft" turns it into a pull request draft.
+    Note,
+    /// A draft for a pull request, posted to GitHub from Submit review
+    /// (PR-9). Never typed into a terminal.
+    PullRequest {
+        /// The repository, `owner/name`.
+        repo: String,
+        /// The pull request's number in that repository.
+        number: u32,
+    },
 }
 
 /// Who wrote a reply or resolved a comment.
@@ -126,7 +162,7 @@ pub struct Comment {
     /// Where it is in its life.
     pub status: Status,
     /// Starts at 1 and goes up on every change. Edits name the revision
-    /// they were made against; an older one is refused as stale.
+    /// they were made against; an older one answers `DaemonError::Conflict`.
     pub revision: u64,
     /// Waiting, and Humata can't tell whether an earlier try reached the
     /// terminal (it restarted mid-send). The user sends it again or takes it
@@ -143,13 +179,27 @@ pub struct Comment {
     /// when they were deleted. `anchor.quoted` keeps them as they were
     /// (SM-18).
     pub addressed: Option<Vec<String>>,
+    /// Where it goes: the terminal, a note, or a pull request draft.
+    pub destination: Destination,
+    /// Who wrote it. The user's, unless the agent or the review chat wrote it.
+    pub author: Author,
+    /// For [`Status::Posted`], the link to the posted comment (PR-14).
+    pub posted_url: Option<String>,
+    /// A pull request draft whose submit was cut short after GitHub may have
+    /// taken it. Still a draft; the user decides whether to post again
+    /// (D287). Never set with [`Status::Posted`].
+    pub post_unconfirmed: bool,
 }
 
 impl Comment {
-    /// Whether it counts toward the session's draft badge (SM-15).
+    /// Whether it counts toward the session's draft badge (SM-15): a draft
+    /// for the terminal that isn't archived. Notes and pull request drafts
+    /// are never typed, so they are not counted.
     #[must_use]
     pub const fn counts_as_draft(&self) -> bool {
-        matches!(self.status, Status::Draft) && !self.archived
+        matches!(self.status, Status::Draft)
+            && !self.archived
+            && matches!(self.destination, Destination::Terminal)
     }
 }
 
@@ -210,7 +260,23 @@ pub trait CommentsClient: Send + Sync + 'static {
     /// Makes a draft. `key` makes a retry of the same call make nothing more.
     fn create(&self, session: &SessionId, anchor: Anchor, text: &str, key: &str) -> Reply<Comment>;
 
-    /// Changes a draft's text. Refused when `revision` is not the comment's.
+    /// Makes a draft for a pull request the session's review holds, as the
+    /// user (PR-9). Kept apart from [`Self::create`] so the many callers that
+    /// comment for the terminal stay as they are. `repo` is `owner/name`;
+    /// the anchor names the same repository. Refused for a pull request the
+    /// review doesn't hold. `key` makes a retry make nothing more.
+    fn create_for_pull_request(
+        &self,
+        session: &SessionId,
+        anchor: Anchor,
+        text: &str,
+        repo: &str,
+        number: u32,
+        key: &str,
+    ) -> Reply<Comment>;
+
+    /// Changes a draft's text. A `revision` that is not the comment's answers
+    /// `DaemonError::Conflict`; a comment that is no longer a draft is refused.
     fn edit(&self, id: &CommentId, text: &str, revision: u64) -> Reply<Comment>;
 
     /// Deletes a comment for good (SM-7). Archive keeps it instead.
@@ -218,6 +284,13 @@ pub trait CommentsClient: Send + Sync + 'static {
 
     /// Points a detached draft at a new passage (SM-7).
     fn reattach(&self, id: &CommentId, anchor: Anchor, revision: u64) -> Reply<Comment>;
+
+    /// Turns a note into a draft for a pull request, in place: the same
+    /// comment, its id, author and anchor kept (D284). `pr` names one of the
+    /// review's pull requests. Without it the daemon takes the review's only
+    /// pull request whose `owner/name` is the note's repository or whose name
+    /// is its folder; with none, or several, it refuses and `pr` is needed.
+    fn make_note_a_draft(&self, id: &CommentId, pr: Option<(&str, u32)>) -> Reply<Comment>;
 
     /// Types these drafts, or an unconfirmed batch again, into the session's
     /// main agent as one message (SM-9, SE-23). Other drafts stay drafts.

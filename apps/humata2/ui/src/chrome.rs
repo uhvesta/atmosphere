@@ -39,10 +39,12 @@ pub(crate) fn status(value: Status) -> Div {
     let dot = match value {
         Status::Working => dot.bg(rgb(crate::theme::GREEN)),
         Status::NeedsYou => dot.bg(rgb(crate::theme::ORANGE)),
-        Status::Idle | Status::ProbablyIdle => {
+        // Moving keeps the plain hollow dot (frame 64).
+        Status::Idle | Status::ProbablyIdle | Status::Moving => {
             dot.border_1().border_color(rgb(crate::theme::GREY))
         }
         Status::Offline => dot.bg(rgb(crate::theme::GREY)),
+        Status::Stopped => return stopped(),
         Status::Exited { .. } => {
             return div()
                 .size(px(10.))
@@ -57,6 +59,22 @@ pub(crate) fn status(value: Status) -> Div {
         .justify_center()
         .flex_shrink_0()
         .child(dot)
+}
+/// The mark of a session or machine whose sessions were stopped: a small
+/// grey square, unlike the round state dots (frames 73 to 75).
+pub(crate) fn stopped() -> Div {
+    div()
+        .size(px(10.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .child(
+            div()
+                .size(px(7.))
+                .rounded(px(1.5))
+                .bg(rgb(crate::theme::GREY)),
+        )
 }
 pub(crate) fn lights() -> Div {
     div().flex().gap(px(8.)).flex_shrink_0().children(

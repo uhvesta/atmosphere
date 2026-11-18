@@ -239,6 +239,7 @@ impl Entry {
 /// One line of `operations.jsonl`.
 #[derive(Debug, Deserialize)]
 struct OperationLine {
+    #[serde(default)]
     id: String,
     #[serde(default)]
     kind: String,
@@ -248,6 +249,9 @@ struct OperationLine {
     state: Json,
     #[serde(default)]
     reason: Option<String>,
+    /// What a pending line waits for, as the daemon writes it.
+    #[serde(default)]
+    waits_for: Option<String>,
 }
 
 /// An operation as it last stood.
@@ -284,12 +288,18 @@ impl Operation {
             kind: line.kind,
             step: line.step,
             state,
-            detail: line.reason.or(inner),
+            detail: line.reason.or(line.waits_for).or(inner),
         }
     }
 
     fn stuck(&self) -> bool {
         self.state == "stuck"
+    }
+
+    /// No end line: pending, or a state this CLI doesn't know (a newer
+    /// daemon's), which is shown as written and counted as owed.
+    fn owed(&self) -> bool {
+        !matches!(self.state.as_str(), "finished" | "undone" | "stuck")
     }
 
     fn json(&self) -> Json {
@@ -344,10 +354,15 @@ fn read_operations(path: &Path) -> Result<Vec<Operation>, DoctorError> {
     };
     let mut order: Vec<String> = Vec::new();
     let mut latest: HashMap<String, Operation> = HashMap::new();
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let Ok(line) = serde_json::from_str::<OperationLine>(line) else {
+    for (number, line) in text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty()) {
+        let Ok(mut line) = serde_json::from_str::<OperationLine>(line) else {
             continue;
         };
+        if line.id.is_empty() {
+            // Kept, not dropped: a record without an id still says what
+            // happened.
+            line.id = format!("line {}", number + 1);
+        }
         let operation = Operation::of(line);
         if !latest.contains_key(&operation.id) {
             order.push(operation.id.clone());
@@ -557,6 +572,23 @@ pub(super) async fn restarts<D: Daemon, C: Console>(
         }
     }
 
+    if ctx.flags.dry_run {
+        // The plan: the repairs this run would apply. Nothing is applied and
+        // the diagnosis is not written.
+        let would_apply: Vec<Json> = all
+            .iter()
+            .filter(|repair| !args.explain && (repair.safe || args.allow.contains(&repair.id)))
+            .map(Repair::json)
+            .collect();
+        return Ok(Done {
+            result: json!({
+                "report": report.folder.display().to_string(),
+                "would_apply": would_apply,
+            }),
+            outcome: crate::call::Outcome::Planned,
+        });
+    }
+
     let mut applied: Vec<Applied> = Vec::new();
     if !args.explain {
         // The store last: a damaged one makes humatad leave.
@@ -592,6 +624,12 @@ pub(super) async fn restarts<D: Daemon, C: Console>(
         .filter(|operation| operation.stuck())
         .map(Operation::json)
         .collect();
+    let owed: Vec<Json> = report
+        .operations
+        .iter()
+        .filter(|operation| operation.owed())
+        .map(Operation::json)
+        .collect();
     Ok(Done::reply(json!({
         "report": report.folder.display().to_string(),
         "machine": report.file.machine,
@@ -599,6 +637,7 @@ pub(super) async fn restarts<D: Daemon, C: Console>(
         "not_brought_back": not_back,
         "operations": report.operations.iter().map(Operation::json).collect::<Vec<_>>(),
         "stuck": stuck,
+        "owed": owed,
         "repairs": all.iter().map(Repair::json).collect::<Vec<_>>(),
         "applied": applied.iter().map(Applied::json).collect::<Vec<_>>(),
         "diagnosis": path.display().to_string(),
@@ -738,9 +777,10 @@ fn render(
             .as_deref()
             .map(|detail| format!(": {detail}"))
             .unwrap_or_default();
+        let owed = if operation.owed() { " (still owed)" } else { "" };
         let _ = writeln!(
             out,
-            "- {} {} at {}: {}{detail}",
+            "- {} {} at {}: {}{owed}{detail}",
             operation.kind, operation.id, operation.step, operation.state
         );
     }

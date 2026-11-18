@@ -33,6 +33,26 @@ async fn board_ref<D: Daemon, C: Console>(
     Ok(pb::BoardRef { board: Some(board) })
 }
 
+/// The board a write names: `--global`, `--session` or `--channel`. With
+/// none, no board is sent and the daemon picks the caller's own session
+/// board, so every door agrees (VF-21).
+async fn written_board<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    which: &BoardWhich,
+) -> Result<Option<pb::BoardRef>, CliError> {
+    let named = which.global || which.session.is_some() || ctx.channel_flag().await?.is_some();
+    if named {
+        Ok(Some(board_ref(ctx, which).await?))
+    } else {
+        Ok(None)
+    }
+}
+
+/// `--revision`: the revision the caller read, checked by the daemon.
+fn revision(read: Option<u64>) -> Option<pb::Revision> {
+    read.map(|value| pb::Revision { value })
+}
+
 /// Session names or ids, resolved in order (BD-16).
 async fn sessions<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
@@ -77,7 +97,7 @@ pub(super) async fn board<D: Daemon, C: Console>(
         }) => {
             let request = pb::CreateItemRequest {
                 idempotency_key: ctx.key(),
-                board: Some(board_ref(ctx, &which).await?),
+                board: written_board(ctx, &which).await?,
                 title,
                 column: column.map_or(pb::BoardColumn::Unspecified, values::column) as i32,
                 description: description.unwrap_or_default(),
@@ -86,7 +106,7 @@ pub(super) async fn board<D: Daemon, C: Console>(
                 depends_on: depends_on.into_iter().filter_map(item).collect(),
                 ..Default::default()
             };
-            reply(ctx, rpc::board::CREATE_ITEM, &request).await
+            ctx.change(rpc::board::CREATE_ITEM, &request).await
         }
         Some(BoardCommand::Edit {
             item: id,
@@ -96,6 +116,7 @@ pub(super) async fn board<D: Daemon, C: Console>(
             unassign,
             depends_on,
             drop_depends_on,
+            revision: read,
         }) => {
             let request = pb::UpdateItemRequest {
                 idempotency_key: ctx.key(),
@@ -109,34 +130,35 @@ pub(super) async fn board<D: Daemon, C: Console>(
                     depends_on_remove: drop_depends_on.into_iter().filter_map(item).collect(),
                     ..Default::default()
                 }),
-                expected_revision: None,
+                expected_revision: revision(read),
                 reason: String::new(),
             };
-            reply(ctx, rpc::board::UPDATE_ITEM, &request).await
+            ctx.change(rpc::board::UPDATE_ITEM, &request).await
         }
         Some(BoardCommand::Move {
             item: id,
             column,
             after,
+            revision: read,
         }) => {
             let request = pb::MoveItemRequest {
                 idempotency_key: ctx.key(),
                 id: item(id),
                 column: values::column(column) as i32,
                 after: after.and_then(item),
-                expected_revision: None,
+                expected_revision: revision(read),
                 reason: String::new(),
             };
-            reply(ctx, rpc::board::MOVE_ITEM, &request).await
+            ctx.change(rpc::board::MOVE_ITEM, &request).await
         }
-        Some(BoardCommand::Rm { item: id }) => {
+        Some(BoardCommand::Rm { item: id, revision: read }) => {
             let request = pb::DeleteItemRequest {
                 idempotency_key: ctx.key(),
                 id: item(id),
-                expected_revision: None,
+                expected_revision: revision(read),
                 reason: String::new(),
             };
-            reply(ctx, rpc::board::DELETE_ITEM, &request).await
+            ctx.change(rpc::board::DELETE_ITEM, &request).await
         }
         Some(BoardCommand::History { item: id }) => {
             let id = item(id);
@@ -179,7 +201,7 @@ pub(super) async fn view<D: Daemon, C: Console>(
         id: Some(pb::ViewId { value: view }),
         state: values::view_state(action) as i32,
     };
-    reply(ctx, rpc::view::SET_VIEW_STATE, &request).await
+    ctx.change(rpc::view::SET_VIEW_STATE, &request).await
 }
 
 /// `--against`: what the session's changes are compared with.
@@ -227,15 +249,13 @@ pub(super) async fn diff<D: Daemon, C: Console>(
             }
             let session = Some(ctx.session(&session).await?);
             let key = ctx.key();
-            ctx.present_json(rpc::diff::MARK_REVIEWED, |presence| pb::MarkReviewedRequest {
+            ctx.change_present(rpc::diff::MARK_REVIEWED, |presence| pb::MarkReviewedRequest {
                 idempotency_key: key.clone(),
                 session: session.clone(),
                 presence,
                 // The daemon snapshots what its last GetDiff showed.
                 shown_tree: Vec::new(),
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         None => {
             let Some(session) = session else {
@@ -273,7 +293,7 @@ pub(super) async fn comment<D: Daemon, C: Console>(
                     )),
                 }),
             };
-            reply(ctx, rpc::comment::CREATE_COMMENT, &request).await
+            ctx.change(rpc::comment::CREATE_COMMENT, &request).await
         }
         CommentCommand::Send { session, ids } => {
             let request = pb::SendCommentsRequest {
@@ -281,7 +301,7 @@ pub(super) async fn comment<D: Daemon, C: Console>(
                 session: Some(ctx.session(&session).await?),
                 ids: ids.into_iter().map(|value| pb::CommentId { value }).collect(),
             };
-            reply(ctx, rpc::comment::SEND_COMMENTS, &request).await
+            ctx.change(rpc::comment::SEND_COMMENTS, &request).await
         }
         CommentCommand::Ls { session } => {
             let session = Some(ctx.session(&session).await?);
@@ -293,7 +313,7 @@ pub(super) async fn comment<D: Daemon, C: Console>(
                 id: Some(pb::CommentId { value: comment }),
                 expected_revision: None,
             };
-            reply(ctx, rpc::comment::DROP_COMMENT, &request).await
+            ctx.change(rpc::comment::DROP_COMMENT, &request).await
         }
     }
 }
@@ -335,7 +355,7 @@ pub(super) async fn review<D: Daemon, C: Console>(
             let key = ctx.key();
             let agent = agent.map(|value| pb::AgentId { value });
             let first_message = message.unwrap_or_default();
-            ctx.present_json(rpc::review::START_REVIEW, |presence| pb::StartReviewRequest {
+            ctx.change_present(rpc::review::START_REVIEW, |presence| pb::StartReviewRequest {
                 idempotency_key: key.clone(),
                 prs: prs.clone(),
                 machine: machine.clone(),
@@ -344,9 +364,7 @@ pub(super) async fn review<D: Daemon, C: Console>(
                 first_message: first_message.clone(),
                 push_allowed: allow_push,
                 presence,
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
         ReviewCommand::Drafts { session } => {
             let session = Some(ctx.session(&session).await?);
@@ -361,16 +379,14 @@ pub(super) async fn review<D: Daemon, C: Console>(
             let session = Some(ctx.session(&session).await?);
             let key = ctx.key();
             let allowed = values::on(state);
-            ctx.present_json(rpc::review::SET_PUSH_ALLOWED, |presence| {
+            ctx.change_present(rpc::review::SET_PUSH_ALLOWED, |presence| {
                 pb::SetPushAllowedRequest {
                     idempotency_key: key.clone(),
                     session: session.clone(),
                     allowed,
                     presence,
                 }
-            })
-            .await
-            .map(Done::reply)
+            }).await
         }
     }
 }
@@ -418,13 +434,11 @@ async fn submit<D: Daemon, C: Console>(
         })
         .collect();
     let key = ctx.key();
-    ctx.present_json(rpc::review::SUBMIT_REVIEW, |presence| pb::SubmitReviewRequest {
+    ctx.change_present(rpc::review::SUBMIT_REVIEW, |presence| pb::SubmitReviewRequest {
         idempotency_key: key.clone(),
         session: session.clone(),
         reviews: reviews.clone(),
         plan: token.clone(),
         presence,
-    })
-    .await
-    .map(Done::reply)
+    }).await
 }

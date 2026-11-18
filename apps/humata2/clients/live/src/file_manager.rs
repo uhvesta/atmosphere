@@ -15,8 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use humata2_clients::model::{MachineId, SessionId, TransferId};
 use humata2_clients::{
-    EVENT_QUEUE, EmptyPlan, Entry, EntryKind, FileManager, FileManagerError, FileReply, FileRoot, Folder, Listing,
-    RetentionSkip, StorageAction, StorageKind, StorageReport, StorageRow, TransferMode, TransferPhase, TransferRow,
+    EVENT_QUEUE, EmptyPlan, Entry, EntryKind, FileManager, FileManagerError, FileReply, FileRoot, Folder,
+    ItemLanding, Landing, Listing, RetentionSkip, StorageAction, StorageKind, StorageReport, StorageRow, TransferMode, TransferPhase, TransferRow,
     TrashEntry, TrashListing,
 };
 use humata2_grpc::humata::v1 as pb;
@@ -274,6 +274,19 @@ fn location(folder: &Folder, name: Option<&str>, what: &str) -> Result<pb::FileL
                 }),
             })
         }
+        FileRoot::SessionPastes(session) => Root::SessionPastes(pb::SessionPastes {
+            session: Some(pb::SessionId {
+                value: session.0.clone(),
+            }),
+        }),
+        FileRoot::Received { from } => Root::Received(pb::MachineReceived {
+            from: Some(pb::MachineId { value: from.0.clone() }),
+        }),
+        FileRoot::SessionFolder { session } => Root::SessionFolder(pb::SessionFolder {
+            session: Some(pb::SessionId {
+                value: session.0.clone(),
+            }),
+        }),
     };
     let path = match name {
         Some(name) => folder.child(name).path,
@@ -368,15 +381,18 @@ fn phase_of(transfer: &pb::Transfer, host: &MachineId) -> TransferPhase {
     }
 }
 
+/// The last name in a location's path.
+fn last_part(location: &pb::FileLocation) -> String {
+    location
+        .path
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or("")
+        .to_owned()
+}
+
 fn what_of(transfer: &pb::Transfer, upload_name: Option<&str>) -> String {
-    let last = |location: &pb::FileLocation| {
-        location
-            .path
-            .rsplit('/')
-            .find(|part| !part.is_empty())
-            .unwrap_or("")
-            .to_owned()
-    };
+    let last = last_part;
     match transfer.sources.as_slice() {
         [] => upload_name.map_or_else(|| "Upload".to_owned(), str::to_owned),
         [one] => {
@@ -406,7 +422,26 @@ fn transfer_row(transfer: &pb::Transfer, host: &MachineId, upload_name: Option<&
         done_bytes: transfer.done_bytes,
         total_bytes: transfer.total_bytes,
         phase: phase_of(transfer, host),
+        outcomes: outcomes_of(transfer),
     }
+}
+
+/// What became of each source of a finished transfer (PL-13): the daemon
+/// sends one outcome per source, in order.
+fn outcomes_of(transfer: &pb::Transfer) -> Vec<ItemLanding> {
+    transfer
+        .sources
+        .iter()
+        .zip(&transfer.outcomes)
+        .map(|(source, outcome)| ItemLanding {
+            name: last_part(source),
+            landing: match pb::TransferLanding::try_from(outcome.landing) {
+                Ok(pb::TransferLanding::SavedAs) => Landing::SavedAs(outcome.saved_as.clone()),
+                Ok(pb::TransferLanding::AlreadyThere) => Landing::AlreadyThere,
+                Ok(pb::TransferLanding::Unspecified) | Err(_) => Landing::AsAsked,
+            },
+        })
+        .collect()
 }
 
 /// A transfer that failed at once for a reason the caller can act on (a full
@@ -492,7 +527,7 @@ fn storage_report(machine: &MachineId, report: &pb::StorageReport) -> StorageRep
 }
 
 /// `+0530` as seconds east of UTC.
-fn parse_offset(text: &str) -> Option<i32> {
+pub(crate) fn parse_offset(text: &str) -> Option<i32> {
     let text = text.trim();
     let (sign, digits) = match text.split_at_checked(1)? {
         ("+", digits) => (1, digits),
@@ -638,7 +673,13 @@ impl Inner {
         names: Vec<String>,
         into: Folder,
         mode: TransferMode,
+        keep_both: bool,
     ) -> Result<TransferId, FileManagerError> {
+        let on_existing = if keep_both {
+            pb::OnExisting::KeepBoth
+        } else {
+            pb::OnExisting::Fail
+        };
         let what = match mode {
             TransferMode::Copy => "Copying",
             TransferMode::Move => "Moving",
@@ -658,8 +699,9 @@ impl Inner {
                     TransferMode::Copy => pb::TransferMode::Copy,
                     TransferMode::Move => pb::TransferMode::Move,
                 } as i32,
-                on_existing: pb::OnExisting::Fail as i32,
+                on_existing: on_existing as i32,
                 reason: String::new(),
+                name: String::new(),
             })
             .await
             .map_err(|status| status_error(&status, what, &into.machine))?
@@ -848,6 +890,26 @@ impl Inner {
     /// first file's transfer is the one returned.
     async fn upload_tree(self: &Arc<Self>, local: Vec<PathBuf>, into: Folder) -> Result<TransferId, FileManagerError> {
         const WHAT: &str = "Uploading";
+        // All or nothing: a dropped name the folder already has refuses the
+        // whole drop before the first folder is made or byte is sent.
+        let present = self.list(into.clone()).await?;
+        let taken: Vec<String> = local
+            .iter()
+            .filter_map(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+            .filter(|name| present.entries.iter().any(|entry| &entry.name == name))
+            .collect();
+        if !taken.is_empty() {
+            return Err(FileManagerError::NotAllowed {
+                what: format!(
+                    "Nothing was uploaded: {} already {} in {}. Move the old {} away or leave {} out of the drop, then drop again",
+                    taken.join(", "),
+                    if taken.len() == 1 { "exists" } else { "exist" },
+                    into.display_path(),
+                    if taken.len() == 1 { "one" } else { "ones" },
+                    if taken.len() == 1 { "it" } else { "them" },
+                ),
+            });
+        }
         let mut work: Vec<(PathBuf, Folder)> = local.into_iter().rev().map(|path| (path, into.clone())).collect();
         let mut first = None;
         while let Some((path, dest)) = work.pop() {
@@ -894,6 +956,70 @@ impl Inner {
         name: &str,
     ) -> Result<TransferId, FileManagerError> {
         let what = format!("Uploading {name}");
+        let transfer = self.send_file(path, size, dest, name).await?;
+        lock(&self.upload_names).insert(transfer_id(&transfer), name.to_owned());
+        self.follow_new(transfer, &what, &dest.machine).await
+    }
+
+    /// Uploads `local` into a new folder of the session's pastes on
+    /// `machine` and returns where each file is on that machine's disk, in
+    /// order (D335). Anything that isn't a file is refused before anything
+    /// is sent.
+    async fn paste_files(
+        &self,
+        local: Vec<PathBuf>,
+        machine: &MachineId,
+        session: &SessionId,
+    ) -> Result<Vec<String>, FileManagerError> {
+        const WHAT: &str = "Pasting files";
+        let mut files = Vec::with_capacity(local.len());
+        for path in local {
+            let meta = tokio::fs::metadata(&path)
+                .await
+                .map_err(|error| local_error(WHAT, &path, &error))?;
+            match path.file_name().map(|name| name.to_string_lossy().into_owned()) {
+                Some(name) if meta.is_file() => files.push((path, meta.len(), name)),
+                _ => {
+                    return Err(FileManagerError::NotAllowed {
+                        what: format!(
+                            "{} isn't a file, so it can't be pasted into a terminal on another machine. Paste files only, or copy the folder over in Files",
+                            path.display()
+                        ),
+                    });
+                }
+            }
+        }
+        let pastes = Folder::root(machine.clone(), FileRoot::SessionPastes(session.clone()));
+        let folder = format!("paste-{}", uuid::Uuid::new_v4().simple());
+        self.create_folder(&pastes, &folder).await?;
+        let into = pastes.child(&folder);
+        let mut typed = Vec::with_capacity(files.len());
+        for (path, size, name) in files {
+            let transfer = self.send_file(&path, size, &into, &name).await?;
+            if let Some(error) = failed_at_start(&transfer, machine) {
+                return Err(error);
+            }
+            if transfer.disk_path.is_empty() {
+                return Err(failed(
+                    &format!("Pasting {name}"),
+                    "the daemon didn't say where the file landed. Update Humata and the daemon to the same version",
+                ));
+            }
+            typed.push(transfer.disk_path);
+        }
+        Ok(typed)
+    }
+
+    /// Sends one file into `dest` as `name`, continuing once from its bytes
+    /// when the stream broke, and returns the transfer the daemon answered.
+    async fn send_file(
+        &self,
+        path: &Path,
+        size: u64,
+        dest: &Folder,
+        name: &str,
+    ) -> Result<pb::Transfer, FileManagerError> {
+        let what = format!("Uploading {name}");
         let sha256 = hash_file(path).await.map_err(|error| local_error(&what, path, &error))?;
         let destination = location(dest, None, &what)?;
         let key = fresh_key();
@@ -926,8 +1052,7 @@ impl Inner {
             }
             Err(status) => return Err(fail(&status)),
         };
-        lock(&self.upload_names).insert(transfer_id(&transfer), name.to_owned());
-        self.follow_new(transfer, &what, &dest.machine).await
+        Ok(transfer)
     }
 
     /// One upload stream: the header, then the file's bytes from `offset`.
@@ -1236,12 +1361,33 @@ impl FileManager for LiveFileManager {
         mode: TransferMode,
     ) -> FileReply<TransferId> {
         let (inner, from, into) = (self.inner.clone(), from.clone(), into.clone());
-        Box::pin(async move { inner.start_transfer(from, names, into, mode).await })
+        Box::pin(async move { inner.start_transfer(from, names, into, mode, false).await })
+    }
+
+    fn start_transfer_keep_both(
+        &self,
+        from: &Folder,
+        names: Vec<String>,
+        into: &Folder,
+        mode: TransferMode,
+    ) -> FileReply<TransferId> {
+        let (inner, from, into) = (self.inner.clone(), from.clone(), into.clone());
+        Box::pin(async move { inner.start_transfer(from, names, into, mode, true).await })
     }
 
     fn upload(&self, local: Vec<PathBuf>, into: &Folder) -> FileReply<TransferId> {
         let (inner, into) = (self.inner.clone(), into.clone());
         Box::pin(async move { inner.upload(local, into).await })
+    }
+
+    fn paste_files(
+        &self,
+        local: Vec<PathBuf>,
+        machine: &MachineId,
+        session: &SessionId,
+    ) -> FileReply<Vec<String>> {
+        let (inner, machine, session) = (self.inner.clone(), machine.clone(), session.clone());
+        Box::pin(async move { inner.paste_files(local, &machine, &session).await })
     }
 
     fn cancel_transfer(&self, transfer: &TransferId) -> FileReply<()> {
@@ -1428,6 +1574,38 @@ mod tests {
         assert_eq!((row.from, row.to), (MachineId::new("ma_a"), MachineId::new("ma_b")));
         moving.sources = vec![place("ma_mac", "data/set.csv")];
         assert!(!transfer_row(&moving, &mac(), None).via_host);
+    }
+
+    #[test]
+    fn a_finished_row_says_where_each_source_landed() {
+        let place = |path: &str| pb::FileLocation {
+            machine: None,
+            root: None,
+            path: path.to_owned(),
+        };
+        let mut done = transfer(pb::TransferState::Done);
+        done.sources = vec![place("a/notes.md"), place("a/same.md"), place("a/plain.md")];
+        done.outcomes = vec![
+            pb::TransferOutcome {
+                landing: pb::TransferLanding::SavedAs as i32,
+                saved_as: "notes-2.md".to_owned(),
+            },
+            pb::TransferOutcome {
+                landing: pb::TransferLanding::AlreadyThere as i32,
+                saved_as: String::new(),
+            },
+            pb::TransferOutcome::default(),
+        ];
+        let row = transfer_row(&done, &mac(), None);
+        let landings: Vec<_> = row.outcomes.iter().map(|item| (item.name.as_str(), item.landing.clone())).collect();
+        assert_eq!(
+            landings,
+            vec![
+                ("notes.md", Landing::SavedAs("notes-2.md".to_owned())),
+                ("same.md", Landing::AlreadyThere),
+                ("plain.md", Landing::AsAsked),
+            ]
+        );
     }
 
     #[test]

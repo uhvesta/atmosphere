@@ -2,6 +2,7 @@
 //! times and the work that holds its folder (DK-2, DK-11, DK-4, D182).
 
 use humata2_grpc::humata::v1 as pb;
+use humata2_sessions::doc_repo::{self, DocGit};
 use humata2_sessions::{documents_under, repos_under};
 use humata2_store::{DeskFolderKind, DeskRow, SessionRecord};
 
@@ -37,6 +38,68 @@ pub(crate) fn delete_at_ms(row: &DeskRow) -> Option<i64> {
     expires_at(row).filter(|_| row.held_work.is_empty())
 }
 
+/// Whether the folder is a versions repository and its newest version's id
+/// (empty before the first). Runs one `git rev-parse` for a repository; a
+/// failure is logged and shows as no version.
+pub(crate) fn doc_state(folder: &std::path::Path) -> (bool, String) {
+    if !doc_repo::is_doc_repo(folder) {
+        return (false, String::new());
+    }
+    match doc_repo::head(&DocGit::inherit(), folder) {
+        Ok(head) => (true, head.unwrap_or_default()),
+        Err(error) => {
+            crate::log::say!(
+                "humatad2: couldn't read the newest version of {}: {error}",
+                folder.display()
+            );
+            (true, String::new())
+        }
+    }
+}
+
+/// How many versions the folder holds (0 when it has no repository or no
+/// version yet) and whether it holds a file outside its clones and `.git`.
+/// A git failure is logged and shows as no versions.
+pub(crate) fn folder_signals(folder: &std::path::Path) -> (u32, bool) {
+    let count = if doc_repo::is_doc_repo(folder) {
+        doc_repo::version_count(&DocGit::inherit(), folder).unwrap_or_else(|error| {
+            crate::log::say!(
+                "humatad2: couldn't count the versions of {}: {error}",
+                folder.display()
+            );
+            0
+        })
+    } else {
+        0
+    };
+    (count, holds_files(folder))
+}
+
+/// Whether `dir` holds a file anywhere under it, skipping `.git` and every
+/// directory with a `.git` of its own (a clone). Stops at the first file;
+/// an unreadable folder holds none.
+fn holds_files(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if !kind.is_dir() {
+            return true;
+        }
+        let path = entry.path();
+        if entry.file_name() == ".git" || path.join(".git").exists() {
+            continue;
+        }
+        if holds_files(&path) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The `DeskSession` the app shows for `session` and its Desk row.
 pub(crate) fn desk_pb(session: &SessionRecord, row: &DeskRow) -> pb::DeskSession {
     let kind = match row.kind {
@@ -45,6 +108,8 @@ pub(crate) fn desk_pb(session: &SessionRecord, row: &DeskRow) -> pb::DeskSession
         }
         DeskFolderKind::Picked => pb::desk_folder::Kind::Picked(pb::desk_folder::Picked {}),
     };
+    let (has_versions, doc_head) = doc_state(&session.folder);
+    let (version_count, holds_files) = folder_signals(&session.folder);
     pb::DeskSession {
         session: Some(pb::SessionId {
             value: session.id.clone(),
@@ -66,5 +131,11 @@ pub(crate) fn desk_pb(session: &SessionRecord, row: &DeskRow) -> pb::DeskSession
             .map(|(owner, name)| pb::RepoRef { owner, name })
             .collect(),
         documents: documents_under(&session.folder),
+        channel_desk: None,
+        doc_head,
+        has_versions,
+        version_count,
+        holds_files,
+        document_lines: std::collections::HashMap::new(),
     }
 }

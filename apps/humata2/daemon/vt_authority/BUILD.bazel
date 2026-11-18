@@ -1,0 +1,35 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# A tab's authoritative screen (D271): one Ghostty terminal per running
+# tab, fed by the holder's output, that answers the program's terminal
+# queries with nobody watching, never sends an answer twice, and hands
+# viewers opaque checkpoints. Knows nothing of holders or the wire.
+# Visible to humatad only: its holder links keep one per tab.
+rust_library(
+    name = "vt_authority",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata2_vt_authority",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        "//apps/humata2/terminal/vt:ghostty_vt",
+        "@crates//:thiserror",
+    ],
+)
+
+[
+    rust_test(
+        name = "%s_test" % src.removeprefix("tests/").removesuffix(".rs"),
+        srcs = [src],
+        deps = [
+            ":vt_authority",
+            "//apps/humata2/terminal/vt:ghostty_vt",
+        ],
+    )
+    for src in glob(["tests/*.rs"])
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

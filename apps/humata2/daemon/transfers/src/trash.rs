@@ -12,7 +12,7 @@ use humata2_store::fault::point;
 use serde::{Deserialize, Serialize};
 
 use crate::error::TrashError;
-use crate::fsutil::{make_dirs, remove_all, tree_size};
+use crate::fsutil::{make_dirs, remove_all, rename_keeping_mode, tree_size};
 
 /// Items stay this long (LD-7).
 pub const KEEP_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -151,7 +151,7 @@ impl Trash {
             return Err(error);
         }
         point("trash.put.recorded");
-        if let Err(source) = rename(&original, &dir.join(CONTENT)) {
+        if let Err(source) = rename_keeping_mode(&original, &dir.join(CONTENT)) {
             let _ = remove_all(&dir);
             return Err(if source.kind() == ErrorKind::CrossesDevices {
                 TrashError::OtherDisk {
@@ -232,7 +232,7 @@ impl Trash {
         if let Some(parent) = place.parent() {
             make_dirs(parent, 0o755).map_err(io("create the folder", parent))?;
         }
-        if let Err(source) = rename(&dir.join(CONTENT), &place) {
+        if let Err(source) = rename_keeping_mode(&dir.join(CONTENT), &place) {
             return Err(if source.kind() == ErrorKind::CrossesDevices {
                 TrashError::OtherDisk { path: place, source }
             } else {

@@ -4,8 +4,10 @@
 //! Desk sessions under its Desk row.
 
 use humata2_clients::desk;
+use humata2_clients::{FileRoot, Folder};
 use humata2_clients::model::{ForkKind, SessionId};
 use humata2_desk::{Change, Delegate, DeskAction, DeskState, Sort};
+use humata2_files::FilesAction;
 use humata2_session::SessionAction;
 use tca::Effect;
 
@@ -42,8 +44,39 @@ impl App {
     /// New desk session, from Home, the Desk page or a command: the form
     /// starts on the agent Settings picked.
     pub(super) fn start_new_desk_session(&self, state: &mut AppState) -> Effect<AppAction> {
-        let agent = state.settings.preferences.default_agent;
+        let agent = crate::new_session::default_agent(state);
         self.child(state, AppAction::Desk(DeskAction::StartNew { agent }))
+    }
+
+    /// New desk session for this session, from a session's menu (CD-6): the
+    /// channel's dialog with that session as the target. A Desk session has
+    /// no channel to look after, so it starts nothing there.
+    pub(super) fn new_desk_session_for(
+        &self,
+        state: &mut AppState,
+        id: &SessionId,
+    ) -> Effect<AppAction> {
+        if state.is_desk_session(id) {
+            return Effect::none();
+        }
+        let Some(channel) = state
+            .workspace
+            .session(id)
+            .map(|session| session.channel.clone())
+        else {
+            return Effect::none();
+        };
+        let agent = crate::new_session::default_agent(state);
+        let menu = self.child(state, AppAction::Session(SessionAction::Menu(false)));
+        let dialog = self.child(
+            state,
+            AppAction::Desk(DeskAction::StartChannelNew {
+                channel,
+                target: Some(id.clone()),
+                agent,
+            }),
+        );
+        Effect::merge([menu, dialog])
     }
 
     /// Does what the Desk asked for, and leaves a Desk session's page for
@@ -58,7 +91,43 @@ impl App {
             DeskAction::Delegate(Delegate::OpenSession(id)) => {
                 self.navigate(state, Route::Session(id.clone()))
             }
+            // D382: a Desk session has no repository, so its folder is
+            // opened as the session's own, on the machine it runs on.
+            DeskAction::Delegate(Delegate::OpenFolder(id)) => {
+                let Some(machine) = state.workspace.session(id).map(|session| session.machine.clone())
+                else {
+                    return Effect::none();
+                };
+                let go = self.navigate(state, Route::Files);
+                let side = state.files.active;
+                let folder = Folder::root(machine, FileRoot::SessionFolder { session: id.clone() });
+                let show = self.child(state, AppAction::Files(FilesAction::Navigate(side, folder)));
+                Effect::merge([go, show])
+            }
             DeskAction::Delegate(Delegate::Toast(text)) => state.toast(text.clone(), &clock),
+            // CD-4: closing a channel's Desk session from its own page goes
+            // back to that channel's Desk tab.
+            DeskAction::Changed {
+                session,
+                change: Change::Close,
+                result: Ok(()),
+            } if state.route == Route::Session(session.clone())
+                && state.workspace.desk.channel_sessions.contains_key(session) =>
+            {
+                let Some(channel) = state
+                    .workspace
+                    .desk
+                    .channel_sessions
+                    .get(session)
+                    .map(|found| found.channel.clone())
+                else {
+                    return Effect::none();
+                };
+                state.channel_pages.entry(channel.clone()).or_default().tab =
+                    crate::channel::Tab::Desk;
+                let go = self.navigate(state, Route::Channel(channel));
+                Effect::merge([go, self.load()])
+            }
             DeskAction::Changed {
                 session,
                 change: Change::Close,
@@ -66,6 +135,21 @@ impl App {
             } if state.route == Route::Session(session.clone()) => {
                 self.navigate(state, Route::Desk)
             }
+            // REPOS (RL-5, DK-14): New desk session's repo search opens on the library.
+            DeskAction::New(humata2_desk::NewAction::AddingRepo(true)) => {
+                self.open_new_desk_repo_search(state)
+            }
+            // REPOS (RL-3, RL-5): Add repo opens on the library.
+            DeskAction::Menu(Some(humata2_desk::Menu::AddRepo(_))) => {
+                self.open_desk_repo_search(state)
+            }
+            // The daemon's Desk events keep the Desk current; after the
+            // app's own change it still reads again, which also brings the
+            // session rows a start or a close changes.
+            DeskAction::Started(Ok(_))
+            | DeskAction::Changed { result: Ok(()), .. }
+            | DeskAction::Copied(Ok(()))
+            | DeskAction::CleanedUp(Ok(_)) => self.load(),
             // The Desk page shows its own error; anywhere else (a session's
             // folder bar) a failed change has only the toast to say so.
             DeskAction::Changed {
@@ -91,7 +175,7 @@ impl App {
     /// Closed on the Desk.
     pub(super) fn archive_or_close(&self, state: &mut AppState) -> Effect<AppAction> {
         match Self::open_desk_session(state) {
-            Some(id) => self.handle(state, AppAction::Desk(DeskAction::Close(id))),
+            Some(id) => self.handle(state, AppAction::Desk(DeskAction::AskClose(id))),
             None => self.child(state, AppAction::Session(SessionAction::Archive)),
         }
     }

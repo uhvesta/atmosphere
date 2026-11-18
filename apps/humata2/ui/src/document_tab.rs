@@ -12,10 +12,11 @@ use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::TestTextExt as _;
-use gpui_kit::component::input::{InputEvent, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState};
 use humata2_clients::comments::{Anchor, Comment, CommentId, Side};
+use humata2_clients::docs::VersionText;
 use humata2_clients::model::{Session, SessionId};
 use humata2_markdown::{
     Anchor as PageAnchor, Comment as PageComment, CommentMarks, LineRange, MarkdownOptions, MarkdownView,
@@ -53,6 +54,8 @@ struct Page {
     child_lines: Rc<RefCell<Vec<u32>>>,
     /// The line the page was last brought to while linked.
     last_top: Option<u32>,
+    /// The old version the page was last linked to, when one is shown.
+    last_old: Option<String>,
 }
 
 /// What a sync needs from the store, copied out so no store borrow is held
@@ -63,6 +66,8 @@ struct Plan {
     documents: Vec<Want>,
     /// The open comment box: session, first line, last line, text.
     editing: Option<(SessionId, u32, u32, String)>,
+    /// The History strip's parts: old versions shown, the Save version box.
+    history: crate::doc_history::Wanted,
 }
 
 struct Want {
@@ -70,6 +75,9 @@ struct Want {
     source: String,
     marks: Vec<Mark>,
     follow: bool,
+    /// The id of the old version the tab shows, once it is read: the page
+    /// that follows the source is that version's.
+    old: Option<String>,
 }
 
 fn plan(state: &AppState) -> Plan {
@@ -82,6 +90,7 @@ fn plan(state: &AppState) -> Plan {
             .collect(),
         ..Plan::default()
     };
+    plan.history = crate::doc_history::wanted(state);
     let (Some(id), Some(view)) = (state.session.open.as_ref(), state.session.view()) else {
         return plan;
     };
@@ -140,6 +149,16 @@ fn plan(state: &AppState) -> Plan {
                 source: source.clone(),
                 marks,
                 follow: shown.mode == DocumentMode::SideBySide && shown.linked,
+                old: if repo.is_empty() {
+                    state
+                        .session
+                        .history(id, path)
+                        .filter(|history| history.read_only())
+                        .and_then(|history| history.viewed.as_ref())
+                        .map(|read| read.version.id.clone())
+                } else {
+                    None
+                },
             });
         }
     }
@@ -205,6 +224,7 @@ impl Target {
             quoted,
             base: None,
             detached: false,
+            outdated: false,
         }
     }
 
@@ -260,7 +280,14 @@ pub(crate) struct Documents {
     /// The editors of changed code files, by repository and path.
     editors: RefCell<HashMap<(String, String), EditorView>>,
     pub(crate) conversation: crate::conversation_tab::ConversationScroll,
+    /// The History strip's Save version box, list and old versions' pages.
+    history: crate::doc_history::HistoryUi,
     _typing: Subscription,
+    /// The filter field of a repository's base menu in the Diff panel
+    /// (RV-31), and the repository it was last set for.
+    base_filter: Entity<InputState>,
+    base_filter_for: Option<String>,
+    _base_filtering: Subscription,
 }
 
 /// What the Diff panel remembers about one file's code view so a rewrap can
@@ -322,7 +349,8 @@ impl Documents {
                 .placeholder("Write a comment")
                 .auto_grow(1, 12)
         });
-        let ui = ui.clone();
+        let history = crate::doc_history::HistoryUi::new(ui, window, cx);
+        let typing_ui = ui.clone();
         let typing = cx.subscribe(
             &comment_input,
             move |input: Entity<TextareaState>, event: &InputEvent, cx: &mut App| {
@@ -330,10 +358,10 @@ impl Documents {
                     return;
                 }
                 let value = input.read(cx).value().to_string();
-                let Some(session) = ui.read(|state| state.session.open.clone()) else {
+                let Some(session) = typing_ui.read(|state| state.session.open.clone()) else {
                     return;
                 };
-                let held = ui.read(|state| {
+                let held = typing_ui.read(|state| {
                     state
                         .comments
                         .sessions
@@ -344,13 +372,38 @@ impl Documents {
                 // The field also changes when the store sets it; only the
                 // person's typing is news.
                 if held.is_some_and(|held| held != value) {
-                    ui.send(
+                    typing_ui.send(
                         AppAction::Comments(CommentsAction::Typed(session, value)),
                         cx,
                     );
                 }
             },
         );
+        let base_filter = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Filter branches, or type a branch or commit")
+        });
+        let filtering = {
+            let ui = ui.clone();
+            cx.subscribe(
+                &base_filter,
+                move |input: Entity<InputState>, event: &InputEvent, cx: &mut App| {
+                    if !matches!(event, InputEvent::Change) {
+                        return;
+                    }
+                    let value = input.read(cx).value().to_string();
+                    let held = ui.read(|state| {
+                        state.review.repo_picker.as_ref().map(|picker| picker.filter.clone())
+                    });
+                    // Only the person's typing is news, not the store's own set.
+                    if held.is_some_and(|held| held != value) {
+                        ui.send(
+                            AppAction::Review(humata2_review::ReviewAction::FilterRepoBases(value)),
+                            cx,
+                        );
+                    }
+                },
+            )
+        };
         Self {
             pages: HashMap::new(),
             comment_input,
@@ -359,8 +412,17 @@ impl Documents {
             diff_views: RefCell::new(HashMap::new()),
             editors: RefCell::new(HashMap::new()),
             conversation: Default::default(),
+            history,
             _typing: typing,
+            base_filter,
+            base_filter_for: None,
+            _base_filtering: filtering,
         }
+    }
+
+    /// The filter field of the open repository base menu.
+    pub(crate) fn base_filter(&self) -> Entity<InputState> {
+        self.base_filter.clone()
     }
 
     /// The scroll state of the Diff panel's code view for `name`.
@@ -399,11 +461,14 @@ impl Documents {
     /// store. Called before each draw of the window.
     pub(crate) fn sync(&mut self, ui: &Rc<Ui>, window: &mut Window, cx: &mut App) {
         let plan = ui.read(plan);
+        self.history.sync(&plan.history, window, cx);
         let mut following = HashSet::new();
+        let mut olds = HashMap::new();
         for want in plan.documents {
             if want.follow {
                 following.insert(want.key.clone());
             }
+            olds.insert(want.key.clone(), want.old.clone());
             match self.pages.get_mut(&want.key) {
                 None => {
                     let mut options = MarkdownOptions::new(want.key.2.clone());
@@ -426,6 +491,7 @@ impl Documents {
                             scroll: ScrollHandle::new(),
                             child_lines: Rc::new(RefCell::new(Vec::new())),
                             last_top: None,
+                            last_old: None,
                         },
                     );
                 }
@@ -474,6 +540,32 @@ impl Documents {
             }
         }
 
+        // A repository's base menu opens with its filter empty and focused,
+        // and the field empties when the menu closes.
+        let picker = ui.read(|state| {
+            state
+                .review
+                .repo_picker
+                .as_ref()
+                .map(|picker| (picker.repo.clone(), picker.filter.clone()))
+        });
+        match picker {
+            Some((repo, filter)) if self.base_filter_for.as_ref() != Some(&repo) => {
+                self.base_filter
+                    .update(cx, |input, cx| input.set_value(filter, window, cx));
+                self.base_filter
+                    .update(cx, |input, cx| input.focus(window, cx));
+                self.base_filter_for = Some(repo);
+            }
+            Some(_) => {}
+            None => {
+                if self.base_filter_for.take().is_some() {
+                    self.base_filter
+                        .update(cx, |input, cx| input.set_value(String::new(), window, cx));
+                }
+            }
+        }
+
         // Linked scrolling: the block at the source's top line goes to the
         // top of the page.
         for (key, page) in &mut self.pages {
@@ -481,6 +573,20 @@ impl Documents {
                 page.last_top = None;
                 continue;
             }
+            // The page that follows is the one shown: the old version's
+            // while one is read, and nothing to move until it is made.
+            let old = olds.get(key).cloned().flatten();
+            if page.last_old != old {
+                page.last_old = old.clone();
+                page.last_top = None;
+            }
+            let shown = match &old {
+                Some(id) => self.history.viewed_page(&key.0, &key.2, id),
+                None => Some(page.view.clone()),
+            };
+            let Some(shown) = shown else {
+                continue;
+            };
             let top = page
                 .child_lines
                 .borrow()
@@ -490,7 +596,7 @@ impl Documents {
                 && page.last_top != Some(top)
             {
                 page.last_top = Some(top);
-                page.view.update(cx, |view, cx| {
+                shown.update(cx, |view, cx| {
                     let block = view
                         .document()
                         .blocks()
@@ -528,9 +634,39 @@ impl Documents {
             .view()
             .map(|view| view.document(repo, path))
             .unwrap_or_default();
-        let preview = || {
+        // An old version of a Desk file is read-only (DV-6): its text, its
+        // recorded comments, and no way to comment, send or resolve.
+        let history = if repo.is_empty() {
+            state.session.history(&session.id, path)
+        } else {
+            None
+        };
+        let old = history.filter(|history| history.read_only());
+        let read = old.and_then(|history| history.viewed.as_ref());
+        let viewed_view = read
+            .and_then(|read| self.history.viewed_page(&session.id, path, &read.version.id));
+        let reading = old.is_some() && viewed_view.is_none();
+        let shown_view = viewed_view.unwrap_or_else(|| page.view.clone());
+        // `unlink_on_scroll`: the page follows the source while scrolling is
+        // linked, so turning the wheel over the page is scrolling it by
+        // hand, and that unticks Link scrolling.
+        let preview = |unlink_on_scroll: bool, view: Entity<MarkdownView>| {
+            let (ui, repo, path) = (ui.clone(), repo.to_owned(), path.to_owned());
+            let linked_path = path.clone();
             div()
                 .id("doc-preview")
+                .when(unlink_on_scroll, move |pane| {
+                    pane.on_scroll(move |_, _, cx| {
+                        ui.send(
+                            AppAction::Session(SessionAction::LinkScrolling {
+                                repo: repo.clone(),
+                                path: linked_path.clone(),
+                                linked: false,
+                            }),
+                            cx,
+                        );
+                    })
+                })
                 .role(Role::Document)
                 .aria_label(format!("{path} preview"))
                 .flex_1()
@@ -548,46 +684,72 @@ impl Documents {
                         .max_w(px(608.))
                         .px(px(24.))
                         .h_full()
-                        .child(page.view.clone()),
+                        .child(view),
                 )
                 .test_support()
         };
-        Some(match shown.mode {
-            DocumentMode::Preview => preview().into_any_element(),
-            DocumentMode::Source => self.source(ui, state, session, page, repo, path, text, look),
-            DocumentMode::SideBySide => {
-                let groups = state.session.view().map_or(1, |view| view.groups.len());
-                let drafts = state.comments.sendable(&session.id).len();
-                let boxed = state
-                    .comments
-                    .sessions
-                    .get(&session.id)
-                    .is_some_and(|held| held.editing.is_some());
-                col()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h_0()
-                    .child(link_bar(
-                        ui,
-                        &session.id,
-                        repo,
-                        path,
-                        shown.linked,
-                        groups <= 1,
-                        if boxed { 0 } else { drafts },
-                        look,
-                    ))
-                    .child(
-                        row()
-                            .flex_1()
-                            .min_h_0()
-                            .items_stretch()
-                            .child(self.source(ui, state, session, page, repo, path, text, look))
-                            .child(div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(look.line)))
-                            .child(preview()),
-                    )
-                    .into_any_element()
+        let content = if reading {
+            crate::doc_history::reading(look)
+        } else {
+            match shown.mode {
+                DocumentMode::Preview => preview(false, shown_view).into_any_element(),
+                DocumentMode::Source => {
+                    self.source(ui, state, session, page, repo, path, text, read, look)
+                }
+                DocumentMode::SideBySide => {
+                    let groups = state.session.view().map_or(1, |view| view.groups.len());
+                    let sendable = state.comments.sendable(&session.id);
+                    // While a box is open, Send shows only when another draft
+                    // waits beside the box's own (frame 42 has none); it then
+                    // saves the box's draft and sends all of them.
+                    let in_box = state
+                        .comments
+                        .sessions
+                        .get(&session.id)
+                        .and_then(|held| held.editing.as_ref())
+                        .map(|open| open.comment.clone());
+                    let boxed = in_box.as_ref().is_some_and(|in_box| {
+                        sendable.iter().all(|draft| Some(&draft.id) == in_box.as_ref())
+                    });
+                    let drafts = sendable.len();
+                    col()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .child(link_bar(
+                            ui,
+                            &session.id,
+                            repo,
+                            path,
+                            shown.linked,
+                            groups <= 1,
+                            if boxed || old.is_some() { 0 } else { drafts },
+                            look,
+                        ))
+                        .child(
+                            row()
+                                .flex_1()
+                                .min_h_0()
+                                .items_stretch()
+                                .child(self.source(
+                                    ui, state, session, page, repo, path, text, read, look,
+                                ))
+                                .child(div().w(px(1.)).h_full().flex_shrink_0().bg(rgb(look.line)))
+                                .child(preview(shown.linked, shown_view)),
+                        )
+                        .into_any_element()
+                }
             }
+        };
+        Some(match history {
+            Some(history) => col()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(self.history.strip(ui, history, path, read, look))
+                .child(content)
+                .into_any_element(),
+            None => content,
         })
     }
 
@@ -603,17 +765,24 @@ impl Documents {
         repo: &str,
         path: &str,
         text: &str,
+        read: Option<&VersionText>,
         look: Look,
     ) -> AnyElement {
+        // An old version shows its own text, comments and no box (DV-6).
+        let text = read.map_or(text, |read| read.text.as_str());
         let lines: Vec<String> = text.lines().map(str::to_owned).collect();
         let total = lines.len() as u32;
-        let by_line = state.comments.on_file(&session.id, repo, path);
+        let by_line = match read {
+            Some(read) => crate::doc_history::recorded_by_line(read),
+            None => state.comments.on_file(&session.id, repo, path),
+        };
         let editing = state
             .comments
             .sessions
             .get(&session.id)
             .and_then(|held| held.editing.as_ref())
-            .filter(|b| b.anchor.repo == repo && b.anchor.path == path);
+            .filter(|b| b.anchor.repo == repo && b.anchor.path == path)
+            .filter(|_| read.is_none());
         let box_range = editing.map(|b| (b.anchor.first, b.anchor.last));
         let box_comment = editing.and_then(|b| b.comment.clone());
         let wrap = state.review.wrap;
@@ -657,15 +826,26 @@ impl Documents {
             };
             let click = target.clone();
             let gutter = div()
-                .id(SharedString::from(format!("doc-line-{n}")))
-                .role(Role::Button)
-                .aria_label(format!("Comment on line {n}"))
+                .id(SharedString::from(if read.is_some() {
+                    format!("doc-old-line-{n}")
+                } else {
+                    format!("doc-line-{n}")
+                }))
                 .flex()
                 .flex_shrink_0()
-                .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    click.click(n, event.modifiers.shift, cx);
+                // Only the file as it is takes a comment (DV-6).
+                .when(read.is_none(), move |gutter| {
+                    gutter
+                        .role(Role::Button)
+                        .aria_label(format!("Comment on line {n}"))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            click.click(n, event.modifiers.shift, cx);
+                        })
+                })
+                .when(read.is_some(), |gutter| {
+                    gutter.role(Role::Region).aria_label(format!("Line {n}"))
                 })
                 .child(
                     div()
@@ -725,7 +905,9 @@ impl Documents {
                 if Some(&comment.id) == box_comment.as_ref() {
                     continue;
                 }
-                children.push(
+                children.push(if read.is_some() {
+                    crate::doc_history::recorded_card(look, comment).into_any_element()
+                } else {
                     comment_cards::card(
                         ui,
                         look,
@@ -734,16 +916,25 @@ impl Documents {
                         reattaching.as_ref() == Some(&comment.id),
                         &start,
                     )
-                    .into_any_element(),
-                );
+                    .into_any_element()
+                });
                 child_lines.push(n);
             }
             if let (Some(b), Some((_, last))) = (editing, box_range)
                 && (last == n || (last_line && last > total))
             {
                 children.push(
-                    comment_cards::open_box(ui, look, &session.id, &b.anchor, &self.comment_input, agent)
-                        .into_any_element(),
+                    comment_cards::open_box(
+                        ui,
+                        look,
+                        &session.id,
+                        &b.anchor,
+                        &self.comment_input,
+                        agent,
+                        &b.text,
+                        &comment_cards::offers(state, &session.id, &b.anchor.repo),
+                    )
+                    .into_any_element(),
                 );
                 child_lines.push(n);
             }

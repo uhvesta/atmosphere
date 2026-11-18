@@ -39,8 +39,7 @@ Micro. Platforms: macOS, with Linux noted where it differs. Paths are relative t
 5. **I do:** hold ⇧ and scroll the wheel over htop.
    **I see:** the terminal's history should scroll, and htop should not react.
    **State and events:** the wheel is not checked for Shift. `scroll` (`terminal/view/src/view.rs:1159-1175`) passes the modifiers to `wheel_bytes`, and with mouse tracking on it sends the report with the Shift bit set (`terminal/pane/src/host.rs:169-192`, `:293-302`). htop gets the wheel.
-   **Status:** Likely bug
-   Evidence: `terminal/view/src/view.rs:1159-1175` and `terminal/pane/src/host.rs:293-302`. The press, drag and release all check `!event.modifiers.shift` (`view.rs:1000`, `:1112`, `:1150`), so a wheel that ignores Shift is inconsistent with them. To confirm: run htop, hold ⇧, scroll, and see whether htop moves.
+   **Status:** Fakes only. With ⇧ held the wheel scrolls the history and the program gets no report, as clicks and drags already did (`terminal/pane/tests/pane.rs::shift_wheel_scrolls_the_history_while_the_program_takes_the_mouse`).
 
 6. **I do:** in `less` on the alternate screen, scroll the wheel down three notches.
    **I see:** the file scrolls down by about three lines.
@@ -94,8 +93,7 @@ Micro. Platforms: macOS, with Linux noted where it differs. Paths are relative t
 - **I see:** with nothing resetting the mode, the wheel and clicks are reported as text into the shell: a line of `^[[<64;...M` appears in the shell's input. The pane does not reset the mode, so the shell keeps getting reports until the next program or a `reset`.
 - **State and events:** the terminal state holds mouse tracking after its program is gone. The pane gates on `is_mouse_tracking()` only (`terminal/pane/src/host.rs:281-283`), and no code resets modes when a program exits. `grep` for reset sequences in `terminal/pane/src`, `terminal/host/src`, `terminal/client/src` and `daemon/holder/src` finds none.
 - **Expected outcome:** either the shell gets the reports (many terminals do this too), or the pane clears the modes when its program ends. The brief asks which. The code does the first.
-- **Status:** Likely bug
-  Evidence: `terminal/pane/src/host.rs:281-283` (the gate on tracking only). To confirm: run the printf above, kill the process, and watch the shell's input line when the mouse moves.
+- **Status:** Fakes only, as designed (D483). The shell gets the reports, as in most terminals: the pane cannot tell that the program that asked has gone while the shell lives on. ⇧ still selects and scrolls (`terminal/pane/tests/pane.rs::programs_that_take_the_mouse_get_it_unless_shift_is_held`), `reset` clears the mode, and when the tab's own program ends the mouse goes back to the history (`terminal/pane/tests/pane.rs::with_nobody_listening_the_mouse_goes_back_to_the_history`).
 
 ### Mouse events during a link drop
 
@@ -125,21 +123,21 @@ Micro. Platforms: macOS, with Linux noted where it differs. Paths are relative t
 | 2. vim click moves the cursor | Works (real shell) | `terminal/lab/tests/neovim.rs::neovim_colors_mouse_keyboard_resize_and_resume` (manual) |
 | 3. Wheel reported to the program | Fakes only | `terminal/pane/tests/pane.rs::programs_that_take_the_mouse_get_it_unless_shift_is_held` |
 | 4. ⇧ selects and sends nothing | Fakes only | `terminal/pane/tests/pane.rs::programs_that_take_the_mouse_get_it_unless_shift_is_held` |
-| 5. ⇧ wheel over htop | Likely bug | `terminal/view/src/view.rs:1159-1175`, `terminal/pane/src/host.rs:293-302` |
+| 5. ⇧ wheel over htop | Fakes only | `terminal/pane/tests/pane.rs::shift_wheel_scrolls_the_history_while_the_program_takes_the_mouse` |
 | 6. less wheel becomes arrows | Fakes only | `terminal/pane/tests/pane.rs::on_the_alternate_screen_the_wheel_sends_arrows_when_asked` |
 | 7. Wheel scrolls history | Fakes only | `terminal/view/tests/view.rs::scrolling_sends_whole_rows_older_output_first` |
 | 8. Focus out and in on app switch | Code, no test | `terminal/pane/tests/pane.rs::programs_that_ask_are_told_when_the_pane_gains_and_loses_focus` (in-window only) |
 | 9. No focus report unless asked | Fakes only | `terminal/vt/tests/view_support.rs::focus_is_reported_only_when_the_program_asked` |
 | Branch: read-only attach | Code, no test | `terminal/pane/src/host.rs:119-123`, `terminal/client/src/replica.rs:528-541` |
 | Branch: wheel over scrollbar | Code, no test | `terminal/view/src/view.rs:1159-1175` |
-| Branch: crash leaves mouse mode on | Likely bug | `terminal/pane/src/host.rs:281-283` |
+| Branch: crash leaves mouse mode on | Fakes only | `terminal/pane/tests/pane.rs::programs_that_take_the_mouse_get_it_unless_shift_is_held`, `terminal/pane/tests/pane.rs::with_nobody_listening_the_mouse_goes_back_to_the_history`; D483 |
 | Branch: link drop during htop | Fakes only | `terminal/pane/tests/pane.rs::while_disconnected_input_is_dropped_and_the_pane_says_so` |
 
 ## Gaps and likely bugs
 
 - **Not built:** nothing in the repo runs htop, `less`, or a real wheel in a real window. No test sends a real wheel to a real program. The lab's Neovim test covers a click and no wheel.
-- **Likely bug:** Shift does not stop the wheel from reaching a mouse-tracking program, unlike clicks and drags (`terminal/view/src/view.rs:1159-1175`). To confirm: hold ⇧ and scroll in htop.
-- **Likely bug:** a program that leaves mouse tracking on is not cleared when it ends, so the shell gets mouse reports as typed text (`terminal/pane/src/host.rs:281-283`). To confirm: the printf and kill steps above.
+- **Fixed:** with ⇧ held the wheel scrolls the history, as clicks and drags do (`terminal/pane/tests/pane.rs::shift_wheel_scrolls_the_history_while_the_program_takes_the_mouse`, Fakes only).
+- **As designed (D483):** a program that leaves mouse tracking on when it is killed leaves it on for the shell, which gets the reports; ⇧ still selects and `reset` clears it.
 - **Code, no test:** the app-switch focus report. The pane only sees its own focus handle (`terminal/view/src/view.rs` `on_focus` and `on_blur`). Whether GPUI blurs the handle when the whole app loses activation is outside the repo; confirm on the Mac.
 - **Code, no test:** `less` on the alternate screen. The code comment says `less` and `vim` set mode 1007 (`terminal/pane/src/host.rs:168`), but no test runs `less`.
 - **Code, no test:** the wheel over the scrollbar and the mouse on a read-only pane.

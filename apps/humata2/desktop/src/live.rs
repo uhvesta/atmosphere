@@ -8,9 +8,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use humata2_clients::{
-    Clients, FakeClipboard, FakeFileSystem, FakeKeychain,
+    Clients, DaemonError, FakeClipboard, FakeFileSystem, FakeKeychain, LocalDaemon, Reply,
 };
-use humata2_clients_live::{ConnectError, LiveComments, LiveDaemon, LiveMachines, LiveOptions, Observer};
+use humata2_clients_live::{
+    ConnectError, DaemonFacts, LiveComments, LiveDaemon, LiveMachines, LiveOptions, Observer,
+};
 use humata2_install::{AGENT_LABEL, Bundle, Installed, Layout, SystemLaunchd};
 use tca::SystemClock;
 
@@ -64,9 +66,11 @@ pub(crate) enum LiveStartError {
 }
 
 /// Where the app finds the host tools it carries:
-/// `<App>.app/Contents/Helpers/{humatad2,humata2_holder,humata}` when the
+/// `<App>.app/Contents/Helpers/{humatad2,humata2_holder,humata,stack}` when the
 /// running executable is `<App>.app/Contents/MacOS/<exe>`; None otherwise (a
-/// bazel-run dev binary).
+/// bazel-run dev binary). The release they belong to is named by
+/// `Contents/Resources/manifest.json` when the app ships one (UP-1, D281);
+/// it sits outside Helpers, which holds only signed executables.
 pub(crate) fn bundled_tools(exe: &Path) -> Option<Bundle> {
     let macos = exe.parent()?;
     if macos.file_name()? != "MacOS" {
@@ -81,12 +85,128 @@ pub(crate) fn bundled_tools(exe: &Path) -> Option<Bundle> {
         return None;
     }
     let helpers = contents.join("Helpers");
-    Some(Bundle::new(
+    let bundle = Bundle::new(
         helpers.join("humatad2"),
         helpers.join("humata2_holder"),
         helpers.join("humata"),
-    ))
+        helpers.join("stack"),
+    );
+    let manifest = contents.join("Resources").join("manifest.json");
+    if !manifest.is_file() {
+        return Some(bundle);
+    }
+    // The Linux tools Add machine installs from (TS-2), when the app carries them.
+    let machine_tools = contents.join("Resources").join("machine-tools");
+    let bundle = bundle.with_manifest(manifest);
+    Some(if machine_tools.join("manifest.json").is_file() { bundle.with_machine_tools(machine_tools) } else { bundle })
 }
+
+/// This Mac's own daemon for the one thing a daemon too old to hold a Migrate
+/// item can't do itself (D374): swap the staged release in and restart.
+/// Wraps `humata2_install::migrate_old_daemon` on a blocking task.
+struct LiveLocalDaemon {
+    layout: Layout,
+    /// The daemon's socket, which a restart removes and makes again.
+    socket: PathBuf,
+}
+
+impl LiveLocalDaemon {
+    const WHAT: &'static str = "Migrating the daemon on This Mac";
+
+    /// How long one look at the socket may take. A daemon that accepts but
+    /// doesn't answer is not back; the next filesystem event looks again.
+    const LOOK: Duration = Duration::from_secs(5);
+
+    fn refused(reason: impl Into<String>) -> DaemonError {
+        DaemonError::Refused { what: Self::WHAT.to_owned(), reason: reason.into() }
+    }
+
+    /// Whether the daemon at `socket` answers ServerInfo with `bundle`.
+    async fn answers_at(socket: &Path, bundle: &str) -> bool {
+        let look = LiveDaemon::connect(LiveOptions::new(socket.to_path_buf()));
+        matches!(
+            tokio::time::timeout(Self::LOOK, look).await,
+            Ok(Ok(daemon)) if daemon.facts().bundle == bundle
+        )
+    }
+}
+
+impl LocalDaemon for LiveLocalDaemon {
+    fn migrate_old_daemon(&self, staged_bundle: &str) -> Reply<()> {
+        let layout = self.layout.clone();
+        let shown = staged_bundle.to_owned();
+        Box::pin(async move {
+            let done = tokio::task::spawn_blocking(move || -> Result<(), DaemonError> {
+                // Migrate what the card showed, not a release staged since.
+                let staged = humata2_install::staged_release(&layout)
+                    .map_err(|error| LiveLocalDaemon::refused(error.to_string()))?;
+                if staged.as_deref() != Some(shown.as_str()) {
+                    return Err(LiveLocalDaemon::refused(
+                        "the release staged beside the daemon is not the one the Migrate item showed. Quit Humata and open it again to see the current Migrate item; nothing was changed",
+                    ));
+                }
+                humata2_install::migrate_old_daemon(&layout, &SystemLaunchd)
+                    .map_err(|error| LiveLocalDaemon::refused(error.to_string()))
+            })
+            .await;
+            match done {
+                Ok(result) => result,
+                Err(error) => Err(LiveLocalDaemon::refused(format!(
+                    "the migration's thread stopped before it finished ({error}). Open Humata again; if the old daemon is still running, click Migrate again, and report a bug with the log in ~/.humata2/logs if it keeps stopping"
+                ))),
+            }
+        })
+    }
+
+    fn back_at(&self, staged_bundle: &str) -> Reply<()> {
+        let socket = self.socket.clone();
+        let bundle = staged_bundle.to_owned();
+        Box::pin(async move {
+            let Some(dir) = socket.parent().map(Path::to_path_buf) else {
+                return Err(Self::refused(format!(
+                    "{} has no folder to watch for the new daemon. Quit Humata and open it again",
+                    socket.display()
+                )));
+            };
+            // Each change in the socket's folder wakes one look; a change
+            // that lands while a look runs is kept for the next one.
+            let changed = Arc::new(tokio::sync::Notify::new());
+            let wake = changed.clone();
+            let mut watcher = notify::recommended_watcher(move |_event: notify::Result<notify::Event>| {
+                wake.notify_one();
+            })
+            .map_err(|error| {
+                Self::refused(format!(
+                    "Humata couldn't watch {} for the new daemon ({error}). Quit Humata and open it again",
+                    dir.display()
+                ))
+            })?;
+            notify::Watcher::watch(&mut watcher, &dir, notify::RecursiveMode::NonRecursive)
+                .map_err(|error| {
+                    Self::refused(format!(
+                        "Humata couldn't watch {} for the new daemon ({error}). Quit Humata and open it again",
+                        dir.display()
+                    ))
+                })?;
+            // The watch is set before the first look, so a daemon that came
+            // up already is seen and one that comes up next is not missed.
+            loop {
+                if Self::answers_at(&socket, &bundle).await {
+                    return Ok(());
+                }
+                changed.notified().await;
+            }
+        })
+    }
+}
+
+/// What installing the host tools did, and the bundle id of the app's
+/// release when it is staged beside an older daemon, waiting for Migrate.
+pub(crate) type InstallReport = (Installed, Option<String>);
+
+/// What the app starts with: its clients, what the install did, and what
+/// the daemon said about itself.
+pub(crate) type Started = (Clients, Option<InstallReport>, DaemonFacts);
 
 /// Fakes unless `--live` was given or the app runs from a bundle;
 /// `--socket` overrides `~/.humata2/humatad.sock`.
@@ -122,6 +242,10 @@ pub(crate) fn first_phase(bundle_present: bool) -> Phase {
 /// connects. `progress` hears each phase as it begins, so a window can show
 /// it. The clock, clipboard, file system and keychain are the fakes the demo
 /// uses, because no real ones exist yet.
+///
+/// An install that finds an older daemon stages the app's release instead of
+/// swapping it in (D301); the report then names that release, so the app
+/// can post "Migrate the daemon on This Mac".
 pub(crate) async fn start_live(
     socket: &Path,
     bundle: Option<&Bundle>,
@@ -130,25 +254,34 @@ pub(crate) async fn start_live(
     wait: Duration,
     calls: Option<Observer>,
     progress: impl Fn(Phase),
-) -> Result<(Clients, Option<Installed>), LiveStartError> {
+) -> Result<Started, LiveStartError> {
     let installer = bundle.map(|bundle| {
         let bundle = bundle.clone();
         let layout = Layout::for_home(home);
-        move || humata2_install::install(&bundle, &layout, &SystemLaunchd)
+        move || -> Result<InstallReport, humata2_install::InstallError> {
+            let installed = humata2_install::install(&bundle, &layout, &SystemLaunchd)?;
+            let staged = humata2_install::staged_release(&layout)?;
+            Ok((installed, staged))
+        }
     });
-    start_with(installer, socket, storage, wait, calls, progress).await
+    let local: Arc<dyn LocalDaemon> = Arc::new(LiveLocalDaemon {
+        layout: Layout::for_home(home),
+        socket: socket.to_path_buf(),
+    });
+    start_with(installer, socket, storage, local, wait, calls, progress).await
 }
 
 /// [`start_live`] with the install passed in, so a test can stand in for the
 /// real one (which writes under HOME and runs launchctl).
-async fn start_with(
-    installer: Option<impl FnOnce() -> Result<Installed, humata2_install::InstallError> + Send + 'static>,
+async fn start_with<R: Send + 'static>(
+    installer: Option<impl FnOnce() -> Result<R, humata2_install::InstallError> + Send + 'static>,
     socket: &Path,
     storage: Arc<dyn tca::Storage>,
+    local_daemon: Arc<dyn LocalDaemon>,
     wait: Duration,
     calls: Option<Observer>,
     progress: impl Fn(Phase),
-) -> Result<(Clients, Option<Installed>), LiveStartError> {
+) -> Result<(Clients, Option<R>, DaemonFacts), LiveStartError> {
     let installed = match installer {
         Some(installer) => {
             progress(Phase::Installing);
@@ -171,6 +304,7 @@ async fn start_with(
         .await
         .map_err(|source| LiveStartError::Connect { source })?;
     let file_manager = humata2_clients_live::LiveFileManager::new(&daemon);
+    let facts = daemon.facts().clone();
     let clients = Clients {
         daemon: Arc::new(daemon.clone()),
         desk: Arc::new(daemon.clone()),
@@ -179,15 +313,20 @@ async fn start_with(
         comments: Arc::new(LiveComments::new(&daemon)),
         history: Arc::new(humata2_clients_live::history::LiveHistory::new(&daemon)),
         marks: Arc::new(humata2_clients_live::marks::LiveMarks::new(&daemon)),
+        views: Arc::new(humata2_clients_live::LiveViews::new(&daemon)),
+        pull_requests: Arc::new(humata2_clients_live::LivePullRequests::new(&daemon)),
+        review_chat: Arc::new(humata2_clients_live::LiveReviewChat::new(&daemon)),
         terminals: Arc::new(daemon),
         clock: Arc::new(SystemClock::new()),
         clipboard: Arc::new(FakeClipboard::default()),
+        reveal: Arc::new(humata2_clients::FinderReveal::new()),
         files: Arc::new(FakeFileSystem::default()),
         file_manager: Arc::new(file_manager),
         keychain: Arc::new(FakeKeychain::default()),
+        local_daemon,
         storage,
     };
-    Ok((clients, installed))
+    Ok((clients, installed, facts))
 }
 
 async fn wait_for_socket(socket: &Path, wait: Duration) -> Result<(), LiveStartError> {
@@ -247,8 +386,62 @@ mod tests {
             PathBuf::from(format!("{helpers}/humatad2")),
             PathBuf::from(format!("{helpers}/humata2_holder")),
             PathBuf::from(format!("{helpers}/humata")),
+            PathBuf::from(format!("{helpers}/stack")),
         );
         assert_eq!(format!("{bundle:?}"), format!("{:?}", Some(want)));
+    }
+
+    #[test]
+    fn bundled_tools_name_the_release_the_app_ships() {
+        let root = std::env::temp_dir().join(format!("humata2-live-test-manifest-{}", std::process::id()));
+        let contents = root.join("Humata 2.app/Contents");
+        std::fs::create_dir_all(contents.join("MacOS")).expect("MacOS");
+        std::fs::create_dir_all(contents.join("Resources")).expect("Resources");
+        let exe = contents.join("MacOS/humata2");
+        let without = bundled_tools(&exe).expect("an app's tools");
+        let manifest = contents.join("Resources/manifest.json");
+        std::fs::write(&manifest, "{}").expect("manifest");
+        let with = bundled_tools(&exe).expect("an app's tools");
+        let helpers = contents.join("Helpers");
+        let tools = || {
+            Bundle::new(
+                helpers.join("humatad2"),
+                helpers.join("humata2_holder"),
+                helpers.join("humata"),
+                helpers.join("stack"),
+            )
+        };
+        assert_eq!(format!("{without:?}"), format!("{:?}", tools()));
+        assert_eq!(format!("{with:?}"), format!("{:?}", tools().with_manifest(manifest)));
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    #[test]
+    fn bundled_tools_carry_the_linux_tools_an_app_ships() {
+        let root = std::env::temp_dir().join(format!("humata2-live-test-machine-tools-{}", std::process::id()));
+        let contents = root.join("Humata 2.app/Contents");
+        let folder = contents.join("Resources/machine-tools");
+        std::fs::create_dir_all(contents.join("MacOS")).expect("MacOS");
+        std::fs::create_dir_all(&folder).expect("machine-tools");
+        let exe = contents.join("MacOS/humata2");
+        let manifest = contents.join("Resources/manifest.json");
+        std::fs::write(&manifest, "{}").expect("manifest");
+        let helpers = contents.join("Helpers");
+        let tools = || {
+            Bundle::new(
+                helpers.join("humatad2"),
+                helpers.join("humata2_holder"),
+                helpers.join("humata"),
+                helpers.join("stack"),
+            )
+            .with_manifest(manifest.clone())
+        };
+        let empty = bundled_tools(&exe).expect("an app's tools");
+        std::fs::write(folder.join("manifest.json"), "{}").expect("machine-tools manifest");
+        let with = bundled_tools(&exe).expect("an app's tools");
+        assert_eq!(format!("{empty:?}"), format!("{:?}", tools()));
+        assert_eq!(format!("{with:?}"), format!("{:?}", tools().with_machine_tools(folder)));
+        std::fs::remove_dir_all(&root).expect("clean up");
     }
 
     #[test]
@@ -287,6 +480,7 @@ mod tests {
             humatad2: humata2_install::BinaryChange::Unchanged,
             holder: humata2_install::BinaryChange::Unchanged,
             humata: humata2_install::BinaryChange::Unchanged,
+            stack: humata2_install::BinaryChange::Unchanged,
             agent: humata2_install::AgentChange::Unchanged,
             path_hint: None,
             path_clash: None,
@@ -316,6 +510,7 @@ mod tests {
             Some(|| Ok(installed())),
             &socket,
             Arc::new(tca::MemoryStorage::new()),
+            Arc::new(humata2_clients::FakeLocalDaemon::default()),
             Duration::from_millis(100),
             None,
             |phase| heard.lock().expect("lock").push(phase),
@@ -332,6 +527,7 @@ mod tests {
             None::<fn() -> Result<Installed, humata2_install::InstallError>>,
             &socket,
             Arc::new(tca::MemoryStorage::new()),
+            Arc::new(humata2_clients::FakeLocalDaemon::default()),
             Duration::from_millis(100),
             None,
             |phase| heard.lock().expect("lock").push(phase),
@@ -350,6 +546,7 @@ mod tests {
             Some(|| -> Result<Installed, humata2_install::InstallError> { panic!("install blew up") }),
             &socket,
             Arc::new(tca::MemoryStorage::new()),
+            Arc::new(humata2_clients::FakeLocalDaemon::default()),
             Duration::from_millis(100),
             None,
             |phase| heard.lock().expect("lock").push(phase),

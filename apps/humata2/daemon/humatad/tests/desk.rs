@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 
 use common::{
     Attach, Build, Daemon, World, agent_tab, folder, get_session, git, humata_as_agent, machine_id,
-    open, repo_ref, shell_token, wait_status,
+    open, repo_ref, shell_token, stored_tabs, wait_status,
 };
 use humata2_grpc::humata::v1 as pb;
+use humata2_store::{DeskFolderKind, DeskRow, SessionDetail, SessionRecord, StartStep, Store};
 use pb::SessionStatus as Status;
+use rustix::process::{Pid, Signal, kill_process};
 use tonic::Code;
 use tonic::transport::Channel;
 
@@ -34,11 +36,16 @@ impl Fixture {
     }
 
     async fn expiring_after(ms: &str) -> Self {
+        Self::with_env(&[(EXPIRE, ms)]).await
+    }
+
+    /// A daemon started with `env`, such as a fault point to stop at.
+    async fn with_env(env: &[(&str, &str)]) -> Self {
         let dir = folder();
         let world = World::new(dir.path());
         let args = world.args();
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let daemon = Daemon::start_with_env(Build::Admin, dir, &refs, &[(EXPIRE, ms)]).await;
+        let daemon = Daemon::start_with_env(Build::Admin, dir, &refs, env).await;
         Self { daemon, world }
     }
 
@@ -60,6 +67,9 @@ impl Fixture {
                 channels_and_machines: false,
             }),
             first_message: String::new(),
+            channel: None,
+            target: None,
+            switches: None,
         }
     }
 
@@ -90,7 +100,7 @@ impl Fixture {
     async fn listed(&self) -> Vec<pb::DeskSession> {
         self.desk()
             .await
-            .list_desk_sessions(pb::ListDeskSessionsRequest {})
+            .list_desk_sessions(pb::ListDeskSessionsRequest::default())
             .await
             .unwrap()
             .into_inner()
@@ -110,6 +120,7 @@ impl Fixture {
             .close_desk_session(pb::CloseDeskSessionRequest {
                 idempotency_key: None,
                 session: Some(id.clone()),
+                ..Default::default()
             })
             .await
             .unwrap()
@@ -147,6 +158,7 @@ impl Fixture {
                     boards,
                     channels_and_machines,
                 }),
+                switches: None,
             })
             .await
             .unwrap()
@@ -249,6 +261,51 @@ impl Fixture {
 
     fn desk_root(&self) -> PathBuf {
         self.world.channels.join("desk")
+    }
+
+    /// A Desk session in a folder the person picked, as an older release
+    /// recorded it. No start can make one now (D451, D460), so its records
+    /// are written to the store the way the old data holds them: the
+    /// session, its finished start and its Desk row. It has no agent, so it
+    /// can be closed, listed and cleaned up but not resumed.
+    async fn old_picked_session(&self, title: &str, folder: &Path) -> pb::SessionId {
+        let id = format!("se_old_{}", title.to_lowercase());
+        let store = Store::open(self.daemon.state.join("store")).unwrap();
+        store
+            .put_session_with_detail(
+                &SessionRecord {
+                    id: id.clone(),
+                    channel: "desk".to_owned(),
+                    machine: machine_id(&self.daemon).await.value,
+                    title: title.to_owned(),
+                    agent: common::AGENT_NAME.to_owned(),
+                    folder: folder.canonicalize().unwrap(),
+                    created_unix_ms: 1,
+                },
+                &SessionDetail {
+                    session: id.clone(),
+                    repos: Vec::new(),
+                    model: None,
+                    first_message: None,
+                    start: StartStep::Done,
+                    operation: None,
+                    revision: 1,
+                },
+            )
+            .unwrap();
+        store
+            .put_desk(&DeskRow {
+                session_id: id.clone(),
+                kind: DeskFolderKind::Picked,
+                boards: true,
+                channels_and_machines: false,
+                last_used_unix_ms: 1,
+                closed_unix_ms: None,
+                deleted_unix_ms: None,
+                held_work: String::new(),
+            })
+            .unwrap();
+        pb::SessionId { value: id }
     }
 }
 
@@ -363,41 +420,58 @@ async fn renaming_keeps_the_folder() {
     assert_eq!(PathBuf::from(desk.folder.unwrap().path), path);
 }
 
+/// D451, D460: a start that names a picked folder is refused whatever the
+/// path (a good folder, a missing one, a relative one), says which field,
+/// and starts and makes nothing.
 #[tokio::test]
-async fn a_picked_folder_is_used_where_it_is() {
+async fn a_start_with_a_picked_folder_is_refused_and_starts_nothing() {
     let fixture = Fixture::new().await;
     let picked = fixture.world.root.join("my-notes");
     std::fs::create_dir_all(&picked).unwrap();
     std::fs::write(picked.join("todo.md"), "- ship\n").unwrap();
-    let mut request = fixture.request("Notes");
-    request.picked_path = picked.display().to_string();
-    let (id, path) = fixture.start_with(request).await;
-    assert_eq!(path.canonicalize().unwrap(), picked.canonicalize().unwrap());
-    let desk = fixture.find(&id).await.unwrap();
-    assert!(scratch_of(&desk).is_none(), "{desk:?}");
-    assert!(!fixture.desk_root().join("notes").exists());
-}
-
-#[tokio::test]
-async fn a_picked_folder_must_exist_and_sit_outside_humata() {
-    let fixture = Fixture::new().await;
-    let inside = fixture.world.channels.join("payments");
-    std::fs::create_dir_all(&inside).unwrap();
-    let file = fixture.world.root.join("a-file.txt");
-    std::fs::write(&file, "x").unwrap();
     for path in [
+        picked.display().to_string(),
         fixture.world.root.join("missing").display().to_string(),
         "relative/path".to_owned(),
-        file.display().to_string(),
-        inside.display().to_string(),
-        fixture.world.channels.display().to_string(),
     ] {
         let mut request = fixture.request("Notes");
         request.picked_path = path.clone();
         let status = fixture.try_start(request).await.unwrap_err();
-        assert_eq!(status.code(), Code::InvalidArgument, "{path}: {status:?}");
+        let (field, problem) = common::invalid_field(&status);
+        assert_eq!(field, "picked_path", "{path}");
+        assert_eq!(problem, pb::invalid_field::Problem::NotAllowedHere, "{path}");
     }
     assert!(fixture.listed().await.is_empty());
+    assert!(!fixture.desk_root().join("notes").exists());
+    assert!(!picked.join(".git").exists(), "the picked folder was not touched");
+}
+
+/// D460: the same start without the folder is placed by the roots: a scratch
+/// folder under the configured channels root's desk folder.
+#[tokio::test]
+async fn a_new_start_is_placed_under_the_configured_root() {
+    let fixture = Fixture::new().await;
+    let (id, path) = fixture.start("Notes").await;
+    assert_eq!(path, fixture.desk_root().join("notes"));
+    let desk = fixture.find(&id).await.unwrap();
+    assert!(scratch_of(&desk).is_some(), "{desk:?}");
+}
+
+/// D458: a session an older release started in a picked folder is still
+/// listed as a picked one, and closing it leaves the folder.
+#[tokio::test]
+async fn an_existing_picked_session_is_still_listed_and_closes_in_place() {
+    let fixture = Fixture::new().await;
+    let picked = fixture.world.root.join("my-notes");
+    std::fs::create_dir_all(&picked).unwrap();
+    std::fs::write(picked.join("todo.md"), "- ship\n").unwrap();
+    let id = fixture.old_picked_session("Notes", &picked).await;
+    let desk = fixture.find(&id).await.expect("the old session is listed");
+    assert!(scratch_of(&desk).is_none(), "{desk:?}");
+    assert_eq!(PathBuf::from(desk.folder.unwrap().path).canonicalize().unwrap(), picked.canonicalize().unwrap());
+    let closed = fixture.close(&id).await;
+    assert!(closed.closed_at.is_some(), "{closed:?}");
+    assert!(picked.join("todo.md").exists());
 }
 
 #[tokio::test]
@@ -408,7 +482,9 @@ async fn another_machine_is_refused_and_starts_nothing() {
         value: "ma_somewhere_else".to_owned(),
     });
     let status = fixture.try_start(elsewhere).await.unwrap_err();
-    assert_eq!(status.code(), Code::FailedPrecondition, "{status:?}");
+    let (field, problem) = common::invalid_field(&status);
+    assert_eq!(field, "machine");
+    assert_eq!(problem, pb::invalid_field::Problem::UnknownValue);
 
     // This machine named explicitly is fine.
     let mut here = fixture.request("Here");
@@ -577,6 +653,77 @@ async fn closing_stops_the_agent_and_keeps_the_folder_for_seven_days() {
     assert!(listed.closed_at.is_some());
 }
 
+/// The longest a close may take with a shell's holder stopped. The shutdown
+/// gives up after its own bound and the holder is ended after a short grace,
+/// so this only catches a hang.
+const CLOSE_GUARD: Duration = Duration::from_secs(30);
+
+/// Resumes a process the test stopped, when the test ends, so a failing
+/// assertion leaves nothing stopped behind.
+struct Resumed(u32);
+
+impl Drop for Resumed {
+    fn drop(&mut self) {
+        // A pid that no longer names a process is fine.
+        if let Some(pid) = i32::try_from(self.0).ok().and_then(Pid::from_raw) {
+            let _ = kill_process(pid, Signal::CONT);
+        }
+    }
+}
+
+/// Whether process `pid` still runs. One that has ended and waits to be
+/// reaped (a zombie) doesn't.
+fn running(pid: u32) -> bool {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps runs");
+    let state = String::from_utf8_lossy(&output.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+#[tokio::test]
+async fn closing_ends_a_shell_whose_holder_is_stopped_and_does_not_wait_for_it() {
+    let fixture = Fixture::new().await;
+    let (id, _) = fixture.start("Plan Q4").await;
+    let shell = fixture
+        .daemon
+        .terminals()
+        .await
+        .open_shell_tab(pb::OpenShellTabRequest {
+            idempotency_key: None,
+            session: Some(id.clone()),
+            repo: None,
+            folder: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .id
+        .unwrap();
+    let holder = stored_tabs(&fixture.daemon.state)
+        .iter()
+        .find(|tab| tab.id == shell.value)
+        .expect("the shell tab is stored")
+        .holder_pid;
+    let pid = i32::try_from(holder).ok().and_then(Pid::from_raw).expect("a holder pid");
+    kill_process(pid, Signal::STOP).expect("the test can stop its own holder");
+    let _resumed = Resumed(holder);
+
+    tokio::time::timeout(CLOSE_GUARD, fixture.close(&id))
+        .await
+        .expect("the close finished within the guard, though the shell's holder never answered");
+
+    assert!(!running(holder), "the shell's holder was ended by its pid");
+    assert!(
+        stored_tabs(&fixture.daemon.state)
+            .iter()
+            .all(|tab| tab.id != shell.value),
+        "the closed shell is forgotten"
+    );
+}
+
 #[tokio::test]
 async fn a_closed_session_refuses_resume_and_new_tabs() {
     let fixture = Fixture::new().await;
@@ -601,6 +748,7 @@ async fn a_closed_session_refuses_resume_and_new_tabs() {
             idempotency_key: None,
             session: Some(id.clone()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap_err();
@@ -662,6 +810,7 @@ async fn the_channel_actions_refuse_a_desk_session() {
             model: String::new(),
             machine: None,
             branch: String::new(),
+            reason: String::new(),
         })
         .await
         .unwrap_err();
@@ -788,9 +937,7 @@ async fn a_picked_folder_is_never_deleted() {
     let picked = fixture.world.root.join("my-notes");
     std::fs::create_dir_all(&picked).unwrap();
     std::fs::write(picked.join("todo.md"), "- ship\n").unwrap();
-    let mut request = fixture.request("Notes");
-    request.picked_path = picked.display().to_string();
-    let (picked_id, _) = fixture.start_with(request).await;
+    let picked_id = fixture.old_picked_session("Notes", &picked).await;
     let (scratch_id, scratch_path) = fixture.start("Scratch").await;
     fixture.close(&picked_id).await;
     fixture.close(&scratch_id).await;
@@ -890,15 +1037,48 @@ async fn a_retried_clean_up_answers_what_the_first_one_did() {
     assert_eq!(fixture.trash().await.len(), 1);
 }
 
+/// D440: Clean up moves a scratch folder to the Bin before it marks the
+/// row deleted, so whoever hears the row go (the Desk event that follows
+/// the commit) finds the folder gone. Killed the moment that mark is
+/// committed, the daemon has already moved the folder.
+#[tokio::test]
+async fn a_scratch_folder_is_in_the_bin_before_its_row_is_marked_deleted() {
+    let scratch = folder();
+    let arm = scratch.path().join("arm");
+    let arm_path = arm.to_str().expect("the test folder's path is UTF-8").to_owned();
+    let mut fixture = Fixture::with_env(&[
+        (EXPIRE, NEVER),
+        ("HUMATA2_STOP_AT", "store.desk.put.committed"),
+        ("HUMATA2_FAULT_ARM", arm_path.as_str()),
+    ])
+    .await;
+    let (id, path) = fixture.start("Old").await;
+    fixture.close(&id).await;
+    let plan = fixture.plan().await;
+    std::fs::write(&arm, b"").expect("the stop is armed");
+
+    // The call is cut off with the daemon that was answering it.
+    let _ = fixture
+        .desk()
+        .await
+        .clean_up_desk(pb::CleanUpDeskRequest {
+            idempotency_key: None,
+            plan: plan.token.clone(),
+            delete: vec![id.clone()],
+        })
+        .await;
+    fixture.daemon.stopped(Duration::from_secs(60)).await;
+
+    assert!(!path.exists(), "the folder went before the row was marked deleted");
+}
+
 #[tokio::test]
 async fn cleaning_up_a_picked_session_leaves_its_folder() {
     let fixture = Fixture::new().await;
     let picked = fixture.world.root.join("my-notes");
     std::fs::create_dir_all(&picked).unwrap();
     std::fs::write(picked.join("todo.md"), "- ship\n").unwrap();
-    let mut request = fixture.request("Notes");
-    request.picked_path = picked.display().to_string();
-    let (id, _) = fixture.start_with(request).await;
+    let id = fixture.old_picked_session("Notes", &picked).await;
     fixture.close(&id).await;
     let plan = fixture.plan().await;
     assert_eq!(plan.rows.len(), 1);

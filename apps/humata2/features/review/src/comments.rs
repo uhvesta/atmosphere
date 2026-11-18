@@ -20,8 +20,9 @@ use std::time::Duration;
 use humata2_clients::DaemonError;
 use humata2_clients::Reply;
 use humata2_clients::comments::{
-    Anchor, Comment, CommentEvent, CommentId, CommentsClient, Listing, Sent, Side, Status, Which,
+    Anchor, Comment, CommentEvent, CommentId, CommentsClient, Destination, Listing, Sent, Side, Status, Which,
 };
+use humata2_clients::Workspace;
 use humata2_clients::model::{Comment as LegacyComment, SessionId};
 use serde::{Deserialize, Serialize};
 use tca::{Clock, Effect, Reducer};
@@ -50,6 +51,15 @@ enum Then {
     Archive(CommentId),
     /// Close the box, then send every draft.
     SendAll,
+    /// Close the box, keeping its draft, then open a new one here.
+    Open(Anchor),
+    /// Make the box's text a draft for a pull request instead (PR-11).
+    GitHub {
+        /// The repository, `owner/name`.
+        repo: String,
+        /// The pull request's number.
+        number: u32,
+    },
 }
 
 /// The box a comment is written in (SM-9).
@@ -149,6 +159,16 @@ impl CommentsState {
         rows
     }
 
+    /// The drafts for GitHub in `session`, in the order they were made: the
+    /// ones Submit review would post.
+    #[must_use]
+    pub fn github_drafts(&self, session: &SessionId) -> Vec<&Comment> {
+        self.sessions
+            .get(session)
+            .map(|held| held.comments.iter().filter(|c| is_github_draft(c)).collect())
+            .unwrap_or_default()
+    }
+
     /// The drafts a Send would type, in the order they were made.
     #[must_use]
     pub fn sendable(&self, session: &SessionId) -> Vec<&Comment> {
@@ -156,6 +176,32 @@ impl CommentsState {
             .get(session)
             .map(|held| held.comments.iter().filter(|c| c.counts_as_draft()).collect())
             .unwrap_or_default()
+    }
+}
+
+/// The pull request a comment on `repo` in `session` can be drafted for on
+/// GitHub (PR-11, PR-23), or `None` when the session isn't a pull request
+/// review or its pull requests are ambiguous for that file. `repo` is the
+/// anchor's repository, either `owner/name` or just the name; with one pull
+/// request in the review, it needs no match.
+#[must_use]
+pub fn github_target(workspace: &Workspace, session: &SessionId, repo: &str) -> Option<(String, u32)> {
+    if !workspace.session(session).is_some_and(|found| found.pull_request_review) {
+        return None;
+    }
+    let pulls: Vec<_> = workspace
+        .pulls
+        .iter()
+        .filter(|pull| pull.session.as_ref() == Some(session))
+        .collect();
+    let by_name: Vec<_> = pulls
+        .iter()
+        .copied()
+        .filter(|pull| humata2_clients::comments::repo_holds_pull(repo, &pull.repo))
+        .collect();
+    match (by_name.as_slice(), pulls.as_slice()) {
+        ([pull], _) | ([], [pull]) => Some((pull.repo.clone(), pull.number)),
+        _ => None,
     }
 }
 
@@ -227,6 +273,16 @@ pub enum CommentsAction {
     Close(SessionId),
     /// Close the box without keeping what it made.
     Cancel(SessionId),
+    /// Make the box's text a draft for the pull request `repo` (`owner/name`)
+    /// `number`, as the user, in place of a comment for the agent (PR-11).
+    DraftForGitHub(SessionId, String, u32),
+    /// The pull request draft was made; its box closes. The second answer is
+    /// the box's earlier comment for the agent being dropped, when there was
+    /// one.
+    GitHubDrafted(SessionId, Result<Comment, DaemonError>, Option<(CommentId, Result<(), DaemonError>)>),
+    /// Turn a note into a draft for a pull request, in place (PR-23). `pr`
+    /// names the pull request when the note's repository doesn't say.
+    MakeDraft(SessionId, CommentId, Option<(String, u32)>),
 
     /// Send every draft held (Send N).
     SendAll(SessionId),
@@ -370,6 +426,9 @@ impl Comments {
         if b.then == Some(Then::Cancel) {
             return self.cancel_now(session, s);
         }
+        if let Some(Then::GitHub { repo, number }) = b.then.clone() {
+            return self.draft_for_github(session, s, repo, number);
+        }
         if b.then.is_some() || b.due {
             if let Some(effect) = self.start_write(session, s) {
                 return effect;
@@ -385,12 +444,16 @@ impl Comments {
         s.editing = None;
         let stop = Effect::cancel(Self::save_key(session));
         match then {
-            Then::Close | Then::Cancel => stop,
+            Then::Close | Then::Cancel | Then::GitHub { .. } => stop,
             Then::Comment => match comment {
                 Some(id) => stop.and(self.send(session, vec![id])),
                 None => stop,
             },
             Then::Archive(id) => stop.and(self.archive(session, &id)),
+            Then::Open(anchor) => {
+                self.open_box(session, s, new_box(anchor, None, String::new()));
+                stop
+            }
             Then::SendAll => {
                 let ids = Self::draft_ids(s);
                 stop.and(self.send(session, ids))
@@ -418,6 +481,46 @@ impl Comments {
             return stop.and(Effect::future(async move { CommentsAction::Changed(session, call.await) }));
         }
         stop
+    }
+
+    /// Makes the box's text a pull request draft. The comment for the agent
+    /// that autosaving made is dropped once the draft exists, so nothing is
+    /// ever lost half way.
+    fn draft_for_github(
+        &self,
+        session: &SessionId,
+        s: &mut SessionComments,
+        repo: String,
+        number: u32,
+    ) -> Effect<CommentsAction> {
+        let Some(b) = s.editing.as_mut() else {
+            return Effect::none();
+        };
+        if is_blank(&b.text) {
+            b.then = None;
+            return Effect::none();
+        }
+        b.writing = true;
+        b.due = false;
+        let client = self.client.clone();
+        let session = session.clone();
+        let (anchor, text) = (b.anchor.clone(), b.text.clone());
+        let key = format!("{}/github", b.key);
+        let earlier = b.comment.clone().filter(|_| b.created_here);
+        let stop = Effect::cancel(Self::save_key(&session));
+        stop.and(Effect::future(async move {
+            let made = client
+                .create_for_pull_request(&session, anchor, &text, &repo, number, &key)
+                .await;
+            let dropped = match (&made, earlier) {
+                (Ok(_), Some(id)) => {
+                    let result = client.drop_comment(&id).await;
+                    Some((id, result))
+                }
+                _ => None,
+            };
+            CommentsAction::GitHubDrafted(session, made, dropped)
+        }))
     }
 
     fn draft_ids(s: &SessionComments) -> Vec<CommentId> {
@@ -503,6 +606,7 @@ impl Comments {
                     .collect(),
                 base: comment.context.as_ref().map(|c| c.base.clone()),
                 detached: known.is_none(),
+                outdated: false,
             };
             let call = self.client.create(&hand.session, anchor, &comment.body, &key);
             let session = hand.session.clone();
@@ -586,12 +690,26 @@ impl Reducer for Comments {
                     open.anchor = anchor;
                     return Effect::none();
                 }
+                // A box holding text keeps it as a draft and the new box
+                // opens once it is saved (flow 04 step 6, RV-27).
+                if let Some(open) = s
+                    .editing
+                    .as_mut()
+                    .filter(|b| b.then.is_none() && !is_blank(&b.text))
+                {
+                    open.then = Some(Then::Open(anchor));
+                    return self.drive(&session, s);
+                }
                 self.open_box(&session, s, new_box(anchor, None, String::new()));
                 Effect::none()
             }
             A::EditDraft(session, id) => {
                 let s = state.sessions.entry(session.clone()).or_default();
-                let Some(comment) = s.comments.iter().find(|c| c.id == id && c.counts_as_draft()) else {
+                let Some(comment) = s
+                    .comments
+                    .iter()
+                    .find(|c| c.id == id && (c.counts_as_draft() || is_github_draft(c)))
+                else {
                     return Effect::none();
                 };
                 let b = new_box(comment.anchor.clone(), Some(id), comment.text.clone());
@@ -645,7 +763,9 @@ impl Reducer for Comments {
                             return Self::fail(s, &error);
                         };
                         b.writing = false;
-                        let stale = matches!(error, DaemonError::Refused { .. })
+                        // The daemon answers a stale revision as a conflict.
+                        let conflict = matches!(error, DaemonError::Conflict { .. });
+                        let stale = (conflict || matches!(error, DaemonError::Refused { .. }))
                             && b.comment.is_some()
                             && !b.retried
                             && b.then != Some(Then::Cancel);
@@ -684,7 +804,11 @@ impl Reducer for Comments {
                             .editing
                             .as_ref()
                             .and_then(|b| b.comment.as_ref())
-                            .is_some_and(|id| s.comments.iter().any(|c| &c.id == id && c.counts_as_draft()));
+                            .is_some_and(|id| {
+                                s.comments
+                                    .iter()
+                                    .any(|c| &c.id == id && (c.counts_as_draft() || is_github_draft(c)))
+                            });
                         if still_draft {
                             if let Some(b) = s.editing.as_mut() {
                                 b.due = true;
@@ -704,11 +828,68 @@ impl Reducer for Comments {
             }
             A::Comment(session) => {
                 let s = state.sessions.entry(session.clone()).or_default();
+                // A draft for GitHub is never typed into the terminal:
+                // Comment on its box only saves and closes it.
+                let github = s
+                    .editing
+                    .as_ref()
+                    .and_then(|b| b.comment.as_ref())
+                    .is_some_and(|id| s.comments.iter().any(|c| &c.id == id && is_github_draft(c)));
                 let Some(b) = s.editing.as_mut() else {
                     return Effect::none();
                 };
-                b.then = Some(if is_blank(&b.text) { Then::Cancel } else { Then::Comment });
+                b.then = Some(if is_blank(&b.text) {
+                    Then::Cancel
+                } else if github {
+                    Then::Close
+                } else {
+                    Then::Comment
+                });
                 self.drive(&session, s)
+            }
+            A::DraftForGitHub(session, repo, number) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                let Some(b) = s.editing.as_mut() else {
+                    return Effect::none();
+                };
+                // A draft of the user's that was already a comment for the
+                // agent keeps its destination; only a box this one made can
+                // become a pull request draft.
+                if is_blank(&b.text) || (b.comment.is_some() && !b.created_here) {
+                    return Effect::none();
+                }
+                b.then = Some(Then::GitHub { repo, number });
+                self.drive(&session, s)
+            }
+            A::GitHubDrafted(session, made, dropped) => {
+                let s = state.sessions.entry(session).or_default();
+                match made {
+                    Ok(comment) => {
+                        upsert(s, comment);
+                        s.editing = None;
+                        match dropped {
+                            Some((id, Ok(()))) => {
+                                remove(s, &id);
+                                Effect::none()
+                            }
+                            Some((_, Err(error))) => Self::fail(s, &error),
+                            None => Effect::none(),
+                        }
+                    }
+                    Err(error) => {
+                        if let Some(b) = s.editing.as_mut() {
+                            b.writing = false;
+                            b.then = None;
+                        }
+                        Self::fail(s, &error)
+                    }
+                }
+            }
+            A::MakeDraft(session, id, pr) => {
+                let call = self
+                    .client
+                    .make_note_a_draft(&id, pr.as_ref().map(|(repo, number)| (repo.as_str(), *number)));
+                self.changed(&session, call)
             }
             A::Close(session) => {
                 let s = state.sessions.entry(session.clone()).or_default();
@@ -852,6 +1033,13 @@ impl Reducer for Comments {
             A::Delegate(_) => Effect::none(),
         }
     }
+}
+
+/// Whether `comment` is a draft for GitHub that is still to be submitted.
+fn is_github_draft(comment: &Comment) -> bool {
+    comment.status == Status::Draft
+        && !comment.archived
+        && matches!(comment.destination, Destination::PullRequest { .. })
 }
 
 fn is_blank(text: &str) -> bool {

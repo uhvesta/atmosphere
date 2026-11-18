@@ -22,11 +22,12 @@ use humata2_store::{
     StoreError,
 };
 use pb::invalid_field::Problem;
+use pb::repo_service_server::RepoService as _;
 use prost::Message;
 use tonic::{Code, Status};
 
 use super::scope::{self, board_for_policy, by_of, column_number, made_by_session};
-use super::{BoardSvc, FIRST_COLUMN, Op, history, ids, item_id, item_ids, keys, merged, page_of};
+use super::{BoardSvc, DEFAULT_COLUMN, Op, history, ids, item_id, item_ids, keys, merged, page_of};
 use crate::away::{Method, Placement, by_name, by_operation, placed_on};
 use crate::guard::Checked;
 use crate::identity::{AgentCaller, Caller};
@@ -270,6 +271,14 @@ fn decoded<T: Message + Default>(entry: &pb::JournalEntry) -> Result<T, Rejectio
     T::decode(entry.request.as_slice()).map_err(|source| Rejection::Undecodable { source })
 }
 
+/// `request` as a call `caller` made, for a service that reads its caller
+/// from the request as the socket's interceptor leaves it.
+fn as_caller<T>(caller: Caller, request: T) -> tonic::Request<T> {
+    let mut request = tonic::Request::new(request);
+    request.extensions_mut().insert(caller);
+    request
+}
+
 fn request_of<T: Message + Default>(bytes: &[u8], method: &str) -> Result<T, Status> {
     T::decode(bytes).map_err(|error| {
         status::invalid_field(
@@ -423,6 +432,54 @@ impl BoardSvc {
             Method::WithdrawRequest => {
                 let request: pb::WithdrawRequestRequest = request_of(bytes, &call.method)?;
                 Ok(me.inbox.withdraw_as(caller, request).await?.encode_to_vec())
+            }
+            // REPOS (RL-12, D568): the host's library and search, as that
+            // agent, under the host's rule for global reads.
+            Method::SearchRepos => {
+                let request: pb::SearchReposRequest = request_of(bytes, &call.method)?;
+                let repos = me.repos_for(&call.method)?;
+                Ok(repos.search_repos(as_caller(caller, request)).await?.into_inner().encode_to_vec())
+            }
+            Method::ListRepoLibrary => {
+                let request: pb::ListRepoLibraryRequest = request_of(bytes, &call.method)?;
+                let repos = me.repos_for(&call.method)?;
+                Ok(repos.list_repo_library(as_caller(caller, request)).await?.into_inner().encode_to_vec())
+            }
+            // D768: only the host keeps machines and holds their links, so
+            // a machine's agents look machines up, read other machines'
+            // files and copy between machines here, as that agent.
+            Method::ListMachines => {
+                let request: pb::ListMachinesRequest = request_of(bytes, &call.method)?;
+                let machines = &me.host_calls_for(&call.method)?.machines;
+                Ok(machines.list_for_machine_agent(as_caller(caller, request)).await?.into_inner().encode_to_vec())
+            }
+            Method::GetMachine => {
+                use pb::machine_service_server::MachineService as _;
+                let request: pb::GetMachineRequest = request_of(bytes, &call.method)?;
+                let machines = &me.host_calls_for(&call.method)?.machines;
+                Ok(machines.get_machine(as_caller(caller, request)).await?.into_inner().encode_to_vec())
+            }
+            Method::ListDirectory => {
+                use pb::file_service_server::FileService as _;
+                let mut request: pb::ListDirectoryRequest = request_of(bytes, &call.method)?;
+                request.location = request.location.map(|location| crate::away::on_link(machine, location));
+                let files = &me.host_calls_for(&call.method)?.files;
+                Ok(files.list_directory(as_caller(caller, request)).await?.into_inner().encode_to_vec())
+            }
+            Method::Stat => {
+                use pb::file_service_server::FileService as _;
+                let mut request: pb::StatRequest = request_of(bytes, &call.method)?;
+                request.location = request.location.map(|location| crate::away::on_link(machine, location));
+                let files = &me.host_calls_for(&call.method)?.files;
+                Ok(files.stat(as_caller(caller, request)).await?.into_inner().encode_to_vec())
+            }
+            Method::StartTransfer => {
+                use pb::transfer_service_server::TransferService as _;
+                let mut request: pb::StartTransferRequest = request_of(bytes, &call.method)?;
+                request.sources = request.sources.into_iter().map(|location| crate::away::on_link(machine, location)).collect();
+                request.destination = request.destination.map(|location| crate::away::on_link(machine, location));
+                let transfers = &me.host_calls_for(&call.method)?.transfers;
+                Ok(transfers.start_transfer(as_caller(caller, request)).await?.into_inner().encode_to_vec())
             }
         }
     }
@@ -659,7 +716,14 @@ impl BoardSvc {
             | Method::GetItem
             | Method::GetItemHistory
             | Method::WaitForAnswer
-            | Method::WithdrawRequest => Err(Rejection::UnknownOperation {
+            | Method::WithdrawRequest
+            | Method::SearchRepos
+            | Method::ListRepoLibrary
+            | Method::ListMachines
+            | Method::GetMachine
+            | Method::ListDirectory
+            | Method::Stat
+            | Method::StartTransfer => Err(Rejection::UnknownOperation {
                 operation: entry.operation.clone(),
             }
             .into()),
@@ -745,7 +809,7 @@ impl BoardSvc {
             return Err(unusable(status::missing("title")));
         }
         let column = match request.column {
-            0 => FIRST_COLUMN,
+            0 => DEFAULT_COLUMN,
             column => column_number(column, "column").map_err(unusable)?,
         };
         let board = request
@@ -1252,6 +1316,77 @@ mod tests {
         let result = host.boards.forwarded(BOX, forwarded_create(AGENT, 3)).await;
         assert!(matches!(result.outcome, Some(pb::forwarded_result::Outcome::Error(_))));
         assert!(host.store.board_items(&[BoardKey::Session(AGENT.to_owned())]).unwrap().is_empty());
+    }
+
+    /// An agent's library list, forwarded by `BOX` (RL-12).
+    fn forwarded_library_list(session: &str, call_id: u64) -> pb::ForwardedCall {
+        pb::ForwardedCall {
+            call_id,
+            principal: Some(pb::forwarded_call::Principal::Agent(pb::AgentPrincipal {
+                session: Some(pb::SessionId {
+                    value: session.to_owned(),
+                }),
+                pid: 0,
+            })),
+            method: "/humata.v1.RepoService/ListRepoLibrary".to_owned(),
+            request: pb::ListRepoLibraryRequest::default().encode_to_vec(),
+            deadline: None,
+            idempotency_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_library_list_answers_with_the_hosts_library() {
+        let host = host();
+        let directory = tempfile::tempdir().unwrap();
+        let repos = crate::repo_service::RepoSvc::new(
+            directory.path().join("repos.db"),
+            directory.path(),
+            Arc::clone(&host.guard),
+        );
+        repos
+            .library()
+            .unwrap()
+            .record(&humata2_repo_library::Use {
+                repo: humata2_repo_library::RepoName::parse("acme/ledger").unwrap(),
+                remote: "https://github.com/acme/ledger.git".to_owned(),
+                default_branch: "main".to_owned(),
+                at: 1,
+                place: humata2_repo_library::Place::Channel("ch_a".to_owned()),
+                canonical: false,
+            })
+            .unwrap();
+        let boards = host.boards.clone().with_repos(repos);
+        let result = boards.forwarded(BOX, forwarded_library_list(AGENT, 21)).await;
+        assert_eq!(result.call_id, 21);
+        let Some(pb::forwarded_result::Outcome::Response(bytes)) = result.outcome else {
+            panic!("the host answers with its library: {result:?}");
+        };
+        let listed = pb::ListRepoLibraryResponse::decode(bytes.as_slice()).unwrap();
+        let names: Vec<_> = listed
+            .repos
+            .iter()
+            .filter_map(|entry| entry.repo.as_ref())
+            .map(|repo| format!("{}/{}", repo.owner, repo.name))
+            .collect();
+        assert_eq!(names, ["acme/ledger"]);
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_library_list_for_a_session_placed_elsewhere_is_refused() {
+        let host = host();
+        let directory = tempfile::tempdir().unwrap();
+        let repos = crate::repo_service::RepoSvc::new(
+            directory.path().join("repos.db"),
+            directory.path(),
+            Arc::clone(&host.guard),
+        );
+        let boards = host.boards.clone().with_repos(repos);
+        let result = boards.forwarded(BOX, forwarded_library_list("se_far", 22)).await;
+        let Some(pb::forwarded_result::Outcome::Error(error)) = result.outcome else {
+            panic!("the host refuses: {result:?}");
+        };
+        assert!(matches!(error.kind, Some(pb::error::Kind::IdentityMismatch(_))));
     }
 
     #[tokio::test]

@@ -92,6 +92,7 @@ impl World {
                 idempotency_key: None,
                 session: Some(session(AGENT)),
                 repo: None,
+                folder: String::new(),
             })
             .await
             .unwrap()
@@ -410,6 +411,49 @@ async fn the_global_board_numbers_under_glb() {
     let made = world.make(global(), "global", pb::BoardColumn::Backlog).await;
     assert_eq!(id_of(&made), "GLB-1");
     assert!(made.channel.is_none());
+}
+
+/// VF-21: a person names the board of an item they make.
+#[tokio::test]
+async fn a_person_must_name_the_board_of_a_new_item() {
+    let world = World::start().await;
+    let refused = world
+        .boards()
+        .await
+        .create_item(pb::CreateItemRequest {
+            title: "Nameless".to_owned(),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code(), Code::InvalidArgument);
+}
+
+/// VF-21: an agent that names no board makes its item on its own session
+/// board, in To do, which is what its CLI and MCP calls get.
+#[tokio::test]
+async fn an_agent_item_with_no_board_goes_on_its_session_board_in_to_do() {
+    let world = World::start().await;
+    let made = world
+        .boards()
+        .await
+        .create_item(world.as_agent(pb::CreateItemRequest {
+            title: "Plain".to_owned(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .item
+        .unwrap();
+    assert!(
+        matches!(
+            made.board.and_then(|board| board.board),
+            Some(pb::board_ref::Board::Session(id)) if id.value == AGENT
+        ),
+        "the item landed on the agent's own board"
+    );
+    assert_eq!(made.column, pb::BoardColumn::ToDo as i32);
 }
 
 #[tokio::test]

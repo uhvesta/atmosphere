@@ -83,7 +83,7 @@ Layer: macro. Platforms: macOS for the host (this Mac); the box is Linux (box-1 
 - **I see:** the wrong try is refused and the terminal is left as it was: no login. The second, right try logs me in.
 - **State and events:** one wrong try is counted. A right try clears the count.
 - **Expected outcome:** the refusal says the passphrase was wrong, how many tries are left, and what to do. The login state is unchanged.
-- **Status:** Likely bug. The behaviour is proven: `daemon/humatad/tests/away_login.rs::a_wrong_passphrase_leaves_the_terminal_as_it_was`. But on a wrong try the daemon drops the tries left (`daemon/humatad/src/cli_login.rs:337-339` matches `Checked::Wrong { .. }` and answers with the generic presence refusal, `Refusal::PresenceRequired`). The user is not told it was the passphrase, or how many tries are left. To confirm: type a wrong passphrase on box-1 and read the message.
+- **Status:** Works (real daemon): `daemon/humatad/tests/away_login.rs::a_wrong_passphrase_leaves_the_terminal_as_it_was` types a wrong passphrase at a real `humata login` on a machine whose host is away, and the terminal is left as it was. The refusal carries the tries left (`daemon/humatad/src/cli_login.rs::a_wrong_passphrase_is_refused_with_its_tries_left`). (Was a likely bug: the tries left were dropped; fixed by BUGS.)
 
 ### Five wrong tries lock the prompt, and a restart keeps the lock
 
@@ -92,7 +92,7 @@ Layer: macro. Platforms: macOS for the host (this Mac); the box is Linux (box-1 
 - **I see:** after the fifth wrong try, the prompt is locked. The error says the prompt is locked, gives the time of the unlock, and says to answer from the app on the Mac. Trying early does not shorten the lock. A right passphrase is refused until the lock ends.
 - **State and events:** the lock is kept in the machine's store with its end time. A restart of box-1's daemon does not clear it.
 - **Expected outcome:** the lock holds for the stated time, survives a restart, and the message says what to do.
-- **Status:** Works (real daemon) for the lock and its survival: `daemon/humatad/tests/away_login.rs::five_wrong_tries_lock_the_passphrase_and_a_restart_keeps_the_lock` and `daemon/humatad/tests/away_login.rs::wrong_tries_are_counted_across_a_restart`. Likely bug, for the message: `daemon/humatad/src/status.rs:369-376` gives the unlock time as raw Unix epoch seconds ("wait until 1768500000 seconds past the Unix epoch"), which a person cannot read. The text should give a local time and a wait. To confirm: read the error after the fifth wrong try.
+- **Status:** Works (real daemon) for the lock and its survival: `daemon/humatad/tests/away_login.rs::five_wrong_tries_lock_the_passphrase_and_a_restart_keeps_the_lock` and `daemon/humatad/tests/away_login.rs::wrong_tries_are_counted_across_a_restart`. The message gives the wait and the clock time, not epoch seconds (`daemon/humatad/src/status.rs::a_passphrase_lock_says_how_long_is_left_and_not_unix_seconds`). (Was a likely bug; fixed by BUGS.)
 
 ### The Mac is not away, so the passphrase is refused
 
@@ -245,8 +245,8 @@ Layer: macro. Platforms: macOS for the host (this Mac); the box is Linux (box-1 
 | 10. Push waits under Wait | Works (real daemon) | `daemon/humatad/tests/away_boundary.rs::row_6_under_wait_a_push_waits_for_the_host_and_is_then_asked` |
 | 11. Link returns; journal replays in order | Works (real daemon) | `daemon/humatad/tests/flow_26_10.rs::flow_26_10_a_person_works_on_devbox_1_with_the_mac_closed_and_the_mac_sees_it_on_return` |
 | 12. Approved write on the board; lost edits shown | Works (real daemon) | `daemon/humatad/tests/away_approved_board.rs::an_edit_approved_on_the_box_while_the_host_is_away_is_made_when_the_link_is_back`; `daemon/humatad/tests/away_left_out.rs::an_edit_the_host_now_refuses_is_kept_as_lost_and_the_session_says_so` |
-| B1. Wrong passphrase | Likely bug (tries left dropped) | `daemon/humatad/tests/away_login.rs::a_wrong_passphrase_leaves_the_terminal_as_it_was`; `daemon/humatad/src/cli_login.rs:337-339` |
-| B2. Five wrong tries lock; restart keeps lock | Works (real daemon); Likely bug (message shows raw epoch seconds) | `daemon/humatad/tests/away_login.rs::five_wrong_tries_lock_the_passphrase_and_a_restart_keeps_the_lock`; `daemon/humatad/src/status.rs:369-376` |
+| B1. Wrong passphrase | Works (real daemon) | `daemon/humatad/tests/away_login.rs::a_wrong_passphrase_leaves_the_terminal_as_it_was`; `daemon/humatad/src/cli_login.rs::a_wrong_passphrase_is_refused_with_its_tries_left` |
+| B2. Five wrong tries lock; restart keeps lock | Works (real daemon) | `daemon/humatad/tests/away_login.rs::five_wrong_tries_lock_the_passphrase_and_a_restart_keeps_the_lock`; `daemon/humatad/src/status.rs::a_passphrase_lock_says_how_long_is_left_and_not_unix_seconds` |
 | B3. Host reachable refuses passphrase | Works (real daemon) | `daemon/humatad/tests/away_login.rs::a_machine_whose_host_is_reachable_refuses_the_passphrase` |
 | B4. Machine never sent a passphrase | Works (real daemon) | `daemon/humatad/tests/away_login.rs::a_machine_never_sent_a_passphrase_refuses_the_login` |
 | B5. Pipe or `--json` login | Works (real daemon), real `humata` | `daemon/humatad/tests/away_login.rs::a_login_with_no_prompt_to_answer_needs_the_user`; `cli/tests/waiting.rs::a_passphrase_is_never_read_from_a_pipe` |
@@ -266,8 +266,8 @@ Layer: macro. Platforms: macOS for the host (this Mac); the box is Linux (box-1 
 - None found among the steps above. The AW-7 rows, the link, the journal, the replay and the passphrase login have code and tests.
 
 **Likely bugs**
-- A wrong passphrase gets the generic presence refusal, and the tries left are dropped (`daemon/humatad/src/cli_login.rs:337-339`). To confirm: type a wrong passphrase on a machine and read the message.
-- The lock message shows the unlock time as raw Unix epoch seconds (`daemon/humatad/src/status.rs:369-376`). To confirm: read the error after five wrong tries.
+- Fixed (was a likely bug): a wrong passphrase is refused with its tries left (`daemon/humatad/src/cli_login.rs::a_wrong_passphrase_is_refused_with_its_tries_left`).
+- Fixed (was a likely bug): the lock message gives the wait and the time (`daemon/humatad/src/status.rs::a_passphrase_lock_says_how_long_is_left_and_not_unix_seconds`).
 
 **Code, no test**
 - An agent's attempt to attach with input is refused (step 3). `daemon/humatad/src/attach.rs` shows no caller-kind check that a test covers.

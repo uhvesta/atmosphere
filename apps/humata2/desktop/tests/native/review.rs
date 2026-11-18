@@ -340,7 +340,7 @@ fn the_base_menu_picks_what_the_diff_is_against_and_mark_reviewed_starts_it_over
     app.click("diff-base-since-reviewed");
     assert!(!app.contains("diff-base-menu"));
     assert_eq!(
-        app.ui.read(|s| s.review.base.get(&id).cloned()),
+        app.ui.read(|s| Some(s.review.targets_of(&id).preset)),
         Some(DiffBase::SinceLastReviewed)
     );
     // Nothing changed since Mark reviewed: the panel says so, not "No
@@ -351,7 +351,7 @@ fn the_base_menu_picks_what_the_diff_is_against_and_mark_reviewed_starts_it_over
     app.click("diff-base");
     app.click("diff-base-other-brin");
     assert_eq!(
-        app.ui.read(|s| s.review.base.get(&id).cloned()),
+        app.ui.read(|s| Some(s.review.targets_of(&id).preset)),
         Some(DiffBase::OtherSession(SessionId::new("brin")))
     );
 }

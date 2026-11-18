@@ -8,6 +8,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::install::{BuildsError, InstallProblem, InstalledFile};
+use crate::stack_config::StackConfigError;
 use crate::name::MachineName;
 use crate::platform::Platform;
 use crate::provider::Action;
@@ -246,9 +247,15 @@ pub enum KnownHostsError {
 #[derive(Debug, Error)]
 pub enum SetupError {
     #[error(
-        "the provider's `{action}` command failed ({exit}); its output is below. Fix what it reports and try again, or change the command in Settings › Machine providers"
+        "the provider's `{action}` command failed ({exit}); {}. Fix the cause and try again, or change the command in Settings › Machine providers",
+        output_said(.printed)
     )]
-    CommandFailed { action: Action, exit: Exit },
+    CommandFailed {
+        action: Action,
+        exit: Exit,
+        /// Whether the command printed anything the failure shows.
+        printed: bool,
+    },
     #[error(transparent)]
     Values(#[from] ValuesError),
     #[error(transparent)]
@@ -260,19 +267,26 @@ pub enum SetupError {
     #[error(transparent)]
     KnownHosts(#[from] KnownHostsError),
     #[error(
-        "couldn't reach {machine} after {attempts} attempts (last: {exit}); the output is below. If it is still booting, try again; if it asks for a login, open it interactively"
+        "couldn't reach {machine} after {attempts} attempts (last: {exit}); {}. If it is still booting, try again; if it asks for a login, open it interactively",
+        output_said(.printed)
     )]
-    Unreachable { machine: MachineName, attempts: u32, exit: Exit },
+    Unreachable {
+        machine: MachineName,
+        attempts: u32,
+        exit: Exit,
+        printed: bool,
+    },
     #[error(
-        "a command that reaching {machine} needs wasn't found (exit 127); the output names it. Install it on this Mac (or on the machine), or fix the provider's `connect`"
+        "a command that reaching {machine} needs wasn't found (exit 127); {}. Install it on this Mac (or on the machine), or fix the provider's `connect`",
+        output_said(.printed)
     )]
-    ToolMissing { machine: MachineName },
+    ToolMissing { machine: MachineName, printed: bool },
     #[error(
         "{machine}'s SSH host key isn't one Humata knows. Check its fingerprint and confirm it, or add `ssh.host_key` to the identity output so Humata can pin it"
     )]
     HostKeyUnknown { machine: MachineName },
     #[error(
-        "{machine}'s SSH host key changed since Humata pinned it{}. That happens when the machine was rebuilt, and also when something intercepts the connection. Trust the new key only if you know {machine} was rebuilt, after checking its fingerprint on the machine itself (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`); otherwise leave it and find out who changed it",
+        "{machine}'s SSH host key changed since Humata pinned it{}. That happens when the machine was rebuilt, and also when something intercepts the connection. Humata can't swap a pinned key in place: only if you know {machine} was rebuilt, and after checking its fingerprint on the machine itself (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`), remove {machine} from Humata and add it again, which asks you to confirm the new fingerprint. Otherwise leave it and find out who changed it",
         fingerprints(.expected_fingerprint.as_deref(), .presented_fingerprint.as_deref())
     )]
     HostKeyChanged {
@@ -287,9 +301,14 @@ pub enum SetupError {
     )]
     ConnectHostKey { machine: MachineName },
     #[error(
-        "Humata couldn't learn {machine}'s SSH host key: the connection ended before the machine presented one ({exit}); the output is below. Check the address and that sshd runs there, then try again"
+        "Humata couldn't learn {machine}'s SSH host key: the connection ended before the machine presented one ({exit}); {}. Check the address and that sshd runs there, then try again",
+        output_said(.printed)
     )]
-    HostKeyScanFailed { machine: MachineName, exit: Exit },
+    HostKeyScanFailed {
+        machine: MachineName,
+        exit: Exit,
+        printed: bool,
+    },
     #[error(
         "{machine} answered, but `uname -sm` printed nothing Humata can read; make sure `connect` runs `{{cmd}}` unchanged and that nothing else prints to stdout"
     )]
@@ -299,7 +318,7 @@ pub enum SetupError {
     )]
     UnsupportedPlatform { machine: MachineName, uname: String },
     #[error(
-        "the machine check on {machine} failed ({exit}) or printed nothing Humata can read; the output is below"
+        "the machine check on {machine} failed ({exit}) or printed nothing Humata can read; the check step shows what it printed, if anything. If it timed out, {machine} or this computer may be too busy to answer in time: try again once it's less loaded"
     )]
     CheckFailed { machine: MachineName, exit: Exit },
     #[error(
@@ -327,9 +346,20 @@ pub enum SetupError {
     #[error("installing {file} on {machine} failed: {problem}")]
     Install { machine: MachineName, file: InstalledFile, problem: InstallProblem },
     #[error(
-        "couldn't write the peer link's key into ~/.humata2/state on {machine} ({exit}); the output is below. Check that the folder is yours and the disk isn't full there, then try again"
+        "the tools are on {machine}, but writing ~/.humata2/bin/bundle.json there failed: {problem}. Without it the machine can't say which release it runs, so Humata would ask to migrate it for no reason. Fix what is reported (a full disk or the folder's permissions) and add the machine again"
     )]
-    Enroll { machine: MachineName, exit: Exit },
+    Bundle { machine: MachineName, problem: InstallProblem },
+    #[error(transparent)]
+    StackConfig(#[from] StackConfigError),
+    #[error(
+        "couldn't write the peer link's key into ~/.humata2/state on {machine} ({exit}); {}. Check that the folder is yours and the disk isn't full there, then try again",
+        output_said(.printed)
+    )]
+    Enroll {
+        machine: MachineName,
+        exit: Exit,
+        printed: bool,
+    },
     #[error(
         "{machine} won't let {user} keep services running after logout (linger). An admin must run this once on {machine}: `{admin_command}`, then try again. Or start humatad2 without systemd, which won't restart it if it crashes"
     )]
@@ -339,13 +369,19 @@ pub enum SetupError {
     )]
     UserManagerUnavailable { machine: MachineName, user: String, admin_command: String },
     #[error(
-        "setting up the humatad2 service on {machine} failed ({exit}); the output is below. Fix what it reports and try again"
+        "setting up the humatad2 service on {machine} failed ({exit}); {}. Fix the cause and try again",
+        output_said(.printed)
     )]
-    ServiceFailed { machine: MachineName, exit: Exit },
+    ServiceFailed {
+        machine: MachineName,
+        exit: Exit,
+        printed: bool,
+    },
     #[error(
-        "humatad2 didn't stay running on {machine}; the output below has its last log lines. Fix what it reports and try again"
+        "humatad2 didn't stay running on {machine}; {}. Fix the cause and try again",
+        output_said(.printed)
     )]
-    ServiceDidNotStart { machine: MachineName },
+    ServiceDidNotStart { machine: MachineName, printed: bool },
 }
 
 /// Taking over an interactive login failed (MP-14). The terminal stays the
@@ -357,22 +393,38 @@ pub enum TakeoverError {
     )]
     BadAnswer { line: String },
     #[error(
-        "after the login, {machine} didn't run the line Humata typed within {}s, so the login doesn't end at a shell; the end of the terminal's output is below. A menu-only tool can't carry Humata's link (MP-18): give the provider an `identity` command that prints SSH details instead, or point `connect` at a wrapper script that ends in a POSIX shell. If the machine was only slow, open it interactively again",
-        .waited.as_secs_f32()
+        "after the login, {machine} didn't run the line Humata typed within {}s, so the login doesn't end at a shell; {}. A menu-only tool can't carry Humata's link (MP-18): give the provider an `identity` command that prints SSH details instead, or point `connect` at a wrapper script that ends in a POSIX shell. If the machine was only slow, open it interactively again",
+        .waited.as_secs_f32(),
+        end_said(.output_tail)
     )]
     NoShell { machine: MachineName, waited: Duration, output_tail: String },
     #[error(transparent)]
     Builds(#[from] BuildsError),
     #[error("installing {file} over the login failed: {problem}")]
-    Install { file: InstalledFile, problem: InstallProblem },
+    Install {
+        file: InstalledFile,
+        problem: InstallProblem,
+        /// The end of the terminal's output, where the install's output is.
+        output_tail: String,
+    },
     #[error(
-        "humatad2 on {machine} didn't say it was ready within {}s; the end of the terminal's output is below. Check that humatad2 is installed at ~/.humata2/bin/humatad2 on {machine} and runs: log in over ssh and run the line Humata typed by hand to see its error. If the machine was only slow, for example starting its daemon, open it interactively again",
-        .waited.as_secs_f32()
+        "the tools were installed over the login, but writing ~/.humata2/bin/bundle.json failed: {problem}. Without it the machine can't say which release it runs, so Humata would ask to migrate it for no reason. Fix what is reported (a full disk or the folder's permissions) and open the login again"
+    )]
+    Bundle {
+        problem: InstallProblem,
+        /// The end of the terminal's output, where the write's output is.
+        output_tail: String,
+    },
+    #[error(
+        "humatad2 on {machine} didn't say it was ready within {}s; {}. Check that humatad2 is installed at ~/.humata2/bin/humatad2 on {machine} and runs: log in over ssh and run the line Humata typed by hand to see its error. If the machine was only slow, for example starting its daemon, open it interactively again",
+        .waited.as_secs_f32(),
+        end_said(.output_tail)
     )]
     SyncTimedOut { machine: MachineName, waited: Duration, output_tail: String },
     #[error(
-        "the terminal logged in to {machine} ended{} before the takeover finished; the end of its output is below. If humatad2 wasn't found or failed, check ~/.humata2/bin/humatad2 on {machine}: log in over ssh and run the line Humata typed by hand to see its error. Then open it interactively again",
-        .exit.map(|how| format!(" ({how})")).unwrap_or_default()
+        "the terminal logged in to {machine} ended{} before the takeover finished; {}. If humatad2 wasn't found or failed, check ~/.humata2/bin/humatad2 on {machine}: log in over ssh and run the line Humata typed by hand to see its error. Then open it interactively again",
+        .exit.map(|how| format!(" ({how})")).unwrap_or_default(),
+        end_said(.output_tail)
     )]
     TerminalEnded { machine: MachineName, exit: Option<Exit>, output_tail: String },
     #[error(transparent)]
@@ -397,6 +449,36 @@ pub enum Remedy {
     StartWithoutSystemd,
     /// Run the provider's `delete` for what `create` made.
     DeleteWhatWasMade,
+}
+
+/// What a failure says about the output its command printed (MP-20): the
+/// output is shown below only when there was some.
+pub(crate) fn output_said(printed: &bool) -> &'static str {
+    if *printed {
+        "its output is below"
+    } else {
+        "it printed no output"
+    }
+}
+
+/// What a failure says about the end of a terminal's output, which is
+/// shown below only when there was some (MP-20).
+pub(crate) fn end_said(tail: &str) -> &'static str {
+    if tail.trim().is_empty() {
+        "the terminal printed no output"
+    } else {
+        "the end of the terminal's output is below"
+    }
+}
+
+/// The output a failure shows, under what it says about it (MP-20): the
+/// output when there was some, else that the command printed none.
+pub(crate) fn output_block(tail: &str) -> String {
+    if tail.trim().is_empty() {
+        "the command printed no output".to_owned()
+    } else {
+        format!("the output is below:\n{tail}")
+    }
 }
 
 /// ` (pinned SHA256:…, presented SHA256:…)`, for what is known.

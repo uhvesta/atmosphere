@@ -50,6 +50,7 @@ rust_test(
     srcs = ["tests/trash.rs"],
     deps = [
         ":transfers",
+        "@crates//:rustix",
         "@crates//:tempfile",
     ],
 )
@@ -59,6 +60,7 @@ rust_test(
     srcs = ["tests/transfers.rs"],
     deps = [
         ":transfers",
+        "@crates//:rustix",
         "@crates//:sha2",
         "@crates//:tempfile",
     ],

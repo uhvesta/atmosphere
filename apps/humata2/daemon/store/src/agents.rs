@@ -9,10 +9,11 @@ use prost::Message;
 use rusqlite::{Connection, Transaction, params};
 
 use crate::proto::AgentLaunch as LaunchProto;
+use crate::replies::put_replies;
 use crate::store::{Inner, bytes_path, check_id, from_sql, path_bytes, put_tab, to_sql};
 use crate::{
     AgentLaunch, AgentRecord, AgentState, Interruption, ResumeFailure, Store, StoreError,
-    TabRecord, Told, blob,
+    TabRecord, TabReplies, Told, blob,
 };
 
 /// The blob type an agent's launch is kept as.
@@ -21,17 +22,34 @@ const LAUNCH_VERSION: u16 = 1;
 impl Store {
     /// Saves an agent's record. Its session must be saved.
     pub fn put_agent(&self, agent: &AgentRecord) -> Result<(), StoreError> {
-        self.put_agent_with(agent, None)
+        self.put_agent_with(agent, None, None)
     }
 
     /// Saves an agent's record and its tab in one commit, so neither is
     /// ever saved without the other.
     pub fn put_agent_and_tab(&self, agent: &AgentRecord, tab: &TabRecord) -> Result<(), StoreError> {
-        check_id(&tab.id)?;
-        self.put_agent_with(agent, Some(tab))
+        self.put_agent_and_tab_with_replies(agent, tab, None)
     }
 
-    fn put_agent_with(&self, agent: &AgentRecord, tab: Option<&TabRecord>) -> Result<(), StoreError> {
+    /// As [`Store::put_agent_and_tab`], and with `replies`, the tab's reply
+    /// record, saved in the same commit: a holder new to its tab is never
+    /// saved without the record it answers from.
+    pub fn put_agent_and_tab_with_replies(
+        &self,
+        agent: &AgentRecord,
+        tab: &TabRecord,
+        replies: Option<&TabReplies>,
+    ) -> Result<(), StoreError> {
+        check_id(&tab.id)?;
+        self.put_agent_with(agent, Some(tab), replies)
+    }
+
+    fn put_agent_with(
+        &self,
+        agent: &AgentRecord,
+        tab: Option<&TabRecord>,
+        replies: Option<&TabReplies>,
+    ) -> Result<(), StoreError> {
         check_id(&agent.session)?;
         check_id(&agent.tab)?;
         let inner = self.inner();
@@ -43,6 +61,9 @@ impl Store {
             (|| {
                 if let Some(tab) = tab {
                     put_tab(transaction, tab)?;
+                    if let Some(replies) = replies {
+                        put_replies(transaction, &tab.id, replies)?;
+                    }
                 }
                 put_row(transaction, agent, placed.inline(), placed.file())
             })()
@@ -337,6 +358,7 @@ fn to_proto(launch: &AgentLaunch) -> LaunchProto {
         holder_socket: path_bytes(&launch.holder_socket).to_vec(),
         cols: u32::from(launch.cols),
         rows: u32::from(launch.rows),
+        cli_version: launch.cli_version.clone().unwrap_or_default(),
     }
 }
 
@@ -353,6 +375,7 @@ fn from_proto(launch: LaunchProto) -> AgentLaunch {
         holder_socket: bytes_path(launch.holder_socket),
         cols: u16::try_from(launch.cols).unwrap_or(u16::MAX),
         rows: u16::try_from(launch.rows).unwrap_or(u16::MAX),
+        cli_version: Some(launch.cli_version).filter(|version| !version.is_empty()),
     }
 }
 

@@ -51,7 +51,7 @@ Micro. Covers macOS and Linux for the daemon and holder; the desktop flow test i
 - **I see (code as written):** Nothing appears for those keys. No message is shown. When the screen arrives, there is no `ls` line in the shell.
 - **State and events:** The keys never reach the link. `terminal/client/src/replica.rs:305-307` returns `false` when input is not enabled, and the enable flag stays off until the replica has a fresh snapshot (`terminal/client/src/replica.rs:537`). `terminal/pane/src/host.rs:119-122` drops the bytes when the pane is not connected, and it is created as connected (`:111`), so the drop is silent. Nothing is pushed to `errors`, so no toast is raised.
 - **Expected outcome:** Typing before the screen is either held and sent once the screen is up, or refused with a message the person can see ("wait for the screen, then type it again"). The daemon-link layer already refuses with that message (`clients/src/daemon.rs:403-410`, `clients/live/src/link.rs:60-66`), but the window never gets that far.
-- **Status:** Likely bug. See the list at the end. To confirm: make a replica with a snapshot that arrives late, type into it, and check the sink receives no frame and no `ReplicaEvent::Failed` is emitted.
+- **Status:** Fakes only. Until the screen arrives the pane takes no input, and the first keys raise one toast: "This tab is still getting its screen back, so what you typed was not sent. Type it again once the screen shows." Once the screen is up the keys reach the shell (`terminal/client/tests/component.rs::keys_before_the_first_screen_are_told_once_then_the_screen_takes_them`).
 
 ### B2. The daemon also restarted while the app was closed (daemon side)
 
@@ -110,7 +110,7 @@ Micro. Covers macOS and Linux for the daemon and holder; the desktop flow test i
 | 4. Shows what was printed while closed | Works (real daemon) | `clients/live/tests/term_restart.rs`; `desktop/tests/live_flows.rs::after_the_app_restarts_the_session_tab_shows_what_was_printed_while_it_was_gone` |
 | 5. Scroll position or the bottom | Code, no test | `terminal/client/src/replica.rs:725-737` |
 | 6. Typing once the screen is up | Works (real daemon) | `clients/live/tests/term_restart.rs::a_shell_tab_catches_up_after_the_app_restarts_and_types_only_once_synced` |
-| B1. Typing during catch-up | Likely bug | `terminal/client/src/replica.rs:305-307`, `terminal/pane/src/host.rs:119-122` |
+| B1. Typing during catch-up | Fakes only | `terminal/client/tests/component.rs::keys_before_the_first_screen_are_told_once_then_the_screen_takes_them` |
 | B2. Daemon restarted, tab outlives it | Works (real daemon) | `daemon/humatad/tests/terminal.rs::a_tab_outlives_its_daemon` |
 | B3. App reopens tab after daemon restart | Code, no test | `clients/live/src/link.rs:280`, `ui/src/terminals.rs:300-310` |
 | B4. Huge backlog | Works (real daemon) | `daemon/humatad/tests/terminal.rs::a_client_that_lists_no_codecs_gets_its_snapshot_whole_and_raw` (the app's path) |
@@ -121,7 +121,7 @@ Tag count, branches: Works 3, Code no test 1, Likely bug 1.
 
 ## Gaps and likely bugs
 
-- Likely bug: keys typed before the screen arrives are dropped without a message. `terminal/client/src/replica.rs:305-307` and `terminal/pane/src/host.rs:119-122`. To confirm, type into a replica before its snapshot and check that nothing reaches the sink and no error is raised.
+- Fixed: keys typed before the screen arrives raise one toast that says to type again once it shows (`terminal/client/tests/component.rs::keys_before_the_first_screen_are_told_once_then_the_screen_takes_them`, Fakes only).
 - Not built in the app: compressed and piecewise terminal snapshots. The daemon supports them, but the app lists no codecs (`clients/terminal_link/src/lib.rs:61`), so only a test client uses them. No milestone found. Decide whether the app should ask for them.
 - Code, no test: ⌘Q (`desktop/src/main.rs:202-203`) and the app's own reopen after a daemon restart (`clients/live/src/link.rs:280`, `ui/src/terminals.rs:300-310`).
 - Code, no test: the scroll position is not kept across a restart (`terminal/client/src/replica.rs:725-737`). No requirement found that asks for it.

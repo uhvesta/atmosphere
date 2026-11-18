@@ -45,6 +45,9 @@ pub struct Wrapper {
     pub retry: Duration,
     /// How long the server gets to print its URL.
     pub wait_for_url: Duration,
+    /// The model the session was started on, handed to the TUI as
+    /// `--model`; None runs OpenCode's own default.
+    pub model: Option<String>,
 }
 
 /// Why the wrapper could not run.
@@ -167,6 +170,7 @@ pub async fn run_wrapper<H: Humata>(wrapper: Wrapper, humata: Arc<H>) -> Result<
 
     let mut tui = match Command::new(&wrapper.program)
         .args(["--server", &url, "-s", &session])
+        .args(wrapper.model.iter().flat_map(|model| ["--model", model.as_str()]))
         .env("OPENCODE_PASSWORD", &password)
         .env_remove("OPENCODE_SERVER_PASSWORD")
         .current_dir(&wrapper.folder)

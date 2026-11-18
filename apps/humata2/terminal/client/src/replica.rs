@@ -1,11 +1,11 @@
 //! One embeddable terminal replica. Networking, fonts, themes and app chrome belong to its host.
-use ghostty_vt::{Key, KeyEvent, Terminal};
+use ghostty_vt::{Colors, Key, KeyEvent, Terminal};
 use gpui_kit as gpui;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{
-    App, Context, Entity, EventEmitter, Focusable, KeyBinding, Render, ScrollHandle, Subscription,
-    Window, div, prelude::*, px,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, KeyDownEvent, Render,
+    ScrollHandle, Subscription, Window, div, prelude::*, px,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -86,6 +86,28 @@ pub struct ReplicaConfig {
     /// None keeps inactive views resident. No process is ever paused.
     pub memory_saver: Option<Duration>,
     pub shortcuts: ShortcutPolicy,
+    /// When this view asks the host to fit the terminal to its bounds.
+    pub fit: FitPolicy,
+    /// The colors used where the program set none, applied to every
+    /// checkpoint this replica installs. `None` keeps the engine's own.
+    pub default_colors: Option<Colors>,
+}
+/// When a replica asks its host to resize the terminal to fit its bounds.
+/// Several views can show one terminal; only one should size it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FitPolicy {
+    /// Whenever the replica holds control.
+    #[default]
+    Controlling,
+    /// Only while it holds control and has focus, so a view nobody is typing
+    /// in never resizes a terminal that another view is showing.
+    Focused,
+    /// While it holds control: when it first shows the terminal, whenever its
+    /// own bounds change (a side panel narrowing it, say), and while it has
+    /// focus. An unfocused view never re-asks for the size it already asked
+    /// for, so when another view sizes the terminal it keeps that size and
+    /// two views never take turns sizing it (D750).
+    Shown,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplicaContinuation {
@@ -129,6 +151,9 @@ pub struct ReplicaState {
     pub offset: u64,
     pub input_seq: u64,
     pub written_seq: u64,
+    /// The program's exit code once it has ended; -1 when the host did not
+    /// say.
+    pub exit_code: Option<i32>,
 }
 #[derive(Debug, thiserror::Error)]
 pub enum ReplicaError {
@@ -189,6 +214,13 @@ pub enum ReplicaError {
         #[source]
         source: ghostty_vt::Error,
     },
+    #[error(
+        "Could not apply the terminal's default colors: {source}. The terminal keeps the colors it had; supply a complete color set and set it again."
+    )]
+    Colors {
+        #[source]
+        source: ghostty_vt::Error,
+    },
     #[error("Could not encode terminal input: {source}")]
     Input {
         #[source]
@@ -240,6 +272,11 @@ struct InputState {
     route: u64,
     seq: Cell<u64>,
     enabled: Cell<bool>,
+    fit: FitPolicy,
+    focused: Cell<bool>,
+    /// The columns, rows and cell size this view last asked for, so `Shown`
+    /// asks again only when its own bounds change.
+    wanted: Cell<Option<(u16, u16, u16, u16)>>,
     sink: Rc<dyn ReplicaSink>,
     errors: RefCell<Vec<ReplicaError>>,
     pending: RefCell<BTreeSet<u64>>,
@@ -294,18 +331,28 @@ impl Pty for ReplicaPty {
         true
     }
     fn resize(&mut self, size: ghostty_vt::Size, cell: CellSize) {
-        if self.0.enabled.get() {
-            if let Err(source) = self.0.sink.send(ClientFrame::Resize {
+        let cell_width = cell.width.round().clamp(1., u16::MAX as f32) as u16;
+        let cell_height = cell.height.round().clamp(1., u16::MAX as f32) as u16;
+        let wanted = (size.cols, size.rows, cell_width, cell_height);
+        let fits = match self.0.fit {
+            FitPolicy::Controlling => true,
+            FitPolicy::Focused => self.0.focused.get(),
+            FitPolicy::Shown => self.0.focused.get() || self.0.wanted.get() != Some(wanted),
+        };
+        if self.0.enabled.get() && fits {
+            match self.0.sink.send(ClientFrame::Resize {
                 id: self.0.route,
                 cols: size.cols,
                 rows: size.rows,
-                cell_width: cell.width.round().clamp(1., u16::MAX as f32) as u16,
-                cell_height: cell.height.round().clamp(1., u16::MAX as f32) as u16,
+                cell_width,
+                cell_height,
             }) {
-                self.0
+                Ok(_) => self.0.wanted.set(Some(wanted)),
+                Err(source) => self
+                    .0
                     .errors
                     .borrow_mut()
-                    .push(ReplicaError::Send { source });
+                    .push(ReplicaError::Send { source }),
             }
         }
     }
@@ -333,6 +380,11 @@ pub struct TerminalReplica {
     detaching: bool,
     detached: bool,
     pending_focus: bool,
+    /// Holds focus while the screen has not arrived, so keys typed then go
+    /// to no other terminal and are not dropped unseen.
+    waiting: FocusHandle,
+    /// Whether the app was told keys were typed while waiting.
+    told_waiting: bool,
     idle_ready: bool,
     idle_generation: u64,
     idle_timer: Option<gpui_kit::Task<()>>,
@@ -345,7 +397,7 @@ impl TerminalReplica {
         config: ReplicaConfig,
         sink: Rc<dyn ReplicaSink>,
         _: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Result<Self, ReplicaError> {
         if config
             .memory_saver
@@ -353,14 +405,17 @@ impl TerminalReplica {
         {
             return Err(ReplicaError::IdleTimeout);
         }
-        Ok(Self::build(config, sink))
+        Ok(Self::build(config, sink, cx.focus_handle()))
     }
-    fn build(config: ReplicaConfig, sink: Rc<dyn ReplicaSink>) -> Self {
+    fn build(config: ReplicaConfig, sink: Rc<dyn ReplicaSink>, waiting: FocusHandle) -> Self {
         Self {
             input: Rc::new(InputState {
                 route: config.session.id,
                 seq: Cell::new(0),
                 enabled: Cell::new(false),
+                fit: config.fit,
+                focused: Cell::new(false),
+                wanted: Cell::new(None),
                 sink,
                 errors: RefCell::new(Vec::new()),
                 pending: RefCell::new(BTreeSet::new()),
@@ -385,6 +440,8 @@ impl TerminalReplica {
             detaching: false,
             detached: false,
             pending_focus: false,
+            waiting,
+            told_waiting: false,
             idle_ready: false,
             idle_generation: 0,
             idle_timer: None,
@@ -405,7 +462,7 @@ impl TerminalReplica {
         {
             return Err(ReplicaError::IdleTimeout);
         }
-        Ok(cx.new(|_| Self::build(config, sink)))
+        Ok(cx.new(|cx| Self::build(config, sink, cx.focus_handle())))
     }
     pub fn state(&self) -> ReplicaState {
         let phase = if self.detaching {
@@ -436,10 +493,35 @@ impl TerminalReplica {
             offset: self.offset,
             input_seq: self.input.seq.get(),
             written_seq: self.written_seq,
+            exit_code: self.exited,
         }
     }
     pub fn pane(&self) -> Option<&Entity<TerminalPane>> {
         self.pane.as_ref()
+    }
+    /// Changes the default colors for the terminal showing and for every
+    /// checkpoint installed later. `None` leaves the screen showing as it is
+    /// and keeps the engine's colors for later checkpoints.
+    ///
+    /// # Errors
+    ///
+    /// [`ReplicaError::Colors`] when the engine refuses them; nothing changes.
+    pub fn set_default_colors(
+        &mut self,
+        colors: Option<Colors>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), ReplicaError> {
+        if let (Some(colors), Some(pane)) = (&colors, &self.pane) {
+            pane.update(cx, |pane, cx| {
+                pane.view().clone().update(cx, |view, cx| {
+                    cx.notify();
+                    view.grid_mut().set_default_colors(colors)
+                })
+            })
+            .map_err(|source| ReplicaError::Colors { source })?;
+        }
+        self.config.default_colors = colors;
+        Ok(())
     }
     pub fn session(&self) -> &SessionInfo {
         &self.config.session
@@ -481,7 +563,11 @@ impl TerminalReplica {
             && !self.detaching;
         self.input.enabled.set(self.visible && authorized);
         if let Some(pane) = &self.pane {
-            pane.update(cx, |pane, cx| pane.set_connected(authorized, cx));
+            let exited = self.exited.is_some();
+            pane.update(cx, |pane, cx| {
+                pane.set_connected(authorized, cx);
+                pane.set_exited(exited, cx);
+            });
         }
         let state = self.state();
         let lifecycle_changed = self.last_state.as_ref().is_none_or(|old| {
@@ -603,12 +689,32 @@ impl TerminalReplica {
             if let Some(pane) = &self.pane {
                 pane.update(cx, |pane, cx| pane.focus_input(window, cx));
                 self.pending_focus = false;
+                self.told_waiting = false;
                 return;
             }
         }
         self.pending_focus = true;
-        window.blur(cx);
+        // Away from any other terminal, until the screen arrives.
+        window.focus(&self.waiting, cx);
         window.defer(cx, |window, cx| window.draw(cx).clear(cx));
+    }
+    /// A key reached the tab before its screen did, so no program got it:
+    /// tells the app once, as the pane does for input it drops. ⌘ shortcuts
+    /// are the app's, not typing.
+    fn typed_while_waiting(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.told_waiting
+            || event.keystroke.modifiers.platform
+            || !self.waiting.is_focused(window)
+        {
+            return;
+        }
+        self.told_waiting = true;
+        cx.emit(ReplicaEvent::Pane(PaneEvent::InputRefused));
     }
     /// Explicit visibility, independent of keyboard focus.
     pub fn set_visible(
@@ -767,7 +873,7 @@ impl TerminalReplica {
                 maximum: MAX_RAW_CHECKPOINT_BYTES,
             });
         }
-        let terminal = Terminal::from_checkpoint(&checkpoint.bytes)
+        let mut terminal = Terminal::from_checkpoint(&checkpoint.bytes)
             .map_err(|source| ReplicaError::Snapshot { source })?;
         if terminal.size()
             != (ghostty_vt::Size {
@@ -776,6 +882,11 @@ impl TerminalReplica {
             })
         {
             return Err(ReplicaError::Dimensions);
+        }
+        if let Some(colors) = &self.config.default_colors {
+            terminal
+                .set_default_colors(colors)
+                .map_err(|source| ReplicaError::Colors { source })?;
         }
         Ok(terminal)
     }
@@ -809,6 +920,24 @@ impl TerminalReplica {
                     cx.emit(ReplicaEvent::Focused {
                         terminal_uuid: this.config.session.uuid.clone(),
                     })
+                }));
+            self.input.focused.set(focus.contains_focused(window, cx));
+            self.subscriptions
+                .push(cx.on_focus_in(&focus, window, |this, _, cx| {
+                    this.input.focused.set(true);
+                    // A view that fits only when focused asks again now: its
+                    // last fit, made unfocused, sent nothing.
+                    let refit = this.pane.clone().filter(|_| {
+                        matches!(this.input.fit, FitPolicy::Focused | FitPolicy::Shown)
+                    });
+                    if let Some(pane) = refit {
+                        let view = pane.read(cx).view().clone();
+                        view.update(cx, |view, cx| view.request_fit(cx));
+                    }
+                }));
+            self.subscriptions
+                .push(cx.on_focus_out(&focus, window, |this, _, _, _| {
+                    this.input.focused.set(false);
                 }));
             self.pane = Some(pane);
         }
@@ -1004,7 +1133,8 @@ impl TerminalReplica {
                 self.needs_snapshot = false;
                 self.detached = false;
                 self.changed(cx);
-                if self.pending_focus && self.visible && window.focused(cx).is_none() {
+                let free = window.focused(cx).is_none() || self.waiting.is_focused(window);
+                if self.pending_focus && self.visible && free {
                     self.focus_input(window, cx);
                 }
                 self.acknowledge(cx)?;
@@ -1200,6 +1330,15 @@ impl Render for TerminalReplica {
                 .vertical_scrollbar(&self.scroll)
                 .into_any_element()
         });
+        let waiting = content.is_none().then(|| {
+            div()
+                .id("terminal-waiting")
+                .track_focus(&self.waiting)
+                .size_full()
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    this.typed_while_waiting(event, window, cx);
+                }))
+        });
         div()
             .id("terminal-replica")
             .test_support()
@@ -1227,5 +1366,6 @@ impl Render for TerminalReplica {
                 }))
             })
             .children(content)
+            .children(waiting)
     }
 }

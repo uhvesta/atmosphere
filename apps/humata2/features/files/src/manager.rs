@@ -5,6 +5,8 @@ mod edit;
 mod labels;
 mod naming;
 mod pane;
+mod placement;
+mod places;
 mod storage;
 mod trash;
 mod tray;
@@ -16,12 +18,14 @@ use std::sync::Arc;
 use humata2_clients::model::{MachineId, SessionId, TransferId};
 use humata2_clients::{
     Clients, EmptyPlan, FileManagerError, Folder, Listing, StorageReport, StorageRow, TransferRow,
-    TrashListing, Workspace,
+    TrashListing, TransferMode, Workspace,
 };
 use tca::{Effect, Reducer};
 
 pub use naming::{Naming, NamingKind};
 pub use pane::{Pane, Side};
+pub use places::{RowChoice, RowMenu, folder_path};
+pub use placement::{SendTarget, crumbs, landing, landing_label, session_slug};
 pub use tray::human_bytes;
 pub use when::{age_label, days_left, modified_label};
 
@@ -130,6 +134,10 @@ pub struct FilesState {
     pub naming: Option<Naming>,
     /// Which pane's machine list is open.
     pub picker: Option<Side>,
+    /// Which of Copy to or Move to is open over the action bar.
+    pub send_menu: Option<TransferMode>,
+    /// The row whose menu is open (PL-10).
+    pub row_menu: Option<RowMenu>,
     /// What went wrong last, as a message.
     pub error: Option<String>,
 }
@@ -141,6 +149,14 @@ pub enum Delegate {
     Toast(String),
     /// Archive this session, with the normal checks (LD-15).
     ArchiveSession(SessionId),
+    /// Open a terminal tab in `session`, started in `folder`, an absolute
+    /// path on the session's machine (PL-10).
+    OpenTerminal {
+        /// The session whose machine it is on.
+        session: SessionId,
+        /// Where it starts.
+        folder: String,
+    },
 }
 
 /// What happens on the files page.
@@ -176,6 +192,18 @@ pub enum FilesAction {
     TogglePicker(Side),
     /// Close the machine list.
     ClosePicker,
+    /// Open the menu of a row (its … or a right click), selecting the row.
+    OpenRowMenu(Side, String),
+    /// Close the row menu.
+    CloseRowMenu,
+    /// Copy a row's absolute path (PL-10).
+    CopyPath(Side, String),
+    /// Show a row on This Mac in Finder (PL-10).
+    RevealInFinder(Side, String),
+    /// Open a terminal on a row's machine, in its folder (PL-10).
+    OpenTerminalHere(Side, String),
+    /// Finder could not show a row; the message says why.
+    RevealFailed(String),
     /// Make a folder in the active pane.
     NewFolder(String),
     /// Rename the one selected name in the active pane.
@@ -188,7 +216,15 @@ pub enum FilesAction {
     /// Copy the active pane's selection into the other pane's folder.
     Copy,
     /// Move the active pane's selection into the other pane's folder.
+    /// Move the active pane's selection into the other pane's folder.
     Move,
+    /// Open the Copy to or Move to menu, or close it when it is already open.
+    ToggleSendMenu(TransferMode),
+    /// Copy the active pane's selection to a machine, where Humata puts it
+    /// (PL-3); a name taken there keeps both (PL-13).
+    CopyTo(MachineId),
+    /// Move the active pane's selection to a machine, as `CopyTo` does.
+    MoveTo(MachineId),
     /// Files were dropped from Finder on a pane (FM-4).
     Dropped(Side, Vec<PathBuf>),
     /// A change finished.
@@ -316,11 +352,29 @@ impl Reducer for Files {
                 state.picker = None;
                 Effect::none()
             }
+            A::OpenRowMenu(side, name) => self.open_row_menu(state, side, name),
+            A::CloseRowMenu => {
+                state.row_menu = None;
+                Effect::none()
+            }
+            A::CopyPath(side, name) => self.copy_path(state, side, &name),
+            A::RevealInFinder(side, name) => self.reveal_row(state, side, &name),
+            A::OpenTerminalHere(side, name) => self.open_terminal_here(state, side, &name),
+            A::RevealFailed(message) => {
+                state.error = Some(message);
+                Effect::none()
+            }
             A::NewFolder(name) => self.new_folder(state, name),
             A::Rename { new_name } => self.rename(state, new_name),
             A::Delete => self.delete(state),
             A::Copy => self.transfer(state, humata2_clients::TransferMode::Copy),
             A::Move => self.transfer(state, humata2_clients::TransferMode::Move),
+            A::ToggleSendMenu(mode) => {
+                state.send_menu = if state.send_menu == Some(mode) { None } else { Some(mode) };
+                Effect::none()
+            }
+            A::CopyTo(machine) => self.send_to(state, machine, TransferMode::Copy),
+            A::MoveTo(machine) => self.send_to(state, machine, TransferMode::Move),
             A::Dropped(side, paths) => self.dropped(state, side, paths),
             A::Finished(edit, result) => self.finished(state, edit, result),
             A::LowDiskReady {

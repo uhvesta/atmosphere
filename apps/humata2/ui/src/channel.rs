@@ -6,6 +6,7 @@ use crate::{
     widgets::{col, push_primary_shape, push_quiet, push_quiet_shape, row},
 };
 use gpui_kit::assets::IconName;
+use crate::widgets::push_primary;
 use gpui_kit::base::{Disableable as _, TestTextExt as _};
 use gpui_kit::component::{
     Sizable as _,
@@ -122,6 +123,7 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
         .waiting()
         .filter(|r| r.channel == channel.id)
         .count();
+    let desk = state.desk.channel_rows(&channel.id).len();
     let machines = channel
         .machines
         .iter()
@@ -203,6 +205,7 @@ pub(crate) fn header(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Loo
                 .children(
                     [
                         (Tab::Sessions, "Sessions", (sessions > 0).then_some(sessions)),
+                        (Tab::Desk, "Desk", (desk > 0).then_some(desk)),
                         (Tab::Inbox, "Inbox", (waiting > 0).then_some(waiting)),
                         (Tab::Board, "Board", None),
                         (Tab::Repos, "Repos and machines", None),
@@ -525,8 +528,8 @@ fn sessions(
                                 } else {
                                     look.secondary
                                 }))
-                                .child(
-                                    if let Some(pull) = state
+                                .child({
+                                    let state_text = if let Some(pull) = state
                                         .workspace
                                         .pulls
                                         .iter()
@@ -536,8 +539,10 @@ fn sessions(
                                         format!("{} · PR #{}", s.status.label(), pull.number)
                                     } else {
                                         s.status.label()
-                                    },
-                                ),
+                                    };
+                                    // The state reads in the view under the row's link.
+                                    div().child(state_text.clone()).test_text(state_text)
+                                }),
                         )
                         .child(
                             div()
@@ -829,9 +834,15 @@ fn repos(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
             row()
                 .gap(px(8.))
                 .child(
-                    push_quiet_shape("channel-add-repo", "Add a GitHub repo…", look)
-                        .text_color(rgb(look.tertiary))
-                        .disabled(true),
+                    push_quiet(
+                        ui,
+                        "channel-add-repo",
+                        "Add a GitHub repo…",
+                        AppAction::ChannelAddRepo(humata2_app::ChannelAddRepoAction::Open(
+                            channel.id.clone(),
+                        )),
+                        look,
+                    ),
                 )
                 .child(push_quiet(
                     ui,
@@ -906,7 +917,8 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                     div()
                         .text_size(px(15.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(format!("Nothing in # {} yet", channel.name)),
+                        .child(format!("Nothing in # {} yet", channel.name))
+                        .test_text(format!("Nothing in # {} yet", channel.name)),
                 )
                 .child(
                     col()
@@ -934,17 +946,16 @@ fn empty(ui: &Rc<Ui>, state: &AppState, channel: &Channel, look: Look) -> AnyEle
                             IconName::FolderGit2,
                             "Add a repo",
                             "Sessions get their own clone of each repo you add.".to_owned(),
-                            // No action adds a repo to a channel yet (CH-6): the frame's filled
-                            // button, drawn dimmed and disabled.
-                            Some(
-                                push_primary_shape(
-                                    "channel-empty-add-repo",
-                                    "Add a GitHub repo…",
-                                    look,
-                                )
-                                .opacity(0.5)
-                                .disabled(true),
-                            ),
+                            // CH-6: the frame's filled button opens the Add a GitHub repo sheet.
+                            Some(push_primary(
+                                ui,
+                                "channel-empty-add-repo",
+                                "Add a GitHub repo…",
+                                AppAction::ChannelAddRepo(humata2_app::ChannelAddRepoAction::Open(
+                                    channel.id.clone(),
+                                )),
+                                look,
+                            )),
                         ))
                         .child(step(
                             IconName::Server,
@@ -1005,6 +1016,7 @@ pub(crate) fn page(
             empty(ui, state, channel, look)
         }
         Tab::Sessions => sessions(ui, state, channel, &view, filter, look),
+        Tab::Desk => crate::channel_desk::tab(ui, state, channel, look),
         Tab::Activity => activity(ui, state, channel, look),
         Tab::Repos => repos(ui, state, channel, look),
         Tab::Inbox => lists::inbox(ui, state, look).into_any_element(),

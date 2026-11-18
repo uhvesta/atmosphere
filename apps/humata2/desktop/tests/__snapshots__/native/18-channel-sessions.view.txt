@@ -35,6 +35,7 @@ Button "New session"
 Button "Pin this channel"
 Button "More channel actions" disabled
 Tab "Sessions" selected
+Tab "Desk"
 Tab "Inbox"
 Tab "Board"
 Tab "Repos and machines"
@@ -42,7 +43,7 @@ Tab "Agent access"
 Tab "Activity"
 #channel-sessions
   #channel-session-filter
-    #input-4294967331
+    #input
       TextInput "Filter sessions" value="" placeholder="Filter sessions"
   Tab "Open" selected
   Tab "Archived"
@@ -51,12 +52,18 @@ Tab "Activity"
   Button "Collapse all"
   Link "Ledger schema migration"
     Button "2" description="1 from this session, 1 from forks"
+    text "Needs you"
     Button "Fold session forks"
   Link "Try BRIN index"
     Button "1" description="1 from this session, 0 from forks"
+    text "Needs you"
     Button "Fold session forks"
   Link "Partial BRIN on posted_at"
+    text "Working"
   Link "Review the schema"
+    text "Idle"
   Link "Refund retries"
     Button "1" description="1 from this session, 0 from forks"
+    text "Working"
   Link "API rate limiter"
+    text "Idle · PR #491"

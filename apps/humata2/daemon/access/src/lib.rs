@@ -13,6 +13,7 @@
 
 mod call;
 mod capability;
+mod channel_desk;
 mod desk;
 mod error;
 mod ids;
@@ -26,6 +27,7 @@ pub use call::{
     NetworkTarget, PathScope, Place, RepoBranch, Root, Target,
 };
 pub use capability::{AwayRule, Capability, ChannelRules, Decision, Tier};
+pub use channel_desk::{ChannelDeskAccess, ChannelDeskSwitch, ChannelDeskSwitches};
 pub use error::{AnswerError, CheckError, PolicyError};
 pub use ids::{AgentId, ChannelId, GrantId, MachineId, RepoRef, RequestId, SessionId, SessionRef};
 pub use path::{RepoPath, RepoPathError};

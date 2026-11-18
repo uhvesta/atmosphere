@@ -36,6 +36,7 @@ fn expected(kind: &Kind) -> (&'static str, i32) {
         Kind::PushRefused(_) => ("push_refused", 4),
         Kind::SshFailed(_) => ("ssh_failed", 8),
         Kind::HostKeyChanged(_) => ("host_key_changed", 7),
+        Kind::HostKeyUnknown(_) => ("host_key_unknown", 7),
         Kind::ChecksumMismatch(_) => ("checksum_mismatch", 11),
         Kind::ResumeFailed(_) => ("resume_failed", 7),
         Kind::ApprovalPending(_) => ("pending", 12),
@@ -61,6 +62,9 @@ fn expected(kind: &Kind) -> (&'static str, i32) {
         Kind::StepFailed(_) => ("step_failed", 9),
         Kind::PassphraseLocked(_) => ("passphrase_locked", 10),
         Kind::DependencyLoop(_) => ("dependency_loop", 7),
+        Kind::MigrationNeeded(_) => ("migration_needed", 7),
+        Kind::HostNeedsMigrate(_) => ("host_needs_migrate", 7),
+        Kind::NoDefaultBranch(_) => ("no_default_branch", 7),
         Kind::Internal(_) => ("internal", 70),
     }
 }
@@ -91,6 +95,7 @@ fn every_kind() -> Vec<Kind> {
         Kind::PushRefused(Default::default()),
         Kind::SshFailed(Default::default()),
         Kind::HostKeyChanged(Default::default()),
+        Kind::HostKeyUnknown(Default::default()),
         Kind::ChecksumMismatch(Default::default()),
         Kind::ResumeFailed(Default::default()),
         Kind::AgentLacksFeature(Default::default()),
@@ -115,6 +120,9 @@ fn every_kind() -> Vec<Kind> {
         Kind::StepFailed(Default::default()),
         Kind::PassphraseLocked(Default::default()),
         Kind::DependencyLoop(Default::default()),
+        Kind::MigrationNeeded(Default::default()),
+        Kind::HostNeedsMigrate(Default::default()),
+        Kind::NoDefaultBranch(Default::default()),
         Kind::Internal(Default::default()),
     ]
 }

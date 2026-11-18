@@ -72,6 +72,11 @@ impl Drop for Served {
 }
 
 async fn start() -> (Served, LiveDaemon) {
+    start_with(FAKE_GH).await
+}
+
+/// [`start`], with `gh_script` as the fake `gh`.
+async fn start_with(gh_script: &str) -> (Served, LiveDaemon) {
     use std::os::unix::fs::PermissionsExt;
     // Short, so the socket's path fits.
     let dir = tempfile::Builder::new()
@@ -83,7 +88,7 @@ async fn start() -> (Served, LiveDaemon) {
         .expect("restrict the temp folder");
     let root = dir.path().to_path_buf();
     let gh = root.join("gh");
-    std::fs::write(&gh, FAKE_GH).expect("write the fake gh");
+    std::fs::write(&gh, gh_script).expect("write the fake gh");
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755))
         .expect("let the fake gh run");
     std::fs::create_dir_all(root.join("remotes")).expect("make remotes folder");
@@ -147,4 +152,25 @@ async fn a_query_narrows_the_repos() {
         .await
         .expect("the repos are listed");
     assert_eq!(listed, vec!["octo/notes".to_owned()]);
+}
+
+/// A signed-in `gh` that GitHub has rate-limited: listing repos fails as
+/// gh prints it.
+const RATE_LIMITED_GH: &str = r#"#!/bin/sh
+case "$*" in
+  *user/repos*) echo "gh: API rate limit exceeded for user ID 42. (HTTP 403)" >&2; exit 1 ;;
+  *"api user"*) echo octo ;;
+  *) echo "fake gh: unexpected $*" >&2; exit 1 ;;
+esac
+"#;
+
+/// Macro-02: a rate limit is told as a wait. Signing in again would not fix it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rate_limited_gh_is_refused_as_a_wait_and_not_a_sign_in() {
+    let (_served, live) = start_with(RATE_LIMITED_GH).await;
+    let error = within("the refusal", live.github_repos(""))
+        .await
+        .expect_err("a rate-limited gh lists no repos");
+    let told = error.to_string();
+    assert!(!told.contains("auth login"), "a rate limit is not fixed by signing in: {told}");
 }

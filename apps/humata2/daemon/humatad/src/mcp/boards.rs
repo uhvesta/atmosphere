@@ -109,10 +109,14 @@ impl GrpcDaemon {
     /// `board_item_create`.
     pub(super) async fn board_item_create(&self, call: Call) -> Result<Reply, ToolError> {
         let arguments = &call.arguments;
-        let board = self.board_ref(arguments).await?;
+        // No board named: the daemon picks the caller's session board (VF-21).
+        let board = match arguments.get("board") {
+            Some(_) => Some(self.board_ref(arguments).await?),
+            None => None,
+        };
         let request = self.request(pb::CreateItemRequest {
             idempotency_key: Some(key(&call)),
-            board: Some(board),
+            board,
             title: text(arguments, "title"),
             column: arguments
                 .get("column")

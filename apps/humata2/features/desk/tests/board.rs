@@ -35,6 +35,7 @@ fn item(id: &str, scope: Scope, status: ItemStatus) -> Item {
         depends_on: Vec::new(),
         session: None,
         parent: None,
+        revision: 0,
     }
 }
 

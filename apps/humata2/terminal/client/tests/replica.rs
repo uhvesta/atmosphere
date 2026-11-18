@@ -457,6 +457,30 @@ fn memory_saver_pins_search_selection_and_history_bookmarks_and_can_be_disabled(
             .any(|frame| matches!(frame, ClientFrame::Detach { id: 1 }))
     );
 }
+/// The memory saver waits out its whole delay on the test clock: a hidden
+/// tab is kept a second short of it and freed once it has passed.
+#[test]
+fn memory_saver_frees_a_hidden_tab_only_once_its_delay_has_passed() {
+    const DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+    let (mut cx, window, app, socket) = memory_fixture();
+    cx.update(|cx| app.update(cx, |app, cx| app.set_memory_saver(true, DELAY, cx)));
+    click_tab(&mut cx, window, &app, 3);
+    draw(&mut cx, window, &app);
+    let detached = |sent: Vec<ClientFrame>| {
+        sent.iter()
+            .any(|frame| matches!(frame, ClientFrame::Detach { id: 1 }))
+    };
+
+    cx.advance_clock(DELAY - std::time::Duration::from_secs(1));
+    draw(&mut cx, window, &app);
+    assert!(!detached(frames(&socket)), "the hidden tab was freed before its delay");
+    assert!(cx.update(|cx| app.read(cx).pane(1).is_some()));
+
+    cx.advance_clock(std::time::Duration::from_secs(1));
+    draw(&mut cx, window, &app);
+    assert!(detached(frames(&socket)), "the hidden tab was kept past its delay");
+}
+
 #[test]
 fn memory_saver_keeps_a_waiting_multiline_paste_in_memory() {
     let (mut cx, window, app, socket) = memory_fixture();

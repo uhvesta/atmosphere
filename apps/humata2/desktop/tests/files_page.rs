@@ -1,6 +1,7 @@
 //! The Files page as a person uses it, headless on the fakes: open it, pick
-//! a machine through the popup, copy, make a folder through the name prompt,
-//! delete to the trash, and meet an offline machine. No window is shown.
+//! a machine through the popup, copy to a machine or somewhere specific,
+//! make a folder through the name prompt, delete to the trash, and meet an
+//! offline machine. No window is shown.
 //!
 //! Written for when the page is wired: `Clients` has `file_manager`, `Fakes`
 //! has the fake behind it, and the Files route sends `FilesAction::Opened`.
@@ -13,7 +14,7 @@ use gpui_kit::{
 };
 use humata2_app::{AppAction, Route};
 use humata2_clients::model::MachineId;
-use humata2_clients::{Clients, FakeFileManager, Folder, fixture};
+use humata2_clients::{Clients, FakeFileManager, FileRoot, Folder, fixture};
 use humata2_engine::Resources;
 use humata2_files::{FilesAction, Side};
 use humata2_flow::{Action, Driver as _, FrameMode, GpuiDriver, Target};
@@ -171,19 +172,44 @@ fn an_offline_machine_cannot_be_picked() {
 fn a_click_elsewhere_closes_the_list() {
     let mut app = App::new();
     app.open_files();
-    app.click(Role::Button, "Machine of the right pane: This Mac");
+    // Both panes start on This Mac's home; one notes.txt row is the left's.
+    app.pick_on_right("gpu-box");
+    app.click(Role::Button, "Machine of the right pane: gpu-box");
     assert_eq!(app.picker(), Some(Side::Right));
     app.click(Role::ListItem, "notes.txt");
     assert_eq!(app.picker(), None);
 }
 
 #[test]
-fn copying_shows_a_tray_row_and_the_name_arrives_when_it_is_done() {
+fn copy_to_a_machine_lands_by_rule_and_the_name_arrives_when_it_is_done() {
+    // PL-3, PL-5: a Home file sent to gpu-box asks only the machine and
+    // lands in gpu-box's From This Mac place.
     let mut app = App::new();
     app.open_files();
     app.pick_on_right("gpu-box");
     app.click(Role::ListItem, "notes.txt");
-    app.click(Role::Button, "Copy \u{2192}");
+    app.click(Role::Button, "Copy to \u{25b8}");
+    app.click(Role::ListBoxOption, "gpu-box \u{b7} From This Mac");
+    let transfers = app.ui.read(|state| state.files.transfers.clone());
+    assert_eq!(transfers.len(), 1);
+    let received = Folder::root(gpu(), FileRoot::Received { from: mac() });
+    assert!(app.fake.names_in(&received).is_empty(), "nothing is there before it is done");
+
+    app.fake.finish(&transfers[0].id);
+    app.settle();
+    assert_eq!(app.fake.names_in(&received), ["notes.txt"]);
+    assert_eq!(app.names(Side::Left), ["notes.txt"], "a copy leaves the original");
+}
+
+#[test]
+fn somewhere_specific_copies_into_the_other_panes_folder() {
+    // PL-5: Somewhere specific… is the explicit form: the other pane's folder.
+    let mut app = App::new();
+    app.open_files();
+    app.pick_on_right("gpu-box");
+    app.click(Role::ListItem, "notes.txt");
+    app.click(Role::Button, "Copy to \u{25b8}");
+    app.click(Role::ListBoxOption, "Somewhere specific\u{2026}");
     let transfers = app.ui.read(|state| state.files.transfers.clone());
     assert_eq!(transfers.len(), 1);
     assert!(app.names(Side::Right).is_empty());
@@ -216,6 +242,7 @@ fn new_folder_asks_for_a_name_and_makes_the_folder() {
 fn delete_moves_the_selection_to_the_trash() {
     let mut app = App::new();
     app.open_files();
+    app.pick_on_right("gpu-box");
     app.click(Role::ListItem, "notes.txt");
     app.click(Role::Button, "Delete");
     assert!(app.names(Side::Left).is_empty());

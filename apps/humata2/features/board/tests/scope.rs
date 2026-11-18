@@ -32,6 +32,7 @@ fn item(id: &str, scope: Scope) -> Item {
         depends_on: Vec::new(),
         session: None,
         parent: None,
+        revision: 0,
     }
 }
 

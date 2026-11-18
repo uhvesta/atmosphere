@@ -47,6 +47,34 @@ impl Owner {
     }
 }
 
+impl Owner {
+    /// The owner as kept on disk for [`Operations::restore`].
+    fn label(&self) -> String {
+        match self {
+            Self::User => "user".to_owned(),
+            Self::Session(id) => format!("session:{id}"),
+            Self::Script(id) => format!("script:{id}"),
+        }
+    }
+
+    fn from_label(label: &str) -> Option<Self> {
+        match label.split_once(':') {
+            None if label == "user" => Some(Self::User),
+            Some(("session", id)) => Some(Self::Session(id.to_owned())),
+            Some(("script", id)) => Some(Self::Script(id.to_owned())),
+            _ => None,
+        }
+    }
+}
+
+/// Whose an operation is and where the feed files it, as work keeps them on
+/// disk to bring the operation back after a restart ([`Operations::restore`]).
+#[derive(Clone, Debug)]
+pub(crate) struct Origin {
+    pub(crate) owner: String,
+    pub(crate) scope: Option<(String, String)>,
+}
+
 /// Runs an operation's work again with the handle given (Retry).
 pub(crate) type Rerun = Arc<dyn Fn(Progress) + Send + Sync>;
 
@@ -190,6 +218,7 @@ impl Operations {
             started_by: Some(identity::actor(caller)),
             version: 1,
             result: None,
+            pull_requests: Vec::new(),
         };
         let scope = match caller {
             Caller::Agent(agent) => Some((
@@ -217,6 +246,51 @@ impl Operations {
         let by = operation.started_by.clone();
         tracked.tell(pb::Change::Created, operation, by);
         Ok(Started::New(Progress { tracked }))
+    }
+
+    /// Brings back an operation a restart lost, under its own id, as it was
+    /// kept (running, with the steps it had): the work that kept it goes on
+    /// and ends it through the returned handle. One this daemon already has
+    /// is returned as it is. `None` when `operation` has no id or `origin`
+    /// names no owner.
+    pub(crate) fn restore(&self, operation: pb::Operation, origin: &Origin) -> Option<Progress> {
+        let id = operation.id.as_ref().map(|id| id.value.clone())?;
+        let owner = Owner::from_label(&origin.owner)?;
+        let mut table = lock(&self.table);
+        if let Some(known) = table.by_id.get(&id) {
+            return Some(Progress {
+                tracked: known.clone(),
+            });
+        }
+        let (sender, _) = watch::channel(operation.clone());
+        let tracked = Arc::new(Tracked {
+            owner,
+            scope: origin.scope.clone(),
+            feed: self.feed.clone(),
+            operation: sender,
+            steps: Vec::new(),
+            cancellable: operation.cancellable,
+            cancel: Mutex::default(),
+            rerun: Mutex::new(None),
+            retry_key: Mutex::new(None),
+        });
+        table.by_id.insert(id.clone(), tracked.clone());
+        if let Some(key) = operation.idempotency_key.as_ref().filter(|key| !key.value.is_empty()) {
+            table.by_key.insert(key.value.clone(), id);
+        }
+        let by = operation.started_by.clone();
+        tracked.tell(pb::Change::Created, operation, by);
+        Some(Progress { tracked })
+    }
+
+    /// Whether operation `id` is known here and still running. One a
+    /// restart lost, or that has ended, is not.
+    pub(crate) fn running(&self, id: &str) -> bool {
+        let table = lock(&self.table);
+        let Some(tracked) = table.by_id.get(id) else {
+            return false;
+        };
+        tracked.operation.borrow().state == pb::OperationState::Running as i32
     }
 
     /// The operation a call with `key` from this caller already started.
@@ -263,9 +337,33 @@ pub(crate) struct Progress {
     tracked: Arc<Tracked>,
 }
 
+/// Reports a step's progress in units and facts, for work that runs on other
+/// threads than the one that owns the [`Progress`].
+#[derive(Clone)]
+pub(crate) struct Units(Arc<Tracked>);
+
+impl Units {
+    pub(crate) fn set(&self, key: &str, done: u64, total: u64) {
+        Progress { tracked: self.0.clone() }.set_units(key, done, total);
+    }
+
+    pub(crate) fn add_fact(&self, key: &str, name: &str, more: u64) {
+        Progress { tracked: self.0.clone() }.add_fact(key, name, more);
+    }
+}
+
 impl Progress {
     pub(crate) fn operation(&self) -> pb::Operation {
         self.tracked.operation.borrow().clone()
+    }
+
+    /// Whose the operation is, for work that keeps it on disk to bring it
+    /// back after a restart.
+    pub(crate) fn origin(&self) -> Origin {
+        Origin {
+            owner: self.tracked.owner.label(),
+            scope: self.tracked.scope.clone(),
+        }
     }
 
     /// The operation's changes, for the work that hands this handle to
@@ -371,12 +469,49 @@ impl Progress {
         });
     }
 
+    /// How far step `key` is, in units: neither count goes down, and done
+    /// never passes total (GRPC.md section 7).
+    fn set_units(&self, key: &str, done: u64, total: u64) {
+        self.change(|operation| {
+            if let Some(shown) = operation.steps.iter_mut().find(|shown| shown.key == key) {
+                shown.total_units = shown.total_units.max(total);
+                shown.done_units = shown.done_units.max(done).min(shown.total_units);
+            }
+        });
+    }
+
+    /// Adds `more` to the decimal fact `name` of step `key`.
+    fn add_fact(&self, key: &str, name: &str, more: u64) {
+        self.change(|operation| {
+            if let Some(shown) = operation.steps.iter_mut().find(|shown| shown.key == key) {
+                let before = shown.facts.get(name).and_then(|fact| fact.parse::<u64>().ok()).unwrap_or(0);
+                shown.facts.insert(name.to_owned(), before.saturating_add(more).to_string());
+            }
+        });
+    }
+
+    /// A handle that reports a step's units from the threads doing its work.
+    pub(crate) fn units(&self) -> Units {
+        Units(self.tracked.clone())
+    }
+
     pub(crate) fn succeed(self, result: Option<pb::operation::Result>) {
         self.change(|operation| {
             operation.state = pb::OperationState::Succeeded as i32;
             operation.cancellable = false;
             operation.finished_at = Some(now());
             operation.result = result;
+        });
+    }
+
+    /// Ends the operation as succeeded with the pull requests a push opened
+    /// or found, one for each repository.
+    pub(crate) fn succeed_with_pull_requests(self, pull_requests: Vec<pb::PullRequestRef>) {
+        self.change(|operation| {
+            operation.state = pb::OperationState::Succeeded as i32;
+            operation.cancellable = false;
+            operation.finished_at = Some(now());
+            operation.pull_requests = pull_requests;
         });
     }
 
@@ -720,7 +855,13 @@ impl pb::operation_service_server::OperationService for OperationSvc {
         progress.change(|operation| {
             operation.state = pb::OperationState::Running as i32;
             operation.cancellable = tracked.cancellable;
-            operation.steps = tracked.steps.iter().map(|&step| waiting(step)).collect();
+            // Work that names its own steps has none to start from, so the
+            // steps it showed start over, keeping their titles.
+            operation.steps = if tracked.steps.is_empty() {
+                operation.steps.iter().map(|shown| waiting_named(&shown.key, &shown.title)).collect()
+            } else {
+                tracked.steps.iter().map(|&step| waiting(step)).collect()
+            };
             operation.error = None;
             operation.result = None;
             operation.finished_at = None;

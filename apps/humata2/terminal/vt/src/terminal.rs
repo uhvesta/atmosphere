@@ -488,6 +488,30 @@ impl Terminal {
         .map_err(fail)
     }
 
+    /// Selects everything the screen holds, history included, as Select
+    /// All does.
+    pub fn select_all(&mut self) -> Result<(), Error> {
+        let fail = |source| Error::Selection { source };
+        let rows = self.total_rows().saturating_sub(1);
+        let last = u32::try_from(rows).unwrap_or(u32::MAX);
+        let start = self.grid_ref_at(ffi::POINT_TAG_SCREEN, 0, 0);
+        let end = self.grid_ref_at(ffi::POINT_TAG_SCREEN, self.cols.saturating_sub(1), last);
+        let selection = ffi::GhosttySelection {
+            start: start.map_err(fail)?,
+            end: end.map_err(fail)?,
+            rectangle: false,
+        };
+        // SAFETY: the refs are fresh; the terminal copies the selection.
+        check(unsafe {
+            ffi::ghostty_terminal_set(
+                self.raw.ptr,
+                ffi::TERMINAL_OPT_SELECTION,
+                (&raw const selection).cast(),
+            )
+        })
+        .map_err(fail)
+    }
+
     /// Clears the selection.
     pub fn clear_selection(&mut self) -> Result<(), Error> {
         // SAFETY: NULL clears the selection.
@@ -1051,6 +1075,10 @@ impl Grid for Terminal {
 
     fn scrollbar(&self) -> Option<terminal_grid::Scrollbar> {
         Terminal::scrollbar(self)
+    }
+
+    fn is_alternate_screen(&self) -> bool {
+        Terminal::is_alternate_screen(self)
     }
 
     fn clear_dirty(&mut self) {

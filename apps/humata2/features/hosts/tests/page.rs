@@ -37,6 +37,7 @@ fn detail(variables: &[&str]) -> MachineDetail {
         folders: vec![],
         sessions: vec![SessionId::new("s1")],
         rules: vec![],
+        stop: None,
     }
 }
 

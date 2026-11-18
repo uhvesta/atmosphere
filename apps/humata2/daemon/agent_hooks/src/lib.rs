@@ -7,6 +7,10 @@
 //!   on the hook's stdout. [`Decision::Undecided`] is empty output for all.
 //! - [`claude_permission_hook`], [`codex_hooks`] and [`copilot_plugin`] make
 //!   the per-session hook config humatad writes into its state folder.
+//! - [`claude_mcp_config`], [`copilot_mcp_config`] and [`codex_mcp`] tell
+//!   each CLI of Humata's own MCP server for the session (D748).
+//! - [`parse_question`] and [`render_question`] do the same for an agent's
+//!   own ask-user form, which becomes an Inbox question (D761).
 //! - OpenCode has no hooks: the `humata opencode` wrapper hands each
 //!   `permission.asked` event's `data` over as the payload, and posts what
 //!   [`render_permission`] writes as the body of OpenCode's reply (D201a).
@@ -17,6 +21,11 @@
 
 use std::path::Path;
 use std::time::Duration;
+
+mod mcp;
+pub use mcp::{MCP_SERVER, claude_mcp_config, codex_mcp, copilot_mcp_config};
+mod question;
+pub use question::{Question, Reply, parse_question, render_question};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -72,6 +81,9 @@ pub struct Ask {
     pub command: String,
     /// What the agent says the command is for, if it says.
     pub description: Option<String>,
+    /// The tool changes files (an edit, a write, a patch) and doesn't run a
+    /// command, so the card says it edits files.
+    pub edits_files: bool,
     /// The same for the same ask again, and different for another one: the
     /// Inbox's idempotency key within a session.
     pub key: String,
@@ -96,6 +108,8 @@ pub enum PayloadError {
     NotJson(#[source] serde_json::Error),
     #[error("the hook payload isn't a {agent:?} permission ask: {why}")]
     NotAnAsk { agent: Agent, why: &'static str },
+    #[error("the hook payload isn't a {agent:?} question for the user: {why}")]
+    NotAQuestion { agent: Agent, why: &'static str },
     #[error("Copilot asks to bypass its sandbox, which an approval from the Inbox doesn't cover")]
     SandboxBypass,
 }
@@ -160,6 +174,7 @@ pub fn parse_permission(agent: Agent, payload: &[u8]) -> Result<Ask, PayloadErro
         tool: tool.to_owned(),
         command: command_of(input),
         description: str_field(input, "description").map(str::to_owned),
+        edits_files: edits_files(tool),
         key: ask_key(&[agent.name(), tool, &input_json, turn]),
     })
 }
@@ -182,8 +197,27 @@ fn opencode_ask(value: &Value) -> Option<Ask> {
         tool: action.to_owned(),
         command: resources.join("\n"),
         description: None,
+        edits_files: matches!(action, "edit" | "write" | "patch"),
         key: ask_key(&[Agent::OpenCode.name(), id]),
     })
+}
+
+/// Whether `tool`, as any agent names it, changes files: Claude's `Edit`,
+/// `Write`; Codex's `apply_patch`; Copilot's `edit`, `create`,
+/// `str_replace_editor`.
+fn edits_files(tool: &str) -> bool {
+    matches!(
+        tool.to_ascii_lowercase().as_str(),
+        "edit"
+            | "multiedit"
+            | "write"
+            | "create"
+            | "notebookedit"
+            | "apply_patch"
+            | "str_replace"
+            | "str_replace_editor"
+            | "str_replace_based_edit_tool"
+    )
 }
 
 fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -276,6 +310,15 @@ pub fn permission_command(agent: Agent, humata: &Path, socket: &Path) -> String 
     )
 }
 
+/// The shell command an agent's ask-user hook runs (D761).
+fn question_command(agent: Agent, humata: &Path, socket: &Path) -> String {
+    format!(
+        "{} hook {} question 2>/dev/null || true",
+        humata_call(humata, socket),
+        agent.name(),
+    )
+}
+
 /// The shell command that tells Humata the session is `state`: working,
 /// idle or needs-input. Its output is discarded and it never fails.
 fn turn_command(humata: &Path, socket: &Path, state: &str) -> String {
@@ -360,9 +403,18 @@ pub fn copilot_plugin(humata: &Path, socket: &Path) -> Vec<PluginFile> {
         "bash": permission_command(Agent::Copilot, humata, socket),
         "timeoutSec": HOLD_SECONDS,
     });
+    // Matched to `ask_user` only, so no other tool call waits on a CLI run;
+    // the daemon reads the tool name all the same (D761).
+    let question = json!({
+        "type": "command",
+        "matcher": "ask_user",
+        "bash": question_command(Agent::Copilot, humata, socket),
+        "timeoutSec": HOLD_SECONDS,
+    });
     let hooks = json!({
         "version": 1,
         "hooks": {
+            "preToolUse": [question],
             "userPromptSubmitted": [turn("working", 10)],
             "postToolUse": [turn("working", 10)],
             "agentStop": [turn("idle", 10)],

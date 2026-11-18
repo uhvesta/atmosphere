@@ -90,6 +90,30 @@ async fn a_retry_with_the_same_key_saves_once() {
     assert_eq!(first.path, retry.path);
 }
 
+/// The client retries a paste whose answer it lost; when the daemon
+/// restarted in between, the retry still finds the first save instead of
+/// saving the image again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_retry_with_the_same_key_after_a_restart_saves_once() {
+    let mut daemon = daemon_with_session().await;
+    let keyed = |key: &str| pb::PasteImageRequest {
+        idempotency_key: Some(pb::IdempotencyKey {
+            value: key.to_owned(),
+        }),
+        ..request(SESSION, pb::ImageFormat::Png, PNG.to_vec())
+    };
+
+    let first = paste(&daemon, keyed("paste-1")).await.unwrap();
+    daemon.restart().await;
+    let retry = paste(&daemon, keyed("paste-1")).await.unwrap();
+    let other = paste(&daemon, keyed("paste-2")).await.unwrap();
+
+    assert_eq!(retry.path, first.path);
+    assert_ne!(other.path, first.path);
+    let folder = Path::new(&first.path).parent().unwrap();
+    assert_eq!(std::fs::read_dir(folder).unwrap().count(), 2);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_image_over_the_limit_is_refused() {
     let daemon = daemon_with_session().await;

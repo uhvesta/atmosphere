@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ghostty_vt::{ClipboardTarget, Grid as _, Scroll, Terminal, clipboard_read_reply};
+use ghostty_vt::{Grid as _, Scroll, Terminal, clipboard_read_reply};
 use gpui_kit::Pixels;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
@@ -13,8 +13,8 @@ use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme as _, Icon, h_flex};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent,
-    SharedString, Subscription, Window, div, px,
+    AnyElement, App, ClipboardEntry, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, KeyDownEvent, SharedString, Subscription, Window, div, px,
 };
 use terminal_view::{Mark, TerminalView, Theme};
 
@@ -53,7 +53,7 @@ pub struct TerminalPane {
     refind_scheduled: bool,
     shortcut_events: u64,
     find_shortcuts: u64,
-    /// Whether the last frame showed the paste prompt.
+    /// Whether the last frame showed the paste or clipboard-read prompt.
     prompt_shown: bool,
     /// Output held while the pane is hidden (NV-34), parsed when it is
     /// shown or when it grows past [`HIDDEN_LIMIT`]; `None` while shown.
@@ -69,6 +69,11 @@ pub struct TerminalPane {
     unmeasured_draws: u8,
     /// Whether the pane draws its own disconnected banner.
     offline_banner: bool,
+    /// Whether the program has ended: an ended program is not a lost
+    /// connection, so the disconnected banner stays away.
+    exited: bool,
+    /// What ⌥ does, kept here so a fresh copy of the screen keeps it.
+    option_as_alt: ghostty_vt::OptionAsAlt,
     _view_changes: Subscription,
 }
 
@@ -113,6 +118,8 @@ impl TerminalPane {
             fit_flush_scheduled: false,
             unmeasured_draws: 0,
             offline_banner: true,
+            exited: false,
+            option_as_alt: ghostty_vt::OptionAsAlt::Off,
             _view_changes: view_changes,
         }
     }
@@ -121,7 +128,7 @@ impl TerminalPane {
     /// immediately so buffered output cannot cross an ordered host resize.
     pub fn use_authoritative_size(&mut self, cx: &mut Context<Self>) {
         if let Some(bytes) = self.unfitted.take() {
-            self.parse(&bytes, cx);
+            self.parse(&bytes, false, cx);
         }
         cx.notify();
     }
@@ -135,7 +142,26 @@ impl TerminalPane {
     pub fn replace_terminal(&mut self, terminal: Terminal, cx: &mut Context<Self>) {
         self.view
             .update(cx, |view, cx| view.replace_grid(terminal, cx));
-        self.parse(&[], cx);
+        let option_as_alt = self.option_as_alt;
+        self.view
+            .update(cx, |view, _| view.grid_mut().set_option_as_alt(option_as_alt));
+        self.parse(&[], false, cx);
+    }
+
+    /// Settings › Option acts as Alt (D420): ⌥ keys send Esc and the key
+    /// instead of the character the keyboard layout gives.
+    pub fn set_option_as_alt(&mut self, on: bool, cx: &mut Context<Self>) {
+        let mode = if on {
+            ghostty_vt::OptionAsAlt::On
+        } else {
+            ghostty_vt::OptionAsAlt::Off
+        };
+        if mode == self.option_as_alt {
+            return;
+        }
+        self.option_as_alt = mode;
+        self.view
+            .update(cx, |view, _| view.grid_mut().set_option_as_alt(mode));
     }
 
     /// Focuses terminal text/IME input before the next platform input event.
@@ -152,7 +178,7 @@ impl TerminalPane {
             held.extend_from_slice(bytes);
             if held.len() > HIDDEN_LIMIT {
                 let held = std::mem::take(held);
-                self.parse(&held, cx);
+                self.parse(&held, false, cx);
             }
             return;
         }
@@ -162,12 +188,12 @@ impl TerminalPane {
                 // Never drawn yet and still busy: parse at the size it has.
                 let held = std::mem::take(held);
                 self.unfitted = None;
-                self.parse(&held, cx);
+                self.parse(&held, false, cx);
             }
             cx.notify();
             return;
         }
-        self.parse(bytes, cx);
+        self.parse(bytes, true, cx);
     }
 
     /// Shows or hides the pane. A hidden pane draws nothing and holds the
@@ -180,7 +206,7 @@ impl TerminalPane {
             (true, Some(held)) => {
                 match &mut self.unfitted {
                     Some(unfitted) => unfitted.extend_from_slice(&held),
-                    None => self.parse(&held, cx),
+                    None => self.parse(&held, false, cx),
                 }
                 cx.notify();
             }
@@ -196,7 +222,10 @@ impl TerminalPane {
         self.hidden.is_none()
     }
 
-    fn parse(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+    /// Parses `bytes`. Output that is not `live` is caught up on: held
+    /// while hidden or before the first draw. A clipboard read in it is
+    /// old by the time anyone sees it, so it is dropped instead of asked.
+    fn parse(&mut self, bytes: &[u8], live: bool, cx: &mut Context<Self>) {
         let events = self.view.update(cx, |view, cx| {
             let terminal = view.grid_mut();
             terminal.feed(bytes);
@@ -204,6 +233,9 @@ impl TerminalPane {
             terminal.drain_events()
         });
         for event in events {
+            if !live && matches!(event, ghostty_vt::Event::ClipboardReadRequested { .. }) {
+                continue;
+            }
             self.shared.borrow_mut().engine_event(event);
         }
         self.take_events(cx);
@@ -226,6 +258,16 @@ impl TerminalPane {
     pub fn set_offline_banner(&mut self, show: bool, cx: &mut Context<Self>) {
         if self.offline_banner != show {
             self.offline_banner = show;
+            cx.notify();
+        }
+    }
+
+    /// Whether the program has ended. Typing stays off as while
+    /// disconnected, but the pane never says the connection was lost: the
+    /// caller says the program ended.
+    pub fn set_exited(&mut self, exited: bool, cx: &mut Context<Self>) {
+        if self.exited != exited {
+            self.exited = exited;
             cx.notify();
         }
     }
@@ -257,10 +299,15 @@ impl TerminalPane {
         let mut shared = self.shared.borrow_mut();
         if shared.connected != connected {
             shared.connected = connected;
-            if !connected {
+            if connected {
+                shared.told_refused = false;
+            } else {
                 shared.pending_paste = None;
-                self.view
-                    .update(cx, |view, cx| view.cancel_pending_clipboard(cx));
+                shared.clipboard_read = None;
+                self.view.update(cx, |view, cx| {
+                    view.cancel_pending_clipboard(cx);
+                    view.end_composition(cx);
+                });
             }
             cx.notify();
         }
@@ -301,12 +348,40 @@ impl TerminalPane {
         }
     }
 
-    /// Answers the program's clipboard read (OSC 52), with `text` once the
-    /// user allowed it or `None` to refuse.
-    pub fn answer_clipboard_read(&mut self, target: ClipboardTarget, text: Option<&str>) {
-        self.shared
-            .borrow_mut()
-            .send(&clipboard_read_reply(target, text));
+    /// Answers the clipboard read the program is waiting on (OSC 52), with
+    /// `text` once the user allowed it or, refused, an empty clipboard.
+    fn answer_clipboard_read(&mut self, text: Option<&str>, cx: &mut Context<Self>) {
+        let mut shared = self.shared.borrow_mut();
+        if let Some(target) = shared.clipboard_read.take() {
+            shared.send(&clipboard_read_reply(target, text));
+        }
+        drop(shared);
+        cx.notify();
+    }
+
+    /// Sends the program the clipboard's text, once: the user allowed it.
+    fn allow_clipboard_read(&mut self, cx: &mut Context<Self>) {
+        if let Some(item) = cx.read_from_clipboard() {
+            self.answer_clipboard_read(Some(&clipboard_text(&item)), cx);
+            return;
+        }
+        // A browser reads its clipboard only after asking, from this click.
+        let read = cx.read_from_clipboard_async();
+        cx.spawn(async move |pane, cx| {
+            let result = read.await;
+            let _ = pane.update(cx, |pane, cx| match result {
+                Ok(item) => {
+                    let text = item.as_ref().map(clipboard_text).unwrap_or_default();
+                    pane.answer_clipboard_read(Some(&text), cx);
+                }
+                Err(source) => {
+                    pane.shared.borrow_mut().clipboard_read_failed(source);
+                    pane.answer_clipboard_read(None, cx);
+                    pane.take_events(cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn paste(&mut self, text: String, confirmed: bool, cx: &mut Context<Self>) {
@@ -315,6 +390,8 @@ impl TerminalPane {
             let mut shared = shared.borrow_mut();
             if shared.connected {
                 paste_text(&mut shared, view.grid_mut(), text, confirmed);
+            } else {
+                shared.refuse();
             }
             cx.notify();
         });
@@ -335,7 +412,7 @@ impl TerminalPane {
         if let Some(held) = self.unfitted.take()
             && !held.is_empty()
         {
-            self.parse(&held, cx);
+            self.parse(&held, false, cx);
         }
         cx.notify();
     }
@@ -345,13 +422,13 @@ impl TerminalPane {
             let mut shared = self.shared.borrow_mut();
             (
                 std::mem::take(&mut shared.events),
-                shared.pending_paste.is_some(),
+                shared.pending_paste.is_some() || shared.clipboard_read.is_some(),
             )
         };
         for event in events {
             cx.emit(event);
         }
-        // Draw the pane again only when the paste prompt comes or goes; the
+        // Draw the pane again only when a prompt comes or goes; the
         // terminal redraws on its own, so streaming output leaves the rest
         // of the window as it was.
         if waiting != self.prompt_shown {
@@ -700,6 +777,11 @@ impl TerminalPane {
             .child(
                 div()
                     .id("find-count")
+                    // A status, so a screen reader reads the count as it
+                    // changes; its label stays in a frame that drew the bar
+                    // again from the last one, where the text is not kept.
+                    .role(gpui_kit::Role::Status)
+                    .aria_label(count.clone())
                     .test_support()
                     .min_w(px(72.))
                     .text_xs()
@@ -786,6 +868,68 @@ impl TerminalPane {
             )
             .into_any_element()
     }
+
+    fn render_clipboard_prompt(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        h_flex()
+            .id("clipboard-read-prompt")
+            .test_support()
+            .absolute()
+            .bottom(px(8.))
+            .left(px(8.))
+            .right(px(8.))
+            .gap(px(8.))
+            .p(px(8.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(theme.warning)
+            .bg(theme.popover)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .text_sm()
+                    .text_color(theme.foreground)
+                    .child(
+                        "This program asks to read your clipboard. Allowing sends it what you \
+                         copied last, which could be a password or a key.",
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap(px(6.))
+                    .child(
+                        Button::new("clipboard-refuse")
+                            .label("Refuse")
+                            .compact()
+                            .on_click(cx.listener(|pane, _, _, cx| {
+                                pane.answer_clipboard_read(None, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("clipboard-allow")
+                            .label("Allow once")
+                            .compact()
+                            .primary()
+                            .on_click(
+                                cx.listener(|pane, _, _, cx| pane.allow_clipboard_read(cx)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+/// The clipboard's text, or nothing when it holds none.
+fn clipboard_text(item: &ClipboardItem) -> String {
+    item.entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            ClipboardEntry::String(string) => Some(string.text.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Rows through the end of the output the program wrote from the top: its
@@ -869,8 +1013,9 @@ impl Render for TerminalPane {
         let shared = self.shared.borrow();
         let connected = shared.connected;
         let pending = shared.pending_paste.clone();
+        let reading = shared.clipboard_read.is_some();
         drop(shared);
-        self.prompt_shown = pending.is_some();
+        self.prompt_shown = pending.is_some() || reading;
         let find_bar = self
             .find
             .as_ref()
@@ -878,8 +1023,11 @@ impl Render for TerminalPane {
         let paste_prompt = pending
             .as_ref()
             .map(|pending| self.render_paste_prompt(pending, cx));
+        // One prompt at a time: the paste the user started comes first.
+        let clipboard_prompt =
+            (pending.is_none() && reading).then(|| self.render_clipboard_prompt(cx));
         let theme = cx.theme();
-        let banner = (!connected && self.offline_banner).then(|| {
+        let banner = (!connected && !self.exited && self.offline_banner).then(|| {
             div()
                 .id("disconnected-banner")
                 .test_support()
@@ -915,6 +1063,7 @@ impl Render for TerminalPane {
             .child(div().flex_1().min_h_0().child(self.view.clone()))
             .children(find_bar)
             .children(paste_prompt)
+            .children(clipboard_prompt)
             .children(banner)
             .into_any_element()
     }

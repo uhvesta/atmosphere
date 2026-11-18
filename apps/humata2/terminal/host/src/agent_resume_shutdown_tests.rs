@@ -10,6 +10,22 @@ use std::{
 };
 use terminal_provider::{ResumeAdapter, ResumeError, ResumeIdentity, ResumePolicy, ResumeRegistry};
 
+/// Stops every process whose command line names this test's own folder (its
+/// holders, under `/private/tmp`), even when the test fails partway.
+struct OwnHolders(String);
+impl OwnHolders {
+    fn of(dir: &std::path::Path) -> Self {
+        let dir = std::fs::canonicalize(dir).unwrap();
+        assert!(dir.starts_with("/private/tmp/"), "{} is not under /private/tmp", dir.display());
+        Self(format!("{}/", dir.display()))
+    }
+}
+impl Drop for OwnHolders {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("pkill").arg("-f").arg(&self.0).status();
+    }
+}
+
 const ADAPTER: &str = "shutdown-race-fixture-v1";
 const PROVIDER: &str = "shutdown-race-fixture";
 const SESSION: &str = "exact-fixture-session-001";
@@ -47,13 +63,21 @@ impl Drop for ReleaseGate {
     }
 }
 async fn wait_file(path: &Path) {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    use crate::agent_resume_tests::{LAUNCH_WAIT, launch_evidence};
+    tokio::time::timeout(LAUNCH_WAIT, async {
         while !path.is_file() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| {
+        let root = path.parent().unwrap_or(path);
+        panic!(
+            "{} did not appear within {LAUNCH_WAIT:?}; {}",
+            path.display(),
+            launch_evidence(root)
+        )
+    });
 }
 fn attempts(path: &Path) -> usize {
     std::fs::read_to_string(path)
@@ -67,6 +91,7 @@ async fn shutdown_waits_for_paused_resume_launch_and_releases_its_durable_store(
         .prefix("h2-resume-stop-")
         .tempdir_in("/tmp")
         .unwrap();
+    let _holders = OwnHolders::of(dir.path());
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let real_holder = std::fs::canonicalize(std::env::var_os("HUMATA2_HOLDER").unwrap()).unwrap();
     let wrapper = dir.path().join("holder-wrapper");
@@ -258,6 +283,7 @@ async fn explicit_stop_stays_stopped_after_restart(viewer_stop: bool) {
         .prefix("h2-stop-policy-")
         .tempdir_in("/tmp")
         .unwrap();
+    let _holders = OwnHolders::of(dir.path());
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let holder = std::fs::canonicalize(std::env::var_os("HUMATA2_HOLDER").unwrap()).unwrap();
     let agent = dir.path().join("agent");

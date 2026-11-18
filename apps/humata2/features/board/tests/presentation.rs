@@ -1,7 +1,7 @@
 //! BD-7 and dashboard counts always refer to the visible board scope.
 use humata2_board::{Board, BoardAction as A, BoardState, Filter, Mode};
 use humata2_clients::{
-    Clients, fixture,
+    Clients, Operation, fixture,
     model::{ChannelId, ItemId, ItemStatus as S, Scope},
 };
 use std::sync::Arc;
@@ -95,6 +95,43 @@ fn drawer_rejects_unknown_items_and_new_items_keep_the_requested_column() {
     });
     store.send(A::CreateNew, |s| s.new_title = None);
     store.finish();
+}
+
+/// VF-25: + on a column makes the item in that column with one create, so a
+/// refused move can't leave it in To do.
+#[test]
+fn a_new_item_on_a_column_is_made_there_with_one_create() {
+    let workspace = Arc::new(fixture::design());
+    let (clients, fakes) = Clients::fake((*workspace).clone(), Arc::new(TestClock::new()));
+    // Any move the daemon is asked for is refused.
+    fakes.daemon.fail_next(Operation::MoveItem, "the daemon refused the move");
+    let mut store = TestStore::new(
+        BoardState {
+            workspace,
+            ..Default::default()
+        },
+        Board::new(clients),
+    );
+    store.send(A::StartNewIn(S::InProgress), |s| {
+        s.new_title = Some(String::new());
+        s.new_status = S::InProgress;
+    });
+    store.send(A::NewTitle("Ship it".into()), |s| s.new_title = Some("Ship it".into()));
+    store.send(A::CreateNew, |s| s.new_title = None);
+    store.receive_matching("the create", |a| matches!(a, A::Done(Ok(()))), |_| {});
+    store.finish();
+    let made = fakes
+        .daemon
+        .workspace()
+        .items
+        .into_iter()
+        .find(|item| item.title == "Ship it")
+        .expect("the item was made");
+    assert_eq!(made.status, S::InProgress);
+    assert!(
+        !fakes.daemon.calls().iter().any(|call| call.starts_with("move ")),
+        "the column came with the create, so no move was sent"
+    );
 }
 
 #[test]

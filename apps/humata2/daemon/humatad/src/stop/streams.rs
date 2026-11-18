@@ -5,13 +5,19 @@
 //! Hook, an Inbox wait, a host's uplink) lasts as long as its client keeps
 //! it open, so a stop or start sat out the whole shutdown grace whenever a
 //! terminal was attached. Once the daemon is leaving, a response with
-//! nothing ready to send ends at once, with `UNAVAILABLE`, which clients
-//! read as "connect again". Anything a call has ready is sent first, so a
-//! unary reply and the last messages of a stream still go out.
+//! nothing ready to send ends with `UNAVAILABLE`, which clients read as
+//! "connect again". Anything a call has ready is sent first, so a unary
+//! reply and the last messages of a stream still go out.
+//!
+//! A stream the daemon ends itself on leaving (the event feed) says so
+//! with [`EndsByItself`] on its response. It is left to end cleanly,
+//! however slowly its own task gets there, and cut only if it is still
+//! open [`ENDS_BY`] after the daemon started leaving.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use http_body::{Body, Frame, SizeHint};
 use tokio::sync::watch;
@@ -21,9 +27,17 @@ use tonic::codegen::http::{self, HeaderMap, HeaderValue};
 
 /// The gRPC status a cut stream ends with: `UNAVAILABLE`.
 const UNAVAILABLE: &str = "14";
+/// How long a stream marked [`EndsByItself`] has to end once the daemon
+/// is leaving, before it is cut too. Within the daemon's shutdown grace.
+const ENDS_BY: Duration = Duration::from_secs(2);
 /// What a cut stream's client is told. Plain printable ASCII, as
 /// `grpc-message` needs no encoding then.
 const LEAVING: &str = "humatad2 is stopping or starting itself again, so this stream ended; connect again in a moment (a daemon that was stopped for good needs starting first)";
+
+/// Put in a response's extensions by a call whose stream ends by itself
+/// once the daemon is leaving, so that stream is not cut while it does.
+#[derive(Clone, Copy)]
+pub(crate) struct EndsByItself;
 
 /// Says when the daemon starts leaving.
 pub(crate) struct Leaving(watch::Sender<bool>);
@@ -86,13 +100,15 @@ where
         let leaving = self.leaving.clone();
         Box::pin(async move {
             let response = responding.await?;
-            Ok(response.map(|body| tonic::body::Body::new(Cut::new(body, leaving))))
+            let ends_by_itself = response.extensions().get::<EndsByItself>().is_some();
+            Ok(response.map(|body| tonic::body::Body::new(Cut::new(body, leaving, ends_by_itself))))
         })
     }
 }
 
 /// A response body that ends with `UNAVAILABLE` trailers once the daemon
-/// is leaving and it has nothing ready to send.
+/// is leaving and it has nothing ready to send; one that ends by itself
+/// only once [`ENDS_BY`] has passed too.
 struct Cut<B> {
     body: Pin<Box<B>>,
     leaving: Pin<Box<dyn Future<Output = ()> + Send>>,
@@ -100,12 +116,15 @@ struct Cut<B> {
 }
 
 impl<B> Cut<B> {
-    fn new(body: B, mut leaving: watch::Receiver<bool>) -> Self {
+    fn new(body: B, mut leaving: watch::Receiver<bool>, ends_by_itself: bool) -> Self {
         Self {
             body: Box::pin(body),
             leaving: Box::pin(async move {
                 // A sender gone means the daemon is gone too: leaving.
                 let _ = leaving.wait_for(|leaving| *leaving).await;
+                if ends_by_itself {
+                    tokio::time::sleep(ENDS_BY).await;
+                }
             }),
             ended: false,
         }
@@ -214,7 +233,7 @@ mod tests {
     #[tokio::test]
     async fn a_waiting_stream_ends_unavailable_once_the_daemon_is_leaving() {
         let (leaving, layer) = Leaving::signal();
-        let mut body = Box::pin(Cut::new(stand(&["one"], false), layer.leaving.clone()));
+        let mut body = Box::pin(Cut::new(stand(&["one"], false), layer.leaving.clone(), false));
         assert_eq!(data(next(&mut body).await), "one");
         let waiting = tokio::time::timeout(Duration::from_millis(50), next(&mut body)).await;
         assert!(waiting.is_err(), "a stream with nothing to send waits while the daemon stays");
@@ -230,16 +249,63 @@ mod tests {
     async fn what_a_call_has_ready_still_goes_out_when_the_daemon_is_leaving() {
         let (leaving, layer) = Leaving::signal();
         leaving.now();
-        let mut body = Box::pin(Cut::new(stand(&["reply", "last"], true), layer.leaving.clone()));
+        let mut body = Box::pin(Cut::new(stand(&["reply", "last"], true), layer.leaving.clone(), false));
         assert_eq!(data(next(&mut body).await), "reply");
         assert_eq!(data(next(&mut body).await), "last");
         assert!(next(&mut body).await.is_none(), "a reply that ends by itself isn't cut");
     }
 
+    /// A stream that ends by itself once `ends` has passed, as the event
+    /// feed does on its own task when the daemon leaves.
+    struct EndsLater {
+        ends: Pin<Box<tokio::time::Sleep>>,
+    }
+
+    impl Body for EndsLater {
+        type Data = Bytes;
+        type Error = Status;
+
+        fn poll_frame(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
+            self.get_mut().ends.as_mut().poll(cx).map(|()| None)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stream_that_ends_by_itself_ends_cleanly_however_slowly_within_the_limit() {
+        let (leaving, layer) = Leaving::signal();
+        let slow = EndsLater {
+            ends: Box::pin(tokio::time::sleep(ENDS_BY - Duration::from_millis(1))),
+        };
+        let mut body = Box::pin(Cut::new(slow, layer.leaving.clone(), true));
+        leaving.now();
+        let frame = poll_fn(|cx| body.as_mut().poll_frame(cx)).await;
+        assert!(frame.is_none(), "the stream was cut instead of ending by itself");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stream_that_says_it_ends_by_itself_but_stays_open_is_cut_in_the_end() {
+        let (leaving, layer) = Leaving::signal();
+        let mut body = Box::pin(Cut::new(stand(&[], false), layer.leaving.clone(), true));
+        leaving.now();
+        let status = status_of(next(&mut body).await).expect("the trailers carry a status");
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_unmarked_stream_is_cut_without_waiting() {
+        let (leaving, layer) = Leaving::signal();
+        let mut body = Box::pin(Cut::new(stand(&[], false), layer.leaving.clone(), false));
+        leaving.now();
+        let started = tokio::time::Instant::now();
+        let status = status_of(next(&mut body).await).expect("the trailers carry a status");
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+        assert!(started.elapsed() < ENDS_BY, "an attached terminal's stream waited out the limit");
+    }
+
     #[tokio::test]
     async fn a_daemon_gone_without_saying_ends_its_streams_too() {
         let (leaving, layer) = Leaving::signal();
-        let mut body = Box::pin(Cut::new(stand(&[], false), layer.leaving.clone()));
+        let mut body = Box::pin(Cut::new(stand(&[], false), layer.leaving.clone(), false));
         drop(leaving);
         let status = status_of(next(&mut body).await).expect("the trailers carry a status");
         assert_eq!(status.code(), tonic::Code::Unavailable);

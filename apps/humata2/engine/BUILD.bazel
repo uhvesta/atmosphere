@@ -63,6 +63,18 @@ ENGINES = {
     for engine, config in ENGINES.items()
 ]
 
+# A task woken from another thread while the headless app blocks, on each
+# engine (tests/wakes.rs, D759); headless, nothing is shown.
+[
+    rust_test(
+        name = "wakes" + engine + "_test",
+        srcs = ["tests/wakes.rs"],
+        crate_features = config["features"],
+        deps = config["deps"] + [":engine" + engine + "_test_support"],
+    )
+    for engine, config in ENGINES.items()
+]
+
 # Headless frame costs on each engine (benches/frames.rs), one JSON line a
 # case. Measure in an optimised build:
 #   bazel run -c opt //apps/humata2/engine:frames_bench

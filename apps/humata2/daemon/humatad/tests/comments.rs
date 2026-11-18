@@ -10,7 +10,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::{Attach, Daemon, WAIT, error_of, folder, open, state_folder};
+use humata2_chunk::{Codec, Encoder};
 use humata2_grpc::humata::v1 as pb;
+use sha2::{Digest, Sha256};
 use humata2_store::{SessionRecord, Store};
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
@@ -202,6 +204,7 @@ async fn shell_with_token(daemon: &Daemon) -> (String, pb::TabId, Attach) {
             idempotency_key: None,
             session: Some(session()),
             repo: None,
+            folder: String::new(),
         })
         .await
         .unwrap()
@@ -649,6 +652,111 @@ async fn a_sent_comment_is_addressed_when_its_lines_change_and_a_draft_detaches(
     assert!(!find(&daemon, &waiting).await.anchor.unwrap().detached);
 }
 
+/// What the user's editor does: WriteFile of `data` over `path` in the session's clone of `api`.
+async fn user_writes(daemon: &Daemon, path: &str, data: &[u8]) {
+    use pb::write_file_message::Message as Part;
+
+    let chunk = Encoder::new(Codec::None).encode(data.to_vec()).unwrap();
+    let sha256: String = Sha256::digest(data).iter().map(|byte| format!("{byte:02x}")).collect();
+    let messages = vec![
+        pb::WriteFileMessage {
+            message: Some(Part::Header(pb::WriteFileHeader {
+                idempotency_key: None,
+                location: Some(pb::FileLocation {
+                    machine: None,
+                    root: Some(pb::file_location::Root::SessionClone(pb::SessionClone {
+                        session: Some(session()),
+                        repo: Some(pb::RepoRef {
+                            owner: "acme".to_owned(),
+                            name: "api".to_owned(),
+                        }),
+                    })),
+                    path: path.to_owned(),
+                }),
+                size: data.len() as u64,
+                sha256,
+                replace: true,
+                expected_sha256: None,
+            })),
+        },
+        pb::WriteFileMessage {
+            message: Some(Part::Chunk(pb::FileChunk {
+                offset: 0,
+                data: chunk.data,
+                last: true,
+                codec: chunk.header.codec.wire(),
+                raw_size: chunk.header.raw_len,
+                crc32: chunk.header.crc32,
+                ..Default::default()
+            })),
+        },
+    ];
+    pb::file_service_client::FileServiceClient::new(daemon.channel().await)
+        .write_file(tokio_stream::iter(messages))
+        .await
+        .unwrap_or_else(|status| panic!("the user's WriteFile of {path}: {status}"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sent_comment_stays_sent_when_the_user_writes_its_lines_through_files() {
+    let (daemon, clone) = daemon_with_clone().await;
+    let (_token, _tab, mut attach) = shell_with_token(&daemon).await;
+    let edited = create(&daemon, draft(3, 3, "rename")).await;
+    let below = create(&daemon, draft(9, 9, "below")).await;
+    send(&daemon, &[&edited, &below]).await.unwrap();
+    attach.wait_for("[comment on refund.rs:9]").await;
+
+    let text: String = NAMES
+        .iter()
+        .enumerate()
+        .map(|(i, name)| match i + 1 {
+            3 => "line three renamed\n".to_owned(),
+            9 => format!("// inserted\nline {name}\n"),
+            _ => format!("line {name}\n"),
+        })
+        .collect();
+    user_writes(&daemon, "refund.rs", text.as_bytes()).await;
+
+    let edited = find(&daemon, &edited).await;
+    assert_eq!(status_of(&edited), pb::CommentStatus::Sent, "the user's own edit does not address it");
+    let anchor = edited.anchor.as_ref().unwrap();
+    assert_eq!(anchor.quoted, "line three renamed", "the anchor follows the new text");
+    assert_eq!(anchor.lines, Some(pb::LineRange { first: 3, last: 3 }));
+    let below = find(&daemon, &below).await;
+    assert_eq!(status_of(&below), pb::CommentStatus::Sent);
+    assert_eq!(below.anchor.as_ref().unwrap().lines, Some(pb::LineRange { first: 10, last: 10 }));
+
+    // The agent then changes the line on disk: that does address it.
+    let again = text.replace("line three renamed", "line three by the agent");
+    std::fs::write(clone.join("refund.rs"), again).unwrap();
+    let after = find(&daemon, &edited).await;
+    assert_eq!(status_of(&after), pb::CommentStatus::Addressed);
+    assert_eq!(after.addressed_text, "line three by the agent");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sent_comment_is_addressed_when_the_file_is_changed_on_disk() {
+    let (daemon, clone) = daemon_with_clone().await;
+    let (_token, _tab, mut attach) = shell_with_token(&daemon).await;
+    let comment = create(&daemon, draft(3, 3, "rename")).await;
+    send(&daemon, &[&comment]).await.unwrap();
+    attach.wait_for("[comment on refund.rs:3]").await;
+
+    let text: String = NAMES
+        .iter()
+        .enumerate()
+        .map(|(i, name)| match i + 1 {
+            3 => "line three renamed\n".to_owned(),
+            _ => format!("line {name}\n"),
+        })
+        .collect();
+    std::fs::write(clone.join("refund.rs"), text).unwrap();
+
+    let after = find(&daemon, &comment).await;
+    assert_eq!(status_of(&after), pb::CommentStatus::Addressed);
+    assert_eq!(after.addressed_text, "line three renamed");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn resolve_reopen_archive_and_unarchive_move_a_comment_between_lists() {
     let (daemon, _clone) = daemon_with_clone().await;
@@ -935,6 +1043,59 @@ async fn a_batch_typed_before_the_daemon_died_is_not_typed_again() {
     assert!(!sent.delivery_unconfirmed);
     tokio::time::sleep(Duration::from_millis(700)).await;
     assert_eq!(typed_count(&typed, MARK), 1);
+}
+
+/// How each comment batch the last start found ended, as that start's
+/// restart report names it: `(id, state)` of the `comment_send` lines.
+fn comment_sends_named(state: &Path) -> Vec<(String, String)> {
+    let mut folders: Vec<_> = std::fs::read_dir(state.join("restarts"))
+        .expect("the daemon wrote restart reports")
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    folders.sort();
+    let file = folders
+        .iter()
+        .rev()
+        .map(|folder| folder.join("operations.jsonl"))
+        .find(|file| file.exists())
+        .expect("a restart report names the operations");
+    let mut latest: Vec<(String, String)> = Vec::new();
+    for line in std::fs::read_to_string(file).unwrap().lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value["kind"] != "comment_send" {
+            continue;
+        }
+        let entry = (value["id"].as_str().unwrap_or_default().to_owned(), value["state"].as_str().unwrap_or_default().to_owned());
+        match latest.iter_mut().find(|known| known.0 == entry.0) {
+            Some(known) => *known = entry,
+            None => latest.push(entry),
+        }
+    }
+    latest
+}
+
+/// A batch whose paste reached the terminal before the daemon died is
+/// named in the restart report, finished: it arrived and is not typed again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_typed_before_the_daemon_died_is_named_in_the_restart_report_as_finished() {
+    let (mut daemon, _tab, comment, typed) = killed_while_sending("comments.typed").await;
+    let deadline = Instant::now() + WAIT;
+    while typed_count(&typed, MARK) == 0 {
+        assert!(Instant::now() < deadline, "the paste never reached the terminal");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    daemon.restart().await;
+
+    wait_for_status(&daemon, &comment, pb::CommentStatus::Sent).await;
+    // The report is written before the start is done.
+    common::last_start(&daemon).await;
+    let named = comment_sends_named(&daemon.state);
+    assert_eq!(named.len(), 1, "{named:?}");
+    assert_eq!(named[0].1, "finished", "{named:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1224,4 +1385,63 @@ async fn list_comments_hands_out_every_comment_once_in_pages() {
 
     let bad = list_page(&daemon, &draft_only, page_of(2, "nonsense")).await.unwrap_err();
     assert_eq!(bad.code(), Code::InvalidArgument);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_comment_with_no_destination_is_refused_as_missing_one() {
+    let (daemon, _clone) = daemon_with_clone().await;
+    let mut unset = draft(3, 3, "rename this");
+    unset.destination = None;
+    let mut empty = draft(3, 3, "rename this");
+    empty.destination = Some(pb::CommentDestination { destination: None });
+    for request in [unset, empty] {
+        let refused = comments(&daemon).await.create_comment(request).await.unwrap_err();
+        let (field, problem) = common::invalid_field(&refused);
+        assert_eq!(field, "destination");
+        assert_eq!(problem, pb::invalid_field::Problem::Missing);
+    }
+    assert!(listed(&daemon).await.comments.is_empty(), "nothing is drafted");
+}
+
+
+/// Every state the last start's report names for a `comment_send`, in the
+/// order the lines were written.
+fn comment_send_states(state: &Path) -> Vec<String> {
+    let mut folders: Vec<_> = std::fs::read_dir(state.join("restarts"))
+        .expect("the daemon wrote restart reports")
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    folders.sort();
+    let file = folders
+        .iter()
+        .rev()
+        .map(|folder| folder.join("operations.jsonl"))
+        .find(|file| file.exists())
+        .expect("a restart report names the operations");
+    std::fs::read_to_string(file)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| value["kind"] == "comment_send")
+        .map(|value| value["state"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// A batch found in doubt is named pending first, then how it ended: the
+/// report never reads as finished while one is owed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_batch_found_in_doubt_is_named_pending_before_it_is_named_finished() {
+    let (mut daemon, _tab, comment, typed) = killed_while_sending("comments.typed").await;
+    let deadline = Instant::now() + WAIT;
+    while typed_count(&typed, MARK) == 0 {
+        assert!(Instant::now() < deadline, "the paste never reached the terminal");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    daemon.restart().await;
+
+    wait_for_status(&daemon, &comment, pb::CommentStatus::Sent).await;
+    common::last_start(&daemon).await;
+    assert_eq!(comment_send_states(&daemon.state), ["pending", "finished"]);
 }

@@ -1,12 +1,62 @@
 //! Channels (CH-1, CH-2, CH-5) and the state of a session's start (FC-1,
 //! FC-3, SE-4, PER-11, PER-27), so a restart finds both where they were.
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, Transaction, params};
 
-use crate::store::{bytes_path, check_id, from_sql, path_bytes, to_sql};
+use crate::store::{bytes_path, check_id, from_sql, insert_session, path_bytes, to_sql};
 use crate::{
-    ChannelRecord, ChannelRepo, MainClone, SessionDetail, SessionRepo, StartStep, Store, StoreError,
+    ChannelRecord, ChannelRepo, MainClone, SessionDetail, SessionRecord, SessionRepo, StartStep,
+    Store, StoreError,
 };
+
+/// Saves `detail` and its clones in `transaction`, in place of what the
+/// session had: the statements of [`Store::put_session_detail`], shared with
+/// the move of a Desk session so the two can't drift.
+pub(crate) fn write_session_detail(
+    transaction: &Transaction<'_>,
+    detail: &SessionDetail,
+    failed: &impl Fn(rusqlite::Error) -> StoreError,
+) -> Result<(), StoreError> {
+    transaction
+        .execute(
+            "INSERT INTO session_details
+                 (session, model, first_message, start_step, operation, revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (session) DO UPDATE SET
+                 model = excluded.model, first_message = excluded.first_message,
+                 start_step = excluded.start_step, operation = excluded.operation,
+                 revision = excluded.revision",
+            params![
+                detail.session,
+                detail.model,
+                detail.first_message,
+                step_name(detail.start),
+                detail.operation,
+                to_sql(detail.revision)
+            ],
+        )
+        .map_err(failed)?;
+    transaction
+        .execute("DELETE FROM session_repos WHERE session = ?1", [&detail.session])
+        .map_err(failed)?;
+    for (n, repo) in detail.repos.iter().enumerate() {
+        transaction
+            .execute(
+                "INSERT INTO session_repos (session, position, owner, name, branch, path)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    detail.session,
+                    position(n),
+                    repo.owner,
+                    repo.name,
+                    repo.branch,
+                    path_bytes(&repo.path)
+                ],
+            )
+            .map_err(failed)?;
+    }
+    Ok(())
+}
 
 fn position(n: usize) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
@@ -305,47 +355,25 @@ impl Store {
         let doing = "save a session's start";
         self.inner()
             .write_for_session("session_detail.put", doing, Some(&detail.session), |transaction| {
-                let failed = self.inner().failed(doing);
-                transaction
-                    .execute(
-                        "INSERT INTO session_details
-                             (session, model, first_message, start_step, operation, revision)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                         ON CONFLICT (session) DO UPDATE SET
-                             model = excluded.model, first_message = excluded.first_message,
-                             start_step = excluded.start_step, operation = excluded.operation,
-                             revision = excluded.revision",
-                        params![
-                            detail.session,
-                            detail.model,
-                            detail.first_message,
-                            step_name(detail.start),
-                            detail.operation,
-                            to_sql(detail.revision)
-                        ],
-                    )
-                    .map_err(&failed)?;
-                transaction
-                    .execute("DELETE FROM session_repos WHERE session = ?1", [&detail.session])
-                    .map_err(&failed)?;
-                for (n, repo) in detail.repos.iter().enumerate() {
-                    transaction
-                        .execute(
-                            "INSERT INTO session_repos (session, position, owner, name, branch, path)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                            params![
-                                detail.session,
-                                position(n),
-                                repo.owner,
-                                repo.name,
-                                repo.branch,
-                                path_bytes(&repo.path)
-                            ],
-                        )
-                        .map_err(&failed)?;
-                }
-                Ok(())
+                write_session_detail(transaction, detail, &self.inner().failed(doing))
             })
+    }
+
+    /// Saves a new session and where its start stands in one write, so a
+    /// crash leaves both or neither.
+    pub fn put_session_with_detail(
+        &self,
+        session: &SessionRecord,
+        detail: &SessionDetail,
+    ) -> Result<(), StoreError> {
+        check_id(&session.id)?;
+        check_id(&detail.session)?;
+        let doing = "save a session and its start";
+        let failed = self.inner().failed(doing);
+        self.inner().write_with("session.put_with_detail", doing, |transaction| {
+            insert_session(transaction, session).map_err(&failed)?;
+            write_session_detail(transaction, detail, &failed)
+        })
     }
 
     /// The start state of `session`, if one was saved.

@@ -1,0 +1,107 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" collapsed
+    Button "Unfold"
+  TreeItem "web"
+    Button "Unfold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Changes"
+  #review-diff
+    #review-pr-line
+      text "PR #482 against main · 2 repos"
+    #review-repo-acme/api
+      text "api"
+      text "#482"
+    ListBoxOption "acme/api/src/refund.rs" selected
+      text "refund.rs"
+      text "+62"
+      text "−21"
+    Code "acme/api/src/refund.rs"
+      #change-line-0
+        Button "Comment on line 138"
+          text "138"
+        #change-code-0-0
+          text "    let amount = capture.remaining();"
+        text " "
+      #change-line-1
+        Button "Comment on line 139"
+          text "139"
+        #change-code-1-0
+          text "    let cents = amount.floor();"
+        text "−"
+      #review-focus-140
+        #change-line-2
+          Button "Comment on line 140"
+            text "140"
+          #change-code-2-0
+            text "    let cents = amount.round();"
+          text "+"
+      #doc-comment-se_pr_1/c-1
+        text "Draft for GitHub · by Claude Code"
+        text "Draft"
+        text "round() is half-away-from-zero, so a split capture can refund a cent more than was taken. Use floor() on each part."
+        Button "Edit"
+        Button "Drop"
+      #change-line-3
+        Button "Comment on line 141"
+          text "141"
+        #change-code-3-0
+          text "    refund.issue(cents)?;"
+        text " "
+    #review-repo-acme/ledger
+      text "ledger"
+      text "#91"
+  #review-drafts-3-1
+    text "Drafts: 4 (3 by agent, 1 by you)"
+Toolbar "Session panels"
+  Button "Inbox"
+    Status "Inbox: 1"
+  Button "Diff"
+    Status "Diff: 2"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Link "Open channel"
+Button "Submit review"
+Button "Fork"
+Button "Expand terminal"
+Button "Toggle side panel"
+Button "Session actions"
+Tab "claude" selected
+Tab "zsh"
+Button "New terminal"
+Log "Terminal output" description="~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  text "~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  #terminal-replica
+    #terminal-pane
+      #terminal focused
+#pr-new-commits
+  Button "Update the clone"

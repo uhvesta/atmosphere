@@ -22,7 +22,8 @@ The repository holds:
     CRATES.txt                one "name version" line per crate in it
 """
 
-_TARGET = "aarch64-apple-darwin"
+# The app itself, and the Linux tools it carries for remote machines.
+_TARGETS = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]
 _SPOKE = "@@rules_rust++crate+{hub}__{name}-{version}//:BUILD.bazel"
 _LICENSE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "NOTICE")
 _RULE = "=" * 80
@@ -35,7 +36,7 @@ def _lock_deps(entry, conditions):
         return [dep["id"] for dep in deps]
     ids = [dep["id"] for dep in deps.get("common", [])]
     for condition, selected in deps.get("selects", {}).items():
-        if _TARGET in conditions.get(condition, []):
+        if [t for t in _TARGETS if t in conditions.get(condition, [])]:
             ids += [dep["id"] for dep in selected]
     return ids
 

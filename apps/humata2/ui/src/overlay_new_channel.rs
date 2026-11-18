@@ -3,6 +3,7 @@
 use super::{Overlays, sheet, sync};
 use crate::bridge::Ui;
 use crate::chrome;
+use crate::repo_search_field::{RepoField, repo_search_field};
 use crate::theme::{self, Look};
 use crate::widgets::{self, col, row};
 use gpui_kit::assets::IconName;
@@ -30,6 +31,7 @@ impl Overlays {
         }
         sync(&self.name, &sheet_state.name, window, cx);
         sync(&self.repos, &sheet_state.query, window, cx);
+        self.sync_owner(sheet_state.search.adding_owner.as_deref(), window, cx);
         let machines = ui.read(|state| state.workspace.machines.clone());
         let label = |text: &str| {
             div()
@@ -58,78 +60,50 @@ impl Overlays {
                     .aria_label(aria),
             )
         };
-        let hint = |text: String| {
-            div()
-                .text_size(px(11.))
-                .text_color(rgb(look.tertiary))
-                .child(text)
-        };
         let name_value = col()
             .gap(px(5.))
             .child(input(&self.name, "Channel name"))
-            .child(
+            .children(sheet_state.machines_line(&machines).map(|line| {
                 div()
                     .text_size(px(11.5))
                     .text_color(rgb(look.secondary))
-                    .child(format!("Folder: ~/Humata/{}/", sheet_state.folder())),
-            );
-        let mut repo_list = col().id("new-channel-repo-list").gap(px(7.));
-        let shown = sheet_state.shown_repos();
-        for repo in &shown {
-            let on = sheet_state.repos.iter().any(|picked| picked == repo);
-            repo_list = repo_list.child(check(
+                    .child(format!("On: {line}"))
+            }));
+        // REPOS (RL-5): the one repo search, frames 108 to 112.
+        let repos = {
+            let (rows, more) = sheet_state.picker();
+            let workspace = ui.read(|state| state.workspace.clone());
+            let pick = |repo: &str| {
+                AppAction::NewChannel(NewChannelAction::ToggleRepo(repo.to_owned()))
+            };
+            repo_search_field(
                 ui,
                 look,
-                SharedString::from(format!("new-channel-repo-{repo}")).into(),
-                (*repo).to_owned().into(),
-                on,
-                true,
-                Some(IconName::FolderGit2),
-                None,
-                AppAction::NewChannel(NewChannelAction::ToggleRepo((*repo).to_owned())),
-            ));
-        }
-        let more = sheet_state.more_repos();
-        let mut repos = col().gap(px(7.)).child(
-            row()
-                .gap(px(8.))
-                .child(chrome::icon(IconName::Search, look.secondary, 12.))
-                .child(input(&self.repos, "Search repos")),
-        );
-        repos = repos.child(hint("From gh on This Mac. Zero or more.".to_owned()));
-        if let Some(error) = &sheet_state.repos_error {
-            repos = repos.child(
-                row()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .id("new-channel-repos-error")
-                            .role(Role::Alert)
-                            .test_support()
-                            .text_color(rgb(theme::RED))
-                            .child(error.clone()),
-                    )
-                    .child(widgets::push_quiet(
-                        ui,
-                        "new-channel-repos-retry",
-                        "Retry",
-                        AppAction::NewChannel(NewChannelAction::RetryRepos),
-                        look,
-                    )),
-            );
-        } else if sheet_state.listed.is_none() {
-            repos = repos.child(hint("Listing repos from gh…".to_owned()));
-        } else {
-            repos = repos.child(
-                col()
-                    .max_h(px(8. * 21. + 7. * 7.))
-                    .overflow_hidden()
-                    .child(repo_list.max_h(px(8. * 21. + 7. * 7.)).overflow_y_scroll()),
-            );
-            if more > 0 {
-                repos = repos.child(hint(format!("and {more} more; type to narrow")));
-            }
-        }
+                RepoField {
+                    id: "new-channel",
+                    picker: humata2_app::RepoPicker::NewChannel,
+                    hint: Some("Your library first, then GitHub. Zero or more."),
+                    search: &sheet_state.search,
+                    query: Input::new(&self.repos)
+                        .small()
+                        .min_h(px(26.))
+                        .text_size(px(12.5))
+                        .focus_bordered(false)
+                        .aria_label("Search repos")
+                        .into_any_element(),
+                    owner: Input::new(&self.owner)
+                        .small()
+                        .min_h(px(26.))
+                        .aria_label("Org or user")
+                        .into_any_element(),
+                    rows: &rows,
+                    more,
+                    checkable: true,
+                    pick: &pick,
+                    workspace: &workspace,
+                },
+            )
+        };
         let machine_rows = machines.iter().map(|machine| {
             let on = sheet_state.machines.contains(&machine.id);
             let note = match machine.kind {
@@ -153,6 +127,10 @@ impl Overlays {
         sheet("new-channel", "New channel", look)
             .w(px(560.))
             .max_w_full()
+            // The sheet grows to the window, less its 50 pt top and a 24 pt
+            // bottom margin, before the form scrolls: the error banner then
+            // costs no machine rows when there is room.
+            .max_h(window.viewport_size().height - px(50. + 24.))
             .gap(px(12.))
             .p(px(20.))
             .rounded(px(12.))
@@ -165,9 +143,21 @@ impl Overlays {
                     .text_color(rgb(look.text))
                     .child("New channel"),
             )
-            .child(form_row("Name", name_value.into_any_element()))
-            .child(form_row("Repos", repos.into_any_element()))
-            .child(form_row("Machines", machines_col.into_any_element()))
+            // The form scrolls when the repo list and an error make the card
+            // taller than the window allows, so the card keeps the error,
+            // Cancel and Create inside it.
+            .child(
+                col()
+                    .id("new-channel-form")
+                    .gap(px(12.))
+                    .min_h_0()
+                    .flex_shrink(1.)
+                    .overflow_y_scroll()
+                    .child(form_row("Name", name_value.into_any_element()))
+                    .child(form_row("Repos", repos.into_any_element()))
+                    .child(form_row("Machines", machines_col.into_any_element())),
+            )
+            // The error stays in sight under the form, however it scrolls.
             .children(sheet_state.error.clone().map(|error| {
                 widgets::error_banner_in(look, ui, "new-channel-error", error, AppAction::Escape)
             }))

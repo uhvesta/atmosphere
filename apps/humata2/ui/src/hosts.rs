@@ -3,7 +3,7 @@ use crate::{
     bridge::Ui,
     chrome,
     theme::Look,
-    widgets::{col, push_quiet, push_quiet_shape, row},
+    widgets::{col, push_primary, push_quiet, push_quiet_shape, row},
 };
 use gpui_kit::base::{Disableable as _, TestTextExt as _};
 use gpui_kit::component::button::Button;
@@ -93,6 +93,8 @@ pub(crate) fn page(
             .filter(|s| s.machine == machine.id && !s.archived)
             .count();
         let stopped = health.is_some_and(|h| h.stopped);
+        // Its sessions are stopped and the stop reached it (frame 74).
+        let sessions_stopped = machine.stop.as_ref().is_some_and(|stop| stop.delivered);
         let status = if machine.online {
             Status::Working
         } else if stopped {
@@ -116,7 +118,11 @@ pub(crate) fn page(
             .when(state.hosts.selected.as_ref() == Some(&machine.id), |x| {
                 x.bg(rgb(look.fill))
             })
-            .child(chrome::status(status))
+            .child(if sessions_stopped {
+                chrome::stopped()
+            } else {
+                chrome::status(status)
+            })
             .child(
                 col()
                     .w(px(150.))
@@ -144,14 +150,22 @@ pub(crate) fn page(
                         health.map_or_else(|| machine.detail.clone(), |h| h.system.clone()),
                     )),
             )
-            .child(div().w(px(110.)).flex_shrink_0().child(if count == 0 {
-                "none".into()
-            } else {
-                format!(
-                    "{count} {}",
-                    if count == 1 { "session" } else { "sessions" }
-                )
-            }));
+            .child(
+                div()
+                    .w(px(110.))
+                    .flex_shrink_0()
+                    .when(sessions_stopped, |x| x.text_color(rgb(look.secondary)))
+                    .child(if sessions_stopped {
+                        "Sessions stopped".to_owned()
+                    } else if count == 0 {
+                        "none".to_owned()
+                    } else {
+                        format!(
+                            "{count} {}",
+                            if count == 1 { "session" } else { "sessions" }
+                        )
+                    }),
+            );
         if let Some(health) = health {
             line =
                 line.child(
@@ -191,7 +205,19 @@ pub(crate) fn page(
                 );
         }
         line = line.child(div().flex_1());
-        if !machine.online {
+        if sessions_stopped {
+            let starting = state.hosts.starting.contains(&machine.id);
+            line = line.child(
+                button(
+                    ui,
+                    SharedString::from(format!("host-start {}", machine.id)),
+                    if starting { "Starting\u{2026}" } else { "Start sessions" },
+                    AppAction::Hosts(A::StartSessions(machine.id.clone())),
+                    look,
+                )
+                .disabled(starting),
+            );
+        } else if !machine.online {
             line = line.child(
                 button(
                     ui,
@@ -244,6 +270,8 @@ pub(crate) fn page(
         };
         // What the machine's daemon reported wins over what the workspace carries (HO-4).
         let reported = state.hosts.health.get(&machine.id);
+        // The workspace's own health still knows how long it has been up.
+        let carried_uptime = health.map(|carried| carried.uptime.clone());
         let (summary, tools, disk) = if let Some(detail) = reported {
             let health = &detail.health;
             let mut tools = vec![tool_label("gh", &health.gh_version)];
@@ -260,7 +288,13 @@ pub(crate) fn page(
                 100 - (health.disk_free.min(health.disk_total) * 100 / health.disk_total)
             };
             (
-                format!("humatad {} · linked over {link}", detail.daemon_version),
+                match carried_uptime.as_deref() {
+                    Some(up) => format!(
+                        "humatad {} · up {up} · linked over {link}",
+                        detail.daemon_version
+                    ),
+                    None => format!("humatad {} · linked over {link}", detail.daemon_version),
+                },
                 tools,
                 (used, free_gb),
             )
@@ -292,34 +326,58 @@ pub(crate) fn page(
                             .border_color(rgb(look.line))
                     })),
             );
-            if disk.0 > 85 {
-                info = info.child(div().text_color(rgb(0xff9500)).child(format!(
-                    "{} GB free: new clones stop at 5 GB.",
-                    disk.1
-                )));
-            }
         }
         let send = ui.clone();
         let id = machine.id.clone();
-        info = info.child(
-            row()
-                .gap(px(8.))
+        let stop = machine.stop.as_ref().filter(|stop| stop.delivered);
+        // The stop line comes before the disk warning (frame 74).
+        if let Some(stop) = stop {
+            info = info.child(div().child(format!(
+                "Sessions stopped by {} at {}; everything is kept.",
+                stop.by.phrase(&state.workspace),
+                stop.at
+            )));
+        }
+        if (reported.is_some() || health.is_some()) && disk.0 > 85 {
+            info = info.child(div().text_color(rgb(0xff9500)).child(format!(
+                "{} GB free: new clones stop at 5 GB.",
+                disk.1
+            )));
+        }
+        // A machine whose sessions are stopped has no shell to open: Start
+        // sessions takes its place (frame 74).
+        // Otherwise Free space… leads and Open a shell follows (frame 57).
+        let starting = state.hosts.starting.contains(&machine.id);
+        let free = button(
+            ui,
+            "host-detail-free",
+            "Free space…",
+            AppAction::Hosts(A::Select(machine.id.clone())),
+            look,
+        )
+        .disabled(true);
+        let actions = row().gap(px(8.));
+        let actions = if stop.is_some() {
+            actions
                 .child(
-                    button(
+                    push_primary(
                         ui,
-                        "host-detail-free",
-                        "Free space…",
-                        AppAction::Hosts(A::Select(machine.id.clone())),
+                        "host-detail-start",
+                        if starting { "Starting\u{2026}" } else { "Start sessions" },
+                        AppAction::Hosts(A::StartSessions(machine.id.clone())),
                         look,
                     )
-                    .disabled(true),
+                    .disabled(starting),
                 )
-                .child(
-                    push_quiet_shape("host-open-shell", "Open a shell", look)
-                        .disabled(!machine.online)
-                        .on_click(move |_, _, cx| new_session(&send, &id, true, cx)),
-                ),
-        );
+                .child(free)
+        } else {
+            actions.child(free).child(
+                push_quiet_shape("host-open-shell", "Open a shell", look)
+                    .disabled(!machine.online)
+                    .on_click(move |_, _, cx| new_session(&send, &id, true, cx)),
+            )
+        };
+        info = info.child(actions);
         details = details.child(info);
         if let Some(error) = state.hosts.errors.get(&machine.id) {
             details = details.child(div().text_color(rgb(0xff453a)).child(error.clone()));
@@ -360,7 +418,8 @@ pub(crate) fn page(
         ));
     }
     details = details.child(bridge);
-    col().size_full().min_h_0().child(
+    // The Start sessions confirm is drawn over the whole window by the overlays (frame 75).
+    col().size_full().min_h_0().relative().child(
         row()
             .flex_1()
             .min_h_0()

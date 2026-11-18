@@ -11,13 +11,13 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use humata2_access::Capability;
+use humata2_access::{Call, Capability, Refusal, Target};
 use humata2_grpc::Timestamp;
 use humata2_grpc::humata::v1 as pb;
 use humata2_review_diff::{
     Addressed, CommentAnchor, CommentAuthor, CommentError, CommentFilter, CommentLedger, CommentReply, CommentStamp,
-    CommentStatus, Delivery, DeliveryState, DiffContext, FileRef, LedgerParts, MessagePart, Placement, Side, Typed,
-    UserComment, bracketed_paste, compose, place, wire,
+    CommentStatus, Delivery, DeliveryState, DiffContext, FileRef, LedgerParts, MessagePart, NoteTarget, Placement,
+    Side, Typed, UserComment, bracketed_paste, compose, place, wire,
 };
 use humata2_store::{
     CommentChange, CommentDeliveryRecord, CommentDeliveryState, CommentNumbers, CommentRecord, SessionRecord, Store,
@@ -26,13 +26,19 @@ use humata2_store::{
 use prost::Message;
 use tonic::{Code, Status};
 
-use super::sink::{Arrived, Pasted, Target};
+use super::sink::{self, Arrived, Pasted};
 use super::{
     Answer, Review, SELECTED_LINES_MAX, SessionReview, answered, blocking, folder_name, idempotency, lock, now, on_file,
     own_session, remember, repo_keys,
 };
 use crate::identity::{self, Caller};
 use crate::status;
+
+/// The batches of comments the last run left in doubt, per session, as
+/// `Review::note_comments` found them.
+pub(crate) struct Doubtful(
+    Vec<(SessionRecord, std::sync::Arc<SessionReview>, Vec<(String, String, sink::Target)>)>,
+);
 
 /// Whether a comment id names one of the user's comments (`c-<n>`, with or
 /// without its session) rather than a review chat note.
@@ -115,17 +121,52 @@ impl Review {
         caller: &Caller,
         request: pb::CreateCommentRequest,
     ) -> Result<pb::Comment, Status> {
+        let for_pr = match request.destination.as_ref().and_then(|destination| destination.destination.as_ref()) {
+            Some(pb::comment_destination::Destination::PullRequest(pr)) => Some(pr.clone()),
+            _ => None,
+        };
         let asked = request.session.clone().or_else(|| own_session(caller));
         let (record, session) = self.session(asked.as_ref())?;
-        self.require_use(caller, Capability::UserReviewState, &session)?;
+        let author = match &for_pr {
+            Some(_) => Some(self.draft_author(caller, &session)?),
+            None => {
+                self.require_use(caller, Capability::UserReviewState, &session)?;
+                None
+            }
+        };
         let review = self.review(&record.id)?;
         let idempotency = idempotency(request.idempotency_key.as_ref());
         if let Some(Answer::Comment(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(answer);
         }
         let anchor = request.anchor.as_ref().ok_or_else(|| status::missing("anchor"))?;
-        let anchor = self.anchor_from_pb(&record, anchor, None).await?;
-        let comment = lock(&review.comments).add(anchor, &request.text, now()).clone();
+        let comment = match (for_pr, author) {
+            (Some(pr), Some(author)) => {
+                let (repo, number) = self.bound_pull_request(&record.id, &pr)?;
+                let named = anchor
+                    .file
+                    .as_ref()
+                    .and_then(|file| file.repo.as_ref())
+                    .filter(|named| !named.name.is_empty())
+                    .map(wire::repo_key);
+                if named.as_ref().is_some_and(|named| !repo_holds_pull(named, &repo)) {
+                    return Err(status::invalid_field(
+                        "anchor.file.repo",
+                        pb::invalid_field::Problem::NotAllowedHere,
+                        format!("the draft is for a pull request of {repo}, but its lines are in another repository"),
+                        format!("anchor the draft on a file of {repo}"),
+                    ));
+                }
+                let anchor = self.anchor_from_pb(&record, anchor, Some(repo.clone())).await?;
+                lock(&review.comments)
+                    .add_for_pull_request(anchor, &request.text, author, &repo, number, now())
+                    .clone()
+            }
+            _ => {
+                let anchor = self.anchor_from_pb(&record, anchor, None).await?;
+                lock(&review.comments).add(anchor, &request.text, now()).clone()
+            }
+        };
         let answer = to_pb(&comment, &record.id);
         remember(&review, idempotency, Answer::Comment(answer.clone()));
         self.keep_comments(&identity::actor(caller), &record, &review).await?;
@@ -140,6 +181,22 @@ impl Review {
     ) -> Result<pb::Comment, Status> {
         let expected = expected(request.expected_revision.as_ref());
         let text = request.text;
+        if let Caller::Agent(agent) = caller {
+            let author = CommentAuthor::Agent(agent.agent.clone());
+            return self
+                .agent_comment_change(
+                    caller,
+                    agent,
+                    Capability::ReviewDraft,
+                    request.id.as_ref(),
+                    request.idempotency_key.as_ref(),
+                    move |ledger, id| {
+                        own_draft(ledger, id, &author)?;
+                        ledger.edit(id, &text, expected).cloned().map_err(|error| comment_failed(&error))
+                    },
+                )
+                .await;
+        }
         self.change_user_comment(
             caller,
             request.id.as_ref(),
@@ -155,14 +212,27 @@ impl Review {
         caller: &Caller,
         request: pb::DropCommentRequest,
     ) -> Result<pb::DropCommentResponse, Status> {
-        let (record, id, review) = self.user_comment_target(caller, request.id.as_ref())?;
+        let agent = match caller {
+            Caller::Agent(agent) => Some(agent),
+            _ => None,
+        };
+        let (record, id, review) = match agent {
+            Some(agent) => self.agent_session(caller, agent, Capability::ReviewDraft, request.id.as_ref())?,
+            None => self.user_comment_target(caller, request.id.as_ref())?,
+        };
         let idempotency = idempotency(request.idempotency_key.as_ref());
         if let Some(Answer::Dropped(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(answer);
         }
-        lock(&review.comments)
-            .remove(&id, expected(request.expected_revision.as_ref()))
-            .map_err(|error| comment_failed(&error))?;
+        {
+            let mut ledger = lock(&review.comments);
+            if let Some(agent) = agent {
+                own_draft(&ledger, &id, &CommentAuthor::Agent(agent.agent.clone()))?;
+            }
+            ledger
+                .remove(&id, expected(request.expected_revision.as_ref()))
+                .map_err(|error| comment_failed(&error))?;
+        }
         let answer = pb::DropCommentResponse { undo_id: String::new() };
         remember(&review, idempotency, Answer::Dropped(answer.clone()));
         self.keep_comments(&identity::actor(caller), &record, &review).await?;
@@ -211,7 +281,12 @@ impl Review {
                     Capability::CommentResolve,
                     request.id.as_ref(),
                     request.idempotency_key.as_ref(),
-                    move |ledger, id| ledger.resolve(id, author, Some(reply.as_str()), now(), expected).cloned(),
+                    move |ledger, id| {
+                        ledger
+                            .resolve(id, author, Some(reply.as_str()), now(), expected)
+                            .cloned()
+                            .map_err(|error| comment_failed(&error))
+                    },
                 )
                 .await;
         }
@@ -287,11 +362,13 @@ impl Review {
             request.id.as_ref(),
             request.idempotency_key.as_ref(),
             move |ledger, id| {
-                ledger.reply(id, author, &text, now())?;
+                ledger
+                    .reply(id, author, &text, now())
+                    .map_err(|error| comment_failed(&error))?;
                 ledger
                     .comment(id)
                     .cloned()
-                    .ok_or_else(|| CommentError::Unknown { id: id.to_owned() })
+                    .ok_or_else(|| comment_failed(&CommentError::Unknown { id: id.to_owned() }))
             },
         )
         .await
@@ -377,7 +454,17 @@ impl Review {
         let (record, session) = self.session(asked.as_ref())?;
         self.require_use(caller, Capability::UserReviewState, &session)?;
         let review = self.review(&record.id)?;
-        let several_clones = repo_keys(&self.inner, &record, &[]).await?.len() > 1;
+        let several_clones = if record.machine.is_empty() || record.machine == self.inner.machine {
+            repo_keys(&self.inner, &record, &[]).await?.len() > 1
+        } else {
+            // The folder is on the session's own machine, after a move too
+            // (MV-4): its start says which repositories it has.
+            self.inner
+                .store
+                .session_detail(&record.id)
+                .map_err(|error| status::store(error, &self.inner.machine, "read the session's repositories"))?
+                .is_some_and(|detail| detail.repos.len() > 1)
+        };
         let named = local_ids(&record.id, &request.ids)?;
 
         // Begin the batches in memory: the ledger checks everything before
@@ -532,6 +619,7 @@ impl Review {
             .iter()
             .filter(|comment| {
                 comment.archived.is_none()
+                    && comment.pull_request.is_none()
                     && comment.anchor.side == Side::New
                     && !comment.anchor.quoted.is_empty()
                     && matches!(
@@ -549,6 +637,14 @@ impl Review {
         if watched.is_empty() {
             return false;
         }
+        // A user's write of a file is under way, or finishes while this looks: its own rebaseline decides (BUG 42).
+        let epoch = {
+            let writes = lock(&review.user_writes.0);
+            if writes.pending > 0 {
+                return false;
+            }
+            writes.finished
+        };
         let mut wanted: Vec<(String, String)> = watched.iter().map(|w| w.file.clone()).collect();
         wanted.sort();
         wanted.dedup();
@@ -579,6 +675,11 @@ impl Review {
             .filter_map(|(file, lines)| lines.map(|lines| (file, lines)))
             .collect();
         let mut changed = false;
+        // Held through the apply, so no write begins between this check and the ledger's change.
+        let writes = lock(&review.user_writes.0);
+        if writes.pending > 0 || writes.finished != epoch {
+            return false;
+        }
         let mut ledger = lock(&review.comments);
         for w in watched {
             let Some(lines) = files.get(&w.file) else {
@@ -597,15 +698,16 @@ impl Review {
         changed
     }
 
-    /// At start (D138): settles each batch the last run was still typing,
-    /// by asking the sink whether it arrived. Failures are logged; the
-    /// daemon starts regardless.
-    pub(crate) async fn recover_comments(&self) {
+    /// At start (D138, D241): finds each batch the last run was still
+    /// typing and names it pending in the restart report. Call it before
+    /// anything is served, then give what it found to `recover_comments`.
+    pub(crate) fn note_comments(&self, operations: &crate::restart::Operations) -> Doubtful {
+        let mut found = Vec::new();
         let sessions = match self.inner.store.sessions_with_sending_comments() {
             Ok(sessions) => sessions,
             Err(error) => {
                 crate::log::say!("humatad2: couldn't list the sessions with comments to settle: {error}");
-                return;
+                return Doubtful(found);
             }
         };
         for session in sessions {
@@ -624,11 +726,11 @@ impl Review {
                     continue;
                 }
             };
-            let doubtful: Vec<(String, String, Target)> = lock(&review.comments)
+            let doubtful: Vec<(String, String, sink::Target)> = lock(&review.comments)
                 .in_doubt()
                 .into_iter()
                 .map(|delivery| {
-                    let target = Target {
+                    let target = sink::Target {
                         tab: delivery.tab.clone(),
                         holder: delivery.holder,
                     };
@@ -638,8 +740,27 @@ impl Review {
             if doubtful.is_empty() {
                 continue;
             }
+            for (key, _, _) in &doubtful {
+                operations.record(
+                    &format!("comment_send:{}/{key}", record.id),
+                    "comment_send",
+                    "typing",
+                    crate::restart::OperationState::Pending { waits_for: "the terminal to say whether it arrived".to_owned() },
+                );
+            }
+            found.push((record, review, doubtful));
+        }
+        Doubtful(found)
+    }
+
+    /// At start (D138): settles each batch `note_comments` found, by asking
+    /// the sink whether it arrived. Each is named in the restart report
+    /// (D241). Failures are logged; the daemon starts regardless.
+    pub(crate) async fn recover_comments(&self, operations: &crate::restart::Operations, doubtful: Doubtful) {
+        for (record, review, doubtful) in doubtful.0 {
             for (key, text, target) in doubtful {
                 let wire_key = format!("{}/{key}", record.id);
+                let operation = format!("comment_send:{wire_key}");
                 // Only the holder that held the terminal when the batch was
                 // begun can say it never came; without one on record the
                 // user decides.
@@ -655,6 +776,7 @@ impl Review {
                         Arrived::Unknown => unknown(),
                     }
                 };
+                operations.record(&operation, "comment_send", "typing", operation_state(&pasted));
                 settled(&mut lock(&review.comments), &record.id, &key, pasted, false);
             }
             if let Err(status) = self.keep_comments(&system_actor(), &record, &review).await {
@@ -674,8 +796,68 @@ impl Review {
         caller: &Caller,
         id: Option<&pb::CommentId>,
     ) -> Result<(SessionRecord, String, std::sync::Arc<SessionReview>), Status> {
-        let (record, session, id) = self.note_session(caller, id)?;
+        let (record, session, id) = self.locate(caller, id, holds_comment)?;
         self.require_use(caller, Capability::UserReviewState, &session)?;
+        let review = self.review(&record.id)?;
+        Ok((record, id, review))
+    }
+
+    /// The session and local id a comment's wire id names. `<session>/<id>`
+    /// and an agent's own bare ids name it outright; a user's bare id
+    /// (`note-N`, as comments list it) names the one loaded review where
+    /// `holds` says it is.
+    fn locate(
+        &self,
+        caller: &Caller,
+        id: Option<&pb::CommentId>,
+        holds: fn(&SessionReview, &str) -> bool,
+    ) -> Result<(SessionRecord, humata2_access::SessionRef, String), Status> {
+        let bare = id
+            .map(|id| id.value.as_str())
+            .filter(|id| !id.is_empty() && !id.contains('/'));
+        if let (Some(bare), None) = (bare, own_session(caller)) {
+            let found: Vec<String> = lock(&self.inner.sessions)
+                .iter()
+                .filter(|(_, review)| holds(review, bare))
+                .map(|(session, _)| session.clone())
+                .collect();
+            if let [only] = found.as_slice() {
+                let (record, session) = self.session(Some(&pb::SessionId { value: only.clone() }))?;
+                return Ok((record, session, bare.to_owned()));
+            }
+        }
+        self.note_session(caller, id)
+    }
+
+    /// The session a pull request draft is made or changed in, checked for
+    /// the agent that asks: its own, and drafts allowed to it.
+    fn agent_session(
+        &self,
+        caller: &Caller,
+        agent: &crate::identity::AgentCaller,
+        capability: Capability,
+        id: Option<&pb::CommentId>,
+    ) -> Result<(SessionRecord, String, std::sync::Arc<SessionReview>), Status> {
+        let (record, session, id) = self.note_session(caller, id)?;
+        if agent.session.id.as_str() != record.id {
+            return Err(status::invalid_field(
+                "id",
+                pb::invalid_field::Problem::NotAllowedHere,
+                format!("comment {id} is in session {}, not your own", record.id),
+                "answer only comments sent to your own session; list them with comments_list",
+            ));
+        }
+        if matches!(capability, Capability::ReviewDraft) {
+            self.require(
+                caller,
+                &Call::Use {
+                    capability,
+                    target: Target::Channel(session.channel.clone()),
+                },
+            )?;
+        } else {
+            self.require_use(caller, capability, &session)?;
+        }
         let review = self.review(&record.id)?;
         Ok((record, id, review))
     }
@@ -711,28 +893,306 @@ impl Review {
         capability: Capability,
         id: Option<&pb::CommentId>,
         key: Option<&pb::IdempotencyKey>,
-        change: impl FnOnce(&mut CommentLedger, &str) -> Result<UserComment, CommentError> + Send,
+        change: impl FnOnce(&mut CommentLedger, &str) -> Result<UserComment, Status> + Send,
     ) -> Result<pb::Comment, Status> {
-        let (record, session, id) = self.note_session(caller, id)?;
-        if agent.session.id.as_str() != record.id {
-            return Err(status::invalid_field(
-                "id",
-                pb::invalid_field::Problem::NotAllowedHere,
-                format!("comment {id} is in session {}, not your own", record.id),
-                "answer only comments sent to your own session; list them with comments_list",
-            ));
-        }
-        self.require_use(caller, capability, &session)?;
-        let review = self.review(&record.id)?;
+        let (record, id, review) = self.agent_session(caller, agent, capability, id)?;
         let idempotency = idempotency(key);
         if let Some(Answer::Comment(answer)) = answered(&review, idempotency.as_ref()) {
             return Ok(answer);
         }
-        let comment = change(&mut lock(&review.comments), &id).map_err(|error| comment_failed(&error))?;
+        let comment = change(&mut lock(&review.comments), &id)?;
         let answer = to_pb(&comment, &record.id);
         remember(&review, idempotency, Answer::Comment(answer.clone()));
         self.keep_comments(&identity::actor(caller), &record, &review).await?;
         Ok(answer)
+    }
+
+    /// Who a draft for a pull request is by, once `caller` may make one in
+    /// `session`: the user, or the session's own agent (PR-9).
+    fn draft_author(&self, caller: &Caller, session: &humata2_access::SessionRef) -> Result<CommentAuthor, Status> {
+        match caller {
+            Caller::Agent(agent) => {
+                if agent.session.id != session.id {
+                    return Err(status::invalid_field(
+                        "session",
+                        pb::invalid_field::Problem::NotAllowedHere,
+                        "an agent drafts only in its own review".to_owned(),
+                        "leave the session out, or name your own",
+                    ));
+                }
+                self.require(
+                    caller,
+                    &Call::Use {
+                        capability: Capability::ReviewDraft,
+                        target: Target::Channel(session.channel.clone()),
+                    },
+                )?;
+                Ok(CommentAuthor::Agent(agent.agent.clone()))
+            }
+            _ => {
+                self.require_use(caller, Capability::UserReviewState, session)?;
+                Ok(CommentAuthor::User)
+            }
+        }
+    }
+
+    /// The repository key and number of `pr` when it is one of the
+    /// review's pull requests.
+    fn bound_pull_request(&self, session: &str, pr: &pb::PullRequestRef) -> Result<(String, u32), Status> {
+        let repo = pr.repo.as_ref().map(wire::repo_key).unwrap_or_default();
+        let record = self
+            .inner
+            .store
+            .review_session(session)
+            .map_err(|error| status::store(error, &self.inner.machine, "read the review's pull requests"))?;
+        let held = record
+            .as_ref()
+            .is_some_and(|record| record.prs.iter().any(|held| held.number == pr.number && format!("{}/{}", held.owner, held.name) == repo));
+        if held {
+            Ok((repo, pr.number))
+        } else {
+            Err(status::invalid_field(
+                "destination.pull_request",
+                pb::invalid_field::Problem::NotAllowedHere,
+                format!("{repo}#{} is not one of the pull requests this session reviews", pr.number),
+                "draft only for the pull requests of this review; start another review to cover this one",
+            ))
+        }
+    }
+
+    /// A review chat note becomes a draft for one of the review's pull
+    /// requests, in place: the same id, author and anchor (D284).
+    pub(super) async fn make_note_a_draft_of(
+        &self,
+        caller: &Caller,
+        request: pb::MakeNoteADraftRequest,
+    ) -> Result<pb::Comment, Status> {
+        let (record, session, id) = self.locate(caller, request.id.as_ref(), holds_note)?;
+        self.require_use(caller, Capability::UserReviewState, &session)?;
+        let review = self.review(&record.id)?;
+        let idempotency = idempotency(request.idempotency_key.as_ref());
+        if let Some(Answer::Comment(answer)) = answered(&review, idempotency.as_ref()) {
+            return Ok(answer);
+        }
+        if let Some(held) = lock(&review.comments).comment(&id) {
+            if held.pull_request.is_some() {
+                return Ok(to_pb(held, &record.id));
+            }
+            return Err(comment_failed(&CommentError::NotDraft {
+                id: id.clone(),
+                status: held.status,
+            }));
+        }
+        let note = lock(&review.chat)
+            .chat
+            .notes()
+            .find(|note| note.id == id)
+            .cloned()
+            .ok_or_else(|| {
+                status::not_found(
+                    pb::EntityKind::Comment,
+                    &id,
+                    format!("there is no review chat note {id}; it may have been dropped"),
+                    "list the session's comments and make a draft of one of its notes",
+                )
+            })?;
+        let (repo, number) = match request.pr.as_ref() {
+            Some(pr) => self.bound_pull_request(&record.id, pr)?,
+            None => {
+                let binding = self
+                    .inner
+                    .store
+                    .review_session(&record.id)
+                    .map_err(|error| status::store(error, &self.inner.machine, "read the review's pull requests"))?;
+                let folder = folder_name(&note.note.file.repo).to_owned();
+                let mut hits: Vec<(String, u32)> = binding
+                    .iter()
+                    .flat_map(|binding| binding.prs.iter())
+                    .filter(|held| {
+                        format!("{}/{}", held.owner, held.name) == note.note.file.repo || held.name == folder
+                    })
+                    .map(|held| (format!("{}/{}", held.owner, held.name), held.number))
+                    .collect();
+                match (hits.pop(), hits.is_empty()) {
+                    (Some(only), true) => only,
+                    (None, _) => {
+                        return Err(status::invalid_field(
+                            "id",
+                            pb::invalid_field::Problem::NotAllowedHere,
+                            format!(
+                                "note {id} is on {}, which is none of this review's pull requests' repositories",
+                                note.note.file.repo
+                            ),
+                            "make a draft only of a note on a repository the review covers",
+                        ));
+                    }
+                    _ => {
+                        return Err(status::invalid_field(
+                            "pr",
+                            pb::invalid_field::Problem::Missing,
+                            format!("this review has several pull requests in {}", note.note.file.repo),
+                            "pass `pr` with the pull request the draft is for",
+                        ));
+                    }
+                }
+            }
+        };
+        let (first, last, side) = match note.note.target {
+            NoteTarget::File => (0, 0, Side::New),
+            NoteTarget::Hunk { line, side } => (line, line, side),
+            NoteTarget::Lines { first, last, side } => (first, last, side),
+        };
+        let (quoted, blob) = note
+            .note
+            .anchor
+            .as_ref()
+            .map(|anchor| (anchor.quoted.clone(), anchor.blob.clone()))
+            .unwrap_or_default();
+        let anchor = CommentAnchor {
+            file: note.note.file.clone(),
+            side,
+            first,
+            last,
+            quoted,
+            base: String::new(),
+            blob,
+            detached: false,
+        };
+        let comment = {
+            let mut ledger = lock(&review.comments);
+            ledger.adopt_note(
+                &id,
+                anchor,
+                &note.note.text,
+                CommentAuthor::Agent(note.author.clone()),
+                (&repo, number),
+                now(),
+            );
+            if note.outdated {
+                ledger.set_outdated(&id, true);
+            }
+            ledger.comment(&id).cloned()
+        }
+        .ok_or_else(|| status::internal("a note made a draft vanished".to_owned(), ""))?;
+        let answer = to_pb(&comment, &record.id);
+        remember(&review, idempotency, Answer::Comment(answer.clone()));
+        self.keep_comments(&identity::actor(caller), &record, &review).await?;
+        Ok(answer)
+    }
+
+    /// Whether a comment id names a ledger comment (a user's comment, or
+    /// a note made a draft) rather than a review chat note.
+    pub(super) fn is_ledger_id(&self, caller: &Caller, id: Option<&pb::CommentId>) -> bool {
+        is_user_id(id)
+            || self
+                .locate(caller, id, holds_comment)
+                .ok()
+                .is_some_and(|(record, _, local)| {
+                    self.review(&record.id)
+                        .is_ok_and(|review| lock(&review.comments).comment(&local).is_some())
+                })
+    }
+
+    /// PR-17: how many of the session's pull request drafts were never
+    /// submitted (not posted, not dropped).
+    pub(crate) fn unsubmitted_pr_drafts(&self, session: &str) -> Result<u32, Status> {
+        let review = self.review(session)?;
+        let ledger = lock(&review.comments);
+        let count = ledger
+            .comments()
+            .iter()
+            .filter(|c| c.pull_request.is_some() && c.status == CommentStatus::Draft && c.archived.is_none())
+            .count();
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
+    /// Every comment of the session for a pull request, any status, as the
+    /// API shows it.
+    pub(super) async fn pr_comments(&self, session: &str) -> Result<Vec<pb::Comment>, Status> {
+        let review = self.review(session)?;
+        let ledger = lock(&review.comments);
+        Ok(ledger
+            .comments()
+            .iter()
+            .filter(|comment| comment.pull_request.is_some())
+            .map(|comment| to_pb(comment, session))
+            .collect())
+    }
+
+    /// GitHub took these drafts; each still a draft becomes posted at `url`.
+    pub(super) async fn mark_pr_posted(&self, session: &str, ids: &[String], url: &str) -> Result<(), Status> {
+        self.change_pr(session, ids, |ledger, id| {
+            let draft = ledger.comment(id).is_some_and(|c| c.status == CommentStatus::Draft);
+            draft && ledger.mark_posted(id, url).is_ok()
+        })
+        .await
+    }
+
+    /// A submit was cut short and GitHub lists no review holding these.
+    pub(super) async fn mark_pr_unconfirmed(&self, session: &str, ids: &[String]) -> Result<(), Status> {
+        self.change_pr(session, ids, |ledger, id| ledger.set_post_unconfirmed(id, true)).await
+    }
+
+    /// Marks outdated every open draft for a pull request, on the new side,
+    /// whose lines `changed(repo, path, first, last)` says changed (PR-16).
+    /// Returns how many it marked.
+    pub(super) async fn outdate_drafts(
+        &self,
+        session: &str,
+        changed: &(dyn Fn(&str, &str, u32, u32) -> bool + Sync),
+    ) -> Result<usize, Status> {
+        let (record, _) = self.session(Some(&pb::SessionId {
+            value: session.to_owned(),
+        }))?;
+        let review = self.review(session)?;
+        let marked = {
+            let mut ledger = lock(&review.comments);
+            let hits: Vec<String> = ledger
+                .comments()
+                .iter()
+                .filter(|c| {
+                    c.pull_request.is_some()
+                        && c.status == CommentStatus::Draft
+                        && c.archived.is_none()
+                        && !c.outdated
+                        && c.anchor.side == Side::New
+                        && changed(&c.anchor.file.repo, &c.anchor.file.path, c.anchor.first, c.anchor.last)
+                })
+                .map(|c| c.id.clone())
+                .collect();
+            hits.iter().filter(|id| ledger.set_outdated(id, true)).count()
+        };
+        if marked > 0 {
+            self.keep_comments(&system_actor(), &record, &review).await?;
+        }
+        Ok(marked)
+    }
+
+    /// Applies `change` to each of the drafts `ids` name, then saves and
+    /// tells the feed when any changed.
+    async fn change_pr(
+        &self,
+        session: &str,
+        ids: &[String],
+        mut change: impl FnMut(&mut CommentLedger, &str) -> bool + Send,
+    ) -> Result<(), Status> {
+        let (record, _) = self.session(Some(&pb::SessionId {
+            value: session.to_owned(),
+        }))?;
+        let review = self.review(session)?;
+        let changed = {
+            let mut ledger = lock(&review.comments);
+            let mut any = false;
+            for id in ids {
+                let local = id.rsplit('/').next().unwrap_or(id);
+                any |= change(&mut ledger, local);
+            }
+            any
+        };
+        if changed {
+            self.keep_comments(&system_actor(), &record, &review).await?;
+        }
+        Ok(())
     }
 
     /// An anchor from the wire. The repo is the one named, else `fallback`,
@@ -766,6 +1226,9 @@ impl Review {
                 } else {
                     let mut clones = repo_keys(&self.inner, record, &[]).await?;
                     match (clones.pop(), clones.is_empty()) {
+                        // With no clone, the session comments on its own
+                        // folder, even on a file it hasn't written yet.
+                        (None, _) => String::new(),
                         (Some(only), true) => only,
                         _ => {
                             return Err(status::invalid_field(
@@ -815,8 +1278,50 @@ pub(super) fn all_now(ledger: &CommentLedger, session: &str) -> BTreeMap<String,
     ledger
         .comments()
         .iter()
-        .map(|comment| (format!("{session}/{}", comment.id), to_pb(comment, session)))
+        .map(|comment| (wire_id(session, &comment.id), to_pb(comment, session)))
         .collect()
+}
+
+/// A comment's id on the wire: the user's comments carry their session
+/// (`<session>/c-<n>`); a note made a draft keeps its bare `note-<n>`.
+/// Whether lines in repository `anchor` can carry a draft for a pull
+/// request of `pull` (D732): the same key, or a bare name (a clone with
+/// no owner, D624) equal to the pull request's name part. The app's
+/// `humata2_clients::comments::repo_holds_pull` is the same rule.
+fn repo_holds_pull(anchor: &str, pull: &str) -> bool {
+    anchor == pull || (!anchor.contains('/') && pull.rsplit_once('/').is_some_and(|(_, name)| name == anchor))
+}
+
+fn wire_id(session: &str, id: &str) -> String {
+    if id.starts_with("c-") {
+        format!("{session}/{id}")
+    } else {
+        id.to_owned()
+    }
+}
+
+/// Whether the ledger of `review` holds comment `id`.
+fn holds_comment(review: &SessionReview, id: &str) -> bool {
+    lock(&review.comments).comment(id).is_some()
+}
+
+/// Whether `review` holds `id` as a chat note, or as a draft made of one.
+fn holds_note(review: &SessionReview, id: &str) -> bool {
+    holds_comment(review, id) || lock(&review.chat).chat.notes().any(|note| note.id == id)
+}
+
+/// `id` is a draft for a pull request written by `author`, the agent. A
+/// comment the user wrote, for the agent or for GitHub, is the user's to
+/// change (SM-13, PR-11); another agent's draft is that agent's.
+fn own_draft(ledger: &CommentLedger, id: &str, author: &CommentAuthor) -> Result<(), Status> {
+    match ledger.comment(id) {
+        None => Err(comment_failed(&CommentError::Unknown { id: id.to_owned() })),
+        Some(comment) if comment.pull_request.is_some() && comment.author == *author => Ok(()),
+        Some(comment) if comment.author == CommentAuthor::User => Err(status::refused(&Refusal::UserOnly {
+            capability: Some(Capability::UserReviewState),
+        })),
+        Some(comment) => Err(comment_failed(&CommentError::NotYours { id: comment.id.clone() })),
+    }
 }
 
 /// One batch begun or retried in a Send.
@@ -836,6 +1341,7 @@ fn sendable_ids(ledger: &CommentLedger) -> Vec<String> {
         .iter()
         .filter(|comment| {
             comment.archived.is_none()
+                && comment.pull_request.is_none()
                 && matches!(comment.status, CommentStatus::Draft | CommentStatus::Waiting)
                 && !comment.text.trim().is_empty()
                 && !ledger
@@ -845,6 +1351,26 @@ fn sendable_ids(ledger: &CommentLedger) -> Vec<String> {
         })
         .map(|comment| comment.id.clone())
         .collect()
+}
+
+/// How a batch the last run was typing ended, as the restart report says it.
+fn operation_state(pasted: &Pasted) -> crate::restart::OperationState {
+    use crate::restart::OperationState as State;
+    match pasted {
+        Pasted::Typed => State::Finished,
+        Pasted::NotTyped(status) => State::Stuck {
+            reason: format!(
+                "it was not typed into the agent's terminal ({}); the comments are held in the review, so send them again or take them back",
+                status.message()
+            ),
+        },
+        Pasted::Unknown(status) => State::Stuck {
+            reason: format!(
+                "{}; check the agent's terminal for the comments, then send them again or take them back",
+                status.message()
+            ),
+        },
+    }
 }
 
 /// Records what became of typing batch `key`.
@@ -947,6 +1473,115 @@ fn read_lines(folder: &Path, repo: &str, path: &str) -> Option<Vec<String>> {
     Some(text.lines().map(str::to_owned).collect())
 }
 
+/// The user's writes of files in one session, as the review service counts them.
+#[derive(Default)]
+pub(super) struct Writes(std::sync::Mutex<WritesState>);
+
+#[derive(Default)]
+struct WritesState {
+    /// Writes between taking their hold and finishing.
+    pending: usize,
+    /// Writes finished, so a look that started before one can tell.
+    finished: u64,
+}
+
+/// A user write under way in one session (BUG 42). Dropping it, however the
+/// write ended, counts it finished.
+struct Held {
+    review: Review,
+    session: String,
+    state: std::sync::Arc<SessionReview>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut writes = lock(&self.state.user_writes.0);
+        writes.pending = writes.pending.saturating_sub(1);
+        writes.finished += 1;
+    }
+}
+
+impl crate::files::UserWrites for Review {
+    fn writing(&self, session: &str) -> Option<Box<dyn crate::files::UserWrite>> {
+        let state = self.review(session).ok()?;
+        lock(&state.user_writes.0).pending += 1;
+        Some(Box::new(Held {
+            review: self.clone(),
+            session: session.to_owned(),
+            state,
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl crate::files::UserWrite for Held {
+    async fn wrote(self: Box<Self>, repo: &pb::RepoRef, path: &str) {
+        let record = match self.review.inner.store.session(&self.session) {
+            Ok(Some(record)) => record,
+            _ => return,
+        };
+        self.review
+            .rebaseline_user_comments(&record, &self.state, &wire::repo_key(repo), path)
+            .await;
+    }
+}
+
+impl Review {
+    /// The user wrote `path` of the session's clone of `repo`: the comments
+    /// on it follow the new text and stay as they were, a sent one still
+    /// sent. Only the agent's change addresses a comment.
+    async fn rebaseline_user_comments(&self, record: &SessionRecord, review: &SessionReview, repo: &str, path: &str) {
+        let watched: Vec<(String, Vec<String>, u32)> = lock(&review.comments)
+            .comments()
+            .iter()
+            .filter(|comment| {
+                comment.archived.is_none()
+                    && comment.pull_request.is_none()
+                    && comment.anchor.side == Side::New
+                    && !comment.anchor.quoted.is_empty()
+                    && comment.anchor.file.repo == repo
+                    && comment.anchor.file.path == path
+                    && matches!(
+                        comment.status,
+                        CommentStatus::Draft | CommentStatus::Waiting | CommentStatus::Sent
+                    )
+            })
+            .map(|comment| (comment.id.clone(), comment.anchor.quoted.clone(), comment.anchor.first))
+            .collect();
+        if watched.is_empty() {
+            return;
+        }
+        let folder = record.folder.clone();
+        let (repo_key, file) = (repo.to_owned(), path.to_owned());
+        let lines = match blocking(move || read_lines(&folder, &repo_key, &file)).await {
+            Ok(Some(lines)) => lines,
+            _ => return,
+        };
+        let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mut changed = false;
+        {
+            let mut ledger = lock(&review.comments);
+            for (id, quoted, first) in watched {
+                match place(&quoted, first, &lines) {
+                    Placement::Same => {}
+                    Placement::Moved { first, last } => changed |= ledger.moved(&id, first, last),
+                    Placement::Changed { first, last, now: after } => {
+                        changed |= ledger.rebaseline(&id, first, last, after) || ledger.changed(&id, first, last, Vec::new(), now());
+                    }
+                    Placement::Gone => changed |= ledger.gone(&id),
+                }
+            }
+        }
+        if changed && let Err(status) = self.keep_comments(&system_actor(), record, review).await {
+            crate::log::say!(
+                "humatad2: session {}: couldn't save the comments after a write: {}",
+                record.id,
+                status.message()
+            );
+        }
+    }
+}
+
 fn status_from_pb(status: i32) -> Option<CommentStatus> {
     match pb::CommentStatus::try_from(status).ok()? {
         pb::CommentStatus::Draft => Some(CommentStatus::Draft),
@@ -954,7 +1589,8 @@ fn status_from_pb(status: i32) -> Option<CommentStatus> {
         pb::CommentStatus::Sent => Some(CommentStatus::Sent),
         pb::CommentStatus::Addressed => Some(CommentStatus::Addressed),
         pb::CommentStatus::Resolved => Some(CommentStatus::Resolved),
-        pb::CommentStatus::Unspecified | pb::CommentStatus::Posted => None,
+        pb::CommentStatus::Posted => Some(CommentStatus::Posted),
+        pb::CommentStatus::Unspecified => None,
     }
 }
 
@@ -965,6 +1601,7 @@ fn status_to_pb(status: CommentStatus) -> pb::CommentStatus {
         CommentStatus::Sent => pb::CommentStatus::Sent,
         CommentStatus::Addressed => pb::CommentStatus::Addressed,
         CommentStatus::Resolved => pb::CommentStatus::Resolved,
+        CommentStatus::Posted => pb::CommentStatus::Posted,
     }
 }
 
@@ -1022,7 +1659,7 @@ fn to_pb(comment: &UserComment, session: &str) -> pb::Comment {
     let whole_file = anchor.first == 0 && anchor.last == 0;
     pb::Comment {
         id: Some(pb::CommentId {
-            value: format!("{session}/{}", comment.id),
+            value: wire_id(session, &comment.id),
         }),
         session: Some(pb::SessionId {
             value: session.to_owned(),
@@ -1045,14 +1682,23 @@ fn to_pb(comment: &UserComment, session: &str) -> pb::Comment {
             quoted: anchor.quoted.join("\n"),
             blob_sha: anchor.blob.clone(),
             detached: anchor.detached,
-            outdated: false,
+            outdated: comment.outdated,
             base: anchor.base.clone(),
         }),
         text: comment.text.clone(),
-        author: Some(user_actor()),
+        author: Some(actor_of(&comment.author, session)),
         destination: Some(pb::CommentDestination {
-            destination: Some(pb::comment_destination::Destination::Terminal(pb::SessionTerminal {})),
+            destination: Some(match &comment.pull_request {
+                Some((repo, number)) => pb::comment_destination::Destination::PullRequest(pb::PullRequestRef {
+                    repo: Some(wire::repo_ref(repo)),
+                    number: *number,
+                    ..pb::PullRequestRef::default()
+                }),
+                None => pb::comment_destination::Destination::Terminal(pb::SessionTerminal {}),
+            }),
         }),
+        posted_url: comment.posted_url.clone().unwrap_or_default(),
+        post_unconfirmed: comment.post_unconfirmed,
         status: status_to_pb(comment.status) as i32,
         created_at: Some(timestamp(comment.created_at)),
         revision: Some(pb::Revision { value: comment.revision }),
@@ -1090,7 +1736,7 @@ fn to_pb(comment: &UserComment, session: &str) -> pb::Comment {
 /// can't read it.
 fn from_pb(comment: &pb::Comment) -> Option<UserComment> {
     let id = comment.id.as_ref()?.value.rsplit('/').next()?.to_owned();
-    if !id.starts_with("c-") {
+    if !id.starts_with("c-") && !id.starts_with("note-") {
         return None;
     }
     let anchor = comment.anchor.as_ref()?;
@@ -1146,6 +1792,16 @@ fn from_pb(comment: &pb::Comment) -> Option<UserComment> {
             })
             .collect(),
         unconfirmed: comment.delivery_unconfirmed,
+        author: author_of(comment.author.as_ref()),
+        pull_request: match comment.destination.as_ref().and_then(|destination| destination.destination.as_ref()) {
+            Some(pb::comment_destination::Destination::PullRequest(pr)) => {
+                Some((pr.repo.as_ref().map(wire::repo_key).unwrap_or_default(), pr.number))
+            }
+            _ => None,
+        },
+        posted_url: (!comment.posted_url.is_empty()).then(|| comment.posted_url.clone()),
+        outdated: anchor.outdated,
+        post_unconfirmed: comment.post_unconfirmed,
     })
 }
 
@@ -1230,7 +1886,7 @@ fn difference(
     change.removed = kept.comments.keys().filter(|id| !now_kept.comments.contains_key(*id)).cloned().collect();
     told.extend(change.removed.iter().map(|id| pb::CommentFeedEvent {
         event: Some(pb::comment_feed_event::Event::Dropped(pb::CommentId {
-            value: format!("{session}/{id}"),
+            value: wire_id(session, id),
         })),
     }));
     for delivery in ledger.deliveries() {
@@ -1317,7 +1973,11 @@ pub(super) fn load(store: &Store, session: &str) -> Result<(CommentLedger, Kept)
     }
     // Ids are never reused, even when a comment couldn't be read back.
     let numbered = |id: &str| id.rsplit('-').next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
-    let last_comment = comments.iter().map(|comment| numbered(&comment.id)).fold(saved.numbers.last_comment, u64::max);
+    let last_comment = comments
+        .iter()
+        .filter(|comment| comment.id.starts_with("c-"))
+        .map(|comment| numbered(&comment.id))
+        .fold(saved.numbers.last_comment, u64::max);
     let last_delivery =
         deliveries.iter().map(|delivery| numbered(&delivery.key)).fold(saved.numbers.last_delivery, u64::max);
     let ledger = CommentLedger::from_parts(LedgerParts {
@@ -1371,6 +2031,11 @@ fn comment_failed(error: &CommentError) -> Status {
                 CommentError::ReplyNeeded { .. } => "pass `reply` with a short note on what you did",
                 CommentError::NotSent { .. } => "answer only comments that were sent: list them with comments_list",
                 CommentError::AlreadyResolved { .. } => "nothing to do; the user reopens it if more is needed",
+                CommentError::ForPullRequest { .. } => {
+                    "post it from Submit review; to tell the agent something, make a comment for the agent instead"
+                }
+                CommentError::AlreadyPosted { .. } => "open the review on GitHub and change the comment there",
+                CommentError::NotYours { .. } => "change only drafts you wrote; draft your own with review_draft",
                 _ => "",
             };
             status::failure(
@@ -1385,5 +2050,19 @@ fn comment_failed(error: &CommentError) -> Status {
                 ),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod repo_rule_tests {
+    use super::repo_holds_pull;
+
+    #[test]
+    fn a_draft_fits_the_same_repository_or_its_bare_name_only() {
+        assert!(repo_holds_pull("acme/api", "acme/api"));
+        assert!(repo_holds_pull("api", "acme/api"));
+        assert!(!repo_holds_pull("other/api", "acme/api"));
+        assert!(!repo_holds_pull("web", "acme/api"));
+        assert!(!repo_holds_pull("api", "api2"));
     }
 }

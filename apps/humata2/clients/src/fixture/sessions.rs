@@ -76,6 +76,11 @@ pub(super) fn session(
         model: None,
         restart_detail: None,
         permissions: Vec::new(),
+        pull_request_review: false,
+        push_allowed: false,
+        moving: None,
+        folder: format!("/Users/me/Humata/{channel}/sessions/{id}"),
+        clones: Vec::new(),
     }
 }
 
