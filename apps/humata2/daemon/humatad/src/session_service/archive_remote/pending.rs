@@ -86,6 +86,13 @@ impl Pending {
         }
     }
 
+    /// The machine whose link it waits for.
+    fn machine(&self) -> &str {
+        match self {
+            Self::Reconcile { machine, .. } | Self::Release { machine, .. } | Self::Restore { machine, .. } => machine,
+        }
+    }
+
     pub(super) fn session(&self) -> &str {
         match self {
             Self::Reconcile { session, .. } | Self::Release { session, .. } | Self::Restore { session, .. } => session,
@@ -262,6 +269,15 @@ pub(super) fn exists(folder: &Path, pending: &Pending) -> bool {
 /// `pending` is done or moot; its file goes. Blocking.
 pub(super) fn remove(folder: &Path, pending: &Pending) {
     let _ = remove_durably(&path_of(folder, pending));
+}
+
+/// Every follow-up that waits for `machine` goes: it was removed or
+/// forgotten (D783). One that can't be read is left, as [`read_all`] says.
+/// Blocking.
+pub(super) fn remove_of(folder: &Path, machine: &str) {
+    for pending in read_all(folder).iter().filter(|pending| pending.machine() == machine) {
+        remove(folder, pending);
+    }
 }
 
 /// The conversation a restore here is about to resume, kept beside its
@@ -588,5 +604,45 @@ mod resume_tests {
         assert_eq!(read_resumes(dir.path()), vec![("se_1".to_owned(), "/old/folder".to_owned(), lines)]);
         remove_resume(dir.path(), "se_1");
         assert!(read_resumes(dir.path()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod removed_tests {
+    use super::*;
+
+    fn release(session: &str, machine: &str) -> Pending {
+        Pending::Release {
+            session: session.to_owned(),
+            machine: machine.to_owned(),
+            channel: "ch_1".to_owned(),
+            operation: "op_1".to_owned(),
+            restored: None,
+            kept: None,
+            cleared: true,
+        }
+    }
+
+    /// D783: a removed machine's follow-ups go and another machine's stay.
+    #[test]
+    fn a_removed_machines_follow_ups_go_and_another_machines_stay() {
+        let folder = tempfile::tempdir().unwrap();
+        write(folder.path(), &release("se_1", "box-1")).unwrap();
+        write(
+            folder.path(),
+            &Pending::Restore {
+                session: "se_2".to_owned(),
+                machine: "box-1".to_owned(),
+                channel: "ch_1".to_owned(),
+                operation: "op_2".to_owned(),
+            },
+        )
+        .unwrap();
+        write(folder.path(), &release("se_3", "box-2")).unwrap();
+
+        remove_of(folder.path(), "box-1");
+
+        let left: Vec<_> = read_all(folder.path()).iter().map(|pending| pending.session().to_owned()).collect();
+        assert_eq!(left, ["se_3"]);
     }
 }

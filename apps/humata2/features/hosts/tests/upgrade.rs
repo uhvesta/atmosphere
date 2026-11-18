@@ -88,6 +88,7 @@ fn migrate(request: &str, thing: MigrateThing, machine: &str, phase: MigratePhas
         asked_by: None,
         undo_note: None,
         choices: vec![],
+        on_screen: None,
     }
 }
 

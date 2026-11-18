@@ -26,6 +26,7 @@ use humata2_clients::model::{
     Answer, ChannelId, MachineId, MachineStop, MigrateFailure, MigratePhase, MigrateThing, Release, Request,
     RequestId, SessionId,
 };
+use crate::running::{Running, RunningAction, RunningDelegate, RunningState};
 use crate::scripts::ScriptsState;
 use tca::Effect;
 use tca::Reducer;
@@ -184,6 +185,8 @@ pub struct MachinePageState {
     pub migrations: Vec<Request>,
     /// The Scripts section (MACHINESCRIPTS, D686).
     pub scripts: ScriptsState,
+    /// The running holders, frame 59's "Sessions on it" (D784).
+    pub running: RunningState,
 }
 
 impl MachinePageState {
@@ -299,6 +302,8 @@ pub enum Delegate {
     OpenInInbox(RequestId),
     /// Say this in a toast.
     Toast(String),
+    /// What the running list asks (D784).
+    Running(RunningDelegate),
 }
 
 /// The items of the "…" menu that run an action.
@@ -402,6 +407,8 @@ pub enum MachinePageAction {
     RunScript(String),
     /// A Run now ended, or was refused.
     ScriptRan(MachineId, String, Result<(), DaemonError>),
+    /// The running holders' list (D784).
+    Running(RunningAction),
     /// For the parent.
     Delegate(Delegate),
 }
@@ -410,13 +417,33 @@ pub enum MachinePageAction {
 #[derive(Clone)]
 pub struct MachinePage {
     machines: Arc<dyn Machines>,
+    /// The running list's reducer; without it the list isn't loaded.
+    running: Option<Running>,
 }
 
 impl MachinePage {
     /// A page that reads and changes machines through `machines`.
     #[must_use]
     pub fn new(machines: Arc<dyn Machines>) -> Self {
-        Self { machines }
+        Self { machines, running: None }
+    }
+
+    /// The same page, listing the machine's running holders through
+    /// `daemon` (D784).
+    #[must_use]
+    pub fn with_daemon(mut self, daemon: Arc<dyn humata2_clients::Daemon>) -> Self {
+        self.running = Some(Running::new(daemon));
+        self
+    }
+
+    fn running(&self, state: &mut MachinePageState, action: RunningAction) -> Effect<MachinePageAction> {
+        if let RunningAction::Delegate(delegate) = action {
+            return Effect::send(MachinePageAction::Delegate(Delegate::Running(delegate)));
+        }
+        match &self.running {
+            Some(running) => running.reduce(&mut state.running, action).map(MachinePageAction::Running),
+            None => Effect::none(),
+        }
     }
 
     fn load(&self, state: &mut MachinePageState, machine: MachineId) -> Effect<MachinePageAction> {
@@ -455,11 +482,14 @@ impl Reducer for MachinePage {
                         ..MachinePageState::default()
                     };
                 }
-                // The rules and their last runs load beside the detail.
+                // The rules and their last runs load beside the detail, and
+                // so do its running holders.
                 let scripts = self.load_scripts(state, machine.clone());
-                return Effect::merge([self.load(state, machine), scripts]);
+                let running = self.running(state, RunningAction::Load(machine.clone()));
+                return Effect::merge([self.load(state, machine), scripts, running]);
             }
             A::Migrations(migrations) => state.migrations = migrations,
+            A::Running(action) => return self.running(state, action),
             A::OpenInInbox => {
                 if let Some(request) = state.inbox_item() {
                     return delegate(Delegate::OpenInInbox(request));

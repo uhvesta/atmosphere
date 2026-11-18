@@ -9,7 +9,10 @@ mod common;
 #[path = "common/mcp_client.rs"]
 mod mcp_client;
 
-use common::{create_channel, error_of, shell_token, start_session, start_world, wait_status};
+use common::{
+    create_channel, error_of, is_running, shell_token, start_session, start_world, wait_running,
+    wait_status,
+};
 use humata2_grpc::humata::v1 as pb;
 use mcp_client::Mcp;
 use serde_json::{Value, json};
@@ -70,8 +73,10 @@ async fn scene() -> Scene {
     let (channel, _) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
     let (mine, _) = start_session(&daemon, &channel, "Mine").await;
     let (other, _) = start_session(&daemon, &channel, "Other").await;
-    wait_status(&daemon, &mine, pb::SessionStatus::Working).await;
-    wait_status(&daemon, &other, pb::SessionStatus::Working).await;
+    // The test agent speaks once and goes quiet, so it may already read as
+    // ProbablyIdle (D169) by the time the second start is done: both still run.
+    wait_running(&daemon, &mine).await;
+    wait_running(&daemon, &other).await;
     let (token, attach) = shell_token(&daemon, &mine).await;
     Scene { daemon, channel, other, token, _attach: attach }
 }
@@ -141,10 +146,8 @@ async fn an_agent_stopping_or_archiving_another_session_still_asks() {
     for request in &held {
         assert_eq!(request.capability(), pb::Capability::SessionStopOther, "{request:?}");
     }
-    assert_eq!(
-        common::get_session(&scene.daemon, &scene.other).await.status,
-        pb::SessionStatus::Working as i32
-    );
+    let other = common::get_session(&scene.daemon, &scene.other).await;
+    assert!(is_running(&other), "the other session runs on: {:?}", other.status());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -238,10 +241,8 @@ async fn denying_an_agents_archive_of_another_session_leaves_it_working() {
     let waited = waited(&mut mcp, &id).await;
 
     assert_eq!(waited["isError"], true, "{waited}");
-    assert_eq!(
-        common::get_session(&scene.daemon, &scene.other).await.status,
-        pb::SessionStatus::Working as i32
-    );
+    let other = common::get_session(&scene.daemon, &scene.other).await;
+    assert!(is_running(&other), "the other session runs on: {:?}", other.status());
 }
 
 /// DeleteSession of another session as the agent, with `key`: the id of

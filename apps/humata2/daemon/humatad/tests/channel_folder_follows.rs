@@ -341,6 +341,7 @@ impl Fixture {
                 idempotency_key: None,
                 id: Some(id.clone()),
                 machine: None,
+                stopped: false,
             })
             .await
             .unwrap()

@@ -289,6 +289,17 @@ async fn new_shell_tab(
         })
 }
 
+/// Opens a link to tab `tab` of `session` whose attaches open at `size`;
+/// (0, 0) leaves the tab at its own size.
+fn link_at(shared: &Arc<Shared>, session: &SessionId, tab: usize, size: (u16, u16)) -> Reply<TerminalLink> {
+    let shared = shared.clone();
+    let session = session.clone();
+    Box::pin(async move {
+        let tab_id = shared.tab(&session, tab).await?.id.unwrap_or_default();
+        Ok(crate::link::start(&shared, pb_session(&session), tab_id, tab as u64, size))
+    })
+}
+
 impl Terminals for LiveDaemon {
     fn open(&self, session: &SessionId, agent: Agent) -> Reply<(usize, Session)> {
         let shared = self.shared.clone();
@@ -346,18 +357,12 @@ impl Terminals for LiveDaemon {
     }
 
     fn link(&self, session: &SessionId, tab: usize) -> Reply<TerminalLink> {
-        let shared = self.shared.clone();
-        let session = session.clone();
-        Box::pin(async move {
-            let tab_id = shared.tab(&session, tab).await?.id.unwrap_or_default();
-            Ok(crate::link::start(
-                &shared,
-                pb_session(&session),
-                tab_id,
-                tab as u64,
-                LINK_SIZE,
-            ))
-        })
+        link_at(&self.shared, session, tab, LINK_SIZE)
+    }
+
+    fn link_unsized(&self, session: &SessionId, tab: usize) -> Reply<TerminalLink> {
+        // No size: the daemon leaves the tab's grid as it is (D781).
+        link_at(&self.shared, session, tab, (0, 0))
     }
 
     fn paste_image(&self, session: &SessionId, kind: ImageKind, bytes: Vec<u8>) -> Reply<String> {

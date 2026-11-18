@@ -71,6 +71,14 @@ impl Fixture {
             "resume_args": [script, "--resume", "{conversation}"],
             "conversation_file": format!("{}/{{conversation}}.jsonl", world.conv.display()),
             "turn_end": "hooks",
+        }, {
+            // D782: another kind, whose own switch is set apart.
+            "name": OTHER_KIND,
+            "program": "/bin/sh",
+            "start_args": [script, "--session-id", "{conversation}"],
+            "resume_args": [script, "--resume", "{conversation}"],
+            "conversation_file": format!("{}/{{conversation}}.jsonl", world.conv.display()),
+            "turn_end": "hooks",
         }]);
         std::fs::write(&world.agents, agents.to_string()).expect("write a test file");
         world.remote("acme", "api");
@@ -233,24 +241,65 @@ impl Fixture {
         }
     }
 
-    /// The user sets Settings › Agents › Ask for permission in the Inbox
-    /// (D199), and the settings shown after say so.
-    async fn asks_in_inbox(&self, on: bool) {
-        let shown =
-            pb::settings_service_client::SettingsServiceClient::new(self.daemon.channel().await)
-                .update_settings(pb::UpdateSettingsRequest {
-                    agents: Some(pb::AgentSettings {
-                        permissions_in_agent: !on,
-                        ..Default::default()
-                    }),
+    /// The user sets Settings › Agents › `kind` › Ask in the Inbox (D782).
+    async fn asks_in_inbox(&self, kind: &str, on: bool) {
+        let shown = pb::agent_service_client::AgentServiceClient::new(self.daemon.channel().await)
+            .set_agent_enabled(pb::SetAgentEnabledRequest {
+                agent: Some(pb::AgentId {
+                    value: kind.to_owned(),
+                }),
+                asks_in_inbox: Some(on),
+                ..Default::default()
+            })
+            .await
+            .expect("the user changes Settings › Agents")
+            .into_inner();
+        assert_eq!(shown.asks_in_inbox, on);
+    }
+
+    /// The session's agent asks the user through the Inbox (AskUser).
+    async fn ask_user(&self, token: &str) -> pb::RequestState {
+        pb::inbox_service_client::InboxServiceClient::new(self.daemon.channel().await)
+            .ask_user(as_agent(
+                pb::AskUserRequest {
+                    question: "Deploy to staging?".to_owned(),
                     ..Default::default()
-                })
-                .await
-                .expect("the user changes Settings › Agents")
-                .into_inner();
-        assert_eq!(shown.agents.map(|agents| agents.permissions_in_agent), Some(!on));
+                },
+                token,
+            ))
+            .await
+            .expect("the agent asks the user")
+            .into_inner()
+            .state()
+    }
+
+    /// The session's agent asks ahead for network reach (RequestAccess).
+    async fn request_access(&self, token: &str) -> pb::RequestState {
+        pb::inbox_service_client::InboxServiceClient::new(self.daemon.channel().await)
+            .request_access(as_agent(
+                pb::RequestAccessRequest {
+                    capability: pb::Capability::NetworkReach as i32,
+                    target: Some(pb::GrantTarget {
+                        target: Some(pb::grant_target::Target::Network(pb::NetworkTarget {
+                            host: "localhost".to_owned(),
+                            port: 5432,
+                            machine: None,
+                        })),
+                    }),
+                    reason: "to run the tests".to_owned(),
+                    ..Default::default()
+                },
+                token,
+            ))
+            .await
+            .expect("the agent asks ahead")
+            .into_inner()
+            .state()
     }
 }
+
+/// The second agent kind in the fixture's agents file (D782).
+const OTHER_KIND: &str = "other";
 
 fn as_agent<T>(message: T, token: &str) -> tonic::Request<T> {
     let mut request = tonic::Request::new(message);
@@ -475,27 +524,53 @@ async fn with_the_daemon_gone_the_hook_prints_nothing_and_exits_0() {
     assert!(output.stdout.is_empty());
 }
 
-/// D199: with Ask for permission in the Inbox off, a running session's hook
-/// gets no decision at once, so the agent's own prompt asks, and no card is
-/// raised. Turning it back on raises cards again, with no restart.
+/// D782: each agent kind has its own "Ask in the Inbox". Another kind's
+/// switch off leaves this one's asks in the Inbox. With this kind's off,
+/// its permission hook and its ask-user form get no decision at once, so
+/// its own terminal asks, and raise no card; its AskUser and RequestAccess
+/// still wait in the Inbox. Turning it back on raises cards again, with no
+/// restart.
 #[tokio::test(flavor = "multi_thread")]
-async fn with_inbox_asks_off_the_hook_gets_no_decision_and_no_card() {
+async fn an_agent_whose_asks_are_off_asks_in_its_terminal_and_the_others_still_ask_in_the_inbox() {
     let fix = Fixture::new().await;
     let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
-    fix.asks_in_inbox(false).await;
-    let mut stream = fix.hold(&token, "claude", CLAUDE_BASH).await;
-    assert!(last_reply(&mut stream).await.is_empty());
-    assert!(fix.pending().await.is_empty());
-
-    fix.asks_in_inbox(true).await;
-    let _held = fix.hold(&token, "claude", CLAUDE_BASH).await;
+    fix.asks_in_inbox(OTHER_KIND, false).await;
+    let _first = fix.hold(&token, "claude", CLAUDE_BASH).await;
     fix.wait_pending(1).await;
+
+    fix.asks_in_inbox(common::AGENT_NAME, false).await;
+    let mut permission = fix.hold(&token, "copilot", COPILOT_SHELL).await;
+    assert!(last_reply(&mut permission).await.is_empty());
+    let mut question = fix.hold_question(&token, COPILOT_ASK).await;
+    assert!(last_reply(&mut question).await.is_empty());
+    assert_eq!(fix.pending().await.len(), 1);
+
+    assert_eq!(fix.ask_user(&token).await, pb::RequestState::Pending);
+    assert_eq!(fix.request_access(&token).await, pb::RequestState::Pending);
+    fix.wait_pending(3).await;
+
+    fix.asks_in_inbox(common::AGENT_NAME, true).await;
+    let _again = fix.hold(&token, "copilot", COPILOT_SHELL).await;
+    fix.wait_pending(4).await;
 }
 
-/// D199: asks wait in the Inbox until the user says otherwise.
+/// D782: every agent asks in the Inbox until the user says otherwise, and
+/// D199's one switch reads as off.
 #[tokio::test(flavor = "multi_thread")]
 async fn asks_go_to_the_inbox_by_default() {
     let fix = Fixture::new().await;
+    let listed = pb::agent_service_client::AgentServiceClient::new(fix.daemon.channel().await)
+        .list_agents(pb::ListAgentsRequest::default())
+        .await
+        .expect("list the agents")
+        .into_inner();
+    assert!(
+        listed
+            .agents
+            .iter()
+            .filter(|agent| agent.id.as_ref().is_some_and(|id| id.value != "zsh"))
+            .all(|agent| agent.asks_in_inbox)
+    );
     let shown =
         pb::settings_service_client::SettingsServiceClient::new(fix.daemon.channel().await)
             .get_settings(pb::GetSettingsRequest {})
@@ -503,6 +578,29 @@ async fn asks_go_to_the_inbox_by_default() {
             .expect("read the settings")
             .into_inner();
     assert_eq!(shown.agents.map(|agents| agents.permissions_in_agent), Some(false));
+}
+
+/// D782: D199's one switch still works, by setting every kind's own.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_old_one_switch_sets_every_agents_own() {
+    let fix = Fixture::new().await;
+    let (token, _shell) = shell_token(&fix.daemon, &fix.session).await;
+    let shown =
+        pb::settings_service_client::SettingsServiceClient::new(fix.daemon.channel().await)
+            .update_settings(pb::UpdateSettingsRequest {
+                agents: Some(pb::AgentSettings {
+                    permissions_in_agent: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .await
+            .expect("the user changes Settings › Agents")
+            .into_inner();
+    assert_eq!(shown.agents.map(|agents| agents.permissions_in_agent), Some(true));
+    let mut stream = fix.hold(&token, "claude", CLAUDE_BASH).await;
+    assert!(last_reply(&mut stream).await.is_empty());
+    assert!(fix.pending().await.is_empty());
 }
 
 fn reply(text: &str) -> pb::request_answer::Answer {

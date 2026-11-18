@@ -15,6 +15,7 @@ use tonic::{Code, Status};
 use super::{DeskSvc, failed_precondition, not_desk, now_ms, session_id, user_only};
 use crate::channel_service::{blocking, error_of, timestamp_ms};
 use crate::host_relay::assigned;
+use crate::guard::Checked;
 use crate::identity::{self, Caller};
 use crate::remote_work::call_failed;
 use crate::status;
@@ -316,7 +317,14 @@ impl DeskSvc {
                     })?,
                     entry: Entry::File,
                 };
-                self.guard.require(caller, &Call::ReadFiles(place))?;
+                // D768: an asked read waits in the Inbox, and is repeated
+                // once approved.
+                match self.guard.check(caller, &Call::ReadFiles(place))? {
+                    Checked::Allowed => {}
+                    Checked::Ask(asked) => {
+                        self.inbox.ask_read(caller, asked, "versions", None).await?;
+                    }
+                }
             }
             Caller::Script(_) | Caller::Peer => user_only(caller)?,
         }

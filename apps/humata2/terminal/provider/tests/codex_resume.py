@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 
 
@@ -99,6 +100,37 @@ def stop_owned(process):
     return process.communicate(timeout=8)
 
 
+def end_by_codex_home(codex_home):
+    """End every process this fixture's isolated CODEX_HOME started.
+
+    Codex starts an app-server daemon of its own, in a session of its own
+    and reparented to launchd, which killing the owned process groups never
+    reaches. Each carries the fixture's CODEX_HOME, a fresh temporary folder,
+    in its environment, so `ps -E` finds them, and nothing else, by it.
+    """
+    marker = f"CODEX_HOME={codex_home}"
+    def found():
+        listed = subprocess.run(["ps", "-A", "-E", "-ww", "-o", "pid=,command="], capture_output=True, text=True, check=False).stdout
+        pids = []
+        for line in listed.splitlines():
+            fields = line.split(None, 1)
+            if len(fields) == 2 and fields[0].isdigit() and int(fields[0]) != os.getpid() and any(word == marker for word in fields[1].split()):
+                pids.append(int(fields[0]))
+        return pids
+    for sig, wait in [(signal.SIGTERM, 3.0), (signal.SIGKILL, 3.0)]:
+        pids = found()
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + wait
+        while found() and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+
 def isolated(root):
     home = root / "home"
     codex_home = root / "codex"
@@ -129,55 +161,58 @@ def prepare_host():
         with tempfile.TemporaryDirectory(prefix="h2-codex-host-", dir=os.environ.get("TEST_TMPDIR", "/tmp")) as directory:
             root = Path(directory)
             _, codex_home, project, env = isolated(root)
-            server.request_counter_path = root / "model-requests.json"
-            server.request_counter_path.write_text(json.dumps({"requests": 0}))
-            (codex_home / "config.toml").write_text(
-                'model_provider = "fixture"\nmodel = "fixture-resume"\n'
-                '[features]\nplugins = false\n'
-                '[model_providers.fixture]\nname = "fixture"\n'
-                f'base_url = "http://127.0.0.1:{server.server_port}/v1"\n'
-                'wire_api = "responses"\nrequires_openai_auth = false\n'
-                'supports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
-            )
-            # The helper's stdin is a live control pipe. Never let Codex exec
-            # inherit it: exec reads additional non-TTY input until EOF.
-            seed = subprocess.Popen([binary, "exec", "--json", "--skip-git-repo-check", "SAVED_USER_FIXTURE"], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
             try:
-                stdout, stderr = seed.communicate(timeout=40)
-            except subprocess.TimeoutExpired as error:
-                _, stderr = stop_owned(seed)
-                with server.lock:
-                    request_count = len(server.requests)
-                raise FixtureFailure("host seed", f"CLI seed timed out with {request_count} local Responses requests; bounded stderr: " + stderr[-2500:]) from error
-            if seed.returncode != 0:
-                raise FixtureFailure("host seed", "isolated CLI seed failed: " + stderr[-1500:])
-            records = events(stdout, "host seed")
-            identity = thread_id(records, "host seed")
-            if not any(event.get("type") == "turn.completed" for event in records):
-                raise FixtureFailure("host seed", "the seed turn did not complete")
-            receipts = root / "owned-pids.jsonl"
-            wrapper = root / "codex-wrapper"
-            interactive_env = dict(env, TERM="xterm-256color", COLORTERM="truecolor")
-            interactive_env.pop("NO_COLOR", None)
-            wrapper.write_text(
-                "#!/usr/bin/python3\nimport json,os,sys\n"
-                f"binary={binary!r}\nenv={interactive_env!r}\nidentity={identity!r}\nreceipts={str(receipts)!r}\n"
-                "args=sys.argv[1:]\n"
-                "if not args or args[0]!='resume' or args[-1]!=identity:\n"
-                " raise SystemExit('The isolated fixture wrapper requires resume and its exact saved session ID')\n"
-                "fd=os.open(receipts,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)\n"
-                "try:\n"
-                " os.write(fd,(json.dumps({'pid':os.getpid(),'requested_session_id':identity})+'\\n').encode())\n"
-                " os.fsync(fd)\n"
-                "finally:\n os.close(fd)\n"
-                "os.execve(binary,[binary,*args],env)\n"
-            )
-            wrapper.chmod(0o700)
-            metadata = {"version": 1, "session_id": identity, "binary": binary, "cwd": str(project), "resume_args": [], "wrapper": str(wrapper), "pid_receipts": str(receipts), "model_requests": str(server.request_counter_path), "expected_history": "SAVED_ASSISTANT_FIXTURE"}
-            print(json.dumps(metadata), flush=True)
-            # Any explicit stop line or EOF ends this owned fixture. No stdout
-            # model content, transcript or environment is exposed to the owner.
-            sys.stdin.readline(4096)
+                server.request_counter_path = root / "model-requests.json"
+                server.request_counter_path.write_text(json.dumps({"requests": 0}))
+                (codex_home / "config.toml").write_text(
+                    'model_provider = "fixture"\nmodel = "fixture-resume"\n'
+                    '[features]\nplugins = false\n'
+                    '[model_providers.fixture]\nname = "fixture"\n'
+                    f'base_url = "http://127.0.0.1:{server.server_port}/v1"\n'
+                    'wire_api = "responses"\nrequires_openai_auth = false\n'
+                    'supports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n'
+                )
+                # The helper's stdin is a live control pipe. Never let Codex exec
+                # inherit it: exec reads additional non-TTY input until EOF.
+                seed = subprocess.Popen([binary, "exec", "--json", "--skip-git-repo-check", "SAVED_USER_FIXTURE"], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                try:
+                    stdout, stderr = seed.communicate(timeout=40)
+                except subprocess.TimeoutExpired as error:
+                    _, stderr = stop_owned(seed)
+                    with server.lock:
+                        request_count = len(server.requests)
+                    raise FixtureFailure("host seed", f"CLI seed timed out with {request_count} local Responses requests; bounded stderr: " + stderr[-2500:]) from error
+                if seed.returncode != 0:
+                    raise FixtureFailure("host seed", "isolated CLI seed failed: " + stderr[-1500:])
+                records = events(stdout, "host seed")
+                identity = thread_id(records, "host seed")
+                if not any(event.get("type") == "turn.completed" for event in records):
+                    raise FixtureFailure("host seed", "the seed turn did not complete")
+                receipts = root / "owned-pids.jsonl"
+                wrapper = root / "codex-wrapper"
+                interactive_env = dict(env, TERM="xterm-256color", COLORTERM="truecolor")
+                interactive_env.pop("NO_COLOR", None)
+                wrapper.write_text(
+                    "#!/usr/bin/python3\nimport json,os,sys\n"
+                    f"binary={binary!r}\nenv={interactive_env!r}\nidentity={identity!r}\nreceipts={str(receipts)!r}\n"
+                    "args=sys.argv[1:]\n"
+                    "if not args or args[0]!='resume' or args[-1]!=identity:\n"
+                    " raise SystemExit('The isolated fixture wrapper requires resume and its exact saved session ID')\n"
+                    "fd=os.open(receipts,os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)\n"
+                    "try:\n"
+                    " os.write(fd,(json.dumps({'pid':os.getpid(),'requested_session_id':identity})+'\\n').encode())\n"
+                    " os.fsync(fd)\n"
+                    "finally:\n os.close(fd)\n"
+                    "os.execve(binary,[binary,*args],env)\n"
+                )
+                wrapper.chmod(0o700)
+                metadata = {"version": 1, "session_id": identity, "binary": binary, "cwd": str(project), "resume_args": [], "wrapper": str(wrapper), "pid_receipts": str(receipts), "model_requests": str(server.request_counter_path), "expected_history": "SAVED_ASSISTANT_FIXTURE"}
+                print(json.dumps(metadata), flush=True)
+                # Any explicit stop line or EOF ends this owned fixture. No stdout
+                # model content, transcript or environment is exposed to the owner.
+                sys.stdin.readline(4096)
+            finally:
+                end_by_codex_home(codex_home)
     finally:
         server.release.set()
         if seed is not None:
@@ -198,58 +233,63 @@ def run():
     try:
         with tempfile.TemporaryDirectory(prefix="h2-codex-resume-", dir=os.environ.get("TEST_TMPDIR", "/tmp")) as root:
             root = Path(root)
-            _, _, project, env = isolated(root)
-            provider = f'model_providers.fixture={{name="fixture",base_url="http://127.0.0.1:{server.server_port}/v1",wire_api="responses",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}}'
-            common = ["-c", 'model_provider="fixture"', "-c", 'model="fixture-resume"', "-c", provider, "-c", "features.plugins=false"]
+            _, codex_home, project, env = isolated(root)
+            try:
+                provider = f'model_providers.fixture={{name="fixture",base_url="http://127.0.0.1:{server.server_port}/v1",wire_api="responses",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}}'
+                common = ["-c", 'model_provider="fixture"', "-c", 'model="fixture-resume"', "-c", provider, "-c", "features.plugins=false"]
 
-            def launch(args):
-                process = subprocess.Popen([binary, *common, *args], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
-                owned.append(process)
-                return process
+                def launch(args):
+                    process = subprocess.Popen([binary, *common, *args], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+                    owned.append(process)
+                    return process
 
-            first = launch(["exec", "--json", "--skip-git-repo-check", "SAVED_USER_FIXTURE"])
-            stdout, stderr = first.communicate(timeout=40)
-            if first.returncode != 0:
-                raise FixtureFailure("first turn", "CLI failed against the isolated loopback fixture: " + stderr[-1500:])
-            records = events(stdout, "first turn")
-            identity = thread_id(records, "first turn")
-            if not any(event.get("type") == "turn.completed" for event in records):
-                raise FixtureFailure("first turn", "the deterministic completion did not finish")
-            active = launch(["exec", "resume", "--json", "--skip-git-repo-check", identity, "INTERRUPTED_USER_FIXTURE"])
-            if not server.pending.wait(30):
-                raise FixtureFailure("interruption", "the resumed CLI did not reach its held local request")
-            if active.poll() is not None:
-                raise FixtureFailure("interruption", "the process exited before the intended SIGKILL")
-            interrupted_stdout, _ = stop_owned(active)
-            if active.returncode != -signal.SIGKILL:
-                raise FixtureFailure("interruption", "the owned CLI was not terminated by SIGKILL")
-            if thread_id(events(interrupted_stdout, "interruption"), "interruption") != identity:
-                raise FixtureFailure("interruption", "resume selected a different conversation")
-            server.release.set()
-            restored = launch(["exec", "resume", "--json", "--skip-git-repo-check", identity, "VERIFY_RESUME_FIXTURE"])
-            stdout, stderr = restored.communicate(timeout=40)
-            if restored.returncode != 0:
-                raise FixtureFailure("recovery", "CLI resume failed: " + stderr[-1500:])
-            records = events(stdout, "recovery")
-            if thread_id(records, "recovery") != identity or not any(event.get("type") == "turn.completed" for event in records):
-                raise FixtureFailure("recovery", "the exact saved conversation did not complete after SIGKILL")
-            with server.lock:
-                requests = list(server.requests)
-            if len(requests) != 3:
-                raise FixtureFailure("recovery", "unexpected model request count; no retry should be necessary")
-            resumed_input = json.dumps(requests[2].get("input", []))
-            if "SAVED_USER_FIXTURE" not in resumed_input or "SAVED_ASSISTANT_FIXTURE" not in resumed_input or "VERIFY_RESUME_FIXTURE" not in resumed_input:
-                raise FixtureFailure("recovery", "the provider request omitted the saved prior user/assistant context")
-            missing = launch(["exec", "resume", "--json", "--skip-git-repo-check", str(uuid.uuid4()), "MISSING_RESUME_FIXTURE"])
-            missing_stdout, _ = missing.communicate(timeout=20)
-            with server.lock:
-                after_missing = len(server.requests)
-            if missing.returncode == 0 or after_missing != len(requests) or any(event.get("type") == "thread.started" for event in events(missing_stdout, "missing conversation")):
-                raise FixtureFailure("missing conversation", "resume silently created or queried a different conversation")
-            proof = {"provider": "installed Codex CLI", "model": "deterministic loopback Responses fixture", "structuredSessionId": True, "sameConversationAfterSigkill": True, "retainedUserAndAssistantContext": True, "requests": len(requests), "missingSessionRejectedBeforeModel": True, "personalStateUsed": False, "upstreamModelCalls": False}
-            output = Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", root))
-            (output / "codex-resume-proof.json").write_text(json.dumps(proof, indent=2) + "\n")
-            print(json.dumps(proof))
+                first = launch(["exec", "--json", "--skip-git-repo-check", "SAVED_USER_FIXTURE"])
+                stdout, stderr = first.communicate(timeout=40)
+                if first.returncode != 0:
+                    raise FixtureFailure("first turn", "CLI failed against the isolated loopback fixture: " + stderr[-1500:])
+                records = events(stdout, "first turn")
+                identity = thread_id(records, "first turn")
+                if not any(event.get("type") == "turn.completed" for event in records):
+                    raise FixtureFailure("first turn", "the deterministic completion did not finish")
+                active = launch(["exec", "resume", "--json", "--skip-git-repo-check", identity, "INTERRUPTED_USER_FIXTURE"])
+                if not server.pending.wait(30):
+                    raise FixtureFailure("interruption", "the resumed CLI did not reach its held local request")
+                if active.poll() is not None:
+                    raise FixtureFailure("interruption", "the process exited before the intended SIGKILL")
+                interrupted_stdout, _ = stop_owned(active)
+                if active.returncode != -signal.SIGKILL:
+                    raise FixtureFailure("interruption", "the owned CLI was not terminated by SIGKILL")
+                if thread_id(events(interrupted_stdout, "interruption"), "interruption") != identity:
+                    raise FixtureFailure("interruption", "resume selected a different conversation")
+                server.release.set()
+                restored = launch(["exec", "resume", "--json", "--skip-git-repo-check", identity, "VERIFY_RESUME_FIXTURE"])
+                stdout, stderr = restored.communicate(timeout=40)
+                if restored.returncode != 0:
+                    raise FixtureFailure("recovery", "CLI resume failed: " + stderr[-1500:])
+                records = events(stdout, "recovery")
+                if thread_id(records, "recovery") != identity or not any(event.get("type") == "turn.completed" for event in records):
+                    raise FixtureFailure("recovery", "the exact saved conversation did not complete after SIGKILL")
+                with server.lock:
+                    requests = list(server.requests)
+                if len(requests) != 3:
+                    raise FixtureFailure("recovery", "unexpected model request count; no retry should be necessary")
+                resumed_input = json.dumps(requests[2].get("input", []))
+                if "SAVED_USER_FIXTURE" not in resumed_input or "SAVED_ASSISTANT_FIXTURE" not in resumed_input or "VERIFY_RESUME_FIXTURE" not in resumed_input:
+                    raise FixtureFailure("recovery", "the provider request omitted the saved prior user/assistant context")
+                missing = launch(["exec", "resume", "--json", "--skip-git-repo-check", str(uuid.uuid4()), "MISSING_RESUME_FIXTURE"])
+                missing_stdout, _ = missing.communicate(timeout=20)
+                with server.lock:
+                    after_missing = len(server.requests)
+                if missing.returncode == 0 or after_missing != len(requests) or any(event.get("type") == "thread.started" for event in events(missing_stdout, "missing conversation")):
+                    raise FixtureFailure("missing conversation", "resume silently created or queried a different conversation")
+                proof = {"provider": "installed Codex CLI", "model": "deterministic loopback Responses fixture", "structuredSessionId": True, "sameConversationAfterSigkill": True, "retainedUserAndAssistantContext": True, "requests": len(requests), "missingSessionRejectedBeforeModel": True, "personalStateUsed": False, "upstreamModelCalls": False}
+                output = Path(os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", root))
+                (output / "codex-resume-proof.json").write_text(json.dumps(proof, indent=2) + "\n")
+                print(json.dumps(proof))
+            finally:
+                for process in owned:
+                    stop_owned(process)
+                end_by_codex_home(codex_home)
     finally:
         server.release.set()
         for process in owned:

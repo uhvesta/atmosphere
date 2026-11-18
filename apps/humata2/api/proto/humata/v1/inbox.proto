@@ -118,12 +118,16 @@ enum WithdrawReason {
   // D264: the machine's sessions were stopped.
   WITHDRAW_REASON_MACHINE_STOPPED = 8;
   // UP-1: what it asked for came about another way (a Migrate item
-  // whose machine is at the host's release again).
+  // whose machine is at the host's release again). D781: also a question
+  // on the agent's screen that was answered in its terminal.
   WITHDRAW_REASON_RESOLVED = 9;
   // DK-19: a newer request to move the same Desk session took its place.
   WITHDRAW_REASON_SUPERSEDED = 10;
   // DK-18: the session moved from the Desk into a channel.
   WITHDRAW_REASON_SESSION_MOVED = 11;
+  // D783: the machine the request came from was removed from Humata, so
+  // nothing there can act on an answer. Its sessions are archived.
+  WITHDRAW_REASON_MACHINE_REMOVED = 12;
 }
 
 enum RequestKind {
@@ -183,6 +187,18 @@ message InboxRequest {
   // IN-9 item 2: the call as a dotted operation id, "channel.list" (TP-16).
   // Named by the daemon from the method it routed, never by the agent.
   string operation = 21;
+  // D781: set only on a question the agent asks on its own screen (D767),
+  // raised while the dialog shows: the app draws that screen's live
+  // terminal under the card and offers Dismiss. Unset on every other item,
+  // and on items from a daemon older than D781.
+  ScreenAsk on_screen = 22;
+}
+
+// D781: where the dialog an item was read off is.
+message ScreenAsk {
+  // The agent tab's index among its session's tabs, as ListTabs orders
+  // them and a client's link to the session's terminal numbers them.
+  uint32 tab = 1;
 }
 
 message AlwaysOption {

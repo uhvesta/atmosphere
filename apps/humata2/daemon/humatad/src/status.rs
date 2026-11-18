@@ -716,10 +716,16 @@ pub(crate) fn approval_pending(request: &pb::RequestId) -> Status {
 /// through. Not a proto message: no bytes come with it.
 pub(crate) const READ_APPROVED: &str = "humata2.ReadApproved";
 
-/// An agent's file read the channel's rule sent to the Inbox (D768). Unlike
-/// [`approval_pending`], approving it runs nothing: the agent repeats the
-/// read once the user approves, and a repeat before then meets this request.
-pub(crate) fn read_approval_pending(request: &pb::RequestId) -> Status {
+/// An agent's file read the channel's rule sent to the Inbox (D768). A
+/// repeat of it before the answer meets this request, not a new one. With
+/// `runs`, approving it runs the read and the wait returns its result;
+/// without, the agent repeats the read once the user approves.
+pub(crate) fn read_approval_pending(request: &pb::RequestId, runs: bool) -> Status {
+    let fix = if runs {
+        "call inbox_wait (WaitForAnswer) with this request id: once the user approves, it returns the read's result. Repeating the read before then shows this request again and doesn't add another"
+    } else {
+        "call inbox_wait (WaitForAnswer) with this request id; once the user approves, repeat the same read to get its result. Repeating it before then shows this request again and doesn't add another"
+    };
     failure(
         Code::FailedPrecondition,
         error(
@@ -727,7 +733,7 @@ pub(crate) fn read_approval_pending(request: &pb::RequestId) -> Status {
                 "this read needs the user's approval and is waiting for their answer in the Inbox as request {}",
                 request.value
             ),
-            "call inbox_wait (WaitForAnswer) with this request id; once the user approves, repeat the same read to get its result. Repeating it before then shows this request again and doesn't add another",
+            fix,
             pb::error::Kind::ApprovalPending(pb::ApprovalPending {
                 request: Some(request.clone()),
             }),

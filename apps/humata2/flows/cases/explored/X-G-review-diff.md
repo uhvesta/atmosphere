@@ -88,7 +88,7 @@ Phase 1 (map from code and snapshots, no run). Every step below is read from the
 - **Replay check:** `bazel test //apps/humata2/desktop:live_flows_test --test_filter=review::the_diff_panel_base_menu`.
 
 ### 10. Archive a session with unpushed work asks first (D513-adjacent, unpushed branch)
-- **Screen:** "Archive “Ledger schema migration”?" card with "Archiving stops the agent and keeps the conversation, the record, the scrollback and a summary of the diff. It frees about 2.4 GB once the Undo window passes." An orange box lists per repo, e.g. "ledger: 3 uncommitted files on uhvesta/ledger-schema, never pushed." and "api: 1 commit on uhvesta/ledger-reads not pushed.", then "Archiving deletes that work." Buttons: Cancel, "Archive and delete the work" (red outline), "Commit, push and open a PR, then archive" (primary). Forks line: "Its 2 forks keep running; they move up in the tree." when there are forks.
+- **Screen:** "Archive “Ledger schema migration”?" card with "Archiving stops Claude Code on devbox-1 and keeps the conversation, the record, the scrollback and a summary of the diff. It frees about 2.4 GB once the Undo window passes." An orange box lists per repo, e.g. "ledger: 3 uncommitted files on uhvesta/ledger-schema, never pushed." and "api: 1 commit on uhvesta/ledger-reads not pushed.", then "Archiving deletes that work." Buttons: Cancel, "Archive and delete the work" (red outline), "Commit, push and open a PR, then archive" (primary). Forks line: "Its 2 forks keep running; they move up in the tree." when there are forks.
 - **Offered:** Cancel, Archive and delete the work, Commit, push and open a PR, then archive.
 - **Action:** Archive from the session menu.
 - **Result:** the dialog opens; nothing is archived yet (`archive-sheet`).

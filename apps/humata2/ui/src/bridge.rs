@@ -13,7 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use gpui_kit::{App, EntityId};
+use gpui_kit::{AnyView, App, EntityId};
 use humata2_app::{App as AppReducer, AppAction, AppState};
 use humata2_clients::Clients;
 use tca::{Effect, LocalStore, Observation, Reducer};
@@ -70,6 +70,10 @@ pub struct Ui {
     observations: RefCell<Vec<Observation>>,
     clients: Clients,
     recorder: Recorder,
+    /// The live terminal of the Inbox's open item, while it is a question
+    /// on its agent's screen (D781): set by the shell's terminals, drawn by
+    /// the Inbox's detail.
+    inbox_terminal: RefCell<Option<AnyView>>,
 }
 
 impl Ui {
@@ -91,6 +95,7 @@ impl Ui {
             observations: RefCell::new(Vec::new()),
             clients,
             recorder,
+            inbox_terminal: RefCell::new(None),
         });
         ui.observe();
         ui
@@ -235,6 +240,16 @@ impl Ui {
     #[must_use]
     pub const fn clients(&self) -> &Clients {
         &self.clients
+    }
+
+    /// The Inbox's terminal for its open item, if it shows one (D781).
+    pub(crate) fn inbox_terminal(&self) -> Option<AnyView> {
+        self.inbox_terminal.borrow().clone()
+    }
+
+    /// Sets the Inbox's terminal; `None` when its open item shows none.
+    pub(crate) fn set_inbox_terminal(&self, view: Option<AnyView>) {
+        *self.inbox_terminal.borrow_mut() = view;
     }
 
     /// The recorder.

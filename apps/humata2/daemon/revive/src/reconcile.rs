@@ -142,6 +142,8 @@ pub async fn reconcile_then(
         .drain()
         .map(|(_, tab)| tab)
         .filter(|tab| tab.kind == TabKind::Shell && !agent_tabs.contains(&tab.id))
+        // D784: a shell the user stopped stays stopped until Resume.
+        .filter(|tab| !humata2_holder::stopped_mark_path(&tab.holder_socket).exists())
         .collect();
     shells.sort_by_key(|tab| (tab.created_unix_ms, tab.id.clone()));
     for tab in shells {
@@ -621,6 +623,8 @@ async fn revive_shell(
     }
     let spawned = spawn(spec, Some(&line), what).await?;
     point("revive.shell.spawned");
+    // D784: started again, so no longer stopped. Gone already is fine.
+    let _ = std::fs::remove_file(humata2_holder::stopped_mark_path(&tab.holder_socket));
     tab.holder_pid = spawned.pid;
     tab.holder_generation = tab.holder_generation.saturating_add(1);
     let (saving, socket) = (tab.clone(), tab.holder_socket.clone());

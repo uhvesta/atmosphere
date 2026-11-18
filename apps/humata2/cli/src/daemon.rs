@@ -272,6 +272,10 @@ pub mod rpc {
         CHECK_MACHINE_SCRIPTS = "CheckMachineScripts" -> "CheckMachineScriptsResponse",
         RUN_MACHINE_SCRIPT = "RunMachineScript" -> "Operation",
         LIST_MACHINE_SCRIPT_RUNS = "ListMachineScriptRuns" -> "ListMachineScriptRunsResponse",
+        LIST_RUNNING_HOLDERS = "ListRunningHolders" -> "ListRunningHoldersResponse",
+        STOP_RUNNING_HOLDER = "StopRunningHolder" -> "StopRunningHolderResponse",
+        RESUME_RUNNING_HOLDER = "ResumeRunningHolder" -> "ResumeRunningHolderResponse",
+        END_RUNNING_HOLDER = "EndRunningHolder" -> "EndRunningHolderResponse",
     });
 
     service!(provider, "ProviderService" {
@@ -492,6 +496,10 @@ pub mod rpc {
         machine::SET_HOST_VARIABLE,
         machine::REMOVE_HOST_VARIABLE,
         machine::TRUST_NEW_HOST_KEY,
+        machine::LIST_RUNNING_HOLDERS,
+        machine::STOP_RUNNING_HOLDER,
+        machine::RESUME_RUNNING_HOLDER,
+        machine::END_RUNNING_HOLDER,
         provider::LIST_PROVIDERS,
         provider::GET_PROVIDERS_CONFIG,
         provider::SET_PROVIDERS_CONFIG,

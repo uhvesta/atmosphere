@@ -1199,9 +1199,17 @@ pub fn holder_answers(tab: &humata2_store::TabRecord) -> bool {
 /// Kills the holders of `tabs` at once, as a reboot would, and waits until
 /// each is gone.
 pub async fn kill_holders(tabs: &[humata2_store::TabRecord]) {
+    // A reboot ends each holder's program too, which a killed holder can't:
+    // each runs as the leader of a group of its own under its holder.
+    let programs = children_of(tabs.iter().map(|tab| tab.holder_pid));
     for tab in tabs {
         if let Some(pid) = i32::try_from(tab.holder_pid).ok().and_then(Pid::from_raw) {
             let _ = rustix::process::kill_process(pid, Signal::KILL);
+        }
+    }
+    for program in programs {
+        if let Some(group) = i32::try_from(program).ok().and_then(Pid::from_raw) {
+            let _ = rustix::process::kill_process_group(group, Signal::KILL);
         }
     }
     let deadline = Instant::now() + WAIT;
@@ -1215,6 +1223,24 @@ pub async fn kill_holders(tabs: &[humata2_store::TabRecord]) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
+}
+
+/// The processes whose parent is one of `parents`, from `ps`.
+fn children_of(parents: impl Iterator<Item = u32>) -> Vec<u32> {
+    let parents: Vec<u32> = parents.filter(|pid| *pid != 0).collect();
+    let Ok(listed) = Command::new("/bin/ps").args(["-A", "-o", "pid=,ppid="]).output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace().map(str::parse::<u32>);
+            let (Some(Ok(pid)), Some(Ok(parent))) = (fields.next(), fields.next()) else {
+                return None;
+            };
+            parents.contains(&parent).then_some(pid)
+        })
+        .collect()
 }
 
 /// Runs `humata --json <args>` against the daemon as the user; returns the

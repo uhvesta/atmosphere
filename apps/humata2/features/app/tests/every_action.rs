@@ -145,6 +145,8 @@ struct Samples {
     session: SessionId,
     machine: MachineId,
     file: (String, String),
+    /// A session's shell tab (D784).
+    terminal: (SessionId, usize),
 }
 
 fn samples(workspace: &Workspace) -> Samples {
@@ -160,7 +162,14 @@ fn samples(workspace: &Workspace) -> Samples {
         .find(|s| !s.archived && s.id != here())
         .map(|s| s.id.clone())
         .unwrap_or_else(|| panic!("the design workspace has another session"));
+    let terminal = workspace
+        .sessions
+        .iter()
+        .find(|s| !s.archived && !s.shells.is_empty())
+        .map(|s| (s.id.clone(), 1))
+        .unwrap_or_else(|| panic!("the design workspace has a session with a shell tab"));
     Samples {
+        terminal,
         channel: workspace
             .channels
             .first()
@@ -197,7 +206,11 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
         Some(Command::ContinueInChannel) => Command::StopAgent,
         Some(Command::StopAgent) => Command::Channel(s.channel.clone()),
         Some(Command::Channel(_)) => Command::Session(s.session.clone()),
-        Some(Command::Session(_)) => Command::Pull(482),
+        Some(Command::Session(_)) => Command::Terminal {
+            session: s.terminal.0.clone(),
+            tab: s.terminal.1,
+        },
+        Some(Command::Terminal { .. }) => Command::Pull(482),
         Some(Command::Pull(_)) => Command::File {
             session: here(),
             repo: s.file.0.clone(),
@@ -317,6 +330,7 @@ fn reach(command: &Command) -> Reach {
         | Command::StopAgent
         | Command::Channel(_)
         | Command::Session(_)
+        | Command::Terminal { .. }
         | Command::File { .. }
         | Command::TerminalFullScreen
         | Command::JoinTabGroups
@@ -470,6 +484,9 @@ fn key(name: &str) -> Option<Key> {
         // A key unbound in one context, such as Escape in a terminal,
         // which goes to the program there: it runs nothing of the app's.
         "gpui_kit::NoAction" => Key::Not,
+        // Tab in the Inbox's list moving focus into its item's terminal
+        // (D781): focus, like the sidebar's keys, not a command.
+        "FocusInboxTerminal" => Key::Not,
         "NewSession" => Key::Runs(Command::NewSession),
         "NewChannel" => Key::Runs(Command::NewChannel),
         "Back" => Key::Runs(Command::Back),

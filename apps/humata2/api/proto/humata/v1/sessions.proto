@@ -132,6 +132,11 @@ message ArchiveSummary {
   bool machine_lost = 3;
   // What was lost, from the last pointers.
   repeated SessionWork lost = 4;
+  // D783: the session's machine was removed or forgotten after the session
+  // ran there. Set on every session of the machine, archived before or at
+  // the removal; nothing is relayed for it to a machine later added under
+  // that name. Cleared with the archive when the session is rebuilt.
+  bool machine_removed = 5;
 }
 
 message FileChange {
@@ -463,6 +468,9 @@ message RestoreSessionRequest {
   IdempotencyKey idempotency_key = 1;
   SessionId id = 2;
   MachineId machine = 3;
+  // D784: restore it stopped, its agent not started (the Undo of the close
+  // dialog's "End for good"); ResumeSession starts it.
+  bool stopped = 4;
 }
 
 message PlanDeleteRequest { SessionId id = 1; }

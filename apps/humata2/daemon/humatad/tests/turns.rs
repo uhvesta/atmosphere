@@ -119,20 +119,75 @@ impl Fixture {
             .into_inner()
     }
 
-    /// The next status the feed gives this session.
-    async fn next_status(&self, events: &mut Streaming<pb::Event>) -> Status {
+    /// The next time the feed gives this session, as it shows then.
+    async fn next_shown(&self, events: &mut Streaming<pb::Event>) -> pb::Session {
         tokio::time::timeout(WAIT, async {
             loop {
                 let event = events.message().await.unwrap().expect("the feed ended");
                 if let Some(pb::event::Payload::Session(session)) = event.payload
                     && session.id == Some(self.session.clone())
                 {
-                    return session.status();
+                    return session;
                 }
             }
         })
         .await
-        .expect("the session's status never came on the feed")
+        .expect("the session never came on the feed")
+    }
+
+    /// The next status the feed gives this session.
+    async fn next_status(&self, events: &mut Streaming<pb::Event>) -> Status {
+        self.next_shown(events).await.status()
+    }
+
+    /// Waits until nothing else about the session is still on its way to
+    /// the feed, once a hook has said its turn, so the next event is the
+    /// next change. A feed event shows the session as it is when told, so a
+    /// late one (the output fallback's, a read mark's, the clones' first
+    /// pointers) would show the hook's state again. With a hook heard,
+    /// output changes no status; the agent's watch and the read marks each
+    /// tell in order; the clones' pointers are told when they change, and
+    /// nothing changes them here after the first look.
+    async fn settle(&self, attach: &mut Attach, events: &mut Streaming<pb::Event>) {
+        if get_session(&self.daemon, &self.session).await.pointers.is_empty() {
+            while self.next_shown(events).await.pointers.is_empty() {}
+        }
+        let mut marks = pb::mark_service_client::MarkServiceClient::new(self.daemon.channel().await);
+        // A view clears the read mark (and is gone once dropped)...
+        let viewing = marks
+            .view_session(pb::ViewSessionRequest {
+                session: Some(self.session.clone()),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        drop(viewing);
+        // ...so output marks it unread again: the watch got that far, past
+        // every status it told before.
+        tokio::time::timeout(WAIT, async {
+            for line in 0.. {
+                attach.type_text(&format!("hello {line}\r")).await;
+                attach.wait_for(&format!("got: hello {line}")).await;
+                if get_session(&self.daemon, &self.session).await.unread {
+                    return;
+                }
+            }
+        })
+        .await
+        .expect("the agent's output never marked the session unread");
+        // A pin is told after the read marks before it.
+        marks
+            .set_marks(pb::SetMarksRequest {
+                idempotency_key: None,
+                entity: Some(pb::EntityRef {
+                    entity: Some(pb::entity_ref::Entity::Session(self.session.clone())),
+                }),
+                pinned: Some(true),
+                vip: None,
+            })
+            .await
+            .unwrap();
+        while !self.next_shown(events).await.pinned {}
     }
 }
 
@@ -183,7 +238,10 @@ async fn every_change_is_on_the_feed_and_a_repeat_is_not() {
     let mut events = fix.events().await;
     let mut attach = fix.attach().await;
     fix.fire(&mut attach, "Stop").await;
-    assert_eq!(fix.next_status(&mut events).await, Status::Idle);
+    // Until the hook is heard the output fallback may move the status
+    // (quiet, then the typed line's echo); once it said idle, nothing does.
+    while fix.next_status(&mut events).await != Status::Idle {}
+    fix.settle(&mut attach, &mut events).await;
     // The same state again says nothing; the next change is the next event.
     fix.fire(&mut attach, "Stop").await;
     fix.fire(&mut attach, "UserPromptSubmit").await;

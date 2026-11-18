@@ -409,7 +409,14 @@ impl<'r> App<'r> {
                 DRAIN_BUDGET.as_secs()
             ));
         }
-        text.push_str(&format!("view:\n{}\n", self.view()));
+        let focused = self
+            .cx
+            .update_window(self.window, |_, window, cx| {
+                window.focused(cx).map(|handle| format!("{handle:?}"))
+            })
+            .ok()
+            .flatten();
+        text.push_str(&format!("focused {focused:?}\nview:\n{}\n", self.view()));
         text
     }
 

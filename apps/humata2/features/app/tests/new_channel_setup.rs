@@ -137,3 +137,24 @@ fn a_clone_that_works_opens_the_channel_without_a_failed_row() {
         Route::Channel(ChannelId::new("billing-exports"))
     );
 }
+
+/// The create's reply can come after the setup's last step opened the
+/// channel, when the person has already opened a fresh New channel sheet:
+/// that sheet stays open and the page stays where it is.
+#[test]
+fn a_late_create_reply_leaves_a_fresh_new_channel_sheet_open() {
+    let (mut store, _) = setup();
+    make(&mut store, &["acme/ledger"]);
+    let opened = Route::Channel(ChannelId::new("billing-exports"));
+    assert_eq!(store.state().route, opened);
+
+    store.send(A::StartNewChannel, |_| {});
+    store.skip_received();
+    store.send(A::ChannelCreated(Ok(ChannelId::new("billing-exports"))), |_| {});
+    store.skip_received();
+    assert!(
+        matches!(store.state().overlays.last(), Some(Overlay::NewChannel(_))),
+        "the fresh sheet stays open"
+    );
+    assert_eq!(store.state().route, opened);
+}

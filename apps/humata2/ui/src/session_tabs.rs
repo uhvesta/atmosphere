@@ -130,6 +130,8 @@ fn tab_row(
                 ),
             };
             let ui2 = ui.clone();
+            // Each tab's X is named for its tab (D784).
+            let close_label = format!("Close {name}");
             let drag = TabDrag {
                 group,
                 index,
@@ -155,18 +157,17 @@ fn tab_row(
                 }))
                 .child(glyph)
                 .child(name)
-                .when(!matches!(tab, Tab::Terminal(_)), |t| {
-                    t.child(
-                        send(
-                            ui,
-                            format!("close-tab-{group}-{index}"),
-                            "Close tab",
-                            SessionAction::CloseTab { group, index },
-                            look,
-                        )
+                .child({
+                    // D784: a terminal's close asks Keep running, Stop or
+                    // End for good; any other tab just closes.
+                    let close = if matches!(tab, Tab::Terminal(_)) {
+                        SessionAction::Close(humata2_session::CloseAction::Ask { group, index })
+                    } else {
+                        SessionAction::CloseTab { group, index }
+                    };
+                    send(ui, format!("close-tab-{group}-{index}"), &close_label, close, look)
                         .child(chrome::icon(IconName::X, look.tertiary, 12.))
-                        .test_support(),
-                    )
+                        .test_support()
                 })
                 .on_click(move |_, _, cx| {
                     ui2.send(

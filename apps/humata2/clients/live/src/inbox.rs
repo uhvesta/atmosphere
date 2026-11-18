@@ -485,6 +485,7 @@ fn request(request: &pb::InboxRequest, titles: &BTreeMap<i32, String>, now: i64)
             Some(pb::request_preview::Preview::Question(question)) => question.choices.clone(),
             _ => Vec::new(),
         },
+        on_screen: request.on_screen.as_ref().map(|on_screen| on_screen.tab as usize),
     }
 }
 

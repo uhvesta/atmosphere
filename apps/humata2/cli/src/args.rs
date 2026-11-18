@@ -471,13 +471,39 @@ pub enum SessionCommand {
         to: Option<u32>,
     },
     Rename { session: String, title: String },
-    Stop { session: String },
+    /// Stop a session's agent, or with `--tab` a shell tab (a session's,
+    /// a machine's own, or one no channel has) on `--machine`; either can
+    /// be resumed (D784).
+    Stop {
+        #[arg(required_unless_present = "tab")]
+        session: Option<String>,
+        /// A shell's tab, as `session running` lists it.
+        #[arg(long)]
+        tab: Option<String>,
+    },
+    /// Resume a stopped session, or with `--tab` a stopped shell tab.
     Resume {
-        session: String,
+        #[arg(required_unless_present = "tab")]
+        session: Option<String>,
+        /// A stopped shell's tab, as `session running` lists it.
+        #[arg(long, conflicts_with = "fresh")]
+        tab: Option<String>,
         /// Start over with a summary instead of resuming the conversation.
         #[arg(long)]
         fresh: bool,
     },
+    /// End a session for good: it is archived, by the plan. With `--tab`, a
+    /// shell tab ends instead; nothing is archived. Neither can be resumed.
+    End {
+        #[arg(required_unless_present = "tab")]
+        session: Option<String>,
+        /// A shell's tab, as `session running` lists it.
+        #[arg(long)]
+        tab: Option<String>,
+    },
+    /// Every terminal of ours on `--machine` (default: this one): running
+    /// sessions, stopped ones, and those no channel has.
+    Running,
     Archive {
         session: String,
         /// Commit, push and open PRs first.

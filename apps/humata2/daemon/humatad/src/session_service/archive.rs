@@ -84,6 +84,10 @@ enum ArchiveError {
         "session {session}'s channel {channel} is gone, so its folder can't be checked before it is deleted"
     )]
     NoChannel { session: String, channel: String },
+    #[error(
+        "session {session} ran on machine {machine}, which was removed from Humata or forgotten since, so it can't be restored there"
+    )]
+    MachineGone { session: String, machine: String },
     #[error("couldn't stop session {session}'s agent")]
     Stop {
         session: String,
@@ -318,6 +322,7 @@ fn summary_of(works: &[Work], archived_unix_ms: i64) -> pb::ArchiveSummary {
             .collect(),
         machine_lost: false,
         lost: Vec::new(),
+        machine_removed: false,
     }
 }
 
@@ -687,6 +692,18 @@ impl SessionSvc {
                 None,
             ));
         }
+        // D783: a machine added later under its name never had it.
+        if row.as_ref().is_some_and(machine_gone) {
+            let machine = loaded.record.machine.clone();
+            return Err(failed(
+                Code::FailedPrecondition,
+                &ArchiveError::MachineGone { session: id.clone(), machine: machine.clone() },
+                &format!(
+                    "its history still reads with `humata session read {id}`. To carry on its work, start a new session on a machine you have now; a machine added under the name {machine} is another machine and doesn't have this session"
+                ),
+                None,
+            ));
+        }
         if self.lives_elsewhere(&loaded.record).is_none()
             && request
                 .machine
@@ -752,7 +769,7 @@ impl SessionSvc {
             Started::Existing(operation) => return Ok(Gated::Done(operation)),
         };
         let operation = progress.operation();
-        tokio::spawn(self.clone().run_restore(progress, id, identity::actor(caller)));
+        tokio::spawn(self.clone().run_restore(progress, id, identity::actor(caller), request.stopped));
         Ok(Gated::Done(operation))
     }
 
@@ -1118,7 +1135,9 @@ impl SessionSvc {
         Ok(())
     }
 
-    /// Frees the session's folder when the undo window closes.
+    /// Frees the session's folder when the undo window closes. One whose
+    /// machine was removed is never sent there: its clones were on that
+    /// machine, so `free_folder` only marks it freed.
     fn schedule_free(&self, session: &str, free_after_unix_ms: i64) {
         let (me, session) = (self.clone(), session.to_owned());
         tokio::spawn(async move {
@@ -1233,8 +1252,10 @@ impl SessionSvc {
     }
 
     /// Restore's work: bring the clones back when they were freed, drop the
-    /// archive row, resume the agent on its conversation.
-    async fn run_restore(self, progress: Progress, id: String, by: pb::Actor) {
+    /// archive row, resume the agent on its conversation. `stopped` (D784,
+    /// the Undo of "End for good") leaves it stopped instead, never running:
+    /// ResumeSession starts it.
+    async fn run_restore(self, progress: Progress, id: String, by: pb::Actor, stopped: bool) {
         let guard = self.lifecycle.lock_of(&id).lock_owned().await;
         let loaded = match self.load(&id).await {
             Ok(loaded) => loaded,
@@ -1335,6 +1356,22 @@ impl SessionSvc {
             ));
             return;
         };
+        if stopped {
+            // Undone before the agent stopped: it is stopped now.
+            if let Err(error) = self.stop_agent(&id).await {
+                progress.fail(error_of(
+                    &error,
+                    "stop the session, then restore it again",
+                    None,
+                ));
+                return;
+            }
+            progress.set_step("launch", pb::StepState::Skipped, None);
+            progress.set_step("verify", pb::StepState::Skipped, None);
+            self.tell.session(&id, pb::Change::Updated, Some(by)).await;
+            progress.succeed(Some(pb::operation::Result::Session(pb::SessionId { value: id })));
+            return;
+        }
         let running = match loaded.agent.as_ref() {
             Some(agent) if matches!(agent.state, AgentState::Running { .. }) => {
                 humata2_holder::attach(&agent.launch.holder_socket, u64::MAX)
@@ -1455,6 +1492,13 @@ mod starting_tests {
         let operations = Operations::new(Arc::new(Feed::default()));
         assert!(refuse_while_starting(&operations, "s1", Some("op_gone")).is_ok());
     }
+}
+
+/// Whether `row` is of a session whose machine was removed or forgotten
+/// after it ran there (D783).
+fn machine_gone(row: &ArchiveRow) -> bool {
+    pb::ArchiveSummary::decode(row.summary.as_slice())
+        .is_ok_and(|summary| summary.machine_removed || summary.machine_lost)
 }
 
 #[cfg(test)]

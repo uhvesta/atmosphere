@@ -70,6 +70,7 @@ fn migrate(id: &str, thing: MigrateThing, machine: &str, phase: MigratePhase) ->
         asked_by: None,
         undo_note: None,
         choices: Vec::new(),
+        on_screen: None,
     }
 }
 

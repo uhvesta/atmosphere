@@ -1,5 +1,7 @@
-//! SettingsService (ST-13, FC-12, D196, D199, D770): the branch prefix,
-//! where agents ask for permission and Contain agents, kept in the store;
+//! SettingsService (ST-13, FC-12, D196, D199, D770, D782): the branch
+//! prefix and Contain agents, kept in the store; where agents ask, read
+//! from and written to every kind's `asks_in_inbox` in agents.toml (D782:
+//! `permissions_in_agent` is true iff every kind keeps its asks);
 //! the default agent, terminal, retention defaults, long lines, skills and
 //! notifications, kept as portable config (see `sections`); and a
 //! channel's own prefix, default agent, retention and Contain agents. Each
@@ -23,6 +25,7 @@ use crate::guard::{self, Guard};
 use crate::identity::{self, Caller};
 use crate::inbox::permission;
 use crate::status;
+use crate::agent_switches::OnChange;
 
 mod gh_login;
 mod sections;
@@ -39,6 +42,10 @@ pub(crate) struct SettingsSvc {
     asking: Arc<AtomicBool>,
     /// Where the portable sections are kept.
     sections: Arc<sections::Places>,
+    /// The agent kinds and their agents.toml, for where they ask (D782).
+    agents: Agents,
+    /// Told when that file is written, so machines get the new copy.
+    agents_changed: OnChange,
 }
 
 impl SettingsSvc {
@@ -53,8 +60,23 @@ impl SettingsSvc {
         agents: Agents,
         default_agent: String,
     ) -> Self {
-        let sections = Arc::new(sections::Places::new(state, agents, default_agent));
-        Self { guard, store, machine, feed, asking: Arc::default(), sections }
+        let sections = Arc::new(sections::Places::new(state, agents.clone(), default_agent));
+        Self {
+            guard,
+            store,
+            machine,
+            feed,
+            asking: Arc::default(),
+            sections,
+            agents,
+            agents_changed: OnChange::default(),
+        }
+    }
+
+    /// Tells `changed` each time the compatibility switch writes agents.toml.
+    pub(crate) fn with_agents_changed(mut self, changed: OnChange) -> Self {
+        self.agents_changed = changed;
+        self
     }
 
     /// Learns the host's `gh` login in the background, once, and tells the
@@ -120,12 +142,12 @@ impl SettingsSvc {
     }
 
     async fn shown(&self) -> Result<pb::Settings, Status> {
-        let store = self.store.clone();
-        let (saved, (in_agent, agents_revision), codex_needs_trust, (contain, contain_revision), sections_revision) =
+        let (store, agents) = (self.store.clone(), self.agents.clone());
+        let (saved, in_agent, codex_needs_trust, (contain, contain_revision), sections_revision) =
             blocking(move || -> Result<_, humata2_store::StoreError> {
                 Ok((
                     store.setting(BRANCH_PREFIX_KEY)?,
-                    permission::in_agent(&store)?,
+                    permission::every_kind_in_agent(&agents),
                     permission::codex_trust::needs_trust(&store)?,
                     crate::contained::global(&store)?,
                     store.setting(sections::REVISION_KEY)?.map_or(0, |saved| saved.revision),
@@ -140,7 +162,6 @@ impl SettingsSvc {
         let revision = saved
             .as_ref()
             .map_or(0, |saved| saved.revision)
-            .max(agents_revision)
             .max(contain_revision)
             .max(sections_revision);
         let mut shown = pb::Settings {
@@ -270,17 +291,34 @@ impl pb::settings_service_server::SettingsService for SettingsSvc {
             blocking(move || places.save(&wanted)).await?.map_err(|error| error.status())?;
         }
         let saves_sections = sections::sets_any(&request);
-        let (store, prefix, agents, security) =
-            (self.store.clone(), request.branch_prefix, request.agents, request.security);
+        // D782: the old one switch sets every agent's own switch.
+        if let Some(wanted) = &request.agents {
+            let (agents, in_agent) = (self.agents.clone(), wanted.permissions_in_agent);
+            let written = blocking(move || permission::set_every_kind(&agents, in_agent)).await?;
+            // Even a half-done write changed the file for some kinds.
+            self.agents_changed.tell();
+            written.map_err(|error| {
+                status::failure(
+                    Code::FailedPrecondition,
+                    pb::Error {
+                        message: status::chain(&error),
+                        fix: "fix or remove ~/.humata2/config/agents.toml, then change the switch again".to_owned(),
+                        retry: None,
+                        kind: None,
+                    },
+                )
+            })?;
+        }
+        let (store, prefix, saves_agents, security) =
+            (self.store.clone(), request.branch_prefix, request.agents.is_some(), request.security);
         blocking(move || -> Result<(), humata2_store::StoreError> {
-            if saves_sections {
+            // The agents' switches live in agents.toml; this key keeps the
+            // revision moving when only they change.
+            if saves_sections || saves_agents {
                 store.put_setting(sections::REVISION_KEY, "", current + 1)?;
             }
             if let Some(security) = security {
                 crate::contained::put_global(&store, security.contain_agents, current + 1)?;
-            }
-            if let Some(agents) = agents {
-                permission::put_in_agent(&store, agents.permissions_in_agent, current + 1)?;
             }
             if let Some(prefix) = prefix {
                 store.put_setting(BRANCH_PREFIX_KEY, &prefix, current + 1)?;

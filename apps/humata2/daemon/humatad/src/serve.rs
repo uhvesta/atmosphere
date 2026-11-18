@@ -513,11 +513,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     };
     // ST-1: AgentService lists these kinds; the built-in list when no agents file was given.
     let agent_service = crate::agent_service::AgentSvc::new(agents.clone(), args.agents.is_none());
+    // D782: a write to agents.toml reaches every linked machine, once the
+    // machines are served (below).
+    let agents_changed = agent_service.on_change();
+    // D782's upgrade: D199's one "ask in the agent" switch becomes every
+    // kind's own `asks_in_inbox`, once.
+    if let Err(error) = crate::inbox::permission::move_global_switch(&store, &agents) {
+        crate::log::say!("humatad2: {}", crate::status::chain(&error));
+    }
     // ST-15: Settings checks a default agent it saves against these.
     let settings_agents = agents.clone();
     // B9: the history learns a conversation its agent wrote before the
     // session named it, as a resume does.
     let history_agents = agents.clone();
+    // D782: the Inbox reads each agent's own "Ask in the Inbox".
+    let inbox_agents = agents.clone();
     let reports = state.join("restarts");
     private_folder(&reports)?;
     // D373: which holder file each holder is spawned from.
@@ -603,6 +613,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine.clone(),
         feed.clone(),
     ));
+    // D782: each ask reads its agent's own switch.
+    inbox.use_agents(inbox_agents);
     start_messages.tell(inbox.clone(), store.clone(), machine.clone());
     // D261: a stopped boot ends every holder, withdraws the Inbox's pending
     // requests and settles the record; that is its start.
@@ -742,6 +754,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         migrations: migrations.clone(),
         builds: builds.clone(),
         tell: session_tell.clone(),
+        started: last_start.clone(),
     });
     // D767: a question an agent asks on its screen becomes an Inbox question.
     crate::screen_ask::start(terminals.holder_links(), inbox.clone(), store.clone(), machine.clone());
@@ -973,7 +986,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         &state,
         settings_agents,
         args.default_agent.clone(),
-    );
+    )
+    .with_agents_changed(agents_changed.clone());
     // The default branch prefix is the host's gh login; a start never waits for it (D196).
     settings.follow_gh_login();
     // A machine's own storage and Humata folder, for the host's relayed
@@ -988,6 +1002,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         // D768: its agents' machine lookups go to the host.
         uplinks.forwarder(),
     );
+    // D784: a stopped shell is started again as the restart doctor does.
+    box_machines.use_sessions(session_svc.clone());
     let machines = match host_work {
         Some(work) => {
             let skills_home = match args.skills_home {
@@ -1069,6 +1085,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             history.use_links(work.links(), work.reports());
             trash.use_links(work.links());
             machine_service::recover_in_background(work.clone());
+            // D782: a changed agents.toml goes to every linked machine now,
+            // not only at its next link-up.
+            let pushes = work.clone();
+            agents_changed.set(move || machine_service::agents_changed(&pushes));
             let providers = ProviderSvc::new(guard.clone(), work.clone(), operations.clone(), inbox.clone());
             let skills = crate::skills_service::SkillsSvc::new(
                 guard.clone(),
@@ -1103,6 +1123,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // D768: only the host keeps machines and links them, so a machine's
     // agents look machines up, read other machines' files and copy between
     // machines through the host, which answers as that agent.
+    if let Some((machine_svc, _, _)) = &machines {
+        // D784: a stopped shell is started again as the restart doctor does.
+        machine_svc.use_sessions(session_svc.clone());
+    }
     match &machines {
         Some((machine_svc, _, _)) => board_svc.answer_host_calls(crate::board_service::HostCalls {
             machines: machine_svc.clone(),

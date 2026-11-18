@@ -54,6 +54,8 @@ pub(crate) struct PageContext {
     pub(crate) stopped_by: Option<String>,
     /// The clock time the app's link to it was lost.
     pub(crate) lost_at: Option<String>,
+    /// Now, in Unix milliseconds, to work the running holders' uptime out.
+    pub(crate) now_ms: i64,
 }
 
 /// The page's two inputs: the variable's name and its masked value.
@@ -254,6 +256,7 @@ pub(crate) fn route(
             .stop()
             .map(|stop| stop.by.phrase(&state.workspace)),
         lost_at: found.and_then(|found| found.lost_at.clone()),
+        now_ms: ui.clients().daemon.now_ms(),
     };
     machine_page(
         ui,
@@ -710,6 +713,22 @@ fn left(
                 .test_support(),
         );
     }
+    // D784: once the machine's running holders are listed they are the
+    // "Sessions on it" list, and the ones no channel has follow them.
+    let (running_count, running_card, running_orphans) = if state.running.holders.is_empty() {
+        (None, None, None)
+    } else {
+        let (count, listed, orphans) = crate::machine_running::listing(
+            ui,
+            wrap,
+            state,
+            &context.sessions,
+            &channel_name,
+            context.now_ms,
+            look,
+        );
+        (Some(count), Some(listed), orphans)
+    };
     let mut folders = card(look).overflow_hidden();
     for (index, folder) in detail.folders.iter().enumerate() {
         let sessions_text = match folder.sessions {
@@ -758,16 +777,20 @@ fn left(
                 .gap(px(6.))
                 .child(label(
                     look,
-                    match (&context.lost_at, state.stop().is_some_and(|stop| !stop.delivered)) {
-                        (Some(at), true) => format!(
-                            "Sessions on it · {} · as last seen at {at}",
-                            detail.sessions.len()
-                        ),
-                        _ => format!("Sessions on it · {}", detail.sessions.len()),
+                    {
+                        let count = running_count.unwrap_or(detail.sessions.len());
+                        match (&context.lost_at, state.stop().is_some_and(|stop| !stop.delivered)) {
+                            (Some(at), true) => format!("Sessions on it · {count} · as last seen at {at}"),
+                            _ => format!("Sessions on it · {count}"),
+                        }
                     },
                 ))
-                .child(sessions),
+                .child(match running_card {
+                    Some(listed) => listed.id("machine-running").test_support().into_any_element(),
+                    None => sessions.into_any_element(),
+                }),
         )
+        .children(running_orphans)
         .child(
             col()
                 .gap(px(6.))

@@ -58,6 +58,16 @@ pub(crate) enum MigrateError {
     },
 
     #[error(
+        "couldn't withdraw the Migrate item {request} for {machine}, which was removed from Humata, so it stays in the Inbox until a machine named {machine} links again, which redoes or ends the item for that machine. Until then don't click Migrate on it; nothing it names is there"
+    )]
+    WithdrawRemoved {
+        machine: String,
+        request: String,
+        #[source]
+        source: Status,
+    },
+
+    #[error(
         "couldn't mark the Migrate item {request} for {machine} as done, though it is at this Mac's release; it keeps showing Migrating until this daemon restarts. Restart humatad2 on this Mac to clear it"
     )]
     Settle {
@@ -885,6 +895,46 @@ impl Migrations {
         }
     }
 
+    /// `machine` was removed from Humata (D783): each of its items is
+    /// withdrawn as its machine removed and none is kept to update, so a
+    /// machine added later under the name starts with none of them.
+    pub(crate) async fn machine_removed(&self, machine: &str) -> Result<(), MigrateError> {
+        let _serial = self.inner.serial.lock().await;
+        let keys: Vec<_> = self
+            .inner
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .filter(|(_, name)| name == machine)
+            .cloned()
+            .collect();
+        // One that can't be withdrawn doesn't keep the others: the first
+        // failure is what the caller hears, after the rest.
+        let mut failed = None;
+        for key in keys {
+            let Some(known) = self.known(&key) else {
+                continue;
+            };
+            match self
+                .inner
+                .inbox
+                .withdraw_migrate(&known.id.value, pb::WithdrawReason::MachineRemoved)
+                .await
+            {
+                Ok(_) => self.forget(&key),
+                Err(source) => {
+                    failed.get_or_insert(MigrateError::WithdrawRemoved {
+                        machine: machine.to_owned(),
+                        request: known.id.value.clone(),
+                        source,
+                    });
+                }
+            }
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
     /// The pending item for `thing` on `machine`, if there is one.
     #[cfg(test)]
     pub(crate) fn pending(&self, thing: pb::MigrateThing, machine: &pb::MachineId) -> Option<pb::RequestId> {
@@ -942,6 +992,13 @@ pub(crate) struct Watch {
 impl Watch {
     pub(crate) fn new(migrations: Migrations, release: Release) -> Self {
         Self { migrations, release }
+    }
+
+    /// `machine` was removed from Humata: its Migrate items go (D783).
+    pub(crate) async fn removed(&self, machine: &str) {
+        if let Err(error) = self.migrations.machine_removed(machine).await {
+            crate::log::say!("humatad2: warning: {}", status::chain(&error));
+        }
     }
 
     /// `machine` refused a call the host relays as off its peer list: its
@@ -1419,6 +1476,29 @@ mod tests {
         assert!(!item.action_title.contains("ma_bcc83"), "{}", item.action_title);
         assert!(!item.reason.contains("ma_bcc83"), "{}", item.reason);
         assert_eq!(card(&item).machine, Some(machine));
+    }
+
+    /// D783: removing gpu withdraws its item as its machine removed and
+    /// leaves cpu's; a machine added later as gpu gets an item of its own.
+    #[tokio::test]
+    async fn a_removed_machines_items_are_withdrawn_and_another_machines_stay() {
+        let directory = tempfile::tempdir().unwrap();
+        let inbox = inbox(directory.path());
+        let migrations = Migrations::new(inbox.clone(), idle());
+        migrations.set_names(Names::of_host(HOST));
+        let cpu = pb::MachineId { value: "cpu".to_owned() };
+        let removed = posted(&migrations, &inbox, &gpu()).await;
+        let other = posted(&migrations, &inbox, &cpu).await;
+
+        migrations.machine_removed("gpu").await.unwrap();
+
+        let withdrawn = held(&inbox, removed.id.as_ref().unwrap()).await;
+        assert_eq!(withdrawn.state(), pb::RequestState::Withdrawn);
+        assert_eq!(withdrawn.withdraw_reason(), pb::WithdrawReason::MachineRemoved);
+        assert_eq!(held(&inbox, other.id.as_ref().unwrap()).await.state(), pb::RequestState::Pending);
+        let again = posted(&migrations, &inbox, &gpu()).await;
+        assert_ne!(again.id, removed.id);
+        assert_eq!(again.state(), pb::RequestState::Pending);
     }
 
     #[tokio::test]

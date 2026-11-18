@@ -74,7 +74,14 @@ enum RemoteError {
 /// Waits until `links` show `machine` up on a link other than `stale`, and
 /// returns that link's generation; `None` once the machine is forgotten.
 pub(super) async fn next_link_up(links: &Links, machine: &str, stale: Option<u64>) -> Option<u64> {
-    let mut state = links.watch(machine);
+    next_up(&mut links.watch(machine), stale).await
+}
+
+/// As [`next_link_up`], on one watch of the machine kept across the waits
+/// of a follow-up: once the machine is removed or forgotten the watch has
+/// ended for good, so a machine added later under its name, which never
+/// had the follow-up's session, is never asked (D783).
+async fn next_up(state: &mut tokio::sync::watch::Receiver<LinkState>, stale: Option<u64>) -> Option<u64> {
     let now = *state
         .wait_for(|now| matches!(now, LinkState::Up { generation } if Some(*generation) != stale))
         .await
@@ -156,6 +163,7 @@ fn host_summary(
         repos,
         machine_lost: false,
         lost: Vec::new(),
+        machine_removed: false,
     }
 }
 
@@ -555,8 +563,9 @@ impl SessionSvc {
         let Ok(links) = self.links_to(session, machine) else {
             return;
         };
+        let mut state = links.watch(machine);
         let mut stale = None;
-        while let Some(generation) = next_link_up(&links, machine, stale).await {
+        while let Some(generation) = next_up(&mut state, stale).await {
             match self.reconcile_archive(session, machine, reported, by, asked.as_deref()).await {
                 Ok(()) => break,
                 Err(refused) if refused.code() == Code::Unavailable => stale = Some(generation),
@@ -572,6 +581,20 @@ impl SessionSvc {
         // Answered, or the machine was forgotten (which archives its
         // sessions on its own): nothing is left to learn.
         self.settled(&journal).await;
+    }
+
+    /// `machine` was removed or forgotten: the follow-ups kept for it go,
+    /// so a restart doesn't wait for a machine added later under its name,
+    /// which never had their sessions (D783). The ones running now end on
+    /// their own as its link is forgotten.
+    pub(super) async fn drop_follow_ups_of(&self, machine: &str) {
+        let Some(root) = self.carry.get().map(Carry::remote_archive_folder) else {
+            return;
+        };
+        let machine = machine.to_owned();
+        if let Err(refused) = blocking(move || pending::remove_of(&root, &machine)).await {
+            crate::log::say!("humatad2: couldn't drop a removed machine's follow-ups: {}", refused.message());
+        }
     }
 
     /// Keeps `journal` on disk, so a restart goes on with it. Best effort: a
@@ -922,14 +945,14 @@ impl SessionSvc {
         if here {
             tokio::spawn(self.clone().run_restore_here(progress, loaded, machine, by));
         } else {
-            tokio::spawn(self.clone().run_restore_there(progress, id, machine, by));
+            tokio::spawn(self.clone().run_restore_there(progress, id, machine, by, request.stopped));
         }
         Ok(Gated::Done(operation))
     }
 
     /// Undo in place: the machine restores the session where it is, and the
     /// host drops its own archive row.
-    async fn run_restore_there(self, progress: Progress, id: String, machine: String, by: pb::Actor) {
+    async fn run_restore_there(self, progress: Progress, id: String, machine: String, by: pb::Actor, stopped: bool) {
         let guard = self.lifecycle.lock_of(&id).lock_owned().await;
         progress.set_step("restore", pb::StepState::Running, None);
         let ended = async {
@@ -938,6 +961,7 @@ impl SessionSvc {
                 idempotency_key: None,
                 id: Some(pb::SessionId { value: id.clone() }),
                 machine: None,
+                stopped,
             };
             let first = relayed
                 .session()
@@ -1397,9 +1421,9 @@ impl SessionSvc {
         let Some(carry) = self.carry.get().cloned() else {
             return;
         };
-        let links = carry.links().clone();
+        let mut state = carry.links().watch(&machine);
         let mut stale = None;
-        while let Some(generation) = next_link_up(&links, &machine, stale).await {
+        while let Some(generation) = next_up(&mut state, stale).await {
             match self.load(&session).await {
                 Ok(loaded) if loaded.record.machine == self.machine => {}
                 Ok(_) => break,
@@ -1943,6 +1967,22 @@ mod tests {
     use humata2_store::{SessionDetail, SessionRepo, StartStep};
 
     use super::*;
+
+    /// D783: a follow-up waiting on box-1 when box-1 is removed ends, and
+    /// a machine added afterwards under the name doesn't wake it.
+    #[tokio::test(start_paused = true)]
+    async fn a_follow_up_ends_with_its_machine_and_never_wakes_for_the_next_of_its_name() {
+        let links = Links::default();
+        let lazy = || tonic::transport::Endpoint::from_static("http://127.0.0.1:9").connect_lazy();
+        links.up("box-1", lazy());
+        let mut state = links.watch("box-1");
+        let first = next_up(&mut state, None).await.expect("box-1 is up");
+
+        links.forget("box-1");
+        links.up("box-1", lazy());
+
+        assert_eq!(next_up(&mut state, Some(first)).await, None);
+    }
 
     fn loaded() -> Loaded {
         Loaded {

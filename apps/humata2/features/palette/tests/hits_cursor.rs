@@ -168,3 +168,22 @@ fn while_asking_for_a_machine_the_hits_are_not_rows() {
     assert!(machines > 0, "the step lists machines");
     store.send(A::Move(-1), |s| s.cursor = machines - 1);
 }
+
+/// The workspace changing under an open palette (a session's state moving
+/// on) lists the entries again with the cursor still on the row it was on.
+#[test]
+fn a_workspace_change_keeps_the_cursor_on_its_row() {
+    let mut store = opened();
+    let workspace = Arc::new(fixture::design());
+    store.send(A::Show(workspace.clone()), |_| {});
+    assert!(entries(&store) > 1, "the empty query lists several commands");
+    let first = store.state().cursor;
+    store.send(A::Move(1), |_| {});
+    let moved = store.state().cursor;
+    assert_ne!(moved, first, "the cursor moved");
+    let picked = store.state().entries[moved].command.clone();
+
+    store.send(A::Show(workspace.clone()), |_| {});
+    let cursor = store.state().cursor;
+    assert_eq!(store.state().entries[cursor].command, picked);
+}

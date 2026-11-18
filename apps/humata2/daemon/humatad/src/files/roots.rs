@@ -663,7 +663,7 @@ impl Target {
     fn canonical_root(&self) -> Result<PathBuf, Status> {
         fs::canonicalize(&self.root).map_err(|error| match error.kind() {
             ErrorKind::NotFound => status::not_found(
-                pb::EntityKind::File,
+                pb::EntityKind::RootFolder,
                 &self.shown,
                 format!("there is no folder at {} on this machine", self.root.display()),
                 "check the session, channel and repository; the folder may not have been made yet",

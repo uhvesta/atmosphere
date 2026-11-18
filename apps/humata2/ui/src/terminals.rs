@@ -2,13 +2,17 @@
 //! `terminal_replica` entity fed by that tab's link: the daemon's frames in
 //! (the screen first, then output and size changes), the view's frames out.
 //! Dropping the entry drops the link; the program keeps running.
-use crate::{bridge::Ui, theme::Look};
+//!
+//! The Inbox's open item, when it is a question on its agent's screen,
+//! gets one more replica of that tab, apart from the session's own: it
+//! never sizes the tab and never moves the session's focus (D781).
+use crate::{bridge::Ui, inbox_terminal::InboxTerminal, theme::Look};
 use ghostty_vt::{Colors, Rgb};
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route, layout::FullScreen};
 use humata2_clients::ImageKind;
-use humata2_clients::model::{Agent, MachineKind, SessionId, Status};
+use humata2_clients::model::{Agent, MachineKind, RequestId, SessionId, Status};
 use humata2_clients::{LinkSink, SendError as LinkSendError, TerminalLink, TerminalNotice};
 use humata2_session::{SessionAction, Tab};
 use std::{
@@ -77,7 +81,7 @@ impl std::future::Future for NextFrame {
 type Key = (SessionId, usize);
 
 /// Where a tab's link stands.
-enum Link {
+pub(crate) enum Link {
     /// Asked for; the screen has not arrived.
     Opening,
     /// Frames can go out.
@@ -149,9 +153,19 @@ struct Entry {
     _pump: Task<()>,
 }
 
+/// The Inbox's view of a question's screen (D781).
+struct InboxEntry {
+    key: Key,
+    /// `None` when the replica could not be made; the view says why.
+    entry: Option<Entry>,
+    view: Entity<InboxTerminal>,
+}
+
 /// A terminal belongs to its session/tab, regardless of which group displays it.
 pub(crate) struct Terminals {
     entries: HashMap<Key, Entry>,
+    /// The Inbox's open item's screen, while it is a question on one.
+    inbox: Option<InboxEntry>,
     errors: HashMap<Key, String>,
     /// How many replicas each tab has had: a replacement is a new identity.
     generations: HashMap<Key, u64>,
@@ -189,6 +203,7 @@ impl Terminals {
     pub(crate) fn new(_: &Rc<Ui>, _: &mut App) -> Self {
         Self {
             entries: HashMap::new(),
+            inbox: None,
             errors: HashMap::new(),
             generations: HashMap::new(),
             shell: Rc::new(Cell::new(None)),
@@ -197,6 +212,9 @@ impl Terminals {
     }
 
     /// A replica for `key` and the task that opens its link and feeds it.
+    /// `inbox`: the Inbox's view of a question's screen, which never sizes
+    /// the tab and leaves the session's focus alone (D781).
+    #[allow(clippy::too_many_arguments)]
     fn open(
         &mut self,
         key: Key,
@@ -204,6 +222,7 @@ impl Terminals {
         look: Look,
         font: u8,
         free_hidden: bool,
+        inbox: bool,
         window: &mut Window,
         cx: &mut App,
     ) -> Result<Entry, ReplicaError> {
@@ -225,7 +244,7 @@ impl Terminals {
             theme: font_theme(font),
             memory_saver: memory_saver(free_hidden),
             shortcuts: ShortcutPolicy::default(),
-            fit: FIT,
+            fit: if inbox { FitPolicy::Never } else { FIT },
             default_colors: Some(colors(look)),
         };
         let replica = TerminalReplica::create(config, sink, window, cx)?;
@@ -244,7 +263,7 @@ impl Terminals {
                         cx.notify(shell);
                     }
                 }
-                ReplicaEvent::Focused { .. } => {
+                ReplicaEvent::Focused { .. } if !inbox => {
                     let ui = ui.clone();
                     let (session, tab) = key.clone();
                     // Focus can change during a render that is reading the store.
@@ -393,7 +412,12 @@ impl Terminals {
             let handle = window.window_handle();
             let (id, tab) = key;
             cx.spawn(async move |cx| {
-                let (worked, why) = match ui.clients().terminals.link(&id, tab).await {
+                let linked = if inbox {
+                    ui.clients().terminals.link_unsized(&id, tab)
+                } else {
+                    ui.clients().terminals.link(&id, tab)
+                };
+                let (worked, why) = match linked.await {
                     Err(error) => (false, Some(error.to_string())),
                     Ok(TerminalLink {
                         mut frames,
@@ -552,6 +576,9 @@ impl Terminals {
         })
     }
 
+    /// Opens, updates and drops the views to match `state`. Returns whether
+    /// it dropped the Inbox's terminal while it had focus, so the shell
+    /// takes focus back for the list (D781).
     pub(crate) fn sync(
         &mut self,
         ui: &Rc<Ui>,
@@ -559,7 +586,7 @@ impl Terminals {
         look: Look,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> bool {
         self.shell.set(Some(window.current_view()));
         self.look = Some(look);
         // Closing a tab hides its view, retaining the program and scrollback.
@@ -604,7 +631,7 @@ impl Terminals {
                 for tab in 0..=session.shells.len() {
                     let key = (id.clone(), tab);
                     if !self.entries.contains_key(&key) && !self.errors.contains_key(&key) {
-                        match self.open(key.clone(), ui, look, font, free_hidden, window, cx) {
+                        match self.open(key.clone(), ui, look, font, free_hidden, false, window, cx) {
                             Ok(entry) => {
                                 self.entries.insert(key, entry);
                             }
@@ -664,6 +691,123 @@ impl Terminals {
                 self.errors.insert((id.clone(), *tab), format!("The terminal theme could not be applied: {source}. Change appearance again to retry."));
             }
         }
+        let lost_focus = self.sync_inbox(ui, state, look, window, cx);
+        ui.set_inbox_terminal(self.inbox.as_ref().map(|inbox| inbox.view.clone().into()));
+        lost_focus
+    }
+
+    /// Links the Inbox's open item's screen while it is a question on one,
+    /// and only that one (D781). Returns whether the view it dropped had
+    /// focus.
+    fn sync_inbox(
+        &mut self,
+        ui: &Rc<Ui>,
+        state: &AppState,
+        look: Look,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let wanted = if state.route == Route::Inbox {
+            state.inbox.terminal()
+        } else {
+            None
+        };
+        // A link that ended after showing a screen opens again once the
+        // machine answers; one that never showed one stays with its reason.
+        let ended_after_screen = self.inbox.as_ref().is_some_and(|inbox| {
+            inbox.entry.as_ref().is_some_and(|entry| {
+                matches!(&*entry.link.borrow(), Link::Ended { worked: true, .. })
+            }) && is_connected(state, &inbox.key.0)
+        });
+        let moved = self.inbox.as_ref().map(|inbox| &inbox.key) != wanted.as_ref();
+        let mut lost_focus = false;
+        if (ended_after_screen || moved)
+            && let Some(entry) = self.inbox.take().and_then(|gone| gone.entry)
+        {
+            lost_focus = entry.replica.read(cx).pane().is_some_and(|pane| {
+                pane.read(cx).focus_handle(cx).contains_focused(window, cx)
+            });
+        }
+        let Some(key) = wanted else {
+            return lost_focus;
+        };
+        let font = state.settings.preferences.font_size;
+        let request = state
+            .inbox
+            .shown()
+            .into_iter()
+            .find(|request| {
+                request.session == key.0
+                    && request.on_screen == Some(key.1)
+                    && request.answer.is_none()
+            })
+            .map(|request| request.id.clone())
+            .unwrap_or_else(|| RequestId::new(""));
+        if self.inbox.is_none() {
+            let opened = self.open(key.clone(), ui, look, font, false, true, window, cx);
+            let (entry, why) = match opened {
+                Ok(entry) => (Some(entry), None),
+                // Nothing to link: the reason stays until another item opens.
+                Err(source) => (None, Some(format!("the terminal could not start ({source})"))),
+            };
+            let shown = entry
+                .as_ref()
+                .map(|entry| (entry.replica.clone(), entry.link.clone()));
+            let view = InboxTerminal::new(ui.clone(), request.clone(), shown, why, cx);
+            self.inbox = Some(InboxEntry { key: key.clone(), entry, view });
+        }
+        let Some(inbox) = &mut self.inbox else {
+            return lost_focus;
+        };
+        if let Some(entry) = &mut inbox.entry {
+            let connected = is_connected(state, &key.0);
+            let exited = key.1 == 0
+                && state
+                    .workspace
+                    .session(&key.0)
+                    .is_some_and(|session| matches!(session.status, Status::Exited { .. }));
+            entry.writable.set(connected && !exited);
+            let appearance = (look.term_text, look.term, look.term_dim);
+            let changed_appearance = entry.appearance != appearance;
+            entry.appearance = appearance;
+            let option_as_alt = state.settings.preferences.option_as_alt;
+            entry.replica.update(cx, |replica, cx| {
+                let _ = replica.set_visible(true, cx);
+                if let Some(pane) = replica.pane().cloned() {
+                    pane.update(cx, |pane, cx| {
+                        if !connected {
+                            pane.set_connected(false, cx);
+                        }
+                        pane.set_option_as_alt(option_as_alt, cx);
+                    });
+                }
+                if changed_appearance {
+                    // A refused color change keeps the screen as it was.
+                    let _ = replica.set_default_colors(Some(colors(look)), cx);
+                }
+            });
+        }
+        inbox.view.update(cx, |view, cx| view.update(request, font, look, cx));
+        lost_focus
+    }
+
+    /// Focuses the Inbox's terminal: a click in it, or Tab from the list.
+    /// Returns whether it took focus: false when there is none or it has
+    /// focus already.
+    pub(crate) fn focus_inbox(&self, window: &mut Window, cx: &mut App) -> bool {
+        let Some(entry) = self.inbox.as_ref().and_then(|inbox| inbox.entry.as_ref()) else {
+            return false;
+        };
+        let focused = entry.replica.read(cx).pane().is_some_and(|pane| {
+            pane.read(cx).focus_handle(cx).contains_focused(window, cx)
+        });
+        if focused {
+            return false;
+        }
+        entry
+            .replica
+            .update(cx, |replica, cx| replica.focus_input(window, cx));
+        true
     }
 
     pub(crate) fn focus(
@@ -877,7 +1021,7 @@ fn exit_line(code: i32, look: Look) -> AnyElement {
 }
 
 /// The rows the grid shows, one per line.
-fn grid_text(pane: &Entity<TerminalPane>, cx: &mut App) -> String {
+pub(crate) fn grid_text(pane: &Entity<TerminalPane>, cx: &mut App) -> String {
     pane.read(cx).view().clone().update(cx, |view, _| {
         let grid = view.grid_mut();
         grid.sync();
@@ -924,7 +1068,7 @@ fn is_connected(state: &AppState, id: &SessionId) -> bool {
 /// The cell is the font's advance rounded up to a whole pixel, so 12 pt Menlo
 /// (7.2 px) would become 8 px, a tenth wider than the design. Half a point
 /// smaller lands on 7 px; the line pitch stays 18 at the default setting.
-fn font_theme(font: u8) -> Theme {
+pub(crate) fn font_theme(font: u8) -> Theme {
     let size = f32::from(font) - 0.5;
     Theme {
         font_size: size,

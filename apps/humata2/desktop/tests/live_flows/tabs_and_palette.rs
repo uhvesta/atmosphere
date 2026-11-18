@@ -195,7 +195,7 @@ fn the_tab_row_opens_and_closes_files_and_the_panel_and_full_screen_follow_their
 
     // 7, and the only tab of its group: ✕ closes the file tab and the
     // terminal shows again; nothing stopped.
-    app.click(Role::Button, "Close tab");
+    app.click(Role::Button, &format!("Close {README}"));
     app.wait_until("the file tab to close", |app| {
         app.ui.read(|state| file_tabs(state) == 0 && terminal_selected(state))
     });

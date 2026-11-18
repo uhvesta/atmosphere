@@ -717,16 +717,20 @@ impl ChannelSvc {
                 .map_err(&stopped)?
                 .map_err(DeleteError::Store)?;
             let Some(mut agent) = agent else { continue };
-            let AgentState::Running { holder_pid } = agent.state else {
-                continue;
+            let owner = format!("session {session}'s terminal");
+            // D784: a deleted channel ends every agent, one still starting
+            // or being resumed included: it has no pid yet, so its holder
+            // is found by its socket.
+            let ended = match agent.state {
+                AgentState::Running { holder_pid } => {
+                    holder_end::shut_or_end(&agent.launch.holder_socket, holder_pid, &owner).await
+                }
+                AgentState::Launching | AgentState::Resuming => {
+                    holder_end::end_holder_at(&agent.launch.holder_socket, &owner).await
+                }
+                _ => continue,
             };
-            if let Err(error) = holder_end::shut_or_end(
-                &agent.launch.holder_socket,
-                holder_pid,
-                &format!("session {session}'s terminal"),
-            )
-            .await
-            {
+            if let Err(error) = ended {
                 crate::log::say!("humatad2: {error}");
             }
             agent.state = AgentState::Stopped;

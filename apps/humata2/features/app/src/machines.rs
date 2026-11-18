@@ -56,6 +56,7 @@ impl App {
             _ => None,
         };
         let effect = MachinePage::new(self.clients.machines.clone())
+            .with_daemon(self.clients.daemon.clone())
             .reduce(&mut state.machine_page, action)
             .map(AppAction::MachinePage);
         let Some(delegate) = delegate else {
@@ -112,6 +113,18 @@ impl App {
                 Effect::merge([go, select])
             }
             PageDelegate::Toast(text) => state.toast(text, &clock),
+            PageDelegate::Running(humata2_hosts::RunningDelegate::Open { session: Some(session), .. }) => {
+                self.navigate(state, Route::Session(session))
+            }
+            // SEAM (D784): attaching a terminal no session names by its tab
+            // needs a client call the Daemon trait doesn't have yet.
+            PageDelegate::Running(humata2_hosts::RunningDelegate::Open { session: None, .. }) => Effect::none(),
+            PageDelegate::Running(humata2_hosts::RunningDelegate::ArchiveSession(session)) => {
+                // The session page's own Archive, frame 65's dialog included.
+                let go = self.navigate(state, Route::Session(session));
+                let archive = self.handle(state, AppAction::Session(humata2_session::SessionAction::Archive));
+                Effect::merge([go, archive])
+            }
         };
         effect.and(asked)
     }

@@ -3,10 +3,11 @@
 //! agent's payload, raises the card, says it's still waiting every 15 s, and
 //! ends with the bytes the hook prints. Empty bytes are no decision, so the
 //! agent's own prompt asks: for a payload that isn't an ask, a card nobody
-//! answered in time, one that was withdrawn, or every ask while Settings ›
-//! Agents › Ask for permission in the Inbox is off (D199). The `question`
-//! event does the same for the agent's own ask-user form (D761): its card
-//! is an Inbox question, and the session needs you while it's held.
+//! answered in time, one that was withdrawn, or every ask of an agent whose
+//! Settings › Agents › "Ask in the Inbox" is off (D782, was D199's one
+//! switch). The `question` event does the same for the agent's own ask-user
+//! form (D761): its card is an Inbox question, and the session needs you
+//! while it's held.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -68,10 +69,10 @@ impl SessionSvc {
                 .map(|asked| Hooked::Question(kind, asked)),
             _ => None,
         };
-        // Not an ask this daemon answers, or the user keeps asks in the
-        // agent's own prompt (D199): no decision, no card.
+        // Not an ask this daemon answers, or the user keeps this agent's
+        // asks in its own terminal (D782): no decision, no card.
         let hooked = match hooked {
-            Some(hooked) if !self.inbox.asks_in_agent().await? => Some(hooked),
+            Some(hooked) if !self.inbox.asks_in_agent(&agent.agent) => Some(hooked),
             _ => None,
         };
         let Some(hooked) = hooked else {

@@ -31,6 +31,8 @@ mod machines;
 // REPOS (RL-1): the repo library and search.
 mod repos;
 mod review;
+// D784: running holders, listed and ended.
+mod running;
 // REPOS (CH-21)
 mod session_repos;
 mod sessions;
@@ -90,15 +92,16 @@ struct Inner {
     pushes: Vec<(SessionId, PushChoice)>,
     pull_requests: HashMap<(SessionId, String), u32>,
     next_pull_request: u32,
-    asks_in_inbox: bool,
     codex_needs_trust: bool,
-    /// AGENTSET: the built-in agents' switches.
+    /// AGENTSET: the agent kinds' switches.
     switches: Vec<AgentSwitch>,
     github_repos: Vec<String>,
     /// Document versions (DV-2 to DV-8).
     docs: docs::Store,
     // REPOS (RL-1): the repo library, saved scope and search state.
     repos: repos::State,
+    /// D784: the holders each machine lists, as a test seeded them.
+    running: Vec<crate::daemon::RunningHolder>,
 }
 
 struct Subscriber {
@@ -148,7 +151,6 @@ impl FakeDaemon {
                 pushes: Vec::new(),
                 pull_requests: HashMap::new(),
                 next_pull_request: 1,
-                asks_in_inbox: true,
                 codex_needs_trust: false,
                 switches: agent_switches::defaults(),
                 docs: docs::Store::default(),
@@ -164,6 +166,7 @@ impl FakeDaemon {
                 .to_vec(),
                 // REPOS (RL-1)
                 repos: repos::State::default(),
+                running: Vec::new(),
             })),
             clock,
             latency: Duration::ZERO,
@@ -566,17 +569,11 @@ impl Daemon for FakeDaemon {
         access::remove_grant(self, grant)
     }
 
-    fn asks_in_inbox(&self) -> Reply<bool> {
-        agent_asks::asks_in_inbox(self)
-    }
 
     fn set_default_agent(&self, agent: Agent) -> Reply<()> {
         agent_asks::set_default_agent(self, agent)
     }
 
-    fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool> {
-        agent_asks::set_asks_in_inbox(self, inbox)
-    }
 
     fn codex_needs_trust(&self) -> Reply<bool> {
         agent_asks::codex_needs_trust(self)
@@ -586,8 +583,8 @@ impl Daemon for FakeDaemon {
         agent_switches::agent_switches(self)
     }
 
-    fn set_agent_switch(&self, agent: Agent, change: SwitchChange) -> Reply<AgentSwitch> {
-        agent_switches::set_agent_switch(self, agent, change)
+    fn set_agent_switch(&self, kind: String, change: SwitchChange) -> Reply<AgentSwitch> {
+        agent_switches::set_agent_switch(self, kind, change)
     }
 
     fn reconnect(&self, machine: &MachineId) -> Reply<Vec<(SessionId, Recovery)>> {
@@ -635,6 +632,31 @@ impl Daemon for FakeDaemon {
         sessions::stop_agent(self, session)
     }
 
+    fn running_holders(&self, machine: &MachineId) -> Reply<Vec<crate::daemon::RunningHolder>> {
+        running::running_holders(self, machine)
+    }
+
+    fn stop_running_holder(&self, machine: &MachineId, tab: &crate::daemon::HolderTab) -> Reply<()> {
+        running::stop_running_holder(self, machine, tab)
+    }
+
+    fn resume_running_holder(&self, machine: &MachineId, tab: &crate::daemon::HolderTab) -> Reply<()> {
+        running::resume_running_holder(self, machine, tab)
+    }
+
+    fn end_running_holder(&self, machine: &MachineId, tab: &crate::daemon::HolderTab) -> Reply<()> {
+        running::end_running_holder(self, machine, tab)
+    }
+
+    fn adopt_running_holder(
+        &self,
+        machine: &MachineId,
+        tab: &str,
+        channel: Option<&crate::model::ChannelId>,
+    ) -> Reply<SessionId> {
+        running::adopt_running_holder(self, machine, tab, channel)
+    }
+
     fn plan_archive(&self, session: &SessionId) -> Reply<ArchivePlan> {
         sessions::plan_archive(self, session)
     }
@@ -649,6 +671,10 @@ impl Daemon for FakeDaemon {
 
     fn restore_session(&self, session: &SessionId) -> Reply<()> {
         sessions::restore_session(self, session)
+    }
+
+    fn restore_session_stopped(&self, session: &SessionId) -> Reply<()> {
+        running::restore_session_stopped(self, session)
     }
 
     fn set_pinned(&self, session: &SessionId, pinned: bool) -> Reply<()> {

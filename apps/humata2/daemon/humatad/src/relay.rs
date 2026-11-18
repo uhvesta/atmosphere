@@ -185,6 +185,12 @@ const MACHINE_METHODS: (&str, &[&str]) = (
         // on the box's own daemon, which serves both to the host alone.
         "PlanChangeRoot",
         "ChangeRoot",
+        // D784: a machine lists, stops, resumes and ends its own holders.
+        "ListRunningHolders",
+        "StopRunningHolder",
+        "ResumeRunningHolder",
+        "EndRunningHolder",
+        "AdoptRunningHolder",
     ],
 );
 
@@ -327,7 +333,8 @@ impl RelayError {
     /// [`Self::status`] for a call relayed to `machine`'s daemon. When that
     /// daemon can't be reached or the call breaks on the way, the error is
     /// MachineOffline: the host then follows the call as one whose answer was
-    /// lost (D150), not as the machine's refusal.
+    /// lost (D150), not as the machine's refusal. A link that relays nothing
+    /// (D146) reaches no daemon either, so it is offline too (HO-5).
     fn status_on(&self, machine: &str) -> Status {
         self.failure(Some(machine))
     }
@@ -335,7 +342,11 @@ impl RelayError {
     fn failure(&self, machine: Option<&str>) -> Status {
         let kind = match (self, machine) {
             (
-                RelayError::Daemon { .. } | RelayError::Connect { .. } | RelayError::Gone | RelayError::Carry { .. },
+                RelayError::Daemon { .. }
+                | RelayError::Connect { .. }
+                | RelayError::Gone
+                | RelayError::Off
+                | RelayError::Carry { .. },
                 Some(machine),
             ) => Some(pb::error::Kind::MachineOffline(pb::MachineOffline {
                 machine: None,
@@ -500,7 +511,12 @@ impl Relay {
     }
 
     async fn try_begin(&self) -> Result<[u8; 32], Status> {
-        let channel = self.channel().await.map_err(|error| error.status())?;
+        // A failure here answers the host's relayed calls (and is only logged
+        // for ProveHost), so a daemon never reached is the machine offline.
+        let channel = self
+            .channel()
+            .await
+            .map_err(|error| error.status_on(&self.shared.machine))?;
         let reply = pb::daemon_service_client::DaemonServiceClient::new(channel)
             .begin_relay(pb::BeginRelayRequest {})
             .await
@@ -815,6 +831,11 @@ mod tests {
             "/humata.v1.MachineService/RemoveHostVariable",
             "/humata.v1.MachineService/PlanChangeRoot",
             "/humata.v1.MachineService/ChangeRoot",
+            "/humata.v1.MachineService/ListRunningHolders",
+            "/humata.v1.MachineService/StopRunningHolder",
+            "/humata.v1.MachineService/ResumeRunningHolder",
+            "/humata.v1.MachineService/EndRunningHolder",
+            "/humata.v1.MachineService/AdoptRunningHolder",
         ] {
             assert!(allows(allowed), "{allowed}");
         }
@@ -1317,5 +1338,24 @@ mod tests {
             .unwrap_err();
         assert_eq!(failed.code(), Code::Unavailable);
         assert!(relay.complete(&HOST_NONCE, &PROOF).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_link_that_relays_nothing_answers_relayed_calls_as_the_machine_offline() {
+        let relay = Relay::off(MACHINE.to_owned());
+        assert_eq!(relay.begin().await, None);
+
+        let (host_client, host_server) = tokio::io::duplex(1 << 16);
+        let link = register(Server::builder().add_routes(Routes::default()), &relay);
+        tokio::spawn(serve(link, host_server));
+        let mut client = tonic::client::Grpc::new(connect_over(host_client).await);
+        client.ready().await.unwrap();
+        let failed = client
+            .unary(Request::new(Bytes::new()), path(LIST), RawCodec)
+            .await
+            .unwrap_err();
+        assert_eq!(failed.code(), Code::Unavailable);
+        let kind = crate::status::error_of(&failed).and_then(|error| error.kind);
+        assert!(matches!(kind, Some(pb::error::Kind::MachineOffline(_))), "{failed:?}");
     }
 }

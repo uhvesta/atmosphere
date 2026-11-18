@@ -15,7 +15,7 @@ use humata2_transfers::NewItem;
 use pb::invalid_field::Problem;
 use tonic::{Code, Request, Response, Status};
 
-use super::Reads;
+use super::{Reads, held_read};
 use super::roots::{Roots, Target, io_failure};
 use crate::grant_target;
 use crate::guard::Guard;
@@ -62,10 +62,10 @@ impl Ops {
     ) -> Result<Response<pb::ListDirectoryResponse>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
+        let location = request.location.clone();
         let target = self
             .roots
             .target(request.location, "location", Entry::Folder)?;
-        self.reads.require(&caller, target.place.clone()).await?;
         let (size, token) = match request.page {
             Some(page) => (page.page_size as usize, page.page_token),
             None => (0, String::new()),
@@ -74,6 +74,15 @@ impl Ops {
             0 => PAGE_DEFAULT,
             size => size.min(PAGE_MAX),
         };
+        let (roots, held_token) = (self.roots.clone(), token.clone());
+        self.reads
+            .require(&caller, target.place.clone(), "list", move || {
+                held_read("humata.v1.ListDirectoryResponse", async move {
+                    let target = roots.target(location, "location", Entry::Folder)?;
+                    blocking(move || list(&target, size, &held_token)).await?
+                })
+            })
+            .await?;
         let response = blocking(move || list(&target, size, &token)).await??;
         Ok(Response::new(response))
     }
@@ -85,20 +94,20 @@ impl Ops {
     ) -> Result<Response<pb::FileEntry>, Status> {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
+        let location = request.location.clone();
         let target = self
             .roots
             .target(request.location, "location", Entry::Folder)?;
-        self.reads.require(&caller, target.place.clone()).await?;
-        let entry = blocking(move || {
-            let path = target.existing()?;
-            let meta = fs::metadata(&path).map_err(|error| found(&error, &target, &path))?;
-            Ok::<_, Status>(entry_of(
-                target.location.clone(),
-                &meta,
-                target.writable,
-            ))
-        })
-        .await??;
+        let roots = self.roots.clone();
+        self.reads
+            .require(&caller, target.place.clone(), "stat", move || {
+                held_read("humata.v1.FileEntry", async move {
+                    let target = roots.target(location, "location", Entry::Folder)?;
+                    blocking(move || stat_of(&target)).await?
+                })
+            })
+            .await?;
+        let entry = blocking(move || stat_of(&target)).await??;
         Ok(Response::new(entry))
     }
 
@@ -381,6 +390,13 @@ fn token_of(order: &Order) -> String {
 fn order_of(token: &str) -> Option<Order> {
     let (folder, name) = token.split_once(':')?;
     Some((folder == "1", name.to_lowercase(), name.to_owned()))
+}
+
+/// The entry `target` names, as Stat answers it.
+fn stat_of(target: &Target) -> Result<pb::FileEntry, Status> {
+    let path = target.existing()?;
+    let meta = fs::metadata(&path).map_err(|error| found(&error, target, &path))?;
+    Ok(entry_of(target.location.clone(), &meta, target.writable))
 }
 
 fn list(target: &Target, size: usize, token: &str) -> Result<pb::ListDirectoryResponse, Status> {

@@ -100,9 +100,16 @@ pub(super) async fn transfer_start<D: Daemon, C: Console>(
         _ => None,
     };
     match transfer_start_inner(ctx, args, is_move).await {
-        // D777: a wrong guess about a bare `shared…` must be fixable from the error.
+        // D777, D777b: the hint is for a place's own folder that isn't there;
+        // a missing source or entry is reported as itself.
         Err(CliError::Daemon(source))
-            if bare_shared.is_some() && matches!(&source, DaemonError::Refused { error, .. } if matches!(error.kind, Some(pb::error::Kind::NotFound(_)))) =>
+            if bare_shared.is_some()
+                && matches!(
+                    &source,
+                    DaemonError::Refused { error, .. }
+                        if matches!(&error.kind, Some(pb::error::Kind::NotFound(missing))
+                            if missing.kind == pb::EntityKind::RootFolder as i32)
+                ) =>
         {
             Err(CliError::SharedNotFound {
                 typed: bare_shared.unwrap_or_default(),

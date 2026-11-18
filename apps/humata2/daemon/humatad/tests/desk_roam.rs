@@ -833,13 +833,18 @@ async fn sessions_feed(rig: &Rig) -> tonic::Streaming<pb::Event> {
         .into_inner()
 }
 
-/// Waits for the next change the host's Sessions feed tells of. Fails once
-/// `LONG` passes without one, or when the feed ends.
+/// Waits for the next change the host's Sessions feed tells of; the start's
+/// Resync (D341) is not a change. Fails once `LONG` passes without one, or
+/// when the feed ends.
 async fn next_change(feed: &mut tonic::Streaming<pb::Event>, what: &str) {
-    match tokio::time::timeout(LONG, feed.message()).await {
-        Ok(Ok(Some(_))) => {}
-        Ok(ended) => panic!("the host's Sessions feed ended ({ended:?}) while waiting for {what}"),
-        Err(_) => panic!("{what} never happened within {LONG:?}"),
+    let deadline = tokio::time::Instant::now() + LONG;
+    loop {
+        match tokio::time::timeout_at(deadline, feed.message()).await {
+            Ok(Ok(Some(event))) if matches!(event.payload, Some(pb::event::Payload::Resync(_))) => {}
+            Ok(Ok(Some(_))) => return,
+            Ok(ended) => panic!("the host's Sessions feed ended ({ended:?}) while waiting for {what}"),
+            Err(_) => panic!("{what} never happened within {LONG:?}"),
+        }
     }
 }
 

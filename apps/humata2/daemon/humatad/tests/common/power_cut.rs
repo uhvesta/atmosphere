@@ -220,6 +220,7 @@ impl Operation {
                         idempotency_key: None,
                         id: Some(base.b.clone()),
                         machine: Some(base.host.clone()),
+                        stopped: false,
                     })
                     .await;
             }

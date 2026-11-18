@@ -1,0 +1,145 @@
+//! The machine page's running list asks over the whole window (D363): End
+//! for good… names the agent and says it can't be undone, and Adopt… gives a
+//! terminal no channel has a channel or the Desk.
+
+use super::Overlays;
+use super::fork::{card, heading};
+use crate::bridge::Ui;
+use crate::machine_running::agent_label;
+use crate::theme::{Look, RED_STATUS};
+use crate::widgets::{self, col, row};
+use gpui_kit::base::FocusTrapElement as _;
+use gpui_kit::{prelude::*, *};
+use humata2_app::{AppAction, AppState};
+use humata2_clients::RunningHolder;
+use humata2_clients::model::MachineKind;
+use humata2_hosts::page::MachinePageAction;
+use humata2_hosts::{AdoptTarget, RunningAction};
+use std::rc::Rc;
+
+/// What the open question asks, read from the app's state.
+#[derive(Clone)]
+pub(super) enum RunningView {
+    End { holder: RunningHolder, machine: String },
+    Adopt { holder: RunningHolder, machine: String, channels: Vec<(humata2_clients::model::ChannelId, String)> },
+}
+
+impl RunningView {
+    /// The open question, if there is one.
+    pub(super) fn read(state: &AppState) -> Option<Self> {
+        let running = &state.machine_page.running;
+        let name = |holder: &RunningHolder| {
+            state.workspace.machine(&holder.machine).map_or_else(
+                || holder.machine.to_string(),
+                |found| {
+                    if matches!(found.kind, MachineKind::ThisMac) {
+                        "This Mac".to_owned()
+                    } else {
+                        found.name.clone()
+                    }
+                },
+            )
+        };
+        if let Some(holder) = running.confirm_end.clone() {
+            let machine = name(&holder);
+            return Some(Self::End { holder, machine });
+        }
+        let holder = running.adopting.clone()?;
+        let machine = name(&holder);
+        let channels = state
+            .workspace
+            .channels
+            .iter()
+            .map(|channel| (channel.id.clone(), format!("# {}", channel.name)))
+            .collect();
+        Some(Self::Adopt { holder, machine, channels })
+    }
+
+    pub(super) const fn is_end(&self) -> bool {
+        matches!(self, Self::End { .. })
+    }
+}
+
+fn send(action: RunningAction) -> AppAction {
+    AppAction::MachinePage(MachinePageAction::Running(action))
+}
+
+/// What End for good… says: who ends, where, and that it can't be undone.
+pub(crate) fn end_words(holder: &RunningHolder, machine: &str) -> String {
+    let agent = agent_label(holder.agent);
+    if holder.is_orphan() || holder.agent == humata2_clients::model::Agent::Shell {
+        format!("{agent} on {machine} ends now, with everything it started. It can't be resumed or undone.")
+    } else {
+        format!("{agent} on {machine} ends and the session is archived. It can't be resumed or undone.")
+    }
+}
+
+impl Overlays {
+    /// The End for good… or Adopt… question.
+    pub(super) fn running_dialog(&self, view: &RunningView, look: Look, ui: &Rc<Ui>) -> AnyElement {
+        let dismiss = ui.clone();
+        let (cancel, body) = match view {
+            RunningView::End { holder, machine } => {
+                let title = if holder.title.is_empty() {
+                    agent_label(holder.agent).to_owned()
+                } else {
+                    holder.title.clone()
+                };
+                (
+                    RunningAction::CancelEnd,
+                    card("running-end-dialog", "End for good", 440., look)
+                        .child(heading(format!("End {title} for good?")))
+                        .child(div().text_color(rgb(look.secondary)).child(end_words(holder, machine)))
+                        .child(
+                            row()
+                                .gap(px(8.))
+                                .pt(px(4.))
+                                .justify_end()
+                                .child(widgets::push_quiet(ui, "running-end-cancel", "Cancel", send(RunningAction::CancelEnd), look))
+                                .child(
+                                    widgets::push_quiet(ui, "running-end-confirm", "End for good", send(RunningAction::ConfirmEnd), look)
+                                        .border_color(rgb(RED_STATUS))
+                                        .text_color(rgb(RED_STATUS)),
+                                ),
+                        ),
+                )
+            }
+            RunningView::Adopt { holder, machine, channels } => {
+                let place = |id: String, text: String, target: AdoptTarget| {
+                    widgets::push_quiet(ui, SharedString::from(id), text, send(RunningAction::ConfirmAdopt(target)), look)
+                        .w_full()
+                };
+                let mut list = col().gap(px(6.)).child(place("running-adopt-desk".to_owned(), "Desk".to_owned(), AdoptTarget::Desk));
+                for (id, name) in channels {
+                    list = list.child(place(format!("running-adopt-{id}"), name.clone(), AdoptTarget::Channel(id.clone())));
+                }
+                (
+                    RunningAction::CancelAdopt,
+                    card("running-adopt-dialog", "Adopt", 440., look)
+                        .child(heading(format!("Adopt {} on {machine}", agent_label(holder.agent))))
+                        .child(
+                            div()
+                                .text_color(rgb(look.secondary))
+                                .child("Give it to a channel or the Desk. It keeps running."),
+                        )
+                        .child(list)
+                        .child(
+                            row()
+                                .pt(px(4.))
+                                .justify_end()
+                                .child(widgets::push_quiet(ui, "running-adopt-cancel", "Cancel", send(RunningAction::CancelAdopt), look)),
+                        ),
+                )
+            }
+        };
+        let body = body
+            .track_focus(&self.sheet)
+            .on_action(move |_: &crate::keys::Dismiss, _, cx| {
+                cx.stop_propagation();
+                dismiss.send(send(cancel.clone()), cx);
+            })
+            .test_support()
+            .focus_trap("running-trap", &self.sheet);
+        div().id("running-dialog").role(Role::Group).aria_label("running dialog").test_support().child(body).into_any_element()
+    }
+}

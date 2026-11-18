@@ -780,9 +780,10 @@ async fn feed(
         .into_inner()
 }
 
-/// The next event that isn't a session's: the asking session's own change
-/// (Needs you while its agent waits on the request, D158 item 7) comes on
-/// the same feed, around the request's.
+/// The next event that isn't a session's or a Resync: the asking session's
+/// own change (Needs you while its agent waits on the request, D158 item 7)
+/// comes on the same feed, around the request's, and a feed opened before
+/// the daemon's start finished gets its after-restart Resync (D341).
 async fn next_not_session(events: &mut tonic::Streaming<pb::Event>) -> pb::Event {
     loop {
         let event = tokio::time::timeout(WAIT, events.message())
@@ -790,10 +791,27 @@ async fn next_not_session(events: &mut tonic::Streaming<pb::Event>) -> pb::Event
             .unwrap()
             .unwrap()
             .unwrap();
-        if !matches!(event.payload, Some(pb::event::Payload::Session(_))) {
+        if !matches!(
+            event.payload,
+            Some(pb::event::Payload::Session(_) | pb::event::Payload::Resync(_))
+        ) {
             return event;
         }
     }
+}
+
+/// Whether the feed tells of nothing but a Resync for a moment.
+async fn quiet(events: &mut tonic::Streaming<pb::Event>) -> bool {
+    tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            let event = events.message().await.unwrap().unwrap();
+            if !matches!(event.payload, Some(pb::event::Payload::Resync(_))) {
+                return event;
+            }
+        }
+    })
+    .await
+    .is_err()
 }
 
 /// The next request event's change, request id and state.
@@ -897,12 +915,7 @@ async fn the_feed_tells_of_each_request_and_its_answer() {
         (&mut other_session, "a feed narrowed to another session"),
         (&mut machines_only, "a feed of machines only"),
     ] {
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), events.message())
-                .await
-                .is_err(),
-            "{why} hears of no request"
-        );
+        assert!(quiet(events).await, "{why} hears of no request");
     }
 }
 
@@ -984,9 +997,7 @@ async fn the_feed_tells_of_the_grant_an_approval_makes_and_its_revoking() {
     );
     assert_eq!(next_told(&mut access_only).await, (deleted, Ok(grant)));
     assert!(
-        tokio::time::timeout(Duration::from_millis(200), other_session.message())
-            .await
-            .is_err(),
+        quiet(&mut other_session).await,
         "a feed narrowed to another session hears of no grant"
     );
 }
@@ -1199,8 +1210,8 @@ async fn an_agent_listing_another_sessions_turns_waits_in_the_inbox_when_the_rul
 
 // ----- D768: an agent's file read the rule asks about waits in the Inbox.
 // Reading another session's clone is Ask by default
-// (FilesReadOtherSession). One card per session, capability and path; once
-// approved, the agent's read again succeeds. -----
+// (FilesReadOtherSession). One card per session, capability, path and
+// operation; approving it runs the read, and the wait returns its result. -----
 
 /// The root of `OTHER`'s clone of acme/ledger, or `path` in it.
 fn ledger(path: &str) -> pb::FileLocation {
@@ -1288,7 +1299,7 @@ async fn an_agents_asked_read_raises_one_card_and_runs_once_approved() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn another_path_gets_its_own_card_and_a_stat_and_a_stream_read_of_one_file_share_one() {
+async fn another_path_or_another_read_of_one_file_gets_its_own_card() {
     let fixture = Fixture::start().await;
     fixture.ledger_on_disk();
 
@@ -1308,12 +1319,14 @@ async fn another_path_gets_its_own_card_and_a_stat_and_a_stream_read_of_one_file
     };
 
     assert_ne!(listing, stat);
-    assert_eq!(stat, read, "one card per session, capability and path");
-    assert_eq!(common::pending_requests(&fixture.daemon).await.len(), 2);
+    assert_ne!(stat, read, "each read waits for its own result");
+    assert_eq!(common::pending_requests(&fixture.daemon).await.len(), 3);
 
     fixture.answer(&stat, approve()).await.unwrap();
     fixture.wait(&stat).await;
     assert!(fixture.stat_ledger("a.txt").await.is_ok());
+    fixture.answer(&read, approve()).await.unwrap();
+    fixture.wait(&read).await;
     let mut chunks = fixture
         .files()
         .await
@@ -1359,3 +1372,99 @@ async fn waiting_on_an_approved_read_says_what_was_approved_not_a_bare_approval(
         "an approved read's wait names what it holds, so a client can tell it to repeat the read: {waited:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_on_an_approved_listing_returns_the_listing() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+    let id = pending_of(&fixture.list_ledger().await.unwrap_err());
+
+    fixture.answer(&id, approve()).await.unwrap();
+    let waited = fixture.wait(&id).await;
+
+    assert!(waited.error.is_none(), "{waited:?}");
+    assert_eq!(waited.result_type, "humata.v1.ListDirectoryResponse");
+    let listed = pb::ListDirectoryResponse::decode(waited.result.as_slice()).unwrap();
+    let names: Vec<String> = listed
+        .entries
+        .iter()
+        .filter_map(|entry| entry.location.as_ref())
+        .map(|location| location.path.clone())
+        .collect();
+    assert!(names.iter().any(|name| name.ends_with("a.txt")), "{names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_on_an_approved_file_read_returns_the_files_bytes() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+    let refused = fixture
+        .files()
+        .await
+        .read_file(fixture.as_agent(pb::ReadFileRequest {
+            location: Some(ledger("a.txt")),
+            ..Default::default()
+        }))
+        .await;
+    let id = match refused {
+        Ok(_) => panic!("an asked read streamed the file"),
+        Err(refused) => pending_of(&refused),
+    };
+
+    fixture.answer(&id, approve()).await.unwrap();
+    let waited = fixture.wait(&id).await;
+
+    assert!(waited.error.is_none(), "{waited:?}");
+    assert_eq!(waited.result_type, "humata.v1.FileChunk");
+    let chunk = pb::FileChunk::decode(waited.result.as_slice()).unwrap();
+    assert_eq!(chunk.data, b"ledger\n");
+    assert!(chunk.last, "the whole file was held: {chunk:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_on_an_approved_stat_returns_the_entry() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+    let id = pending_of(&fixture.stat_ledger("a.txt").await.unwrap_err());
+
+    fixture.answer(&id, approve()).await.unwrap();
+    let waited = fixture.wait(&id).await;
+
+    assert!(waited.error.is_none(), "{waited:?}");
+    assert_eq!(waited.result_type, "humata.v1.FileEntry");
+    let entry = pb::FileEntry::decode(waited.result.as_slice()).unwrap();
+    assert!(entry.location.unwrap().path.ends_with("a.txt"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_approved_reads_bytes_go_to_the_first_wait_and_later_ones_repeat_the_read() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+    let id = pending_of(&fixture.list_ledger().await.unwrap_err());
+    fixture.answer(&id, approve()).await.unwrap();
+
+    let first = fixture.wait(&id).await;
+    let second = fixture.wait(&id).await;
+
+    assert_eq!(first.result_type, "humata.v1.ListDirectoryResponse");
+    assert!(second.result.is_empty(), "the held bytes were dropped once delivered: {second:?}");
+    assert_ne!(second.result_type, first.result_type, "a later wait is told to repeat the read");
+    assert!(second.error.is_none(), "{second:?}");
+    assert!(fixture.list_ledger().await.is_ok(), "the repeat goes through");
+}
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repeated_approved_read_drops_its_held_bytes() {
+    let fixture = Fixture::start().await;
+    fixture.ledger_on_disk();
+    let id = pending_of(&fixture.list_ledger().await.unwrap_err());
+    fixture.answer(&id, approve()).await.unwrap();
+
+    // The agent repeats the read instead of waiting (exit 12, then again).
+    assert!(fixture.list_ledger().await.is_ok(), "the repeat goes through");
+    let waited = fixture.wait(&id).await;
+
+    assert!(waited.error.is_none(), "{waited:?}");
+    assert!(waited.result.is_empty(), "the repeat took the read; its bytes aren't held: {waited:?}");
+    assert_ne!(waited.result_type, "humata.v1.ListDirectoryResponse");
+}
+

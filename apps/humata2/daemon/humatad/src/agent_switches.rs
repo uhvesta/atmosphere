@@ -1,5 +1,6 @@
 //! AGENTSET (D720, D722): which agent kinds Humata offers, and whether it
-//! installs a kind's CLI when the machine doesn't have it. The switches are
+//! installs a kind's CLI when the machine doesn't have it. D782 adds whether
+//! a kind's permission and question asks go to the Inbox. The switches are
 //! the host's `~/.humata2/config/agents.toml`, which ships to machines the
 //! way `repos.toml` does. A missing file means every kind is enabled and
 //! nothing is installed. A bad file is an error; the caller decides what to
@@ -43,7 +44,7 @@ pub(crate) enum SwitchesError {
         source: io::Error,
     },
     #[error(
-        "{what} isn't valid TOML: {source}. Fix the line it points to (a switch is an [agents.<kind>] table with enabled, install_when_missing and install), or delete the file to go back to every agent enabled. Humata leaves the file as it is"
+        "{what} isn't valid TOML: {source}. Fix the line it points to (a switch is an [agents.<kind>] table with enabled, install_when_missing, install and asks_in_inbox), or delete the file to go back to every agent enabled. Humata leaves the file as it is"
     )]
     Parse {
         /// Names the file, or says it is the text of a switch change.
@@ -73,6 +74,7 @@ struct KindSwitch {
     enabled: Option<bool>,
     install_when_missing: Option<bool>,
     install: Option<String>,
+    asks_in_inbox: Option<bool>,
 }
 
 /// The whole file: only the `agents` table.
@@ -140,6 +142,18 @@ impl AgentSwitches {
             .filter(|command| !command.trim().is_empty())
     }
 
+    /// Whether the kind's permission and question asks wait in the Inbox
+    /// (D782). On unless the file turns it off; the plain shell asks nothing,
+    /// so it reads as on.
+    pub(crate) fn asks_in_inbox(&self, kind: &str) -> bool {
+        if kind == ZSH {
+            return true;
+        }
+        self.entry(kind)
+            .and_then(|entry| entry.asks_in_inbox)
+            .unwrap_or(true)
+    }
+
     fn entry(&self, kind: &str) -> Option<&KindSwitch> {
         self.kinds.get(kind)
     }
@@ -194,11 +208,32 @@ fn is_env_wrapper(program: &Path) -> bool {
     text.contains('/') && text.ends_with("/env")
 }
 
+/// Something to run after the switches file changes, such as pushing it to
+/// the linked machines (D782). Set once, at start; telling it before then
+/// does nothing.
+#[derive(Clone, Default)]
+pub(crate) struct OnChange(std::sync::Arc<std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>>);
+
+impl OnChange {
+    /// What to run on each change. A second call is ignored.
+    pub(crate) fn set(&self, run: impl Fn() + Send + Sync + 'static) {
+        let _ = self.0.set(Box::new(run));
+    }
+
+    /// Runs what was set, if anything.
+    pub(crate) fn tell(&self) {
+        if let Some(run) = self.0.get() {
+            run();
+        }
+    }
+}
+
 /// A change to one kind's switches. A field left `None` is not touched.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Change {
     pub(crate) enabled: Option<bool>,
     pub(crate) install_when_missing: Option<bool>,
+    pub(crate) asks_in_inbox: Option<bool>,
 }
 
 /// Applies `change` to the `[agents.<kind>]` table in the file at `path`, and
@@ -267,6 +302,9 @@ fn edit_text(text: &str, kind: &str, change: Change) -> String {
     }
     if let Some(on) = change.install_when_missing {
         wanted.push(("install_when_missing", on));
+    }
+    if let Some(on) = change.asks_in_inbox {
+        wanted.push(("asks_in_inbox", on));
     }
     if wanted.is_empty() {
         return text.to_owned();
@@ -576,6 +614,48 @@ mod tests {
             Err(SwitchesError::Parse { .. })
         ));
         assert_eq!(fs::read_to_string(&path).expect("read the file"), text);
+    }
+
+    #[test]
+    fn asks_go_to_the_inbox_unless_the_kind_turns_them_off() {
+        let switches = AgentSwitches::parse("[agents.copilot]\nasks_in_inbox = false\n")
+            .expect("valid file");
+        assert!(!switches.asks_in_inbox("copilot"));
+        assert!(switches.asks_in_inbox("claude"));
+        assert!(AgentSwitches::default().asks_in_inbox("copilot"));
+    }
+
+    #[test]
+    fn zsh_always_reads_as_asking_in_the_inbox() {
+        let switches =
+            AgentSwitches::parse("[agents.zsh]\nasks_in_inbox = false\n").expect("valid file");
+        assert!(switches.asks_in_inbox(ZSH));
+    }
+
+    #[test]
+    fn setting_asks_keeps_the_kinds_other_switches_and_comments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let text = "# mine\n[agents.copilot]\nenabled = true # on\ninstall_when_missing = true\n";
+        let path = with_file(dir.path(), text);
+        let change = Change {
+            asks_in_inbox: Some(false),
+            ..Change::default()
+        };
+        let switches = set(&path, "copilot", change).expect("set");
+        assert!(!switches.asks_in_inbox("copilot"));
+        assert!(switches.enabled("copilot"));
+        assert!(switches.install_when_missing("copilot"));
+        let written = fs::read_to_string(&path).expect("read the file");
+        assert!(written.contains("# mine"));
+        assert!(written.contains("enabled = true # on"));
+        let back_on = Change {
+            asks_in_inbox: Some(true),
+            ..Change::default()
+        };
+        let switches = set(&path, "copilot", back_on).expect("set back");
+        assert!(switches.asks_in_inbox("copilot"));
+        let written = fs::read_to_string(&path).expect("read the file");
+        assert_eq!(written.matches("asks_in_inbox").count(), 1);
     }
 
     #[test]

@@ -978,6 +978,10 @@ pub struct Request {
     pub undo_note: Option<String>,
     /// The answers a question offers, at most four (IN-25).
     pub choices: Vec<String>,
+    /// Set when it is a question on its agent's screen: the agent tab's
+    /// index among the session's tabs. The Inbox shows that terminal under
+    /// the card while it waits, and offers Dismiss, not Deny (D781).
+    pub on_screen: Option<usize>,
 }
 
 /// The access rule that turned an agent's call into an Inbox request.

@@ -334,6 +334,14 @@ impl App {
             });
         match result {
             Ok(id) => {
+                // The reply can come after the setup's last step already
+                // closed the sheet and opened the channel, and after the
+                // person opened a fresh New channel sheet: that one asked
+                // nothing (neither creating nor showing a setup), so it
+                // stays, and the page isn't changed under it.
+                if !sheet.is_some_and(|sheet| sheet.creating || sheet.setup.is_some()) {
+                    return Effect::none();
+                }
                 state
                     .overlays
                     .retain(|overlay| !matches!(overlay, Overlay::NewChannel(_)));

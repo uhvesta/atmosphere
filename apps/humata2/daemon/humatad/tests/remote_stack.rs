@@ -3,7 +3,8 @@
 //! linked machine, with anything that looks like a secret left out, checked
 //! by size and SHA-256 before it replaces what the box has. The `stack`
 //! CLI itself goes with the other tools. A host with no such file leaves a
-//! box alone.
+//! box alone. A change to the host's `config/agents.toml` while a box is
+//! linked reaches it then, not only at its next link (D782).
 
 mod common;
 #[path = "common/remote_rig.rs"]
@@ -12,7 +13,8 @@ mod remote_rig;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use remote_rig::{LONG, Rig};
+use humata2_grpc::humata::v1 as pb;
+use remote_rig::{COPILOT_AGENT, LONG, Rig};
 use sha2::{Digest, Sha256};
 
 const BOX: &str = "box-1";
@@ -86,4 +88,31 @@ async fn a_host_with_no_stack_settings_sends_a_box_nothing() {
     assert!(!rig.host_stack_settings().exists());
     assert!(!on_box(&rig).exists(), "the box was given settings the host doesn't have");
     assert!(rig.the(BOX).home().join(".humata2/bin/stack").is_file());
+}
+
+/// D782: turning an agent's "Ask in the Inbox" off on the host reaches a
+/// linked box's agents.toml with no new link, so its sessions follow.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_switch_changed_on_the_host_reaches_a_linked_box() {
+    let rig = Rig::start(&[BOX], &[]).await;
+    let shown = pb::agent_service_client::AgentServiceClient::new(rig.channel().await)
+        .set_agent_enabled(pb::SetAgentEnabledRequest {
+            agent: Some(pb::AgentId {
+                value: COPILOT_AGENT.to_owned(),
+            }),
+            asks_in_inbox: Some(false),
+            ..Default::default()
+        })
+        .await
+        .expect("the user turns Copilot's Ask in the Inbox off")
+        .into_inner();
+    assert!(!shown.asks_in_inbox);
+    let host_file = rig
+        .host
+        .state
+        .parent()
+        .expect("the host's state folder is in a folder of its own")
+        .join("config/agents.toml");
+    let want = std::fs::read(&host_file).expect("the host wrote its agents.toml");
+    holds(&rig.the(BOX).home().join(".humata2/config/agents.toml"), &want).await;
 }

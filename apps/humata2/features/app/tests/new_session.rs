@@ -77,11 +77,14 @@ fn a_default_agent_that_is_turned_off_falls_back_to_the_first_that_is_on() {
     state.settings.agents.switches = Some(
         [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
             .map(|agent| AgentSwitch {
-                agent,
+                kind: agent.command().to_owned(),
+                name: agent.name().to_owned(),
+                agent: Some(agent),
                 enabled: agent != Agent::Claude && agent != Agent::Codex,
                 install_when_missing: false,
                 can_install: true,
                 install_command: None,
+                asks_in_inbox: true,
             })
             .to_vec(),
     );

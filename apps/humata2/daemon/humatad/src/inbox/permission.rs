@@ -17,9 +17,12 @@ use pb::invalid_field::Problem;
 use tokio::sync::watch;
 use tonic::Status;
 
+use humata2_sessions::Agents;
 use humata2_store::{Store, StoreError};
+use thiserror::Error;
 
 use super::{Decided, Entry, Held, Inbox, inbox_ask, new_id, withdraw, withdrawn};
+use crate::agent_switches::{self, Change, SwitchesError};
 use crate::attach;
 use crate::channel_service::blocking;
 use crate::identity::{AgentCaller, Caller};
@@ -27,22 +30,91 @@ use crate::status;
 
 pub(crate) mod codex_trust;
 
-/// The store key of Settings › Agents › Ask for permission in the Inbox
-/// (D199): "true" when asks stay in the agent's own prompt. With no row,
-/// asks wait in the Inbox.
+/// The store key D199's single switch was kept under: "true" when every
+/// agent asked in its own prompt. D782 moved it to each kind's
+/// `asks_in_inbox` in agents.toml; [`move_global_switch`] carries an old
+/// "true" over at start and deletes the key.
 const IN_AGENT_KEY: &str = "agents.permissions_in_agent";
 
-/// Whether permission asks stay in the agent's own prompt (D199), and the
-/// revision that was saved at (0 for the default, the Inbox).
-pub(crate) fn in_agent(store: &Store) -> Result<(bool, u64), StoreError> {
-    Ok(store
-        .setting(IN_AGENT_KEY)?
-        .map_or((false, 0), |saved| (saved.value == "true", saved.revision)))
+/// Why D199's old switch couldn't be carried over to agents.toml.
+#[derive(Debug, Error)]
+pub(crate) enum MoveSwitchError {
+    #[error("couldn't read D199's old \"ask in the agent\" setting from the store")]
+    Read(#[source] StoreError),
+    #[error(
+        "couldn't turn off \"Ask in the Inbox\" for {kind} in agents.toml. The old setting is kept and moved again at the next start; until then {kind} asks in the Inbox"
+    )]
+    Write {
+        kind: String,
+        #[source]
+        source: SwitchesError,
+    },
+    #[error(
+        "turned \"Ask in the Inbox\" off for every agent, but couldn't delete the old setting from the store. Nothing is lost; the move runs again at the next start"
+    )]
+    Delete(#[source] StoreError),
+    #[error(
+        "couldn't set \"Ask in the Inbox\" for {kind} in agents.toml. The kinds before it were changed; set each agent's switch in Settings › Agents, or fix the file and try again"
+    )]
+    Set {
+        kind: String,
+        #[source]
+        source: SwitchesError,
+    },
 }
 
-/// Saves where permission asks go (D199) at `revision`.
-pub(crate) fn put_in_agent(store: &Store, on: bool, revision: u64) -> Result<(), StoreError> {
-    store.put_setting(IN_AGENT_KEY, if on { "true" } else { "false" }, revision)
+/// D782's upgrade: if D199's old switch says every agent asks in its own
+/// prompt, writes `asks_in_inbox = false` for every kind but the shell, then
+/// deletes the old key. Gives whether there was anything to move. Without a
+/// switches file (no home) it moves nothing and keeps the key.
+pub(crate) fn move_global_switch(store: &Store, agents: &Agents) -> Result<bool, MoveSwitchError> {
+    let Some(saved) = store.setting(IN_AGENT_KEY).map_err(MoveSwitchError::Read)? else {
+        return Ok(false);
+    };
+    let Some(path) = agents.settings_file() else {
+        return Ok(false);
+    };
+    if saved.value == "true" {
+        let off = Change {
+            asks_in_inbox: Some(false),
+            ..Change::default()
+        };
+        for kind in agents.kinds().iter().filter(|kind| kind.name != "zsh") {
+            agent_switches::set(path, &kind.name, off).map_err(|source| MoveSwitchError::Write {
+                kind: agents.person_name(&kind.name),
+                source,
+            })?;
+        }
+    }
+    store.delete_setting(IN_AGENT_KEY).map_err(MoveSwitchError::Delete)?;
+    Ok(saved.value == "true")
+}
+
+/// Whether every agent kind keeps its asks in its own terminal, so D199's
+/// `permissions_in_agent` reads true (D782). False without agents to read.
+pub(crate) fn every_kind_in_agent(agents: &Agents) -> bool {
+    let switches = crate::agent_gate::switches(agents).unwrap_or_default();
+    let mut kinds = agents.kinds().iter().filter(|kind| kind.name != "zsh").peekable();
+    kinds.peek().is_some() && kinds.all(|kind| !switches.asks_in_inbox(&kind.name))
+}
+
+/// Sets D199's `permissions_in_agent` the D782 way: every kind's
+/// `asks_in_inbox` to `!in_agent`.
+pub(crate) fn set_every_kind(agents: &Agents, in_agent: bool) -> Result<(), MoveSwitchError> {
+    let Some(path) = agents.settings_file() else {
+        return Ok(());
+    };
+    let change = Change {
+        asks_in_inbox: Some(!in_agent),
+        ..Change::default()
+    };
+    for kind in agents.kinds().iter().filter(|kind| kind.name != "zsh") {
+        agent_switches::set(path, &kind.name, change).map_err(|source| MoveSwitchError::Set {
+            kind: agents.person_name(&kind.name),
+            source,
+        })?;
+    }
+    Ok(())
 }
 
 impl Inbox {
@@ -59,16 +131,15 @@ impl Inbox {
         }
     }
 
-    /// Whether permission asks stay in the agent's own prompt (D199), read
-    /// at each ask so running sessions follow a change.
-    pub(crate) async fn asks_in_agent(&self) -> Result<bool, Status> {
-        let store = self.store.clone();
-        blocking(move || in_agent(&store))
-            .await?
-            .map(|(on, _)| on)
-            .map_err(|error| {
-                status::store(error, &self.machine, "read where agents ask for permission")
-            })
+    /// Whether a session of agent kind `kind` asks in its own terminal
+    /// (D782): its switch in agents.toml is off. Read at each ask, so
+    /// running sessions follow a change; a missing or broken file, or no
+    /// agents to read, means the Inbox.
+    pub(crate) fn asks_in_agent(&self, kind: &str) -> bool {
+        self.agents
+            .get()
+            .and_then(crate::agent_gate::switches)
+            .is_some_and(|switches| !switches.asks_in_inbox(kind))
     }
 }
 
@@ -96,11 +167,16 @@ pub(crate) struct Question {
     pub(crate) only_choices: bool,
 }
 
-/// Whether the agent still asks a question on its screen with the chosen
-/// reply (D767 amendment): `Ok(false)` when the screen no longer asks it or
-/// no longer lists that choice; an error when the screen can't be read.
-pub(crate) type StillAsked =
-    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<bool, Status>> + Send>> + Send + Sync>;
+/// Whether the agent still asks a question on its screen (D767 amendment):
+/// given a reply's choice, `Ok(false)` when the screen no longer asks it or
+/// no longer lists that choice; given `None` (a Dismiss, D781), `Ok(false)`
+/// only when the screen no longer asks it. An error when the screen can't
+/// be read.
+pub(crate) type StillAsked = Arc<
+    dyn Fn(Option<String>) -> Pin<Box<dyn Future<Output = Result<bool, Status>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// How a card was settled, as the hook tells its agent.
 #[derive(Debug, PartialEq, Eq)]
@@ -123,6 +199,11 @@ pub(crate) struct PermissionWait {
 }
 
 impl PermissionWait {
+    /// The card's request id.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
     /// Waits until the card is answered or withdrawn, and says what the
     /// hook tells its agent: a withdrawn card is no decision.
     pub(crate) async fn decided(&mut self) -> Decision {
@@ -220,12 +301,16 @@ impl Inbox {
     /// Raises a question the agent asks on its own screen (D767), as
     /// [`Self::raise_question`] does; a reply is taken only while
     /// `still_asked` says the screen still asks it with that choice, and
-    /// withdraws the card otherwise.
+    /// withdraws the card otherwise. The card names `tab`, the agent tab's
+    /// index among its session's tabs, so the app can show that screen
+    /// under it (D781); a Deny of it first looks whether the screen still
+    /// asks.
     pub(crate) async fn raise_screen_question(
         self: &Arc<Self>,
         caller: &Caller,
         agent: &AgentCaller,
         asked: Question,
+        tab: u32,
         still_asked: StillAsked,
     ) -> Result<PermissionWait, Status> {
         let Question {
@@ -235,9 +320,24 @@ impl Inbox {
             only_choices,
         } = asked;
         self.raise_held_asked(caller, agent, &key, only_choices, Some(still_asked), |id| {
-            super::question(id, agent, question, choices)
+            let mut card = super::question(id, agent, question, choices);
+            card.on_screen = Some(pb::ScreenAsk { tab });
+            card
         })
         .await
+    }
+
+    /// Withdraws screen question `id` as resolved, if it is still pending:
+    /// its screen no longer asks it, so it was answered in its terminal
+    /// (D781). Nothing is typed.
+    pub(crate) async fn withdraw_screen_resolved(&self, id: &str) {
+        let state = self.state.lock().await;
+        let Some(entry) = state.requests.iter().find(|entry| entry.id == id) else {
+            return;
+        };
+        if entry.request.borrow().request.state == pb::RequestState::Pending as i32 {
+            self.withdraw_resolved(entry).await;
+        }
     }
 
     /// Raises the card `make` builds, or holds the pending one of the same
@@ -322,8 +422,15 @@ impl Inbox {
     /// and returns the refusal of the answer that found it so. Call it with
     /// the state locked.
     pub(super) async fn withdraw_unasked(&self, entry: &Entry) -> Status {
+        withdrawn(&self.withdraw_resolved(entry).await)
+    }
+
+    /// Withdraws pending `entry` as resolved: the question it shows is no
+    /// longer on its agent's screen, so it was answered there (D781).
+    /// Returns the withdrawn request. Call it with the state locked.
+    pub(super) async fn withdraw_resolved(&self, entry: &Entry) -> pb::InboxRequest {
         let mut next = entry.request.borrow().clone();
-        withdraw(&mut next.request, pb::WithdrawReason::CallEnded);
+        withdraw(&mut next.request, pb::WithdrawReason::Resolved);
         let current = next.request.clone();
         let saved = self
             .commit(entry, next.clone(), None, "save the withdrawal")
@@ -333,7 +440,7 @@ impl Inbox {
             entry.request.send_replace(next);
         }
         self.tell(pb::Change::Updated, &entry.session, &current);
-        withdrawn(&current)
+        current
     }
 
     /// Withdraws `entry` when it's a pending permission card that no hook
@@ -476,5 +583,72 @@ fn card(
         created_at: Some(attach::now()),
         revision: Some(pb::Revision { value: 1 }),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The built-in kinds, with their switches in a fresh agents.toml
+    /// beside a fresh store.
+    fn setup() -> (Store, Agents, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let agents = Agents::builtin().with_settings(dir.path().join("config/agents.toml"));
+        (store, agents, dir)
+    }
+
+    fn asks(agents: &Agents, kind: &str) -> bool {
+        crate::agent_gate::switches(agents).unwrap_or_default().asks_in_inbox(kind)
+    }
+
+    #[test]
+    fn the_old_switch_on_turns_every_kinds_asks_off_and_is_forgotten() {
+        let (store, agents, _dir) = setup();
+        store.put_setting(IN_AGENT_KEY, "true", 3).unwrap();
+        assert!(move_global_switch(&store, &agents).unwrap());
+        assert!(!asks(&agents, "claude"));
+        assert!(!asks(&agents, "copilot"));
+        assert!(every_kind_in_agent(&agents));
+        assert_eq!(store.setting(IN_AGENT_KEY).unwrap(), None);
+        // A second start has nothing left to move.
+        assert!(!move_global_switch(&store, &agents).unwrap());
+    }
+
+    #[test]
+    fn the_old_switch_off_is_forgotten_and_changes_no_agent() {
+        let (store, agents, _dir) = setup();
+        store.put_setting(IN_AGENT_KEY, "false", 3).unwrap();
+        assert!(!move_global_switch(&store, &agents).unwrap());
+        assert!(asks(&agents, "claude"));
+        assert!(!every_kind_in_agent(&agents));
+        assert_eq!(store.setting(IN_AGENT_KEY).unwrap(), None);
+    }
+
+    #[test]
+    fn the_old_switch_reads_true_only_while_every_kind_keeps_its_asks() {
+        let (_store, agents, _dir) = setup();
+        set_every_kind(&agents, true).unwrap();
+        assert!(every_kind_in_agent(&agents));
+        let path = agents.settings_file().unwrap();
+        let on = Change {
+            asks_in_inbox: Some(true),
+            ..Change::default()
+        };
+        agent_switches::set(path, "copilot", on).unwrap();
+        assert!(!every_kind_in_agent(&agents));
+        set_every_kind(&agents, false).unwrap();
+        assert!(asks(&agents, "claude") && asks(&agents, "copilot"));
+    }
+
+    #[test]
+    fn a_broken_switches_file_keeps_every_kind_asking_in_the_inbox() {
+        let (_store, agents, _dir) = setup();
+        let path = agents.settings_file().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "[agents.copilot\nasks_in_inbox = false").unwrap();
+        assert!(asks(&agents, "copilot"));
+        assert!(!every_kind_in_agent(&agents));
     }
 }

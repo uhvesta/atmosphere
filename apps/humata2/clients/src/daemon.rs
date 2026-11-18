@@ -158,8 +158,7 @@ pub enum Operation {
     PlanPush,
     /// [`Daemon::push`].
     Push,
-    /// [`Daemon::set_asks_in_inbox`].
-    SetAsksInInbox,
+
     /// [`Daemon::set_agent_switch`].
     SetAgentSwitch,
     /// [`Daemon::rename_session`].
@@ -184,6 +183,16 @@ pub enum Operation {
     SaveRepoScope,
     /// [`Daemon::add_repo_to_channel`].
     AddRepoToChannel,
+    /// [`Daemon::running_holders`].
+    RunningHolders,
+    /// [`Daemon::stop_running_holder`].
+    StopRunningHolder,
+    /// [`Daemon::resume_running_holder`].
+    ResumeRunningHolder,
+    /// [`Daemon::end_running_holder`].
+    EndRunningHolder,
+    /// [`Daemon::adopt_running_holder`].
+    AdoptRunningHolder,
 }
 
 /// Why a daemon call failed.
@@ -440,6 +449,50 @@ pub trait Daemon: Send + Sync + 'static {
         let what = format!("Adding a repo to {session}");
         Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
     }
+    /// Every holder of ours running on `machine`, sessions' first (by
+    /// title), then stopped sessions (by title), then those no session
+    /// names (by start) (D784). Relayed to a remote machine's own daemon.
+    fn running_holders(&self, machine: &MachineId) -> Reply<Vec<RunningHolder>> {
+        let what = format!("Listing the terminals running on {}", crate::machine_names::name_of(machine));
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// D784 "Stop" for a shell tab (a session's, a machine's own, or one no
+    /// session names): its holder and program group end and the tab is
+    /// kept, stopped, to resume. An agent's tab is refused: stop the agent
+    /// with [`Daemon::stop_agent`].
+    fn stop_running_holder(&self, machine: &MachineId, tab: &HolderTab) -> Reply<()> {
+        let _ = tab;
+        let what = format!("Stopping a terminal on {}", crate::machine_names::name_of(machine));
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// D784 "Resume" for a stopped shell tab: a new shell in its folder,
+    /// its saved output above. An agent resumes through [`Daemon::resume`].
+    fn resume_running_holder(&self, machine: &MachineId, tab: &HolderTab) -> Reply<()> {
+        let _ = tab;
+        let what = format!("Resuming a terminal on {}", crate::machine_names::name_of(machine));
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// D784 "End for good" for a shell tab: its holder and program group
+    /// end and its tab is gone. Can't be undone. A session's agent ends for
+    /// good through [`Daemon::archive`].
+    fn end_running_holder(&self, machine: &MachineId, tab: &HolderTab) -> Reply<()> {
+        let _ = tab;
+        let what = format!("Ending a terminal on {}", crate::machine_names::name_of(machine));
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// D784 "Adopt…" for a terminal no session names: it becomes a session
+    /// in `channel`, or on the Desk without one, and keeps running. Its tab
+    /// is the one [`Daemon::running_holders`] listed.
+    fn adopt_running_holder(
+        &self,
+        machine: &MachineId,
+        tab: &str,
+        channel: Option<&crate::model::ChannelId>,
+    ) -> Reply<SessionId> {
+        let _ = (tab, channel);
+        let what = format!("Adopting a terminal on {}", crate::machine_names::name_of(machine));
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
     /// Stops a session's agent; the session, its terminals and clones stay
     /// (SE-7).
     fn stop_agent(&self, session: &SessionId) -> Reply<()> {
@@ -460,6 +513,13 @@ pub trait Daemon: Send + Sync + 'static {
     fn add_machine(&self, address: &str) -> Reply<MachineId>;
     /// Restores a session archived by this client, including its tree and pin.
     fn restore_session(&self, session: &SessionId) -> Reply<()>;
+    /// Restores an archived session stopped, its agent not started (D784:
+    /// the Undo of the close dialog's "End for good"); [`Daemon::resume`]
+    /// starts it.
+    fn restore_session_stopped(&self, session: &SessionId) -> Reply<()> {
+        let _ = session;
+        Box::pin(async { Err(DaemonError::NotServedYet { what: "Restoring a session stopped".to_owned() }) })
+    }
     /// Pins or unpins a session.
     fn set_pinned(&self, session: &SessionId, pinned: bool) -> Reply<()>;
     /// Marks a session very important, or not.
@@ -587,11 +647,7 @@ pub trait Daemon: Send + Sync + 'static {
     ) -> Reply<()>;
     /// Removes a scoped "Always allow" grant (IN-19).
     fn remove_grant(&self, grant: &GrantId) -> Reply<()>;
-    /// Whether agents' permission asks wait in the Inbox (D199); false: the
-    /// agent's own prompt asks.
-    fn asks_in_inbox(&self) -> Reply<bool>;
-    /// Sets it; gives what the daemon holds after.
-    fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool>;
+
     /// Makes `agent` Settings' default agent, the one a start takes when
     /// neither it nor the channel names one (ST-15, D770). The daemon then
     /// tells each channel's default again.
@@ -601,8 +657,9 @@ pub trait Daemon: Send + Sync + 'static {
     /// Every built-in agent except the shell with its switches, enabled or
     /// not, in the daemon's order (AGENTSET).
     fn agent_switches(&self) -> Reply<Vec<AgentSwitch>>;
-    /// Changes one agent's switches; gives what the daemon holds after.
-    fn set_agent_switch(&self, agent: Agent, change: SwitchChange) -> Reply<AgentSwitch>;
+    /// Changes one agent kind's switches (`kind` is its id); gives what the
+    /// daemon holds after.
+    fn set_agent_switch(&self, kind: String, change: SwitchChange) -> Reply<AgentSwitch>;
 }
 
 /// The terminals of sessions. What a tab draws, and what is typed into it,
@@ -627,6 +684,14 @@ pub trait Terminals: Send + Sync + 'static {
     /// tab's screen. Input sent while the link reconnects, or after it
     /// closed, fails with [`SendError::Closed`]; it is never replayed.
     fn link(&self, session: &SessionId, tab: usize) -> Reply<TerminalLink>;
+
+    /// Opens a link like [`Terminals::link`] that leaves the tab at its own
+    /// size: it opens at none, and a view on it never sends a resize. For
+    /// the Inbox's view of a question's screen, which must not change the
+    /// grid its program draws on (D781).
+    fn link_unsized(&self, session: &SessionId, tab: usize) -> Reply<TerminalLink> {
+        self.link(session, tab)
+    }
 
     /// Saves an image pasted into one of `session`'s tabs on the session's
     /// machine and returns its absolute path there, for the tab to type
@@ -723,6 +788,8 @@ pub enum ImageKind {
 
 mod agent_switches;
 mod fake;
+mod running;
 
 pub use agent_switches::{AgentSwitch, SwitchChange};
+pub use running::{HolderTab, RunningHolder, agent_of_kind};
 pub use fake::{FakeDaemon, FakeViews};

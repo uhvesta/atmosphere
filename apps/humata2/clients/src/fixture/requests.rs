@@ -28,6 +28,7 @@ pub(super) fn request(
         asked_by: None,
         undo_note: None,
         choices: Vec::new(),
+        on_screen: None,
     }
 }
 

@@ -32,10 +32,16 @@ impl Overlays {
         });
         let forks = confirm.plan.forks_keep_running;
         let send = |action: SessionAction| AppAction::Session(action);
+        // D784: name the agent it ends and where, as the close dialog does.
+        let ends = if confirm.agent.is_empty() {
+            "the agent".to_owned()
+        } else {
+            format!("{} on {}", confirm.agent, confirm.machine)
+        };
         let mut body = card("archive-sheet", "Archive session", 660., look)
             .child(heading(format!("Archive “{}”?", confirm.title)))
             .child(div().text_color(rgb(look.secondary)).child(format!(
-                "Archiving stops the agent and keeps the conversation, the record, the scrollback and a summary of the diff.{frees}"
+                "Archiving stops {ends} and keeps the conversation, the record, the scrollback and a summary of the diff.{frees}"
             )));
         if forks > 0 {
             body = body.child(div().child(format!(

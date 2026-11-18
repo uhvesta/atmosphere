@@ -244,15 +244,45 @@ pub(super) async fn session<D: Daemon, C: Console>(
             };
             ctx.change(rpc::session::RENAME_SESSION, &request).await
         }
-        SessionCommand::Stop { session } => {
+        SessionCommand::Stop { tab: Some(tab), .. } => {
+            let request = pb::StopRunningHolderRequest {
+                machine: ctx.machine_flag().await?,
+                tab: Some(pb::TabId { value: tab }),
+            };
+            ctx.change(rpc::machine::STOP_RUNNING_HOLDER, &request).await
+        }
+        SessionCommand::Stop { session, tab: None } => {
             let request = pb::StopSessionRequest {
                 idempotency_key: ctx.key(),
-                id: Some(ctx.session(&session).await?),
+                id: Some(ctx.session(&named(session)?).await?),
             };
             ctx.change(rpc::session::STOP_SESSION, &request).await
         }
-        SessionCommand::Resume { session, fresh } => {
+        SessionCommand::Resume { tab: Some(tab), .. } => {
+            let request = pb::ResumeRunningHolderRequest {
+                machine: ctx.machine_flag().await?,
+                tab: Some(pb::TabId { value: tab }),
+            };
+            ctx.change(rpc::machine::RESUME_RUNNING_HOLDER, &request).await
+        }
+        SessionCommand::End { tab: Some(tab), .. } => {
+            let request = pb::EndRunningHolderRequest {
+                machine: ctx.machine_flag().await?,
+                tab: Some(pb::TabId { value: tab }),
+            };
+            ctx.change(rpc::machine::END_RUNNING_HOLDER, &request).await
+        }
+        // End for good of a session is Archive (D784, Fable's ruling).
+        SessionCommand::End { session, tab: None } => archive(ctx, &named(session)?, pb::ArchiveChoice::Archive).await,
+        SessionCommand::Running => {
+            let request = pb::ListRunningHoldersRequest {
+                machine: ctx.machine_flag().await?,
+            };
+            reply(ctx, rpc::machine::LIST_RUNNING_HOLDERS, &request).await
+        }
+        SessionCommand::Resume { session, fresh, tab: None } => {
             use pb::resume_session_request::Mode;
+            let session = named(session)?;
             let mode = if fresh {
                 Mode::StartFreshWithSummary
             } else {
@@ -275,26 +305,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 (false, true) => pb::ArchiveChoice::ArchiveAndDeleteWork,
                 (false, false) => pb::ArchiveChoice::Archive,
             };
-            let id = Some(ctx.session(&session).await?);
-            let archive = pb::ArchiveSessionRequest {
-                idempotency_key: ctx.key(),
-                id: id.clone(),
-                choice: choice as i32,
-                plan: None,
-            };
-            ctx.planned(
-                rpc::session::PLAN_ARCHIVE,
-                &pb::PlanArchiveRequest { id },
-                |plan: &pb::ArchivePlan| plan.token.clone(),
-                move |plan| async move {
-                    ctx.json(
-                        rpc::session::ARCHIVE_SESSION,
-                        &pb::ArchiveSessionRequest { plan, ..archive },
-                    )
-                    .await
-                },
-            )
-            .await
+            archive(ctx, &session, choice).await
         }
         SessionCommand::Delete { session } => {
             let id = Some(ctx.session(&session).await?);
@@ -322,6 +333,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
                 idempotency_key: ctx.key(),
                 id: Some(ctx.session(&session).await?),
                 machine: ctx.machine_flag().await?,
+                stopped: false,
             };
             ctx.change(rpc::session::RESTORE_SESSION, &request).await
         }
@@ -459,6 +471,41 @@ pub(super) async fn session<D: Daemon, C: Console>(
 
 /// `text` with Enter pressed after it (D671: a trailing newline is the
 /// submit), unless it already ends in one.
+/// The session a command names; clap asks for it unless `--tab` is given.
+fn named(session: Option<String>) -> Result<String, CliError> {
+    session.ok_or(CliError::Missing {
+        flag: "<session> or --tab <tab>",
+    })
+}
+
+/// Archive `session` by its plan, as `choice` says.
+async fn archive<D: Daemon, C: Console>(
+    ctx: &Ctx<'_, D, C>,
+    session: &str,
+    choice: pb::ArchiveChoice,
+) -> Result<Done, CliError> {
+    let id = Some(ctx.session(session).await?);
+    let archive = pb::ArchiveSessionRequest {
+        idempotency_key: ctx.key(),
+        id: id.clone(),
+        choice: choice as i32,
+        plan: None,
+    };
+    ctx.planned(
+        rpc::session::PLAN_ARCHIVE,
+        &pb::PlanArchiveRequest { id },
+        |plan: &pb::ArchivePlan| plan.token.clone(),
+        move |plan| async move {
+            ctx.json(
+                rpc::session::ARCHIVE_SESSION,
+                &pb::ArchiveSessionRequest { plan, ..archive },
+            )
+            .await
+        },
+    )
+    .await
+}
+
 fn submitted(mut text: String) -> String {
     if !text.ends_with(['\n', '\r']) {
         text.push('\n');

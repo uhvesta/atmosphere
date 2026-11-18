@@ -133,6 +133,7 @@ pub(crate) enum Awaited {
     DeskStart,
     Resume,
     Read,
+    Attach,
 }
 
 impl Awaited {
@@ -142,6 +143,7 @@ impl Awaited {
             Self::DeskStart => "start the Desk session",
             Self::Resume => "resume the session",
             Self::Read => "read the session",
+            Self::Attach => "open the tab's terminal",
         }
     }
 }

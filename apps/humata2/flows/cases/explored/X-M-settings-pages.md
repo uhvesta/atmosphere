@@ -100,15 +100,16 @@ Phase 1 (map from code and existing snapshots, no run). Every step below is read
 - **Replay check:** `bazel test //apps/humata2/desktop:native_test --test_filter=hosts_settings::permission_requests_can_use`
 - **Note:** this list shows every built-in agent before the daemon's switches load (`offered()` falls back to all).
 
-### 11. Agents pane: Ask for permission in the Inbox
-- **Screen:** card "Ask for permission in the Inbox", note fixed as "Off: each agent asks in its own terminal" whatever the state; toggle on until the daemon says otherwise (`asks_in_inbox != Some(false)`).
-- **Offered:** the toggle.
-- **Action:** toggle off.
-- **Result:** the switch shows off at once (`asks_in_inbox = Some(false)`), the daemon saves; `asks_saving` blocks a second toggle while in flight.
+### 11. Agents pane: Ask in the Inbox, one switch per agent (D782)
+- **Screen:** D199's single card "Ask for permission in the Inbox" is gone. On the Agents card, under each enabled agent, an indented row "Ask in the Inbox" with toggle `settings-agent-asks-<id>`, on by default. The subtitle "Off: it asks in its own terminal" shows only while that agent's switch is off. A disabled agent shows no such row; the plain shell has none. A custom kind from `agents.toml` gets the row too, under its own id and name.
+- **Offered:** one toggle per enabled agent.
+- **Action:** toggle Copilot's off.
+- **Result:** the switch shows off at once, then `set_agent_switch` saves `asks_in_inbox = false` under `[agents.copilot]` in `~/.humata2/config/agents.toml`. Only Copilot changes; Claude, Codex and OpenCode still ask in the Inbox. Copilot's own approval dialogs (permission hook, question hook, screen asks) stay in its terminal; screen asks still mark the session NEEDS_INPUT until answered, with no card. Approvals Humata itself asks for (RequestAccess, AskUser, file and copy approvals, proposals, Desk moves, Migrate items) still come to the Inbox. The daemon pushes the file to every linked machine.
 - **Failure:** the daemon refuses → the switch goes back to its old value and `settings.error` shows under the Agents pane as `settings-agents-error` (alert role) with the daemon's wording.
-- **Evidence:** `native/29-permission-route.view.txt` (after the toggle, Inbox off).
-- **Replay check:** `bazel test //apps/humata2/features/settings:agent_asks_test --test_filter=a_refused_change`
-- **Replay check (toggle):** `bazel test //apps/humata2/features/settings:agent_asks_test --test_filter=turning_it_off_and_on`
+- **Evidence:** candidate frame `117-settings-agents-ask-in-inbox.png` (scratch, for Fable; not a golden). `native/29-permission-route` changes (main's).
+- **Replay check:** `bazel test //apps/humata2/features/settings:agent_asks_test` (tests `turning_one_agent_off_changes_only_that_agent_in_the_daemon`, `a_refused_change_goes_back_and_says_why`, `a_custom_kind_has_its_own_switch_and_pickers_still_offer_only_built_in_agents`).
+- **Replay check (native):** `bazel test //apps/humata2/desktop:native_test --test_filter=agent_switches` (test `each_agent_has_its_own_ask_in_the_inbox_switch`).
+- **Upgrade:** a store that had D199's switch on (`agents.permissions_in_agent = "true"`) turns every agent's asks off once at daemon start, then forgets the old key.
 
 ### 12. Agents pane: Trust Humata's hooks in Codex (step, when needed)
 - **Screen:** a card "Trust Humata's hooks in Codex" with the text "Start a Codex session and run /hooks once, then trust Humata's". It shows only when the daemon says Codex hooks need trusting.
@@ -144,7 +145,7 @@ Phase 1 (map from code and existing snapshots, no run). Every step below is read
 - **Replay check:** none exists in the tests; PENDING RUN is the flow itself: `bazel test //apps/humata2/desktop:machines_flow_test` (look for the machine-change-access id), then confirm the Settings view.
 
 ### 16. Palette: settings search
-- **Screen:** the palette lists "Settings › <section>" (8 entries, hint "Settings") and "Settings › <row>" (10 entries, hint = the row's section name). Rows: Appearance, Terminal font, Sidebar shows Pinned, Long lines, Confirm bulk approvals, Default agent, Ask for permission in the Inbox, Permission request alerts, Free memory of hidden terminals, Option acts as Alt. Snapshot `native/30-palette.view.txt` (palette open; Settings item in the rail).
+- **Screen:** the palette lists "Settings › <section>" (8 entries, hint "Settings") and "Settings › <row>" (9 entries, hint = the row's section name). Rows: Appearance, Terminal font, Sidebar shows Pinned, Long lines, Confirm bulk approvals, Default agent, Permission request alerts, Free memory of hidden terminals, Option acts as Alt. Snapshot `native/30-palette.view.txt` (palette open; Settings item in the rail).
 - **Offered:** each entry; typing filters them.
 - **Action:** type "long", choose "Settings › Long lines".
 - **Result:** Settings opens; section Layout; `revealed = Some(LongLines)`. Recorded in the state only: nothing on the screen is highlighted or scrolled to (see Surprises).

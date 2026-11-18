@@ -17,11 +17,14 @@ fn setup() -> (TestStore<Settings>, FakeDaemon) {
 
 fn switch(agent: Agent, enabled: bool, install: bool) -> AgentSwitch {
     AgentSwitch {
-        agent,
+        kind: agent.command().to_owned(),
+        name: agent.name().to_owned(),
+        agent: Some(agent),
         enabled,
         install_when_missing: install,
         can_install: true,
         install_command: None,
+        asks_in_inbox: true,
     }
 }
 
@@ -35,7 +38,7 @@ fn with_one_off(agent: Agent) -> Vec<AgentSwitch> {
     all_on()
         .into_iter()
         .map(|s| AgentSwitch {
-            enabled: s.agent != agent,
+            enabled: s.agent != Some(agent),
             ..s
         })
         .collect()
@@ -66,12 +69,12 @@ fn the_switches_load_in_the_daemons_order() {
 fn turning_an_agent_off_shows_at_once_and_is_saved() {
     let (mut store, _) = loaded();
     let before = switch(Agent::Copilot, true, false);
-    store.send(A::Agents(AgentsAction::Toggle(Agent::Copilot)), |s| {
+    store.send(A::Agents(AgentsAction::Toggle(kind(Agent::Copilot))), |s| {
         s.agents.switches = Some(with_one_off(Agent::Copilot));
     });
     store.receive(
         A::Agents(AgentsAction::Saved {
-            agent: Agent::Copilot,
+            kind: kind(Agent::Copilot),
             before,
             result: Ok(switch(Agent::Copilot, false, false)),
         }),
@@ -89,23 +92,23 @@ fn turning_an_agent_off_shows_at_once_and_is_saved() {
 #[test]
 fn turning_it_back_on_is_saved_too() {
     let (mut store, _) = loaded();
-    store.send(A::Agents(AgentsAction::Toggle(Agent::Codex)), |s| {
+    store.send(A::Agents(AgentsAction::Toggle(kind(Agent::Codex))), |s| {
         s.agents.switches = Some(with_one_off(Agent::Codex));
     });
     store.receive(
         A::Agents(AgentsAction::Saved {
-            agent: Agent::Codex,
+            kind: kind(Agent::Codex),
             before: switch(Agent::Codex, true, false),
             result: Ok(switch(Agent::Codex, false, false)),
         }),
         |_| {},
     );
-    store.send(A::Agents(AgentsAction::Toggle(Agent::Codex)), |s| {
+    store.send(A::Agents(AgentsAction::Toggle(kind(Agent::Codex))), |s| {
         s.agents.switches = Some(all_on());
     });
     store.receive(
         A::Agents(AgentsAction::Saved {
-            agent: Agent::Codex,
+            kind: kind(Agent::Codex),
             before: switch(Agent::Codex, false, false),
             result: Ok(switch(Agent::Codex, true, false)),
         }),
@@ -122,19 +125,19 @@ fn install_when_missing_changes_only_its_own_switch() {
             all_on()
                 .into_iter()
                 .map(|x| AgentSwitch {
-                    install_when_missing: x.agent == Agent::Codex,
+                    install_when_missing: x.agent == Some(Agent::Codex),
                     ..x
                 })
                 .collect(),
         );
     };
     store.send(
-        A::Agents(AgentsAction::ToggleInstall(Agent::Codex)),
+        A::Agents(AgentsAction::ToggleInstall(kind(Agent::Codex))),
         installing,
     );
     store.receive(
         A::Agents(AgentsAction::Saved {
-            agent: Agent::Codex,
+            kind: kind(Agent::Codex),
             before: switch(Agent::Codex, true, false),
             result: Ok(switch(Agent::Codex, true, true)),
         }),
@@ -148,7 +151,7 @@ fn a_refused_change_goes_back_and_shows_why() {
     let (store, daemon) = loaded();
     let mut store = store.non_exhaustive();
     daemon.fail_next(Operation::SetAgentSwitch, "link unavailable");
-    store.send(A::Agents(AgentsAction::Toggle(Agent::Copilot)), |s| {
+    store.send(A::Agents(AgentsAction::Toggle(kind(Agent::Copilot))), |s| {
         s.agents.switches = Some(with_one_off(Agent::Copilot));
     });
     store.receive_matching(
@@ -164,7 +167,7 @@ fn a_refused_change_goes_back_and_shows_why() {
 #[test]
 fn a_toggle_before_the_switches_load_does_nothing() {
     let (mut store, _) = setup();
-    store.send(A::Agents(AgentsAction::Toggle(Agent::Claude)), |_| {});
+    store.send(A::Agents(AgentsAction::Toggle(kind(Agent::Claude))), |_| {});
     store.finish();
 }
 
@@ -185,4 +188,8 @@ fn pickers_leave_out_the_agents_that_are_off() {
         state.offered_agents(),
         vec![Agent::Claude, Agent::Copilot, Agent::OpenCode]
     );
+}
+
+fn kind(agent: Agent) -> String {
+    agent.command().to_owned()
 }

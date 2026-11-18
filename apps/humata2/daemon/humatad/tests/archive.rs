@@ -84,6 +84,12 @@ impl Fixture {
     }
 
     async fn restore(&self, id: &pb::SessionId) -> pb::Operation {
+        self.restore_as(id, false).await
+    }
+
+    /// Restores it; `stopped` leaves it stopped, as the close dialog's Undo
+    /// of End for good does (D784).
+    async fn restore_as(&self, id: &pb::SessionId, stopped: bool) -> pb::Operation {
         let started = self
             .daemon
             .session_service()
@@ -92,6 +98,7 @@ impl Fixture {
                 idempotency_key: None,
                 id: Some(id.clone()),
                 machine: None,
+                stopped,
             })
             .await
             .unwrap()
@@ -272,6 +279,44 @@ async fn undo_brings_the_session_back_exactly() {
     say(&fixture.daemon, &id, "after the undo").await;
     let said = std::fs::read_to_string(fixture.world.conversation(&back.conversation_id)).unwrap();
     assert!(said.contains("before the archive") && said.contains("after the undo"));
+}
+
+/// D784: Undo of End for good gives the session back stopped, not running,
+/// and Resume then brings back the same conversation.
+#[tokio::test]
+async fn undo_of_end_for_good_gives_it_back_stopped_and_resume_revives_it() {
+    let fixture = Fixture::new(NEVER).await;
+    let session = fixture.session("Fix login").await;
+    let id = session.id.clone().unwrap();
+
+    succeeded(&fixture.archive(&id, pb::ArchiveChoice::Archive).await);
+    succeeded(&fixture.restore_as(&id, true).await);
+    let back = get_session(&fixture.daemon, &id).await;
+    assert!(back.archive.is_none(), "an undone archive still reads as archived");
+    assert_eq!(back.status, Status::Exited as i32, "{back:?}");
+    // It stays stopped: nothing resumes it behind the user's back.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(get_session(&fixture.daemon, &id).await.status, Status::Exited as i32);
+
+    let resumed = fixture
+        .daemon
+        .session_service()
+        .await
+        .resume_session(pb::ResumeSessionRequest {
+            idempotency_key: None,
+            id: Some(id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    succeeded(&finished(&fixture.daemon, &resumed).await);
+    let running = common::wait_running(&fixture.daemon, &id).await;
+    assert_eq!(running.conversation_id, session.conversation_id);
+    assert_eq!(running.folder, session.folder);
+    say(&fixture.daemon, &id, "after the resume").await;
+    let said = std::fs::read_to_string(fixture.world.conversation(&running.conversation_id)).unwrap();
+    assert!(said.contains("before the archive") && said.contains("after the resume"));
 }
 
 #[tokio::test]

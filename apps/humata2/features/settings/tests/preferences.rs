@@ -15,8 +15,6 @@ fn preferences_change_without_losing_other_choices() {
     store.send(A::SetFontSize(3), |s| s.preferences.font_size = 10);
     store.send(A::TogglePinned, |s| s.preferences.show_pinned = false);
     store.send(A::Section(Section::Agents), |s| s.section = Section::Agents);
-    // Opening Agents reads where permission asks go (D199).
-    store.receive(A::AsksShown(Ok(true)), |s| s.asks_in_inbox = Some(true));
     store.receive(A::CodexTrustShown(Ok(false)), |_| {});
     store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
         s.agents.switches = Some(all_on());
@@ -51,11 +49,14 @@ fn all_on() -> Vec<humata2_clients::AgentSwitch> {
     use humata2_clients::model::Agent;
     [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
         .map(|agent| humata2_clients::AgentSwitch {
-            agent,
+            kind: agent.command().to_owned(),
+            name: agent.name().to_owned(),
+            agent: Some(agent),
             enabled: true,
             install_when_missing: false,
             can_install: true,
             install_command: None,
+            asks_in_inbox: true,
         })
         .to_vec()
 }

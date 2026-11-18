@@ -45,9 +45,18 @@ impl Holder {
         Self::start_from(|_| holder_binary())
     }
 
+    /// A holder running `sh` with `args`, in the test's folder.
+    fn start_running(args: &[&str]) -> Self {
+        Self::start_with(|_| holder_binary(), args)
+    }
+
     /// A holder started from the binary `holder` gives, which it may put in
     /// the test's folder.
     fn start_from(holder: impl FnOnce(&Path) -> PathBuf) -> Self {
+        Self::start_with(holder, &[])
+    }
+
+    fn start_with(holder: impl FnOnce(&Path) -> PathBuf, args: &[&str]) -> Self {
         // Socket paths must be short, so not under the test's own temp.
         let dir = tempfile::Builder::new()
             .prefix("h2e")
@@ -57,7 +66,7 @@ impl Holder {
             holder: holder(dir.path()),
             socket: dir.path().join("t.sock"),
             program: PathBuf::from("/bin/sh"),
-            args: Vec::new(),
+            args: args.iter().map(Into::into).collect(),
             cwd: dir.path().to_owned(),
             env: vec![
                 ("PS1".into(), "$ ".into()),
@@ -160,6 +169,63 @@ async fn a_holder_ended_by_its_pid_is_gone_and_keeps_what_it_printed() {
         .unwrap()
         .expect("what it printed is kept for the holder after it");
     assert!(saved.saved_through > 0);
+}
+
+/// A program that ignores a hangup, as an agent's CLI or something it
+/// started may. Its pid is read from the file it writes first.
+struct Program(u32);
+
+impl Program {
+    async fn started_by(dir: &Path) -> Self {
+        let file = dir.join("program.pid");
+        let deadline = tokio::time::Instant::now() + GUARD;
+        loop {
+            if let Some(pid) = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
+                return Self(pid);
+            }
+            assert!(tokio::time::Instant::now() < deadline, "the program never wrote its pid");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+}
+
+impl Drop for Program {
+    /// Ends the program when the test ends, however it ended: only while
+    /// it is still this test's `sleep`, so a reused pid is left alone.
+    fn drop(&mut self) {
+        let named = std::process::Command::new("/bin/ps")
+            .args(["-o", "command=", "-p", &self.0.to_string()])
+            .output()
+            .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).contains("sleep 1000"));
+        if named {
+            let _ = kill_process(pid_of(self.0), Signal::KILL);
+        }
+    }
+}
+
+/// A holder that has to be killed can't end its program itself, so ending
+/// it by its pid ends its program's group too: no agent outlives its
+/// holder, even one that ignores the hangup.
+#[tokio::test]
+async fn a_holder_ended_by_its_pid_takes_its_program_with_it() {
+    let holder = Holder::start_running(&[
+        "-c",
+        "echo $$ > program.pid; trap '' HUP; exec sleep 1000",
+    ]);
+    let program = Program::started_by(holder._dir.path()).await;
+
+    // Shorter than the holder's own hangup grace, so it is killed while it
+    // still waits on its program.
+    tokio::time::timeout(GUARD, end_by_pid(&holder.socket, holder.pid, Duration::from_millis(100)))
+        .await
+        .expect("the holder was ended within the guard")
+        .expect("the holder was ended by its pid");
+    let snapshot = Snapshot::take().await.expect("the process list can be read");
+    assert!(!snapshot.is_alive(holder.pid), "the holder is no longer running");
+    assert!(!snapshot.is_alive(program.0), "the holder's program outlived it");
 }
 
 /// An installed holder can have a file name of its own. It is still the

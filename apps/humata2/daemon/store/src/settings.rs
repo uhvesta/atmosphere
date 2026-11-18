@@ -41,6 +41,16 @@ impl Store {
                 .map(drop)
         })
     }
+
+    /// Forgets `key`, so it has its default again. Forgetting a key with no
+    /// row does nothing.
+    pub fn delete_setting(&self, key: &str) -> Result<(), StoreError> {
+        self.inner().write("setting.delete", "delete a setting", |transaction| {
+            transaction
+                .execute("DELETE FROM settings WHERE key = ?1", [key])
+                .map(drop)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -58,5 +68,17 @@ mod tests {
             store.setting("branch_prefix").unwrap(),
             Some(SavedSetting { value: String::new(), revision: 2 })
         );
+    }
+
+    #[test]
+    fn a_deleted_setting_is_absent_and_the_others_stay() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.put_setting("old", "true", 1).unwrap();
+        store.put_setting("kept", "x", 1).unwrap();
+        store.delete_setting("old").unwrap();
+        store.delete_setting("never-saved").unwrap();
+        assert_eq!(store.setting("old").unwrap(), None);
+        assert_eq!(store.setting("kept").unwrap().map(|saved| saved.value).as_deref(), Some("x"));
     }
 }

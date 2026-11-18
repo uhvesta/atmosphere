@@ -28,6 +28,7 @@ mod read_marks;
 mod recorded;
 // REPOS (RL-1): the repo library and search over RepoService.
 mod repos;
+mod running;
 // REPOS (CH-21)
 mod session_repos;
 mod settings;

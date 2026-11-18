@@ -85,3 +85,33 @@ fn archive_goes_ahead_when_a_review_has_no_unsubmitted_drafts() {
     );
     assert!(store.state().archiving.is_none());
 }
+
+/// D784: the Archive confirm names the agent it ends and where it runs, as
+/// the close dialog does: "Copilot on This Mac".
+#[test]
+fn the_archive_confirm_names_the_agent_and_machine_it_ends() {
+    let mut workspace = fixture::design();
+    let id = SessionId::new("ledger");
+    for session in &mut workspace.sessions {
+        if session.id == id {
+            session.agent = humata2_clients::model::Agent::Copilot;
+            session.machine = humata2_clients::model::MachineId::new("this-mac");
+        }
+    }
+    let (clients, fakes) = Clients::fake(workspace.clone(), Arc::new(TestClock::new()));
+    fakes.daemon.set_unsubmitted_drafts(&id, 1);
+    let state = SessionState {
+        workspace: Arc::new(workspace),
+        open: Some(id),
+        ..Default::default()
+    };
+    let mut store = TestStore::new(state, Sessions::new(clients)).non_exhaustive();
+    store.send(A::Archive, |_| {});
+    store.receive_matching(
+        "the plan",
+        |a| matches!(a, A::ArchivePlanned { result: Ok(_), .. }),
+        |_| {},
+    );
+    let named = store.state().archiving.as_ref().map(|confirm| (confirm.agent.clone(), confirm.machine.clone()));
+    assert_eq!(named, Some(("Copilot".to_owned(), "This Mac".to_owned())));
+}

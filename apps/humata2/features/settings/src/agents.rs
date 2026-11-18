@@ -1,5 +1,6 @@
 //! Settings › Agents › Agents (AGENTSET, D725): which agents Humata offers,
-//! and whether it may install each one's CLI on a machine without it.
+//! whether it may install each one's CLI on a machine without it, and
+//! whether each one's asks wait in the Inbox (D782).
 
 use humata2_clients::model::Agent;
 use humata2_clients::{AgentSwitch, Clients, DaemonError, SwitchChange};
@@ -8,8 +9,8 @@ use tca::Effect;
 /// The agents' switches as the daemon last said.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentsState {
-    /// Every built-in agent except the shell, in the daemon's order; `None`
-    /// until the daemon has said.
+    /// Every agent kind except the shell, built-in or custom, in the
+    /// daemon's order; `None` until the daemon has said.
     pub switches: Option<Vec<AgentSwitch>>,
 }
 
@@ -25,7 +26,7 @@ impl AgentsState {
                 None => true,
                 Some(switches) => switches
                     .iter()
-                    .any(|switch| switch.agent == *agent && switch.enabled),
+                    .any(|switch| switch.agent == Some(*agent) && switch.enabled),
             })
             .collect()
     }
@@ -38,14 +39,16 @@ pub enum AgentsAction {
     Load,
     /// The daemon gave the switches, or couldn't.
     Loaded(Result<Vec<AgentSwitch>, DaemonError>),
-    /// Turn an agent on or off.
-    Toggle(Agent),
-    /// Turn "Install when missing" on or off for an agent.
-    ToggleInstall(Agent),
-    /// The daemon saved an agent's switches, or refused.
+    /// Turn an agent kind on or off, by its id.
+    Toggle(String),
+    /// Turn "Install when missing" on or off for an agent kind.
+    ToggleInstall(String),
+    /// Turn "Ask in the Inbox" on or off for an agent kind (D782).
+    ToggleAsks(String),
+    /// The daemon saved an agent kind's switches, or refused.
     Saved {
-        /// The agent changed.
-        agent: Agent,
+        /// The id of the kind changed.
+        kind: String,
         /// What its switches were before the change, to put back on a refusal.
         before: AgentSwitch,
         /// What the daemon holds now, or why it refused.
@@ -73,25 +76,29 @@ pub(crate) fn reduce(
             }
             Effect::none()
         }
-        AgentsAction::Toggle(agent) => change(clients, state, agent, |switch| SwitchChange {
+        AgentsAction::Toggle(kind) => change(clients, state, kind, |switch| SwitchChange {
             enabled: Some(!switch.enabled),
-            install_when_missing: None,
+            ..SwitchChange::default()
         }),
-        AgentsAction::ToggleInstall(agent) => {
-            change(clients, state, agent, |switch| SwitchChange {
-                enabled: None,
+        AgentsAction::ToggleInstall(kind) => {
+            change(clients, state, kind, |switch| SwitchChange {
                 install_when_missing: Some(!switch.install_when_missing),
+                ..SwitchChange::default()
             })
         }
+        AgentsAction::ToggleAsks(kind) => change(clients, state, kind, |switch| SwitchChange {
+            asks_in_inbox: Some(!switch.asks_in_inbox),
+            ..SwitchChange::default()
+        }),
         AgentsAction::Saved {
-            agent,
+            kind,
             before,
             result,
         } => {
             let slot = state
                 .switches
                 .as_mut()
-                .and_then(|all| all.iter_mut().find(|switch| switch.agent == agent));
+                .and_then(|all| all.iter_mut().find(|switch| switch.kind == kind));
             match result {
                 Ok(saved) => {
                     if let Some(slot) = slot {
@@ -114,13 +121,13 @@ pub(crate) fn reduce(
 fn change(
     clients: &Clients,
     state: &mut AgentsState,
-    agent: Agent,
+    kind: String,
     wanted: impl Fn(&AgentSwitch) -> SwitchChange,
 ) -> Effect<AgentsAction> {
     let Some(slot) = state
         .switches
         .as_mut()
-        .and_then(|all| all.iter_mut().find(|switch| switch.agent == agent))
+        .and_then(|all| all.iter_mut().find(|switch| switch.kind == kind))
     else {
         return Effect::none();
     };
@@ -132,11 +139,14 @@ fn change(
     if let Some(install) = change.install_when_missing {
         slot.install_when_missing = install;
     }
+    if let Some(inbox) = change.asks_in_inbox {
+        slot.asks_in_inbox = inbox;
+    }
     let daemon = clients.daemon.clone();
     Effect::future(async move {
-        let result = daemon.set_agent_switch(agent, change).await;
+        let result = daemon.set_agent_switch(kind.clone(), change).await;
         AgentsAction::Saved {
-            agent,
+            kind,
             before,
             result,
         }

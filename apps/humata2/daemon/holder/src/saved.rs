@@ -41,6 +41,13 @@ pub fn saved_scrollback_path(socket: &Path) -> PathBuf {
     socket.with_extension("scrollback")
 }
 
+/// Where the daemon marks that the user stopped the terminal of `socket`
+/// (D784 "Stop"): a start's revive leaves it stopped, and only Resume
+/// starts it again, which takes the mark away.
+pub fn stopped_mark_path(socket: &Path) -> PathBuf {
+    socket.with_extension("stopped")
+}
+
 /// What a holder that was killed, or lost to a reboot, left on disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SavedOutput {

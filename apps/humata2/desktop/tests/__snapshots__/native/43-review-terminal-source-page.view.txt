@@ -54,10 +54,12 @@ Toolbar "Desk folder"
   Button "Remove acme/api"
   Button "Add repo"
 Tab "claude" selected
+  Button "Close claude"
 Tab "zsh"
+  Button "Close zsh"
 Button "New terminal"
 Tab "rfc-brin.md" selected
-  Button "Close tab"
+  Button "Close rfc-brin.md"
 Button "New terminal"
 RadioGroup "Show the file as"
   RadioButton "Preview"

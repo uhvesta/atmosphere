@@ -6,6 +6,7 @@ use crate::{
     widgets::{self, col, row},
 };
 use gpui_kit::assets::IconName;
+use gpui_kit::base::Disableable as _;
 use gpui_kit::base::TestTextExt as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::{prelude::*, *};
@@ -617,7 +618,7 @@ fn bulk_strip(ui: &Rc<Ui>, confirm: Option<Bulk>, waiting: usize, look: Look) ->
 /// stands; any other request names who asks and how it was answered.
 fn row_from(state: &AppState, request: &Request, session: Option<&Session>) -> String {
     let Some(card) = request.migrate() else {
-        return asked_from(session, request.answer.as_ref());
+        return asked_from(session, request.answer.as_ref(), request.on_screen.is_some());
     };
     let status = match state.inbox.migrate_status(&request.id) {
         Some(MigrateStatus::Migrating) => "migrating…".to_owned(),
@@ -632,8 +633,9 @@ fn row_from(state: &AppState, request: &Request, session: Option<&Session>) -> S
 }
 
 /// A row's second line: who asks and from which session, then how it was
-/// answered once it is (IN-7).
-fn asked_from(session: Option<&Session>, answer: Option<&Answer>) -> String {
+/// answered once it is (IN-7). `on_screen`: a question on its agent's
+/// screen, whose Deny is Dismiss and leaves the question there (D781).
+fn asked_from(session: Option<&Session>, answer: Option<&Answer>, on_screen: bool) -> String {
     let mut parts = Vec::new();
     if let Some(session) = session {
         parts.push(
@@ -650,11 +652,52 @@ fn asked_from(session: Option<&Session>, answer: Option<&Answer>) -> String {
         None => {}
         Some(Answer::Approved) => parts.push("approved".to_owned()),
         Some(Answer::Always { .. }) => parts.push("always allowed".to_owned()),
+        Some(Answer::Denied { reply: None }) if on_screen => {
+            parts.push("dismissed; the question is still on its screen".to_owned())
+        }
         Some(Answer::Denied { reply: None }) => parts.push("denied".to_owned()),
         Some(Answer::Denied { reply: Some(note) }) => parts.push(format!("denied: {note}")),
         Some(Answer::Replied { text }) => parts.push(format!("replied: {text}")),
     }
     parts.join(" · ")
+}
+
+/// Under a question on its agent's screen: the live terminal at full width,
+/// then the hint and Dismiss (D781). The terminal is the one the Inbox links
+/// for the open item; until it is made, the hint shows alone.
+fn screen_question(ui: &Rc<Ui>, state: &AppState, request: &Request, look: Look) -> AnyElement {
+    let pending = state.inbox.pending.contains(&request.id);
+    col()
+        .w_full()
+        .gap(px(12.))
+        .children(ui.inbox_terminal())
+        .child(
+            row()
+                .gap(px(12.))
+                .items_center()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(11.5))
+                        .text_color(rgb(look.secondary))
+                        .child(
+                            "Answer in the terminal or pick a choice above. Dismiss closes this item and presses nothing.",
+                        ),
+                )
+                .child(
+                    request_card::button(
+                        ui,
+                        SharedString::from(format!("dismiss {}", request.id)),
+                        if pending { "Dismissing…" } else { "Dismiss" },
+                        vec![AppAction::Inbox(InboxAction::Dismiss(request.id.clone()))],
+                        look,
+                        false,
+                    )
+                    .disabled(pending),
+                ),
+        )
+        .into_any_element()
 }
 
 pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoElement {
@@ -779,6 +822,11 @@ pub(crate) fn inbox(ui: &Rc<Ui>, state: &AppState, look: Look) -> impl IntoEleme
                         .max_w(px(560.))
                         .child(request_card::card(ui, state, r, true, look))
                 }))
+                .children(
+                    selected
+                        .filter(|r| r.on_screen.is_some() && r.answer.is_none())
+                        .map(|r| screen_question(ui, state, r, look)),
+                )
                 .when(selected.is_none(), |x| {
                     x.child(widgets::empty_in(
                         look,

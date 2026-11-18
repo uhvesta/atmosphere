@@ -85,6 +85,7 @@ fn item(thing: MigrateThing, phase: MigratePhase, answer: Option<Answer>) -> Req
         asked_by: None,
         undo_note: None,
         choices: Vec::new(),
+        on_screen: None,
     }
 }
 

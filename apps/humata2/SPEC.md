@@ -2300,6 +2300,15 @@ and frame 37 a Desk session's.
   The frames draw parts 1–4 and 8. Parts 5–7 and Open session ↗ keep the
   owner's rule that a request carries its full decision context; frames 03,
   04, 26 and 27 are to gain them. (provisional, D105)
+
+  A question an agent asks on its own screen (D781) opens in the wide Inbox
+  with that agent's live terminal under its card, drawn at the tab's own size
+  and never resizing it. The terminal takes keys only after a click or Tab.
+  The card offers the screen's choices and **Dismiss**, not Deny or Reply….
+  Dismiss presses nothing: the item closes as resolved if the question is
+  gone; otherwise the session keeps needing the user until it is answered in
+  the terminal. The session's Inbox panel shows the card with Dismiss in
+  place of Deny, and no terminal.
 - **IN-10** The preview depends on the kind of request:
   - Board item change: the item (opens its drawer) and each field before →
     after.
@@ -2360,6 +2369,9 @@ and frame 37 a Desk session's.
   action is checked against the channel's rules, including its own session
   board and the channel items it created, whose rules default to Allow. The
   rules govern calls made through Humata only (SEC-5).
+  Humata's own approvals (RequestAccess, AskUser, file and copy approvals,
+  proposals, Desk moves, Migrate items) always come to the Inbox, whatever
+  the agent's Ask in the Inbox switch (ST-1a, D782).
 - **IN-17** The Agent access tab lists rules per kind of action, each with
   **Allow / Ask me / Never**, and explains that anything asked lands in the
   Inbox batched with every other agent's requests. Defaults:
@@ -3446,6 +3458,12 @@ NV-32–NV-34 keep what still holds.
   a new id, and that agents that can't offer only code-only forks. Each
   agent also shows where its turn ends come from (SE-21): its hooks, or
   watching its output.
+- **ST-1a** **Ask in the Inbox** (D782): each enabled agent has this switch,
+  on by default. On, the agent's own approval dialogs come to the Inbox; off,
+  they stay in its terminal, and a question on its screen still marks the
+  session Needs you. A plain shell has no switch. The switches live in
+  `~/.humata2/config/agents.toml` and are pushed to linked machines; a
+  machine that doesn't have them yet asks in the Inbox.
 - **ST-2** The user can add an agent (name, command, resume and fork
   arguments).
 - **ST-3** **Terminal**: font, theme (follows the system by default),

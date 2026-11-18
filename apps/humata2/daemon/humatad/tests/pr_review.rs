@@ -1062,6 +1062,7 @@ async fn archived_reviews_keep_unsubmitted_drafts_through_a_restore() {
             idempotency_key: None,
             id: session.id.clone(),
             machine: None,
+            stopped: false,
         })
         .await
         .unwrap()

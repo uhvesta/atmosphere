@@ -190,6 +190,9 @@ fn restored(
         deferred,
         running: false,
         outcome: None,
+        // A restored request has no held result to drop (D768).
+        once: false,
+        taken: false,
     };
     let access = asked.clone().and_then(|target| {
         match ahead(

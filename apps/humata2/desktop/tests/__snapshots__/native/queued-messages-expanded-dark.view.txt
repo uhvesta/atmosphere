@@ -61,7 +61,9 @@ Button "Expand terminal"
 Button "Toggle side panel"
 Button "Session actions"
 Tab "claude" selected
+  Button "Close claude"
 Tab "zsh"
+  Button "Close zsh"
 Button "New terminal"
 #terminal-peers-0
   text "1 other can type here"

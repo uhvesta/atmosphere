@@ -12,10 +12,12 @@
 
 pub mod add;
 pub mod page;
+pub mod running;
 pub mod scripts;
 
 pub use add::{AddMachine, AddMachineAction, AddMachineState};
 pub use page::{MachinePage, MachinePageAction, MachinePageState};
+pub use running::{AdoptTarget, RowAction, Running, RunningAction, RunningDelegate, RunningState};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

@@ -912,12 +912,112 @@ async fn a_persons_bare_shared_is_still_refused() {
 #[tokio::test]
 async fn a_bare_shared_not_found_says_where_it_looked_and_differs_from_the_clones() {
     let bare = agent_on_ch_1();
-    bare.refuse(rpc::transfer::START_TRANSFER, pb::error::Kind::NotFound(Default::default()));
+    bare.refuse(rpc::transfer::START_TRANSFER, not_found_of(pb::EntityKind::RootFolder, ""));
     let (bare_exit, bare_out) = agent_cp(&bare, "shared/x", "ma_1:shared/").await;
     let clone = agent_on_ch_1();
-    clone.refuse(rpc::transfer::START_TRANSFER, pb::error::Kind::NotFound(Default::default()));
+    clone.refuse(rpc::transfer::START_TRANSFER, not_found_of(pb::EntityKind::RootFolder, ""));
     let (clone_exit, clone_out) = agent_cp(&clone, "./shared/x", "ma_1:shared/").await;
     assert_eq!(bare_exit, exit::NOT_FOUND);
     assert_eq!(clone_exit, exit::NOT_FOUND);
     assert_ne!(bare_out, clone_out);
+}
+
+// ----- D768: `cat` of an asked read waits for the answer. -----
+
+fn read_pending() -> pb::error::Kind {
+    pb::error::Kind::ApprovalPending(pb::ApprovalPending {
+        request: Some(pb::RequestId { value: "rq_9".into() }),
+    })
+}
+
+fn approved(result_type: &str, result: Vec<u8>) -> pb::WaitResponse {
+    pb::WaitResponse {
+        id: Some(pb::RequestId { value: "rq_9".into() }),
+        state: pb::RequestState::Approved as i32,
+        result,
+        result_type: result_type.into(),
+        ..Default::default()
+    }
+}
+
+const CAT_WAITING: [&str; 7] = ["--wait", "5", "--channel", "ch_1", "files", "cat", "ma_1:shared/notes.txt"];
+
+#[tokio::test]
+async fn cat_of_an_asked_read_writes_the_file_its_approval_read() {
+    use prost::Message;
+    let daemon = FakeDaemon::new();
+    let held = approved("humata.v1.FileChunk", chunk(b"hello", 0, true).encode_to_vec());
+    daemon
+        .refuse(rpc::files::READ_FILE, read_pending())
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&held]);
+    let console = FakeConsole::pipe();
+
+    assert_eq!(run(&daemon, &console, &CAT_WAITING).await, exit::OK);
+
+    assert_eq!(console.written(), b"hello");
+    assert_eq!(daemon.sent::<pb::ReadFileRequest>(rpc::files::READ_FILE).len(), 1);
+}
+
+#[tokio::test]
+async fn cat_of_an_approved_read_cut_short_reads_on_from_where_it_ended() {
+    use prost::Message;
+    let daemon = FakeDaemon::new();
+    let held = approved("humata.v1.FileChunk", chunk(b"hel", 0, false).encode_to_vec());
+    daemon
+        .refuse(rpc::files::READ_FILE, read_pending())
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&held])
+        .stream(rpc::files::READ_FILE, &[&chunk(b"lo", 3, true)]);
+    let console = FakeConsole::pipe();
+
+    assert_eq!(run(&daemon, &console, &CAT_WAITING).await, exit::OK);
+
+    assert_eq!(console.written(), b"hello");
+    let sent: Vec<pb::ReadFileRequest> = daemon.sent(rpc::files::READ_FILE);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1].offset, 3);
+}
+
+#[tokio::test]
+async fn cat_of_an_approved_read_that_ran_nothing_reads_again() {
+    let daemon = FakeDaemon::new();
+    daemon
+        .refuse(rpc::files::READ_FILE, read_pending())
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&approved("humata2.ReadApproved", Vec::new())])
+        .stream(rpc::files::READ_FILE, &[&chunk(b"hello", 0, true)]);
+    let console = FakeConsole::pipe();
+
+    assert_eq!(run(&daemon, &console, &CAT_WAITING).await, exit::OK);
+
+    assert_eq!(console.written(), b"hello");
+}
+
+fn not_found_of(kind: pb::EntityKind, id: &str) -> pb::error::Kind {
+    pb::error::Kind::NotFound(pb::NotFound {
+        kind: kind as i32,
+        id: id.into(),
+        in_trash: false,
+    })
+}
+
+/// D777b: what `cp ./note.txt <to>` prints when the daemon refuses with `refusal`.
+async fn cp_note_refused(to: &str, refusal: pb::error::Kind) -> (i32, String) {
+    let daemon = agent_on_ch_1();
+    daemon.refuse(rpc::transfer::START_TRANSFER, refusal);
+    agent_cp(&daemon, "./note.txt", to).await
+}
+
+#[tokio::test]
+async fn a_missing_shared_folder_gets_the_hint_for_a_clone_source() {
+    let bare = cp_note_refused("shared/", not_found_of(pb::EntityKind::RootFolder, "")).await;
+    let plain = cp_note_refused("ma_1:shared/", not_found_of(pb::EntityKind::RootFolder, "")).await;
+    assert_eq!(bare.0, exit::NOT_FOUND);
+    assert_ne!(bare.1, plain.1);
+}
+
+#[tokio::test]
+async fn a_missing_source_is_reported_as_itself_not_as_the_shared_folder() {
+    let bare = cp_note_refused("shared/", not_found_of(pb::EntityKind::File, "note.txt")).await;
+    let plain = cp_note_refused("ma_1:shared/", not_found_of(pb::EntityKind::File, "note.txt")).await;
+    assert_eq!(bare.0, exit::NOT_FOUND);
+    assert_eq!(bare.1, plain.1);
 }

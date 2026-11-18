@@ -362,10 +362,10 @@ fn desk_tabs(look: Look, state: St, on: usize, file: Option<(&'static str, IconN
         .bg(c(look.panel))
         .border_b_1()
         .border_color(c(look.line))
-        .child(session::tab(look, Some(status(state).into_any_element()), "claude", on == 0, false))
-        .child(session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", on == 1, false));
+        .child(session::tab(look, Some(status(state).into_any_element()), "claude", on == 0))
+        .child(session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", on == 1));
     if let Some((name, glyph)) = file {
-        bar = bar.child(session::tab(look, Some(small_icon(glyph, look.secondary).into_any_element()), name, on == 2, true));
+        bar = bar.child(session::tab(look, Some(small_icon(glyph, look.secondary).into_any_element()), name, on == 2));
     }
     bar.child(div().px(px(10.)).child(small_icon(IconName::Plus, look.secondary)))
 }
@@ -759,7 +759,7 @@ fn md_modes(look: Look, on: usize) -> Div {
 }
 
 fn md_tab(look: Look, on: bool) -> Div {
-    session::tab(look, Some(small_icon(IconName::FileText, look.secondary).into_any_element()), "rfc-brin.md", on, true)
+    session::tab(look, Some(small_icon(IconName::FileText, look.secondary).into_any_element()), "rfc-brin.md", on)
 }
 
 /// Reviewing a document while the agent that wrote it stays in view:
@@ -786,8 +786,8 @@ pub fn split_review(look: Look) -> Div {
         .child(group_row(
             look,
             vec![
-                session::tab(look, Some(status(St::Idle).into_any_element()), "claude", true, false),
-                session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false, false),
+                session::tab(look, Some(status(St::Idle).into_any_element()), "claude", true),
+                session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false),
             ],
             None,
         ))
@@ -958,8 +958,8 @@ pub fn source_review(look: Look) -> Div {
         .child(group_row(
             look,
             vec![
-                session::tab(look, Some(status(St::Idle).into_any_element()), "claude", false, false),
-                session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false, false),
+                session::tab(look, Some(status(St::Idle).into_any_element()), "claude", false),
+                session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false),
                 md_tab(look, true),
             ],
             Some(md_modes(look, 2)),
@@ -1005,8 +1005,8 @@ pub fn terminal_source_page(look: Look) -> Div {
         .child(group_row(
             look,
             vec![
-                session::tab(look, Some(status(St::Idle).into_any_element()), "claude", true, false).text_color(c(look.secondary)),
-                session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false, false),
+                session::tab(look, Some(status(St::Idle).into_any_element()), "claude", true).text_color(c(look.secondary)),
+                session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false),
             ],
             None,
         ))

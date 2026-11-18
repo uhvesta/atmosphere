@@ -188,6 +188,14 @@ impl Drop for World {
                 let _ = rustix::process::kill_process(pid_of(pid), Signal::KILL);
             }
         }
+        // A killed holder can't end its program, and a holder the test
+        // killed as a reboot left one too: each runs this world's
+        // `agent.sh`, a fresh folder's, so end them by it.
+        let _ = std::process::Command::new("pkill")
+            .arg("-KILL")
+            .arg("-f")
+            .arg(format!("{}/", self.root.display()))
+            .status();
     }
 }
 

@@ -18,8 +18,9 @@ fn dim(look: Look, text: impl Into<SharedString>) -> Div {
         .text_color(rgb(look.secondary))
         .child(text.into())
 }
-/// Settings › Agents › Agents (AGENTSET, D725): one switch per agent, and
-/// under an enabled one that has an install command, "Install when missing".
+/// Settings › Agents › Agents (AGENTSET, D725): one switch per agent kind,
+/// custom kinds included, and under an enabled one "Ask in the Inbox" (D782)
+/// and, when it has an install command, "Install when missing".
 /// Nothing but a loading line until the daemon has said which are on.
 fn agent_switches_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
     let mut block = col()
@@ -42,21 +43,46 @@ fn agent_switches_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
     };
     let mut rows = card(look);
     for switch in switches {
-        let id = switch.agent.command();
+        let id = &switch.kind;
+        // A custom kind (D782) shows the name its definition gives.
+        let name = switch
+            .agent
+            .map_or_else(|| switch.name.clone(), |agent| crate::desk::runs(agent).to_owned());
         rows = rows.child(line(
             div()
                 .flex_1()
                 .min_w_0()
-                .child(crate::desk::runs(switch.agent))
+                .child(name)
                 .into_any_element(),
             0.,
         ).child(toggle(
             ui,
             &format!("settings-agent-enabled-{id}"),
             switch.enabled,
-            A::Agents(AgentsAction::Toggle(switch.agent)),
+            A::Agents(AgentsAction::Toggle(switch.kind.clone())),
             look,
         )));
+        if switch.enabled {
+            // D782: where this agent's own approval dialogs go; the
+            // subtitle shows only while they stay in its terminal.
+            rows = rows.child(line(
+                col()
+                    .flex_1()
+                    .min_w_0()
+                    .child("Ask in the Inbox")
+                    .when(!switch.asks_in_inbox, |x| {
+                        x.child(dim(look, "Off: it asks in its own terminal"))
+                    })
+                    .into_any_element(),
+                18.,
+            ).child(toggle(
+                ui,
+                &format!("settings-agent-asks-{id}"),
+                switch.asks_in_inbox,
+                A::Agents(AgentsAction::ToggleAsks(switch.kind.clone())),
+                look,
+            )));
+        }
         if let (true, Some(command)) = (switch.enabled, &switch.install_command) {
             rows = rows.child(line(
                 col()
@@ -77,7 +103,7 @@ fn agent_switches_block(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                 ui,
                 &format!("settings-agent-install-{id}"),
                 switch.install_when_missing,
-                A::Agents(AgentsAction::ToggleInstall(switch.agent)),
+                A::Agents(AgentsAction::ToggleInstall(switch.kind.clone())),
                 look,
             )));
         }
@@ -524,21 +550,6 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                                 x.bg(rgb(look.accent)).text_color(rgb(0xffffff))
                             })
                         })),
-                )
-                .child(
-                    card(look).child(setting(
-                        look,
-                        Row::AsksInInbox.title(),
-                        "Off: each agent asks in its own terminal",
-                        toggle(
-                            ui,
-                            "settings-asks-in-inbox",
-                            state.settings.asks_in_inbox != Some(false),
-                            A::ToggleAsksInInbox,
-                            look,
-                        )
-                        .into_any_element(),
-                    )),
                 )
                 .when(state.settings.codex_needs_trust, |x| {
                     x.child(card(look).child(setting(

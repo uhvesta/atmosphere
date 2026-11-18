@@ -60,6 +60,16 @@ pub(crate) fn agent(tell: Tell, session: String) {
         // A watch that lost its holder keeps what it knew: the next one
         // finds it, and a report in between still has an entry to change.
         let Some(code) = code else {
+            // D784: a holder that is gone for good (killed, not replaced by
+            // an upgrade) leaves its agent showing as ended, so it reads as
+            // one to resume rather than a running row that can't attach.
+            // The record stays running, so a start brings it back as
+            // before; a Resume finds no holder and starts it again.
+            if holder_gone(holder_pid, &socket).await {
+                mark_lost(&session, holder_pid);
+                tell.session(&session, humata2_grpc::humata::v1::Change::Updated, None)
+                    .await;
+            }
             return;
         };
         turns::forget(&session, holder_pid);
@@ -244,6 +254,49 @@ async fn follow(
             tell.session(session, humata2_grpc::humata::v1::Change::Updated, None)
                 .await;
         }
+    }
+}
+
+/// Agents whose holder went away without an exit while this daemon runs,
+/// by session and the holder pid their record runs under (D784).
+static LOST: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<(String, u32)>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn mark_lost(session: &str, holder_pid: u32) {
+    LOST.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((session.to_owned(), holder_pid));
+}
+
+/// Whether `session`'s agent, running under `holder_pid`, lost its holder
+/// while this daemon runs: it shows as ended (D784).
+pub(crate) fn lost(session: &str, holder_pid: u32) -> bool {
+    LOST.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&(session.to_owned(), holder_pid))
+}
+
+/// How long a holder that hung up gets for its socket to answer again, as
+/// one that replaced it in an upgrade does.
+const GONE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the holder that hung up is gone: its process has ended and
+/// nothing answers on its socket within [`GONE_GRACE`].
+async fn holder_gone(holder_pid: u32, socket: &Path) -> bool {
+    let deadline = Instant::now() + GONE_GRACE;
+    loop {
+        if tokio::net::UnixStream::connect(socket).await.is_ok() {
+            return false;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    match humata2_holder::process::Snapshot::take().await {
+        Ok(snapshot) => !snapshot.is_alive(holder_pid),
+        // Without the process list it may still run: leave it as it was.
+        Err(_) => false,
     }
 }
 

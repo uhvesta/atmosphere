@@ -14,6 +14,7 @@ mod migrate;
 mod migrated;
 pub(crate) mod permission;
 mod relay;
+mod removed;
 mod replay;
 
 use std::collections::HashMap;
@@ -75,6 +76,9 @@ pub(crate) struct Inbox {
     /// What carries out a click on a Migrate item (UP-1). Set once the
     /// host's Migrate items are made.
     migrator: std::sync::OnceLock<crate::upgrade::items::Approver>,
+    /// The agents this daemon runs, whose `agents.toml` says where each
+    /// kind's own asks go (D782). Unset, every kind asks in the Inbox.
+    agents: std::sync::OnceLock<humata2_sessions::Agents>,
 }
 
 #[derive(Default)]
@@ -154,6 +158,14 @@ struct Held {
     running: bool,
     /// How the approved call ended. Kept in memory only.
     outcome: Option<Outcome>,
+    /// An asked read's result (D768): its bytes are dropped once a wait
+    /// delivers them, a repeat of the read goes through, or `READ_HELD`
+    /// passes, and later waits are told to repeat the read. The approval
+    /// keeps its usual keep time.
+    once: bool,
+    /// The read's result was delivered or its read repeated: bytes that
+    /// arrive after this are dropped at once.
+    taken: bool,
 }
 
 impl Held {
@@ -165,6 +177,8 @@ impl Held {
             deferred: false,
             running: false,
             outcome: None,
+            once: false,
+            taken: false,
         }
     }
 
@@ -244,7 +258,14 @@ impl Inbox {
             relays: Arc::new(Relays::new()),
             forwarder: std::sync::OnceLock::new(),
             migrator: std::sync::OnceLock::new(),
+            agents: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Reads where each agent kind asks from `agents`' switches file from
+    /// now on (D782). A second call is ignored.
+    pub(crate) fn use_agents(&self, agents: humata2_sessions::Agents) {
+        let _ = self.agents.set(agents);
     }
 
     /// The machines' live links and the answers sent down them: each link
@@ -673,11 +694,22 @@ impl Inbox {
         // D767 amendment: a question asked on the agent's screen that the
         // screen no longer asks (answered in the terminal) takes no reply:
         // it is withdrawn, and the reply says so, not that it was answered.
-        if let (Some(still_asked), pb::request_answer::Answer::Reply(reply)) =
-            (&entry.still_asked, &decided.answer)
-        {
-            if !still_asked(reply.text.clone()).await? {
-                return Err(self.withdraw_unasked(entry).await);
+        // D781: a Deny of one (the app's Dismiss) looks once too and types
+        // nothing either way: gone from the screen, it is withdrawn as
+        // resolved; still asked, or the screen unreadable, it is denied.
+        if let Some(still_asked) = &entry.still_asked {
+            match &decided.answer {
+                pb::request_answer::Answer::Reply(reply) => {
+                    if !still_asked(Some(reply.text.clone())).await? {
+                        return Err(self.withdraw_unasked(entry).await);
+                    }
+                }
+                pb::request_answer::Answer::Deny(_) => {
+                    if let Ok(false) = still_asked(None).await {
+                        return Ok(self.withdraw_resolved(entry).await);
+                    }
+                }
+                _ => {}
             }
         }
         let by = answered_by(caller, user);
@@ -1199,8 +1231,11 @@ impl pb::inbox_service_server::InboxService for Inbox {
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
         let id = id_of(request.id.as_ref().map(|id| id.value.clone())).ok_or_else(|| status::missing("id"))?;
-        let mut answers = match self.find(&caller, &id).await {
-            Ok(held) => held.subscribe(),
+        let (held, mut answers) = match self.find(&caller, &id).await {
+            Ok(held) => {
+                let answers = held.subscribe();
+                (held, answers)
+            }
             // A request this machine doesn't hold may be the host's (D268).
             Err(missing) => {
                 let stream = self.wait_on_host(&caller, request, &id, missing)?;
@@ -1225,7 +1260,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
             loop {
                 let current = answers.borrow_and_update().clone();
                 if !current.waiting() {
-                    let _ = sender.send(Ok(settled(&current))).await;
+                    if sender.send(Ok(settled(&current))).await.is_ok() {
+                        deferred::delivered(&held);
+                    }
                     return;
                 }
                 tokio::select! {

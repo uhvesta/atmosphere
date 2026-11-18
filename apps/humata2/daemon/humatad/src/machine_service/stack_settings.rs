@@ -4,6 +4,8 @@
 //! differs. Adding or reconnecting a machine sends it too, in setup; this
 //! catches a file that changed while the machine was linked or away. A host
 //! with no such file sends nothing and leaves the machine's own alone.
+//! A write to the host's `config/agents.toml` (D782) sends to every linked
+//! machine at once, so its sessions' "Ask in the Inbox" follows.
 
 use std::sync::Arc;
 
@@ -27,6 +29,19 @@ pub(super) fn link_up(work: &Arc<Work>, machine: &str) {
             Err(error) => crate::log::say!("humatad2: sending the stack settings to {named} stopped: {error}"),
         }
     });
+}
+
+/// The host's agents.toml was written (D782): every machine linked now gets
+/// the settings, as at a link-up. A machine away gets them when it links.
+pub(crate) fn agents_changed(work: &Arc<Work>) {
+    let linked: Vec<String> = super::lock(&work.links)
+        .keys()
+        .filter(|machine| work.relay_links.channel(machine).is_ok())
+        .cloned()
+        .collect();
+    for machine in linked {
+        link_up(work, &machine);
+    }
 }
 
 /// Reads the host's file afresh and sends it to `machine`.

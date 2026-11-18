@@ -8,7 +8,7 @@ use serde_json::Value as Json;
 use crate::args::Global;
 use crate::as_json;
 use crate::console::Console;
-use crate::daemon::{Daemon, DaemonError, Rpc, rpc};
+use crate::daemon::{Daemon, DaemonError, Replies, Rpc, rpc};
 use crate::error::CliError;
 use crate::principal::{Environment, Principal};
 
@@ -119,6 +119,36 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
                         // D768: an approved read ran nothing; repeated now,
                         // it goes through and this is its real result.
                         Approved::Repeat => Ok(self.daemon.unary(rpc, request.encode_to_vec()).await?),
+                    }
+                }
+                _ => Err(DaemonError::Refused {
+                    rpc: path,
+                    code,
+                    error,
+                }
+                .into()),
+            },
+            Err(other) => Err(other.into()),
+        }
+    }
+
+    /// A server stream whose opening the daemon may hold for the user's
+    /// approval (D768): it waits for the answer as [`Self::raw`] does.
+    pub(crate) async fn stream(&self, rpc: Rpc, request: &impl Message) -> Result<Opened, CliError> {
+        match self.daemon.server_stream(rpc, request.encode_to_vec()).await {
+            Ok(replies) => Ok(Opened::Stream(replies)),
+            Err(DaemonError::Refused {
+                rpc: path,
+                code,
+                error,
+            }) => match &error.kind {
+                Some(pb::error::Kind::ApprovalPending(pending)) => {
+                    let id = pending.request.clone().unwrap_or_default();
+                    match self.approved_result(id).await? {
+                        Approved::Result(bytes) => Ok(Opened::Held(bytes)),
+                        Approved::Repeat => Ok(Opened::Stream(
+                            self.daemon.server_stream(rpc, request.encode_to_vec()).await?,
+                        )),
                     }
                 }
                 _ => Err(DaemonError::Refused {
@@ -405,6 +435,13 @@ impl<'a, D: Daemon, C: Console> Ctx<'a, D, C> {
 
 /// What an answered request's held call returned: its result, or the
 /// error it failed with, or the user's no.
+/// A server stream [`Ctx::stream`] opened.
+pub(crate) enum Opened {
+    Stream(Replies),
+    /// The approved call ran while held; this is its one reply.
+    Held(Vec<u8>),
+}
+
 /// What an approved held call gives back.
 enum Approved {
     /// The call ran: its reply.
@@ -432,7 +469,9 @@ fn answered_result(rpc: Rpc, answer: pb::WaitResponse) -> Result<Approved, CliEr
     if state == pb::RequestState::Approved as i32 && answer.result_type == READ_APPROVED {
         return Ok(Approved::Repeat);
     }
-    if state == pb::RequestState::Approved as i32 && !answer.result.is_empty() {
+    if state == pb::RequestState::Approved as i32
+        && (!answer.result.is_empty() || !answer.result_type.is_empty())
+    {
         return Ok(Approved::Result(answer.result));
     }
     let (message, fix, kind) = if state == pb::RequestState::Denied as i32 {

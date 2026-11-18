@@ -227,9 +227,9 @@ pub fn view_tab(look: Look) -> Div {
                 .bg(c(look.panel))
                 .border_b_1()
                 .border_color(c(look.line))
-                .child(tab(look, Some(status(St::Working).into_any_element()), "claude", false, false))
-                .child(tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false, false))
-                .child(tab(look, Some(small_icon(IconName::Sparkles, PURPLE).into_any_element()), "PR review: ledger schema", true, true))
+                .child(tab(look, Some(status(St::Working).into_any_element()), "claude", false))
+                .child(tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false))
+                .child(tab(look, Some(small_icon(IconName::Sparkles, PURPLE).into_any_element()), "PR review: ledger schema", true))
                 .child(div().px(px(10.)).child(small_icon(IconName::Plus, look.secondary)))
                 .child(div().flex_1()),
         )

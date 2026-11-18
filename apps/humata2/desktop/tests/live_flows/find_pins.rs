@@ -101,11 +101,20 @@ fn one_character_searches_nothing_and_two_words_find_the_turn_again() {
         .await;
         (world, clients, id)
     });
+    let history = clients.history.clone();
     let mut app = App::open(&runtime, clients);
     app.wait_until("the session to load", |app| {
         app.ui.read(|state| state.workspace.session(&id).is_some())
     });
     app.show_session(&id);
+    // The agent taking its first message doesn't mean the host has indexed
+    // it, and an open search isn't run again when it has (D438): search
+    // once the host finds the words, as `find.rs` does.
+    app.wait_until("the host to index the conversation", |app| {
+        app.runtime
+            .block_on(history.search(WORDS, ""))
+            .is_ok_and(|(hits, _)| hits.iter().any(|hit| hit.session == id))
+    });
     open_palette(&mut app);
 
     type_query(&mut app, WORDS);
@@ -170,20 +179,25 @@ fn the_palettes_pin_adds_the_session_last_on_the_host_and_an_archive_keeps_it() 
     });
     open_palette(&mut app);
     type_query(&mut app, "pin");
-    let at = app.ui.read(|state| {
-        state
-            .palette
-            .entries
-            .iter()
-            .position(|entry| format!("{:?}", entry.command).starts_with("Pin {"))
-    });
-    let at = at.expect("the palette offers Pin for the session");
+    // Where Pin is, read again each step: the session's state moving on
+    // can add or drop an entry above it while the palette is open.
+    let pin_at = |app: &App<'_>| {
+        app.ui.read(|state| {
+            state
+                .palette
+                .entries
+                .iter()
+                .position(|entry| format!("{:?}", entry.command).starts_with("Pin {"))
+        })
+    };
+    let mut at = pin_at(&app).expect("the palette offers Pin for the session");
     while app.ui.read(|state| state.palette.cursor) < at {
         let was = app.ui.read(|state| state.palette.cursor);
         app.play(&Action::Key("down".to_owned()));
         app.wait_until("the cursor to move down", |app| {
             app.ui.read(|state| state.palette.cursor) > was
         });
+        at = pin_at(&app).expect("the palette still offers Pin");
     }
     app.play(&Action::Key("enter".to_owned()));
     app.wait_until("the palette to close", |app| !palette_open(app));

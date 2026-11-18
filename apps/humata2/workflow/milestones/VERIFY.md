@@ -240,3 +240,36 @@ Coach: VERIFY (Opus 5.5), opened 2026-11-16.
   - migrate: the installed 0.2 bundle against an older daemon and holder (bin-linux.old-1817) on a throwaway humata2-linux user.
 - Fix lanes, test first: D768 (an asked read raises an Inbox approval), D773 (an older machine's refusal maps to peer_version_unsupported, and a Migrate item is made sure to exist), and the D770 check that the dialogs preselect through agent_for.
 - Fable is deciding the owner's machine-identity design: a random machine id, with the name only a label.
+
+## 2026-11-17 22:10 — wave 3 results and the merged 0.2.2 release (c41e46c4)
+- Wave 3 (0.2 bins, fe9eea4f, Copilot claude-haiku-5.5): 8 of 12 cases pass (67%), plus the identity probe as a report.
+  - Pass: trust card Yes, trust card No, the moved session's trust card, D760 remove and re-add, agent_busy cleared on idle, D761 ask_user, and N1's resumed fork read, local and remote.
+  - Partial or fail, all fixed in 0.2.2:
+    - the trust card showed stale choices at first;
+    - NotPicked read as "answered";
+    - the held start message was typed twice in 3 of 5 sessions, including through "Send it now";
+    - files case 1, the pull, passed only in part.
+  - The unsent start message's Inbox card itself passed, with the full text and the Send it now / Leave it unsent choices.
+  - The identity probe went into D776 as "Seen live". A different machine re-added under a removed name showed the old sessions as idle on it, and the removed machine's Inbox requests stayed pending. Both now have a fix lane.
+  - Cancelled: 0.2 Migrate lane (owner change).
+- 0.2.2, which merges 0.2.2 and 0.2.3, is committed as c41e46c4. The freeze batch passed 36 of 36. It carries:
+  - D755: the pull hint names This Mac;
+  - D773 and its follow-up: an older machine's refusal turns into a Migrate item, on every relayed call;
+  - D770: the dialogs preselect the agent the daemon picks;
+  - D768: an asked read waits in the Inbox, and approval says to repeat the read, which the CLI does under --wait;
+  - D777: a bare shared/ is the channel's shared folder;
+  - the trust card's A–D fixes and the Send it now doubling fix.
+- Next, after tree open, each test first:
+  - the removed-machine fix (D783): sessions archived and marked, Type, Attach and Restore refused, requests and Migrate items withdrawn, and timers and reconcile kept off the new machine;
+  - D768b: an approved read runs and returns its result, files cat waits, and held bytes are dropped on delivery, on repeat, or after 10 minutes;
+  - D777b: a missing source names the source;
+  - D782: the per-agent Ask in the Inbox switch, which owns the card-less hold, with agents.toml pushed to linked machines;
+  - D781: the Inbox inline terminal and Dismiss, after D782; goldens 114–117 go to Fable as candidates;
+  - D770 gaps: the PR dialog before a "PR reviews" channel exists, re-preselecting when the channel changes, and the Settings row showing the daemon's pick.
+
+- 2026-11-17 23:19 PST: the owner extended the VERIFY approvals until 2026-11-18 08:20 PST, relayed by main. Until then, Copilot logins may go into the test VMs and isolated homes, so the e2e passes after 0.2.3 run on real Copilot, and lanes don't ask the owner; Fable decides. The standing rules still apply:
+  - ~/.copilot, ~/.codex and ~/.claude are read only;
+  - no tokens in files;
+  - no deleting personal or uncommitted data;
+  - no auto-killing the owner's sessions;
+  - one bazel.

@@ -9,9 +9,11 @@ Button "Close window"
 Button "Minimize window"
 Button "Zoom window"
 Tab "claude" selected
+  Button "Close claude"
 Tab "zsh"
+  Button "Close zsh"
 Tab "client.rs"
-  Button "Close tab"
+  Button "Close client.rs"
 Button "New terminal"
 #terminal-peers-0
   text "1 other can type here"

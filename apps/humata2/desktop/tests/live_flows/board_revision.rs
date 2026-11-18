@@ -236,15 +236,11 @@ impl Daemon for Held {
     fn remove_grant(&self, grant: &GrantId) -> Reply<()> {
         self.inner.remove_grant(grant)
     }
-    fn asks_in_inbox(&self) -> Reply<bool> {
-        self.inner.asks_in_inbox()
-    }
+
     fn set_default_agent(&self, agent: Agent) -> Reply<()> {
         self.inner.set_default_agent(agent)
     }
-    fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool> {
-        self.inner.set_asks_in_inbox(inbox)
-    }
+
     fn codex_needs_trust(&self) -> Reply<bool> {
         self.inner.codex_needs_trust()
     }
@@ -253,10 +249,10 @@ impl Daemon for Held {
     }
     fn set_agent_switch(
         &self,
-        agent: Agent,
+        kind: String,
         change: humata2_clients::SwitchChange,
     ) -> Reply<humata2_clients::AgentSwitch> {
-        self.inner.set_agent_switch(agent, change)
+        self.inner.set_agent_switch(kind, change)
     }
 }
 

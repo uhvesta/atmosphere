@@ -1127,3 +1127,39 @@ async fn watching_a_transfer_that_does_not_exist_is_not_found() {
 
     assert_eq!(not_found(&refused), pb::EntityKind::Transfer);
 }
+
+/// What a start that fails says is missing: a refusal now, or the failed
+/// transfer's problem.
+async fn missing_kind(daemon: &Daemon, request: pb::StartTransferRequest) -> pb::EntityKind {
+    match start(daemon, request).await {
+        Err(refused) => not_found(&refused),
+        Ok(started) => {
+            let end = settled(daemon, &started.id.clone().unwrap()).await;
+            match end.problem.and_then(|problem| problem.kind) {
+                Some(pb::error::Kind::NotFound(missing)) => missing.kind(),
+                other => panic!("expected not_found, got {other:?}"),
+            }
+        }
+    }
+}
+
+// D777b: the CLI tells a missing shared folder from a missing source by the kind.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_copy_to_a_shared_folder_that_is_not_made_says_so_and_a_missing_source_says_that() {
+    let world = world().await;
+    std::fs::write(world.clone.join("note.txt"), "note").unwrap();
+    let copy_of = |source: &str| {
+        start_request(
+            &[in_clone(source)],
+            in_shared(""),
+            pb::TransferMode::Copy,
+            pb::OnExisting::Fail,
+            None,
+        )
+    };
+
+    assert_eq!(missing_kind(&world.daemon, copy_of("missing.txt")).await, pb::EntityKind::File);
+    std::fs::remove_dir_all(&world.shared).unwrap();
+    assert_eq!(missing_kind(&world.daemon, copy_of("note.txt")).await, pb::EntityKind::RootFolder);
+}
+

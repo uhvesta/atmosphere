@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 
-use crate::call::{Ctx, Done, decode};
+use crate::call::{Ctx, Done, Opened, decode};
 use crate::console::Console;
 use crate::daemon::{Daemon, DaemonError, rpc};
 use crate::error::CliError;
@@ -277,26 +277,42 @@ pub(super) async fn cat<D: Daemon, C: Console>(
     ctx: &Ctx<'_, D, C>,
     location: pb::FileLocation,
 ) -> Result<Done, CliError> {
-    let request = pb::ReadFileRequest {
+    let mut request = pb::ReadFileRequest {
         location: Some(location),
         // Every codec this build decodes; the daemon picks by its setting.
         accept_codecs: Codec::wire_list(&Codec::ALL),
         ..Default::default()
     };
     let rpc = rpc::files::READ_FILE;
-    let mut replies = ctx.daemon.server_stream(rpc, request.encode_to_vec()).await?;
     let mut data = Vec::new();
     let mut decoder = Decoder::new();
-    while let Some(reply) = replies.recv().await {
+    // An asked read waits for the answer (D768). Approved, its run held
+    // the file's start; past that start, the read goes on as approved.
+    let mut replies = match ctx.stream(rpc, &request).await? {
+        Opened::Stream(replies) => Some(replies),
+        Opened::Held(bytes) => {
+            let chunk: pb::FileChunk = decode(rpc, &bytes)?;
+            let last = chunk.last;
+            let (raw, kept) = decode_chunk(decoder, chunk.clone()).await?;
+            decoder = kept;
+            take(ctx, &mut data, &raw);
+            if last {
+                None
+            } else {
+                request.offset = chunk.offset + raw.len() as u64;
+                Some(ctx.daemon.server_stream(rpc, request.encode_to_vec()).await?)
+            }
+        }
+    };
+    while let Some(reply) = match replies.as_mut() {
+        Some(replies) => replies.recv().await,
+        None => None,
+    } {
         let chunk: pb::FileChunk = decode(rpc, &reply?)?;
         let last = chunk.last;
         let (raw, kept) = decode_chunk(decoder, chunk).await?;
         decoder = kept;
-        if ctx.flags.json {
-            data.extend_from_slice(&raw);
-        } else {
-            ctx.console.write(&raw);
-        }
+        take(ctx, &mut data, &raw);
         if last {
             break;
         }
@@ -309,6 +325,15 @@ pub(super) async fn cat<D: Daemon, C: Console>(
         "bytes": data.len(),
         "sha256": hex(&Sha256::digest(&data)),
     })))
+}
+
+/// `raw` bytes of a file `cat` reads: on stdout, or kept for `--json`.
+fn take<D: Daemon, C: Console>(ctx: &Ctx<'_, D, C>, data: &mut Vec<u8>, raw: &[u8]) {
+    if ctx.flags.json {
+        data.extend_from_slice(raw);
+    } else {
+        ctx.console.write(raw);
+    }
 }
 
 /// Sends a local file: a header with its size and SHA-256, then 1 MiB

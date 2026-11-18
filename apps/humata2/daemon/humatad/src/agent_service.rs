@@ -15,7 +15,7 @@ use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::{AgentKind, Agents, TurnEnd};
 use tonic::{Code, Request, Response, Status};
 
-use crate::agent_switches::{self, AgentSwitches, Change, SwitchesError};
+use crate::agent_switches::{self, AgentSwitches, Change, OnChange, SwitchesError};
 use crate::identity;
 use crate::{agent_gate, status};
 use pb::invalid_field::Problem;
@@ -25,11 +25,22 @@ pub(crate) struct AgentSvc {
     agents: Agents,
     /// Whether no agents file was given, so the kinds are the built-in ones.
     built_in: bool,
+    /// Told after every switch it writes, so linked machines get the file.
+    on_change: OnChange,
 }
 
 impl AgentSvc {
     pub(crate) fn new(agents: Agents, built_in: bool) -> Self {
-        Self { agents, built_in }
+        Self {
+            agents,
+            built_in,
+            on_change: OnChange::default(),
+        }
+    }
+
+    /// The hook told after every switch this service writes.
+    pub(crate) fn on_change(&self) -> OnChange {
+        self.on_change.clone()
     }
 
     /// The switches in the file now, read afresh as every check does; none
@@ -65,6 +76,7 @@ impl AgentSvc {
             } as i32,
             enabled: switches.is_none_or(|switches| switches.enabled(&kind.name)),
             install_when_missing: switches.is_some_and(|switches| switches.install_when_missing(&kind.name)),
+            asks_in_inbox: switches.is_none_or(|switches| switches.asks_in_inbox(&kind.name)),
             can_install: can_install(switches, &kind.name),
             install_command: switches
                 .and_then(|switches| switches.install_command(&kind.name))
@@ -181,12 +193,14 @@ impl pb::agent_service_server::AgentService for AgentSvc {
         let change = Change {
             enabled: request.enabled,
             install_when_missing: request.install_when_missing,
+            asks_in_inbox: request.asks_in_inbox,
         };
         let name = kind.clone();
         let written = tokio::task::spawn_blocking(move || agent_switches::set(&path, &name, change))
             .await
             .map_err(|error| status::internal(format!("saving the agent switches stopped: {error}"), ""))?
             .map_err(|error| switches_failed(&error))?;
+        self.on_change.tell();
         let found = self.agents.get(&kind).map_err(|error| {
             status::internal(format!("the agent {kind} went missing: {}", status::chain(&error)), "")
         })?;
@@ -286,6 +300,7 @@ mod tests {
             agent: Some(pb::AgentId { value: agent.to_owned() }),
             enabled,
             install_when_missing: install,
+            asks_in_inbox: None,
         });
         request.extensions_mut().insert(caller);
         request
@@ -342,6 +357,51 @@ mod tests {
             .into_inner()
             .agents;
         assert!(!ids(&listed).contains(&"codex".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn asks_go_to_the_inbox_until_one_kind_turns_them_off() {
+        let (svc, _dir) = with_switches("");
+        let mut request = Request::new(pb::SetAgentEnabledRequest {
+            agent: Some(pb::AgentId { value: "copilot".to_owned() }),
+            asks_in_inbox: Some(false),
+            ..Default::default()
+        });
+        request.extensions_mut().insert(user());
+
+        let copilot = svc.set_agent_enabled(request).await.unwrap().into_inner();
+
+        assert!(!copilot.asks_in_inbox);
+        assert!(copilot.enabled);
+        let listed = svc
+            .list_agents(Request::new(pb::ListAgentsRequest::default()))
+            .await
+            .unwrap()
+            .into_inner()
+            .agents;
+        let asks = |name: &str| {
+            listed
+                .iter()
+                .find(|agent| ids(std::slice::from_ref(agent)) == [name])
+                .map(|agent| agent.asks_in_inbox)
+        };
+        assert_eq!(asks("copilot"), Some(false));
+        assert_eq!(asks("claude"), Some(true));
+    }
+
+    #[tokio::test]
+    async fn a_written_switch_tells_the_change_hook() {
+        let (svc, _dir) = with_switches("");
+        let told = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = told.clone();
+        svc.on_change().set(move || {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        svc.set_agent_enabled(set("codex", Some(false), None, user())).await.unwrap();
+        let _ = svc.set_agent_enabled(set("nope", Some(false), None, user())).await;
+
+        assert_eq!(told.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

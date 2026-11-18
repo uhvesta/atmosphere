@@ -58,6 +58,7 @@ mod stack_settings;
 pub(crate) use box_storage::BoxMachineSvc;
 pub(crate) use change_root::start_layout;
 pub(crate) use forget::{Forgetting, finish_forgets};
+pub(crate) use stack_settings::agents_changed;
 
 /// What stopping or starting the host's own sessions through the machine
 /// list is refused as.
@@ -77,6 +78,8 @@ pub(crate) struct MachineSvc {
     inbox: Arc<Inbox>,
     /// What this machine keeps, for the Storage page (LD-13 to LD-15).
     storage: Arc<Storage>,
+    /// D784: starts a stopped shell again, as the restart doctor does.
+    sessions: Arc<std::sync::OnceLock<crate::session_service::SessionSvc>>,
 }
 
 /// The wall clock, which tests set.
@@ -242,13 +245,21 @@ impl Work {
         }
     }
 
-    /// `machine`'s removal is done: no channel lists it any more (D760).
+    /// `machine`'s removal is done: no channel lists it any more (D760),
+    /// its sessions are archived, and its requests and Migrate items
+    /// withdrawn (D783).
     /// From a thread that may block, never a runtime worker.
     pub(crate) fn removed(&self, machine: &str, runtime: &Handle) {
         if let Err(error) = runtime.block_on(self.take_out_of_channels(machine)) {
             crate::log::say!(
                 "humatad2: {machine} was removed, but couldn't be taken out of its channels: {}. Take it out of each channel that still lists it",
                 error.message()
+            );
+        }
+        if let Err(error) = runtime.block_on(self.archive_removed(machine)) {
+            crate::log::say!(
+                "humatad2: {machine} was removed, but its sessions or Inbox requests couldn't all be let go of: {}. Archive the sessions still shown on {machine} and deny its requests still waiting, before adding another machine named {machine}; restarting Humata doesn't do it for you",
+                status::chain(&error)
             );
         }
     }
@@ -706,10 +717,16 @@ impl MachineSvc {
             operations,
             inbox,
             storage,
+            sessions: Arc::default(),
         };
         // A change of a box's folder the last run began and didn't end is asked again.
         svc.recover_box_roots();
         svc
+    }
+
+    /// D784: the session service, which starts a stopped shell again.
+    pub(crate) fn use_sessions(&self, sessions: crate::session_service::SessionSvc) {
+        let _ = self.sessions.set(sessions);
     }
 
     /// The machines an agent's channel lists (TP-1), when its rules let it
@@ -816,6 +833,24 @@ impl MachineSvc {
             Some(name) if name != self.guard.machine() => Ok(Some(name.to_owned())),
             _ => Ok(None),
         }
+    }
+
+    /// D784: Stop, End and Adopt of a running holder end or take over a
+    /// terminal, so an agent may make them only under the machine-destroy
+    /// switch (Never by default), as it may remove a machine; the user
+    /// always may, and a script or peer never. Returns the other machine
+    /// the call names, as [`MachineSvc::storage_call`] does.
+    fn destroy_call(&self, caller: &Caller, machine: Option<&pb::MachineId>) -> Result<Option<String>, Status> {
+        if let Caller::Agent(_) = caller {
+            let named = machine
+                .map(|id| id.value.as_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| self.guard.machine())
+                .to_owned();
+            self.require(caller, &named, MachineActionKind::Delete)?;
+            return Ok(Some(named).filter(|name| name != self.guard.machine()));
+        }
+        self.storage_call(caller, machine)
     }
 
     /// The machine service on `machine`'s live link: a machine the host
@@ -1687,6 +1722,8 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         // An add of the name until the removal ends is told it is being
         // removed, not that the name is taken (D760).
         self.work.machines.removing(&name);
+        // While its link is still up, so the machine itself ends them (D784).
+        self.work.end_removed_sessions(&name).await;
         self.work.link_down(&name);
         self.work.forget_peer(&name);
         self.work.forget_journal(&name).await;
@@ -1824,6 +1861,140 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         }
         let report = self.storage_blocking(|storage| storage.report(Vec::new())).await?;
         Ok(Response::new(report))
+    }
+
+    async fn list_running_holders(
+        &self,
+        request: Request<pb::ListRunningHoldersRequest>,
+    ) -> Result<Response<pb::ListRunningHoldersResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        if let Some(machine) = self.storage_call(&caller, request.get_ref().machine.as_ref())? {
+            // D784: a box lists its own holders; each is named by the id the
+            // caller used.
+            let mut client = self.storage_client(&machine)?;
+            let mut listed = client
+                .list_running_holders(Request::new(pb::ListRunningHoldersRequest { machine: None }))
+                .await?
+                .into_inner();
+            for holder in &mut listed.holders {
+                holder.machine = Some(machine_id(&machine));
+            }
+            return Ok(Response::new(listed));
+        }
+        let here = self.guard.machine().to_owned();
+        let holders = crate::running_holders::list(self.storage.store(), &self.storage.holders(), &here)
+            .await
+            .map_err(|error| error.into_status(&here))?;
+        Ok(Response::new(pb::ListRunningHoldersResponse { holders }))
+    }
+
+    async fn stop_running_holder(
+        &self,
+        request: Request<pb::StopRunningHolderRequest>,
+    ) -> Result<Response<pb::StopRunningHolderResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let remote = self.destroy_call(&caller, request.get_ref().machine.as_ref())?;
+        let tab = running_tab(request.get_ref().tab.as_ref())?;
+        if let Some(machine) = remote {
+            let mut client = self.storage_client(&machine)?;
+            let tab = Some(pb::TabId { value: tab });
+            return client
+                .stop_running_holder(Request::new(pb::StopRunningHolderRequest { machine: None, tab }))
+                .await;
+        }
+        let here = self.guard.machine().to_owned();
+        crate::running_holders::stop(self.storage.store(), &tab)
+            .await
+            .map_err(|error| error.into_status(&here))?;
+        Ok(Response::new(pb::StopRunningHolderResponse {}))
+    }
+
+    async fn resume_running_holder(
+        &self,
+        request: Request<pb::ResumeRunningHolderRequest>,
+    ) -> Result<Response<pb::ResumeRunningHolderResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let remote = self.storage_call(&caller, request.get_ref().machine.as_ref())?;
+        let tab = running_tab(request.get_ref().tab.as_ref())?;
+        if let Some(machine) = remote {
+            let mut client = self.storage_client(&machine)?;
+            let tab = Some(pb::TabId { value: tab });
+            return client
+                .resume_running_holder(Request::new(pb::ResumeRunningHolderRequest { machine: None, tab }))
+                .await;
+        }
+        let here = self.guard.machine().to_owned();
+        let Some(sessions) = self.sessions.get() else {
+            return Err(status::internal(
+                "this daemon started without its session service, so it can't start a shell again; restart the daemon".to_owned(),
+                "",
+            ));
+        };
+        crate::running_holders::resume(self.storage.store(), sessions, &caller, &tab)
+            .await
+            .map_err(|error| error.into_status(&here))?;
+        Ok(Response::new(pb::ResumeRunningHolderResponse {}))
+    }
+
+    async fn end_running_holder(
+        &self,
+        request: Request<pb::EndRunningHolderRequest>,
+    ) -> Result<Response<pb::EndRunningHolderResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let remote = self.destroy_call(&caller, request.get_ref().machine.as_ref())?;
+        let tab = running_tab(request.get_ref().tab.as_ref())?;
+        if let Some(machine) = remote {
+            let mut client = self.storage_client(&machine)?;
+            let tab = Some(pb::TabId { value: tab });
+            return client
+                .end_running_holder(Request::new(pb::EndRunningHolderRequest { machine: None, tab }))
+                .await;
+        }
+        let here = self.guard.machine().to_owned();
+        crate::running_holders::end(self.storage.store(), &tab)
+            .await
+            .map_err(|error| error.into_status(&here))?;
+        Ok(Response::new(pb::EndRunningHolderResponse {}))
+    }
+
+    async fn adopt_running_holder(
+        &self,
+        request: Request<pb::AdoptRunningHolderRequest>,
+    ) -> Result<Response<pb::AdoptRunningHolderResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        let remote = self.destroy_call(&caller, request.get_ref().machine.as_ref())?;
+        let tab = running_tab(request.get_ref().tab.as_ref())?;
+        let channel = request.get_ref().channel.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+        if let Some(machine) = remote {
+            let mut client = self.storage_client(&machine)?;
+            let tab = Some(pb::TabId { value: tab });
+            let channel = Some(pb::ChannelId { value: channel }).filter(|id| !id.value.is_empty());
+            return client
+                .adopt_running_holder(Request::new(pb::AdoptRunningHolderRequest { machine: None, tab, channel }))
+                .await;
+        }
+        let here = self.guard.machine().to_owned();
+        let builtin = humata2_sessions::Agents::builtin();
+        let sessions = self.sessions.get();
+        let (agents, home) = sessions.map_or((&builtin, std::path::Path::new("")), |sessions| sessions.agents_and_home());
+        let session = crate::running_holders::adopt(
+            self.storage.store(),
+            &self.storage.holders(),
+            agents,
+            home,
+            &tab,
+            &channel,
+            // The host knows every channel.
+            true,
+        )
+        .await
+        .map_err(|error| error.into_status(&here))?;
+        if let Some(sessions) = sessions {
+            sessions.adopted(&session).await;
+        }
+        Ok(Response::new(pb::AdoptRunningHolderResponse {
+            session: Some(pb::SessionId { value: session }),
+        }))
     }
 
     async fn clear_build_cache(
@@ -2054,4 +2225,11 @@ impl pb::machine_service_server::MachineService for MachineSvc {
     ) -> Result<Response<pb::ListMachineScriptRunsResponse>, Status> {
         self.rpc_list_machine_script_runs(request).await
     }
+}
+
+/// The tab a D784 call names, which it must.
+fn running_tab(tab: Option<&pb::TabId>) -> Result<String, Status> {
+    tab.map(|tab| tab.value.clone())
+        .filter(|tab| !tab.is_empty())
+        .ok_or_else(|| status::missing("tab"))
 }

@@ -9,6 +9,7 @@
 //! line doesn't copy the workspace.
 
 pub mod editor;
+mod close;
 mod continue_in;
 mod conversation;
 mod document;
@@ -17,6 +18,7 @@ mod menu;
 mod message;
 mod tabs;
 pub use menu::{MenuItem, RenameDraft};
+pub use close::{CloseAction, CloseChoice, CloseConfirm, CloseKey, CloseKind, CloseNotice, CloseThen};
 pub use continue_in::ContinueDraft;
 pub use conversation::{Conversation, ConversationRead, ConversationTarget};
 pub use document::{DocumentEntry, DocumentMode, DocumentView, is_markdown};
@@ -174,6 +176,11 @@ pub struct ArchiveConfirm {
     pub plan: ArchivePlan,
     /// The archive is on its way to the daemon.
     pub sending: bool,
+    /// The agent it ends, as the close dialog names it: "Claude Code",
+    /// "Copilot", "Shell" (D784).
+    pub agent: String,
+    /// The machine it runs on, "This Mac" for this one (D784).
+    pub machine: String,
 }
 
 /// Why the daemon refused a session action, in a form the page can act on
@@ -281,6 +288,14 @@ pub struct SessionState {
     /// What the daemon last refused the open session until a migration is
     /// done; the page draws a Migrate-first notice from it.
     pub refused: Option<SessionRefused>,
+    /// The close dialog of a terminal tab, if open (D784).
+    pub closing: Option<CloseConfirm>,
+    /// "Always keep running without asking": closing a terminal tab hides
+    /// it without the dialog (D784).
+    pub always_keep_running: bool,
+    /// The session the close dialog's End for good is archiving, so its
+    /// toast's Undo restores it as Stopped (D784).
+    pub ending_for_good: Option<SessionId>,
 }
 
 impl SessionState {
@@ -345,6 +360,12 @@ pub enum Delegate {
     Archived(SessionId, String, Option<String>),
     /// The open session was archived: leave its page.
     Left,
+    /// Show this toast from the close dialog (D784); its button sends
+    /// [`SessionAction::Close`] with [`CloseAction::Then`].
+    CloseNotice(CloseNotice),
+    /// End for good archived this session: like [`Delegate::Archived`], but
+    /// the toast says so and its Undo is [`CloseThen::RestoreStopped`].
+    EndedForGood(SessionId, String),
 }
 
 /// What happens on a session's page.
@@ -429,6 +450,8 @@ pub enum SessionAction {
     OpenView(String),
     /// Close a tab; its process keeps running.
     CloseTab { group: usize, index: usize },
+    /// The close dialog of a terminal tab (D784).
+    Close(CloseAction),
     /// Move a tab into the other group: with one group it makes the second,
     /// beside the first; from the second it joins the first. The moved tab
     /// is selected and its group focused. A lone tab in the only group stays.
@@ -870,6 +893,7 @@ impl Reducer for Sessions {
             | SessionAction::CancelContinue
             | SessionAction::Continued(_)) => return self.continue_in(state, action),
             SessionAction::History(action) => return self.history(state, action),
+            SessionAction::Close(action) => return self.close(state, action),
             SessionAction::Show(workspace) => {
                 state.workspace = workspace;
                 let waiting: Vec<_> = state
@@ -1672,15 +1696,21 @@ impl Reducer for Sessions {
                     return self.archive(session, title, false);
                 }
                 Ok(plan) => {
+                    let (agent, machine) = close::agent_and_machine(state, &session);
                     state.archiving = Some(ArchiveConfirm {
                         session,
                         title,
                         plan,
                         sending: false,
+                        agent,
+                        machine,
                     });
                     state.error = None;
                 }
-                Err(error) => state.error = Some(error.to_string()),
+                Err(error) => {
+                    state.ending_for_good = None;
+                    state.error = Some(error.to_string());
+                }
             },
             SessionAction::ConfirmArchive(push_first) => {
                 let Some(confirm) = &mut state.archiving else {
@@ -1697,6 +1727,7 @@ impl Reducer for Sessions {
             SessionAction::CancelArchive => {
                 if state.archiving.as_ref().is_some_and(|confirm| !confirm.sending) {
                     state.archiving = None;
+                    state.ending_for_good = None;
                 }
             }
             SessionAction::Archived {
@@ -1706,6 +1737,14 @@ impl Reducer for Sessions {
             } => match result {
                 Ok(archive) => {
                     state.archiving = None;
+                    if state.ending_for_good.as_ref() == Some(&session) {
+                        state.ending_for_good = None;
+                        let text = close::ended_text(&title, &close::machine_of(state, &session));
+                        if state.open.as_ref() == Some(&session) {
+                            state.open = None;
+                        }
+                        return Effect::send(SessionAction::Delegate(Delegate::EndedForGood(session, text)));
+                    }
                     if state.open.as_ref() == Some(&session) {
                         state.open = None;
                     }
@@ -1718,6 +1757,8 @@ impl Reducer for Sessions {
                 Err(error) => {
                     if let Some(confirm) = &mut state.archiving {
                         confirm.sending = false;
+                    } else {
+                        state.ending_for_good = None;
                     }
                     state.error = Some(error.to_string());
                 }

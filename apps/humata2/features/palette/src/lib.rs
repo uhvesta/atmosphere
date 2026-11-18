@@ -104,6 +104,13 @@ pub enum Command {
     Channel(ChannelId),
     /// Open a session.
     Session(SessionId),
+    /// Open one of a session's terminal tabs, hidden or not (D784).
+    Terminal {
+        /// The session it belongs to.
+        session: SessionId,
+        /// Its terminal tab: 0 is the agent's, then its shells.
+        tab: usize,
+    },
     /// Open a pull request by number.
     Pull(u32),
     /// Open a repository path in its session's own clone.
@@ -322,7 +329,7 @@ impl Reducer for Palette {
             PaletteAction::Show(workspace) => {
                 state.workspace = workspace;
                 if state.open {
-                    state.refresh();
+                    state.refresh_keeping_cursor();
                 }
             }
             PaletteAction::Restore(recent) => state.recent = recent,
@@ -462,6 +469,29 @@ impl PaletteState {
         ])
     }
 
+    /// Lists the entries again for a changed workspace, with the cursor
+    /// still on the row it was on: a session that changes state while the
+    /// palette is open doesn't send the person back to the top. A row that
+    /// is gone puts the cursor on the first.
+    fn refresh_keeping_cursor(&mut self) {
+        let before = self.entries.clone();
+        let cursor = self.cursor;
+        self.refresh();
+        self.cursor = match before.get(cursor) {
+            Some(entry) => self
+                .entries
+                .iter()
+                .position(|found| found.command == entry.command)
+                .unwrap_or(0),
+            // A hit row: the hits follow the entries, so it moves with them.
+            None => cursor
+                .checked_sub(before.len())
+                .map(|hit| self.entries.len() + hit)
+                .filter(|&row| row < self.rows())
+                .unwrap_or(0),
+        };
+    }
+
     fn refresh(&mut self) {
         let query = self.query.trim();
         let asking = self
@@ -591,7 +621,9 @@ impl PaletteState {
             ));
         }
         for entry in self.all() {
-            let search = if matches!(entry.command, Command::Session(_)) {
+            // A terminal is searched on its title and machine (its hint),
+            // never its session's status word.
+            let search = if matches!(entry.command, Command::Session(_) | Command::Terminal { .. }) {
                 format!("{} {}", entry.title, entry.hint)
             } else {
                 entry.title.clone()
@@ -611,7 +643,9 @@ impl PaletteState {
                     .position(|command| command == &entry.command)
                     .map_or(0, |at| 1_000 - i64::try_from(at).unwrap_or(0));
                 let direct = fuzzy(query, &entry.title).is_some();
-                scored.push((score + recent + if direct { 10_000 } else { 0 }, entry));
+                // A session's terminals sit just below the session (D784).
+                let terminal = if matches!(entry.command, Command::Terminal { .. }) { 100 } else { 0 };
+                scored.push((score + recent + if direct { 10_000 } else { 0 } - terminal, entry));
             }
         }
         scored
@@ -625,7 +659,7 @@ impl PaletteState {
         match entry.command {
             Command::ReviewPull(_) | Command::Pull(_) => Group::Pull,
             Command::MoveTo { .. } => Group::Machines,
-            Command::Session(_) => Group::Sessions,
+            Command::Session(_) | Command::Terminal { .. } => Group::Sessions,
             Command::File { .. } => Group::Files,
             Command::Channel(_) => Group::Channels,
             _ if self.promoted(entry) => Group::ThisSession,
@@ -909,6 +943,31 @@ impl PaletteState {
                         |parent| format!("fork of {}", parent.title),
                     ),
             });
+        }
+        // D784: every terminal tab of a session, hidden or not, so a tab
+        // closed with Keep running is found again.
+        for session in self.workspace.sessions.iter().filter(|session| !session.archived) {
+            let machine = self
+                .workspace
+                .machines
+                .iter()
+                .find(|machine| machine.id == session.machine)
+                .map_or_else(|| humata2_clients::machine_names::name_of(&session.machine), |machine| machine.name.clone());
+            for (at, shell) in session.shells.iter().enumerate() {
+                let tab = at + 1;
+                let program = session
+                    .terminal_agents
+                    .get(&tab)
+                    .map_or_else(|| shell.clone(), |agent| agent.name().to_owned());
+                entries.push(Entry {
+                    command: Command::Terminal {
+                        session: session.id.clone(),
+                        tab,
+                    },
+                    title: format!("{program} in {}", session.title),
+                    hint: machine.clone(),
+                });
+            }
         }
         for (session, files) in &self.workspace.session_files {
             if self.context.as_ref().is_some_and(|id| id != session) {

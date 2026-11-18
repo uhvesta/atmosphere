@@ -25,7 +25,8 @@ impl Overlays {
         sync(&self.query, &palette.query, window, cx);
         let mac = cx.platform_info().is_mac();
         let group = |command: &Command| match command {
-            Command::Session(_) => 0,
+            // D784: a session's terminals, hidden ones too, sit with its sessions.
+            Command::Session(_) | Command::Terminal { .. } => 0,
             Command::File { .. } => 1,
             Command::Channel(_) => 2,
             _ => 3,
@@ -83,6 +84,7 @@ impl Overlays {
                             IconName::SquareTerminal
                         }
                     }
+                    Command::Terminal { .. } => IconName::SquareTerminal,
                     Command::File { .. } => IconName::FileCode,
                     Command::Channel(_) => IconName::FolderGit2,
                     Command::Fork => IconName::GitFork,

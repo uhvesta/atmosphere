@@ -374,6 +374,9 @@ RIG_TESTS.append("agent_send_machine")
 # FK-9: a context-only fork on a box given its own copy through the host.
 RIG_TESTS.append("own_copy_remote")
 
+# D784: the host lists, stops, resumes and ends a box's holders there.
+RIG_TESTS.append("running_holders_remote")
+
 # Single power cuts picked from the suites below, one test each: the quick
 # check to queue while working on recovery.
 RIG_TESTS.append("power_cut_focus")

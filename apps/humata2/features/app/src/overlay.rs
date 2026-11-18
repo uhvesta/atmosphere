@@ -120,6 +120,28 @@ impl App {
                 AppAction::MachinePage(humata2_hosts::MachinePageAction::DismissConfirm),
             );
         }
+        if state.session.closing.is_some() {
+            return self.child(
+                state,
+                AppAction::Session(SessionAction::Close(humata2_session::CloseAction::Cancel)),
+            );
+        }
+        if state.machine_page.running.confirm_end.is_some() {
+            return self.child(
+                state,
+                AppAction::MachinePage(humata2_hosts::MachinePageAction::Running(
+                    humata2_hosts::RunningAction::CancelEnd,
+                )),
+            );
+        }
+        if state.machine_page.running.adopting.is_some() {
+            return self.child(
+                state,
+                AppAction::MachinePage(humata2_hosts::MachinePageAction::Running(
+                    humata2_hosts::RunningAction::CancelAdopt,
+                )),
+            );
+        }
         if state.machine_page.menu_open {
             return self.child(
                 state,

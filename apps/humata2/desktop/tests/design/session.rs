@@ -116,7 +116,7 @@ fn header(look: Look, screen: Screen) -> Div {
         .child(icon(IconName::Ellipsis, look.secondary))
 }
 
-pub fn tab(look: Look, lead: Option<AnyElement>, text: &'static str, on: bool, closable: bool) -> Div {
+pub fn tab(look: Look, lead: Option<AnyElement>, text: &'static str, on: bool) -> Div {
     div()
         .flex()
         .items_center()
@@ -130,7 +130,7 @@ pub fn tab(look: Look, lead: Option<AnyElement>, text: &'static str, on: bool, c
         .when(!on, |tab| tab.text_color(c(look.secondary)))
         .children(lead)
         .child(text)
-        .when(closable, |tab| tab.child(small_icon(IconName::X, look.tertiary)))
+        .child(small_icon(IconName::X, look.tertiary))
 }
 
 fn tabs(look: Look, screen: Screen) -> Div {
@@ -148,9 +148,9 @@ fn tabs(look: Look, screen: Screen) -> Div {
         .bg(c(look.panel))
         .border_b_1()
         .border_color(c(look.line))
-        .child(tab(look, Some(status(dot).into_any_element()), "claude", true, false))
-        .child(tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false, false))
-        .child(tab(look, Some(small_icon(IconName::FileCode, look.secondary).into_any_element()), "client.rs", false, true))
+        .child(tab(look, Some(status(dot).into_any_element()), "claude", true))
+        .child(tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false))
+        .child(tab(look, Some(small_icon(IconName::FileCode, look.secondary).into_any_element()), "client.rs", false))
         .child(div().px(px(10.)).child(small_icon(IconName::Plus, look.secondary)))
         .child(div().flex_1())
         .when(screen.term == Term::Offline, |bar| {
@@ -1102,8 +1102,8 @@ fn group_tabs(look: Look, state: St, agent: &'static str, extra: Option<&'static
         .bg(c(look.panel))
         .border_b_1()
         .border_color(c(look.line))
-        .child(tab(look, Some(status(state).into_any_element()), agent, true, false).when(!focused, |tab| tab.text_color(c(look.secondary))))
-        .children(extra.map(|name| tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), name, false, false)))
+        .child(tab(look, Some(status(state).into_any_element()), agent, true).when(!focused, |tab| tab.text_color(c(look.secondary))))
+        .children(extra.map(|name| tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), name, false)))
         .child(div().px(px(10.)).child(small_icon(IconName::Plus, look.secondary)))
         .child(div().flex_1())
         .child(div().mr(px(10.)).child(small_icon(IconName::X, look.tertiary)))

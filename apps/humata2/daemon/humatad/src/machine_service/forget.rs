@@ -39,12 +39,19 @@ pub(crate) trait Forgetting: Send + Sync + 'static {
 
     /// Archives those sessions as lost with their machine, takes `machine`
     /// out of every channel and lets go of what the host kept of its
-    /// reports. The sessions archived.
-    async fn archive_lost(&self, machine: &str) -> Result<Vec<pb::SessionId>, Status>;
+    /// reports, withdrawing each session's pending requests for `reason`.
+    /// The sessions archived.
+    async fn archive_lost(&self, machine: &str, reason: pb::WithdrawReason) -> Result<Vec<pb::SessionId>, Status>;
 
     /// Takes `machine` out of every channel that has it, and nothing else:
     /// what Remove machine does to the channels (D760).
     async fn take_out_of_channels(&self, machine: &str) -> Result<(), Status>;
+
+    /// Ends each session recorded on `machine` and not yet archived through
+    /// the machine's own session end, while its link is still up: what
+    /// Remove machine does to them (D784). One the machine doesn't end is
+    /// logged and left; nothing here fails the removal.
+    async fn end_sessions_on(&self, machine: &str);
 }
 
 /// The forget plans handed out, the answers already given and the sessions'
@@ -303,6 +310,47 @@ impl Work {
         self.forgetting.hook()?.take_out_of_channels(machine).await
     }
 
+    /// `machine` is being removed and still answers: its sessions end there
+    /// (D784). Remove machine only; Forget machine ends nothing, as that
+    /// machine doesn't answer and its sessions keep running there.
+    pub(super) async fn end_removed_sessions(&self, machine: &str) {
+        match self.forgetting.hook() {
+            Ok(hook) => hook.end_sessions_on(machine).await,
+            Err(error) => crate::log::say!(
+                "humatad2: {machine} is being removed, but its sessions couldn't be ended there: {}. They may still run on {machine}; stop them there before you reuse that machine",
+                error.message()
+            ),
+        }
+    }
+
+    /// `machine`'s removal is done: its sessions are archived as lost with
+    /// it, and every request it raised is withdrawn as its machine removed,
+    /// so a machine added later under the name shows none of them (D783).
+    /// The host's id for a machine is still its name (D61, D776), so what is
+    /// left keyed by it would attach to the next machine of that name.
+    pub(super) async fn archive_removed(&self, machine: &str) -> Result<(), Status> {
+        let archived = self
+            .forgetting
+            .hook()?
+            .archive_lost(machine, pb::WithdrawReason::MachineRemoved)
+            .await;
+        archived.map(drop).and(self.withdraw_removed(machine).await)
+    }
+
+    /// What `machine` raised beyond its sessions' requests is withdrawn as
+    /// its machine removed: those of sessions the host never recorded, any
+    /// its journal brought for no session, and its Migrate items (D783).
+    /// Removing and forgetting a machine both do it.
+    async fn withdraw_removed(&self, machine: &str) -> Result<(), Status> {
+        if let Some(upgrade) = self.upgrade.get() {
+            upgrade.removed(machine).await;
+        }
+        match self.inbox.get() {
+            Some(inbox) => inbox.withdraw_pending_from(machine, pb::WithdrawReason::MachineRemoved).await,
+            None => Ok(()),
+        }
+    }
+
     /// The steps of a forget once its plan is spent and it is kept: archive
     /// the machine's sessions, take it out of the host's list and let go of
     /// its link, then keep the answer. Every step can run again, so a
@@ -317,7 +365,11 @@ impl Work {
     ) -> Result<Vec<pb::SessionId>, Status> {
         let forgetting = &self.forgetting;
         let _one_at_a_time = forgetting.finishing.lock().await;
-        let mut archived = forgetting.hook()?.archive_lost(name).await?;
+        let mut archived = forgetting
+            .hook()?
+            .archive_lost(name, pb::WithdrawReason::SessionArchived)
+            .await?;
+        self.withdraw_removed(name).await?;
         // What an earlier, cut short run archived is no longer listed by the
         // sessions' side; the answer is the same as the first call's.
         for value in planned.into_iter().rev() {

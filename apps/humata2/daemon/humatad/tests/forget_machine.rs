@@ -12,9 +12,13 @@ mod remote_rig;
 
 use common::{error_of, git, shell_token};
 use humata2_grpc::humata::v1 as pb;
-use remote_rig::{Rig, is_live};
+use humata2_store::AgentState;
+use remote_rig::{LONG, Rig, is_live};
 use tonic::Code;
+use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
+use tonic::{Request, Status, Streaming};
+use tokio_stream::wrappers::ReceiverStream;
 
 const REPO: (&str, &str) = ("acme", "api");
 
@@ -296,4 +300,301 @@ async fn a_forget_cut_at_any_point_is_finished_at_the_next_start() {
         let again = machines(&rig).await.forget_machine(forget(&plan, "forget-cut")).await.expect("the key answers").into_inner();
         assert_eq!(again.archived, [on_box.clone()], "cut at {point}");
     }
+}
+
+/// Copilot's permissionRequest payload (agent_hooks/testdata/copilot).
+const COPILOT_SHELL: &str = r#"{"sessionId":"c0p1","timestamp":1763251200000,"cwd":"/work/api","hook_event_name":"permissionRequest","toolName":"bash","toolInput":{"command":"rm -rf build","description":"Clean the build folder"}}"#;
+
+/// A user message in Claude's JSONL, which the host's mirror keeps as a turn.
+const SAID: &str = r#"{"type":"user","message":{"content":"before the removal"}}"#;
+
+/// The machine removed from Hosts, planned and confirmed as the app does.
+async fn remove(rig: &Rig, id: &pb::MachineId) {
+    let plan = machines(rig)
+        .await
+        .plan_remove_machine(pb::PlanRemoveMachineRequest { id: Some(id.clone()) })
+        .await
+        .expect("the removal is planned")
+        .into_inner();
+    let started = machines(rig)
+        .await
+        .remove_machine(pb::RemoveMachineRequest { id: Some(id.clone()), plan: plan.token, ..Default::default() })
+        .await
+        .expect("the removal starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+}
+
+/// `line` typed into the session's agent through the host, once the agent
+/// echoes it.
+async fn say(rig: &Rig, id: &pb::SessionId, line: &str) {
+    let tab = common::agent_tab(&rig.host, id).await;
+    let open = pb::AttachOpen { session: Some(id.clone()), ..common::open(&tab, 0) };
+    let mut agent = common::Attach::start(&rig.host, open).await;
+    agent.wait_for("agent up").await;
+    agent.type_text(&format!("{line}\n")).await;
+    agent.wait_for(&format!("got: {line}")).await;
+}
+
+/// The texts of every entry the host's mirror holds for `id`.
+async fn mirror_texts(rig: &Rig, id: &pb::SessionId) -> Vec<String> {
+    let mut history = pb::history_service_client::HistoryServiceClient::new(rig.channel().await);
+    let mut request = pb::ReadTurnsRequest { session: Some(id.clone()), ..Default::default() };
+    let mut texts = Vec::new();
+    loop {
+        let response = history.read_turns(request.clone()).await.expect("the mirror reads").into_inner();
+        texts.extend(response.entries.into_iter().map(|entry| entry.text));
+        let next = response.page.map(|page| page.next_page_token).unwrap_or_default();
+        if next.is_empty() {
+            return texts;
+        }
+        request.page = Some(pb::PageRequest { page_size: 0, page_token: next });
+    }
+}
+
+/// Waits until the host's mirror of `id` holds `text`. The mirror follows
+/// the machine on its own and tells no feed, so this asks again until it
+/// does, within the rig's long wait.
+async fn mirrored(rig: &Rig, id: &pb::SessionId, text: &str) {
+    let deadline = std::time::Instant::now() + LONG;
+    while !mirror_texts(rig, id).await.iter().any(|entry| entry.contains(text)) {
+        assert!(std::time::Instant::now() < deadline, "the host's mirror never held {text:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// `id` archived as the app archives a session that is done with.
+async fn archive(rig: &Rig, id: &pb::SessionId) {
+    let mut sessions = pb::session_service_client::SessionServiceClient::new(rig.channel().await);
+    let plan = sessions
+        .plan_archive(pb::PlanArchiveRequest { id: Some(id.clone()) })
+        .await
+        .expect("the archive is planned")
+        .into_inner();
+    let started = sessions
+        .archive_session(pb::ArchiveSessionRequest {
+            idempotency_key: None,
+            id: Some(id.clone()),
+            choice: pb::ArchiveChoice::Archive as i32,
+            plan: plan.token,
+        })
+        .await
+        .expect("the archive starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+}
+
+/// Types a line into `id` through the host, as `humata type` does.
+async fn type_into(rig: &Rig, id: &pb::SessionId, key: &str) -> Result<pb::TypeResponse, Status> {
+    rig.host
+        .terminals()
+        .await
+        .r#type(pb::TypeRequest {
+            idempotency_key: Some(pb::IdempotencyKey { value: key.to_owned() }),
+            session: Some(id.clone()),
+            text: "hello\n".to_owned(),
+            when: pb::type_request::When::Now as i32,
+            ..Default::default()
+        })
+        .await
+        .map(tonic::Response::into_inner)
+}
+
+/// What the host answers an attach (read only, as a viewer opens one) of
+/// `id`'s tab `tab`, which it is expected to refuse.
+async fn attach_refused(rig: &Rig, id: &pb::SessionId, tab: &pb::TabId) -> Status {
+    let (to, outgoing) = tokio::sync::mpsc::channel(1);
+    let open = pb::AttachOpen { session: Some(id.clone()), read_only: true, ..common::open(tab, 0) };
+    to.send(pb::AttachClientMessage { message: Some(pb::attach_client_message::Message::Open(open)) })
+        .await
+        .unwrap();
+    let answered = rig.host.terminals().await.attach(ReceiverStream::new(outgoing)).await;
+    let refused = match answered {
+        Err(status) => status,
+        Ok(response) => match tokio::time::timeout(LONG, response.into_inner().message()).await {
+            Ok(Err(status)) => status,
+            other => panic!("the attach of session {} was let through: {other:?}", id.value),
+        },
+    };
+    drop(to);
+    refused
+}
+
+/// The session's agent's permission hook, held on box-1's own daemon: its
+/// card waits in the host's Inbox.
+async fn hold_hook(rig: &Rig, token: &str) -> Streaming<pb::HookReply> {
+    let mut request = Request::new(pb::HookRequest {
+        agent: "copilot".to_owned(),
+        event: "permission".to_owned(),
+        payload: COPILOT_SHELL.as_bytes().to_vec(),
+    });
+    request
+        .metadata_mut()
+        .insert("humata-session-token", MetadataValue::try_from(token).expect("a token is ASCII"));
+    pb::session_service_client::SessionServiceClient::new(rig.the("box-1").daemon().channel().await)
+        .hook(request)
+        .await
+        .expect("box-1 opens the Hook stream")
+        .into_inner()
+}
+
+/// The host's pending Inbox card of `session`, once it shows. Read again
+/// each time the host's Inbox feed tells of a change.
+async fn pending_card(rig: &Rig, session: &pb::SessionId) -> pb::InboxRequest {
+    let mut feed = pb::event_service_client::EventServiceClient::new(rig.channel().await)
+        .subscribe(pb::SubscribeRequest { topics: vec![pb::Topic::Inbox as i32], ..Default::default() })
+        .await
+        .expect("the host's Inbox feed opens")
+        .into_inner();
+    let deadline = tokio::time::Instant::now() + LONG;
+    loop {
+        let now = rig
+            .host
+            .inbox_service()
+            .await
+            .list_requests(pb::ListRequestsRequest::default())
+            .await
+            .expect("the host lists its Inbox")
+            .into_inner()
+            .requests;
+        let card = now.iter().find(|request| {
+            request.state() == pb::RequestState::Pending
+                && request.requester.as_ref().and_then(|agent| agent.session.as_ref()) == Some(session)
+        });
+        if let Some(card) = card {
+            return card.clone();
+        }
+        match tokio::time::timeout_at(deadline, feed.message()).await {
+            Ok(Ok(Some(_))) => {}
+            Ok(ended) => panic!("the host's Inbox feed ended ({ended:?}) before box-1's card showed; it held {now:?}"),
+            Err(_) => panic!("box-1's card never showed within {LONG:?}; the host's Inbox held {now:?}"),
+        }
+    }
+}
+
+/// D783: box-1 is removed with a live session holding a waiting card and
+/// a session archived before, and the same ssh alias, now a fresh machine,
+/// is added again as box-1. Neither old session is shown live or idle on
+/// the new machine; typing into either, attaching to the live one and
+/// restoring the archived one are refused as their machine gone rather
+/// than sent to the new machine; the card was
+/// withdrawn as its machine removed; and the history still reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_added_again_under_a_removed_ones_name_takes_on_none_of_its_sessions_or_requests() {
+    let mut rig = Rig::start_seen(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host, one.clone()]).await;
+    let earlier = rig.start_on(&channel, &one, "Archived first").await;
+    rig.wait_session(&earlier, "live", is_live).await;
+    archive(&rig, &earlier).await;
+    let old = rig.start_on(&channel, &one, "Old work").await;
+    rig.wait_session(&old, "live", is_live).await;
+    say(&rig, &old, SAID).await;
+    mirrored(&rig, &old, "before the removal").await;
+    let tab = common::agent_tab(&rig.host, &old).await;
+    let token = rig.agent_token("box-1", &old).await;
+    let _hook = hold_hook(&rig, &token).await;
+    let card = pending_card(&rig, &old).await;
+
+    remove(&rig, &one).await;
+    rig.replace_box("box-1").await;
+
+    for id in [&old, &earlier] {
+        let shown = rig.session(id).await;
+        assert!(!is_live(&shown), "session {} shows {:?} on the new box-1", id.value, shown.status());
+        assert_eq!(shown.status(), pb::SessionStatus::Archived, "session {}", id.value);
+    }
+    let listed = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .list_sessions(pb::ListSessionsRequest::default())
+        .await
+        .expect("the host lists its sessions")
+        .into_inner()
+        .sessions;
+    assert!(
+        !listed.iter().any(|session| session.id.as_ref().is_some_and(|id| id == &old || id == &earlier)),
+        "an old session is still listed: {listed:?}"
+    );
+
+    for id in [&old, &earlier] {
+        let typed = type_into(&rig, id, &format!("type-{}", id.value))
+            .await
+            .expect_err("nothing is typed into a session whose machine was removed");
+        assert_eq!(typed.code(), Code::FailedPrecondition, "session {}: {typed:?}", id.value);
+        assert!(!error_of(&typed).fix.is_empty(), "the refusal says what to do");
+    }
+    let attached = attach_refused(&rig, &old, &tab).await;
+    assert_eq!(attached.code(), Code::FailedPrecondition, "{attached:?}");
+    let restored = pb::session_service_client::SessionServiceClient::new(rig.channel().await)
+        .restore_session(pb::RestoreSessionRequest {
+            idempotency_key: Some(pb::IdempotencyKey { value: "restore-earlier".to_owned() }),
+            id: Some(earlier.clone()),
+            machine: None,
+            stopped: false,
+        })
+        .await
+        .expect_err("a session whose machine was removed isn't restored on the new one");
+    assert_eq!(restored.code(), Code::FailedPrecondition, "{restored:?}");
+
+    let settled = rig
+        .host
+        .inbox_service()
+        .await
+        .get_request(pb::GetRequestRequest { id: card.id.clone() })
+        .await
+        .expect("the host still knows the card")
+        .into_inner();
+    assert_eq!(settled.state(), pb::RequestState::Withdrawn);
+    assert_eq!(settled.withdraw_reason(), pb::WithdrawReason::MachineRemoved);
+
+    assert!(
+        mirror_texts(&rig, &old).await.iter().any(|entry| entry.contains("before the removal")),
+        "the old session's history no longer reads"
+    );
+}
+
+/// D783: a session started on the machine added again under the name is
+/// that machine's own, and typing into it goes through.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_on_the_machine_added_again_takes_typing() {
+    let mut rig = Rig::start_seen(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host.clone(), one.clone()]).await;
+    let old = rig.start_on(&channel, &one, "Old work").await;
+    rig.wait_session(&old, "live", is_live).await;
+
+    remove(&rig, &one).await;
+    rig.replace_box("box-1").await;
+    let channel = rig.create_channel("Ledger", &[REPO], &[host, one.clone()]).await;
+    let fresh = rig.start_on(&channel, &one, "New work").await;
+    rig.wait_session(&fresh, "live", is_live).await;
+
+    type_into(&rig, &fresh, "type-fresh").await.expect("the new box-1's own session takes typing");
+}
+
+/// D784: removing a machine that answers ends its sessions there through
+/// the machine's own session end, so none is left running on a machine
+/// Humata no longer lists.
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_reachable_machine_ends_its_sessions_there() {
+    let rig = Rig::start_seen(&["box-1"], &[REPO]).await;
+    let (host, one) = (rig.host_id().await, Rig::box_id("box-1"));
+    let channel = rig.create_channel("Payments", &[REPO], &[host, one.clone()]).await;
+    let old = rig.start_on(&channel, &one, "Old work").await;
+    rig.wait_session(&old, "live", is_live).await;
+
+    remove(&rig, &one).await;
+
+    let agent = rig
+        .the("box-1")
+        .store()
+        .agent(&old.value)
+        .expect("box-1's store reads")
+        .expect("box-1 still records the session's agent");
+    assert!(
+        !matches!(agent.state, AgentState::Running { .. } | AgentState::Launching | AgentState::Resuming),
+        "the session still runs on the removed box-1: {:?}",
+        agent.state
+    );
 }

@@ -18,6 +18,9 @@ use crate::machine_service::Forgetting;
 use crate::remote_work::RemoteView;
 use crate::status;
 
+/// How long Remove machine waits for the machine to end each session (D784).
+const END_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// A session on the gone machine and what the host last knew of it.
 struct Gone {
     record: SessionRecord,
@@ -115,6 +118,8 @@ impl Gone {
             repos,
             machine_lost: true,
             lost: vec![self.work()],
+            // D783: never relayed to a machine later added under the name.
+            machine_removed: true,
         }
     }
 }
@@ -196,7 +201,35 @@ impl Forgetting for SessionSvc {
         self.leave_channels(machine).await
     }
 
-    async fn archive_lost(&self, machine: &str) -> Result<Vec<pb::SessionId>, Status> {
+    async fn end_sessions_on(&self, machine: &str) {
+        let Some(remote) = self.remote.clone() else {
+            return;
+        };
+        let gone = match self.gone_on(machine).await {
+            Ok(gone) => gone,
+            Err(error) => {
+                crate::log::say!(
+                    "humatad2: {machine} is being removed, but its sessions couldn't be read to end them there: {}. They may still run on {machine}; stop them there before you reuse that machine",
+                    error.message()
+                );
+                return;
+            }
+        };
+        for session in &gone {
+            let id = &session.record.id;
+            let ended = tokio::time::timeout(END_DEADLINE, remote.stop_session_on(machine, id)).await;
+            let failed = match ended {
+                Ok(Ok(_)) => continue,
+                Ok(Err(error)) => Status::from(error).message().to_owned(),
+                Err(_) => format!("{machine} didn't answer within {} seconds", END_DEADLINE.as_secs()),
+            };
+            crate::log::say!(
+                "humatad2: {machine} is being removed, but session {id} couldn't be ended there: {failed}. It may still run on {machine}; stop it there before you reuse that machine. The removal goes on and archives the session here"
+            );
+        }
+    }
+
+    async fn archive_lost(&self, machine: &str, reason: pb::WithdrawReason) -> Result<Vec<pb::SessionId>, Status> {
         let gone = self.gone_on(machine).await?;
         let archived_at = now_ms();
         // The sessions' clones were on the gone machine, so there is nothing
@@ -217,6 +250,10 @@ impl Forgetting for SessionSvc {
                 .map_err(|error| status::store(error, &self.machine, "save that the session was lost"))?;
             drop(guard);
         }
+        // D783: the sessions archived before are marked too, so none of
+        // them is relayed to a machine later added under the name.
+        let marked = self.mark_machine_removed(machine).await?;
+        self.drop_follow_ups_of(machine).await;
         self.leave_channels(machine).await?;
         let remote = self.remote.clone();
         let mut done = Vec::new();
@@ -226,7 +263,7 @@ impl Forgetting for SessionSvc {
             if let Err(error) = self.end_grants_of(id).await {
                 crate::log::say!("humatad2: ending lost session {id}'s grants: {}", error.message());
             }
-            if let Err(error) = self.withdraw_requests_of(id, pb::WithdrawReason::SessionArchived).await {
+            if let Err(error) = self.withdraw_requests_of(id, reason).await {
                 crate::log::say!("humatad2: withdrawing lost session {id}'s requests: {}", error.message());
             }
             if let Some(remote) = &remote {
@@ -236,6 +273,55 @@ impl Forgetting for SessionSvc {
             publish_family(&self.tell, id, None).await;
             done.push(pb::SessionId { value: id.clone() });
         }
+        // The ones archived before: their archive now says so.
+        for id in &marked {
+            self.tell.session(id, pb::Change::Updated, None).await;
+        }
         Ok(done)
+    }
+}
+
+impl SessionSvc {
+    /// Marks every archived session that ran on `machine` as its machine
+    /// removed (D783), each under its lifecycle lock so an archive step in
+    /// flight isn't overwritten. The sessions marked now; one marked before
+    /// is left as it is.
+    async fn mark_machine_removed(&self, machine: &str) -> Result<Vec<String>, Status> {
+        let (store, name) = (self.starter.store.clone(), machine.to_owned());
+        let ran_there = blocking(move || {
+            store
+                .sessions()
+                .map(|records| records.into_iter().filter(|record| record.machine == name).map(|record| record.id).collect::<Vec<_>>())
+        })
+        .await?
+        .map_err(|error| status::store(error, &self.machine, "read the sessions on the machine"))?;
+        let mut marked = Vec::new();
+        for id in ran_there {
+            let guard = self.lifecycle.lock_of(&id).lock_owned().await;
+            let (store, key) = (self.starter.store.clone(), id.clone());
+            let changed = blocking(move || -> Result<bool, humata2_store::StoreError> {
+                let Some(mut row) = store.archive(&key)? else {
+                    return Ok(false);
+                };
+                // A summary this daemon can't read is left whole rather
+                // than replaced by one that holds the mark alone.
+                let Ok(mut summary) = pb::ArchiveSummary::decode(row.summary.as_slice()) else {
+                    return Ok(false);
+                };
+                if summary.machine_removed {
+                    return Ok(false);
+                }
+                summary.machine_removed = true;
+                row.summary = summary.encode_to_vec();
+                store.put_archive(&row).map(|()| true)
+            })
+            .await?
+            .map_err(|error| status::store(error, &self.machine, "mark the session as its machine removed"))?;
+            drop(guard);
+            if changed {
+                marked.push(id);
+            }
+        }
+        Ok(marked)
     }
 }

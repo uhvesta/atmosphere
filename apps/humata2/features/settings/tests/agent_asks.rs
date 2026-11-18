@@ -1,8 +1,10 @@
-//! Settings › Agents › Ask for permission in the Inbox (D199): opening the
-//! section reads where the daemon sends asks; the switch changes it there,
-//! and a change the daemon refuses goes back and says why.
-use humata2_clients::{Clients, FakeDaemon, Operation, fixture};
-use humata2_settings::{AgentsAction, Row, Section, Settings, SettingsAction as A, SettingsState};
+//! Settings › Agents › Ask in the Inbox (D782): each agent has its own
+//! switch for where its permission and question asks go. Turning one off
+//! changes only that agent in the daemon; a change the daemon refuses goes
+//! back and says why.
+use humata2_clients::model::Agent;
+use humata2_clients::{AgentSwitch, Clients, FakeDaemon, Operation, fixture};
+use humata2_settings::{AgentsAction, Section, Settings, SettingsAction as A, SettingsState};
 use std::sync::Arc;
 use tca::{TestClock, TestStore};
 
@@ -14,88 +16,66 @@ fn setup() -> (TestStore<Settings>, FakeDaemon) {
     (store, fakes.daemon)
 }
 
-#[test]
-fn the_switch_is_one_row_in_the_agents_section() {
-    let rows: Vec<Row> = Row::ALL
-        .into_iter()
-        .filter(|row| *row == Row::AsksInInbox)
-        .collect();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(Row::AsksInInbox.section(), Section::Agents);
-}
-
-#[test]
-fn opening_agents_shows_asks_going_to_the_inbox_by_default() {
-    let (mut store, _) = setup();
+fn loaded(store: &mut TestStore<Settings>) {
     store.send(A::Section(Section::Agents), |s| s.section = Section::Agents);
-    store.receive(A::AsksShown(Ok(true)), |s| s.asks_in_inbox = Some(true));
     store.receive(A::CodexTrustShown(Ok(false)), |_| {});
     store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
         s.agents.switches = Some(all_on());
     });
-    store.finish();
+}
+
+fn asks(store: &TestStore<Settings>, agent: Agent) -> Option<bool> {
+    store
+        .state()
+        .agents
+        .switches
+        .as_ref()?
+        .iter()
+        .find(|switch| switch.agent == Some(agent))
+        .map(|switch| switch.asks_in_inbox)
 }
 
 #[test]
-fn revealing_the_row_reads_the_daemon_too() {
+fn every_agent_asks_in_the_inbox_by_default() {
     let (mut store, _) = setup();
-    store.send(A::Reveal(Row::AsksInInbox), |s| {
-        s.section = Section::Agents;
-        s.revealed = Some(Row::AsksInInbox);
-    });
-    store.receive(A::AsksShown(Ok(true)), |s| s.asks_in_inbox = Some(true));
-    store.receive(A::CodexTrustShown(Ok(false)), |_| {});
-    store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
-        s.agents.switches = Some(all_on());
-    });
+    loaded(&mut store);
+    for agent in [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode] {
+        assert_eq!(asks(&store, agent), Some(true));
+    }
     store.finish();
 }
 
 #[test]
-fn turning_it_off_and_on_changes_it_in_the_daemon() {
-    let (mut store, _) = setup();
-    store.send(A::ToggleAsksInInbox, |s| {
-        s.asks_in_inbox = Some(false);
-        s.asks_saving = true;
-    });
-    store.receive(
-        A::AsksSaved {
-            wanted: false,
-            result: Ok(false),
-        },
-        |s| s.asks_saving = false,
+fn turning_one_agent_off_changes_only_that_agent_in_the_daemon() {
+    let (store, _) = setup();
+    let mut store = store.non_exhaustive();
+    loaded(&mut store);
+    store.send(A::Agents(AgentsAction::ToggleAsks(kind(Agent::Copilot))), |_| {});
+    // The switch shows off at once.
+    assert_eq!(asks(&store, Agent::Copilot), Some(false));
+    store.receive_matching(
+        "saved",
+        |a| matches!(a, A::Agents(AgentsAction::Saved { result: Ok(_), .. })),
+        |_| {},
     );
-    // The daemon keeps it: reading it again shows it off.
-    store.send(A::Section(Section::Agents), |s| s.section = Section::Agents);
-    store.receive(A::AsksShown(Ok(false)), |_| {});
-    store.receive(A::CodexTrustShown(Ok(false)), |_| {});
-    store.receive(A::Agents(AgentsAction::Loaded(Ok(all_on()))), |s| {
-        s.agents.switches = Some(all_on());
-    });
-    store.send(A::ToggleAsksInInbox, |s| {
-        s.asks_in_inbox = Some(true);
-        s.asks_saving = true;
-    });
-    store.receive(
-        A::AsksSaved {
-            wanted: true,
-            result: Ok(true),
-        },
-        |s| s.asks_saving = false,
+    // The daemon kept it, and the other agents still ask in the Inbox.
+    store.send(A::Section(Section::Notifications), |_| {});
+    store.send(A::Section(Section::Agents), |_| {});
+    store.receive_matching(
+        "reloaded",
+        |a| matches!(a, A::Agents(AgentsAction::Loaded(Ok(_)))),
+        |_| {},
     );
-    store.finish();
-}
-
-#[test]
-fn a_second_toggle_while_saving_is_ignored() {
-    let (clients, _) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
-    let state = SettingsState {
-        asks_in_inbox: Some(false),
-        asks_saving: true,
-        ..SettingsState::default()
-    };
-    let mut store = TestStore::new(state, Settings::new(clients));
-    store.send(A::ToggleAsksInInbox, |_| {});
+    assert_eq!(asks(&store, Agent::Copilot), Some(false));
+    assert_eq!(asks(&store, Agent::Claude), Some(true));
+    // Turning it back on asks in the Inbox again.
+    store.send(A::Agents(AgentsAction::ToggleAsks(kind(Agent::Copilot))), |_| {});
+    store.receive_matching(
+        "saved again",
+        |a| matches!(a, A::Agents(AgentsAction::Saved { result: Ok(_), .. })),
+        |_| {},
+    );
+    assert_eq!(asks(&store, Agent::Copilot), Some(true));
     store.finish();
 }
 
@@ -103,31 +83,78 @@ fn a_second_toggle_while_saving_is_ignored() {
 fn a_refused_change_goes_back_and_says_why() {
     let (store, daemon) = setup();
     let mut store = store.non_exhaustive();
-    daemon.fail_next(Operation::SetAsksInInbox, "link unavailable");
-    store.send(A::ToggleAsksInInbox, |s| {
-        s.asks_in_inbox = Some(false);
-        s.asks_saving = true;
-    });
+    loaded(&mut store);
+    daemon.fail_next(Operation::SetAgentSwitch, "link unavailable");
+    store.send(A::Agents(AgentsAction::ToggleAsks(kind(Agent::Claude))), |_| {});
     store.receive_matching(
         "failure",
-        |a| matches!(a, A::AsksSaved { result: Err(_), .. }),
+        |a| matches!(a, A::Agents(AgentsAction::Saved { result: Err(_), .. })),
         |_| {},
     );
-    assert_eq!(store.state().asks_in_inbox, Some(true));
-    assert!(!store.state().asks_saving);
+    assert_eq!(asks(&store, Agent::Claude), Some(true));
     assert!(store.state().error.is_some());
     store.finish();
 }
 
-fn all_on() -> Vec<humata2_clients::AgentSwitch> {
-    use humata2_clients::model::Agent;
+#[test]
+fn a_custom_kind_has_its_own_switch_and_pickers_still_offer_only_built_in_agents() {
+    let (clients, fakes) = Clients::fake(fixture::design(), Arc::new(TestClock::new()));
+    let custom = AgentSwitch {
+        kind: "my-agent".to_owned(),
+        name: "My agent".to_owned(),
+        agent: None,
+        ..all_on()[0].clone()
+    };
+    let mut switches = all_on();
+    switches.push(custom);
+    fakes.daemon.set_agent_switches(switches);
+    let mut store =
+        TestStore::new(SettingsState::default(), Settings::new(clients)).non_exhaustive();
+    store.send(A::Section(Section::Agents), |_| {});
+    store.receive_matching(
+        "loaded",
+        |a| matches!(a, A::Agents(AgentsAction::Loaded(Ok(_)))),
+        |_| {},
+    );
+    store.send(A::Agents(AgentsAction::ToggleAsks("my-agent".to_owned())), |_| {});
+    store.receive_matching(
+        "saved",
+        |a| matches!(a, A::Agents(AgentsAction::Saved { result: Ok(_), .. })),
+        |_| {},
+    );
+    let custom_asks = |store: &TestStore<Settings>| {
+        store
+            .state()
+            .agents
+            .switches
+            .as_ref()
+            .and_then(|all| all.iter().find(|s| s.kind == "my-agent"))
+            .map(|s| s.asks_in_inbox)
+    };
+    assert_eq!(custom_asks(&store), Some(false));
+    assert_eq!(asks(&store, Agent::Claude), Some(true));
+    assert_eq!(
+        store.state().agents.offered(),
+        vec![Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
+    );
+    store.finish();
+}
+
+fn all_on() -> Vec<AgentSwitch> {
     [Agent::Claude, Agent::Codex, Agent::Copilot, Agent::OpenCode]
-        .map(|agent| humata2_clients::AgentSwitch {
-            agent,
+        .map(|agent| AgentSwitch {
+            kind: agent.command().to_owned(),
+            name: agent.name().to_owned(),
+            agent: Some(agent),
             enabled: true,
             install_when_missing: false,
             can_install: true,
             install_command: None,
+            asks_in_inbox: true,
         })
         .to_vec()
+}
+
+fn kind(agent: Agent) -> String {
+    agent.command().to_owned()
 }

@@ -65,7 +65,7 @@ pub fn archive_unpushed(look: Look) -> Div {
             div().absolute().top(px(120.)).left_0().w_full().flex().justify_center().child(
                 dialog(look, 660.)
                     .child(title("Archive “Ledger schema migration”?"))
-                    .child(div().text_color(c(look.secondary)).child("Archiving stops the agent and keeps the conversation, the record, the scrollback and a summary of the diff. It frees about 2.4 GB once the Undo window passes."))
+                    .child(div().text_color(c(look.secondary)).child("Archiving stops Claude Code on devbox-1 and keeps the conversation, the record, the scrollback and a summary of the diff. It frees about 2.4 GB once the Undo window passes."))
                     .child(div().text_color(c(look.text)).child("Its 2 forks keep running; they move up in the tree."))
                     .child(
                         div()
@@ -106,7 +106,7 @@ pub fn archived(look: Look) -> Div {
         .bg(c(look.panel))
         .border_b_1()
         .border_color(c(look.line))
-        .child(session::tab(look, Some(status(St::Idle).into_any_element()), "claude", true, false))
+        .child(session::tab(look, Some(status(St::Idle).into_any_element()), "claude", true))
         .child(div().flex_1());
     let body = div()
         .flex_1()

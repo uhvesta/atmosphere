@@ -38,6 +38,8 @@ fn binary(variable: &str) -> PathBuf {
 struct Agent {
     socket: PathBuf,
     gate: PathBuf,
+    /// The holder's process, ended with the test however it ends.
+    pid: u32,
     _dir: TempDir,
 }
 
@@ -70,10 +72,11 @@ impl Agent {
             scrollback_bytes: 1 << 20,
             log: dir.path().join("holder.log"),
         };
-        spawn(&spec).unwrap();
+        let pid = spawn(&spec).unwrap().pid;
         Self {
             socket: spec.socket,
             gate,
+            pid,
             _dir: dir,
         }
     }
@@ -85,6 +88,25 @@ impl Agent {
             .await
             .unwrap()
             .unwrap();
+    }
+}
+
+impl Drop for Agent {
+    /// A test that fails before its shutdown still ends its holder, and the
+    /// holder ends the stand-in with it. Only while the pid is still this
+    /// test's holder, so a reused pid is left alone.
+    fn drop(&mut self) {
+        let pid = self.pid.to_string();
+        let ours = std::process::Command::new("/bin/ps")
+            .args(["-ww", "-o", "args=", "-p", &pid])
+            .output()
+            .is_ok_and(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .contains(&format!("--socket {} ", self.socket.display()))
+            });
+        if ours {
+            let _ = std::process::Command::new("/bin/kill").args(["-TERM", &pid]).status();
+        }
     }
 }
 

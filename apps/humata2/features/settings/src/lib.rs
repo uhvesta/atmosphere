@@ -135,8 +135,6 @@ pub enum Row {
     ConfirmBulkApprovals,
     /// The agent new sessions start with.
     DefaultAgent,
-    /// Agents ask for permission in the Inbox (D199).
-    AsksInInbox,
     /// Extra app alerts for permission requests.
     PermissionRequestAlerts,
     /// Hidden terminals give their screen memory back.
@@ -147,14 +145,13 @@ pub enum Row {
 
 impl Row {
     /// Every row, in the order the page shows them.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::Appearance,
         Self::TerminalFont,
         Self::SidebarShowsPinned,
         Self::LongLines,
         Self::ConfirmBulkApprovals,
         Self::DefaultAgent,
-        Self::AsksInInbox,
         Self::PermissionRequestAlerts,
         Self::FreeHiddenTerminals,
         Self::OptionAsAlt,
@@ -170,7 +167,7 @@ impl Row {
             Self::LongLines => "Long lines",
             Self::ConfirmBulkApprovals => "Confirm bulk approvals",
             Self::DefaultAgent => "Default agent",
-            Self::AsksInInbox => "Ask for permission in the Inbox",
+
             Self::PermissionRequestAlerts => "Permission request alerts",
             Self::FreeHiddenTerminals => "Free memory of hidden terminals",
             Self::OptionAsAlt => "Option acts as Alt",
@@ -185,7 +182,7 @@ impl Row {
                 Section::Layout
             }
             Self::ConfirmBulkApprovals | Self::FreeHiddenTerminals => Section::General,
-            Self::DefaultAgent | Self::AsksInInbox => Section::Agents,
+            Self::DefaultAgent => Section::Agents,
             Self::PermissionRequestAlerts => Section::Notifications,
             Self::OptionAsAlt => Section::Keyboard,
         }
@@ -215,11 +212,7 @@ pub struct SettingsState {
     pub font_menu: bool,
     /// The row the palette opened the page at.
     pub revealed: Option<Row>,
-    /// Whether agents' permission asks wait in the Inbox (D199); None until
-    /// the daemon says.
-    pub asks_in_inbox: Option<bool>,
-    /// Whether the Inbox setting is being saved.
-    pub asks_saving: bool,
+
     /// Whether Codex's hooks still need trusting in its /hooks (D202).
     pub codex_needs_trust: bool,
     /// The owner's machine scripts, as the Machines section last read them (MACHINESCRIPTS).
@@ -255,18 +248,7 @@ pub enum SettingsAction {
     ToggleFreeHiddenTerminals,
     /// Make ⌥ act as Alt in terminals, or type the layout's characters.
     ToggleOptionAsAlt,
-    /// Send agents' permission asks to the Inbox, or to their own prompt (D199).
-    ToggleAsksInInbox,
-    /// The daemon saved the Inbox setting, or refused it. `wanted` is what
-    /// was asked for.
-    AsksSaved {
-        /// Whether asks were to go to the Inbox.
-        wanted: bool,
-        /// Where the daemon keeps them, or why it refused.
-        result: Result<bool, DaemonError>,
-    },
-    /// The daemon said where asks go, or couldn't.
-    AsksShown(Result<bool, DaemonError>),
+
     /// The daemon said whether Codex's hooks still need trusting.
     CodexTrustShown(Result<bool, DaemonError>),
     /// Pick the default agent.
@@ -323,15 +305,12 @@ impl Settings {
         Effect::future(async move { SettingsAction::ScriptsShown(call.await) })
     }
 
-    /// Reads where the daemon sends permission asks, then whether Codex's
-    /// hooks need trusting, then the agents' switches, as the Agents section
-    /// opens.
+    /// Reads whether Codex's hooks need trusting, then the agents' switches
+    /// (with where each one asks, D782), as the Agents section opens.
     fn read_asks(&self) -> Effect<SettingsAction> {
-        let asks = self.clients.daemon.clone();
         let trust = self.clients.daemon.clone();
         let switches = self.clients.daemon.clone();
         Effect::concat([
-            Effect::future(async move { SettingsAction::AsksShown(asks.asks_in_inbox().await) }),
             Effect::future(async move {
                 SettingsAction::CodexTrustShown(trust.codex_needs_trust().await)
             }),
@@ -386,33 +365,7 @@ impl Reducer for Settings {
                     return self.read_asks();
                 }
             }
-            SettingsAction::ToggleAsksInInbox => {
-                if state.asks_saving {
-                    return Effect::none();
-                }
-                let wanted = !state.asks_in_inbox.unwrap_or(true);
-                state.asks_in_inbox = Some(wanted);
-                state.asks_saving = true;
-                let daemon = self.clients.daemon.clone();
-                return Effect::future(async move {
-                    let result = daemon.set_asks_in_inbox(wanted).await;
-                    SettingsAction::AsksSaved { wanted, result }
-                });
-            }
-            SettingsAction::AsksSaved { wanted, result } => {
-                state.asks_saving = false;
-                match result {
-                    Ok(inbox) => state.asks_in_inbox = Some(inbox),
-                    Err(error) => {
-                        state.asks_in_inbox = Some(!wanted);
-                        state.error = Some(error.to_string());
-                    }
-                }
-            }
-            SettingsAction::AsksShown(result) => match result {
-                Ok(inbox) => state.asks_in_inbox = Some(inbox),
-                Err(error) => state.error = Some(error.to_string()),
-            },
+
             SettingsAction::CodexTrustShown(result) => match result {
                 Ok(needs) => state.codex_needs_trust = needs,
                 Err(error) => state.error = Some(error.to_string()),

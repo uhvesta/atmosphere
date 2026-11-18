@@ -338,3 +338,99 @@ async fn ctrl_c_stops_waiting_with_130() {
     let console = FakeConsole::terminal();
     assert_eq!(run_interrupted(&daemon, &console, &ASK_AHEAD).await, exit::INTERRUPTED);
 }
+
+// ----- D768: an agent's asked file read, waited on with --wait. -----
+
+const LS_LEDGER: [&str; 6] = ["--json", "--wait", "5", "files", "ls", "ma_1:se_1/acme/ledger"];
+
+fn read_pending() -> pb::error::Kind {
+    pb::error::Kind::ApprovalPending(pb::ApprovalPending {
+        request: pending().id,
+    })
+}
+
+/// The answer to an approved read that ran nothing: repeat the read.
+fn approved_repeat() -> pb::WaitResponse {
+    pb::WaitResponse {
+        state: pb::RequestState::Approved as i32,
+        result_type: "humata2.ReadApproved".into(),
+        ..pending()
+    }
+}
+
+fn ledger_listing() -> pb::ListDirectoryResponse {
+    pb::ListDirectoryResponse {
+        entries: vec![pb::FileEntry {
+            location: Some(pb::FileLocation {
+                path: "a.txt".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn an_approved_asked_read_gets_the_real_listing_on_the_repeat() {
+    let daemon = FakeDaemon::new();
+    daemon
+        .refuse(rpc::files::LIST_DIRECTORY, read_pending())
+        .reply(rpc::files::LIST_DIRECTORY, &ledger_listing())
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&approved_repeat()]);
+    let console = FakeConsole::pipe();
+
+    assert_eq!(run(&daemon, &console, &LS_LEDGER).await, exit::OK);
+
+    assert!(console.stdout().contains("a.txt"), "{}", console.stdout());
+    assert_eq!(daemon.sent::<pb::ListDirectoryRequest>(rpc::files::LIST_DIRECTORY).len(), 2);
+}
+
+#[tokio::test]
+async fn a_repeat_refused_after_the_approval_comes_straight_back() {
+    let daemon = FakeDaemon::new();
+    daemon
+        .refuse(rpc::files::LIST_DIRECTORY, read_pending())
+        .refuse(rpc::files::LIST_DIRECTORY, pb::error::Kind::Denied(pb::Denied::default()))
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&approved_repeat()]);
+    let console = FakeConsole::pipe();
+
+    assert_eq!(run(&daemon, &console, &LS_LEDGER).await, exit::DENIED);
+
+    assert_eq!(daemon.sent::<pb::ListDirectoryRequest>(rpc::files::LIST_DIRECTORY).len(), 2);
+    assert_eq!(console.json()["error"]["kind"], "denied");
+}
+
+#[tokio::test]
+async fn a_repeat_pending_again_comes_straight_back_without_another_wait() {
+    let daemon = FakeDaemon::new();
+    daemon
+        .refuse(rpc::files::LIST_DIRECTORY, read_pending())
+        .refuse(rpc::files::LIST_DIRECTORY, read_pending())
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&approved_repeat()]);
+    let console = FakeConsole::pipe();
+
+    assert_eq!(run(&daemon, &console, &LS_LEDGER).await, exit::PENDING);
+
+    assert_eq!(daemon.sent::<pb::ListDirectoryRequest>(rpc::files::LIST_DIRECTORY).len(), 2);
+    assert_eq!(daemon.sent::<pb::WaitForAnswerRequest>(rpc::inbox::WAIT_FOR_ANSWER).len(), 1);
+}
+
+#[tokio::test]
+async fn an_approved_read_that_ran_returns_its_result_even_when_it_is_empty() {
+    let daemon = FakeDaemon::new();
+    // An empty listing encodes as no bytes; its type still says it ran.
+    let ran = pb::WaitResponse {
+        state: pb::RequestState::Approved as i32,
+        result_type: "humata.v1.ListDirectoryResponse".into(),
+        ..pending()
+    };
+    daemon
+        .refuse(rpc::files::LIST_DIRECTORY, read_pending())
+        .stream(rpc::inbox::WAIT_FOR_ANSWER, &[&ran]);
+    let console = FakeConsole::pipe();
+
+    assert_eq!(run(&daemon, &console, &LS_LEDGER).await, exit::OK);
+
+    assert_eq!(daemon.sent::<pb::ListDirectoryRequest>(rpc::files::LIST_DIRECTORY).len(), 1);
+}

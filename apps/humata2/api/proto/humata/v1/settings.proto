@@ -125,11 +125,11 @@ message Settings {
   AgentSettings agents = 12;            // D199
 }
 
-// D199 Settings › Agents. Off (the default): an agent's permission ask
-// waits in the Inbox as a card. On: the daemon answers every permission
-// hook at once with no decision, so the agent's own prompt asks. The
-// hook stays installed; read at each ask, so running sessions follow a
-// change with no restart. Turn ends and needs-input notices don't change.
+// D199, kept for older callers (D782): `permissions_in_agent` reads true
+// only when every agent kind has `AgentDefinition.asks_in_inbox` off, and
+// writing it sets that switch for every kind. The per-kind switch is
+// SetAgentEnabledRequest.asks_in_inbox. Read at each ask, so running
+// sessions follow a change with no restart.
 message AgentSettings {
   bool permissions_in_agent = 1;
   // D202, output only (writes ignore it): some agent kind carries Codex's
@@ -223,6 +223,13 @@ message AgentDefinition {
   // The command "Install when missing" runs (`bash -lc`), shown in
   // Settings › Agents; empty when there is none.
   string install_command = 17;
+  // D782: the kind's permission and question asks wait in the Inbox. Off:
+  // its permission hook and question hook get no decision, so the agent
+  // asks in its own terminal, and a dialog seen on its screen raises no
+  // card. RequestAccess, AskUser, file approvals and proposals still go to
+  // the Inbox. Read from agents.toml at each ask; true for the shell and
+  // when the file is missing or broken.
+  bool asks_in_inbox = 18;
 }
 
 
@@ -236,6 +243,8 @@ message SetAgentEnabledRequest {
   AgentId agent = 1;
   optional bool enabled = 2;
   optional bool install_when_missing = 3;
+  // D782: unset leaves it as it is.
+  optional bool asks_in_inbox = 4;
 }
 
 message ListAgentsResponse { repeated AgentDefinition agents = 1; }

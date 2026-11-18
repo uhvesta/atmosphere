@@ -108,17 +108,41 @@ pub(super) fn lost_error(request: &str) -> pb::Error {
 }
 
 /// Names an asked read for its card: one card per session (added by the
-/// caller), capability and path, whatever entry kind the call expects, so a
-/// stat and a read of one file share it (D768).
-fn read_key(asked: &AccessRequest) -> String {
+/// caller), capability, path and operation (D768). The operation is in it
+/// because an approval runs that read and the wait returns its result, which
+/// must be the result of the call that waits; the entry kind isn't.
+fn read_key(asked: &AccessRequest, operation: &str) -> String {
     match &asked.call {
         Call::ReadFiles(place) => format!(
-            "read/{:?}/{:?}/{:?}/{:?}",
+            "read/{operation}/{:?}/{:?}/{:?}/{:?}",
             asked.capability, place.machine, place.root, place.path
         ),
-        call => format!("read/{:?}/{call:?}", asked.capability),
+        call => format!("read/{operation}/{:?}/{call:?}", asked.capability),
     }
 }
+
+/// An asked read's result went to a waiter, or the read was repeated: its
+/// bytes are dropped, and the card now tells a later waiter to repeat the
+/// read, which goes through for the rest of the keep time (D768).
+pub(super) fn delivered(held: &tokio::sync::watch::Sender<Held>) {
+    held.send_if_modified(|held| {
+        if !held.once {
+            return false;
+        }
+        held.taken = true;
+        if let Some(outcome) = &mut held.outcome {
+            if outcome.error.is_none() && outcome.result_type != status::READ_APPROVED {
+                outcome.result = Vec::new();
+                status::READ_APPROVED.clone_into(&mut outcome.result_type);
+            }
+        }
+        true
+    });
+}
+
+/// How long an approved read's bytes wait for the agent before they're
+/// dropped and it is told to repeat the read (D768).
+const READ_HELD: Duration = Duration::from_secs(10 * 60);
 
 /// What a repeat of an asked read meets in its card (D768).
 enum Standing {
@@ -238,16 +262,24 @@ impl Inbox {
 
     /// An agent's file read the channel's rule asks about (D768): the read
     /// isn't held open. The first one raises an Inbox card and answers
-    /// `approval_pending` at once; a repeat of it (same session, capability
-    /// and path) answers with that card while it waits, goes through once it
-    /// is approved (for as long as an approved call's result is kept), and
-    /// is told the user's deny. Past that, the next read asks again.
-    /// Approving runs nothing: the agent repeats the read.
-    pub(crate) async fn ask_read(&self, caller: &Caller, asked: AccessRequest) -> Result<(), Status> {
+    /// `approval_pending` at once; a repeat of it (same session, capability,
+    /// path and `operation`) answers with that card while it waits, goes
+    /// through once it is approved (for as long as an approved call's result
+    /// is kept), and is told the user's deny. Past that, the next read asks
+    /// again. Approving runs `run`, whose result the wait returns; with no
+    /// `run` (a read that can't be replayed) the agent repeats the read.
+    pub(crate) async fn ask_read(
+        &self,
+        caller: &Caller,
+        asked: AccessRequest,
+        operation: &str,
+        run: Option<Run>,
+    ) -> Result<(), Status> {
         let Caller::Agent(agent) = caller else {
             return Err(status::needs_approval(asked.capability));
         };
-        let key = read_key(&asked);
+        let runs = run.is_some();
+        let key = read_key(&asked, operation);
         let full = format!("{}/{key}", agent.session.id);
         let mut state = self.state.lock().await;
         let held = state
@@ -256,8 +288,16 @@ impl Inbox {
             .map(|entry| entry.request.borrow().clone());
         if let Some(held) = held {
             match standing(&held) {
-                Standing::Waiting(id) => return Err(status::read_approval_pending(&id)),
-                Standing::Through => return Ok(()),
+                Standing::Waiting(id) => return Err(status::read_approval_pending(&id, runs)),
+                Standing::Through => {
+                    if let Some(entry) = state
+                        .id_with(Some(&full))
+                        .and_then(|id| state.requests.iter().find(|entry| entry.id == id))
+                    {
+                        delivered(&entry.request);
+                    }
+                    return Ok(());
+                }
                 Standing::Denied(error) => {
                     state.keys.remove(&full);
                     return Err(status::failure(Code::PermissionDenied, error));
@@ -267,18 +307,25 @@ impl Inbox {
                 }
             }
         }
-        let run: Run = Box::new(|_| {
-            Box::pin(async {
-                Ok(Deferred {
-                    result: Vec::new(),
-                    result_type: status::READ_APPROVED.to_owned(),
+        let run: Run = run.unwrap_or_else(|| {
+            Box::new(|_| {
+                Box::pin(async {
+                    Ok(Deferred {
+                        result: Vec::new(),
+                        result_type: status::READ_APPROVED.to_owned(),
+                    })
                 })
             })
         });
         let id = self
             .deferred_in(&mut state, caller, asked, Some(key), None, run)
             .await?;
-        Err(status::read_approval_pending(&id))
+        if runs {
+            if let Some(entry) = state.requests.iter().find(|entry| entry.id == id.value) {
+                entry.request.send_modify(|held| held.once = true);
+            }
+        }
+        Err(status::read_approval_pending(&id, runs))
     }
 
     /// The pending requests whose card shows a board change or a new item,
@@ -509,10 +556,20 @@ impl Inbox {
                 Err(error) => Err(status::internal(format!("the call failed: {error}"), "")),
             };
             let outcome = Outcome::of(done);
+            let (mut once, mut taken) = (false, false);
             sender.send_modify(|held| {
                 held.running = false;
                 held.outcome = Some(outcome);
+                (once, taken) = (held.once, held.taken);
             });
+            // D768: an asked read's bytes go to its first taker, and are
+            // never held past READ_HELD.
+            if once {
+                if !taken {
+                    tokio::time::sleep(READ_HELD).await;
+                }
+                delivered(&sender);
+            }
         });
     }
 }
@@ -638,6 +695,81 @@ mod tests {
         assert!(
             matches!(guard.check(&caller, &reach()), Ok(Checked::Allowed)),
             "the grant covers the next identical call"
+        );
+    }
+
+    /// The bytes and type an approved request holds now, if it ran.
+    async fn held_result(inbox: &Inbox, id: &str) -> Option<(Vec<u8>, String)> {
+        let state = inbox.state.lock().await;
+        let entry = state.requests.iter().find(|entry| entry.id == id)?;
+        let held = entry.request.borrow();
+        let found = held
+            .outcome
+            .as_ref()
+            .map(|outcome| (outcome.result.clone(), outcome.result_type.clone()));
+        found
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_approved_reads_bytes_nobody_takes_are_dropped_after_read_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("store")).unwrap());
+        store.put_session(&record()).unwrap();
+        let guard = Arc::new(Guard::new(MACHINE, pb::DaemonRole::Host));
+        let inbox = Inbox::new(guard.clone(), store, MACHINE.to_owned(), Arc::new(Feed::default()));
+        let caller = agent();
+        let run: Run = Box::new(|_| {
+            Box::pin(async {
+                Ok(Deferred {
+                    result: b"held".to_vec(),
+                    result_type: "humata.v1.FileChunk".to_owned(),
+                })
+            })
+        });
+        let pending = inbox
+            .ask_read(&caller, asked_of(&guard, &caller), "read", Some(run))
+            .await
+            .unwrap_err();
+        let id = status::error_of(&pending)
+            .and_then(|error| match error.kind {
+                Some(pb::error::Kind::ApprovalPending(pending)) => pending.request,
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("the read should wait on a request: {pending:?}"));
+        inbox
+            .answer_request(user_request(pb::AnswerRequestRequest {
+                id: Some(id.clone()),
+                answer: Some(pb::RequestAnswer {
+                    answer: Some(pb::request_answer::Answer::Approve(pb::Approve {})),
+                }),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        let mut ran = None;
+        for _ in 0..200 {
+            ran = held_result(&inbox, &id.value).await;
+            if ran.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(ran, Some((b"held".to_vec(), "humata.v1.FileChunk".to_owned())), "the approved read ran");
+
+        tokio::time::sleep(READ_HELD + Duration::from_secs(1)).await;
+        let mut after = None;
+        for _ in 0..200 {
+            after = held_result(&inbox, &id.value).await;
+            if after.as_ref().is_some_and(|(bytes, _)| bytes.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            after,
+            Some((Vec::new(), status::READ_APPROVED.to_owned())),
+            "past READ_HELD the bytes are dropped and a waiter is told to repeat the read"
         );
     }
 

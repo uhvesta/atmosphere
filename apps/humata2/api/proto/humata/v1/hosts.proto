@@ -60,6 +60,34 @@ service MachineService {
   rpc StopMachineSessions(StopMachineSessionsRequest) returns (StopMachineSessionsResponse);
   // D265: starts them again, or cancels a stop the machine never got.
   rpc StartMachineSessions(StartMachineSessionsRequest) returns (StartMachineSessionsResponse);
+  // D784: every running holder of ours on a machine, a session's or one no
+  // session names (an orphan, "Not in a channel"). An orphan with no tab is
+  // given one as it is listed, so every entry can be attached by its tab.
+  // Only holders serving a socket in the machine's own holders folder are
+  // listed. User-only; a box answers for itself over the peer link.
+  rpc ListRunningHolders(ListRunningHoldersRequest) returns (ListRunningHoldersResponse);
+  // D784 "Stop" for a shell tab (a session's or a machine's own, or an
+  // orphan): its holder and program group end and the tab is kept, stopped,
+  // with its saved output; a start leaves it stopped. An agent's tab is
+  // refused: StopSession stops the agent. Refused for an unreachable
+  // machine. User-only.
+  rpc StopRunningHolder(StopRunningHolderRequest) returns (StopRunningHolderResponse);
+  // D784 "Resume" for a stopped shell tab: a new shell in the folder it was
+  // in, its saved output shown above, as after a reboot. An agent's tab is
+  // refused: ResumeSession resumes the agent. User-only.
+  rpc ResumeRunningHolder(ResumeRunningHolderRequest) returns (ResumeRunningHolderResponse);
+  // D784 "End for good" for a shell tab: its holder and program group end
+  // and the tab is gone. An agent's tab is refused: "End for good" for a
+  // session is ArchiveSession. Refused for an unreachable machine.
+  // User-only.
+  rpc EndRunningHolder(EndRunningHolderRequest) returns (EndRunningHolderResponse);
+  // D784 "Adopt…": a running holder no session names ("Not in a channel")
+  // becomes a session in a channel or the Desk, keeping the same holder
+  // (same pid, still attaches). Whatever agent it runs, it is adopted as a
+  // shell-kind session: its conversation isn't known. Refused for a tab a
+  // session already holds, and for a holder that isn't running. An agent
+  // caller needs the machine-destroy switch (off by default).
+  rpc AdoptRunningHolder(AdoptRunningHolderRequest) returns (AdoptRunningHolderResponse);
   // SEAM (MACHINESCRIPTS, D687): the rules in machine-scripts.toml, the script
   // names in the scripts folder and each rule's last run per machine.
   rpc ListMachineScripts(ListMachineScriptsRequest) returns (ListMachineScriptsResponse);
@@ -823,4 +851,84 @@ message MachineScriptStepRun {
   // Why the step failed or was skipped, in words.
   string error = 7;
   uint64 took_ms = 8;
+}
+
+message ListRunningHoldersRequest {
+  // Unset: this machine.
+  MachineId machine = 1;
+}
+
+// One running holder (D784).
+message RunningHolder {
+  // The tab to attach it by.
+  TabId tab = 1;
+  // Unset for an orphan: no session names it.
+  SessionId session = 2;
+  // The session's title; empty for an orphan.
+  string title = 3;
+  // The session's channel; unset for an orphan and for a Desk session.
+  ChannelId channel = 4;
+  // Set for a Desk session.
+  bool desk = 5;
+  // The program it runs, as an agent kind: "copilot", "claude", "codex",
+  // or "shell" for anything else.
+  string agent = 6;
+  // The holder's process.
+  uint32 pid = 7;
+  // The folder it was started in.
+  string folder = 8;
+  // When the holder started.
+  google.protobuf.Timestamp started = 9;
+  // A client has it open in a tab now.
+  bool attached = 10;
+  // The machine it runs on.
+  MachineId machine = 11;
+  // Stopped (D784 "Stop"): no holder runs, so pid, started and attached
+  // are unset. A stopped session's agent has no tab and ResumeSession
+  // revives it; a stopped shell keeps its tab and ResumeRunningHolder
+  // revives it.
+  bool stopped = 12;
+}
+
+message ListRunningHoldersResponse {
+  // Sessions' holders first (by title), then stopped sessions (by title),
+  // then orphans (by start).
+  repeated RunningHolder holders = 1;
+}
+
+message StopRunningHolderRequest {
+  MachineId machine = 1;
+  // The terminal's tab, as ListRunningHolders gave it.
+  TabId tab = 2;
+}
+
+message StopRunningHolderResponse {}
+
+message ResumeRunningHolderRequest {
+  MachineId machine = 1;
+  // The stopped terminal's tab, as ListRunningHolders gave it.
+  TabId tab = 2;
+}
+
+message ResumeRunningHolderResponse {}
+
+message EndRunningHolderRequest {
+  MachineId machine = 1;
+  // The holder's tab, as ListRunningHolders gave it.
+  TabId tab = 2;
+}
+
+message EndRunningHolderResponse {}
+
+message AdoptRunningHolderRequest {
+  MachineId machine = 1;
+  // The orphan's tab, as ListRunningHolders gave it.
+  TabId tab = 2;
+  // Where it goes; empty means the Desk.
+  ChannelId channel = 3;
+}
+
+message AdoptRunningHolderResponse {
+  // The session the holder is now.
+  SessionId session = 1;
 }

@@ -122,7 +122,9 @@ Dialog "Submit review" focused
   Button "Cancel"
   Button "Submit 2 reviews"
 Tab "claude" selected
+  Button "Close claude"
 Tab "zsh"
+  Button "Close zsh"
 Button "New terminal"
 Log "Terminal output" description="~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
   text "~/src/api (fix-refund-rounding) $ claude\n\n> why round() and not floor()?\n● review_focus refund.rs:140\n  It rounds half away from zero …\n\n> note that on the line for me\n● review_note refund.rs:140\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"

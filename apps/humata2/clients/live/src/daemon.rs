@@ -9,8 +9,8 @@ use humata2_clients::model::{
     RuleSetting, Scope, SessionId, SessionOptions, SetupId, TransferId,
 };
 use humata2_clients::{
-    AgentSwitch, ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, PastTurn, Reply,
-    SwitchChange, UnpushedWork,
+    AgentSwitch, ArchivePlan, Daemon, DaemonError, Event, Events, ForkOptions, HolderTab, PastTurn,
+    Reply, RunningHolder, SwitchChange, UnpushedWork,
     Workspace,
 };
 use humata2_grpc::humata::v1 as pb;
@@ -709,6 +709,12 @@ impl Shared {
     /// Brings an archived session back where it was (the Undo after an
     /// archive), and waits for the daemon to finish.
     async fn restore_session(&self, session: SessionId) -> Result<(), DaemonError> {
+        self.restore_session_as(session, false).await
+    }
+
+    /// Restores an archived session, `stopped` to leave its agent unstarted
+    /// (D784).
+    async fn restore_session_as(&self, session: SessionId, stopped: bool) -> Result<(), DaemonError> {
         let operation = self
             .sessions()
             .restore_session(pb::RestoreSessionRequest {
@@ -717,6 +723,7 @@ impl Shared {
                     value: session.as_str().to_owned(),
                 }),
                 machine: None,
+                stopped,
             })
             .await
             .map_err(|status| self.error(&status, "Restoring the session"))?
@@ -1038,6 +1045,47 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.restore_session(session).await })
     }
 
+    fn restore_session_stopped(&self, session: &SessionId) -> Reply<()> {
+        let shared = self.shared.clone();
+        let session = session.clone();
+        Box::pin(async move { shared.restore_session_as(session, true).await })
+    }
+
+    fn running_holders(&self, machine: &MachineId) -> Reply<Vec<RunningHolder>> {
+        let shared = self.shared.clone();
+        let machine = machine.clone();
+        Box::pin(async move { shared.running_holders(machine).await })
+    }
+
+    fn stop_running_holder(&self, machine: &MachineId, tab: &HolderTab) -> Reply<()> {
+        let shared = self.shared.clone();
+        let (machine, tab) = (machine.clone(), tab.clone());
+        Box::pin(async move { shared.stop_running_holder(machine, tab).await })
+    }
+
+    fn resume_running_holder(&self, machine: &MachineId, tab: &HolderTab) -> Reply<()> {
+        let shared = self.shared.clone();
+        let (machine, tab) = (machine.clone(), tab.clone());
+        Box::pin(async move { shared.resume_running_holder(machine, tab).await })
+    }
+
+    fn end_running_holder(&self, machine: &MachineId, tab: &HolderTab) -> Reply<()> {
+        let shared = self.shared.clone();
+        let (machine, tab) = (machine.clone(), tab.clone());
+        Box::pin(async move { shared.end_running_holder(machine, tab).await })
+    }
+
+    fn adopt_running_holder(
+        &self,
+        machine: &MachineId,
+        tab: &str,
+        channel: Option<&humata2_clients::model::ChannelId>,
+    ) -> Reply<SessionId> {
+        let shared = self.shared.clone();
+        let (machine, tab, channel) = (machine.clone(), tab.to_owned(), channel.cloned());
+        Box::pin(async move { shared.adopt_running_holder(machine, tab, channel).await })
+    }
+
     fn set_pinned(&self, session: &SessionId, pinned: bool) -> Reply<()> {
         let shared = self.shared.clone();
         let session = session.clone();
@@ -1215,10 +1263,6 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.revoke(grant).await })
     }
 
-    fn asks_in_inbox(&self) -> Reply<bool> {
-        let shared = self.shared.clone();
-        Box::pin(async move { shared.asks_in_inbox().await })
-    }
 
     fn codex_needs_trust(&self) -> Reply<bool> {
         let shared = self.shared.clone();
@@ -1230,18 +1274,14 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { shared.change_default_agent(agent).await })
     }
 
-    fn set_asks_in_inbox(&self, inbox: bool) -> Reply<bool> {
-        let shared = self.shared.clone();
-        Box::pin(async move { shared.change_asks_in_inbox(inbox).await })
-    }
 
     fn agent_switches(&self) -> Reply<Vec<AgentSwitch>> {
         let shared = self.shared.clone();
         Box::pin(async move { shared.agent_switches().await })
     }
 
-    fn set_agent_switch(&self, agent: Agent, change: SwitchChange) -> Reply<AgentSwitch> {
+    fn set_agent_switch(&self, kind: String, change: SwitchChange) -> Reply<AgentSwitch> {
         let shared = self.shared.clone();
-        Box::pin(async move { shared.set_agent_switch(agent, change).await })
+        Box::pin(async move { shared.set_agent_switch(kind, change).await })
     }
 }

@@ -16,6 +16,7 @@ mod upgrade_rig;
 use common::{error_of, shell_token};
 use humata2_grpc::humata::v1 as pb;
 use tonic::{Code, Status};
+use tonic::transport::Channel;
 use upgrade_rig::{BOX, box_id};
 
 fn key(value: &str) -> Option<pb::IdempotencyKey> {
@@ -214,4 +215,74 @@ async fn a_machine_back_at_the_hosts_release_withdraws_its_item_as_resolved() {
         !upgrade::inbox(&rig.host).await.iter().any(upgrade_rig::pending_on_box),
         "nothing is left to migrate on {BOX}"
     );
+}
+
+async fn machines(rig: &remote_rig::Rig) -> pb::machine_service_client::MachineServiceClient<Channel> {
+    pb::machine_service_client::MachineServiceClient::new(rig.channel().await)
+}
+
+/// `item` once it is withdrawn, failing the test unless that was because
+/// its machine was removed.
+async fn withdrawn_as_removed(rig: &remote_rig::Rig, item: &pb::InboxRequest) {
+    let done = upgrade::request_until(&rig.host, the_id(item), "was withdrawn", |item| {
+        item.state() == pb::RequestState::Withdrawn
+    })
+    .await;
+    assert_eq!(done.withdraw_reason(), pb::WithdrawReason::MachineRemoved, "{done:?}");
+}
+
+/// D783: removing the machine withdraws its Migrate item, so a machine
+/// added later under its name starts with none.
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_machine_withdraws_its_migrate_item() {
+    let (mut rig, _) = upgrade_rig::at_one_release().await;
+    upgrade_rig::box_at_release(&mut rig, "b").await;
+    let item = upgrade_rig::daemon_item(&rig).await;
+
+    let plan = machines(&rig)
+        .await
+        .plan_remove_machine(pb::PlanRemoveMachineRequest { id: Some(box_id()) })
+        .await
+        .expect("the removal is planned")
+        .into_inner();
+    let started = machines(&rig)
+        .await
+        .remove_machine(pb::RemoveMachineRequest { id: Some(box_id()), plan: plan.token, ..Default::default() })
+        .await
+        .expect("the removal starts")
+        .into_inner();
+    let ended = rig.ended(&started).await;
+    assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
+
+    withdrawn_as_removed(&rig, &item).await;
+}
+
+/// D783: forgetting a machine that is gone withdraws its Migrate item the
+/// same way.
+#[tokio::test(flavor = "multi_thread")]
+async fn forgetting_a_machine_withdraws_its_migrate_item() {
+    let (mut rig, _) = upgrade_rig::at_one_release().await;
+    upgrade_rig::box_at_release(&mut rig, "b").await;
+    let item = upgrade_rig::daemon_item(&rig).await;
+    rig.the_mut(BOX).kill();
+    rig.link_lost(BOX).await;
+
+    let plan = machines(&rig)
+        .await
+        .plan_forget_machine(pb::PlanForgetMachineRequest { id: Some(box_id()) })
+        .await
+        .expect("the forget is planned")
+        .into_inner();
+    machines(&rig)
+        .await
+        .forget_machine(pb::ForgetMachineRequest {
+            idempotency_key: key("forget"),
+            id: Some(box_id()),
+            plan: plan.token,
+            presence: None,
+        })
+        .await
+        .expect("the machine is forgotten");
+
+    withdrawn_as_removed(&rig, &item).await;
 }

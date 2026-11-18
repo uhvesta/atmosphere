@@ -1339,9 +1339,25 @@ async fn feed(daemon: &Daemon, request: Request<pb::SubscribeRequest>) -> tonic:
         .into_inner()
 }
 
+/// The next event that isn't a Resync: a feed opened before the daemon's
+/// start finished gets its after-restart Resync first (D341).
+async fn next_told(events: &mut tonic::Streaming<pb::Event>) -> pb::Event {
+    loop {
+        let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+        if !matches!(event.payload, Some(pb::event::Payload::Resync(_))) {
+            return event;
+        }
+    }
+}
+
+/// Whether the feed tells of nothing but a Resync for a moment.
+async fn quiet(events: &mut tonic::Streaming<pb::Event>) -> bool {
+    tokio::time::timeout(std::time::Duration::from_millis(200), next_told(events)).await.is_err()
+}
+
 /// The next view event's change, title and state.
 async fn next_view(events: &mut tonic::Streaming<pb::Event>) -> (i32, String, i32) {
-    let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+    let event = next_told(events).await;
     match event.payload {
         Some(pb::event::Payload::View(view)) => (event.change, view.title, view.state),
         other => panic!("expected a view, got {other:?}"),
@@ -1395,14 +1411,14 @@ async fn the_feed_tells_the_agent_of_its_drafts_and_the_user_of_offers_only() {
         "a repeated MarkReady changes nothing, so it isn't told"
     );
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(200), elsewhere.message()).await.is_err(),
+        quiet(&mut elsewhere).await,
         "a feed narrowed to another channel hears nothing"
     );
 }
 
 /// The next comment event's change, note id and text.
 async fn next_note(events: &mut tonic::Streaming<pb::Event>) -> (i32, String, String) {
-    let event = tokio::time::timeout(WAIT, events.message()).await.unwrap().unwrap().unwrap();
+    let event = next_told(events).await;
     match event.payload {
         Some(pb::event::Payload::Comment(comment)) => (event.change, note_id(&comment), comment.text),
         other => panic!("expected a comment, got {other:?}"),
@@ -1539,7 +1555,7 @@ async fn the_feed_tells_of_each_note_made_changed_dropped_and_undone_but_not_aga
         assert_eq!(told, expected);
     }
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(200), views_only.message()).await.is_err(),
+        quiet(&mut views_only).await,
         "a feed of views only hears of no note"
     );
 

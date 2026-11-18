@@ -74,9 +74,14 @@ impl Storage {
         &self.home
     }
 
-    /// The host's records, for the machine service's root change.
-    pub(crate) fn store(&self) -> &Store {
+    /// This machine's store, for the running holders' list (D784) and the machine service's root change.
+    pub(crate) fn store(&self) -> &Arc<Store> {
         &self.store
+    }
+
+    /// The daemon's holders folder, `<state>/holders`, next to its logs.
+    pub(crate) fn holders(&self) -> PathBuf {
+        self.logs.parent().map_or_else(|| PathBuf::from("holders"), |state| state.join("holders"))
     }
 
     /// The folder the daemon keeps new channels in.

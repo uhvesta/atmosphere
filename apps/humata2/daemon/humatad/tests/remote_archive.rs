@@ -72,7 +72,7 @@ async fn start_archive(rig: &Rig, id: &pb::SessionId, choice: pb::ArchiveChoice)
 async fn restore(rig: &Rig, id: &pb::SessionId, on: Option<pb::MachineId>) -> pb::Operation {
     let started = sessions(rig)
         .await
-        .restore_session(pb::RestoreSessionRequest { idempotency_key: None, id: Some(id.clone()), machine: on })
+        .restore_session(pb::RestoreSessionRequest { idempotency_key: None, id: Some(id.clone()), machine: on, stopped: false })
         .await
         .expect("the restore starts")
         .into_inner();
@@ -678,7 +678,7 @@ async fn cut_a_mirror_restore(point: &str, at_link: bool) -> Cut {
     let host = rig.host_id().await;
     let asked = sessions(&rig)
         .await
-        .restore_session(pb::RestoreSessionRequest { idempotency_key: None, id: Some(id.clone()), machine: Some(host.clone()) })
+        .restore_session(pb::RestoreSessionRequest { idempotency_key: None, id: Some(id.clone()), machine: Some(host.clone()), stopped: false })
         .await;
     if at_link {
         let started = asked.expect("the restore starts").into_inner();
@@ -916,7 +916,7 @@ async fn host_cut_while_restoring_here(point: &str) {
     let host = rig.host_id().await;
     let _ = sessions(&rig)
         .await
-        .restore_session(pb::RestoreSessionRequest { idempotency_key: None, id: Some(id.clone()), machine: Some(host.clone()) })
+        .restore_session(pb::RestoreSessionRequest { idempotency_key: None, id: Some(id.clone()), machine: Some(host.clone()), stopped: false })
         .await;
     rig.host_stopped().await;
     rig.restart_host(&[]).await;

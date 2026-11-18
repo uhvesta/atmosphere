@@ -65,11 +65,18 @@ gpui_kit::actions!(
         TerminalFullScreen,
         /// ⇧⌘F: fork the open session.
         ForkSession,
+        /// Tab in the Inbox's list: its open item's terminal (D781).
+        FocusInboxTerminal,
     ]
 );
 
 /// The sidebar's key context.
 pub const SIDEBAR: &str = "Sidebar";
+
+/// The Inbox page's key context while no dialog holds the keys. It sits
+/// under the window root's, so its Tab is taken here before the root's
+/// moves focus to the next stop (D781).
+pub(crate) const INBOX: &str = "HumataInbox";
 
 /// Every shortcut as people see it, for the Shortcuts sheet: keys, then
 /// what they do.
@@ -224,6 +231,7 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("home", First, sidebar),
         KeyBinding::new("end", Last, sidebar),
         KeyBinding::new("enter", Open, sidebar),
+        KeyBinding::new("tab", FocusInboxTerminal, Some(INBOX)),
     ]
 }
 

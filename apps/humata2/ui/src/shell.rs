@@ -316,8 +316,14 @@ impl Render for Shell {
             }
         }
         let look = Look::of(cx);
-        self.ui
+        let lost_focus = self
+            .ui
             .read(|state| self.terminals.sync(&self.ui, state, look, window, cx));
+        if lost_focus {
+            // The Inbox's terminal went with its item: the list takes the
+            // keys back (D781).
+            window.focus(&self.focus, cx);
+        }
         self.documents.sync(&self.ui, window, cx);
         let target = self.ui.read(|state| {
             (!state.dialog_holds_keys()).then(|| crate::terminals::focus_target(state))
@@ -524,6 +530,9 @@ impl Render for Shell {
                 ))
             }))
             .child(div().flex_1().min_h_0().flex().flex_col().child(body));
+        let inbox_keys = self
+            .ui
+            .read(|state| state.route == Route::Inbox && !state.dialog_holds_keys());
         div()
             .id("shell")
             .relative()
@@ -537,12 +546,21 @@ impl Render for Shell {
             .track_focus(&self.focus)
             // Escape in a terminal reaches its program (keys.rs unbinds
             // Dismiss there), unless something over the page would close.
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                let escape = event.keystroke.key == "escape"
-                    && !event.keystroke.modifiers.modified();
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let bare = !event.keystroke.modifiers.modified();
+                let escape = event.keystroke.key == "escape" && bare;
                 if escape && this.ui.read(escape_closes_something) {
                     cx.stop_propagation();
                     this.send(AppAction::Escape, cx);
+                }
+            }))
+            // Tab from the Inbox's list moves into its open item's
+            // terminal; nothing focuses it by itself, and once it has focus
+            // Tab reaches its program, whose context unbinds it (D781).
+            .when(inbox_keys, |shell| shell.key_context(keys::INBOX))
+            .on_action(cx.listener(|this, _: &keys::FocusInboxTerminal, window, cx| {
+                if !this.terminals.focus_inbox(window, cx) {
+                    window.focus_next(cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &keys::OpenPalette, _, cx| {

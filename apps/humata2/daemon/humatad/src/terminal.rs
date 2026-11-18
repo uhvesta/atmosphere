@@ -35,6 +35,8 @@ use crate::serve::SOCKET_PATH_MAX;
 use crate::upgrade::items::Migrations;
 use crate::{paste, status};
 
+mod lost;
+
 /// How long a holder gets to answer a first connection before a tab is
 /// listed without its offsets.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -181,6 +183,9 @@ pub(crate) struct TerminalsConfig {
     /// Tells the feed a session whose tabs changed, so every client lists
     /// them without asking (a list read just before is not the last word).
     pub(crate) tell: crate::session_service::Tell,
+    /// This start, which brings back the shells whose holders died with the
+    /// last run: an attach to one waits for it rather than call it gone.
+    pub(crate) started: Arc<crate::restart::Started>,
 }
 
 /// The service. Its state sits behind an `Arc` so a call waiting for the
@@ -766,6 +771,28 @@ impl Core {
         }
     }
 
+    /// `tab` as it stands once this start has brought it back. A holder
+    /// that died with the last run is started again by the restart, in the
+    /// background: until then nothing answers on its socket, yet the tab
+    /// isn't gone. So when the start isn't done and the holder doesn't
+    /// answer, this waits for the start and reads the tab again.
+    async fn tab_once_brought_back(
+        &self,
+        tab: TabRecord,
+        session: Option<&str>,
+    ) -> Result<TabRecord, Status> {
+        if self.config.started.get().is_some()
+            || self.holders.link(&tab.id, &tab.holder_socket).await.is_ok()
+        {
+            return Ok(tab);
+        }
+        self.config
+            .started
+            .wait_for(crate::restart::Awaited::Attach)
+            .await?;
+        self.tab(&tab.id, session).await
+    }
+
     async fn tab(&self, id: &str, session: Option<&str>) -> Result<TabRecord, Status> {
         match self.find_tab(id).await? {
             Some(tab) if session.is_none_or(|session| tab.session.as_deref() == Some(session)) => {
@@ -813,6 +840,7 @@ impl Core {
             return Ok(None);
         };
         self.check_input(caller, self.session_target(&record))?;
+        self.refuse_if_machine_gone(&record).await?;
         Ok(Some((machine, remote.clone())))
     }
 
@@ -1500,6 +1528,11 @@ impl Core {
         let session = id_of(request.session.clone().map(|session| session.value))
             .ok_or_else(|| status::missing("session"))?;
         let session = self.session(&session).await?;
+        // D783: nothing is relayed for a session whose machine is gone; a
+        // machine added later under its name doesn't have it.
+        if self.elsewhere(&session).is_some() {
+            self.refuse_if_machine_gone(&session).await?;
+        }
         // UP-1, D281 e: nothing is typed into a session on a machine at another release.
         crate::upgrade::gate::machine_ready(
             &self.config.migrations,
@@ -1852,9 +1885,12 @@ impl pb::terminal_service_server::TerminalService for Terminals {
             } else {
                 self.check_input(&caller, self.session_target(&record))?;
             }
+            // D783: a machine added later under its name doesn't have it.
+            self.refuse_if_machine_gone(&record).await?;
             return Ok(Response::new(remote.attach(&machine, open, incoming).await?));
         }
         let tab = self.tab(&id, session.as_deref()).await?;
+        let tab = self.tab_once_brought_back(tab, session.as_deref()).await?;
         let target = self.tab_target(&tab).await?;
         // UP-1, D281 e: a writable attach into a session on a machine at another release is refused.
         if !open.read_only

@@ -70,7 +70,7 @@ fn dot(status: Status) -> Div {
 }
 
 /// A button that sends `events` in order when clicked.
-fn button(
+pub(crate) fn button(
     ui: &Rc<Ui>,
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -1003,8 +1003,11 @@ fn decision_card(
             .children(change_rule)
     });
 
-    // 8. The answers.
-    let is_question = request.kind == RequestKind::Question;
+    // 8. The answers. A question on its agent's screen offers its choices
+    // and Dismiss, never Deny or Reply…: the wide Inbox puts Dismiss under
+    // the terminal, the session's panel here (D781).
+    let on_screen = request.on_screen.is_some();
+    let is_question = request.kind == RequestKind::Question || on_screen;
     let copy = request.copy();
     let id = request.id.clone();
     let reply = state
@@ -1123,14 +1126,26 @@ fn decision_card(
                     }))
                 })
                 .child(div().flex_1())
-                .child(button(
-                    ui,
-                    SharedString::from(format!("reply {}", request.id)),
-                    "Reply…",
-                    vec![AppAction::Inbox(InboxAction::StartReply(id.clone()))],
-                    look,
-                    false,
-                )),
+                .when(!on_screen, |r| {
+                    r.child(button(
+                        ui,
+                        SharedString::from(format!("reply {}", request.id)),
+                        "Reply…",
+                        vec![AppAction::Inbox(InboxAction::StartReply(id.clone()))],
+                        look,
+                        false,
+                    ))
+                })
+                .when(on_screen && !wide, |r| {
+                    r.child(button(
+                        ui,
+                        SharedString::from(format!("dismiss {}", request.id)),
+                        "Dismiss",
+                        vec![AppAction::Inbox(InboxAction::Dismiss(id.clone()))],
+                        look,
+                        false,
+                    ))
+                }),
         )
     };
 

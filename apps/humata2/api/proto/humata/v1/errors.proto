@@ -115,6 +115,9 @@ enum EntityKind {
   ENTITY_KIND_AGENT = 14;
   ENTITY_KIND_TAB = 15;
   ENTITY_KIND_PULL_REQUEST = 16;
+  // A place's own folder (a channel's shared folder, a session's clone) that
+  // isn't made on the machine yet; a missing entry inside it is ENTITY_KIND_FILE.
+  ENTITY_KIND_ROOT_FOLDER = 17;
 }
 
 message NotFound {

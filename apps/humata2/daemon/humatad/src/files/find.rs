@@ -143,7 +143,7 @@ impl Find {
                 path: String::new(),
             };
             let target = self.roots.target(Some(location), "session", Entry::Folder)?;
-            self.reads.require(&caller, target.place.clone()).await?;
+            self.reads.require(&caller, target.place.clone(), "find", || None).await?;
             targets.push((target, Scope::OwnFolder));
         }
         for repo in repos {
@@ -161,7 +161,7 @@ impl Find {
                 path: String::new(),
             };
             let target = self.roots.target(Some(location), "session", Entry::Folder)?;
-            self.reads.require(&caller, target.place.clone()).await?;
+            self.reads.require(&caller, target.place.clone(), "find", || None).await?;
             targets.push((target, Scope::Clone));
         }
 

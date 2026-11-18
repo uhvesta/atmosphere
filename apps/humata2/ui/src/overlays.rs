@@ -25,6 +25,8 @@ mod add_machine;
 mod desk;
 #[path = "overlay_archive.rs"]
 mod archive;
+#[path = "overlay_close.rs"]
+mod close;
 #[path = "overlay_continue.rs"]
 mod continue_dialog;
 // REPOS (CH-6): a channel's Add a GitHub repo sheet.
@@ -47,6 +49,8 @@ mod pr_review;
 mod rename;
 #[path = "overlay_root.rs"]
 mod root;
+#[path = "overlay_running.rs"]
+mod running;
 #[path = "overlay_session_add_repo.rs"]
 mod session_add_repo;
 #[path = "overlay_shortcuts.rs"]
@@ -59,6 +63,7 @@ mod toasts;
 enum Kind {
     AddMachine,
     Archive,
+    Close,
     Continue,
     Desk,
     Fork,
@@ -73,6 +78,8 @@ enum Kind {
     SubmitReview,
     Rename,
     RootChange,
+    RunningEnd,
+    RunningAdopt,
     SessionAddRepo,
     Shortcuts,
 }
@@ -270,7 +277,9 @@ impl Overlays {
             Some(Kind::Fork) => self
                 .fork_branch
                 .update(cx, |input, cx| input.focus(window, cx)),
-            Some(Kind::Move | Kind::Continue | Kind::Archive) => window.focus(&self.sheet, cx),
+            Some(Kind::Move | Kind::Continue | Kind::Archive | Kind::Close | Kind::RunningEnd | Kind::RunningAdopt) => {
+                window.focus(&self.sheet, cx);
+            }
             Some(Kind::Rename) => self
                 .rename_title
                 .update(cx, |input, cx| input.focus(window, cx)),
@@ -443,15 +452,18 @@ impl Render for Overlays {
             )
         });
         let renaming = self.ui.read(|state| state.session.renaming.clone());
+        let closing = self.ui.read(|state| state.session.closing.clone());
         let continuing = self.ui.read(|state| state.session.continuing.clone());
         let machine_confirm = self.ui.read(machine_confirm);
         let add_machine = self
             .ui
             .read(|state| state.add_machine.open.then(|| state.add_machine.clone()));
         let root_change = self.ui.read(root::RootView::read);
+        let running = self.ui.read(running::RunningView::read);
         let shown = top
             .as_ref()
             .map(kind)
+            .or_else(|| closing.as_ref().map(|_| Kind::Close))
             .or_else(|| archiving.as_ref().map(|_| Kind::Archive))
             .or_else(|| renaming.as_ref().map(|_| Kind::Rename))
             .or_else(|| moving.as_ref().map(|_| Kind::Move))
@@ -460,6 +472,11 @@ impl Render for Overlays {
             .or_else(|| self.desk_open().then_some(Kind::Desk))
             .or_else(|| add_machine.is_some().then_some(Kind::AddMachine))
             .or_else(|| machine_confirm.as_ref().map(MachineConfirm::kind))
+            .or_else(|| {
+                running
+                    .as_ref()
+                    .map(|view| if view.is_end() { Kind::RunningEnd } else { Kind::RunningAdopt })
+            })
             .or_else(|| root_change.is_some().then_some(Kind::RootChange))
             .or_else(|| self.pr_kind());
         self.follow_focus(shown, window, cx);
@@ -479,6 +496,11 @@ impl Render for Overlays {
                 self.session_add_repo(&sheet_state, look, &ui, window, cx)
             }
             Overlay::Shortcuts => self.shortcuts(look, &ui, cx),
+        });
+        let content = content.or_else(|| {
+            closing
+                .as_ref()
+                .map(|confirm| self.close_dialog(confirm, look, &ui))
         });
         let content = content.or_else(|| {
             archiving
@@ -515,6 +537,7 @@ impl Render for Overlays {
         let content = content.or_else(|| {
             machine_confirm.as_ref().map(|confirm| confirm.card(&ui, look).into_any_element())
         });
+        let content = content.or_else(|| running.as_ref().map(|view| self.running_dialog(view, look, &ui)));
         let content = content.or_else(|| {
             root_change
                 .as_ref()
@@ -525,6 +548,23 @@ impl Render for Overlays {
         let layer = match content {
             Some(content) => {
                 let ui = ui.clone();
+                // The close dialog's scrim cancels it; Escape alone doesn't reach it.
+                let outside = match shown {
+                    Some(Kind::Close) => {
+                        AppAction::Session(SessionAction::Close(humata2_session::CloseAction::Cancel))
+                    }
+                    Some(Kind::RunningEnd) => {
+                        AppAction::MachinePage(humata2_hosts::MachinePageAction::Running(
+                            humata2_hosts::RunningAction::CancelEnd,
+                        ))
+                    }
+                    Some(Kind::RunningAdopt) => {
+                        AppAction::MachinePage(humata2_hosts::MachinePageAction::Running(
+                            humata2_hosts::RunningAction::CancelAdopt,
+                        ))
+                    }
+                    _ => AppAction::Escape,
+                };
                 layer
                     .child(
                         div()
@@ -539,7 +579,7 @@ impl Render for Overlays {
                                 rgba(0x0000_0080)
                             })
                             .occlude()
-                            .on_click(move |_, _, cx| ui.send(AppAction::Escape, cx)),
+                            .on_click(move |_, _, cx| ui.send(outside.clone(), cx)),
                     )
                     .child(
                         div()
@@ -551,7 +591,7 @@ impl Render for Overlays {
                             .justify_center()
                             .pt(px(match shown {
                                 Some(Kind::Palette | Kind::Move | Kind::Continue | Kind::Rename | Kind::RootChange) => 110.,
-                                Some(Kind::Archive | Kind::MachineStop) => 120.,
+                                Some(Kind::Archive | Kind::Close | Kind::RunningEnd | Kind::RunningAdopt | Kind::MachineStop) => 120.,
                                 Some(Kind::MachineStart) => 180.,
                                 Some(Kind::Fork | Kind::SubmitReview) => 24.,
                                 Some(Kind::NewSession | Kind::Desk) => 70.,

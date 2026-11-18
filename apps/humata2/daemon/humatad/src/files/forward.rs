@@ -289,16 +289,21 @@ impl Forward {
     }
 
     /// `location` placed and judged for reading: a read the rule asks
-    /// about raises an Inbox card here, on the host (D768).
+    /// about raises an Inbox card here, on the host (D768). `run` makes the
+    /// relayed read an approval runs, from the place.
     async fn judged_read(
         &self,
         caller: &Caller,
         location: Option<pb::FileLocation>,
         field: &str,
         entry: Entry,
+        operation: &str,
+        run: impl FnOnce(&Placed) -> Option<super::Run>,
     ) -> Result<Placed, Status> {
         let placed = self.roots.place(location, field, entry)?;
-        self.reads.require(caller, placed.place.clone()).await?;
+        self.reads
+            .require(caller, placed.place.clone(), operation, || run(&placed))
+            .await?;
         Ok(placed)
     }
 
@@ -312,7 +317,29 @@ impl Forward {
         }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let placed = self.judged_read(&caller, request.location, "location", Entry::Folder).await?;
+        let page = request.page.clone();
+        let placed = self
+            .judged_read(&caller, request.location, "location", Entry::Folder, "list", |placed| {
+                let machine = placed.machine().to_owned();
+                let mut client = self.reach.relayed(&machine).ok()?.file();
+                let links = self.reach.links.get().cloned();
+                let sent = pb::ListDirectoryRequest {
+                    location: Some(there(placed)),
+                    page,
+                };
+                super::held_read("humata.v1.ListDirectoryResponse", async move {
+                    let mut reply = client
+                        .list_directory(Request::new(sent))
+                        .await
+                        .map_err(|status| lost(links.as_ref(), &machine, status))?
+                        .into_inner();
+                    for entry in &mut reply.entries {
+                        back(&machine, entry);
+                    }
+                    Ok(reply)
+                })
+            })
+            .await?;
         let machine = placed.machine().to_owned();
         let mut client = self.reach.relayed(&machine)?.file();
         let sent = pb::ListDirectoryRequest {
@@ -340,7 +367,25 @@ impl Forward {
         }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let placed = self.judged_read(&caller, request.location, "location", Entry::Folder).await?;
+        let placed = self
+            .judged_read(&caller, request.location, "location", Entry::Folder, "stat", |placed| {
+                let machine = placed.machine().to_owned();
+                let mut client = self.reach.relayed(&machine).ok()?.file();
+                let links = self.reach.links.get().cloned();
+                let sent = pb::StatRequest {
+                    location: Some(there(placed)),
+                };
+                super::held_read("humata.v1.FileEntry", async move {
+                    let mut entry = client
+                        .stat(Request::new(sent))
+                        .await
+                        .map_err(|status| lost(links.as_ref(), &machine, status))?
+                        .into_inner();
+                    back(&machine, &mut entry);
+                    Ok(entry)
+                })
+            })
+            .await?;
         let machine = placed.machine().to_owned();
         let mut client = self.reach.relayed(&machine)?.file();
         let sent = pb::StatRequest {
@@ -507,7 +552,8 @@ impl Forward {
                 })),
                 path: String::new(),
             };
-            self.judged_read(&caller, Some(location), "session", Entry::Folder).await?;
+            self.judged_read(&caller, Some(location), "session", Entry::Folder, "find", |_| None)
+                .await?;
         }
         let mut client = self.reach.relayed(&machine)?.file();
         let mut reply = client
@@ -531,7 +577,39 @@ impl Forward {
         }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
-        let placed = self.judged_read(&caller, request.location, "location", Entry::File).await?;
+        let (offset, max_bytes) = (request.offset, request.max_bytes);
+        let placed = self
+            .judged_read(&caller, request.location, "location", Entry::File, "read", |placed| {
+                let machine = placed.machine().to_owned();
+                let mut client = self.reach.relayed(&machine).ok()?.file();
+                let links = self.reach.links.get().cloned();
+                // Uncompressed, so the held chunk is the file's bytes.
+                let sent = pb::ReadFileRequest {
+                    location: Some(there(placed)),
+                    offset,
+                    max_bytes: super::held_max(max_bytes),
+                    reason: String::new(),
+                    accept_codecs: Vec::new(),
+                };
+                super::held_read("humata.v1.FileChunk", async move {
+                    let lose = |status: Status| lost(links.as_ref(), &machine, status);
+                    let mut chunks = client
+                        .read_file(Request::new(sent))
+                        .await
+                        .map_err(lose)?
+                        .into_inner();
+                    let mut read = Vec::new();
+                    while let Some(chunk) = chunks.message().await.map_err(lose)? {
+                        let last = chunk.last;
+                        read.push(chunk);
+                        if last {
+                            break;
+                        }
+                    }
+                    Ok(super::held_chunk(offset, max_bytes, read))
+                })
+            })
+            .await?;
         let machine = placed.machine().to_owned();
         let mut client = self.reach.relayed(&machine)?.file();
         let sent = pb::ReadFileRequest {

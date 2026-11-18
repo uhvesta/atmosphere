@@ -150,7 +150,7 @@ a machine checks only calls it answers alone, using the host's last
 | TrashService (files) | each machine's trash; the host for session records | host socket; forwarded | |
 | TransferEndService (files) | the machine that has the files | machine socket; host socket, relayed whole | The far end of a transfer the host drives: one call per step the engine takes on a local disk (D156). For the user and the host's relayed calls, never an agent |
 | BoardService (boards) | host | host socket; forwarded, or journaled (§9) | |
-| InboxService (inbox) | host; a machine while its host is away, for requests it holds (§9.4) | host socket; machine socket for `humata inbox` | |
+| InboxService (inbox) | host; a machine while its host is away, for requests it holds (§9.4) | host socket; machine socket for `humata inbox` | A question read off an agent's screen (D767) carries `on_screen` (22), a `ScreenAsk{tab}` naming the agent tab by its index among the session's tabs as ListTabs orders them; nothing else sets it, and the app shows that tab's live terminal under the card while it waits (D781). A Deny on such an item (the app's Dismiss) types nothing and reads the screen once: if the question is gone the answer returns the item withdrawn as `WITHDRAW_REASON_RESOLVED` (9); if it still asks, or can't be read, it is DENIED, no second item is raised for that screen, and the session stays NEEDS_INPUT, with no card, until a look sees the dialog gone. A look that finds the dialog gone, and a reply whose check finds it gone, also withdraw it as RESOLVED; the agent exiting or a new holder stays CALL_ENDED. |
 | AccessService, AuditService, CliAuthService (access) | host | host socket; forwarded | The policy a machine applies offline is a copy (§9.2). A machine checks CLI logins and the approval passphrase itself while the host is away |
 | DiffService, CommentService, ViewService, PullRequestReviewService (review) | host for comments, views, drafts, review state; the machine computes diffs | host socket; forwarded; comment and view drafts refused while the host is away (§9.3) | |
 | ReviewChatService (review) | the review session's machine, which keeps the review chat's view state, notes and switches (PR-22–PR-26) | host socket; forwarded | The app reports its view; agents in the review change it through MCP (review_*), each change undoable. Switches off are denied with `SOURCE_REVIEW_SWITCH_OFF` |
@@ -234,8 +234,16 @@ It never changes what is checked.
   nothing is installed; the host's `config/agents.toml` changes that.
 - `ListAgents` lists only enabled kinds, and the plain shell, which is
   always on. Set `include_disabled` to list the rest, with `enabled = false`.
-- `SetAgentEnabled` changes `enabled` or `install_when_missing` (only the
-  fields set) and answers the definition. User-only: an agent or script is
+- `SetAgentEnabled` changes `enabled`, `install_when_missing` or
+  `asks_in_inbox` (only the fields set) and answers the definition.
+  `AgentDefinition.asks_in_inbox` (D782, default true) says whether that
+  kind's permission hook, ask-user form hook and on-screen questions come
+  to the Inbox; off, they get no decision and its own terminal asks. It
+  never changes RequestAccess, AskUser, file or copy approvals, proposals,
+  Desk moves or Migrate items. A write reaches every linked machine at
+  once. `AgentSettings.permissions_in_agent` (D199) is kept for old
+  clients: it reads true only while every kind's `asks_in_inbox` is off,
+  and setting it sets every kind's. User-only: an agent or script is
   told so and a peer is refused. An unknown agent, the plain shell, or
   `install_when_missing` on a kind with no install command is `INVALID_ARGUMENT`
   naming `agent` or `install_when_missing`. A daemon started without a home
@@ -463,6 +471,13 @@ that run, and any other state fails with `invalid_field` on `id`.
 `leave_channels` and `provider_delete` come with sessions, channels and
 providers.
 
+Once a `REMOVE_MACHINE` commits, the host also lets go of everything it kept under the machine's name, because a machine added later under that name is another machine (D783, D61):
+- Every session on the machine is archived as `machine_lost`.
+- Every archive of a session that ran there, including ones archived before the removal, gets `ArchiveSummary.machine_removed`.
+- The machine's pending Inbox requests are withdrawn with `WITHDRAW_REASON_MACHINE_REMOVED` (12). These are its sessions' requests, the ones its journal brought, and its Migrate items. Its remote-archive and restore follow-ups are dropped.
+
+Forget machine (LD-12) sets `machine_removed` and makes the same withdrawals. `Type`, the queued-typing calls, `Attach` and `RestoreSession` refuse a session marked `machine_removed` or `machine_lost` with `FAILED_PRECONDITION` (no kind), and never relay it to the machine now called that name. The host's mirror still serves `ReadTurns` and `humata session read`. A rebuild clears the mark together with the archive.
+
 ## 8. The peer link
 
 `PeerService` (peer.proto) is served by every remote daemon and called only
@@ -513,8 +528,14 @@ by the host over the stdio link the host started.
   folders' check and set-up, `CheckDeskFolders` and `MigrateDeskFolders`
   (D458); and the machine's
   own Storage page, `MachineService` `GetStorage`, `ClearBuildCache` and
-  `TrimLogs` (LD-13 to LD-15); the host relays those last two groups for the
-  user only, never for an agent)
+  `TrimLogs` (LD-13 to LD-15); the machine's own holders, `ListRunningHolders`,
+  `StopRunningHolder`, `ResumeRunningHolder`, `EndRunningHolder` and
+  `AdoptRunningHolder` (D784: Stop, Resume and End take shell tabs only and
+  refuse an agent tab with FailedPrecondition; Adopt makes a running holder
+  no session names a session in the channel given, the Desk when none, and
+  refuses one a session already has; an agent caller of Stop, End or Adopt
+  needs the machine destroy switch; an offline machine refuses them at once); the host
+  relays those last groups for the user only, never for an agent)
   to the machine's own socket
   daemon, which runs them as the user's, marked as from the host. Before
   answering Hello the link calls `DaemonService.BeginRelay` on that socket and
@@ -815,10 +836,17 @@ capability and path and fails at once `FAILED_PRECONDITION`
 `approval_pending` with its id. Repeating the read returns the same request
 while it waits, succeeds once it is approved, and is `PERMISSION_DENIED` `denied` with the request after a
 deny. A machine agent's read of another machine is asked on the host (D768).
-Approving it runs nothing: `WaitForAnswer` comes back approved with
-`result_type` `humata2.ReadApproved` and no bytes, which tells the client to
-repeat the read; the pending error's fix says so too. MCP's `inbox_wait` shows
-it as `repeat_call: true`, and `humata --wait` repeats the read and prints its
+There is one request per operation too: a stat and a read of one file get
+one each. Approving ListDirectory, Stat or ReadFile runs the read, and
+`WaitForAnswer` returns its result: the response message, or for ReadFile one
+uncompressed `FileChunk` of up to 8 MiB, not `last` when the file goes on (read
+the rest from `offset` + its length). The bytes go to the first wait that
+delivers them or the first repeat of the read; after that, and after 10
+minutes, the result is `humata2.ReadApproved` with no bytes. That marker is
+also what an approved FindFiles, Desk versions read, or a read of a machine
+that was offline answers: it tells the client to repeat the read, which goes
+through while the approval is kept. MCP's `inbox_wait` shows it as
+`repeat_call: true`, and `humata --wait` repeats the read and prints its
 result.
 
 `host_key_changed` is not retryable and its fix never says "accept the new

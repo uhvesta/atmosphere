@@ -495,6 +495,8 @@ pub struct Rig {
     /// The host's PATH, with this rig's `ssh` first. A restart of the host
     /// needs it again, since a start's environment is for that start only.
     path: String,
+    /// What the boxes run, for a box put in place of one (`replace_box`).
+    build: Build,
     boxes: Vec<Remote>,
 }
 
@@ -646,6 +648,7 @@ impl Rig {
             world,
             feed: Mutex::new(feed),
             path,
+            build,
             boxes: remotes,
         };
         for remote in &rig.boxes {
@@ -745,10 +748,34 @@ impl Rig {
     /// Adds `name`, confirming the host key it presents, and waits for its
     /// link.
     async fn add(&self, name: &str) {
+        self.add_as(name, "first").await;
+    }
+
+    /// A fresh machine in place of `name`, which the host has removed: the
+    /// same ssh alias now reaches a new machine, which is added under the
+    /// same name, as a person who reuses the alias does (D783). The old
+    /// machine and its folders are gone.
+    pub async fn replace_box(&mut self, name: &'static str) {
+        let at = self
+            .boxes
+            .iter()
+            .position(|remote| remote.name == name)
+            .unwrap_or_else(|| panic!("this rig has no machine {name}"));
+        drop(self.boxes.remove(at));
+        let links = self.host.dir.path().join("links");
+        let template = format!("file://{}/{{owner}}/{{name}}.git", self.world.remotes.display());
+        let fresh = Remote::start(name, &links, &template, self.build, &[]).await;
+        self.boxes.push(fresh);
+        self.add_as(name, "again").await;
+    }
+
+    /// Adds `name` as [`add`](Self::add) does; `round` keeps each add's
+    /// idempotency keys its own.
+    async fn add_as(&self, name: &str, round: &str) {
         let mut machines = self.machines().await;
         let request = |step: &str, fingerprint: &str| pb::AddSshMachineRequest {
             idempotency_key: Some(pb::IdempotencyKey {
-                value: format!("add-{name}-{step}"),
+                value: format!("add-{name}-{round}-{step}"),
             }),
             ssh_host: format!("me@{name}.internal"),
             name: name.to_owned(),

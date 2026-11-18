@@ -9,9 +9,14 @@
 //! - Humata never answers it itself. Only the person's reply picks a
 //!   choice, by moving the screen's highlight to it and pressing Enter, and
 //!   only if the screen still asks the same question.
-//! - Deny types nothing: the question stays on the screen for the person.
+//! - Deny (the app's Dismiss, D781) types nothing. It looks at the screen
+//!   once: a question no longer there is withdrawn as resolved; one still
+//!   there is denied, and the session goes on needing you, with no card,
+//!   until a look sees it gone.
 //! - A question the screen no longer shows (answered in the terminal) is
-//!   withdrawn, and so is one whose agent exited.
+//!   withdrawn as resolved; one whose agent exited, as its call ended.
+//! - The card names the agent's tab, so the app shows that screen's live
+//!   terminal under it (D781).
 //! - While a card is up, the agent's output also has the screen read again
 //!   ([`output`]), at most every [`RELOOK_EVERY`]: a box drawn in steps
 //!   gets its last choices, and one answered in the terminal is withdrawn,
@@ -80,8 +85,11 @@ struct Open {
     /// What the card shows: a later look that reads more of the screen
     /// (a box drawn in steps) raises the card again with it.
     asked: Asked,
+    /// The card's request id; `None` for D782's card-less hold.
+    card: Option<String>,
     /// Holds the card and the session's Needs you; ends with the person's
-    /// answer. Ending it early withdraws the card.
+    /// answer, except a Deny, which leaves the session needing you while
+    /// the screen asks (D781). Ending it early withdraws a pending card.
     task: JoinHandle<()>,
 }
 
@@ -143,7 +151,9 @@ pub(crate) fn gone(session: &str) {
     let session = session.to_owned();
     tokio::spawn(async move {
         let mut open = asks.open.lock().await;
-        asks.withdraw_gone(&mut open, &session);
+        // Dropping the wait withdraws a pending card as its call ended.
+        open.remove(&session);
+        asks.watching().asking.remove(&session);
     });
 }
 
@@ -163,16 +173,18 @@ impl Asks {
     }
 
     /// `session`'s screen no longer asks its card's question (answered in
-    /// the terminal, or the agent moved on): withdraws the card, ends its
-    /// hold on the session's Needs you and stops following the screen for
-    /// it. `open` is the locked map of open cards.
-    fn withdraw_gone(&self, open: &mut HashMap<String, Open>, session: &str) {
-        open.remove(session);
+    /// the terminal, or the agent moved on): withdraws the card as resolved
+    /// (D781), ends its hold on the session's Needs you and stops following
+    /// the screen for it. `open` is the locked map of open cards.
+    async fn withdraw_gone(&self, open: &mut HashMap<String, Open>, session: &str) {
+        if let Some(card) = open.remove(session).and_then(|mut gone| gone.card.take()) {
+            self.inbox.withdraw_screen_resolved(&card).await;
+        }
         self.watching().asking.remove(session);
     }
 
     async fn look(self: &Arc<Self>, session: &str, holder_pid: u32) {
-        let Some((record, tab)) = self.agent_of(session, holder_pid).await else {
+        let Some((record, tab, index)) = self.agent_of(session, holder_pid).await else {
             return;
         };
         let Some(seen) = self.screen(&tab).await else {
@@ -180,7 +192,7 @@ impl Asks {
         };
         let mut open = self.open.lock().await;
         let Some((question, asked)) = seen else {
-            self.withdraw_gone(&mut open, session);
+            self.withdraw_gone(&mut open, session).await;
             return;
         };
         let shown = open.get(session).is_some_and(|now| {
@@ -192,7 +204,7 @@ impl Asks {
         // A card read off a screen still drawing is withdrawn first.
         open.remove(session);
         self.watching().asking.remove(session);
-        let Some(task) = self.raise(&record, tab, question, asked.clone()).await else {
+        let Some((task, card)) = self.raise(&record, tab, index, question, asked.clone()).await else {
             return;
         };
         self.watching().asking.insert(session.to_owned());
@@ -202,6 +214,7 @@ impl Asks {
                 holder_pid,
                 question,
                 asked,
+                card,
                 task,
             },
         );
@@ -213,17 +226,21 @@ impl Asks {
         read_screen(&tab.holder_socket).await
     }
 
-    /// Raises the card and holds it until the person answers.
+    /// Raises the card for `tab`, the session's tab at `index`, and holds
+    /// it until the person answers. Returns the hold and the card's id. For
+    /// an agent whose asks stay in its own terminal (D782) it raises no
+    /// card, but still holds the session's Needs you, card-less, until a
+    /// look sees the dialog gone and drops the [`Open`] entry.
     async fn raise(
         self: &Arc<Self>,
         record: &SessionRecord,
         tab: TabRecord,
+        index: u32,
         question: ScreenQuestion,
         asked: Asked,
-    ) -> Option<JoinHandle<()>> {
-        // D199: the user keeps asks in the agent's own screen.
-        if self.inbox.asks_in_agent().await.unwrap_or(false) {
-            return None;
+    ) -> Option<(JoinHandle<()>, Option<String>)> {
+        if self.inbox.asks_in_agent(&record.agent) {
+            return Some((hold_without_card(&record.id), None));
         }
         let agent = AgentCaller::of(record, &self.machine);
         let caller = Caller::Agent(agent.clone());
@@ -238,7 +255,7 @@ impl Asks {
         let still_asked = still_asks(tab.holder_socket.clone(), question);
         let wait = match self
             .inbox
-            .raise_screen_question(&caller, &agent, card, still_asked)
+            .raise_screen_question(&caller, &agent, card, index, still_asked)
             .await
         {
             Ok(wait) => wait,
@@ -251,11 +268,23 @@ impl Asks {
                 return None;
             }
         };
+        let id = wait.id().to_owned();
         let asking = crate::session_service::Asking::hold(&record.id);
         let this = Arc::clone(self);
-        Some(tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut wait = wait;
             let decision = wait.decided().await;
+            if let Decision::Deny { .. } = decision {
+                // D781: dismissed while the screen still asks (or couldn't
+                // be read). The agent is still blocked on it, so this task
+                // becomes D782's card-less hold: Needs you stays, the
+                // screen is still followed, and the look that sees the
+                // question gone drops the entry, which aborts this task.
+                // The same screen raises no second card.
+                drop(wait);
+                hold_card_less(asking).await;
+                return;
+            }
             drop(asking);
             // Settled: the screen needn't be followed for this card.
             if let Some(session) = tab.session.as_deref() {
@@ -265,9 +294,30 @@ impl Asks {
                 this.pick(&tab, question, &text).await;
             }
             drop(wait);
-        }))
+        });
+        Some((task, Some(id)))
     }
 
+}
+
+/// Holds `session`'s Needs you with no Inbox card, while its screen still
+/// asks (D782; D781's Dismiss reuses it). Kept as an [`Open`] entry's task,
+/// so the hold ends when a look sees the question gone and `withdraw_gone`
+/// drops the entry, which aborts the task and lets go of the hold.
+pub(crate) fn hold_without_card(session: &str) -> JoinHandle<()> {
+    tokio::spawn(hold_card_less(crate::session_service::Asking::hold(session)))
+}
+
+/// Keeps `asking` (the session's Needs you) until the task running it is
+/// aborted: the one card-less hold, for D782's agents that ask in their
+/// own terminal and for a card dismissed while its screen still asks
+/// (D781).
+async fn hold_card_less(asking: crate::session_service::Asking) {
+    let _asking = asking;
+    std::future::pending::<()>().await;
+}
+
+impl Asks {
     /// Picks `choice` on `tab`'s screen, if the screen still asks
     /// `question` and still lists that choice. Nothing else is typed.
     async fn pick(&self, tab: &TabRecord, question: ScreenQuestion, choice: &str) {
@@ -311,12 +361,13 @@ impl Asks {
         }
     }
 
-    /// The session's record and its agent's tab, while it runs under
+    /// The session's record, its agent's tab and that tab's index among
+    /// the session's tabs, as ListTabs orders them, while it runs under
     /// `holder_pid`.
-    async fn agent_of(&self, session: &str, holder_pid: u32) -> Option<(SessionRecord, TabRecord)> {
+    async fn agent_of(&self, session: &str, holder_pid: u32) -> Option<(SessionRecord, TabRecord, u32)> {
         let (store, key) = (self.store.clone(), session.to_owned());
         let read = tokio::task::spawn_blocking(
-            move || -> Result<Option<(SessionRecord, TabRecord)>, StoreError> {
+            move || -> Result<Option<(SessionRecord, TabRecord, u32)>, StoreError> {
                 let Some(agent) = store.agent(&key)? else {
                     return Ok(None);
                 };
@@ -329,7 +380,16 @@ impl Asks {
                 if tab.kind != TabKind::Agent {
                     return Ok(None);
                 }
-                Ok(store.session(&key)?.map(|record| (record, tab)))
+                let Some(index) = store
+                    .tabs()?
+                    .iter()
+                    .filter(|each| each.session.as_deref() == Some(key.as_str()))
+                    .position(|each| each.id == tab.id)
+                    .and_then(|index| u32::try_from(index).ok())
+                else {
+                    return Ok(None);
+                };
+                Ok(store.session(&key)?.map(|record| (record, tab, index)))
             },
         )
         .await;
@@ -355,11 +415,11 @@ async fn read_screen(socket: &Path) -> Option<Option<(ScreenQuestion, Asked)>> {
     }))
 }
 
-/// Checks a reply to the card for `question` against the screen of the
-/// holder at `socket` as the reply comes: whether it still asks `question`
-/// and lists the reply's choice.
+/// Checks an answer to the card for `question` against the screen of the
+/// holder at `socket` as it comes: whether it still asks `question` and,
+/// for a reply, lists the reply's choice.
 fn still_asks(socket: std::path::PathBuf, question: ScreenQuestion) -> StillAsked {
-    Arc::new(move |choice: String| {
+    Arc::new(move |choice: Option<String>| {
         let socket = socket.clone();
         Box::pin(async move {
             let read = tokio::time::timeout(CHECK_LIMIT, read_screen(&socket)).await;
@@ -379,7 +439,10 @@ fn still_asks(socket: std::path::PathBuf, question: ScreenQuestion) -> StillAske
                     ),
                 ));
             };
-            Ok(keys_for(question, &choice, now.as_ref()).is_ok())
+            Ok(match choice {
+                Some(choice) => keys_for(question, &choice, now.as_ref()).is_ok(),
+                None => now.is_some_and(|(asking, _)| asking == question),
+            })
         })
     })
 }

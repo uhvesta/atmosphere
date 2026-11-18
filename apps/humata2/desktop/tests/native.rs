@@ -196,6 +196,8 @@ mod fork_move;
 // AGENTSET (D725): Settings › Agents switches.
 #[path = "native/agent_switches.rs"]
 mod agent_switches;
+#[path = "native/inbox_terminal.rs"]
+mod inbox_terminal;
 #[path = "native/hosts_settings.rs"]
 mod hosts_settings;
 #[path = "native/lists.rs"]

@@ -616,8 +616,8 @@ fn desk_session(look: Look, info: Option<Div>) -> Div {
         .bg(c(look.panel))
         .border_b_1()
         .border_color(c(look.line))
-        .child(session::tab(look, Some(status(St::Working).into_any_element()), "claude", true, false))
-        .child(session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false, false))
+        .child(session::tab(look, Some(status(St::Working).into_any_element()), "claude", true))
+        .child(session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false))
         .child(div().px(px(10.)).child(small_icon(IconName::Plus, look.secondary)));
     let lines = vec![
         tl(look.term_dim, "~/Humata/payments-rewrite/desk/triage-flaky-tests $ claude"),
@@ -757,7 +757,7 @@ pub fn moving_copy_progress(look: Look) -> Div {
         .bg(c(look.panel))
         .border_b_1()
         .border_color(c(look.line))
-        .child(session::tab(look, Some(status(St::Working).into_any_element()), "claude", true, false))
+        .child(session::tab(look, Some(status(St::Working).into_any_element()), "claude", true))
         .child(div().flex_1())
         .child(div().mr(px(12.)).child(secondary(look, "read-only until the agent resumes")));
     let body = div()

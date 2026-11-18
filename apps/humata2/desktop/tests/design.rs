@@ -14,6 +14,8 @@
 //! only into its own agents' terminals, one per agent; another copy of the
 //! work is a fork. New session runs any agent's TUI or a plain terminal.
 
+#[path = "design/agent_asks.rs"]
+mod agent_asks;
 #[path = "design/desk.rs"]
 mod desk;
 #[path = "design/board.rs"]
@@ -58,6 +60,8 @@ mod pr_review;
 mod views;
 #[path = "design/diff_targets.rs"]
 mod diff_targets;
+#[path = "design/screen_question.rs"]
+mod screen_question;
 #[path = "design/stop.rs"]
 mod stop;
 #[path = "design/upgrade.rs"]
@@ -286,6 +290,20 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     ("97-desk-moving-copy-progress", LIGHT, roam::moving_copy_progress),
     // R2 (CV-8): no frame drew this dialog; built from frames 62 and 63.
     ("113-continue-in-channel", LIGHT, fork_move::continue_in_channel),
+    // D782 (2026-11-17): each agent's "Ask in the Inbox" switch; Fable
+    // accepted the native capture on 2026-11-17.
+    ("117-settings-agents-ask-in-inbox", LIGHT, agent_asks::ask_in_inbox),
+];
+
+/// Frames not yet approved: drawn into the test's undeclared outputs
+/// (`candidates/<name>.png`) for review, never checked against a golden.
+/// Move one into [`FRAMES`] and record it once it is approved.
+const CANDIDATES: &[(&str, Look, Draw)] = &[
+    // D781 (2026-11-17): a question on its agent's screen with its live
+    // terminal under the card.
+    ("114-inbox-screen-question", LIGHT, screen_question::unfocused),
+    ("115-inbox-screen-question-dark", DARK, screen_question::focused),
+    ("116-inbox-screen-question-no-terminal", LIGHT, screen_question::offline_screen),
 ];
 
 // The glob import brings in gpui's own `test` attribute, so name std's.
@@ -302,8 +320,14 @@ fn design_goldens() {
         Tolerance::default()
     };
     let mut failed = Vec::new();
-    for (name, look, draw) in FRAMES {
+    let candidates = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR")
+        .map(|folder| std::path::PathBuf::from(folder).join("candidates"));
+    for (name, look, draw) in FRAMES.iter().chain(CANDIDATES) {
         let (look, draw) = (*look, *draw);
+        let candidate = CANDIDATES.iter().any(|(each, _, _)| each == name);
+        if candidate && candidates.is_none() {
+            continue;
+        }
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(760.))))),
             show: false,
@@ -316,6 +340,11 @@ fn design_goldens() {
             .into();
         cx.run_until_parked();
         let image = cx.capture_screenshot(window).expect("the window draws");
+        if let (true, Some(folder)) = (candidate, candidates.as_ref()) {
+            std::fs::create_dir_all(folder).expect("the candidates folder is made");
+            image.save(folder.join(format!("{name}.png"))).expect("the candidate is written");
+            continue;
+        }
         // Each failing frame still writes its .new.png, so one run shows them all.
         if let Err(error) = snapshots.check_image(name, &image, tolerance) {
             failed.push(format!("{name}: {error}"));

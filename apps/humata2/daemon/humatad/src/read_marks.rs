@@ -246,6 +246,11 @@ pub(crate) fn view(session: &str) -> (Viewing, bool) {
     )
 }
 
+/// Whether a client views `session` now (D784: "open in a tab").
+pub(crate) fn is_viewed(session: &str) -> bool {
+    state().viewers.contains_key(session)
+}
+
 /// A view of a session, held while a client holds its ViewSession stream.
 pub(crate) struct Viewing {
     session: String,

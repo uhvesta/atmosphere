@@ -85,6 +85,9 @@ pub enum Offer {
     Migrate,
     /// Migrate again, after a failure.
     MigrateAgain,
+    /// Dismiss, on a question read off its agent's screen: closes the item
+    /// and presses nothing (D781). Its choices show beside it.
+    Dismiss,
 }
 
 /// Where a Migrate item is, as its card shows it.
@@ -297,6 +300,9 @@ impl InboxState {
         let Some(request) = self.find(id).filter(|request| request.answer.is_none()) else {
             return Vec::new();
         };
+        if request.on_screen.is_some() {
+            return vec![Offer::Dismiss];
+        }
         if request.kind == RequestKind::Question {
             return vec![Offer::Reply];
         }
@@ -416,6 +422,20 @@ impl InboxState {
         self.find(id)
     }
 
+    /// The terminal the open item's detail shows: the session and tab of
+    /// a question on its agent's screen, while it waits (D781). The open
+    /// item is the selection when it shows, else the first shown.
+    #[must_use]
+    pub fn terminal(&self) -> Option<(SessionId, usize)> {
+        let shown = self.shown();
+        let open = self
+            .selection()
+            .filter(|selected| shown.iter().any(|request| request.id == selected.id))
+            .or_else(|| shown.first().copied())?;
+        let tab = open.on_screen.filter(|_| open.answer.is_none())?;
+        Some((open.session.clone(), tab))
+    }
+
     fn select_visible(&mut self) {
         let shown = self.shown();
         if !shown.iter().any(|r| Some(&r.id) == self.selected.as_ref()) {
@@ -484,6 +504,9 @@ pub enum InboxAction {
     ToggleAlways(RequestId),
     /// Answer a question with one of its choices.
     Choose(RequestId, String),
+    /// Dismiss a question on its agent's screen: a Deny with no reply, which
+    /// types nothing into the terminal (D781).
+    Dismiss(RequestId),
     /// Open the session that asked this request, with the request selected.
     OpenRequest(RequestId),
     /// Migrate, or Migrate again, on a Migrate item. Does nothing unless the
@@ -675,6 +698,7 @@ fn own_request(old: &OldLocalDaemon) -> Request {
         asked_by: None,
         undo_note: None,
         choices: Vec::new(),
+        on_screen: None,
     }
 }
 
@@ -787,6 +811,7 @@ impl Reducer for Inbox {
             InboxAction::Answer(id, _)
             | InboxAction::ToggleAlways(id)
             | InboxAction::Choose(id, _)
+            | InboxAction::Dismiss(id)
             | InboxAction::Always(id)
             | InboxAction::StartReply(id)
                 if state.is_migrate(&id) => {}
@@ -816,6 +841,9 @@ impl Reducer for Inbox {
             }
             InboxAction::Choose(id, text) => {
                 return self.answer(state, id, Answer::Replied { text });
+            }
+            InboxAction::Dismiss(id) => {
+                return self.answer(state, id, Answer::Denied { reply: None });
             }
             InboxAction::OpenRequest(id) => {
                 if let Some(request) = state.workspace.requests.iter().find(|r| r.id == id) {

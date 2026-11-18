@@ -3,7 +3,8 @@
 //! question with the question and every choice the screen offers, and the
 //! session waits on you meanwhile. Humata types nothing until the person
 //! answers in the Inbox; then it picks their choice. A question answered in
-//! the terminal instead is withdrawn.
+//! the terminal instead is withdrawn. An agent whose "Ask in the Inbox" is
+//! off (D782) raises no card; the session still needs you while it asks.
 
 mod common;
 
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use common::{
-    Attach, Build, Daemon, WAIT, World, agent_tab, create_channel, folder, open, start_session,
+    Attach, Build, Daemon, WAIT, World, agent_tab, create_channel, folder, open,
 };
 use humata2_grpc::humata::v1 as pb;
 
@@ -146,12 +147,25 @@ struct Fixture {
     answer: PathBuf,
 }
 
+/// How the fixture's session starts.
+#[derive(Default)]
+struct Start {
+    /// D782: the agent's "Ask in the Inbox" is off before it starts.
+    asks_in_terminal: bool,
+    /// Its first message, held until its input is free (D762).
+    first_message: String,
+}
+
 impl Fixture {
     async fn new() -> Self {
         Self::drawing(Draw::Whole).await
     }
 
     async fn drawing(draw: Draw) -> Self {
+        Self::starting(draw, Start::default()).await
+    }
+
+    async fn starting(draw: Draw, start: Start) -> Self {
         let dir = folder();
         let world = World::new(dir.path());
         let script = dir.path().join("trust-agent.sh");
@@ -174,7 +188,32 @@ impl Fixture {
         let daemon = Daemon::start_with(Build::Admin, dir, &refs).await;
         let (channel, setup) = create_channel(&daemon, "Payments", &[("acme", "api")]).await;
         assert_eq!(setup.state, pb::OperationState::Succeeded as i32, "{:?}", setup.error);
-        let (session, operation) = start_session(&daemon, &channel, "Fix login").await;
+        if start.asks_in_terminal {
+            let shown = pb::agent_service_client::AgentServiceClient::new(daemon.channel().await)
+                .set_agent_enabled(pb::SetAgentEnabledRequest {
+                    agent: Some(pb::AgentId {
+                        value: common::AGENT_NAME.to_owned(),
+                    }),
+                    asks_in_inbox: Some(false),
+                    ..Default::default()
+                })
+                .await
+                .expect("the user turns the agent's Ask in the Inbox off")
+                .into_inner();
+            assert!(!shown.asks_in_inbox);
+        }
+        let machine = common::machine_id(&daemon).await;
+        let mut request = common::start_request(channel.id.as_ref().expect("channel id"), &machine, "Fix login");
+        request.first_message = start.first_message;
+        let started = daemon
+            .session_service()
+            .await
+            .start_session(request)
+            .await
+            .expect("start the session")
+            .into_inner();
+        let operation = common::finished(&daemon, &started.operation.expect("an operation")).await;
+        let session = started.session.expect("a session");
         assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{:?}", operation.error);
         Self {
             daemon,
@@ -491,4 +530,145 @@ async fn typing_at_the_prompt_after_the_trust_box_was_answered_on_the_screen_is_
     let typed = fix.type_now("hello\n").await;
     assert!(typed.typed);
     assert!(!typed.agent_busy, "{typed:?}");
+}
+
+/// D782: an agent whose "Ask in the Inbox" is off raises no card for the
+/// trust box on its screen, but the session needs you while the box shows
+/// and not after it is answered in the terminal; its first message, held
+/// meanwhile, is sent once.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_asking_in_its_terminal_raises_no_card_but_needs_you_until_answered() {
+    let dir = folder();
+    let marker = dir.path().join("first-message-ran");
+    let fix = Fixture::starting(
+        Draw::Whole,
+        Start {
+            asks_in_terminal: true,
+            first_message: format!("run:echo sent >> '{}'", marker.display()),
+        },
+    )
+    .await;
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::NeedsInput).await;
+    // Long enough for a card to have come, as the tests above see one come.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let pending = fix
+        .requests()
+        .await
+        .into_iter()
+        .filter(|request| request.state == pb::RequestState::Pending as i32)
+        .count();
+    assert_eq!(pending, 0, "a card was raised for an agent asking in its terminal");
+    assert_eq!(fix.status().await, pb::SessionStatus::NeedsInput);
+    assert!(!marker.exists(), "the first message was sent over the trust box");
+
+    let mut attach = fix.attach().await;
+    attach.type_text("\r").await;
+    assert_eq!(wait_answer(&fix.answer).await, "");
+    fix.wait_not_needing_you().await;
+    let deadline = Instant::now() + WAIT;
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the held first message was never sent");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(std::fs::read_to_string(&marker).expect("read the marker"), "sent\n", "sent more than once");
+}
+
+fn dismiss() -> pb::request_answer::Answer {
+    pb::request_answer::Answer::Deny(pb::Deny {
+        note: String::new(),
+    })
+}
+
+/// D781: a question read off the agent's screen names the agent's tab, by
+/// its index among the session's tabs as ListTabs orders them, so the app
+/// can show that screen under it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_screen_question_names_its_agent_tab() {
+    let fix = Fixture::new().await;
+    let card = fix.wait_pending().await;
+    let tabs = fix
+        .daemon
+        .terminals()
+        .await
+        .list_tabs(pb::ListTabsRequest {
+            session: Some(fix.session.clone()),
+        })
+        .await
+        .expect("list the session's tabs")
+        .into_inner()
+        .tabs;
+    let agent = tabs
+        .iter()
+        .position(|tab| tab.kind == pb::tab::Kind::Agent as i32)
+        .expect("the session has an agent tab");
+    let tab = card.on_screen.as_ref().map(|on_screen| on_screen.tab as usize);
+    assert_eq!(tab, Some(agent), "{card:?}");
+}
+
+/// D781: Dismiss (a Deny with no note) while the dialog is still on the
+/// screen types nothing and raises no second item, and the session goes on
+/// needing you until the dialog is answered in its terminal.
+#[tokio::test(flavor = "multi_thread")]
+async fn dismissing_while_the_screen_asks_types_nothing_and_the_session_keeps_needing_you() {
+    let fix = Fixture::new().await;
+    let card = fix.wait_pending().await;
+    let id = card.id.clone().expect("card has an id");
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::NeedsInput).await;
+    let dismissed = fix.answer(&id, dismiss()).await.expect("dismiss the item");
+    assert_eq!(dismissed.state, pb::RequestState::Denied as i32, "{dismissed:?}");
+
+    // Longer than a quiet spell, so the screen has been looked at again.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert!(!fix.answer.exists(), "dismissing typed into the question");
+    let pending = fix
+        .requests()
+        .await
+        .into_iter()
+        .filter(|request| request.state == pb::RequestState::Pending as i32)
+        .count();
+    assert_eq!(pending, 0, "a second item was raised for the same screen");
+    assert_eq!(fix.status().await, pb::SessionStatus::NeedsInput);
+
+    // Answered in the terminal: the session no longer needs you.
+    let mut attach = fix.attach().await;
+    attach.type_text("\r").await;
+    assert_eq!(wait_answer(&fix.answer).await, "");
+    fix.wait_not_needing_you().await;
+    assert_eq!(fix.request(&id).await.state, pb::RequestState::Denied as i32);
+}
+
+/// D781: an item whose dialog was answered in the terminal ends withdrawn
+/// as resolved, not as a call that ended, whether Dismiss or the next look
+/// at the screen finds it gone first; Dismiss types nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn dismissing_after_the_dialog_was_answered_in_the_terminal_withdraws_it_as_resolved() {
+    let fix = Fixture::new().await;
+    let card = fix.wait_pending().await;
+    let id = card.id.clone().expect("card has an id");
+
+    let mut attach = fix.attach().await;
+    attach.type_text("\r").await;
+    attach.wait_for("agent up").await;
+    assert_eq!(wait_answer(&fix.answer).await, "");
+    // Taken as the item's end if Dismiss came first; refused as withdrawn
+    // if the look did. Either way nothing is pressed.
+    let _ = fix.answer(&id, dismiss()).await;
+
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let request = fix.request(&id).await;
+        if request.state == pb::RequestState::Withdrawn as i32 {
+            assert_eq!(
+                request.withdraw_reason,
+                pb::WithdrawReason::Resolved as i32,
+                "{request:?}"
+            );
+            break;
+        }
+        assert_ne!(request.state, pb::RequestState::Denied as i32, "{request:?}");
+        assert!(Instant::now() < deadline, "the item was never withdrawn");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    fix.wait_not_needing_you().await;
 }

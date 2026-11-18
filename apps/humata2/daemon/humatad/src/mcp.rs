@@ -1701,6 +1701,18 @@ fn approved_result(result_type: &str, bytes: &[u8]) -> Value {
         "humata.v1.FileEntry" => pb::FileEntry::decode(bytes)
             .ok()
             .map(|entry| file_json(&entry)),
+        // D768: an approved file_read, held whole (uncompressed) up to a cap.
+        "humata.v1.FileChunk" => pb::FileChunk::decode(bytes).ok().map(|chunk| {
+            let next = chunk.offset + chunk.data.len() as u64;
+            let mut shown = match String::from_utf8(chunk.data) {
+                Ok(text) => json!({ "text": text }),
+                Err(error) => json!({ "base64": files::base64_encode(error.as_bytes()) }),
+            };
+            if !chunk.last {
+                shown["more_from_offset"] = json!(next);
+            }
+            shown
+        }),
         "humata.v1.Session" => pb::Session::decode(bytes)
             .ok()
             .map(|session| session_json(&session)),
@@ -2350,6 +2362,32 @@ mod approved_read_tests {
         let shown = approved_result(status::READ_APPROVED, &[]);
         assert_eq!(shown["decision"], "approved");
         assert_eq!(shown["repeat_call"], true);
+    }
+
+    #[test]
+    fn an_approved_file_read_shows_the_files_text() {
+        use prost::Message;
+        let chunk = pb::FileChunk {
+            data: b"hello".to_vec(),
+            last: true,
+            ..Default::default()
+        };
+        let shown = approved_result("humata.v1.FileChunk", &chunk.encode_to_vec());
+        assert_eq!(shown["text"], "hello");
+        assert!(shown.get("more_from_offset").is_none());
+    }
+
+    #[test]
+    fn an_approved_read_cut_short_says_where_the_rest_starts() {
+        use prost::Message;
+        let chunk = pb::FileChunk {
+            offset: 10,
+            data: b"hello".to_vec(),
+            last: false,
+            ..Default::default()
+        };
+        let shown = approved_result("humata.v1.FileChunk", &chunk.encode_to_vec());
+        assert_eq!(shown["more_from_offset"], 15);
     }
 
     #[test]

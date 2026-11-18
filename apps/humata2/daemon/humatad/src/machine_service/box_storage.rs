@@ -40,6 +40,8 @@ pub(crate) struct BoxMachineSvc {
     plans: RootPlans,
     /// The machine's end of the Uplink, for its agents' lookups (D768).
     host: Arc<Forwarder>,
+    /// D784: starts a stopped shell again, as the restart doctor does.
+    sessions: Arc<std::sync::OnceLock<crate::session_service::SessionSvc>>,
 }
 
 impl BoxMachineSvc {
@@ -49,7 +51,12 @@ impl BoxMachineSvc {
         operations: Arc<Operations>,
         host: Arc<Forwarder>,
     ) -> Self {
-        Self { storage, machine, operations, plans: RootPlans::default(), host }
+        Self { storage, machine, operations, plans: RootPlans::default(), host, sessions: Arc::default() }
+    }
+
+    /// D784: the session service, which starts a stopped shell again.
+    pub(crate) fn use_sessions(&self, sessions: crate::session_service::SessionSvc) {
+        let _ = self.sessions.set(sessions);
     }
 
     /// An agent's lookup, asked of the host (D768). Anyone else gets what
@@ -124,6 +131,94 @@ impl pb::machine_service_server::MachineService for BoxMachineSvc {
         let request = request.into_inner();
         let freed = self.blocking(move |storage| storage.clear_build_cache(&request)).await?;
         Ok(Response::new(freed))
+    }
+
+    async fn list_running_holders(
+        &self,
+        request: Request<pb::ListRunningHoldersRequest>,
+    ) -> Result<Response<pb::ListRunningHoldersResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::host_only(&caller, "humata.v1.MachineService.ListRunningHolders")?;
+        let holders = crate::running_holders::list(self.storage.store(), &self.storage.holders(), &self.machine)
+            .await
+            .map_err(|error| error.into_status(&self.machine))?;
+        Ok(Response::new(pb::ListRunningHoldersResponse { holders }))
+    }
+
+    async fn stop_running_holder(
+        &self,
+        request: Request<pb::StopRunningHolderRequest>,
+    ) -> Result<Response<pb::StopRunningHolderResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::host_only(&caller, "humata.v1.MachineService.StopRunningHolder")?;
+        let tab = super::running_tab(request.get_ref().tab.as_ref())?;
+        crate::running_holders::stop(self.storage.store(), &tab)
+            .await
+            .map_err(|error| error.into_status(&self.machine))?;
+        Ok(Response::new(pb::StopRunningHolderResponse {}))
+    }
+
+    async fn resume_running_holder(
+        &self,
+        request: Request<pb::ResumeRunningHolderRequest>,
+    ) -> Result<Response<pb::ResumeRunningHolderResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::host_only(&caller, "humata.v1.MachineService.ResumeRunningHolder")?;
+        let tab = super::running_tab(request.get_ref().tab.as_ref())?;
+        let Some(sessions) = self.sessions.get() else {
+            return Err(status::internal(
+                "this machine's daemon started without its session service, so it can't start a shell again; restart its daemon".to_owned(),
+                "",
+            ));
+        };
+        crate::running_holders::resume(self.storage.store(), sessions, &caller, &tab)
+            .await
+            .map_err(|error| error.into_status(&self.machine))?;
+        Ok(Response::new(pb::ResumeRunningHolderResponse {}))
+    }
+
+    async fn end_running_holder(
+        &self,
+        request: Request<pb::EndRunningHolderRequest>,
+    ) -> Result<Response<pb::EndRunningHolderResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::host_only(&caller, "humata.v1.MachineService.EndRunningHolder")?;
+        let tab = super::running_tab(request.get_ref().tab.as_ref())?;
+        crate::running_holders::end(self.storage.store(), &tab)
+            .await
+            .map_err(|error| error.into_status(&self.machine))?;
+        Ok(Response::new(pb::EndRunningHolderResponse {}))
+    }
+
+    async fn adopt_running_holder(
+        &self,
+        request: Request<pb::AdoptRunningHolderRequest>,
+    ) -> Result<Response<pb::AdoptRunningHolderResponse>, Status> {
+        let caller = identity::caller(&request)?;
+        Self::host_only(&caller, "humata.v1.MachineService.AdoptRunningHolder")?;
+        let tab = super::running_tab(request.get_ref().tab.as_ref())?;
+        let channel = request.get_ref().channel.as_ref().map(|id| id.value.clone()).unwrap_or_default();
+        // The host knows the channels; this machine trusts the one it named.
+        let builtin = humata2_sessions::Agents::builtin();
+        let sessions = self.sessions.get();
+        let (agents, home) = sessions.map_or((&builtin, std::path::Path::new("")), |sessions| sessions.agents_and_home());
+        let session = crate::running_holders::adopt(
+            self.storage.store(),
+            &self.storage.holders(),
+            agents,
+            home,
+            &tab,
+            &channel,
+            false,
+        )
+        .await
+        .map_err(|error| error.into_status(&self.machine))?;
+        if let Some(sessions) = sessions {
+            sessions.adopted(&session).await;
+        }
+        Ok(Response::new(pb::AdoptRunningHolderResponse {
+            session: Some(pb::SessionId { value: session }),
+        }))
     }
 
     async fn trim_logs(

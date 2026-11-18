@@ -24,8 +24,8 @@ Rules for this area: never install a real agent CLI. Never set `install_when_mis
 ## Steps
 
 ### 1. Settings › Agents, all agents on (native fixture)
-- **Screen:** Settings opens on Agents (`Section::Agents`). The card has the title "Agents" and the caption "Agents shown in pickers and started on your machines". Rows: Claude Code, Codex, Copilot, OpenCode, each with a toggle `settings-agent-enabled-<id>`. Under each enabled row: "Install when missing", the install command in mono, "Never replaces one that's there", and a toggle `settings-agent-install-<id>`. Below the card: "Default agent" with buttons Claude Code, Codex, Copilot, OpenCode, Terminal (the chosen one is filled in accent). Then "Off: each agent asks in its own terminal".
-- **Offered:** the four enabled toggles, four install toggles, five default buttons, the asks toggle `settings-asks-in-inbox`.
+- **Screen:** Settings opens on Agents (`Section::Agents`). The card has the title "Agents" and the caption "Agents shown in pickers and started on your machines". Rows: Claude Code, Codex, Copilot, OpenCode, each with a toggle `settings-agent-enabled-<id>`. Under each enabled row: "Ask in the Inbox" with toggle `settings-agent-asks-<id>` (D782; subtitle "Off: it asks in its own terminal" only while off), then "Install when missing", the install command in mono, "Never replaces one that's there", and a toggle `settings-agent-install-<id>`. Below the card: "Default agent" with buttons Claude Code, Codex, Copilot, OpenCode, Terminal (the chosen one is filled in accent). D199's single "Ask for permission in the Inbox" card (`settings-asks-in-inbox`) is gone.
+- **Offered:** the four enabled toggles, four asks toggles, four install toggles, five default buttons.
 - **Action:** `Section(Agents)` (or `Reveal` of a row). Reducer returns `read_asks`: asks, codex trust, then `Agents(Loaded)`.
 - **Result:** until the daemon answers, the card shows only "Loading agents". The fixture's switches have install commands, so the install rows show in the native test.
 - **Evidence:** existing `desktop/tests/__snapshots__/native/29-permission-route.view.txt` is STALE. It shows the default buttons with no Agents card (it predates AGENTSET). New frame: PENDING RUN step 3.
@@ -47,9 +47,16 @@ Rules for this area: never install a real agent CLI. Never set `install_when_mis
 - **Evidence:** PENDING RUN → `$EV/frame/settings-agents.png`.
 - **Replay check:** `bazel test //apps/humata2/desktop:native_test --test_filter=agent_switches --test_env=AGENTSET_FRAME_OUT=$EV/frame --nocache_test_results`
 
+### 3b. Ask in the Inbox per agent, and custom kinds (D782)
+- **Screen:** every enabled agent has its own "Ask in the Inbox" row, on by default. Turning Copilot's off leaves the others on. Turning Copilot itself off hides its asks row. A custom kind in `agents.toml` (e.g. `[agents.my-agent]`) is listed on the card under its own name, with its enable and asks rows; pickers still offer only the built-in agents.
+- **Action:** click `settings-agent-asks-copilot` → `ToggleAsks("copilot")`; the daemon writes `asks_in_inbox = false` under `[agents.copilot]` and pushes the file to linked machines.
+- **Result:** Copilot's permission hook gets an empty reply (it asks in its terminal), its question hook passes through, and a screen ask raises no card but keeps the session NEEDS_INPUT until the dialog is gone. RequestAccess and AskUser from Copilot still come to the Inbox.
+- **Evidence:** candidate frame `117-settings-agents-ask-in-inbox.png` (scratch, for Fable).
+- **Replay check:** `bazel test //apps/humata2/desktop:native_test --test_filter=agent_switches`, `//apps/humata2/features/settings:agent_asks_test`, `//apps/humata2/daemon/humatad:hooks_test`, `:screen_questions_test`, `:remote_stack_test` (`an_agent_switch_changed_on_the_host_reaches_a_linked_box`).
+
 ### 4. A refused save goes back and says why
 - **Screen:** the switch returns to its old state. Error line `settings-agents-error` shows the message under the card.
-- **Action:** `Toggle` with the fake's `fail_next(SetAgentSwitch, "link unavailable")`.
+- **Action:** `Toggle` (or `ToggleAsks`) with the fake's `fail_next(SetAgentSwitch, "link unavailable")`.
 - **Result:** `Saved(Err)` restores `before`, sets `settings.error`.
 - **Evidence:** none. Reducer test.
 - **Replay check:** `bazel test //apps/humata2/features/settings:agent_switches_test --test_filter=a_refused_change`

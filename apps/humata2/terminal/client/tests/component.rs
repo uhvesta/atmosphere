@@ -1527,6 +1527,71 @@ fn an_unfocused_shown_replica_never_takes_back_a_size_another_view_set() {
     assert_eq!(resizes(&h), first, "the other view keeps the size it set");
 }
 
+/// D781: a view that never sizes the terminal sends no resize when it first
+/// shows it, when it is focused or when its bounds change.
+#[test]
+fn a_replica_that_never_fits_never_asks_for_a_size() {
+    let mut config = config(None, ShortcutPolicy::default());
+    config.fit = FitPolicy::Never;
+    let mut h = Harness::configured(config);
+    h.bind();
+    h.apply(ServerFrame::Control {
+        id: 1,
+        controller: true,
+    })
+    .unwrap();
+    h.snapshot(&Terminal::new(80, 24, 1000).unwrap(), 0);
+    h.draw();
+    assert!(resizes(&h).is_empty(), "showing the terminal sized it");
+
+    h.cx.update_window(h.window, |_, window, cx| {
+        window.activate_window();
+        h.child
+            .update(cx, |child, cx| child.focus_input(window, cx));
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    h.cx.run_until_parked();
+    h.draw();
+    assert!(resizes(&h).is_empty(), "focusing the view sized the terminal");
+
+    h.cx.update_window(h.window, |_, window, cx| {
+        window.resize(size(px(400.), px(300.)));
+        window.bounds_changed(cx);
+    })
+    .unwrap();
+    h.draw();
+    assert!(resizes(&h).is_empty(), "new bounds sized the terminal");
+}
+
+/// D781: a view that never sizes the terminal draws a screen wider than its
+/// bounds at the host's size, and can be scrolled sideways to see the rest.
+#[test]
+fn a_replica_that_never_fits_draws_a_screen_wider_than_its_bounds() {
+    let mut config = config(None, ShortcutPolicy::default());
+    config.fit = FitPolicy::Never;
+    let mut h = Harness::configured(config);
+    h.bind();
+    h.apply(ServerFrame::Control {
+        id: 1,
+        controller: true,
+    })
+    .unwrap();
+    // 300 columns never fit 800 px.
+    h.snapshot(&Terminal::new(300, 24, 1000).unwrap(), 0);
+    h.draw();
+    assert!(resizes(&h).is_empty());
+    let (cols, wider) = h.cx.update(|cx| {
+        let child = h.child.read(cx);
+        let pane = child.pane().expect("the snapshot is showing");
+        let cols = pane.read(cx).view().read(cx).grid().size().cols;
+        (cols, child.viewport_scroll().max_offset().x)
+    });
+    assert_eq!(cols, 300, "the grid stays at the host's size");
+    assert!(wider > px(0.), "the rest of the screen is a sideways scroll away");
+}
+
 fn background(h: &mut Harness) -> Rgb {
     h.cx.update(|cx| {
         let pane = h.child.read(cx).pane().unwrap().clone();

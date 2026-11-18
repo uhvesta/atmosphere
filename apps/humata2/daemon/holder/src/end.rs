@@ -4,6 +4,7 @@
 //! ended by its pid instead: no action waits on a holder for ever, and none
 //! leaves running a holder whose pid is known.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use std::time::Duration;
 use rustix::process::Signal;
 use tokio::process::Command;
 
-use crate::process::{Snapshot, holder_names, send, settle_until};
+use crate::process::{Snapshot, holder_names, own_group, send, send_group, settle_until};
 use crate::{HolderError, shutdown};
 
 /// How long a holder gets to end once sent SIGTERM, before it is SIGKILLed:
@@ -56,6 +57,16 @@ pub enum EndError {
     Survived { socket: PathBuf, pid: u32 },
 
     #[error(
+        "the terminal's holder at {} (process {pid}) was ended, but its program's process groups {groups:?} still run after SIGKILL; check them with `ps -g <group>` and end them by hand, since nothing else will",
+        socket.display()
+    )]
+    ProgramSurvived {
+        socket: PathBuf,
+        pid: u32,
+        groups: Vec<u32>,
+    },
+
+    #[error(
         "couldn't list the running processes with `ps` to find the terminal's holder at {}, whose pid file is gone: {source}; check that `ps` runs for this user. `ps -A -ww -o pid=,args= | grep -- '--socket {}'` shows the holder if one still runs; end it by hand before starting another there",
         socket.display(),
         socket.display()
@@ -87,6 +98,12 @@ pub async fn shutdown_or_end(socket: &Path, pid: u32) -> Result<Stopped, EndErro
 /// one named as a holder build or one serving `socket` under a name of its
 /// own, so a pid that has ended, or been reused by another program, is left
 /// alone.
+///
+/// D784: its program goes with it. A holder hangs its program up as it
+/// ends, but one that is killed can't, and a program can ignore the hangup:
+/// so each process group under the holder, noted before it was signalled,
+/// that still runs once the holder is gone is hung up, then killed after
+/// `grace`.
 pub async fn end_by_pid(socket: &Path, pid: u32, grace: Duration) -> Result<(), EndError> {
     let names: Vec<OsString> = holder_names(Path::new(""));
     let listing = |source| EndError::ListProcesses {
@@ -98,25 +115,61 @@ pub async fn end_by_pid(socket: &Path, pid: u32, grace: Duration) -> Result<(), 
     if !is_holder(&snapshot, socket, pid, &names).await.map_err(listing)? {
         return Ok(());
     }
+    // Noted now: once the holder is gone its programs are nobody's child.
+    let groups = snapshot.groups_under(pid, own_group());
     send(pid, Signal::TERM);
     let snapshot = settle_until(grace, |snapshot| snapshot.is_alive(pid))
         .await
         .map_err(listing)?;
     // Asked again: a pid freed by the holder's exit may have been reused.
-    if !is_holder(&snapshot, socket, pid, &names).await.map_err(listing)? {
-        return Ok(());
-    }
-    send(pid, Signal::KILL);
-    let snapshot = settle_until(KILLED_WAIT, |snapshot| snapshot.is_alive(pid))
-        .await
-        .map_err(listing)?;
     if is_holder(&snapshot, socket, pid, &names).await.map_err(listing)? {
-        return Err(EndError::Survived {
+        send(pid, Signal::KILL);
+        let snapshot = settle_until(KILLED_WAIT, |snapshot| snapshot.is_alive(pid))
+            .await
+            .map_err(listing)?;
+        if is_holder(&snapshot, socket, pid, &names).await.map_err(listing)? {
+            return Err(EndError::Survived {
+                socket: socket.to_owned(),
+                pid,
+            });
+        }
+    }
+    match end_groups(&groups, grace).await.map_err(listing)? {
+        Some(groups) => Err(EndError::ProgramSurvived {
             socket: socket.to_owned(),
             pid,
-        });
+            groups,
+        }),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// Hangs up each of `groups` that still runs, then kills those still
+/// running after `grace`. Returns the groups that survived even that.
+async fn end_groups(groups: &BTreeSet<u32>, grace: Duration) -> io::Result<Option<Vec<u32>>> {
+    let running = |snapshot: &Snapshot| -> Vec<u32> {
+        groups
+            .iter()
+            .copied()
+            .filter(|group| snapshot.group_alive(*group))
+            .collect()
+    };
+    let left = running(&Snapshot::take().await?);
+    if left.is_empty() {
+        return Ok(None);
+    }
+    for group in &left {
+        send_group(*group, Signal::HUP);
+    }
+    let left = running(&settle_until(grace, |snapshot| !running(snapshot).is_empty()).await?);
+    if left.is_empty() {
+        return Ok(None);
+    }
+    for group in &left {
+        send_group(*group, Signal::KILL);
+    }
+    let left = running(&settle_until(KILLED_WAIT, |snapshot| !running(snapshot).is_empty()).await?);
+    Ok((!left.is_empty()).then_some(left))
 }
 
 /// The pid of the holder serving `socket`: the one its pid file names, or,

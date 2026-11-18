@@ -465,8 +465,8 @@ pub fn migrate_first(look: Look) -> Div {
         .bg(c(look.panel))
         .border_b_1()
         .border_color(c(look.line))
-        .child(session::tab(look, Some(status(St::Working).into_any_element()), "codex", true, false))
-        .child(session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false, false))
+        .child(session::tab(look, Some(status(St::Working).into_any_element()), "codex", true))
+        .child(session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false))
         .child(div().flex_1())
         .child(div().mr(px(12.)).child(secondary(look, "read-only until gpu-box is migrated")));
     let body = div()

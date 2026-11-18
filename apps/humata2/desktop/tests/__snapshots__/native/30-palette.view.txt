@@ -128,9 +128,11 @@ Button "Expand terminal"
 Button "Toggle side panel"
 Button "Session actions"
 Tab "claude" selected
+  Button "Close claude"
 Tab "zsh"
+  Button "Close zsh"
 Tab "client.rs"
-  Button "Close tab"
+  Button "Close client.rs"
 Button "New terminal"
 #terminal-peers-0
   text "1 other can type here"
@@ -143,6 +145,7 @@ Dialog "Command palette" focused
   #input focused
     TextInput "Search commands" value="ledg" placeholder="Type a command, a channel or a session" focused
   ListBoxOption "Ledger schema migration" selected
+  ListBoxOption "zsh in Ledger schema migration"
   ListBoxOption "Try BRIN index"
   ListBoxOption "Review the schema"
   ListBoxOption "ledger/README.md"

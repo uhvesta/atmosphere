@@ -91,7 +91,9 @@ Button "Open it"
 Button "Later"
 Button "Not now"
 Tab "claude" selected
+  Button "Close claude"
 Tab "zsh"
+  Button "Close zsh"
 Button "New terminal"
 Group "rename dialog"
   Dialog "Rename session" focused

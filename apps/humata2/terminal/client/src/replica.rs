@@ -108,6 +108,10 @@ pub enum FitPolicy {
     /// for, so when another view sizes the terminal it keeps that size and
     /// two views never take turns sizing it (D750).
     Shown,
+    /// Never: the view draws the terminal at the host's size, scrolling
+    /// sideways where it is wider than the view, and never asks for another
+    /// (D781, a question's screen shown in the Inbox).
+    Never,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplicaContinuation {
@@ -338,6 +342,7 @@ impl Pty for ReplicaPty {
             FitPolicy::Controlling => true,
             FitPolicy::Focused => self.0.focused.get(),
             FitPolicy::Shown => self.0.focused.get() || self.0.wanted.get() != Some(wanted),
+            FitPolicy::Never => false,
         };
         if self.0.enabled.get() && fits {
             match self.0.sink.send(ClientFrame::Resize {
@@ -1265,7 +1270,9 @@ impl TerminalReplica {
 impl Render for TerminalReplica {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = self.pane.as_ref().filter(|_| self.visible).map(|pane| {
-            if self.controller && self.fresh {
+            // A view that never sizes the terminal always draws it at the
+            // host's grid, like a view that doesn't control it.
+            if self.controller && self.fresh && self.input.fit != FitPolicy::Never {
                 return pane.clone().into_any_element();
             }
             let view = pane.read(cx).view().read(cx);

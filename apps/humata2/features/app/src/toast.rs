@@ -18,6 +18,9 @@ pub enum ToastAction {
     Comments(Box<CommentsAction>),
     /// Open the bug-report form for a saved report.
     OpenReport(Box<ReportForm>),
+    /// The close dialog's toast button (D784): Open, Resume, or End for
+    /// good's Undo.
+    Close(humata2_session::CloseThen),
 }
 
 /// A message at the bottom of the window.
@@ -73,6 +76,14 @@ impl App {
                 state.toasts.retain(|t| t.id != id);
                 let undone = self.handle(state, AppAction::Comments(*undo));
                 return Effect::merge([Effect::cancel(format!("toast-{id}")), undone]);
+            }
+            Some(ToastAction::Close(then)) => {
+                state.toasts.retain(|t| t.id != id);
+                let done = self.handle(
+                    state,
+                    AppAction::Session(humata2_session::SessionAction::Close(humata2_session::CloseAction::Then(then))),
+                );
+                return Effect::merge([Effect::cancel(format!("toast-{id}")), done]);
             }
             Some(ToastAction::OpenReport(form)) => {
                 state.toasts.retain(|t| t.id != id);

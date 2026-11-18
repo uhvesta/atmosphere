@@ -27,5 +27,5 @@ pub use client::{
 pub use end::{EndError, Stopped, end_by_pid, find_holder, shutdown_or_end};
 pub use error::HolderError;
 pub use protocol::Welcome;
-pub use saved::{SavedOutput, read_saved, read_saved_tail, saved_scrollback_path};
+pub use saved::{SavedOutput, read_saved, read_saved_tail, saved_scrollback_path, stopped_mark_path};
 pub use server::{ServeOptions, holder_pid, serve};

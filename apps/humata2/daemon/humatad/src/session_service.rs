@@ -318,6 +318,19 @@ impl Loaded {
 }
 
 impl SessionSvc {
+    /// D784: the configured agents and home an adopted holder's session
+    /// is planned with.
+    pub(crate) fn agents_and_home(&self) -> (&Agents, &std::path::Path) {
+        (&self.starter.agents, &self.starter.home)
+    }
+
+    /// D784: tells the feed of a session adopted from an orphan holder and
+    /// watches its terminal for an exit, as a started one is.
+    pub(crate) async fn adopted(&self, id: &str) {
+        self.tell.session(id, pb::Change::Created, None).await;
+        watch::agent(self.tell.clone(), id.to_owned());
+    }
+
     pub(crate) fn new(
         guard: Arc<Guard>,
         operations: Arc<Operations>,
@@ -1489,9 +1502,13 @@ fn shown_status(
     }
     match (session_status(agent, start), agent) {
         (pb::SessionStatus::Working, Some(AgentState::Running { holder_pid })) => {
+            // D784: its holder is gone while this daemon runs, so it is
+            // ended until a Resume or a start brings it back.
+            if watch::lost(session, *holder_pid) {
+                pb::SessionStatus::Exited
             // An agent waiting on its own request needs you, turns or not
             // (D158.7); one with no turns otherwise shows none (SE-21).
-            if turns::asking(session) {
+            } else if turns::asking(session) {
                 pb::SessionStatus::NeedsInput
             } else if turns::source_of(kind) == pb::TurnEndSource::None {
                 pb::SessionStatus::RunningUnknownTurn

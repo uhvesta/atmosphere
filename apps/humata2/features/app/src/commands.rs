@@ -43,6 +43,14 @@ impl App {
             }
             Command::Channel(id) => self.navigate(state, Route::Channel(id)),
             Command::Session(id) => self.navigate(state, Route::Session(id)),
+            // D784: a terminal found with Search opens in its tab, shown
+            // again if it was hidden.
+            Command::Terminal { session, tab } => self.child(
+                state,
+                AppAction::Session(SessionAction::Close(humata2_session::CloseAction::Then(
+                    humata2_session::CloseThen::Open { session, tab },
+                ))),
+            ),
             Command::Pull(number) => {
                 let found = state
                     .workspace

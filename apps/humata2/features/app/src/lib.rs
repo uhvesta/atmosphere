@@ -661,6 +661,9 @@ impl App {
                 .pr_info
                 .reduce(&mut state.pr_info, action)
                 .map(AppAction::PrInfo),
+            // Escape's machine-page cancels (DismissConfirm, D784's
+            // CancelEnd and CancelAdopt) reach the page's reducer.
+            AppAction::MachinePage(action) => self.machine_page(state, action),
             _ => Effect::none(),
         }
     }
@@ -702,6 +705,28 @@ impl App {
                         Effect::none()
                     };
                     Effect::merge([notice, leave])
+                }
+                S::EndedForGood(id, text) => {
+                    // D784: Archive's toast, worded for End for good; its
+                    // Undo restores the session as Stopped.
+                    let notice = state.toast_for(text.clone(), &clock, toast::UNDO_TOAST);
+                    if let Some(toast) = state.toasts.last_mut() {
+                        toast.action = Some(ToastAction::Close(humata2_session::CloseThen::RestoreStopped(id.clone())));
+                    }
+                    let gone = Route::Session(id.clone());
+                    let leave = if state.route == gone {
+                        self.leave(state, &gone, Route::Home)
+                    } else {
+                        Effect::none()
+                    };
+                    Effect::merge([notice, leave])
+                }
+                S::CloseNotice(notice) => {
+                    let shown = state.toast_for(notice.text.clone(), &clock, toast::UNDO_TOAST);
+                    if let Some(toast) = state.toasts.last_mut() {
+                        toast.action = Some(ToastAction::Close(notice.then.clone()));
+                    }
+                    shown
                 }
                 S::OpenSession(id) => self.navigate(state, Route::Session(id.clone())),
                 S::Toast(text) => state.toast(text.clone(), &clock),

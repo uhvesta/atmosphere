@@ -35,7 +35,7 @@ use crate::grant_target;
 use crate::guard::{Checked, Guard};
 use crate::host_relay::Links;
 use crate::identity;
-use crate::inbox::Inbox;
+use crate::inbox::{Deferred, Inbox, Run};
 use crate::status;
 use crate::trash_service::Bin;
 
@@ -57,8 +57,7 @@ use roots::io_failure;
 pub(crate) type ReadFileStream = Pin<Box<dyn Stream<Item = Result<pb::FileChunk, Status>> + Send>>;
 
 /// Judges an agent's file read. One the channel's rule asks about raises an
-/// Inbox card and answers `approval_pending` at once; the agent repeats the
-/// read once the user approves (D768).
+/// Inbox card and answers `approval_pending` at once (D768).
 #[derive(Clone)]
 pub(in crate::files) struct Reads {
     guard: Arc<Guard>,
@@ -66,11 +65,73 @@ pub(in crate::files) struct Reads {
 }
 
 impl Reads {
-    pub(in crate::files) async fn require(&self, caller: &identity::Caller, place: Place) -> Result<(), Status> {
+    /// `run`, made only when the rule asks, is the read itself: approving
+    /// the card runs it, and waiting on the card returns its result. With
+    /// none, the agent repeats the read once it is approved.
+    pub(in crate::files) async fn require(
+        &self,
+        caller: &identity::Caller,
+        place: Place,
+        operation: &str,
+        run: impl FnOnce() -> Option<Run>,
+    ) -> Result<(), Status> {
         match self.guard.check(caller, &Call::ReadFiles(place))? {
             Checked::Allowed => Ok(()),
-            Checked::Ask(asked) => self.inbox.ask_read(caller, asked).await,
+            Checked::Ask(asked) => self.inbox.ask_read(caller, asked, operation, run()).await,
         }
+    }
+}
+
+/// An approved read's run: `read` on its own, its reply kept as `result_type`.
+pub(in crate::files) fn held_read<R, F>(result_type: &'static str, read: F) -> Option<Run>
+where
+    R: prost::Message + Send + 'static,
+    F: std::future::Future<Output = Result<R, Status>> + Send + 'static,
+{
+    Some(Box::new(move |_| {
+        Box::pin(async move {
+            let reply = read.await?;
+            Ok(Deferred {
+                result: reply.encode_to_vec(),
+                result_type: result_type.to_owned(),
+            })
+        })
+    }))
+}
+
+/// The most of a file an approved read keeps for its waiter (D768). A
+/// longer file's held chunk isn't `last`, and the rest is read as usual.
+const HELD_MAX: u64 = 8 * 1024 * 1024;
+
+/// The byte count an approved read of `max_bytes` (0 for all) keeps.
+fn held_max(max_bytes: u64) -> u64 {
+    match max_bytes {
+        0 => HELD_MAX,
+        max => max.min(HELD_MAX),
+    }
+}
+
+/// `chunks` of one read, uncompressed, as the one chunk an approved read
+/// keeps: `last` only when the read reached where the caller asked it to
+/// end, not where [`HELD_MAX`] cut it.
+fn held_chunk(offset: u64, max_bytes: u64, chunks: Vec<pb::FileChunk>) -> pb::FileChunk {
+    let mut data = Vec::new();
+    let mut sha256 = String::new();
+    for chunk in chunks {
+        data.extend_from_slice(&chunk.data);
+        if !chunk.sha256.is_empty() {
+            sha256 = chunk.sha256;
+        }
+    }
+    let cut = (max_bytes == 0 || max_bytes > HELD_MAX) && data.len() as u64 >= HELD_MAX && sha256.is_empty();
+    pb::FileChunk {
+        offset,
+        raw_size: u32::try_from(data.len()).unwrap_or(u32::MAX),
+        data,
+        sha256,
+        last: !cut,
+        codec: Codec::None.wire(),
+        crc32: None,
     }
 }
 
@@ -344,10 +405,30 @@ impl pb::file_service_server::FileService for Files {
         }
         let caller = identity::caller(&request)?;
         let request = request.into_inner();
+        let location = request.location.clone();
         let target = self.roots.target(request.location, "location", Entry::File)?;
-        // An asked read answers approval_pending at once; the agent reads
-        // again once it is approved (D768).
-        self.reads.require(&caller, target.place.clone()).await?;
+        // An asked read answers approval_pending at once; approving it reads
+        // the file (up to HELD_MAX, uncompressed) for the waiter (D768).
+        let (roots, offset, max_bytes) = (self.roots.clone(), request.offset, request.max_bytes);
+        self.reads
+            .require(&caller, target.place.clone(), "read", move || {
+                held_read("humata.v1.FileChunk", async move {
+                    let target = roots.target(location, "location", Entry::File)?;
+                    let kept = held_max(max_bytes);
+                    blocking_read(move || {
+                        let (send, mut chunks) = mpsc::channel((kept / CHUNK_MAX as u64 + 2) as usize);
+                        read(&target, offset, kept, Codec::None, &send)?;
+                        drop(send);
+                        let mut read = Vec::new();
+                        while let Ok(chunk) = chunks.try_recv() {
+                            read.push(chunk?);
+                        }
+                        Ok(held_chunk(offset, max_bytes, read))
+                    })
+                    .await
+                })
+            })
+            .await?;
         let codec = self.compression.pick(self.link, &request.accept_codecs);
         let (send, chunks) = mpsc::channel(READ_AHEAD);
         let offset = request.offset;
@@ -560,6 +641,13 @@ impl pb::file_service_server::FileService for Files {
 
 /// Sends `target` from `offset` as chunks. Stops quietly if the reader
 /// went away. A read sent to its end says how the link kept up.
+/// Runs `work` on a blocking thread.
+async fn blocking_read<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, Status> + Send + 'static,
+) -> Result<T, Status> {
+    crate::trash_service::blocking(work).await?
+}
+
 fn read(
     target: &Target,
     offset: u64,
