@@ -47,7 +47,10 @@ if [ -n "$machine_tools" ]; then
     exit 1
   }
   # ELF files only: Gatekeeper and codesign seal them as plain resources.
-  cp -R "$machine_tools" "$contents/Resources/machine-tools"
+  # -L copies the files themselves: the tools folder's entries can be links
+  # into Bazel's output tree, and codesign refuses a bundle whose links point
+  # outside it.
+  cp -RL "$machine_tools" "$contents/Resources/machine-tools"
   chmod -R u+w "$contents/Resources/machine-tools"
   # The release's manifest (UP-1): the Mac's platform joined with the Linux ones.
   # The host's installed bundle.json and the bundle machines are set up from are
@@ -57,6 +60,11 @@ if [ -n "$machine_tools" ]; then
   printf '%s, %s\n' "$mac" "$linux" > "$contents/Resources/manifest.json"
 fi
 printf 'APPL????' > "$contents/PkgInfo"
+outside=$(find "$app" -type l | head -n 1)
+[ -z "$outside" ] || {
+  echo "humata2_app: $outside is a link ($(readlink "$outside")); a signed app can't hold links that leave it. Copy the file instead." >&2
+  exit 1
+}
 /usr/bin/codesign --force --sign - "$contents/MacOS/humata2"
 /usr/bin/codesign --force --sign - "$app"
 """
