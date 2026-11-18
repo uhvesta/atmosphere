@@ -331,6 +331,13 @@ impl AgentKind {
         self.name.clone()
     }
 
+    /// Whether this kind is a plain shell (zsh, bash, fish, …): a program
+    /// with no turns and no conversation of its own.
+    #[must_use]
+    pub fn is_shell(&self) -> bool {
+        self.turn_end == TurnEnd::None
+    }
+
     /// The commands and conversation file for `conversation` in `folder`,
     /// with the CLI on its own default model.
     pub fn launch(&self, home: &Path, folder: &Path, conversation: &str) -> LaunchPlan {

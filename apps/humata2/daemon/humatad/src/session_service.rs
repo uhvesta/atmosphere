@@ -109,8 +109,8 @@ pub(crate) fn watch_agent(tell: Tell, session: String) {
 /// The longest session title taken.
 const TITLE_MAX: usize = 200;
 /// The terminal size a session's agent starts with, until a client attaches.
-const COLS: u16 = 80;
-const ROWS: u16 = 24;
+const COLS: u16 = crate::holders::START_COLS;
+const ROWS: u16 = crate::holders::START_ROWS;
 
 #[derive(Clone)]
 pub(crate) struct SessionSvc {
@@ -968,6 +968,9 @@ impl SessionSvc {
         let Some(agent) = loaded.agent.as_mut() else {
             return Ok(Gated::Done(self.show(&loaded)));
         };
+        if conversation_unknown(&agent.launch, &self.starter.agents) {
+            return Err(stop_unknown_conversation(&id));
+        }
         match agent.state {
             // Saved as launching with no start of this daemon live for it:
             // its old holder may still run the agent. It is ended first, and
@@ -982,6 +985,17 @@ impl SessionSvc {
                 })
                 .await
                 .map_err(|error| stop_launching::status_of(&id, &error))?;
+            }
+            // D784: left resuming by a run that ended mid-resume (the
+            // restart named it stuck) and with no resume of it live now: its
+            // old holder is ended as a launching one's is, so nothing is left
+            // running. One a live operation is bringing up stays busy.
+            AgentState::Resuming if self.left_resuming(&id) => {
+                let socket = agent.launch.holder_socket.clone();
+                let what = format!("session {id}'s terminal");
+                stop_launching::end_old_holder(&id, false, || holder_end::end_holder_at(&socket, &what))
+                    .await
+                    .map_err(|error| stop_launching::status_of(&id, &error))?;
             }
             AgentState::Resuming => return Err(busy(&id, "being resumed")),
             AgentState::Exited { .. } | AgentState::Stopped | AgentState::ResumeFailed { .. } => {
@@ -1475,9 +1489,10 @@ fn session_status(agent: Option<&AgentState>, start: Option<StartStep>) -> pb::S
     match agent {
         Some(AgentState::Launching | AgentState::Resuming) => pb::SessionStatus::Starting,
         Some(AgentState::Running { .. }) => pb::SessionStatus::Working,
-        // A stopped agent has no holder, so it is as gone as one that exited;
-        // only a running agent between turns is idle.
-        Some(AgentState::Exited { .. } | AgentState::Stopped) => pb::SessionStatus::Exited,
+        // D784: the person stopped it; Resume brings it back. Only a running
+        // agent between turns is idle.
+        Some(AgentState::Stopped) => pb::SessionStatus::Stopped,
+        Some(AgentState::Exited { .. }) => pb::SessionStatus::Exited,
         Some(AgentState::ResumeFailed { .. }) => pb::SessionStatus::ResumeFailed,
         None => pb::SessionStatus::Idle,
     }
@@ -1982,6 +1997,28 @@ async fn run_start(
     }
 }
 
+/// D784 (Fable B2): an adopted agent (not a plain shell) whose conversation
+/// Humata never learned. Stopping it could not be undone by Resume.
+fn conversation_unknown(launch: &humata2_store::AgentLaunch, agents: &Agents) -> bool {
+    launch.conversation_id.is_empty()
+        && !agents.get(&launch.agent).is_ok_and(humata2_sessions::AgentKind::is_shell)
+}
+
+/// Stop refused for an agent whose conversation isn't known.
+fn stop_unknown_conversation(session: &str) -> Status {
+    status::failure(
+        Code::FailedPrecondition,
+        pb::Error {
+            message: format!(
+                "session {session}'s agent was adopted and its conversation isn't known, so it can't be stopped and resumed later"
+            ),
+            fix: "End it for good, or keep it running".to_owned(),
+            retry: None,
+            kind: None,
+        },
+    )
+}
+
 /// The reason a failed resume gives, as the API names it.
 fn resume_reason(reason: ResumeFailure) -> pb::resume_failed::Reason {
     use pb::resume_failed::Reason;
@@ -1991,6 +2028,7 @@ fn resume_reason(reason: ResumeFailure) -> pb::resume_failed::Reason {
         ResumeFailure::AgentExited => Reason::AgentExited,
         ResumeFailure::AgentNotInstalled => Reason::AgentNotInstalled,
         ResumeFailure::FolderMissing => Reason::FolderMissing,
+        ResumeFailure::ConversationUnknown => Reason::ConversationUnknown,
     }
 }
 
@@ -2013,6 +2051,10 @@ fn resume_failed(session: &str, reason: ResumeFailure, exit_code: Option<i32>) -
         ResumeFailure::AgentNotInstalled => (
             "the agent's program isn't installed on this machine",
             "install it (or fix its path in Settings > Agents), then resume again",
+        ),
+        ResumeFailure::ConversationUnknown => (
+            "it was adopted and its agent's conversation isn't known, so there is nothing to resume",
+            "End it for good, or keep it running; it can't be resumed because its conversation isn't known",
         ),
         ResumeFailure::FolderMissing => (
             "the session's folder is gone",
@@ -2092,6 +2134,9 @@ pub(crate) async fn run_resume(
     }
     tell.session(&session, pb::Change::Updated, Some(by.clone()))
         .await;
+    // A test holds a resume here, saved as resuming, to act on it mid-way
+    // (D784). Test daemons only.
+    crate::fault::hold_point("resume-saved").await;
     let env = |tab: &TabRecord| tokens.env(tab);
     let outcome = match moved {
         Some(line) => resume_moved_agent(&starter.store, &starter.revive, agent, &env, line).await,
@@ -3002,7 +3047,7 @@ mod tests {
             session_status(Some(&AgentState::Exited { code: 2 }), None),
             S::Exited
         );
-        assert_eq!(session_status(Some(&AgentState::Stopped), None), S::Exited);
+        assert_eq!(session_status(Some(&AgentState::Stopped), None), S::Stopped);
         assert_eq!(session_status(None, None), S::Idle);
         let failed = AgentState::ResumeFailed {
             reason: ResumeFailure::AgentExited,
@@ -3015,6 +3060,21 @@ mod tests {
             S::Starting
         );
         assert_eq!(session_status(None, Some(StartStep::Recorded)), S::Starting);
+    }
+
+    /// D784 (Fable B2): Stop is offered only when the conversation is
+    /// known; a shell of any kind, or an agent with its conversation, stops.
+    #[test]
+    fn stop_is_refused_only_for_an_agent_whose_conversation_is_unknown() {
+        let agents = Agents::builtin().with_shell(std::path::Path::new("/bin/bash"), &[]);
+        let launch = |agent: &str, conversation: &str| humata2_store::AgentLaunch {
+            agent: agent.to_owned(),
+            conversation_id: conversation.to_owned(),
+            ..humata2_store::AgentLaunch::default()
+        };
+        assert!(conversation_unknown(&launch("copilot", ""), &agents));
+        assert!(!conversation_unknown(&launch("copilot", "c_1"), &agents));
+        assert!(!conversation_unknown(&launch("zsh", ""), &agents));
     }
 
     #[test]

@@ -612,8 +612,8 @@ async fn revive_shell(
         args: config.shell_args.clone(),
         cwd,
         env: env(&tab),
-        cols: 80,
-        rows: 24,
+        cols: crate::START_COLS,
+        rows: crate::START_ROWS,
         scrollback_bytes: config.scrollback_bytes,
         log: config.logs.join(format!("{}.log", tab.id)),
     };

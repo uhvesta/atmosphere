@@ -44,7 +44,7 @@ pub(crate) fn status(value: Status) -> Div {
             dot.border_1().border_color(rgb(crate::theme::GREY))
         }
         Status::Offline => dot.bg(rgb(crate::theme::GREY)),
-        Status::Stopped => return stopped(),
+        Status::Stopped | Status::AgentStopped => return stopped(),
         Status::Exited { .. } => {
             return div()
                 .size(px(10.))

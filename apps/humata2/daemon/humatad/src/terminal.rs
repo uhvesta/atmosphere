@@ -51,8 +51,8 @@ const SCREEN_RETRIES: usize = 18;
 const REMEMBERED_MAX: usize = 4096;
 
 /// A new tab's size until a client attaches with its own.
-const INITIAL_COLS: u16 = 80;
-const INITIAL_ROWS: u16 = 24;
+const INITIAL_COLS: u16 = crate::holders::START_COLS;
+const INITIAL_ROWS: u16 = crate::holders::START_ROWS;
 
 /// How long a tab's shell gets to take text typed into it.
 const TYPE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -353,6 +353,12 @@ impl Terminals {
     /// question on an agent's screen (D767).
     pub(crate) fn holder_links(&self) -> Arc<Holders> {
         self.core.holders.clone()
+    }
+
+    /// The count of each tab's attaches that can type, which a grow of a
+    /// clipped question box waits to be 0 (D786).
+    pub(crate) fn writers(&self) -> Arc<Writers> {
+        self.core.writers.clone()
     }
 
     /// Drops the Type keys older than [`TYPED_KEYS_KEPT_MS`], in the
@@ -2077,6 +2083,12 @@ impl Writers {
 
     pub(crate) fn watch(&self, tab: &str) -> watch::Receiver<u32> {
         self.sender(tab).subscribe()
+    }
+
+    /// How many attaches that can type `tab` has now, relayed ones
+    /// included (D786).
+    pub(crate) fn count(&self, tab: &str) -> u32 {
+        lock(&self.tabs).get(tab).map_or(0, |sender| *sender.borrow())
     }
 
     /// Counts an attach that can type until the guard is dropped.

@@ -93,7 +93,7 @@ impl Fixture {
             .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
             .await
             .unwrap();
-        common::wait_status(&self.daemon, id, pb::SessionStatus::Exited).await;
+        common::wait_status(&self.daemon, id, pb::SessionStatus::Stopped).await;
     }
 
     async fn resume(&self, id: &pb::SessionId) -> pb::Operation {

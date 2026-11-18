@@ -59,7 +59,7 @@ fn dot(status: Status) -> Div {
         Status::Working => dot.bg(rgb(GREEN)),
         Status::NeedsYou => dot.bg(rgb(ORANGE)),
         Status::Exited { .. } => dot.bg(rgb(RED)),
-        Status::Offline | Status::Stopped => dot.bg(rgb(GREY)),
+        Status::Offline | Status::Stopped | Status::AgentStopped => dot.bg(rgb(GREY)),
         _ => dot.border_1().border_color(rgb(GREY)),
     };
     row()

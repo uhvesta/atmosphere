@@ -497,6 +497,12 @@ fn cannot_resume(launch: &AgentLaunch) -> Option<ResumeFailure> {
     if !launch.folder.is_dir() {
         return Some(ResumeFailure::FolderMissing);
     }
+    // D784 (Fable B2): an adopted agent keeps its kind but Humata never
+    // learned its conversation; with nothing pinned there is nothing to
+    // resume, and an empty command must never be spawned.
+    if launch.conversation_id.is_empty() {
+        return Some(ResumeFailure::ConversationUnknown);
+    }
     let program = launch.resume_argv.first()?;
     if !installed(Path::new(program), &launch.folder) {
         return Some(ResumeFailure::AgentNotInstalled);
@@ -910,4 +916,21 @@ pub(crate) fn unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |since| i64::try_from(since.as_millis()).unwrap_or(i64::MAX))
+}
+
+#[cfg(test)]
+mod conversation_unknown_tests {
+    use super::*;
+
+    /// D784 (Fable B2): an adopted agent with no known conversation is
+    /// never resumed, so no empty command is spawned.
+    #[test]
+    fn an_agent_whose_conversation_is_unknown_cannot_be_resumed() {
+        let launch = AgentLaunch {
+            agent: "copilot".to_owned(),
+            folder: std::env::temp_dir(),
+            ..AgentLaunch::default()
+        };
+        assert_eq!(cannot_resume(&launch), Some(ResumeFailure::ConversationUnknown));
+    }
 }

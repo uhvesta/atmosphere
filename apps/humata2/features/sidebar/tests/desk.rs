@@ -239,3 +239,31 @@ fn with_the_desk_rows_not_showing_down_skips_them() {
     go(&mut store, Move::Down, &next);
     store.finish();
 }
+
+/// D784 (Fable A2): an untitled shell session's row is never blank; it
+/// reads as its agent.
+#[test]
+fn an_untitled_shell_session_row_reads_as_a_shell() {
+    let mut workspace = with_desk();
+    let shell = desk_ids(shown(workspace.clone()).state()).first().cloned().expect("a desk session");
+    for session in workspace.sessions.iter_mut().filter(|session| session.id == shell) {
+        session.title = String::new();
+        session.agent = humata2_clients::model::Agent::Shell;
+    }
+    let store = shown(workspace);
+    let state = store.state();
+    let titles: Vec<String> = state
+        .desk
+        .iter()
+        .chain(state.rows.iter())
+        .filter(|row| row.key == Some(RowKey::Session(shell.clone())))
+        .filter_map(|row| match &row.kind {
+            humata2_sidebar::RowKind::Session { title, .. } => Some(title.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(!titles.is_empty(), "the session has a row");
+    for title in titles {
+        assert_eq!(title, humata2_clients::model::Agent::Shell.name());
+    }
+}

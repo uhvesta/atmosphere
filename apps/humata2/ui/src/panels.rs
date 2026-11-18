@@ -175,7 +175,7 @@ fn status(value: Status) -> Div {
         Status::Working => dot.bg(rgb(GREEN)),
         Status::NeedsYou => dot.bg(rgb(ORANGE)),
         Status::Exited { .. } => return div().child(icon(IconName::X, RED, 10.)),
-        Status::Offline | Status::Stopped => dot.bg(rgb(0x8e8e93)),
+        Status::Offline | Status::Stopped | Status::AgentStopped => dot.bg(rgb(0x8e8e93)),
         _ => dot.border_1().border_color(rgb(0x8e8e93)),
     };
     row()

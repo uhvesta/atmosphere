@@ -64,13 +64,34 @@ fn send(action: RunningAction) -> AppAction {
     AppAction::MachinePage(MachinePageAction::Running(action))
 }
 
-/// What End for good… says: who ends, where, and that it can't be undone.
+/// What End for good… asks (D784, Fable A7): a shell is "this shell", an
+/// agent goes by its title or name.
+pub(crate) fn end_question(holder: &RunningHolder) -> String {
+    if holder.agent == humata2_clients::model::Agent::Shell {
+        "End this shell for good?".to_owned()
+    } else if holder.title.is_empty() {
+        format!("End {} for good?", agent_label(holder.agent))
+    } else {
+        format!("End {} for good?", holder.title)
+    }
+}
+
+/// What End for good… says: which process ends (folder, machine, pid), and
+/// that it can't be undone (D784, Fable A7).
 pub(crate) fn end_words(holder: &RunningHolder, machine: &str) -> String {
     let agent = agent_label(holder.agent);
-    if holder.is_orphan() || holder.agent == humata2_clients::model::Agent::Shell {
-        format!("{agent} on {machine} ends now, with everything it started. It can't be resumed or undone.")
+    let mut place = if holder.folder.is_empty() {
+        format!("on {machine}")
     } else {
-        format!("{agent} on {machine} ends and the session is archived. It can't be resumed or undone.")
+        format!("in {} on {machine}", holder.folder)
+    };
+    if let Some(pid) = holder.pid {
+        place.push_str(&format!(", pid {pid}"));
+    }
+    if holder.is_orphan() || holder.agent == humata2_clients::model::Agent::Shell {
+        format!("{agent} {place} ends now, with everything it started. It can't be resumed or undone.")
+    } else {
+        format!("{agent} {place} ends and the session is archived. It can't be resumed or undone.")
     }
 }
 
@@ -80,15 +101,10 @@ impl Overlays {
         let dismiss = ui.clone();
         let (cancel, body) = match view {
             RunningView::End { holder, machine } => {
-                let title = if holder.title.is_empty() {
-                    agent_label(holder.agent).to_owned()
-                } else {
-                    holder.title.clone()
-                };
                 (
                     RunningAction::CancelEnd,
                     card("running-end-dialog", "End for good", 440., look)
-                        .child(heading(format!("End {title} for good?")))
+                        .child(heading(end_question(holder)))
                         .child(div().text_color(rgb(look.secondary)).child(end_words(holder, machine)))
                         .child(
                             row()
@@ -141,5 +157,44 @@ impl Overlays {
             .test_support()
             .focus_trap("running-trap", &self.sheet);
         div().id("running-dialog").role(Role::Group).aria_label("running dialog").test_support().child(body).into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::prelude::v1::test;
+    use humata2_clients::model::{Agent, MachineId};
+
+    fn holder(agent: Agent) -> RunningHolder {
+        RunningHolder {
+            tab: None,
+            session: None,
+            title: String::new(),
+            channel: None,
+            desk: false,
+            agent,
+            pid: Some(48_213),
+            folder: "~/src/ledger".to_owned(),
+            started_unix_ms: None,
+            attached: false,
+            machine: MachineId::new("devbox-1"),
+            stopped: false,
+        }
+    }
+
+    #[test]
+    fn ending_names_the_folder_machine_and_pid() {
+        let words = end_words(&holder(Agent::Shell), "devbox-1");
+        assert!(words.contains("~/src/ledger"));
+        assert!(words.contains("devbox-1"));
+        assert!(words.contains("48213"));
+    }
+
+    #[test]
+    fn a_shell_is_asked_about_as_a_shell_not_by_an_empty_title() {
+        let shell = end_question(&holder(Agent::Shell));
+        let claude = end_question(&holder(Agent::Claude));
+        assert_ne!(shell, claude);
     }
 }

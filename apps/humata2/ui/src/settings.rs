@@ -519,6 +519,20 @@ pub(crate) fn page(ui: &Rc<Ui>, state: &AppState, look: Look) -> Div {
                     look,
                 )
                 .into_any_element(),
+            )))
+            // FAST (D787): less CPU and fewer redraws.
+            .child(card(look).child(setting(
+                look,
+                Row::FastMode.title(),
+                "Use less CPU and draw less often. Terminal cursors stop blinking, so a terminal you are not typing in draws nothing.",
+                toggle(
+                    ui,
+                    "settings-fast-mode",
+                    prefs.fast_mode,
+                    A::ToggleFastMode,
+                    look,
+                )
+                .into_any_element(),
             )));
             // REPOS (ST-21): the repo library and the default scope.
             body = body.child(crate::settings_repositories::section(ui, state, look));

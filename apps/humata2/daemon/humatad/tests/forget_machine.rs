@@ -929,3 +929,75 @@ async fn a_holder_let_go_of_by_a_forget_is_adopted() {
         "the adopted holder isn't listed as its new session: {listed:?}"
     );
 }
+
+/// box-1's record of `id`'s agent.
+fn box_agent(rig: &Rig, id: &pb::SessionId) -> humata2_store::AgentRecord {
+    rig.the("box-1")
+        .store()
+        .agent(&id.value)
+        .expect("box-1's store reads")
+        .expect("box-1 records the session's agent")
+}
+
+/// Waits until box-1's agent for `id` is no longer `from`, and returns it.
+async fn box_agent_leaves(rig: &Rig, id: &pb::SessionId, from: fn(&AgentState) -> bool, what: &str) -> humata2_store::AgentRecord {
+    let deadline = tokio::time::Instant::now() + LONG;
+    loop {
+        let agent = box_agent(rig, id);
+        if !from(&agent.state) {
+            return agent;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "box-1's agent is still {what}: {:?}", agent.state);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// D784: removing box-1 while one of its sessions is being resumed there
+/// waits for the resume to settle and then ends the session there, so no
+/// holder is left running that nothing accounts for.
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_machine_mid_resume_ends_the_resumed_session_there() {
+    let (mut rig, id, _pid) = live_on_box().await;
+    let mut sessions = pb::session_service_client::SessionServiceClient::new(rig.channel().await);
+    sessions
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
+        .await
+        .expect("the session on box-1 stops");
+    box_agent_leaves(&rig, &id, |state| !matches!(state, AgentState::Stopped), "not stopped").await;
+
+    // box-1's next resume holds once it is saved as resuming.
+    let hold = rig.host.dir.path().join("hold-resume.fifo");
+    assert!(std::process::Command::new("mkfifo").arg(&hold).status().unwrap().success());
+    let named = hold.display().to_string();
+    rig.restart_box_env("box-1", &[("HUMATA2_HOLD_AT", "resume-saved"), ("HUMATA2_HOLD_FIFO", named.as_str())])
+        .await;
+    let mut sessions = pb::session_service_client::SessionServiceClient::new(rig.channel().await);
+    sessions
+        .resume_session(pb::ResumeSessionRequest { id: Some(id.clone()), ..Default::default() })
+        .await
+        .expect("the resume on box-1 starts");
+    box_agent_leaves(&rig, &id, |state| !matches!(state, AgentState::Resuming), "not resuming").await;
+
+    // The resume goes on a while after the removal has begun.
+    let released = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(hold).map(drop))
+            .await
+            .unwrap()
+            .expect("the held resume's FIFO opens");
+    });
+    remove(&rig, &Rig::box_id("box-1")).await;
+    tokio::time::timeout(LONG, released).await.expect("the resume was released").unwrap();
+
+    let agent = box_agent_leaves(&rig, &id, |state| matches!(state, AgentState::Resuming), "resuming").await;
+    let socket = agent.launch.holder_socket.clone();
+    assert!(
+        !matches!(agent.state, AgentState::Running { .. } | AgentState::Launching),
+        "the session resumed on the removed box-1 still runs: {:?}",
+        agent.state
+    );
+    assert!(
+        std::os::unix::net::UnixStream::connect(&socket).is_err(),
+        "the resumed session's holder still answers on the removed box-1"
+    );
+}

@@ -211,7 +211,8 @@ impl Steps for LiveSteps {
                         pb::SessionStatus::Exited
                         | pb::SessionStatus::ResumeFailed
                         | pb::SessionStatus::Archived
-                        | pb::SessionStatus::MachineStopped => {
+                        | pb::SessionStatus::MachineStopped
+                        | pb::SessionStatus::Stopped => {
                             return Err(fail("the session isn't running".to_owned()));
                         }
                         _ => {}

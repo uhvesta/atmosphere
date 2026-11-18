@@ -381,6 +381,8 @@ message ResumeFailed {
     REASON_AGENT_EXITED = 3;
     REASON_AGENT_NOT_INSTALLED = 4;
     REASON_FOLDER_MISSING = 5;
+    // D784: an adopted agent whose conversation Humata never learned.
+    REASON_CONVERSATION_UNKNOWN = 6;
   }
   SessionId session = 1;
   Reason reason = 2;

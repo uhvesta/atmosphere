@@ -894,6 +894,12 @@ listed and staying.
   until `StartSessions`. While stopped, launching, resuming, attaching and
   typing fail with `FAILED_PRECONDITION`, whose `fix` says to start the
   sessions first; reads keep working.
+- A stopped session (D784): `StopSession` leaves the session at
+  `SESSION_STATUS_STOPPED`, meaning the person stopped its agent and
+  `ResumeSession` brings it back. It is not `MACHINE_STOPPED`, which means
+  the whole machine's sessions were stopped and `StartSessions` is the fix
+  (D264), nor `EXITED`, which the agent reached on its own. Older clients
+  read it as UNSPECIFIED.
 - Machine scripts (D687): `RunMachineScript` returns an Operation of kind
   `MACHINE_SCRIPT`, and every change of a run is announced as the event
   payload `MachineScriptRunChanged` (`machine`, `run_id`) on the machines

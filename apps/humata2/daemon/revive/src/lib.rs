@@ -39,6 +39,13 @@ pub use reconcile::{
 };
 pub use report::RestartReports;
 
+/// D786: the size every holder humatad starts is born at, agent and shell
+/// tabs alike, restarts included. Tall enough for an agent's whole question
+/// box, such as Copilot's folder trust, to fit with no client attached. The
+/// holder binary's own default stays 80x24.
+pub const START_COLS: u16 = 80;
+pub const START_ROWS: u16 = 50;
+
 /// What reviving needs to know about this machine's daemon.
 #[derive(Clone, Debug)]
 pub struct ReviveConfig {

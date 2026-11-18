@@ -18,8 +18,8 @@ use crate::session_service::{clean_title, watch_agent};
 use crate::status;
 
 /// The terminal size a Desk agent starts with, until a client attaches.
-const COLS: u16 = 80;
-const ROWS: u16 = 24;
+const COLS: u16 = crate::holders::START_COLS;
+const ROWS: u16 = crate::holders::START_ROWS;
 
 /// The steps of a start, in order, as the operation shows them.
 const STEPS: [(&str, &str); 3] = [

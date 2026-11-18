@@ -1223,8 +1223,13 @@ impl<G: Grid + 'static> Focusable for TerminalView<G> {
 impl<G: Grid + 'static> Render for TerminalView<G> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+        // Blinks only while its window is active, as Ghostty does: a window
+        // in the background draws nothing for its cursor (FAST, D788). The
+        // window draws again when it becomes active, which starts the blink
+        // over. Decided before the rebuild, so a cursor stopped in its
+        // hidden half is drawn shown.
+        self.schedule_blink(focused && window.is_window_active(), cx);
         self.rebuild(focused, window);
-        self.schedule_blink(focused, cx);
 
         let painted = self.frame.clone();
         let measured = self.frame.clone();

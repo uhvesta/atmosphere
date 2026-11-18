@@ -215,6 +215,9 @@ impl AgentState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResumeFailure {
     ConversationFileMissing,
+    /// D784: an adopted agent whose conversation was never learned, so
+    /// there is nothing to resume.
+    ConversationUnknown,
     AgentStartedAnotherConversation,
     AgentExited,
     AgentNotInstalled,

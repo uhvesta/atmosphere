@@ -995,7 +995,7 @@ fn queue(ui: &Rc<Ui>, state: &AppState, session: &Session, look: Look) -> Option
 /// Whether the session offers Resume: it exited, and was not ended for good
 /// (D784: only Restore or Undo brings an archived session back).
 pub(crate) fn offers_resume(session: &Session) -> bool {
-    matches!(session.status, Status::Exited { .. }) && !session.archived
+    session.status.agent_ended() && !session.archived
 }
 
 #[cfg(test)]

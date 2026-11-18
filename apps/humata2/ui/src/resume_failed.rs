@@ -42,6 +42,9 @@ fn reason(session: &Session, failure: ResumeFailure, host: &str) -> String {
         ResumeFailure::AgentNotInstalled => format!(
             "{agent} isn't installed on {host} any more. Install it there, then try again."
         ),
+        ResumeFailure::ConversationUnknown => format!(
+            "{agent} on {host} was adopted, and its conversation isn't known, so it can't be resumed. End it for good, or keep it running."
+        ),
         ResumeFailure::FolderMissing => format!(
             "This session's folder is gone from {host}. Restore it there, then try again, or start fresh."
         ),

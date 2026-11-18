@@ -37,6 +37,11 @@ const CHANGES_QUEUE: usize = 16;
 /// Size of a screen the holder didn't say.
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
+/// D786: the size every holder humatad starts is born at (one constant
+/// for humatad, its sessions and its restarts).
+pub(crate) const START_COLS: u16 = humata2_revive::START_COLS;
+pub(crate) const START_ROWS: u16 = humata2_revive::START_ROWS;
+
 /// Where a tab stands, as its link last heard. It can trail output still
 /// on its way from the holder, by as much as is in flight.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -661,6 +666,12 @@ pub(crate) enum ScreenUnread {
 /// from the output it kept. A screen of its own, not a link's, and only
 /// read: the queries in the output get no answer from it.
 pub(crate) async fn screen_at(socket: &Path) -> Result<String, ScreenUnread> {
+    screen_and_size_at(socket).await.map(|(text, _)| text)
+}
+
+/// D786: [`screen_at`] and the screen's size, `(cols, rows)`, as the holder
+/// last heard it.
+pub(crate) async fn screen_and_size_at(socket: &Path) -> Result<(String, (u16, u16)), ScreenUnread> {
     let Attachment {
         welcome, mut events, ..
     } = humata2_holder::attach(socket, 0).await.map_err(ScreenUnread::Attach)?;
@@ -683,7 +694,8 @@ pub(crate) async fn screen_at(socket: &Path) -> Result<String, ScreenUnread> {
     };
     let (authority, _) =
         Authority::resume(&config, kept.from, &kept.bytes, &record).map_err(ScreenUnread::Engine)?;
-    authority.screen_text().map_err(ScreenUnread::Engine)
+    let text = authority.screen_text().map_err(ScreenUnread::Engine)?;
+    Ok((text, (cols, rows)))
 }
 
 /// Reads the output the holder keeps, which it sends first.

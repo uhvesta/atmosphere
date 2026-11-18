@@ -6,11 +6,39 @@ fn hosts_and_settings_reference_images() {
     use humata2_clients::model::MachineId;
     use humata2_hosts::HostsAction as H;
     let mut app = App::new(fixture::design());
+    // D784: two terminals no channel has count in devbox-1's "N sessions".
+    let orphans = [39_001, 39_002].map(|pid| humata2_clients::RunningHolder {
+        tab: Some(format!("tab-{pid}")),
+        session: None,
+        title: String::new(),
+        channel: None,
+        desk: false,
+        agent: humata2_clients::model::Agent::Shell,
+        pid: Some(pid),
+        folder: "~/scratch/probe".to_owned(),
+        started_unix_ms: None,
+        attached: false,
+        machine: MachineId::new("devbox-1"),
+        stopped: false,
+    });
+    app.fakes.daemon.set_running_holders(orphans.to_vec());
     app.fold_quiet_channels();
     app.cx
         .update(|cx| Theme::change(ThemeMode::Light, None, cx));
+    // Opening the page reads the holders, so the orphans are counted.
+    app.send(AppAction::Switch(Route::Hosts));
     app.send(AppAction::Hosts(H::Select(MachineId::new("devbox-1"))));
     assert!(app.contains("host-row devbox-1"));
+    assert_eq!(app.ui.read(|state| state.hosts.orphans.get(&MachineId::new("devbox-1")).copied()), Some(2));
+    // The golden's tolerance can hide one changed count, so the image is
+    // also written out for a person to look at, when the run keeps outputs.
+    if let Some(out) = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR") {
+        app.draw();
+        let folder = std::path::PathBuf::from(out).join("candidates");
+        std::fs::create_dir_all(&folder).expect("candidate folder");
+        let image = app.cx.capture_screenshot(app.window).expect("headless image");
+        image.save(folder.join("28-hosts-candidate.png")).expect("image written");
+    }
     app.snapshot("28-hosts");
     app.send(AppAction::Switch(Route::Settings));
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));

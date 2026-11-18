@@ -171,7 +171,7 @@ pub(super) fn apply_input(
                     what: format!("Terminal {tab} of {id}"),
                 });
             }
-            if tab == 0 && matches!(session.status, Status::Exited { .. }) {
+            if tab == 0 && session.status.agent_ended() {
                 return Err(DaemonError::Refused {
                     what: "Typing into this terminal".into(),
                     reason: "the program has exited. Resume it first".into(),

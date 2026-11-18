@@ -56,6 +56,29 @@ pub struct Preferences {
     /// On a Mac keyboard, ⌥ keys send Esc and the key instead of the
     /// character the layout gives (D420).
     pub option_as_alt: bool,
+    /// FAST (D787): trade small comforts for less CPU and fewer redraws.
+    /// Terminal cursors stop blinking, so an idle terminal draws nothing.
+    pub fast_mode: bool,
+}
+
+/// Fast mode's compiled-in default: off.
+const FAST_MODE: bool = false;
+
+/// The environment variable that sets fast mode's default, so a test run
+/// can have it on (`--test_env=HUMATA2_FAST_MODE=1`) or off. A saved
+/// setting wins over it.
+pub const FAST_MODE_VAR: &str = "HUMATA2_FAST_MODE";
+
+/// Fast mode's default given `HUMATA2_FAST_MODE`'s value: `1`, `true` or
+/// `on` turn it on, `0`, `false` or `off` turn it off, and anything else,
+/// or no value, keeps the compiled-in default.
+#[must_use]
+pub fn fast_mode_default(var: Option<&str>) -> bool {
+    match var.map(|value| value.trim().to_ascii_lowercase()).as_deref() {
+        Some("1" | "true" | "on") => true,
+        Some("0" | "false" | "off") => false,
+        _ => FAST_MODE,
+    }
 }
 
 impl Default for Preferences {
@@ -70,6 +93,7 @@ impl Default for Preferences {
             permission_request_alerts: false,
             free_hidden_terminals: true,
             option_as_alt: false,
+            fast_mode: fast_mode_default(std::env::var(FAST_MODE_VAR).ok().as_deref()),
         }
     }
 }
@@ -141,11 +165,13 @@ pub enum Row {
     FreeHiddenTerminals,
     /// ⌥ keys send Esc and the key (D420).
     OptionAsAlt,
+    /// Less CPU and fewer redraws (D787).
+    FastMode,
 }
 
 impl Row {
     /// Every row, in the order the page shows them.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Appearance,
         Self::TerminalFont,
         Self::SidebarShowsPinned,
@@ -155,6 +181,7 @@ impl Row {
         Self::PermissionRequestAlerts,
         Self::FreeHiddenTerminals,
         Self::OptionAsAlt,
+        Self::FastMode,
     ];
 
     /// Its label on the page.
@@ -171,6 +198,7 @@ impl Row {
             Self::PermissionRequestAlerts => "Permission request alerts",
             Self::FreeHiddenTerminals => "Free memory of hidden terminals",
             Self::OptionAsAlt => "Option acts as Alt",
+            Self::FastMode => "Fast mode",
         }
     }
 
@@ -181,7 +209,9 @@ impl Row {
             Self::Appearance | Self::TerminalFont | Self::SidebarShowsPinned | Self::LongLines => {
                 Section::Layout
             }
-            Self::ConfirmBulkApprovals | Self::FreeHiddenTerminals => Section::General,
+            Self::ConfirmBulkApprovals | Self::FreeHiddenTerminals | Self::FastMode => {
+                Section::General
+            }
             Self::DefaultAgent => Section::Agents,
             Self::PermissionRequestAlerts => Section::Notifications,
             Self::OptionAsAlt => Section::Keyboard,
@@ -248,6 +278,8 @@ pub enum SettingsAction {
     ToggleFreeHiddenTerminals,
     /// Make ⌥ act as Alt in terminals, or type the layout's characters.
     ToggleOptionAsAlt,
+    /// Turn fast mode on or off (D787).
+    ToggleFastMode,
 
     /// The daemon said whether Codex's hooks still need trusting.
     CodexTrustShown(Result<bool, DaemonError>),
@@ -390,6 +422,7 @@ impl Reducer for Settings {
             SettingsAction::ToggleOptionAsAlt => {
                 preferences.option_as_alt = !preferences.option_as_alt;
             }
+            SettingsAction::ToggleFastMode => preferences.fast_mode = !preferences.fast_mode,
             SettingsAction::SetAgent(agent) => {
                 preferences.default_agent = agent;
                 // The daemon keeps Settings' default agent too (ST-15, D770),

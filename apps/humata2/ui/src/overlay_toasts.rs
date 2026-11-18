@@ -7,8 +7,37 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, Toast, ToastAction};
+use humata2_clients::model::{SessionId, Status};
 use humata2_session::CloseThen;
 use std::rc::Rc;
+
+/// What a toast draws before its text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Glyph {
+    /// The archive, for Undo.
+    Archive,
+    /// The info mark, for a plain notice.
+    Info,
+    /// A session's state dot, as the sidebar draws it.
+    Status(Status),
+}
+
+/// The glyph of a toast offering `action`. The close dialog's toasts (D784,
+/// Fable A3/A4) never draw the archive: Stop's draws frame 73's stopped
+/// square, Keep running's the session's own state dot (`status_of`), and
+/// End for good's, which is Archive's, keeps the archive.
+fn glyph(action: Option<&ToastAction>, status_of: impl Fn(&SessionId) -> Option<Status>) -> Glyph {
+    match action {
+        None => Glyph::Info,
+        Some(ToastAction::Close(CloseThen::ResumeAgent(_) | CloseThen::ResumeShell { .. })) => {
+            Glyph::Status(Status::AgentStopped)
+        }
+        Some(ToastAction::Close(CloseThen::Open { session, .. })) => {
+            status_of(session).map_or(Glyph::Info, Glyph::Status)
+        }
+        Some(_) => Glyph::Archive,
+    }
+}
 
 /// The words of a toast's button: Open and Resume for the close dialog's
 /// toasts (D784), Add details for a report, otherwise Undo.
@@ -50,15 +79,15 @@ pub(super) fn stack(toasts: Vec<Toast>, look: Look, ui: &Rc<Ui>) -> Div {
                 .text_size(px(12.5))
                 .shadow_lg()
                 .occlude()
-                .child(chrome::icon(
-                    if toast.action.is_some() {
-                        IconName::Archive
-                    } else {
-                        IconName::Info
+                .child(
+                    match glyph(toast.action.as_ref(), |id| {
+                        ui.read(|state| state.workspace.session(id).map(|session| session.status))
+                    }) {
+                        Glyph::Archive => chrome::icon(IconName::Archive, 0xffffff, 12.).into_any_element(),
+                        Glyph::Info => chrome::icon(IconName::Info, 0xffffff, 12.).into_any_element(),
+                        Glyph::Status(status) => chrome::status(status).into_any_element(),
                     },
-                    0xffffff,
-                    12.,
-                ))
+                )
                 .child(div().child(toast.text.clone()))
                 .when(toast.action.is_some(), |x| {
                     let working = toast.working;
@@ -108,7 +137,21 @@ mod tests {
     // The gpui glob above brings in its own `test` attribute, which expands
     // to `#[test]` again; the built-in one wins over a glob by name.
     use ::core::prelude::v1::test;
-    use humata2_clients::model::SessionId;
+
+    #[test]
+    fn close_toasts_draw_state_not_the_archive() {
+        let session = SessionId::new("s");
+        let working = |_: &SessionId| Some(Status::Working);
+        let stop = ToastAction::Close(CloseThen::ResumeAgent(session.clone()));
+        assert_eq!(glyph(Some(&stop), working), Glyph::Status(Status::AgentStopped));
+        let shell = ToastAction::Close(CloseThen::ResumeShell { session: session.clone(), tab: 1 });
+        assert_eq!(glyph(Some(&shell), working), Glyph::Status(Status::AgentStopped));
+        let keep = ToastAction::Close(CloseThen::Open { session: session.clone(), tab: 0 });
+        assert_eq!(glyph(Some(&keep), working), Glyph::Status(Status::Working));
+        let undo = ToastAction::Close(CloseThen::RestoreStopped(session));
+        assert_eq!(glyph(Some(&undo), working), Glyph::Archive);
+        assert_eq!(glyph(None, working), Glyph::Info);
+    }
 
     #[test]
     fn close_toasts_offer_open_and_resume_and_end_offers_undo() {

@@ -23,6 +23,9 @@
 //!   though the output never goes quiet (Copilot's animated logo). A reply
 //!   is checked against the screen as it comes: one to a question the
 //!   screen no longer asks withdraws the card instead (D767 amendment).
+//! - A list the screen's height cuts off, on a tab no one who can type is
+//!   attached to, grows the screen to [`START_ROWS`] rows once, and the
+//!   look after raises the card (D786, [`grows`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -33,12 +36,13 @@ use humata2_store::{AgentState, SessionRecord, Store, StoreError, TabKind, TabRe
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::holders::Holders;
+use crate::holders::{Holders, START_ROWS};
 use crate::identity::{AgentCaller, Caller};
 use crate::inbox::Inbox;
 use crate::inbox::permission::{Decision, Question, StillAsked};
 use crate::screen_question::{self, ScreenQuestion};
 use crate::status;
+use crate::terminal::Writers;
 
 /// Between the highlight's moves and the Enter that picks it, so a
 /// program reading keys one at a time sees them apart.
@@ -54,12 +58,17 @@ const HIGHLIGHT: &[char] = &['❯', '›', '>', '●', '▶'];
 const RELOOK_EVERY: Duration = Duration::from_millis(300);
 /// How long a reply waits to read the screen it is checked against.
 const CHECK_LIMIT: Duration = Duration::from_secs(3);
+/// After a grow, when the screen is read again whether or not the program
+/// redrew (D786: its card comes within 3 s of the grow).
+const LOOK_AFTER_GROW: Duration = Duration::from_secs(1);
 
 static ASKS: OnceLock<Arc<Asks>> = OnceLock::new();
 
 /// What looks at agents' screens, for the daemon's life.
 struct Asks {
     holders: Arc<Holders>,
+    /// Each tab's attaches that can type: a grow waits for none (D786).
+    writers: Arc<Writers>,
     inbox: Arc<Inbox>,
     store: Arc<Store>,
     machine: String,
@@ -87,6 +96,9 @@ struct Open {
     asked: Asked,
     /// The card's request id; `None` for D782's card-less hold.
     card: Option<String>,
+    /// D786: a card-less hold a grow left while the screen redraws. It is
+    /// no card shown: the next look raises the card.
+    grew: bool,
     /// Holds the card and the session's Needs you; ends with the person's
     /// answer, except a Deny, which leaves the session needing you while
     /// the screen asks (D781). Ending it early withdraws a pending card.
@@ -100,9 +112,16 @@ impl Drop for Open {
 }
 
 /// Starts looking at agents' screens. Called once, when the daemon serves.
-pub(crate) fn start(holders: Arc<Holders>, inbox: Arc<Inbox>, store: Arc<Store>, machine: String) {
+pub(crate) fn start(
+    holders: Arc<Holders>,
+    writers: Arc<Writers>,
+    inbox: Arc<Inbox>,
+    store: Arc<Store>,
+    machine: String,
+) {
     let _ = ASKS.set(Arc::new(Asks {
         holders,
+        writers,
         inbox,
         store,
         machine,
@@ -169,6 +188,10 @@ struct Asked {
     /// screen too short for it (Copilot scrolls it, so 24 rows show only
     /// `1. Yes`) is not: its card offers no choice, only the terminal.
     whole: bool,
+    /// Whether the screen's height cuts the list off: it starts past `1.`
+    /// or a row says it scrolls (D786). A list that only lacks an answer
+    /// may still be drawing, so that alone is not.
+    cut_by_height: bool,
 }
 
 impl Asks {
@@ -191,7 +214,7 @@ impl Asks {
         let Some((record, tab, index)) = self.agent_of(session, holder_pid).await else {
             return;
         };
-        let Some(seen) = self.screen(&tab).await else {
+        let Some((seen, (cols, rows))) = read_screen_sized(&tab.holder_socket).await else {
             return;
         };
         let mut open = self.open.lock().await;
@@ -199,15 +222,30 @@ impl Asks {
             self.withdraw_gone(&mut open, session).await;
             return;
         };
-        let shown = open.get(session).is_some_and(|now| {
-            (now.holder_pid, now.question) == (holder_pid, question) && now.asked.same_card(&asked)
-        });
-        if shown {
+        let now = open
+            .get(session)
+            .filter(|now| (now.holder_pid, now.question) == (holder_pid, question));
+        let grown = now.is_some_and(|now| now.grew);
+        if now.is_some_and(|now| !now.grew && now.asked.same_card(&asked)) {
             return;
         }
-        // A card read off a screen still drawing is withdrawn first.
-        open.remove(session);
+        // A card read off a screen still drawing is withdrawn first. A
+        // grow's hold is kept until the card takes over, so the session
+        // needs you throughout.
+        let held = open.remove(session).filter(|before| before.grew);
         self.watching().asking.remove(session);
+        let grow = !grown
+            && grows(
+                asked.cut_by_height,
+                self.writers.count(&tab.id),
+                rows,
+                !self.inbox.asks_in_agent(&record.agent),
+            );
+        if grow {
+            drop(held);
+            self.grow(&mut open, session, holder_pid, question, asked, &tab, cols).await;
+            return;
+        }
         let Some((task, card)) = self.raise(&record, tab, index, question, asked.clone()).await else {
             return;
         };
@@ -219,9 +257,61 @@ impl Asks {
                 question,
                 asked,
                 card,
+                grew: false,
                 task,
             },
         );
+        drop(held);
+    }
+
+    /// D786: grows `tab`'s screen to [`START_ROWS`] rows at its `cols`,
+    /// once. The read that asked it raises no card, but the session needs
+    /// you from it on: a card-less hold stands until the next look, which
+    /// comes with the program's redraw or [`LOOK_AFTER_GROW`] later, and
+    /// raises the card. Nothing is typed. A grow that fails is not tried
+    /// again: the next look raises the card the screen allows.
+    #[allow(clippy::too_many_arguments)]
+    async fn grow(
+        self: &Arc<Self>,
+        open: &mut HashMap<String, Open>,
+        session: &str,
+        holder_pid: u32,
+        question: ScreenQuestion,
+        asked: Asked,
+        tab: &TabRecord,
+        cols: u16,
+    ) {
+        open.insert(
+            session.to_owned(),
+            Open {
+                holder_pid,
+                question,
+                asked,
+                card: None,
+                grew: true,
+                task: hold_without_card(session),
+            },
+        );
+        self.watching().asking.insert(session.to_owned());
+        if let Err(error) = crate::attach::grow_rows(tab, &self.holders, cols, START_ROWS).await {
+            crate::log::say!(
+                "humatad2: session {session}'s agent asks a question its screen is too short to show whole, and growing the screen to {START_ROWS} rows failed, so its card offers no choice; open its terminal to answer: {}",
+                status::chain(&error)
+            );
+        }
+        self.look_after_grow(session, holder_pid);
+    }
+
+    /// Looks at `session`'s screen again [`LOOK_AFTER_GROW`] after a grow,
+    /// so a program that doesn't redraw still gets its card. Not async, so
+    /// a look's future doesn't hold another look's.
+    fn look_after_grow(self: &Arc<Self>, session: &str, holder_pid: u32) {
+        let (asks, session) = (Arc::clone(self), session.to_owned());
+        let again: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = Box::pin(async move {
+            tokio::time::sleep(LOOK_AFTER_GROW).await;
+            asks.look(&session, holder_pid).await;
+        });
+        tokio::spawn(again);
     }
 
     /// The question `tab`'s screen asks now: `Some(None)` when it asks
@@ -427,8 +517,21 @@ impl Asked {
 /// The question the screen of the holder at `socket` asks now:
 /// `Some(None)` when it asks none, `None` when it can't be read.
 async fn read_screen(socket: &Path) -> Option<Option<(ScreenQuestion, Asked)>> {
-    let screen = crate::holders::screen_at(socket).await.ok()?;
-    Some(asked_of(&screen))
+    read_screen_sized(socket).await.map(|(asked, _)| asked)
+}
+
+/// [`read_screen`], and the screen's size, `(cols, rows)`.
+async fn read_screen_sized(socket: &Path) -> Option<(Option<(ScreenQuestion, Asked)>, (u16, u16))> {
+    let (screen, size) = crate::holders::screen_and_size_at(socket).await.ok()?;
+    Some((asked_of(&screen), size))
+}
+
+/// D786: whether a look grows the screen to [`START_ROWS`] rows: only for
+/// a list its height cuts off, while no attach that can type is attached,
+/// the screen is shorter than that, and the agent's questions come to the
+/// Inbox (D782). It never shrinks the screen nor changes its columns.
+fn grows(cut_by_height: bool, writers: u32, rows: u16, asks_in_inbox: bool) -> bool {
+    cut_by_height && writers == 0 && rows < START_ROWS && asks_in_inbox
 }
 
 /// The question `screen` asks and what its card shows, if it asks one.
@@ -598,6 +701,7 @@ fn read_asked(screen: &str) -> Option<Asked> {
         choices,
         highlighted,
         whole: first == 1 && !scrolls,
+        cut_by_height: first != 1 || scrolls,
     })
 }
 
@@ -863,5 +967,28 @@ mod tests {
         assert_eq!(moves(0, 0), b"");
         assert_eq!(moves(0, 2), b"\x1b[B\x1b[B");
         assert_eq!(moves(2, 1), b"\x1b[A");
+    }
+
+    /// D786: a box the screen's height clips or scrolls is cut by height;
+    /// a whole box, and one that only lacks its No (still drawing), are not.
+    #[test]
+    fn only_a_list_the_screens_height_cuts_off_is_cut_by_height() {
+        let clipped = |screen: &str| asked_of(screen).expect("a question").1.cut_by_height;
+        assert!(clipped(COPILOT_TRUST_CLIPPED));
+        assert!(clipped(&COPILOT_TRUST_FRESH.replace("│ ❯ 1. Yes      ", "│                ")));
+        assert!(!clipped(COPILOT_TRUST_FRESH));
+        assert!(!clipped(&COPILOT_TRUST_FRESH.replace("│   3. No (Esc)  ", "│                ")));
+    }
+
+    /// D786: a grow needs every condition; any one missing stops it.
+    #[test]
+    fn a_grow_needs_a_height_cut_no_writer_a_short_screen_and_the_inbox() {
+        assert!(grows(true, 0, 24, true));
+        assert!(grows(true, 0, START_ROWS - 1, true));
+        assert!(!grows(false, 0, 24, true), "a list only still drawing");
+        assert!(!grows(true, 1, 24, true), "a writer attached");
+        assert!(!grows(true, 0, START_ROWS, true), "already tall enough");
+        assert!(!grows(true, 0, 60, true), "never shrinks");
+        assert!(!grows(true, 0, 24, false), "asks stay in the agent's terminal");
     }
 }

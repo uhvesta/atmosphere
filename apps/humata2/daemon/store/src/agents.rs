@@ -331,6 +331,7 @@ fn failure_name(reason: ResumeFailure) -> &'static str {
         ResumeFailure::AgentExited => "agent_exited",
         ResumeFailure::AgentNotInstalled => "agent_not_installed",
         ResumeFailure::FolderMissing => "folder_missing",
+        ResumeFailure::ConversationUnknown => "conversation_unknown",
     }
 }
 
@@ -341,6 +342,7 @@ fn failure_from_name(name: &str) -> Option<ResumeFailure> {
         "agent_exited" => ResumeFailure::AgentExited,
         "agent_not_installed" => ResumeFailure::AgentNotInstalled,
         "folder_missing" => ResumeFailure::FolderMissing,
+        "conversation_unknown" => ResumeFailure::ConversationUnknown,
         _ => return None,
     })
 }

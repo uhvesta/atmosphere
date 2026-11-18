@@ -83,7 +83,7 @@ Toolbar "Session panels"
   Button "Journal"
   Button "Info"
 Link "Open channel"
-Button "Resume agent"
+Button "Resume"
 Button "Fork"
 Button "Expand terminal"
 Button "Toggle side panel"
@@ -109,5 +109,3 @@ Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Desi
   #terminal-replica
     #terminal-pane
       #terminal
-  Status "claude exited with code 0. Resume starts it again with this conversation."
-    Button "Resume"

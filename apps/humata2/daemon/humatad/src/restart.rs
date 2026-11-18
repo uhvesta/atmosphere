@@ -635,6 +635,9 @@ fn resume_failed(reason: ResumeFailure, exit_code: Option<i32>) -> String {
         ResumeFailure::AgentNotInstalled => {
             "its agent program isn't installed on this machine; install it, then resume the session"
         }
+        ResumeFailure::ConversationUnknown => {
+            "it was adopted and its conversation isn't known, so it can't be resumed; End it for good, or keep it running"
+        }
         ResumeFailure::FolderMissing => {
             "its folder is gone, so nothing was started in it; restore the folder, then resume the session"
         }

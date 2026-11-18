@@ -21,6 +21,12 @@ fn ledger() -> SessionId {
 /// The ledger session open with its agent's tab and one shell tab, a
 /// Claude Code session titled "Ledger" on This Mac.
 fn store(online: bool) -> (TestStore<Sessions>, Fakes) {
+    store_with(online, None)
+}
+
+/// As `store`, with tab 1 running `extra` (an agent started in a second
+/// tab) when given.
+fn store_with(online: bool, extra: Option<Agent>) -> (TestStore<Sessions>, Fakes) {
     let mut workspace = fixture::design();
     for session in &mut workspace.sessions {
         session.unread = 0;
@@ -31,6 +37,9 @@ fn store(online: bool) -> (TestStore<Sessions>, Fakes) {
             session.machine = MachineId::new("this-mac");
             session.shells = vec!["zsh".into()];
             session.terminal_agents.clear();
+            if let Some(agent) = extra {
+                session.terminal_agents.insert(1, agent);
+            }
         }
     }
     for machine in &mut workspace.machines {
@@ -162,7 +171,7 @@ fn stopping_the_agent_stops_the_session_and_offers_resume() {
         |a| matches!(notice(a), Some((_, CloseThen::ResumeAgent(id))) if id == ledger()),
         |_| {},
     );
-    let stopped = fakes.daemon.workspace().session(&ledger()).map(|found| matches!(found.status, Status::Exited { .. }));
+    let stopped = fakes.daemon.workspace().session(&ledger()).map(|found| found.status == Status::AgentStopped);
     assert_eq!(stopped, Some(true), "the agent was stopped");
     assert!(store.state().closing.is_none());
     assert_eq!(tabs(&store), vec![Tab::Terminal(1)]);
@@ -236,6 +245,28 @@ fn a_failed_stop_keeps_the_dialog_open_with_the_reason() {
     let open = store.state().closing.as_ref().map(|confirm| (confirm.sending, confirm.error.is_some()));
     assert_eq!(open, Some((None, true)));
     assert_eq!(tabs(&store).len(), 2);
+}
+
+/// B1 (Fable, 2026-11-18): until an extra agent tab can be resumed in its
+/// own conversation, its close offers Keep running and End for good, never
+/// Stop.
+#[test]
+fn an_extra_agent_tab_offers_end_for_good_but_no_stop() {
+    let (mut store, fakes) = store_with(true, Some(Agent::Copilot));
+    store.send(A::Close(C::Ask { group: 0, index: 1 }), |_| {});
+    let confirm = store.state().closing.clone().expect("the close asks");
+    assert_eq!(confirm.kind, CloseKind::ExtraAgent);
+    assert!(confirm.choices().contains(&CloseChoice::KeepRunning));
+    assert!(confirm.choices().contains(&CloseChoice::EndForGood));
+    assert!(!confirm.choices().contains(&CloseChoice::Stop));
+    store.send(A::Close(C::Choose(CloseChoice::Stop)), |_| {});
+    assert!(store.state().closing.is_some(), "Stop isn't offered, so it does nothing");
+    store.send(A::Close(C::Choose(CloseChoice::EndForGood)), |_| {});
+    store.receive_matching("ended", |a| matches!(a, A::Close(C::Ended(Ok(())))), |_| {});
+    let ended = format!("end running holder {:?} on this-mac", HolderTab::Session { session: ledger(), index: 1 });
+    assert!(fakes.daemon.calls().contains(&ended), "{:?}", fakes.daemon.calls());
+    assert!(!fakes.daemon.calls().iter().any(|call| call.starts_with("archive")), "the session isn't archived");
+    assert_eq!(tabs(&store), vec![Tab::Terminal(0)]);
 }
 
 #[test]

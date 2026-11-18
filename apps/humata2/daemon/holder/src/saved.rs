@@ -29,6 +29,8 @@ const RESERVE: u8 = 2;
 /// after.
 const HEAD: usize = 1 + 8 + 4;
 const CHECK: usize = 8;
+/// How much a rewrite gathers before it writes.
+const REWRITE_BATCH: usize = 1 << 20;
 /// How far past the output sent a reservation reaches, at least.
 const RESERVE_AHEAD: u64 = 1 << 20;
 /// How far it reaches at most, when output keeps outrunning it.
@@ -317,22 +319,45 @@ fn next_ahead(last: u64, since: Option<Duration>) -> u64 {
 /// returns the file opened to append to and its length. With `sync`, the
 /// file and its folder are synced before it is returned.
 fn rewrite(path: &Path, kept: &Scrollback, sync: bool) -> std::io::Result<(File, u64)> {
-    let mut out = Vec::new();
+    // Written a few records at a time, straight from what's kept: a
+    // rewrite of a full scrollback used to copy it twice first, into
+    // memory the holder then kept (FAST, D789).
+    let mut out = Vec::with_capacity(REWRITE_BATCH + HEAD + CHECK);
     out.extend_from_slice(MAGIC);
-    for (start, data) in kept.since(0) {
-        let mut at = start;
-        for chunk in data.chunks(CHUNK) {
-            put_record(&mut out, OUTPUT, at, chunk);
-            at += chunk.len() as u64;
-        }
-    }
-    put_record(&mut out, RESERVE, kept.end(), &[]);
 
     let partial = path.with_extension("scrollback-partial");
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true).mode(0o600);
     let mut file = File::open(&options, &partial)?;
-    file.append(&out)?;
+    let mut len = 0u64;
+    let mut write = |out: &mut Vec<u8>| -> std::io::Result<()> {
+        file.append(out)?;
+        len += out.len() as u64;
+        out.clear();
+        Ok(())
+    };
+    let mut failed = None;
+    kept.each_piece(|at, piece| {
+        if failed.is_some() {
+            return;
+        }
+        let mut at = at;
+        for chunk in piece.chunks(CHUNK) {
+            put_record(&mut out, OUTPUT, at, chunk);
+            at += chunk.len() as u64;
+            if out.len() >= REWRITE_BATCH
+                && let Err(error) = write(&mut out)
+            {
+                failed = Some(error);
+                return;
+            }
+        }
+    });
+    if let Some(error) = failed {
+        return Err(error);
+    }
+    put_record(&mut out, RESERVE, kept.end(), &[]);
+    write(&mut out)?;
     if sync {
         file.sync_all()?;
     }
@@ -342,7 +367,7 @@ fn rewrite(path: &Path, kept: &Scrollback, sync: bool) -> std::io::Result<(File,
         sync_dir(folder)?;
     }
     let file = File::open(OpenOptions::new().read(true).write(true), path)?;
-    Ok((file, out.len() as u64))
+    Ok((file, len))
 }
 
 #[cfg(test)]

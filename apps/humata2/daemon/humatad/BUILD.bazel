@@ -388,6 +388,10 @@ RIG_TESTS.append("resume_exits_at_once_remote")
 # refusal tells online machines from offline ones as they are.
 RIG_TESTS.append("channel_delete_remote")
 
+# D786: a box grows a clipped trust box's pty only while no writer, relayed
+# ones included, is attached.
+RIG_TESTS.append("screen_questions_remote")
+
 # Single power cuts picked from the suites below, one test each: the quick
 # check to queue while working on recovery.
 RIG_TESTS.append("power_cut_focus")

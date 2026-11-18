@@ -1731,7 +1731,11 @@ impl pb::machine_service_server::MachineService for MachineSvc {
         // removed, not that the name is taken (D760).
         self.work.machines.removing(&name);
         // While its link is still up, so the machine itself ends them (D784).
-        self.work.end_removed_sessions(&name).await;
+        let left = self.work.end_removed_sessions(&name).await;
+        if !left.is_empty() {
+            // The removal goes on; what is left running says how to end it.
+            progress.set_step("end-sessions", pb::StepState::Failed, Some(left.join("\n")));
+        }
         self.work.link_down(&name);
         // Its reports stay until its sessions are archived with what they
         // last said (`removed`), so the archive keeps the lost work (D783).

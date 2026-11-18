@@ -293,10 +293,10 @@ async fn undo_of_end_for_good_gives_it_back_stopped_and_resume_revives_it() {
     succeeded(&fixture.restore_as(&id, true).await);
     let back = get_session(&fixture.daemon, &id).await;
     assert!(back.archive.is_none(), "an undone archive still reads as archived");
-    assert_eq!(back.status, Status::Exited as i32, "{back:?}");
+    assert_eq!(back.status, Status::Stopped as i32, "{back:?}");
     // It stays stopped: nothing resumes it behind the user's back.
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(get_session(&fixture.daemon, &id).await.status, Status::Exited as i32);
+    assert_eq!(get_session(&fixture.daemon, &id).await.status, Status::Stopped as i32);
 
     let resumed = fixture
         .daemon

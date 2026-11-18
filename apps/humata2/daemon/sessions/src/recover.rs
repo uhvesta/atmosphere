@@ -356,8 +356,9 @@ async fn finish(
         starter.clone_repos(&channel, &detail, &mut |_| {}).await?;
         starter.set_step(&mut detail, StartStep::Cloned).await?;
     }
+    let (cols, rows) = (humata2_revive::START_COLS, humata2_revive::START_ROWS);
     starter
-        .launch_session(session, detail, 80, 24, env, &mut |_| {})
+        .launch_session(session, detail, cols, rows, env, &mut |_| {})
         .await
         .map(|_| ())
 }

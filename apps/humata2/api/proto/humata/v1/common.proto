@@ -132,6 +132,8 @@ enum SessionStatus {
   SESSION_STATUS_PROBABLY_IDLE = 11;
   // D264: its machine's sessions are stopped; Start brings it back.
   SESSION_STATUS_MACHINE_STOPPED = 12;
+  // D784: the person stopped this session's agent; Resume brings it back.
+  SESSION_STATUS_STOPPED = 13;
 }
 
 // SE-21: where a turn end comes from.

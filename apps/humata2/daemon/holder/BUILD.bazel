@@ -120,6 +120,22 @@ rust_test(
     )
 ]
 
+# A holder's memory and CPU, idle and after a full scrollback (FAST).
+# `bazel test -c opt :cost_bench --test_output=streamed --test_arg=--nocapture`.
+rust_test(
+    name = "cost_bench",
+    srcs = ["benches/cost.rs"],
+    crate_root = "benches/cost.rs",
+    data = [":humata2_holder"],
+    env = {"HUMATA2_HOLDER": "$(rootpath :humata2_holder)"},
+    tags = ["manual"],
+    deps = [
+        ":holder",
+        "@crates//:rustix",
+        "@crates//:tempfile",
+    ],
+)
+
 # A stand-in for an agent's CLI that takes a return arriving with the text
 # as part of a paste, as Copilot CLI does (BUG-T1).
 rust_binary(

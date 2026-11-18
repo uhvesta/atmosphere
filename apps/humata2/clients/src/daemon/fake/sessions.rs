@@ -505,8 +505,10 @@ pub(super) fn stop_agent(daemon: &FakeDaemon, session: &SessionId) -> Reply<()> 
         format!("stop the agent of {session}"),
         move |inner| {
             let found = inner.session_mut(&id)?;
+            // D784: a stopped agent reads as stopped, and Resume brings it
+            // back; one that already exited stays exited.
             if !matches!(found.status, Status::Exited { .. }) {
-                found.status = Status::Exited { code: 0 };
+                found.status = Status::AgentStopped;
                 found.turn = Turn::Ended;
             }
             let changed = found.clone();

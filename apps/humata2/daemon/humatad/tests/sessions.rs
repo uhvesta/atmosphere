@@ -364,12 +364,12 @@ async fn stopping_ends_the_agent_and_resuming_brings_it_back_in_its_conversation
         .unwrap()
         .into_inner();
 
-    // A stopped agent has no holder, so it shows as exited, which offers
-    // Resume (session_status in session_service.rs).
-    assert_eq!(stopped.status, Status::Exited as i32);
+    // A stopped agent reads as stopped, not exited, and offers Resume
+    // (D784, session_status in session_service.rs).
+    assert_eq!(stopped.status, Status::Stopped as i32);
     assert_eq!(
         get_session(&fix.daemon, &id).await.status,
-        Status::Exited as i32
+        Status::Stopped as i32
     );
     let deadline = tokio::time::Instant::now() + common::WAIT;
     while holders.iter().any(holder_answers) {

@@ -209,11 +209,13 @@ pub(crate) fn session_header(
                 .text_ellipsis()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_size(px(14.))
-                .child(session.title.clone()),
+                .child(session.shown_title()),
         );
     let note = match session.status {
         Status::NeedsYou => Some(("Needs you".into(), 0xff9f0a)),
         Status::Exited { .. } => Some(("Agent exited".into(), 0xff453a)),
+        // D784 A3: stopped by the person, frame 73's muted "Stopped".
+        Status::AgentStopped => Some(("Stopped".into(), 0x8e8e93)),
         // Frame 64: "Moving to <machine>…" in orange.
         Status::Moving => Some((
             format!(
@@ -280,7 +282,20 @@ pub(crate) fn session_header(
                     )),
             )
         })
-        .when(crate::session_tabs::offers_resume(session), |bar| {
+        // D784 A3: a session the person stopped offers a plain Resume, as
+        // frame 73's stopped rows do; an exited one keeps the blue button.
+        .when(
+            crate::session_tabs::offers_resume(session) && session.status == Status::AgentStopped,
+            |bar| {
+                bar.child(
+                    widgets::send(ui, "resume-agent", "Resume", AppAction::Session(SessionAction::Resume))
+                        .outline()
+                        .h(px(24.))
+                        .px(px(11.)),
+                )
+            },
+        )
+        .when(crate::session_tabs::offers_resume(session) && session.status != Status::AgentStopped, |bar| {
             bar.child(
                 widgets::primary_in(look,
                     ui,
@@ -433,7 +448,7 @@ fn session_menu(ui: &Rc<Ui>, state: &AppState, session: &Session, desk: bool, lo
                     })
                     // A stopped session has no agent to stop, so the item
                     // goes rather than greying out (no frame draws it, D295).
-                    .when(!matches!(session.status, Status::Exited { .. }), |card| {
+                    .when(!session.status.agent_ended(), |card| {
                         card.child(crate::action_menu::item(
                             ui,
                             "session-menu-stop",

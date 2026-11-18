@@ -18,8 +18,9 @@ pub enum CloseKind {
     /// A shell: the session's own when it runs a shell, or an extra shell
     /// tab.
     Shell,
-    /// An extra tab running an agent. Stop and End for good act on a whole
-    /// session, so only Keep running is offered.
+    /// An extra tab running an agent. Keep running or End for good, which
+    /// ends only this tab's holder; no Stop until a per-tab agent resume is
+    /// built (D784, Fable B1).
     ExtraAgent,
 }
 
@@ -75,7 +76,7 @@ impl CloseConfirm {
     #[must_use]
     pub fn choices(&self) -> Vec<CloseChoice> {
         match self.kind {
-            CloseKind::ExtraAgent => vec![CloseChoice::KeepRunning],
+            CloseKind::ExtraAgent => vec![CloseChoice::KeepRunning, CloseChoice::EndForGood],
             CloseKind::Agent | CloseKind::Shell => {
                 vec![CloseChoice::KeepRunning, CloseChoice::Stop, CloseChoice::EndForGood]
             }

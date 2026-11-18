@@ -210,6 +210,8 @@ fn draw_row(
             }
             // A session whose machine's sessions were stopped shows the square,
             // dimmed, with no inbox count: its requests ended (frame 73).
+            // A session the person stopped (AgentStopped) draws its square
+            // through `chrome::status` but keeps its row, selection and count.
             let halted = *status == Status::Stopped
                 || ui.read(|s| match &key {
                     RowKey::Session(id) => stopped_on_machine(s, id),

@@ -59,6 +59,6 @@ fn stop_ends_the_agent_and_keeps_the_session() {
         .session(&ledger())
         .cloned()
         .expect("the session stays");
-    assert!(matches!(session.status, Status::Exited { .. }));
+    assert_eq!(session.status, Status::AgentStopped);
     assert!(!session.archived);
 }

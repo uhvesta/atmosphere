@@ -7,6 +7,8 @@
 //! off (D782) raises no card; the session still needs you while it asks.
 
 mod common;
+#[path = "common/trust_box.rs"]
+mod trust_box;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -45,6 +47,10 @@ enum Draw {
     /// box too short for its list, so only `1. Yes` shows above a footer
     /// that says the list scrolls (D785).
     Clipped,
+    /// D786: [`trust_box::agent`]: once the test lets it, the box clipped
+    /// while the pty has fewer than `whole_from` rows and whole from there,
+    /// drawn again at a new size when it `redraws`.
+    Sized { whole_from: u16, redraws: bool },
 }
 
 /// The rows of Copilot 1.0.113's folder trust box, as VERIFY captured it,
@@ -81,6 +87,9 @@ const BOX_REST: &str = r"  '│   3. No (Esc)                                   
 /// as hex, in `trust-answer`, and answers each line after as the other
 /// test agents do.
 fn agent_script(world: &World, draw: Draw) -> String {
+    if let Draw::Sized { whole_from, redraws } = draw {
+        return trust_box::agent(&world.conv, whole_from, redraws);
+    }
     let (before, ask, after) = match draw {
         Draw::Whole => (String::new(), format!("printf '%s\\n' \\\n{BOX_TOP} \\\n{BOX_REST}\n"), ""),
         Draw::FirstRowFirst => (
@@ -122,6 +131,7 @@ logo=$!
             "",
         ),
         Draw::Clipped => (String::new(), format!("printf '%s\\n' \\\n{BOX_CLIPPED}\n"), ""),
+        Draw::Sized { .. } => unreachable!("drawn by trust_box::agent"),
     };
     // Drawn on row 3 with the cursor saved and put back, so it leaves the
     // lines the agent prints alone.
@@ -707,4 +717,278 @@ async fn dismissing_after_the_dialog_was_answered_in_the_terminal_withdraws_it_a
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     fix.wait_not_needing_you().await;
+}
+
+// D786: every holder starts at 80x50, and a trust box a short screen cuts
+// off, with no client attached to type, grows the pty's rows to 50 once.
+
+/// Long enough for a grow or a card to have come, as the tests above see
+/// one come: past a quiet spell and a look.
+const SETTLE: Duration = Duration::from_secs(5);
+
+impl Fixture {
+    /// The conversations folder, where the agent of [`trust_box::agent`]
+    /// keeps its `go` and `sizes`.
+    fn conv(&self) -> PathBuf {
+        self.answer.parent().expect("the answer is in the conversations folder").to_owned()
+    }
+
+    async fn reader(&self) -> Attach {
+        let tab = agent_tab(&self.daemon, &self.session).await;
+        Attach::start(&self.daemon, trust_box::reader_open(None, &tab)).await
+    }
+
+    /// The agent's screen size now, `(cols, rows)`.
+    async fn size(&self) -> (u32, u32) {
+        let mut reader = self.reader().await;
+        let state = trust_box::wait_state(&mut reader, |_| true).await;
+        (state.cols, state.rows)
+    }
+
+    /// Attaches with input at `cols`x`rows`, which sizes the pty to it, and
+    /// returns the attach.
+    async fn writer(&self, cols: u32, rows: u32) -> Attach {
+        let tab = agent_tab(&self.daemon, &self.session).await;
+        Attach::start(&self.daemon, trust_box::writer_open(None, &tab, cols, rows)).await
+    }
+
+    /// Sizes the pty to `cols`x`rows` as a client does and leaves; once no
+    /// one with input is attached, lets the agent draw. Returns a reader,
+    /// which hears the screen's size.
+    async fn short_then_draw(&self, cols: u32, rows: u32) -> Attach {
+        let writer = self.writer(cols, rows).await;
+        let mut reader = self.reader().await;
+        trust_box::wait_state(&mut reader, |state| {
+            (state.cols, state.rows) == (cols, rows) && state.other_writers == 1
+        })
+        .await;
+        drop(writer);
+        trust_box::wait_state(&mut reader, |state| state.other_writers == 0).await;
+        trust_box::go(&self.conv());
+        reader
+    }
+
+    async fn pending(&self) -> Vec<pb::InboxRequest> {
+        self.requests()
+            .await
+            .into_iter()
+            .filter(|request| request.state == pb::RequestState::Pending as i32)
+            .collect()
+    }
+
+    async fn unread(&self) -> bool {
+        common::get_session(&self.daemon, &self.session).await.unread
+    }
+}
+
+/// Copilot's trust box needs about 26 rows to show its whole list.
+const COPILOT_ROWS: u16 = 30;
+
+fn redrawing(whole_from: u16) -> Draw {
+    Draw::Sized {
+        whole_from,
+        redraws: true,
+    }
+}
+
+/// D786 (pick 1): a session no client ever attached to starts at 80x50,
+/// so the trust box shows whole and its card offers every choice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headless_trust_box_offers_every_choice() {
+    let fix = Fixture::drawing(redrawing(COPILOT_ROWS)).await;
+    trust_box::go(&fix.conv());
+    let card = fix
+        .wait_pending_where(|card| question_of(card).choices == CHOICES)
+        .await;
+    assert!(card.on_screen.is_some());
+    assert_eq!(trust_box::sizes(&fix.conv()), ["50 80"]);
+}
+
+/// D786: a box a 24-row screen clips, with no writer attached, grows the
+/// pty to 80x50; the agent draws it whole and exactly one card is raised,
+/// with every choice. The session needs you throughout.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_short_screen_with_no_writer_grows_to_50_rows_and_raises_one_card_with_every_choice() {
+    let fix = Fixture::drawing(redrawing(COPILOT_ROWS)).await;
+    drop(fix.short_then_draw(80, 24).await);
+    trust_box::wait_size(&fix.conv(), "50 80").await;
+    assert_eq!(fix.status().await, pb::SessionStatus::NeedsInput);
+    let card = fix
+        .wait_pending_where(|card| question_of(card).choices == CHOICES)
+        .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let raised = fix.requests().await;
+    assert_eq!(raised.len(), 1, "more than one card was raised: {raised:?}");
+    assert_eq!(raised[0].id, card.id);
+    assert_eq!(trust_box::sizes(&fix.conv()), ["24 80", "50 80"]);
+    assert_eq!(fix.size().await, (80, 50));
+    assert_eq!(fix.status().await, pb::SessionStatus::NeedsInput);
+}
+
+/// D786: with a writer attached the screen is the writer's to size: no
+/// resize, and the clipped box's card offers no choice (D785).
+#[tokio::test(flavor = "multi_thread")]
+async fn with_a_writer_attached_the_screen_is_not_resized_and_the_card_offers_no_choice() {
+    let fix = Fixture::drawing(redrawing(COPILOT_ROWS)).await;
+    let writer = fix.writer(80, 24).await;
+    trust_box::go(&fix.conv());
+    let card = fix.wait_pending().await;
+    assert!(question_of(&card).choices.is_empty(), "{:?}", question_of(&card).choices);
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(trust_box::sizes(&fix.conv()), ["24 80"]);
+    assert_eq!(fix.size().await, (80, 24));
+    drop(writer);
+}
+
+/// D786: a read-only attach doesn't block the grow, and hears the screen's
+/// new size.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reader_does_not_block_the_grow_and_hears_the_new_size() {
+    let fix = Fixture::drawing(redrawing(COPILOT_ROWS)).await;
+    let mut reader = fix.short_then_draw(80, 24).await;
+    let state = trust_box::wait_state(&mut reader, |state| state.rows == 50).await;
+    assert_eq!(state.cols, 80);
+    fix.wait_pending_where(|card| question_of(card).choices == CHOICES)
+        .await;
+}
+
+/// D786: a box still drawing (its first choice alone, no footer that says
+/// it scrolls) is not cut off by the screen's height, so it is never
+/// resized; the drawn box's card offers every choice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_box_still_drawing_is_never_resized() {
+    let fix = Fixture::drawing(Draw::FirstRowFirst).await;
+    // The box is drawn in full 6 s in; the screen is short before then.
+    drop(fix.writer(80, 24).await);
+    fix.wait_pending_where(|card| question_of(card).choices == CHOICES)
+        .await;
+    assert_eq!(fix.size().await, (80, 24));
+}
+
+/// D786: a box still clipped at 50 rows is resized once, then its card
+/// offers no choice (D785); it is never resized again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_box_still_clipped_at_50_rows_is_resized_once_then_offers_no_choice() {
+    let fix = Fixture::drawing(redrawing(60)).await;
+    drop(fix.short_then_draw(80, 24).await);
+    trust_box::wait_size(&fix.conv(), "50 80").await;
+    let card = fix.wait_pending().await;
+    assert!(question_of(&card).choices.is_empty(), "{:?}", question_of(&card).choices);
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(trust_box::sizes(&fix.conv()), ["24 80", "50 80"]);
+    assert_eq!(fix.pending().await.len(), 1);
+    assert_eq!(fix.size().await, (80, 50));
+}
+
+/// D786: the grow changes only the rows, keeping the columns, and never
+/// shrinks a pty that already has 50 rows or more.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_grow_keeps_the_columns_and_never_shrinks_the_pty() {
+    let wide = Fixture::drawing(redrawing(COPILOT_ROWS)).await;
+    drop(wide.short_then_draw(100, 24).await);
+    wide.wait_pending_where(|card| question_of(card).choices == CHOICES)
+        .await;
+    assert_eq!(trust_box::sizes(&wide.conv()), ["24 100", "50 100"]);
+
+    let tall = Fixture::drawing(redrawing(70)).await;
+    drop(tall.short_then_draw(100, 60).await);
+    let card = tall.wait_pending().await;
+    assert!(question_of(&card).choices.is_empty());
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(trust_box::sizes(&tall.conv()), ["60 100"]);
+    assert_eq!(tall.size().await, (100, 60));
+}
+
+/// D786: the grow types nothing: the agent's answer is only the Enter the
+/// person's Yes presses.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_grow_types_nothing() {
+    let fix = Fixture::drawing(redrawing(COPILOT_ROWS)).await;
+    drop(fix.short_then_draw(80, 24).await);
+    let card = fix
+        .wait_pending_where(|card| question_of(card).choices == CHOICES)
+        .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(!fix.answer.exists(), "something answered the trust question");
+    let id = card.id.clone().expect("card has an id");
+    fix.answer(&id, reply("Yes")).await.expect("pick Yes");
+    assert_eq!(wait_answer(&fix.answer).await, "");
+}
+
+/// D786: an agent whose "Ask in the Inbox" is off (D782) is never resized:
+/// its box stays clipped in its terminal, and the session needs you.
+#[tokio::test(flavor = "multi_thread")]
+async fn with_ask_in_the_inbox_off_the_screen_is_not_resized() {
+    let fix = Fixture::starting(
+        redrawing(COPILOT_ROWS),
+        Start {
+            asks_in_terminal: true,
+            ..Start::default()
+        },
+    )
+    .await;
+    drop(fix.short_then_draw(80, 24).await);
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::NeedsInput).await;
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(trust_box::sizes(&fix.conv()), ["24 80"]);
+    assert_eq!(fix.size().await, (80, 24));
+    assert!(fix.pending().await.is_empty());
+}
+
+/// D786: a program that ignores the resize, and writes nothing after it,
+/// still gets its card within 3 s of the grow: the box it shows is still
+/// clipped, so the card offers no choice (D785).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_that_ignores_the_resize_still_gets_its_card_within_3_seconds() {
+    let fix = Fixture::drawing(Draw::Sized {
+        whole_from: COPILOT_ROWS,
+        redraws: false,
+    })
+    .await;
+    let mut reader = fix.short_then_draw(80, 24).await;
+    trust_box::wait_state(&mut reader, |state| state.rows == 50).await;
+    let grown = Instant::now();
+    drop(reader);
+    let deadline = grown + Duration::from_secs(3);
+    let card = loop {
+        if let Some(card) = fix.pending().await.pop() {
+            break card;
+        }
+        assert!(Instant::now() < deadline, "no card within 3 s of the grow");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(question_of(&card).choices.is_empty(), "{:?}", question_of(&card).choices);
+    assert_eq!(trust_box::sizes(&fix.conv()), ["24 80"]);
+}
+
+/// D786: the repaint the grow brings is not new output (D393): a session
+/// read before the grow stays read.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_grow_is_not_unread_output() {
+    // Clipped at 50 rows too, so the repaint shows the same words.
+    let fix = Fixture::drawing(redrawing(60)).await;
+    drop(fix.short_then_draw(80, 24).await);
+    let deadline = Instant::now() + WAIT;
+    while !fix.unread().await {
+        assert!(Instant::now() < deadline, "the box's first draw never marked the session");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let mut viewing = pb::mark_service_client::MarkServiceClient::new(fix.daemon.channel().await)
+        .view_session(pb::ViewSessionRequest {
+            session: Some(fix.session.clone()),
+        })
+        .await
+        .expect("view the session")
+        .into_inner();
+    viewing.message().await.expect("the view is confirmed").expect("the view is confirmed");
+    drop(viewing);
+    let deadline = Instant::now() + WAIT;
+    while fix.unread().await {
+        assert!(Instant::now() < deadline, "viewing never marked the session read");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    trust_box::wait_size(&fix.conv(), "50 80").await;
+    fix.wait_pending().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!fix.unread().await, "the grow's repaint marked the session unread");
 }

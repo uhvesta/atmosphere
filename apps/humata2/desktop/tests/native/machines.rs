@@ -155,7 +155,16 @@ fn rule(capability: &str, label: &str, setting: RuleSetting) -> ReachRule {
 
 #[test]
 fn machine_page_reference_image() {
-    let mut app = machine_page();
+    let mut app = machine_page_with(running_list);
+    // The view text is compared before the image, so a changed list would
+    // stop the run before an image is produced: write one out as well.
+    if let Some(out) = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR") {
+        app.draw();
+        let folder = std::path::PathBuf::from(out).join("candidates");
+        std::fs::create_dir_all(&folder).expect("candidate folder");
+        let image = app.cx.capture_screenshot(app.window).expect("headless image");
+        image.save(folder.join("59-machine-page-candidate.png")).expect("image written");
+    }
     app.snapshot("59-machine-page");
 }
 
@@ -168,8 +177,48 @@ fn machine_menu_open_reference_image() {
     app.snapshot("machine-menu-open");
 }
 
+/// D784: devbox-1's running list, with two terminals no channel has.
+fn running_list(now: i64) -> Vec<humata2_clients::RunningHolder> {
+    let holder = |session: Option<&str>, title: &str, agent: Agent, pid: Option<u32>, folder: &str, minutes: i64| {
+        humata2_clients::RunningHolder {
+            tab: pid.map(|pid| format!("tab-{pid}")),
+            session: session.map(SessionId::new),
+            title: title.to_owned(),
+            channel: session.map(|_| ChannelId::new("payments-rewrite")),
+            desk: false,
+            agent,
+            pid,
+            folder: folder.to_owned(),
+            started_unix_ms: pid.map(|_| now - minutes * 60_000),
+            attached: false,
+            machine: MachineId::new("devbox-1"),
+            stopped: pid.is_none(),
+        }
+    };
+    let mut ledger = holder(Some("ledger"), "Ledger schema migration", Agent::Claude, Some(40_117), "~/Humata/payments-rewrite/ledger", 26 * 60);
+    ledger.attached = true;
+    let mut benchmark = holder(Some("benchmark"), "Benchmark BRIN", Agent::Codex, Some(41_207), "~/Humata/infra/benchmark", 95);
+    benchmark.channel = Some(ChannelId::new("infra"));
+    let mut postgres = holder(Some("postgres"), "Upgrade Postgres 17", Agent::Claude, None, "~/Humata/infra/postgres", 0);
+    postgres.channel = Some(ChannelId::new("infra"));
+    vec![
+        ledger,
+        holder(Some("brin"), "Try BRIN index", Agent::Claude, Some(40_533), "~/Humata/payments-rewrite/brin", 190),
+        holder(Some("rate"), "API rate limiter", Agent::Codex, Some(41_822), "~/Humata/payments-rewrite/api", 135),
+        holder(Some("partial-brin"), "Partial BRIN on posted_at", Agent::Claude, Some(40_901), "~/Humata/payments-rewrite/partial", 31),
+        benchmark,
+        postgres,
+        holder(None, "", Agent::Shell, Some(39_001), "~/scratch/probe", 12),
+        holder(None, "", Agent::Shell, Some(39_002), "~/scratch/bench", 45),
+    ]
+}
+
 /// Devbox-1's page, in light mode, with nothing open.
 fn machine_page() -> App {
+    machine_page_with(|_| Vec::new())
+}
+
+fn machine_page_with(holders: impl FnOnce(i64) -> Vec<humata2_clients::RunningHolder>) -> App {
     let mut app = App::new(fixture::design());
     app.fakes.machines.set_detail(Ok(MachineDetail {
         machine: MachineId::new("devbox-1"),
@@ -204,6 +253,10 @@ fn machine_page() -> App {
         ],
         stop: None,
     }));
+    let held = holders(app.ui.clients().daemon.now_ms());
+    if !held.is_empty() {
+        app.fakes.daemon.set_running_holders(held);
+    }
     app.fold_quiet_channels();
     app.cx.update(|cx| Theme::change(ThemeMode::Light, None, cx));
     app.send(AppAction::Switch(Route::Machine(MachineId::new("devbox-1"))));

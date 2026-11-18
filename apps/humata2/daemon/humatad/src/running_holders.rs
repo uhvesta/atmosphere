@@ -82,6 +82,12 @@ pub(crate) enum RunningError {
     NotRunning { tab: String },
     #[error("channel {channel} isn't one this machine knows")]
     NoChannel { channel: String },
+    #[error("this machine has no {agent} agent to adopt the holder as")]
+    NoAgent {
+        agent: String,
+        #[source]
+        source: humata2_sessions::AgentError,
+    },
     #[error("this machine has no plain shell agent to adopt the holder as")]
     Shell {
         #[source]
@@ -149,6 +155,13 @@ impl RunningError {
                 &self,
                 "pick a channel from the channel list, or leave it empty to adopt into the Desk",
                 None,
+            ),
+            Self::NoAgent { ref agent, .. } => status::internal(
+                format!(
+                    "{}; add the {agent} agent to Settings > Agents, then adopt it again",
+                    status::chain(&self)
+                ),
+                "",
             ),
             Self::Shell { .. } => status::internal(
                 format!(

@@ -432,8 +432,8 @@ async fn the_stop_switch_stops_the_target() {
         ))
         .await
         .expect("the switch lets the agent stop its target");
-    // A stopped agent has no holder, so it reads as exited.
-    wait_status(&fixture.daemon, &fixture.target, pb::SessionStatus::Exited).await;
+    // A stopped agent reads as stopped (D784).
+    wait_status(&fixture.daemon, &fixture.target, pb::SessionStatus::Stopped).await;
     // The other session is still the rule's: its agent still runs.
     let other = get_session(&fixture.daemon, &fixture.other).await;
     assert!(is_running(&other), "{other:?}");

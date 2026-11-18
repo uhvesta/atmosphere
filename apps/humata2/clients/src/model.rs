@@ -222,6 +222,8 @@ pub enum ResumeFailure {
     AgentNotInstalled,
     /// The session's folder is gone.
     FolderMissing,
+    /// An adopted agent whose conversation was never known (D784).
+    ConversationUnknown,
 }
 
 /// What Start fresh can summarize of a session whose resume failed (D143).
@@ -382,6 +384,10 @@ pub enum Status {
     /// Its machine's sessions are stopped; Start sessions brings it back
     /// (D264, `SESSION_STATUS_MACHINE_STOPPED`).
     Stopped,
+    /// The person stopped this session's agent; Resume brings it back
+    /// (D784, `SESSION_STATUS_STOPPED`). Drawn as `Stopped` is, but its
+    /// action is the session's Resume, never Start sessions.
+    AgentStopped,
     /// Moving to another machine (MV-4); see `Session::moving`.
     Moving,
 }
@@ -397,7 +403,7 @@ impl Status {
             Self::ProbablyIdle => "Probably idle".to_owned(),
             Self::Exited { code } => format!("Exited ({code})"),
             Self::Offline => "Offline".to_owned(),
-            Self::Stopped => "Stopped".to_owned(),
+            Self::Stopped | Self::AgentStopped => "Stopped".to_owned(),
             Self::Moving => "Moving".to_owned(),
         }
     }
@@ -405,7 +411,21 @@ impl Status {
     /// Whether a person can type into it.
     #[must_use]
     pub const fn accepts_input(self) -> bool {
-        !matches!(self, Self::Exited { .. } | Self::Offline | Self::Stopped | Self::Moving)
+        !matches!(self, Self::Exited { .. } | Self::Offline | Self::Stopped | Self::AgentStopped | Self::Moving)
+    }
+
+    /// Whether it is stopped, by its machine's Stop sessions or by its own
+    /// Stop: drawn as frame 73's grey square.
+    #[must_use]
+    pub const fn is_stopped(self) -> bool {
+        matches!(self, Self::Stopped | Self::AgentStopped)
+    }
+
+    /// Whether its agent is not running and the session's own Resume brings
+    /// it back: it exited, or the person stopped it.
+    #[must_use]
+    pub const fn agent_ended(self) -> bool {
+        matches!(self, Self::Exited { .. } | Self::AgentStopped)
     }
 }
 
@@ -598,6 +618,19 @@ pub struct Session {
     pub folder: String,
     /// The repositories cloned inside it, with their absolute paths.
     pub clones: Vec<SessionClone>,
+}
+
+impl Session {
+    /// The title people see: an untitled shell reads as its agent, "Shell"
+    /// (D784, Fable A2), never an empty row or header.
+    #[must_use]
+    pub fn shown_title(&self) -> String {
+        if self.title.trim().is_empty() && self.agent == Agent::Shell {
+            Agent::Shell.name().to_owned()
+        } else {
+            self.title.clone()
+        }
+    }
 }
 
 /// One repository cloned for a session (PL-10).

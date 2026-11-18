@@ -21,6 +21,18 @@ use crate::status;
 /// How long Remove machine waits for the machine to end each session (D784).
 const END_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How soon a stop a busy session refused is asked again.
+const BUSY_AGAIN: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether `refused` says the session is busy with another operation that
+/// settles by itself (a resume, start fresh or holder swap).
+fn busy(refused: &Status) -> bool {
+    refused.code() == tonic::Code::Aborted
+        || status::error_of(refused)
+            .and_then(|error| error.kind)
+            .is_some_and(|kind| matches!(kind, pb::error::Kind::SessionBusy(_)))
+}
+
 /// A session on the gone machine and what the host last knew of it.
 struct Gone {
     record: SessionRecord,
@@ -230,32 +242,52 @@ impl Forgetting for SessionSvc {
         .map_err(|error| status::store(error, &self.machine, "read which sessions the machine should let go of"))
     }
 
-    async fn end_sessions_on(&self, machine: &str) {
+    async fn end_sessions_on(&self, machine: &str) -> Vec<String> {
         let Some(remote) = self.remote.clone() else {
-            return;
+            return Vec::new();
         };
         let gone = match self.gone_on(machine).await {
             Ok(gone) => gone,
             Err(error) => {
-                crate::log::say!(
-                    "humatad2: {machine} is being removed, but its sessions couldn't be read to end them there: {}. They may still run on {machine}; stop them there before you reuse that machine",
+                let left = format!(
+                    "{machine}'s sessions couldn't be read to end them there: {}. They may still run on {machine}: add {machine} again, then end each holder from `humata session running --machine {machine}` with `humata session end --tab <tab> --machine {machine}`",
                     error.message()
                 );
-                return;
+                crate::log::say!("humatad2: {machine} is being removed, but {left}");
+                return vec![left];
             }
         };
+        let mut left = Vec::new();
         for session in &gone {
             let id = &session.record.id;
-            let ended = tokio::time::timeout(END_DEADLINE, remote.stop_session_on(machine, id)).await;
-            let failed = match ended {
-                Ok(Ok(_)) => continue,
-                Ok(Err(error)) => Status::from(error).message().to_owned(),
-                Err(_) => format!("{machine} didn't answer within {} seconds", END_DEADLINE.as_secs()),
+            // D784: a session being resumed, started fresh or swapped there
+            // is busy until that settles; its stop is asked again until then.
+            let deadline = tokio::time::Instant::now() + END_DEADLINE;
+            let failed = loop {
+                let wait = deadline.saturating_duration_since(tokio::time::Instant::now());
+                match tokio::time::timeout(wait, remote.stop_session_on(machine, id)).await {
+                    Ok(Ok(_)) => break None,
+                    Ok(Err(error)) => {
+                        let refused = Status::from(error);
+                        if busy(&refused) && tokio::time::Instant::now() + BUSY_AGAIN < deadline {
+                            tokio::time::sleep(BUSY_AGAIN).await;
+                            continue;
+                        }
+                        break Some(refused.message().to_owned());
+                    }
+                    Err(_) => {
+                        break Some(format!("{machine} didn't answer within {} seconds", END_DEADLINE.as_secs()));
+                    }
+                }
             };
-            crate::log::say!(
-                "humatad2: {machine} is being removed, but session {id} couldn't be ended there: {failed}. It may still run on {machine}; stop it there before you reuse that machine. The removal goes on and archives the session here"
+            let Some(failed) = failed else { continue };
+            let line = format!(
+                "session {id}'s holder may still run on {machine}: {failed}. The removal archived it here. To end it, add {machine} again (it lets go of the session, so its holder is listed under Not in a channel), then run `humata session running --machine {machine}` and `humata session end --tab <tab> --machine {machine}`"
             );
+            crate::log::say!("humatad2: {machine} is being removed, but {line}");
+            left.push(line);
         }
+        left
     }
 
     async fn archive_lost(&self, machine: &str, reason: pb::WithdrawReason) -> Result<Vec<pb::SessionId>, Status> {

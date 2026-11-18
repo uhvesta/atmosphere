@@ -601,6 +601,46 @@ fn with_blinking_off_no_blink_is_scheduled(cx: &mut TestAppContext) {
     .expect("the test window is open");
 }
 
+/// FAST (D788): a window in the background schedules no blink, so its
+/// idle terminal draws nothing; active again, the cursor blinks again.
+#[gpui_kit::test]
+fn a_window_in_the_background_stops_the_blink(cx: &mut TestAppContext) {
+    let mut grid = grid_with(&[]);
+    grid.set_cursor_style(CursorStyle {
+        blinking: true,
+        ..CursorStyle::default()
+    });
+    grid.set_cursor(Cursor {
+        x: 0,
+        y: 0,
+        visible: true,
+    });
+    let (handle, view, _) = open(cx, grid);
+    cx.update_window(handle, |_, window, cx| {
+        focus(&view, window, cx);
+        window.render_frame(cx);
+        assert!(view.read(cx).is_blink_scheduled());
+    })
+    .expect("the test window is open");
+
+    gpui_kit::VisualTestContext::from_window(handle, cx).deactivate_window();
+    cx.update_window(handle, |_, window, cx| {
+        assert!(!window.is_window_active());
+        window.render_frame(cx);
+        assert!(!view.read(cx).is_blink_scheduled());
+    })
+    .expect("the test window is open");
+
+    cx.update_window(handle, |_, window, _| window.activate_window())
+        .expect("the test window is open");
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(view.read(cx).is_blink_scheduled());
+    })
+    .expect("the test window is open");
+}
+
 #[gpui_kit::test]
 fn marks_in_view_draw_their_rows_again(cx: &mut TestAppContext) {
     let (handle, view, _) = open(cx, grid_with(&["find me", "and me"]));

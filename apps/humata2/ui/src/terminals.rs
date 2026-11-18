@@ -125,6 +125,12 @@ impl ReplicaSink for Sink {
 /// How long a tab stays hidden before its screen memory is freed.
 const HIDDEN_FREE_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Whether terminal cursors blink: not in fast mode, where an idle
+/// terminal then draws nothing (FAST, D787). Free when unchanged.
+fn cursor_blink(fast_mode: bool) -> bool {
+    !fast_mode
+}
+
 /// The replica's memory saver for the "free hidden terminals" setting.
 fn memory_saver(on: bool) -> Option<std::time::Duration> {
     on.then_some(HIDDEN_FREE_AFTER)
@@ -626,6 +632,7 @@ impl Terminals {
         let font = state.settings.preferences.font_size;
         let free_hidden = state.settings.preferences.free_hidden_terminals;
         let option_as_alt = state.settings.preferences.option_as_alt;
+        let blink = cursor_blink(state.settings.preferences.fast_mode);
         if let Route::Session(id) = &state.route {
             if let Some(session) = state.workspace.session(id) {
                 for tab in 0..=session.shells.len() {
@@ -651,7 +658,7 @@ impl Terminals {
             let connected = is_connected(state, id);
             entry
                 .writable
-                .set(connected && (*tab != 0 || !matches!(session.status, Status::Exited { .. })));
+                .set(connected && (*tab != 0 || !session.status.agent_ended()));
             let appearance = (look.term_text, look.term, look.term_dim);
             let changed_appearance = entry.appearance != appearance;
             entry.appearance = appearance;
@@ -675,6 +682,7 @@ impl Terminals {
                         // Free when unchanged; a pane made since the last
                         // pass takes the setting here.
                         pane.set_option_as_alt(option_as_alt, cx);
+                        pane.view().update(cx, |view, cx| view.set_cursor_blink(blink, cx));
                         if changed_font {
                             pane.view()
                                 .update(cx, |view, cx| view.set_theme(font_theme(font), cx));
@@ -770,12 +778,13 @@ impl Terminals {
                 && state
                     .workspace
                     .session(&key.0)
-                    .is_some_and(|session| matches!(session.status, Status::Exited { .. }));
+                    .is_some_and(|session| session.status.agent_ended());
             entry.writable.set(connected && !exited);
             let appearance = (look.term_text, look.term, look.term_dim);
             let changed_appearance = entry.appearance != appearance;
             entry.appearance = appearance;
             let option_as_alt = state.settings.preferences.option_as_alt;
+            let blink = cursor_blink(state.settings.preferences.fast_mode);
             entry.replica.update(cx, |replica, cx| {
                 let _ = replica.set_visible(true, cx);
                 if let Some(pane) = replica.pane().cloned() {
@@ -784,6 +793,7 @@ impl Terminals {
                             pane.set_connected(false, cx);
                         }
                         pane.set_option_as_alt(option_as_alt, cx);
+                        pane.view().update(cx, |view, cx| view.set_cursor_blink(blink, cx));
                     });
                 }
                 if changed_appearance {

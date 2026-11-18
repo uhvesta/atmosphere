@@ -17,11 +17,10 @@ use humata2_hosts::page::{MachinePageAction, MachinePageState};
 use std::rc::Rc;
 
 /// How a row's ⋯ menu words an action.
-pub(crate) const fn action_label(action: RowAction, orphan: bool) -> &'static str {
+pub(crate) const fn action_label(action: RowAction) -> &'static str {
     match action {
         RowAction::Open => "Open",
         RowAction::Stop => "Stop",
-        RowAction::EndForGood if orphan => "End session\u{2026}",
         RowAction::EndForGood => "End for good\u{2026}",
         RowAction::Resume => "Resume",
         RowAction::Archive => "Archive\u{2026}",
@@ -30,7 +29,7 @@ pub(crate) const fn action_label(action: RowAction, orphan: bool) -> &'static st
 }
 
 /// Whether a menu draws a separator before `action`: running rows set End
-/// for good apart, stopped rows Archive, and an orphan's End session.
+/// for good apart, stopped rows Archive, and End for good.
 pub(crate) const fn separated(action: RowAction) -> bool {
     matches!(action, RowAction::EndForGood | RowAction::Archive)
 }
@@ -101,7 +100,6 @@ impl RenderOnce for RowMenu {
         );
         if shown {
             let close = open.clone();
-            let orphan = self.holder.is_orphan();
             let mut card = crate::action_menu::card("running-menu-card", 160., look)
                 .top(px(20.))
                 .right(px(0.));
@@ -114,7 +112,7 @@ impl RenderOnce for RowMenu {
                     self.holder.clone(),
                     action,
                 )));
-                let label = action_label(action, orphan);
+                let label = action_label(action);
                 let red = action == RowAction::EndForGood;
                 card = card.child(
                     div()
@@ -141,7 +139,7 @@ impl RenderOnce for RowMenu {
                 );
             }
             host = host
-                .child(
+                .child(deferred(
                     div()
                         .id(SharedString::from(format!("{}-scrim", self.id)))
                         .absolute()
@@ -156,8 +154,8 @@ impl RenderOnce for RowMenu {
                                 cx.notify();
                             });
                         }),
-                )
-                .child(card);
+                ))
+                .child(deferred(card));
         }
         host
     }
@@ -169,6 +167,7 @@ fn cell(look: Look, width: f32, text: impl Into<SharedString>) -> Div {
         .flex_shrink_0()
         .whitespace_nowrap()
         .overflow_hidden()
+        .text_ellipsis()
         .text_size(px(11.5))
         .text_color(rgb(look.secondary))
         .child(text.into())
@@ -229,7 +228,7 @@ fn holder_row(draw: &Draw<'_>, index: usize, group: &'static str, holder: &Runni
         .id((group, index))
         .role(Role::ListItem)
         .aria_label(title.clone())
-        .gap(px(10.))
+        .gap(px(8.))
         .px(px(12.))
         .h(px(36.))
         .border_b_1()
@@ -238,21 +237,19 @@ fn holder_row(draw: &Draw<'_>, index: usize, group: &'static str, holder: &Runni
         .child(if holder.stopped { chrome::stopped() } else { chrome::status(status) })
         .child(
             div()
-                .w(px(if orphan { 90. } else { 150. }))
-                .flex_shrink_0()
+                .when(orphan, |name| name.w(px(90.)).flex_shrink_0())
+                .when(!orphan, |name| name.flex_1().min_w_0())
                 .whitespace_nowrap()
                 .overflow_hidden()
+                .text_ellipsis()
                 .font_weight(FontWeight::MEDIUM)
                 .when(holder.stopped, |name| name.text_color(rgb(look.secondary)))
                 .child(title),
         );
-    if !orphan {
-        line = line
-            .child(cell(look, 110., place))
-            .child(cell(look, 80., agent_label(holder.agent)));
-    }
-    line = line
-        .child(
+    // A session row drops the folder column: its channel and agent say
+    // where it is, and the card's width goes to the title and the buttons.
+    if orphan {
+        line = line.child(
             div()
                 .flex_1()
                 .min_w_0()
@@ -261,30 +258,44 @@ fn holder_row(draw: &Draw<'_>, index: usize, group: &'static str, holder: &Runni
                 .text_size(px(11.5))
                 .text_color(rgb(look.secondary))
                 .child(holder.folder.clone()),
-        )
-        .child(cell(look, 90., when))
-        .child(
+        );
+    } else {
+        line = line.child(cell(look, 114., place)).child(cell(look, 74., agent_label(holder.agent)));
+    }
+    line = line.child(cell(look, 56., when));
+    // Only an orphan's row has room for its pid.
+    if orphan {
+        line = line.child(
             div()
-                .w(px(70.))
+                .w(px(60.))
                 .flex_shrink_0()
                 .text_size(px(11.))
                 .text_color(rgb(look.tertiary))
                 .child(holder.pid.map_or_else(String::new, |pid| format!("pid {pid}"))),
-        )
-        .children(holder.attached.then(|| {
-            div()
-                .id((group, 1000 + index))
-                .role(Role::Button)
-                .aria_label("open in a tab")
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .text_size(px(11.5))
-                .text_color(rgb(look.accent))
-                .cursor_pointer()
-                .child("open in a tab")
-                .on_click(open)
-                .test_support()
-        }));
+        );
+    }
+    // A slot of its own, so a row that has the link and one that has not
+    // keep their columns where they are.
+    line = line.child(
+        div()
+            .w(px(72.))
+            .flex_shrink_0()
+            .flex()
+            .justify_end()
+            .children(holder.attached.then(|| {
+                div()
+                    .id((group, 1000 + index))
+                    .role(Role::Button)
+                    .aria_label("open in a tab")
+                    .whitespace_nowrap()
+                    .text_size(px(11.5))
+                    .text_color(rgb(look.accent))
+                    .cursor_pointer()
+                    .child("open in a tab")
+                    .on_click(open)
+                    .test_support()
+            })),
+    );
     if actions.is_empty() {
         return line.test_support().into_any_element();
     }
@@ -376,8 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn an_orphans_end_is_end_session() {
-        assert_eq!(action_label(RowAction::EndForGood, true), "End session\u{2026}");
-        assert_eq!(action_label(RowAction::EndForGood, false), "End for good\u{2026}");
+    fn ending_reads_the_same_for_every_row() {
+        assert!(action_label(RowAction::EndForGood).starts_with("End for good"));
     }
 }

@@ -537,6 +537,11 @@ fn failure(reason: ResumeFailure) -> (&'static str, &'static str, &'static str) 
             CHECK,
             "its conversation file is gone: put it back at the path listed, then resume. Starting a new session instead loses the conversation",
         ),
+        ResumeFailure::ConversationUnknown => (
+            "conversation_unknown",
+            CHECK,
+            "it was adopted and its conversation isn't known, so it can't be resumed: End for good, or keep it running",
+        ),
         ResumeFailure::FolderMissing => (
             "folder_missing",
             CHECK,

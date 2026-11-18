@@ -55,7 +55,7 @@ fn the_session_menu_renames_and_stops_the_open_session() {
         .session(&SessionId::new("ledger"))
         .map(|s| s.status)
         .expect("the session stays");
-    assert!(matches!(stopped, Status::Exited { .. }));
+    assert_eq!(stopped, Status::AgentStopped);
     app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
     app.click("session-menu");
     assert!(!app.contains("session-menu-stop"), "a stopped session offers no Stop");

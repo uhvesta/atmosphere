@@ -211,6 +211,7 @@ fn status(session: &pb::Session) -> (Status, Option<Recovery>) {
         S::Exited => (exited, None),
         S::Offline => (Status::Offline, None),
         S::MachineStopped => (Status::Stopped, None),
+        S::Stopped => (Status::AgentStopped, None),
         S::Moving => (Status::Moving, None),
         S::ResumeFailed => (
             exited,
@@ -238,6 +239,7 @@ fn resume_failure(failed: &pb::ResumeFailed) -> Option<ResumeFailure> {
         R::AgentExited => Some(ResumeFailure::AgentExited(failed.exit_code)),
         R::AgentNotInstalled => Some(ResumeFailure::AgentNotInstalled),
         R::FolderMissing => Some(ResumeFailure::FolderMissing),
+        R::ConversationUnknown => Some(ResumeFailure::ConversationUnknown),
         R::Unspecified => None,
     }
 }

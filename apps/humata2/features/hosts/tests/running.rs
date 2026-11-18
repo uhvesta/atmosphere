@@ -116,7 +116,7 @@ fn stop_from_the_menu_asks_nothing_and_stops_the_session() {
     store.receive_matching("listed again", |a| matches!(a, A::Loaded(_, Ok(_))), |_| {});
     assert!(store.state().confirm_end.is_none());
     let status = daemon.workspace().session(&session).map(|found| found.status);
-    assert!(matches!(status, Some(Status::Exited { .. })), "{status:?}");
+    assert_eq!(status, Some(Status::AgentStopped));
 }
 
 #[test]

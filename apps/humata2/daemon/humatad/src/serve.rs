@@ -757,7 +757,13 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         started: last_start.clone(),
     });
     // D767: a question an agent asks on its screen becomes an Inbox question.
-    crate::screen_ask::start(terminals.holder_links(), inbox.clone(), store.clone(), machine.clone());
+    crate::screen_ask::start(
+        terminals.holder_links(),
+        terminals.writers(),
+        inbox.clone(),
+        store.clone(),
+        machine.clone(),
+    );
     let roots = Arc::new(Roots::new(
         store.clone(),
         machine.clone(),

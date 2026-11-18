@@ -870,7 +870,7 @@ impl PaletteState {
             }
             if live
                 && open.is_some_and(|session| {
-                    !matches!(session.status, humata2_clients::model::Status::Exited { .. })
+                    !session.status.agent_ended()
                 })
             {
                 entries.push(Entry {

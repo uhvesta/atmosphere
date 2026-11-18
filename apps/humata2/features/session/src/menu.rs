@@ -1,6 +1,5 @@
 //! The header's ⋯ session menu (SE-7) and its Rename dialog (FC-17).
 
-use humata2_clients::model::Status;
 use tca::{Effect, Reducer as _};
 
 use crate::{Panel, SessionAction, SessionState, Sessions, open_session};
@@ -38,7 +37,7 @@ pub struct RenameDraft {
 /// Whether the agent of the open session can be stopped: it runs, or its host
 /// may still hold it.
 fn can_stop(state: &SessionState) -> bool {
-    open_session(state).is_some_and(|session| !matches!(session.status, Status::Exited { .. }))
+    open_session(state).is_some_and(|session| !session.status.agent_ended())
 }
 
 impl Sessions {

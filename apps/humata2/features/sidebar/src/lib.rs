@@ -562,7 +562,7 @@ fn session_row(
         key: Some(key),
         depth,
         kind: RowKind::Session {
-            title: session.title.clone(),
+            title: session.shown_title(),
             status: session.status,
             agent: session.agent,
             unread: session.unread,

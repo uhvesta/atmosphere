@@ -657,7 +657,7 @@ fn left(
     for (index, session) in listed.enumerate() {
         let ui = ui.clone();
         let action = wrap(MachinePageAction::OpenSession(session.id.clone()));
-        let halted = stopped || session.status == Status::Stopped;
+        let halted = stopped || session.status.is_stopped();
         sessions = sessions.child(
             row()
                 .id(("machine-session", index))

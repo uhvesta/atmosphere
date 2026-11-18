@@ -83,4 +83,38 @@ async fn peer_link_round_trip() {
         micros(at(0.99)),
         micros(at(1.0)),
     );
+
+    // FAST: what the daemon costs while the link is open and nothing is
+    // asked, over IDLE, read from `ps`.
+    let pid = child.id().expect("the daemon is running");
+    let before = usage(pid);
+    tokio::time::sleep(IDLE).await;
+    let after = usage(pid);
+    println!(
+        "humatad2 on an open, quiet peer link, no sessions: resident {:.1} MiB, CPU {} ms over {} s idle",
+        after.0 as f64 / 1024.0,
+        after.1 - before.1,
+        IDLE.as_secs()
+    );
+}
+
+/// How long the idle daemon is watched.
+const IDLE: Duration = Duration::from_secs(10);
+
+/// Resident memory in KiB and CPU time in milliseconds, from `ps`.
+fn usage(pid: u32) -> (u64, u64) {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=,time=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps runs");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut fields = text.split_whitespace();
+    let rss = fields.next().and_then(|rss| rss.parse().ok()).expect("an rss");
+    let time = fields.next().expect("a cpu time");
+    // [[hh:]mm:]ss.cc
+    let mut ms = 0f64;
+    for part in time.split(':') {
+        ms = ms * 60.0 + part.parse::<f64>().expect("a time part");
+    }
+    (rss, (ms * 1000.0).round() as u64)
 }

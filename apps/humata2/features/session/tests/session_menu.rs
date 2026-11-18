@@ -112,7 +112,7 @@ fn stopping_ends_the_agent_and_keeps_the_session() {
     store.send(A::MenuPick(MenuItem::Stop), |_| {});
     store.receive_matching("stopped", |a| matches!(a, A::Done(Ok(()))), |_| {});
     let stopped = on_daemon(&daemon, "ledger");
-    assert!(matches!(stopped.status, Status::Exited { .. }));
+    assert_eq!(stopped.status, Status::AgentStopped, "it reads as stopped, not exited (D784)");
     assert!(!stopped.archived);
     assert!(store.state().error.is_none());
 }

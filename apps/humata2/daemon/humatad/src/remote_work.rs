@@ -1379,7 +1379,10 @@ impl RemoteWork {
         let resumed_into_nothing = matches!(work, Work::Resume(_))
             && matches!(
                 status,
-                pb::SessionStatus::Idle | pb::SessionStatus::Exited | pb::SessionStatus::ResumeFailed
+                pb::SessionStatus::Idle
+                    | pb::SessionStatus::Exited
+                    | pb::SessionStatus::Stopped
+                    | pb::SessionStatus::ResumeFailed
             );
         Some(if resumed_into_nothing {
             synthetic(

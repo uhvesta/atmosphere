@@ -30,6 +30,20 @@ impl Stray {
     /// Starts a holder at `socket` as the daemon would, whose program
     /// writes its pid to `<socket>.program` before it sleeps.
     fn start(socket: &Path) -> Self {
+        Self::start_as(socket, Path::new("/bin/sh"), None)
+    }
+
+    /// As [`Self::start`], but the holder's program is a script named
+    /// `agent` (so its launch line names that agent) that does the same.
+    fn start_agent(socket: &Path, agent: &str) -> Self {
+        let script = socket.with_extension("bin").join(agent);
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "#!/bin/sh\necho $$ > \"$1\"\nexec sleep 1003\n").unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        Self::start_as(socket, &script, Some(()))
+    }
+
+    fn start_as(socket: &Path, program_path: &Path, agent: Option<()>) -> Self {
         std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let program = socket.with_extension("program");
         let child = Command::new(binary("HUMATA2_HOLDER"))
@@ -38,9 +52,12 @@ impl Stray {
             .arg("--cwd")
             .arg(socket.parent().unwrap())
             .arg("--")
-            .arg("/bin/sh")
-            .arg("-c")
-            .arg(format!("echo $$ > {}; exec sleep 1003", program.display()))
+            .arg(program_path)
+            .args(if agent.is_some() {
+                vec![program.display().to_string()]
+            } else {
+                vec!["-c".to_owned(), format!("echo $$ > {}; exec sleep 1003", program.display())]
+            })
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -131,6 +148,12 @@ fn holders_of(daemon: &Daemon) -> PathBuf {
 async fn started() -> (Daemon, World, pb::Channel) {
     let dir = folder();
     let world = World::new(dir.path());
+    // The machine also has a "copilot" agent, the fake one under that name.
+    let mut kinds: serde_json::Value = serde_json::from_slice(&std::fs::read(&world.agents).unwrap()).unwrap();
+    let mut copilot = kinds[0].clone();
+    copilot["name"] = "copilot".into();
+    kinds.as_array_mut().unwrap().push(copilot);
+    std::fs::write(&world.agents, kinds.to_string()).unwrap();
     let args = world.args();
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let daemon = Daemon::start_with_env(common::Build::Admin, dir, &refs, &[]).await;
@@ -209,4 +232,23 @@ async fn a_tab_a_session_already_holds_or_a_channel_nobody_knows_is_refused_and_
     assert_eq!(refused.code(), Code::NotFound, "{refused:?}");
     let still = list(&daemon).await.into_iter().find(|holder| holder.pid == orphan.pid()).unwrap();
     assert!(still.session.is_none(), "a refused adopt still named a session");
+}
+
+async fn adopted_agent(daemon: &Daemon, session: &pb::SessionId) -> String {
+    get_session(daemon, session).await.agent.expect("a session names its agent").value
+}
+
+#[tokio::test]
+async fn an_orphan_running_an_agent_is_adopted_as_that_agent_and_a_shell_stays_a_shell() {
+    let (daemon, _world, channel) = started().await;
+    let agent = Stray::start_agent(&holders_of(&daemon).join("tb_00000000000000000000000000000004.sock"), "copilot");
+    let tab = orphan_tab(&daemon, &agent).await;
+    let session = adopt(&daemon, &tab, channel.id.as_ref()).await.expect("the agent's holder is adopted");
+    assert_eq!(adopted_agent(&daemon, &session).await, "copilot");
+    assert!(agent.answers() && agent.program_runs(), "adopting ended the holder");
+
+    let shell = Stray::start(&holders_of(&daemon).join("tb_00000000000000000000000000000005.sock"));
+    let tab = orphan_tab(&daemon, &shell).await;
+    let session = adopt(&daemon, &tab, channel.id.as_ref()).await.expect("the shell's holder is adopted");
+    assert_eq!(adopted_agent(&daemon, &session).await, "zsh");
 }

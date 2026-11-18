@@ -50,8 +50,9 @@ pub(crate) trait Forgetting: Send + Sync + 'static {
     /// Ends each session recorded on `machine` and not yet archived through
     /// the machine's own session end, while its link is still up: what
     /// Remove machine does to them (D784). One the machine doesn't end is
-    /// logged and left; nothing here fails the removal.
-    async fn end_sessions_on(&self, machine: &str);
+    /// logged and left; nothing here fails the removal. Returns one line
+    /// for each, naming it and how to end it.
+    async fn end_sessions_on(&self, machine: &str) -> Vec<String>;
 
     /// What `machine` should let go of (D784): the sessions recorded on it
     /// whose archive says their machine was removed, and their channels
@@ -318,13 +319,17 @@ impl Work {
     /// `machine` is being removed and still answers: its sessions end there
     /// (D784). Remove machine only; Forget machine ends nothing, as that
     /// machine doesn't answer and its sessions keep running there.
-    pub(super) async fn end_removed_sessions(&self, machine: &str) {
+    pub(super) async fn end_removed_sessions(&self, machine: &str) -> Vec<String> {
         match self.forgetting.hook() {
             Ok(hook) => hook.end_sessions_on(machine).await,
-            Err(error) => crate::log::say!(
-                "humatad2: {machine} is being removed, but its sessions couldn't be ended there: {}. They may still run on {machine}; stop them there before you reuse that machine",
-                error.message()
-            ),
+            Err(error) => {
+                let left = format!(
+                    "{machine}'s sessions couldn't be ended there: {}. They may still run on {machine}: add {machine} again, then end each holder from `humata session running --machine {machine}`",
+                    error.message()
+                );
+                crate::log::say!("humatad2: {machine} is being removed, but {left}");
+                vec![left]
+            }
         }
     }
 

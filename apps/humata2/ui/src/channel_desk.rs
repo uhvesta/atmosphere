@@ -29,7 +29,7 @@ fn words(status: Status) -> &'static str {
         Status::Idle | Status::ProbablyIdle => "Idle",
         Status::Exited { .. } => "Exited",
         Status::Offline => "Offline",
-        Status::Stopped => "Stopped",
+        Status::Stopped | Status::AgentStopped => "Stopped",
         Status::Moving => "Moving",
     }
 }

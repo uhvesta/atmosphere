@@ -40,8 +40,8 @@ const STEPS: [(&str, &str); 3] = [
 ];
 
 /// The terminal size a Desk agent starts with, until a client attaches.
-const COLS: u16 = 80;
-const ROWS: u16 = 24;
+const COLS: u16 = crate::holders::START_COLS;
+const ROWS: u16 = crate::holders::START_ROWS;
 
 impl DeskSvc {
     /// StartDeskSession with `channel` set (CD-1, CD-6).

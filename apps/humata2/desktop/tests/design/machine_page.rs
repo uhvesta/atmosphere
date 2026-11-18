@@ -436,3 +436,118 @@ pub fn storage(look: Look) -> Div {
             .child(secondary(look, "Sizes are measured when this page opens. Archive… runs the same checks as archiving from a session.")),
     )
 }
+
+/// The running list's left column (D784): the six sessions, the terminals
+/// no channel has, then the Humata folders. Every row stays inside its card;
+/// a session row has no folder or pid, and its action link has a slot of its
+/// own so the columns line up.
+fn running_left(look: Look, machine: &Machine) -> Div {
+    let cell = |width: f32, text: &'static str| {
+        div().w(px(width)).flex_shrink_0().whitespace_nowrap().overflow_hidden().text_ellipsis().text_size(px(11.5)).text_color(c(look.secondary)).child(text)
+    };
+    let more = || div().flex_shrink_0().child(icon(IconName::Ellipsis, look.secondary));
+    let slot = |link: bool| {
+        div()
+            .w(px(72.))
+            .flex_shrink_0()
+            .flex()
+            .justify_end()
+            .children(link.then(|| div().whitespace_nowrap().text_size(px(11.5)).text_color(c(look.accent)).child("open in a tab")))
+    };
+    let stopped_mark = || {
+        div().size(px(10.)).flex().items_center().justify_center().flex_shrink_0().child(div().size(px(7.)).rounded(px(1.5)).bg(c(GREY)))
+    };
+    let ring = || div().size(px(10.)).flex().items_center().justify_center().flex_shrink_0().child(div().size(px(8.)).rounded_full().border_1().border_color(c(GREY)));
+    let row = || div().flex().items_center().gap(px(8.)).px(px(12.)).h(px(36.)).border_b_1().border_color(c(look.line));
+    let line = |mark: Div, name: &'static str, place: &'static str, agent: &'static str, when: &'static str, link: bool, dim: bool| {
+        row()
+            .child(mark)
+            .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().font_weight(FontWeight::MEDIUM).when(dim, |name| name.text_color(c(look.secondary))).child(name))
+            .child(cell(114., place))
+            .child(cell(74., agent))
+            .child(cell(56., when))
+            .child(slot(link))
+            .child(more())
+    };
+    let orphan = |folder: &'static str, when: &'static str, pid: &'static str| {
+        row()
+            .child(ring())
+            .child(div().w(px(90.)).flex_shrink_0().font_weight(FontWeight::MEDIUM).child("Shell"))
+            .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_size(px(11.5)).text_color(c(look.secondary)).child(folder))
+            .child(cell(56., when))
+            .child(div().w(px(60.)).flex_shrink_0().text_size(px(11.)).text_color(c(look.tertiary)).child(pid))
+            .child(slot(false))
+            .child(more())
+    };
+    let folder = |channel: &'static str, what: &'static str| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .px(px(12.))
+            .h(px(36.))
+            .border_b_1()
+            .border_color(c(look.line))
+            .child(small_icon(IconName::FolderOpen, look.secondary))
+            .child(div().w(px(220.)).whitespace_nowrap().child(channel))
+            .child(div().flex_1().whitespace_nowrap().child(secondary(look, what)))
+            .child(div().flex_shrink_0().whitespace_nowrap().text_color(c(look.accent)).child("Open in Files"))
+    };
+    let section = |title: &'static str, body: Div| div().flex().flex_col().gap(px(6.)).child(label(look, title)).child(body);
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap(px(16.))
+        .child(section(
+            "Sessions on it \u{b7} 6",
+            card(look)
+                .child(line(status(St::Idle), "API rate limiter", "# payments-rewrite", "Codex", "2 h 15 min", false, false))
+                .child(line(status(St::Working), "Benchmark BRIN", "# infra", "Codex", "1 h 35 min", false, false))
+                .child(line(status(St::NeedsYou), "Ledger schema migration", "# payments-rewrite", "Claude Code", "1 d 2 h", true, false))
+                .child(line(status(St::Working), "Partial BRIN on posted_at", "# payments-rewrite", "Claude Code", "31 min", false, false))
+                .child(line(status(St::NeedsYou), "Try BRIN index", "# payments-rewrite", "Claude Code", "3 h 10 min", false, false))
+                .child(line(stopped_mark(), "Upgrade Postgres 17", "# infra", "Claude Code", "Stopped", false, true)),
+        ))
+        .child(section(
+            "Not in a channel \u{b7} 2",
+            card(look).child(orphan("~/scratch/bench", "45 min", "pid 39002")).child(orphan("~/scratch/probe", "12 min", "pid 39001")),
+        ))
+        .child(section("Humata folders by channel", card(look).overflow_hidden().children(machine.folders.iter().map(|&(channel, what)| folder(channel, what)))))
+}
+
+/// Frame 118: an orphan row's ⋯ menu, painted at the window root over the
+/// machine page, End for good… in red.
+pub fn running_menu(look: Look) -> Div {
+    let machine = Machine::devbox_1();
+    let body = div().flex().gap(px(16.)).p(px(20.)).text_size(px(12.5)).child(running_left(look, &machine)).child(right(look, &machine));
+    let item = |text: &'static str, red: bool| {
+        div().px(px(8.)).py(px(4.)).rounded(px(5.)).whitespace_nowrap().text_color(c(if red { RED } else { look.text })).child(text)
+    };
+    page(look, Side::at("devbox-1"), header(look, &machine, false), body).relative().child(
+        div()
+            .absolute()
+            .left(px(MENU_X))
+            .top(px(MENU_Y))
+            .w(px(160.))
+            .flex()
+            .flex_col()
+            .p(px(5.))
+            .gap(px(2.))
+            .bg(c(look.card))
+            .border_1()
+            .border_color(c(look.line))
+            .rounded(px(7.))
+            .shadow_lg()
+            .text_size(px(12.5))
+            .child(item("Open", false))
+            .child(item("Adopt\u{2026}", false))
+            .child(div().h(px(1.)).mx(px(4.)).my(px(2.)).bg(c(look.line)))
+            .child(item("End for good\u{2026}", true)),
+    )
+}
+
+/// Where the menu's top-left sits: under the first orphan row's ⋯.
+const MENU_X: f32 = 670.;
+const MENU_Y: f32 = 438.;

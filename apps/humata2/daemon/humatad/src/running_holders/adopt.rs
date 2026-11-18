@@ -1,16 +1,16 @@
 //! D784 "Adopt…": a running holder no session names becomes a session in a
 //! channel or the Desk, keeping the holder it has (same pid, same socket,
 //! so it still attaches). The session is written as a plain shell session
-//! is: its records, then the tab pointed at it. Whatever the orphan runs, it
-//! is adopted as a shell-kind session, because an agent's conversation isn't
-//! known to us: it keeps running, and a revive would start a shell, not the
-//! agent.
+//! is: its records, then the tab pointed at it. The session keeps the agent
+//! kind the holder reports (from its own launch line). An adopted agent's
+//! conversation isn't known to us, so none is recorded: no conversation id,
+//! file or resume command, rather than an invented conversation.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use humata2_sessions::{Agents, DESK_CHANNEL};
+use humata2_sessions::{Agents, DESK_CHANNEL, LaunchPlan};
 use humata2_store::{
     AgentLaunch, AgentRecord, AgentState, SessionDetail, SessionRecord, StartStep, Store, StoreError,
     TabKind,
@@ -20,8 +20,8 @@ use super::{RunningError, seen};
 
 /// The plain shell, as Settings › Agents names it.
 const SHELL: &str = "zsh";
-const COLS: u16 = 80;
-const ROWS: u16 = 24;
+const COLS: u16 = crate::holders::START_COLS;
+const ROWS: u16 = crate::holders::START_ROWS;
 
 /// Makes the orphan holder of `tab` a session in `channel` (the Desk when
 /// empty) and returns the session's id. Nothing is written unless the tab
@@ -59,9 +59,14 @@ pub(crate) async fn adopt(
         return Err(RunningError::NotRunning { tab: record.id });
     };
     let channel = if channel.is_empty() { DESK_CHANNEL } else { channel };
-    let plan = agents
-        .get(SHELL)
-        .map_err(|source| RunningError::Shell { source })?;
+    let kind = if running.agent == "shell" { SHELL } else { running.agent };
+    let plan = agents.get(kind).map_err(|source| {
+        if kind == SHELL {
+            RunningError::Shell { source }
+        } else {
+            RunningError::NoAgent { agent: kind.to_owned(), source }
+        }
+    })?;
 
     let id = format!("se_{}", uuid::Uuid::new_v4().simple());
     let folder = if running.folder.is_empty() {
@@ -70,8 +75,19 @@ pub(crate) async fn adopt(
     } else {
         PathBuf::from(&running.folder)
     };
-    let conversation = uuid::Uuid::new_v4().hyphenated().to_string();
-    let launch_plan = plan.launch(home, &folder, &conversation);
+    // A shell has no conversation to lose; an agent's is not ours to know.
+    let (conversation, launch_plan) = if kind == SHELL {
+        let conversation = uuid::Uuid::new_v4().hyphenated().to_string();
+        let launch_plan = plan.launch(home, &folder, &conversation);
+        (conversation, launch_plan)
+    } else {
+        let unknown = LaunchPlan {
+            argv: Vec::new(),
+            resume_argv: Vec::new(),
+            conversation_file: PathBuf::new(),
+        };
+        (String::new(), unknown)
+    };
     let now = unix_ms(SystemTime::now());
     let title = if record.title.is_empty() { running.agent.to_owned() } else { record.title.clone() };
     let session = SessionRecord {
@@ -79,7 +95,7 @@ pub(crate) async fn adopt(
         channel: channel.to_owned(),
         machine: String::new(),
         title,
-        agent: SHELL.to_owned(),
+        agent: kind.to_owned(),
         folder: folder.clone(),
         created_unix_ms: now,
     };
@@ -96,7 +112,7 @@ pub(crate) async fn adopt(
         session: id.clone(),
         tab: record.id.clone(),
         launch: AgentLaunch {
-            agent: SHELL.to_owned(),
+            agent: kind.to_owned(),
             folder,
             argv: launch_plan.argv,
             resume_argv: launch_plan.resume_argv,

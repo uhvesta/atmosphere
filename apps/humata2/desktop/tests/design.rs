@@ -293,6 +293,7 @@ const FRAMES: &[(&str, Look, Draw)] = &[
     // D782 (2026-11-17): each agent's "Ask in the Inbox" switch; Fable
     // accepted the native capture on 2026-11-17.
     ("117-settings-agents-ask-in-inbox", LIGHT, agent_asks::ask_in_inbox),
+    ("118-machine-running-menu", LIGHT, machine_page::running_menu),
     // D781 (2026-11-17): a question on its agent's screen with its live
     // terminal under the card; Fable approved them with its fixes.
     ("114-inbox-screen-question", LIGHT, screen_question::unfocused),
