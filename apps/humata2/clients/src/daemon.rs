@@ -21,6 +21,57 @@ pub const EVENT_QUEUE: usize = 256;
 /// files in the palette and the rest are one search away.
 pub const SESSION_FILES_CAP: usize = 500;
 
+/// Keeps at most `cap` of `files`, shared fairly among their repos, so one
+/// big repo never hides the session's other repos. Each repo keeps its
+/// first files in order; a repo with fewer than its share leaves the rest
+/// to the others. The repos keep the order they first appear in.
+pub fn fair_share(files: Vec<crate::model::SessionFile>, cap: usize) -> Vec<crate::model::SessionFile> {
+    if files.len() <= cap {
+        return files;
+    }
+    let mut repos: Vec<(String, usize)> = Vec::new();
+    for file in &files {
+        match repos.iter_mut().find(|(repo, _)| *repo == file.repo) {
+            Some((_, count)) => *count += 1,
+            None => repos.push((file.repo.clone(), 1)),
+        }
+    }
+    // Water-fill: raise every repo's allowance together until the cap is
+    // spent or every repo is fully shown.
+    let mut allowance: Vec<usize> = vec![0; repos.len()];
+    let mut left = cap;
+    while left > 0 {
+        let open: Vec<usize> = (0..repos.len()).filter(|&i| allowance[i] < repos[i].1).collect();
+        if open.is_empty() {
+            break;
+        }
+        let share = (left / open.len()).max(1);
+        for i in open {
+            if left == 0 {
+                break;
+            }
+            let take = share.min(repos[i].1 - allowance[i]).min(left);
+            allowance[i] += take;
+            left -= take;
+        }
+    }
+    let mut kept = vec![0; repos.len()];
+    files
+        .into_iter()
+        .filter(|file| {
+            let Some(i) = repos.iter().position(|(repo, _)| *repo == file.repo) else {
+                return false;
+            };
+            if kept[i] < allowance[i] {
+                kept[i] += 1;
+                true
+            } else {
+                false
+            }
+        })
+        .collect()
+}
+
 /// A daemon reply.
 pub type Reply<T> = BoxFuture<Result<T, DaemonError>>;
 

@@ -196,46 +196,39 @@ impl Shared {
     }
 
     /// The files in each of the session's clones, as many as
-    /// [`SESSION_FILES_CAP`], for the palette's Files group.
+    /// [`SESSION_FILES_CAP`] shared fairly among the repos, for the palette's
+    /// Files group and the Files panel. The daemon pages repos in the
+    /// session's order, so pages are followed (up to [`FIND_PAGES_MAX`]) until
+    /// every repo is reached, and one big repo can't hide the rest.
     pub(crate) async fn find_session_files(
         &self,
         session: &SessionId,
     ) -> Result<Vec<SessionFile>, DaemonError> {
-        let reply = self
-            .file_service()
-            .find_files(pb::FindFilesRequest {
-                session: Some(pb::SessionId {
-                    value: session.as_str().to_owned(),
-                }),
-                query: String::new(),
-                page: Some(pb::PageRequest {
-                    page_size: u32::try_from(humata2_clients::SESSION_FILES_CAP)
-                        .unwrap_or(u32::MAX),
-                    page_token: String::new(),
-                }),
-            })
-            .await
-            .map_err(|status| self.error(&status, "The session's files"))?
-            .into_inner();
-        Ok(reply
-            .entries
-            .iter()
-            .filter_map(|entry| {
-                let location = entry.location.as_ref()?;
-                // D382: a Desk session's own folder is named by the empty
-                // repo, as its documents and comments are.
-                let repo = match &location.root {
-                    Some(pb::file_location::Root::SessionClone(clone)) => map::repo_text(clone.repo.as_ref()?),
-                    Some(pb::file_location::Root::SessionFolder(_)) => String::new(),
-                    _ => return None,
-                };
-                Some(SessionFile {
-                    repo,
-                    path: location.path.clone(),
-                    folder: entry.kind == pb::file_entry::Kind::Folder as i32,
+        let mut files = Vec::new();
+        let mut token = String::new();
+        for _ in 0..FIND_PAGES_MAX {
+            let reply = self
+                .file_service()
+                .find_files(pb::FindFilesRequest {
+                    session: Some(pb::SessionId {
+                        value: session.as_str().to_owned(),
+                    }),
+                    query: String::new(),
+                    page: Some(pb::PageRequest {
+                        page_size: FIND_PAGE_SIZE,
+                        page_token: std::mem::take(&mut token),
+                    }),
                 })
-            })
-            .collect())
+                .await
+                .map_err(|status| self.error(&status, "The session's files"))?
+                .into_inner();
+            files.extend(reply.entries.iter().filter_map(session_file));
+            token = reply.page.map(|page| page.next_page_token).unwrap_or_default();
+            if token.is_empty() {
+                break;
+            }
+        }
+        Ok(humata2_clients::fair_share(files, humata2_clients::SESSION_FILES_CAP))
     }
 
     /// What pushing each of the session's repositories would do, with the
@@ -492,6 +485,32 @@ impl Shared {
     }
 }
 
+/// Files asked for per page when listing a session's files: the daemon's
+/// own page limit.
+const FIND_PAGE_SIZE: u32 = 1000;
+
+/// Pages followed at most when listing a session's files, so a huge clone
+/// costs a bounded number of calls.
+const FIND_PAGES_MAX: usize = 20;
+
+/// A session clone's file as the Files panel lists it, or None for anything
+/// else.
+fn session_file(entry: &pb::FileEntry) -> Option<SessionFile> {
+    let location = entry.location.as_ref()?;
+    // D382: a Desk session's own folder is named by the empty repo, as its
+    // documents and comments are.
+    let repo = match &location.root {
+        Some(pb::file_location::Root::SessionClone(clone)) => map::repo_text(clone.repo.as_ref()?),
+        Some(pb::file_location::Root::SessionFolder(_)) => String::new(),
+        _ => return None,
+    };
+    Some(SessionFile {
+        repo,
+        path: location.path.clone(),
+        folder: entry.kind == pb::file_entry::Kind::Folder as i32,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use humata2_clients::model::RepoDiffSpec;
@@ -631,3 +650,4 @@ mod tests {
         );
     }
 }
+

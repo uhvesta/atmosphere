@@ -83,3 +83,26 @@ fn opening_files_with_its_list_read_reads_nothing() {
     assert_eq!(file_requests(&fakes), before);
     store.skip_in_flight();
 }
+
+#[test]
+fn a_big_first_repo_does_not_hide_the_sessions_other_repos() {
+    let (mut store, _fakes, session) = on_a_session_page();
+    let file = |repo: &str, i: usize| humata2_clients::model::SessionFile {
+        repo: repo.to_owned(),
+        path: format!("src/f{i}.rs"),
+        folder: false,
+    };
+    let mut files: Vec<_> = (0..700).map(|i| file("acme/api", i)).collect();
+    files.extend((0..3).map(|i| file("acme/web", i)));
+    store.send(
+        A::SessionFiles {
+            session: session.clone(),
+            result: Ok(files),
+        },
+        |_| {},
+    );
+    let listed = &store.state().workspace.session_files[&session];
+    assert!(listed.iter().any(|f| f.repo == "acme/web"), "the second repo is listed");
+    assert_eq!(listed.iter().filter(|f| f.repo == "acme/web").count(), 3);
+    store.skip_in_flight();
+}

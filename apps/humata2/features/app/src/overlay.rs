@@ -4,7 +4,7 @@ use humata2_palette::PaletteAction;
 use humata2_review::comments::CommentsAction;
 use humata2_session::{Panel, SessionAction};
 use humata2_clients::model::{SessionFile, SessionId};
-use humata2_clients::{DaemonError, FileChange, SESSION_FILES_CAP};
+use humata2_clients::{DaemonError, FileChange, SESSION_FILES_CAP, fair_share};
 use tca::Effect;
 
 use crate::{App, AppAction, AppState, NewChannel, NewSession, ReportAction, Route};
@@ -266,8 +266,8 @@ impl App {
         result: Result<Vec<SessionFile>, DaemonError>,
     ) -> Effect<AppAction> {
         match result {
-            Ok(mut files) => {
-                files.truncate(SESSION_FILES_CAP);
+            Ok(files) => {
+                let files = fair_share(files, SESSION_FILES_CAP);
                 std::sync::Arc::make_mut(&mut state.workspace)
                     .session_files
                     .insert(session.clone(), files);

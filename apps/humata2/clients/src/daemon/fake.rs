@@ -804,9 +804,8 @@ impl Daemon for FakeDaemon {
         let id = session.clone();
         self.reply(None, format!("find_files {session}"), move |inner| {
             inner.session_mut(&id)?;
-            let mut files = inner.workspace.session_files.get(&id).cloned().unwrap_or_default();
-            files.truncate(crate::daemon::SESSION_FILES_CAP);
-            Ok(files)
+            let files = inner.workspace.session_files.get(&id).cloned().unwrap_or_default();
+            Ok(crate::daemon::fair_share(files, crate::daemon::SESSION_FILES_CAP))
         })
     }
 

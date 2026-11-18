@@ -38,7 +38,7 @@ use std::time::Duration;
 pub use clipboard::{Clipboard, FakeClipboard};
 pub use daemon::{
     AgentSwitch, ArchivePlan, Daemon, DaemonError, EVENT_QUEUE, Event, Events, FakeDaemon, FileChange,
-    ForkOptions, HolderTab, ImageKind, LinkSink, Operation, PastTurn, Reply, SESSION_FILES_CAP, SendError,
+    ForkOptions, HolderTab, ImageKind, LinkSink, Operation, PastTurn, Reply, SESSION_FILES_CAP, SendError, fair_share,
     RunningHolder, SwitchChange, TerminalLink, agent_of_kind, TerminalNotice, Terminals, UnpushedWork,
 };
 pub use comments::{CommentsClient, FakeComments};
