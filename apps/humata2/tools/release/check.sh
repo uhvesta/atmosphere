@@ -90,6 +90,10 @@ for name in humata humatad2 humata2_holder stack; do
     fail "Gatekeeper doesn't accept $binary as notarized Developer ID code."
   cmp -s "$binary" "$app/Contents/Helpers/$name" ||
     fail "$binary isn't the $name inside the app, so someone installing by hand would get another build than the app's."
+  # The daemon installs its tools only when they match the app's manifest.
+  listed=$(plutil -extract "platforms.darwin-arm64.$name.sha256" raw "$app/Contents/Resources/manifest.json" 2>/dev/null || true)
+  [ -z "$listed" ] || [ "$listed" = "$(shasum -a 256 "$binary" | cut -d' ' -f1)" ] ||
+    fail "the app's manifest.json lists another checksum for $name than the signed file, so the app would refuse to install its own tools. Fix release.sh's manifest step and release a new version."
 done
 
 echo "Running the downloaded binaries…"

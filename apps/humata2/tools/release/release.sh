@@ -84,6 +84,25 @@ sign() {
 for helper in "$app/Contents/Helpers/"*; do
   sign "$helper"
 done
+# Signing rewrote the helpers, so the release manifest's Mac checksums, taken
+# at build time, no longer match them. The daemon checks those checksums
+# before it installs its tools, so put the signed files' ones in before the
+# app's signature seals the manifest.
+manifest="$app/Contents/Resources/manifest.json"
+if [ -f "$manifest" ]; then
+  for helper in "$app/Contents/Helpers/"*; do
+    name=$(basename "$helper")
+    key="platforms.darwin-arm64.$name.sha256"
+    plutil -extract "$key" raw "$manifest" >/dev/null 2>&1 || continue
+    plutil -replace "$key" -string "$(shasum -a 256 "$helper" | cut -d' ' -f1)" "$manifest"
+  done
+  for helper in "$app/Contents/Helpers/"*; do
+    name=$(basename "$helper")
+    listed=$(plutil -extract "platforms.darwin-arm64.$name.sha256" raw "$manifest" 2>/dev/null) || continue
+    [ "$listed" = "$(shasum -a 256 "$helper" | cut -d' ' -f1)" ] ||
+      fail "the manifest's checksum for $name doesn't match the signed file, so the daemon would refuse to install it. Nothing was uploaded; look at how manifest.json names the Helpers."
+  done
+fi
 sign "$app"
 codesign --verify --deep --strict "$app" || fail "the app's signature doesn't verify after signing; see codesign's message above."
 # The daemon's own requirement (daemon/app_peer/src/sys.rs), with the team it
