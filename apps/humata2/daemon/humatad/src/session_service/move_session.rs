@@ -818,7 +818,7 @@ impl Mover {
     /// Stops the session's agent on `machine`, if one runs there.
     async fn stop_on(&self, machine: &str) -> Result<(), Status> {
         if !self.carry.is_host(machine) {
-            return self.remote.stop_session_on(machine, &self.session).await.map(drop).map_err(Status::from);
+            return self.remote.stop_moving_session_on(machine, &self.session).await.map(drop).map_err(Status::from);
         }
         let loaded = self.svc.load(&self.session).await?;
         let Some(mut agent) = loaded.agent else {

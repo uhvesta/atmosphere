@@ -651,6 +651,7 @@ impl Shared {
                 id: Some(pb::SessionId {
                     value: session.as_str().to_owned(),
                 }),
+                for_move: false,
             })
             .await
             .map_err(|status| self.error(&status, "Stopping the agent"))?;

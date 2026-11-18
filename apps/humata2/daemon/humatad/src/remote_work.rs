@@ -1043,10 +1043,31 @@ impl RemoteWork {
         machine: &str,
         session: &str,
     ) -> Result<pb::Session, RemoteError> {
+        self.stop_on(machine, session, false).await
+    }
+
+    /// Stops session `session` on `machine` for a move taking it away
+    /// (D784): the machine stops it even when its agent has no conversation
+    /// yet, since the move starts it fresh on its new machine.
+    pub(crate) async fn stop_moving_session_on(
+        &self,
+        machine: &str,
+        session: &str,
+    ) -> Result<pb::Session, RemoteError> {
+        self.stop_on(machine, session, true).await
+    }
+
+    async fn stop_on(
+        &self,
+        machine: &str,
+        session: &str,
+        for_move: bool,
+    ) -> Result<pb::Session, RemoteError> {
         let relayed = self.inner.links.relayed(machine)?;
         let request = pb::StopSessionRequest {
             idempotency_key: None,
             id: Some(pb::SessionId { value: session.to_owned() }),
+            for_move,
         };
         let stopped = relayed
             .session()

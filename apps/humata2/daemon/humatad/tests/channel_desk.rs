@@ -427,6 +427,7 @@ async fn the_stop_switch_stops_the_target() {
             pb::StopSessionRequest {
                 idempotency_key: None,
                 id: Some(fixture.target.clone()),
+                for_move: false,
             },
             &token,
         ))

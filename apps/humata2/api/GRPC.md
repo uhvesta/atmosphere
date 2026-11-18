@@ -899,7 +899,12 @@ listed and staying.
   `ResumeSession` brings it back. It is not `MACHINE_STOPPED`, which means
   the whole machine's sessions were stopped and `StartSessions` is the fix
   (D264), nor `EXITED`, which the agent reached on its own. Older clients
-  read it as UNSPECIFIED.
+  read it as UNSPECIFIED. `StopSession` refuses a running agent that hasn't
+  written its conversation yet, since it would have nothing to resume.
+  `StopSessionRequest.for_move` (field 3) is the host's own stop of a
+  session a move takes away: the machine stops it even then, and the new
+  machine starts it fresh. It is honoured only from the host on a machine
+  that isn't the host; anyone else's is the plain Stop.
 - Machine scripts (D687): `RunMachineScript` returns an Operation of kind
   `MACHINE_SCRIPT`, and every change of a run is announced as the event
   payload `MachineScriptRunChanged` (`machine`, `run_id`) on the machines

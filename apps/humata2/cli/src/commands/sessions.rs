@@ -291,6 +291,7 @@ pub(super) async fn session<D: Daemon, C: Console>(
             let request = pb::StopSessionRequest {
                 idempotency_key: ctx.key(),
                 id: Some(ctx.session(&named(session)?).await?),
+                for_move: false,
             };
             ctx.change(rpc::session::STOP_SESSION, &request).await
         }

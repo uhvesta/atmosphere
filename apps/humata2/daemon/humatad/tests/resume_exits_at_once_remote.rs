@@ -61,7 +61,7 @@ async fn a_box_resume_whose_agent_exits_at_once_fails_and_leaves_no_holder_there
 
     sessions(&rig)
         .await
-        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()), for_move: false })
         .await
         .expect("the session stops");
     let deadline = Instant::now() + DEADLINE;

@@ -960,7 +960,7 @@ async fn removing_a_machine_mid_resume_ends_the_resumed_session_there() {
     let (mut rig, id, _pid) = live_on_box().await;
     let mut sessions = pb::session_service_client::SessionServiceClient::new(rig.channel().await);
     sessions
-        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()), for_move: false })
         .await
         .expect("the session on box-1 stops");
     box_agent_leaves(&rig, &id, |state| !matches!(state, AgentState::Stopped), "not stopped").await;

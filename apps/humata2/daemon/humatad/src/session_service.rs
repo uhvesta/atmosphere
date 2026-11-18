@@ -943,6 +943,12 @@ impl SessionSvc {
         approved: bool,
     ) -> Result<Gated<pb::Session>, Status> {
         Self::refuse_peer(caller)?;
+        // D784: a stop for a move is the move's own, the host's call to the
+        // machine it is taking the session from. Asked by anyone else, it is
+        // the plain Stop.
+        let for_move = request.for_move
+            && matches!(caller, Caller::User(identity::UserVia::Host))
+            && !self.guard.host_link().on_host();
         let id = request
             .id
             .map(|id| id.value)
@@ -974,7 +980,8 @@ impl SessionSvc {
         // D784: Stop keeps a session to resume, and resuming takes up the
         // agent's conversation file. A running agent that hasn't written
         // one yet (no first message, or not signed in) would leave a
-        // session that can only fail to resume, so it isn't stopped.
+        // session that can only fail to resume, so it isn't stopped. A move
+        // stops it all the same: its new machine starts it fresh (D757).
         if matches!(agent.state, AgentState::Running { .. })
             && conversation_unwritten(&agent.launch, &self.starter.agents)
         {
@@ -982,7 +989,9 @@ impl SessionSvc {
             // somewhere the launch doesn't name yet; learn it first, and
             // keep it in what is saved below.
             // An agent just started may be writing it now, so it is given a
-            // moment before Stop is refused.
+            // moment before Stop is refused. A move doesn't wait: it looks
+            // once and goes on without one.
+            let grace = if for_move { std::time::Duration::ZERO } else { UNWRITTEN_GRACE };
             let (store, agents, home, key, file) = (
                 self.starter.store.clone(),
                 self.starter.agents.clone(),
@@ -992,7 +1001,7 @@ impl SessionSvc {
             );
             let launch = agent.launch.clone();
             let learned = blocking(move || -> Result<Option<humata2_store::AgentLaunch>, StoreError> {
-                let until = std::time::Instant::now() + UNWRITTEN_GRACE;
+                let until = std::time::Instant::now() + grace;
                 loop {
                     if file.is_file() {
                         return Ok(Some(launch));
@@ -1010,6 +1019,7 @@ impl SessionSvc {
             .map_err(|error| status::store(error, &self.machine, "learn the agent's conversation"))?;
             match learned {
                 Some(launch) => agent.launch = launch,
+                None if for_move => {}
                 None => {
                     let name = self.starter.agents.person_name(&agent.launch.agent);
                     return Err(stop_unwritten_conversation(&id, &name));

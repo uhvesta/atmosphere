@@ -35,8 +35,8 @@ The owner's rule: agents must know the Board exists. This case walks every way a
    **Status:** Not built, no milestone. `daemon/sessions/src/agents.rs:572` (Copilot), `:552` (Codex), `:615` (Claude); `daemon/agent_hooks/src/lib.rs:373`. `api/MCP.md:13` says "the holder writes the agent's MCP config"; I searched `daemon/` for `mcp-config`, `mcp.json` and `mcp_servers` and found only a read-only path list (`daemon/contain/src/home.rs:147`). So steps 1 and 2 never happen for a real agent.
 
 4. **I do:** look for a skill about the Board.
-   **I see:** none. Humata's `skills/` folder has `order-humata-review`, `render-humata-review` and `restart-doctor`. No code installs any of them into an agent.
-   **Status:** Not built, no milestone. TP-17 expects Humata's skills to steer agents on board edits; `OVERVIEW.md:254` lists it unticked.
+   **I see:** `humata-board` in my skills folder (`~/.claude/skills`, `~/.codex/skills` or `~/.copilot/skills`), with `board.md` and `shared/basics.md` beside its `SKILL.md`. The daemon installed it at its start (D790).
+   **Status:** Works (real daemon) for the install: `daemon/humatad/tests/skills.rs::the_daemon_installs_its_own_skills_for_the_agents_set_up_and_never_syncs_them`. Not headless: a real model picking the skill up from a plain ask.
 
 5. **I do:** run `humata --help` in my shell.
    **I see:** (if found) a `board` line: "Board items. `--global` and `--session` pick the board for every subcommand; `--column` filters the list." `humata board --help` lists `add`, `edit`, `move`, `rm`, `history`.
@@ -83,7 +83,7 @@ When the person registers `humatad2 mcp` in the agent's own config. The server n
 | 1 Tool list | Fakes only | `mcp/tests/schemas.rs` |
 | 2 Greeting | Not built (no Board mention) | `daemon/mcp/src/server.rs:552` |
 | 3 Server registered | Not built | `daemon/sessions/src/agents.rs:572` |
-| 4 Skill | Not built | `skills/` |
+| 4 Skill | Works (real daemon) for the install | `humatad/tests/skills.rs` |
 | 5 `--help` | Code, no test | `cli/src/args.rs:112` |
 | 6 `PATH` | Not built | `daemon/humatad/src/identity.rs:502` |
 | 7 By full path | Works (real daemon) | `live_boards.rs` |
@@ -94,7 +94,7 @@ When the person registers `humatad2 mcp` in the agent's own config. The server n
 ## Gaps and likely bugs
 
 - Not built: registering the MCP server with each agent at launch. This is the largest gap on the Board. All 81 MCP tools are unreachable by a real agent, not only the board ones.
-- Not built: a Board skill or any start-of-session text.
+- Not built: any start-of-session text. The Board skill is installed (D790).
 - Not built: `humata` on the tab's `PATH`.
 - Not built: telling an agent which item it was started for.
 - Likely bug: `api/MCP.md:3` says "Agents reach Humata only through MCP". In the build they can reach it only through the CLI.

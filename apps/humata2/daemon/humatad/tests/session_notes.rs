@@ -288,6 +288,7 @@ async fn a_note_to_a_stopped_session_is_refused_and_types_nothing() {
         .stop_session(pb::StopSessionRequest {
             idempotency_key: None,
             id: Some(scene.target.clone()),
+            for_move: false,
         })
         .await
         .unwrap();

@@ -567,7 +567,7 @@ async fn a_stopped_session_whose_move_is_undone_at_restart_stays_stopped() {
     rig.wait_session(&id, "live", is_live).await;
     sessions(&rig)
         .await
-        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()), for_move: false })
         .await
         .expect("the session stops");
     assert!(rig.the("box-1").tabs().iter().all(|tab| !holder_answers(tab)), "the agent stopped");

@@ -68,6 +68,39 @@ pub(crate) fn agent_sources(home: &Path) -> Vec<SkillsSource> {
         .collect()
 }
 
+/// Installs the skills Humata ships (D790) for every agent set up under
+/// `home`, at the daemon's start. An agent is set up when its own folder
+/// (`~/.claude`, `~/.codex`, `~/.copilot`) is there: Humata never makes
+/// that folder, so it sets no agent up. A failure is logged and the daemon
+/// starts all the same; the next start installs again.
+pub(crate) fn install_own(home: &Path) {
+    for (agent, folder) in AGENT_FOLDERS {
+        let root = home.join(folder);
+        if !root.parent().is_some_and(Path::is_dir) {
+            continue;
+        }
+        match humata2_machines::install_own_skills(&root) {
+            Ok(outcomes) => {
+                for kept in outcomes
+                    .iter()
+                    .filter(|outcome| outcome.change == humata2_machines::OwnSkillChange::Kept)
+                {
+                    crate::log::say!(
+                        "humatad2: left {} as it is: it is your own skill, not the `{}` skill Humata ships, so {agent} doesn't have Humata's. To get Humata's, rename or delete yours; it is installed when the daemon next starts",
+                        root.join(&kept.skill).display(),
+                        kept.skill
+                    );
+                }
+            }
+            Err(error) => crate::log::say!(
+                "humatad2: couldn't install Humata's skills for {agent} in {}: {}. Agents still run, without those skills. Check that the folder is yours and writable and the disk isn't full; they are installed when the daemon next starts",
+                root.display(),
+                status::chain(&error)
+            ),
+        }
+    }
+}
+
 /// Where a machine keeps the synced set, and its own skills (for SK-5).
 #[derive(Clone)]
 pub(crate) struct MachineSkills {

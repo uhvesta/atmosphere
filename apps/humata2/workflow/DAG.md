@@ -69,11 +69,13 @@ milestone file; agents read that file, not this one.
 | [AGENTSET](milestones/AGENTSET.md) | I choose which agents Humata offers, and Humata installs only its own tools unless I say otherwise | L4 | daemon + clients + features + UI | AGENTKINDS: the built-in kinds it switches; MACHINESCRIPTS: `agents.toml` ships beside `repos.toml`, and its `start` step uses the same gate; UPGRADE: Humata's own tools are always installed and upgraded | done (released in 0.2.1–0.2.5, 2026-11-17/18) (Settings › Agents switches; third-party CLIs installed only with the per-agent "Install when missing"; D720–729) |
 | OWNERFIX (no milestone file; WORKLOG) | The frames Fable asked to fix look right, and PR drafts are kept when a review is archived | L4 | UI + daemon | LOOK2: the frames it fixes; PR: drafts on archive (D513 ruling) | done (in 0.2.2) |
 | [RELEASE](milestones/RELEASE.md) | The macOS desktop app is published and installed | L8 | main | V1: release what replaces Humata 1 | done (humata2-v0.2.1 through v0.2.5 published and installed, 2026-11-17/18) |
-| [VERIFY](milestones/VERIFY.md) | Every user flow is reproduced, reviewed for usability, and its fixes are covered by tests | L9 | cases, reproduction, review, TDD fixes | RELEASE: the final jank review runs on what was released | closing with 0.3: Copilot passes and the owner-screen drive (2026-11-18) found the bugs fixed in 0.2.2–0.2.5 and the 0.3 batch (End for good, /clear and /restart following, terminal focus after Resume, Inbox terminal clicks, empty-channel sessions, real-VM SSH flows); Codex and Claude Code move to AGENTS2 |
+| [VERIFY](milestones/VERIFY.md) | Every user flow is reproduced, reviewed for usability, and its fixes are covered by tests | L9 | cases, reproduction, review, TDD fixes | RELEASE: the final jank review runs on what was released | done in 0.3.0: Copilot passes and the owner-screen drive (2026-11-18) found the bugs fixed in 0.2.2–0.2.5 and the 0.3 batch (End for good, /clear and /restart following, terminal focus after Resume, Inbox terminal clicks, empty-channel sessions, real-VM SSH flows); Codex and Claude Code move to AGENTS2 |
 | [RELEASE2](milestones/RELEASE2.md) | The jank-review fixes are published and installed | L10 | main | VERIFY: publish the jank-review fixes | done (0.2.2–0.2.4 carry the VERIFY fixes) |
 | [FAST](milestones/FAST.md) | An optional fast mode makes Humata measurably lighter and quicker | L11 | perf | RELEASE2: profile from the published post-review build; VERIFY: profile and tune only once behaviour is settled and covered by tests | done (in 0.2.5: no idle blink in fast mode or in background windows, holder scrollback 42→18 MiB, new idle-cost benches; D787–D789) |
-| [RELEASE3](milestones/RELEASE3.md) | Fast mode is published and installed | L12 | main | FAST: publish fast mode | in progress: 0.3 carries the VERIFY batch on top of 0.2.5 fast mode; fast tier on and off, then slow tier, then release |
+| [RELEASE3](milestones/RELEASE3.md) | Fast mode is published and installed | L12 | main | FAST: publish fast mode | done (humata2-v0.3.0, 953bb942, released and installed 2026-11-18 08:56; focused tests only, by the owner's 9:30 deadline; full fast tier on/off and slow tier still owed) |
 | [AGENTS2](milestones/AGENTS2.md) | Claude Code and Codex are first-class agents, read through their own structured channels | L13 | daemon + agent_hooks + clients + UI | RELEASE3: starts after 0.3 (owner, 2026-11-18) | next |
+| [STACKVIEW](milestones/STACKVIEW.md) | An agent sends a change as a stack of layers, and I step through it across repos | L13 | api + daemon + clients + UI | RELEASE3: builds on the released review view; parallel to AGENTS2, no shared files | open (owner, 2026-11-18; D791, RV-36) |
+| [LIVEHOLDER](milestones/LIVEHOLDER.md) | My terminals keep running: a version bump, a rename or a move never ends them | L13 | daemon/holder + upgrade + revive | RELEASE3: builds on Migrate the holders (D373); parallel to AGENTS2 and STACKVIEW | open (owner, 2026-11-18) |
 
 ## Critical path
 
@@ -177,11 +179,13 @@ graph TD
   OWNERFIX["OWNERFIX: done"]
   V1["V1: done"]
   RELEASE["RELEASE: done"]
-  VERIFY["VERIFY: closing with 0.3"]
+  VERIFY["VERIFY: done (0.3.0)"]
   RELEASE2["RELEASE2: done"]
   FAST["FAST: done (0.2.5)"]
-  RELEASE3["RELEASE3: in progress (0.3)"]
+  RELEASE3["RELEASE3: done (0.3.0)"]
   AGENTS2["AGENTS2: next"]
+  STACKVIEW["STACKVIEW: open"]
+  LIVEHOLDER["LIVEHOLDER: open"]
   LINUX["LINUX: cut (D485)"]
   ANYHOST["ANYHOST: cut (D485)"]
   classDef cut fill:#ddd,stroke:#999,color:#666
@@ -298,4 +302,6 @@ graph TD
   RELEASE2 ==> FAST
   FAST ==> RELEASE3
   RELEASE3 ==> AGENTS2
+  RELEASE3 --> STACKVIEW
+  RELEASE3 --> LIVEHOLDER
 ```

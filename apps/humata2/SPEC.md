@@ -1637,17 +1637,39 @@ each repo's branch.
   the files, groups with titles, and notes on files, hunks and lines. It
   arrives as a review view offer (VW-2) and opens as the Diff panel or a
   review tab showing exactly that; **Revert** goes back (VW-9).
-- **RV-33** Humata ships two skills for it, synced to every machine
-  (SK-1): **/render-humata-review** turns the user's words ("against what
-  GitHub will show", "just my unstaged changes", "since commit abc, plus the
-  new files in migrations/") into a diff spec, and **/order-humata-review**
-  orders the files top-down (entry points first) or bottom-up (leaf changes
-  first), groups them and writes the notes. The ordering skill asks the
-  agent to hand the work to a small, fast model where the agent supports
-  subagents (e.g. Claude Code's Haiku), and runs inline otherwise.
+- **RV-33** Humata ships three skills for it, installed for every agent
+  on every machine (D790), one per kind of ask (D791):
+  - **/render-humata-review** only shows. It prepares the change as a
+    stack of layers across every repo it touches (RV-36), or turns the
+    user's words ("against what GitHub will show", "just my unstaged
+    changes", "since commit abc, plus the new files in migrations/") into
+    one diff spec. It leaves no notes and gives no opinion.
+  - **/order-humata-review** walks the user through a change: it orders
+    the files top-down (entry points first) or bottom-up (leaf changes
+    first), groups them and writes notes that explain without judging. It
+    asks the agent to hand the work to a small, fast model where the agent
+    supports subagents (e.g. Claude Code's Haiku), and runs inline
+    otherwise.
+  - **/review-humata-change** reviews, only when asked: findings on their
+    lines as notes, draft comments when the change is a pull request the
+    user is reviewing (never posted, PR-12), and a short verdict.
 - **RV-34** The order and notes stay attached to the review while the
   changes move under them: a note on a line that changed is kept and marked
   outdated, as drafts are (PR-16).
+
+- **RV-36** A review can show a change as a **stack**: an ordered list of
+  layers, bottom to top, each with a title, an optional one-line purpose,
+  and per repo it touches either a range (base to head) or a set of
+  uncommitted paths, with its pull request when it has one. A stack spans
+  one repo or many. An agent sends one with `review_prepare`; it works the
+  layers out from a `stack` tool stack or chained pull requests, else one
+  layer per commit, else a logical split of uncommitted work, which it says
+  it chose. The view lists the layers and shows **Whole stack** or one
+  layer's own diff in every repo that layer touches; the user steps to the
+  next and previous layer, and `review_focus` can step there. A layer shows
+  its own change whatever is checked out. Not built (milestone STACKVIEW);
+  until it is, the render skill sends the whole stack as one diff per repo
+  with one group per layer. (D791)
 
 ### Upload into a session
 
@@ -1783,7 +1805,8 @@ user builds a code-level understanding of the change.
 
 - **PR-22** A review session's agent terminal is the **review chat**. The
   agent has the clones to read, search, build and run, and the review's view
-  to work with. It never posts to GitHub and gives no verdict of its own.
+  to work with. It never posts to GitHub and gives no verdict of its own
+  unless the user asks for a review (D791).
 - **PR-23** The agent works the view with MCP tools, each scoped to its own
   review session:
   - `review_context`: what the user is looking at (the diff spec, the open

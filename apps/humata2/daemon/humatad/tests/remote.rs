@@ -670,7 +670,7 @@ async fn a_machine_that_goes_away_and_returns_reattaches_its_session_without_sta
     rig.host.wait_session(&session, "OFFLINE", is_offline).await;
     // Offline, the machine takes no start or stop from here, at once, and a
     // refused start leaves no record (CH-4).
-    let refused = rig.host.sessions().await.stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(session.clone()) }).await.unwrap_err();
+    let refused = rig.host.sessions().await.stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(session.clone()), for_move: false }).await.unwrap_err();
     assert!(matches!(error_of(&refused).kind, Some(pb::error::Kind::MachineOffline(_))));
     let refused = rig
         .host

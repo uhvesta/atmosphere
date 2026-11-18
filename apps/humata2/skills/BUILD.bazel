@@ -1,0 +1,21 @@
+# The agent skills Humata ships (README.md), packed into one file that
+# //apps/humata2/daemon/machines embeds, so the daemon can install them
+# into each agent's skills folder (D790). Every file inside a folder here
+# is packed: a new skill folder needs no change to this file.
+#
+# The format, read by daemon/machines/src/own_skills.rs: for each file a
+# line `<path under this folder>\t<size in bytes>\n`, then that many bytes.
+genrule(
+    name = "bundle",
+    srcs = glob(
+        ["*/**"],
+        exclude = ["**/.*"],
+    ),
+    outs = ["skills.bundle"],
+    cmd = "prefix='" + package_name() + "/'; " +
+          "for f in $(SRCS); do " +
+          "printf '%s\\t%s\\n' \"$${f#$$prefix}\" \"$$(wc -c < \"$$f\" | tr -d ' ')\"; " +
+          "cat \"$$f\"; " +
+          "done > $@",
+    visibility = ["//apps/humata2/daemon/machines:__pkg__"],
+)

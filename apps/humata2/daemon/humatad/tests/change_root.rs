@@ -252,7 +252,7 @@ async fn stopped_session(rig: &Rig, channel: &pb::Channel, host: &pb::MachineId,
     rig.wait_session(&id, "running", |session| common::is_running(session)).await;
     sessions(rig)
         .await
-        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()), for_move: false })
         .await
         .expect("the session stops");
     rig.wait_session(&id, "stopped", |session| !is_live(session)).await;
@@ -567,7 +567,7 @@ async fn stopped_desk_session_on_box(rig: &Rig) -> pb::SessionId {
     rig.wait_session(&id, "running", |session| is_live(session)).await;
     sessions(rig)
         .await
-        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()), for_move: false })
         .await
         .expect("the session stops");
     rig.wait_session(&id, "stopped", |session| !is_live(session)).await;
@@ -697,7 +697,7 @@ async fn retrying_the_failed_change_asks_the_box_again_and_ends_done_with_the_ro
     let failed = root_operations(&rig).await.remove(0);
     sessions(&rig)
         .await
-        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(again.clone()) })
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(again.clone()), for_move: false })
         .await
         .expect("the session stops");
     rig.wait_session(&again, "stopped", |one| !is_live(one)).await;

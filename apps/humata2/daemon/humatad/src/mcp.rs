@@ -690,6 +690,7 @@ impl GrpcDaemon {
         let request = self.request(pb::StopSessionRequest {
             idempotency_key: Some(key(&call)),
             id: Some(id),
+            for_move: false,
         })?;
         let session = self
             .sessions()

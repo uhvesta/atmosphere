@@ -124,6 +124,7 @@ async fn a_cleared_conversation_is_followed_and_resume_takes_it_up() {
         .stop_session(pb::StopSessionRequest {
             idempotency_key: None,
             id: Some(id.clone()),
+            for_move: false,
         })
         .await
         .expect("the session stops")

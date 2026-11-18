@@ -35,7 +35,7 @@ async fn stop_on_a_launching_agent_ends_its_holder_then_the_agent_resumes() {
     assert!(common::holder_answers(&tab), "the old holder is alive");
 
     pb::session_service_client::SessionServiceClient::new(rig.channel().await)
-        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(session.clone()) })
+        .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(session.clone()), for_move: false })
         .await
         .expect("stop ends the old holder of a launching agent");
 

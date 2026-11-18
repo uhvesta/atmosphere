@@ -32,7 +32,7 @@ There is no separate model package: the domain types the app shows live in `clie
 | `markdown` | `humata2_markdown` | The Markdown and Mermaid view, once per engine; its GUI tests are in `markdown/headless`. Not yet used by `ui`. |
 | `engine` | `humata2_engine` | The one place the GUI engine is chosen (D57): `:engine` and `:engine_fast`, plus `:engine_test_support` for headless windows, natural frames and real input in tests, and the parity check of natural frames against fresh windows (D58). |
 | `desktop` | `humata2` binary | The app: windows, menus, wiring. Its tests (`shell_test`, `panels_test`, `native_test`, `design_test`) draw the window headless; `design_test` holds the design goldens (D76). |
-| `skills` | — | Agent skills the app ships (`order-humata-review`, `render-humata-review`). |
+| `skills` | — | Agent skills Humata ships and its daemon installs for each agent (D790): one folder per skill with a thin `SKILL.md` and its reference files, `shared/` copied into each, and `README.md` with the list. `:bundle` packs them for `daemon/machines` to embed. |
 
 ## Terminal experiment (real local and SSH PTYs)
 | Package | Crate | What it holds |

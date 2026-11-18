@@ -90,7 +90,7 @@ impl Fixture {
         self.daemon
             .session_service()
             .await
-            .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()) })
+            .stop_session(pb::StopSessionRequest { idempotency_key: None, id: Some(id.clone()), for_move: false })
             .await
             .unwrap();
         common::wait_status(&self.daemon, id, pb::SessionStatus::Stopped).await;

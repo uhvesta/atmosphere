@@ -490,6 +490,18 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .unwrap_or_else(|_| beside_this_binary("humatad2"));
     let humata_tools = crate::session_service::install_mcp_configs(&state, &humatad, &socket)
         .map_err(|source| DaemonError::McpConfigs { source })?;
+    // D790: Humata's own skills go into the skills folders of the agents set
+    // up in the home, on the host and on a machine alike. A daemon given a
+    // state folder of its own (a test's) and no --skills-home has no home
+    // to write to, so it never reaches the real one.
+    let own_skills_home = args.skills_home.clone().or_else(|| {
+        (!state_given)
+            .then(|| std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from))
+            .flatten()
+    });
+    if let Some(home) = &own_skills_home {
+        crate::peer_skills::install_own(home);
+    }
     let agents = agents
         .with_hooks(&hooks)
         .with_agent_hooks(&agent_hooks.codex, &agent_hooks.copilot_plugin)

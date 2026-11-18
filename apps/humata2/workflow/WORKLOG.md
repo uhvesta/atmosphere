@@ -6,27 +6,15 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Resume here
 
-- **State (2026-11-18 08:30):** RELEASE3 (0.3) in progress.
-  - Shipped: humata2-v0.2.1 through v0.2.5, all installed in /Applications. FAST is done in 0.2.5 (D787–D789).
-  - Every milestone before RELEASE3 is done; see DAG.md.
-- **The 0.3 batch** (uncommitted, focused tests green). It comes from the owner-screen drive (admin daemon in an isolated HOME, Copilot, 2026-11-18):
-  - real-VM SSH flows; a channel with no repos starts in an empty folder;
-  - End for good, Desk sessions included;
-  - Stop refuses an agent with no conversation yet;
-  - failed sessions stay listed; This Mac's system line;
-  - Copilot `/clear` and `/restart` are followed through its conversation hook;
-  - after Resume, the terminal takes keys;
-  - a press on the Inbox terminal focuses it;
-  - the scrollbars no longer cover the trust box.
-  - GAPS_REVIEW.md has an entry for each.
-- **Next:**
-  1. Fix the failing fast-tier test: `power_cut_focus_test` start cut at the box.
-  2. Fast tier with fast mode off and on.
-  3. A live drive of the fixed flows on screen.
-  4. Commit and push.
-  5. The slow tier, including `live_flows_ssh_test` with `TERMINAL_LAB_SSH_CONFIG`.
-  6. Release 0.3 and install it.
-  7. Then AGENTS2: Claude Code and Codex on structured channels, with screen parsing as the fallback only.
+- **State (2026-11-18 09:00):** humata2-v0.3.0 (953bb942) released and installed. Every milestone through RELEASE3 is done.
+  - 0.3.0 shipped on focused tests (the owner asked for a release by 9:30).
+- **Owed against 0.3.0:**
+  1. The full fast tier with fast mode off and on.
+  2. The slow tier, including `live_flows_ssh_test` with `TERMINAL_LAB_SSH_CONFIG=$HOME/.lima/h2-terminal-c1/ssh.config`.
+  3. An on-screen drive: Inbox terminal typing; Copilot `/clear` and `/restart`, then Stop and Resume; End for good.
+  Fix what they find in 0.3.x.
+- **In progress:** Humata-installed agent skills (owner, 2026-11-18). Fable 5.2 picks and writes thin pointer skills in `apps/humata2/skills/`, covering the board, remote work, sessions, the Inbox and more, and closes any install or update gaps.
+- **Next milestone:** AGENTS2, Claude Code and Codex on structured channels.
 - **Owner's deadline:** work until 12:00 PST 2026-11-18. The "permission for anything" window ended at 08:20.
 - **Cut (owner, 2026-11-16, D485):** LINUX, ANYHOST, the browser client and TERM's browser half. macOS desktop only.
 - **Test policy:** the fast tier is the default. Focused tests cover each fix. The slow tier runs once before each release.

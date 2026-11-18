@@ -107,6 +107,7 @@ async fn a_box_grows_a_clipped_trust_box_only_with_no_relayed_writer_attached() 
         .stop_session(pb::StopSessionRequest {
             idempotency_key: None,
             id: Some(blocked),
+            for_move: false,
         })
         .await
         .expect("the first session stops");

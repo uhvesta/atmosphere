@@ -104,6 +104,9 @@ pub enum SkillsError {
     /// A manifest whose set id isn't the id of its entries.
     #[error("the skills manifest's set id doesn't match its files; resend the set")]
     ManifestId,
+    /// The skills this binary carries can't be read: a fault in the build.
+    #[error("the skills built into this Humata can't be read ({what}), so none were installed; this is a fault in this build of Humata, not in your files. Update Humata, and report it if the newest release says the same")]
+    OwnBundle { what: &'static str },
     /// The clash choices file can't be read.
     #[error("{} isn't valid JSON; fix or delete it (your clash picks will be asked again)", .path.display())]
     ChoicesFile {
@@ -113,7 +116,7 @@ pub enum SkillsError {
     },
 }
 
-fn io_err<'a>(action: &'static str, path: &'a Path) -> impl FnOnce(io::Error) -> SkillsError + 'a {
+pub(crate) fn io_err<'a>(action: &'static str, path: &'a Path) -> impl FnOnce(io::Error) -> SkillsError + 'a {
     move |source| SkillsError::Io { action, path: path.to_path_buf(), source }
 }
 
@@ -286,7 +289,9 @@ fn plain_name(name: &str) -> bool {
 /// included (SK-6), and `excludes` are globs (`*`, `?`, `**`) matched against
 /// the path under the source root, or a bare file name when the glob has no
 /// `/`. A source folder that doesn't exist is an agent that isn't installed
-/// and gives no skills.
+/// and gives no skills. A skill Humata installed itself (its folder holds
+/// Humata's mark, D790) is not part of the set and is not counted as
+/// excluded: every machine's daemon installs its own.
 pub fn scan(sources: &[Source], excludes: &[String]) -> Result<SkillSet, SkillsError> {
     let mut entries = Vec::new();
     let mut excluded = 0u32;
@@ -331,6 +336,9 @@ fn walk(
         if kind.is_symlink() {
             *excluded += 1;
         } else if kind.is_dir() {
+            if relative.is_empty() && path.join(crate::own_skills::MARK).is_file() {
+                continue;
+            }
             walk(source, &path, &rel, excludes, entries, excluded)?;
         } else if kind.is_file() {
             if looks_secret(&name) || excluded_by(excludes, &rel) {
@@ -531,7 +539,7 @@ pub struct Managed {
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn unique() -> String {
+pub(crate) fn unique() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());

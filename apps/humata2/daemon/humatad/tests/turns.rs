@@ -385,6 +385,7 @@ async fn a_resume_forgets_what_the_hooks_said() {
         .stop_session(pb::StopSessionRequest {
             idempotency_key: None,
             id: Some(fix.session.clone()),
+            for_move: false,
         })
         .await
         .unwrap();

@@ -57,8 +57,11 @@ pub use setup::{Failure, LoginNeeded, LoginReason, Progress, Ready, RetryPolicy,
 pub use system::{HostVariables, SystemRunner};
 pub use takeover::{Takeover, TakeoverAction};
 
+mod own_skills;
 mod skills;
 mod sync_rules;
+
+pub use own_skills::{OwnSkillChange, OwnSkillOutcome, install_own_skills};
 
 pub use skills::{
     Change, ChangeKind, Choice, Clash, ClashUse, Incoming, Managed, Plan as SkillsPlan, SkillEntry,

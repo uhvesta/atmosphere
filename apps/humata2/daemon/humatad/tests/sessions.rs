@@ -379,6 +379,7 @@ async fn stopping_ends_the_agent_and_resuming_brings_it_back_in_its_conversation
         .stop_session(pb::StopSessionRequest {
             idempotency_key: None,
             id: Some(id.clone()),
+            for_move: false,
         })
         .await
         .unwrap()
@@ -548,6 +549,7 @@ async fn stopping_a_session_withdraws_its_pending_requests() {
         .stop_session(pb::StopSessionRequest {
             idempotency_key: None,
             id: Some(fix.id()),
+            for_move: false,
         })
         .await
         .unwrap();

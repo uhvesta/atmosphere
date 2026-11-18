@@ -1,6 +1,6 @@
 # RELEASE3: Fast mode is published and installed
 
-- **Status:** in progress (0.3, 2026-11-18)
+- **Status:** done: humata2-v0.3.0 (953bb942) published and installed 2026-11-18 08:56. Focused tests only (the owner asked for a release by 9:30); the full fast tier with fast mode on and off and the slow tier run against 0.3.0 next.
 - **Depends on:** FAST: publish fast mode
 - **Unblocks:** nothing; the last milestone
 - **Layer:** L12 · **Lane:** main

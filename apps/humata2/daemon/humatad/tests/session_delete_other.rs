@@ -116,6 +116,7 @@ async fn an_agent_stopping_or_archiving_another_session_still_asks() {
             pb::StopSessionRequest {
                 idempotency_key: None,
                 id: Some(scene.other.clone()),
+                for_move: false,
             },
             &scene.token,
         ))

@@ -356,6 +356,11 @@ message RenameSessionRequest {
 message StopSessionRequest {
   IdempotencyKey idempotency_key = 1;
   SessionId id = 2;
+  // D784: the host stops the agent a move is taking away; the session starts
+  // again on its new machine, fresh if it has no conversation yet, so it is
+  // stopped even then. Trusted only from the host; anyone else's is the
+  // plain Stop.
+  bool for_move = 3;
 }
 
 message ResumeSessionRequest {

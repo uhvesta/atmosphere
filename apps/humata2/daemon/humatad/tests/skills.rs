@@ -612,3 +612,44 @@ async fn an_agent_cannot_preview_sync_or_pick_for_skills() {
         .into_inner();
     assert!(all.operations.is_empty());
 }
+
+/// D790: the daemon installs Humata's own skills, reference files and
+/// all, for the agents set up in the home, refreshes its own copies at the
+/// next start, leaves the person's skills alone, and keeps its own out of
+/// the sync.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_daemon_installs_its_own_skills_for_the_agents_set_up_and_never_syncs_them() {
+    let machine = FakeMachine::new();
+    let dir = folder();
+    // Claude Code is set up in this home; Codex and Copilot are not.
+    std::fs::create_dir_all(dir.path().join("home/.claude")).unwrap();
+    let host = Host::start_in(&machine, dir).await;
+
+    // The socket listens before the daemon has finished starting, so wait
+    // for a call to be answered: the install is done by then.
+    host.list().await;
+    let board = host.skills_folder("claude").join("humata-board");
+    let pointer = std::fs::read(board.join("SKILL.md")).expect("the skill is installed");
+    assert!(board.join("board.md").is_file(), "its reference file comes with it");
+    assert!(board.join("shared/basics.md").is_file(), "and the shared one");
+    assert!(!host.dir.path().join("home/.codex").exists(), "an agent that isn't set up gets nothing");
+    assert!(!host.dir.path().join("home/.copilot").exists());
+
+    // Humata's copy is edited, and the person has a skill of their own.
+    write(&board.join("SKILL.md"), b"edited by hand");
+    write(&host.skills_folder("claude").join("mine/SKILL.md"), b"mine");
+    let host = host.restart(&machine).await;
+    host.list().await;
+    assert_eq!(std::fs::read(board.join("SKILL.md")).unwrap(), pointer);
+    assert_eq!(
+        std::fs::read(host.skills_folder("claude").join("mine/SKILL.md")).unwrap(),
+        b"mine"
+    );
+
+    // Only the person's skill is offered to a machine.
+    host.add_box().await;
+    let plan = host.preview().await;
+    let offered: Vec<&str> = plan.changes.iter().map(|change| change.skill.as_str()).collect();
+    assert_eq!(offered, ["mine"]);
+    assert_eq!(plan.excluded_files, 0);
+}
