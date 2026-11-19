@@ -1,0 +1,61 @@
+<!DOCTYPE html><html><head><style>*{box-sizing:border-box;margin:0;padding:0}
+body{width:1600px;height:950px;font-family:-apple-system,"SF Pro Text",Helvetica,sans-serif;font-size:15px;color:#1d1d1f;background:#fff;overflow:hidden;position:relative}
+.mono{font-family:"SF Mono",Menlo,monospace;font-size:14px}
+.title{height:65px;border-bottom:1px solid #e3e3e6;display:flex;align-items:center;padding:0 20px;gap:14px;background:#fff}
+.lights{display:flex;gap:9px;margin-right:20px}.lights i{width:13px;height:13px;border-radius:50%;display:block}
+.crumb{font-size:14px;color:#6e6e73}.crumb b{font-weight:400}
+.h{font-weight:600;font-size:17px}
+.chip{border:1px solid #d9d9de;border-radius:7px;padding:4px 10px;background:#f5f5f7;font-size:15px}
+.btn{border:1px solid #d9d9de;border-radius:7px;padding:6px 14px;background:#f5f5f7;font-size:15px;white-space:nowrap}
+.btn.primary{background:#0a6cf0;border-color:#0a6cf0;color:#fff}
+.btn.ghost{background:none;border-color:transparent;color:#0a6cf0}
+.files{width:375px;background:#f5f5f7;border-right:1px solid #e3e3e6;padding:14px 10px}
+.f{display:flex;align-items:center;padding:7px 12px;border-radius:7px;gap:8px}
+.f .g{color:#28a745}.f .r{color:#e0393e}.f .dim{color:#8e8e93}
+.sel{background:#e8e8ed}
+.code{flex:1}
+.hunk{color:#6e6e73;padding:10px 12px 2px}
+.ln{display:flex;padding:1px 12px;white-space:pre}.ln span:first-child{width:46px;color:#8e8e93}
+.del{background:#fde8e8}.add{background:#e6f6ea}
+.card{border:1px solid #d9d9de;border-radius:8px;margin:14px 14px 0;padding:14px 12px}
+.foot{position:absolute;bottom:0;left:0;right:0;height:56px;border-top:1px solid #e3e3e6;display:flex;align-items:center;padding:0 20px;gap:24px;background:#fff;color:#424245}
+.term{background:#fff;display:flex;flex-direction:column}
+.tabs{height:40px;border-bottom:1px solid #e3e3e6;display:flex;align-items:stretch;font-size:15px;background:#fbfbfd}
+.tab{display:flex;align-items:center;gap:8px;padding:0 14px;border-right:1px solid #e3e3e6;color:#424245;white-space:nowrap}
+.tab.on{background:#fff;color:#1d1d1f;box-shadow:inset 0 -2px 0 #0a6cf0}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+.x{color:#8e8e93;font-size:13px}
+.out{padding:12px 16px;line-height:1.6;white-space:pre}
+.badge{font-size:12px;border-radius:5px;padding:1px 6px;border:1px solid #c9d8f5;color:#0a6cf0;background:#eef4ff}
+.note{position:absolute;background:#fff8c5;border:1px solid #e6d36b;border-radius:6px;padding:6px 10px;font-size:13px;color:#5c4b00;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+</style></head><body><div class="title"><div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+<div><div class="crumb"># payments-rewrite › Ledger schema migration</div><div style="display:flex;gap:10px;align-items:center;margin-top:2px"><span class="h">Diff</span><span style="color:#6e6e73">against</span><span class="chip">main ⌃⌄</span></div></div>
+<div style="flex:1"></div><span class="btn">Open review terminal ⌄</span><span class="btn">Exit full screen</span><span class="x" style="font-size:18px">✕</span></div>
+<div style="display:flex;height:829px">
+<div class="files">
+<div class="f"><span class="dim">⌄</span><b>ledger</b><span style="flex:1"></span><span class="g">+41</span><span class="r">−0</span></div>
+<div class="f" style="padding-left:30px"><span class="g">A</span>0042_accounts.sql<span class="dim">migrations/</span><span style="flex:1"></span><span class="g">+41</span><span class="r">−0</span></div>
+<div class="f"><span class="dim">⌄</span><b>api</b><span style="flex:1"></span><span class="g">+143</span><span class="r">−24</span></div>
+<div class="f sel" style="padding-left:50px">client.rs<span class="dim">src/</span><span style="flex:1"></span><span class="dim">💬2</span><span class="g">+62</span><span class="r">−21</span></div>
+<div class="f" style="padding-left:50px">entry.rs<span class="dim">src/</span><span style="flex:1"></span><span class="g">+81</span><span class="r">−3</span></div>
+</div>
+<div class="code" style="display:flex;flex-direction:column">
+<div style="height:38px;border-bottom:1px solid #e3e3e6;display:flex;align-items:center;padding:0 14px;gap:6px;color:#6e6e73">📄 api · src/ <span style="color:#1d1d1f">client.rs</span><span style="flex:1"></span>Open in editor</div>
+<div class="mono"><div class="hunk">@@ -40,7 +40,12 @@ impl Client {</div>
+<div class="ln"><span>40</span><span>    pub async fn post(&amp;self, entry: Entry) {</span></div>
+<div class="ln del"><span>41 −</span><span>        self.db.insert_legacy(&amp;entry).await?;</span></div>
+<div class="ln add"><span>41 +</span><span>        let tx = self.db.begin().await?;</span></div>
+<div class="ln add"><span>42 +</span><span>        tx.insert_entry(&amp;entry).await?;</span></div>
+<div class="ln add"><span>43 +</span><span>        tx.insert_legacy(&amp;entry).await?;</span></div>
+<div class="ln add"><span>44 +</span><span>        tx.commit().await?;</span></div></div>
+<div class="card"><b>You</b><div style="margin-top:8px">Wrap the two writes in one transaction so a crash can't leave them out of step.</div></div>
+</div></div>
+<div class="foot">Push &amp; PR…<span>Add repo…</span><span style="flex:1"></span><span class="btn primary">Send 1 comment</span></div>
+<div style="position:absolute;top:58px;right:150px;width:330px;background:#fff;border:1px solid #d9d9de;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.16);padding:8px;font-size:15px">
+<div style="padding:8px 10px 6px;color:#6e6e73;font-size:13px">A new terminal in a read-only copy of this diff. Pick the model inside the agent.</div>
+<div class="f sel"><span class="mono">&gt;_</span>Terminal<span style="flex:1"></span><span class="dim">⌥⌘T</span></div>
+<div style="border-top:1px solid #e3e3e6;margin:6px 0"></div>
+<div class="f"><span class="dot" style="background:#28a745"></span>claude<span style="flex:1"></span><span class="dim">last used</span></div>
+<div class="f"><span class="dot" style="background:#28a745"></span>copilot</div>
+<div class="f" style="color:#8e8e93"><span class="dot" style="background:#c7c7cc"></span>codex · not installed</div>
+</div></body></html>

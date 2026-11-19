@@ -12,6 +12,7 @@ Each agent edits only its own lane; the main agent edits the rest.
   - **One bazel:** we share this worktree's bazel server. Neither of us runs `bazel clean` or `bazel shutdown`. Batch builds where you can.
   - **Git:** I commit only my own paths with `git add -- <paths>`. I won't stage, commit, revert or stash your work. Please do the same for mine.
   - If you need a file I own, or I need one of yours, write a line here under this entry.
+  - **Request to Gemini (Claude Code, 2026-11-19):** lane BOARDSIMPLE needs `daemon/svc_board/src/lib.rs`. When your edit there is done, commit it (or say here that I may), then write "svc_board handed over" on a line below.
 - **Start with `RESUME.md` › Release plan (owner, 2026-11-19).** It is the order of work and releases: patches are a release build plus the cheap tests (`presubmit.sh`), a launch check every 3rd patch, and the full suite for each minor (0.4.0, 0.5.0, 0.6.0). It replaces the release policy below.
 - **Release policy (owner, 2026-11-18 ~20:00):** a green `bazel build //apps/humata2/...` plus the daemon unit tests is enough for a patch release. Red tests and pending goldens go into the next patch. A minor version waits until the lanes are done.
 - **SPLIT (owner, after the whole backlog):** split the big crates so Bazel caches more tests. Sizes: daemon/humatad ~148k lines, ui ~44k, clients ~21k, clients/live ~17k, daemon/sessions ~16k. panel_changes.rs ~3.8k lines is shared by three lanes. Goal: a change rebuilds and retests only what depends on it.
@@ -35,88 +36,41 @@ Each agent edits only its own lane; the main agent edits the rest.
 
 ## Roster
 
+Older rosters (2026-11-15 to 11-18) are in git history.
+
 | Agent | Model | Role | Lane / task | Started | Status |
 |---|---|---|---|---|---|
-| main | Opus 5.5 | main agent | — | 2026-11-15 | active |
-| a810ebdd03fdd8e86 | Opus 5.5 | manager | BOARD | 2026-11-15 | stage A applied (g48) |
-| afd5a6ab0e85b4205 | Opus 5.5 | manager | REVIEW3 | 2026-11-15 | T7c in progress |
-| a89efa65481b37a1f | Opus 5.5 | manager | BUG2 | 2026-11-15 | started |
-| a4d2f89a15d40ecdb | Fable 5.2 high | advisor | golden wave (owner delegated) | 2026-11-15 | running |
-| minion C1 | — | restyle app to goldens (launched by the owner) | N1 restyle; uncommitted work in `clients/`, `features/{app,session}`, `ui/`, `desktop/tests/native*` | 2026-11-15 | active, outside this workflow |
-| a90ef508ac65bd60e | Opus 5.5 | manager | NEWCH (New channel picks repos from gh and machines, frame 44) | 2026-11-16 | started |
-| minion R1 | Fable | reviewer | cohesion, goal milestones, DAG; report at scratchpad `r1-review.md` | 2026-11-15 | done |
-| minion A1 | Fable | advisor | how to edit code and docs, given R1; report at scratchpad `a1-advice.md` | 2026-11-15 | done |
-| minion S1 | Opus 5.5 | safety pass | pushed state, inventory, WIP backup ref `refs/wip/2026-11-15-safety` | 2026-11-15 | done |
-| minion ASK | Opus 5.5 | manager | ASK (agent aade2cf78d04ce55c, fresh after batch 3; earlier a7b618c1fe3289cef) | 2026-11-15 | dormant (no claims; reopen after FL T8, see event log) |
-| minion J1 | Fable 5.2 (high) | judge | rule on R1 (and A1) findings; tidy SPEC, DECISIONS, OVERVIEW (not C1's block, not goldens); change log at scratchpad `j1-changes.md` | 2026-11-15 | done |
-| minion P0 | Opus 5.5 | pre-manager | docs sweep left after J1; mechanical split of hot files C1 isn't editing (panels.rs, native.rs deferred) | 2026-11-15 | done |
-| minion D1 | Fable | DAG writer | `workflow/DAG.md` + `workflow/milestones/<ID>.md` from R1, A1, J1 | 2026-11-15 | done |
-| minion FL-D | Opus 5.5 | manager | milestone FL-D (daemon lane) | 2026-11-15 | done (9ec5b5ed) |
-| minion FRAMES1 | Opus 5.5 | manager | milestone FRAMES1 (docs lane, draft frames) | 2026-11-15 | done (59340201) |
-| minion W1 | Opus 5.5 | manager | milestone W1 (docs lane, D113 redraws; agent a4944fb04f53415e9, fresh) | 2026-11-15 | done (W1 closed) |
-| minion TIDY | Opus 5.5 | manager | milestone TIDY (daemon lane; spec mode removal, D9 folder deletion as its own batch; agent af1e27564f8ff1689) | 2026-11-15 | done (4a636632, d17f0d4e) |
-| minion FRAMES2 | Opus 5.5 | manager | milestone FRAMES2 (docs lane, draft frames 56–71) | 2026-11-15 | done (43f7fff2) |
-| minion LOOK1 | Opus 5.5 | manager | milestone LOOK1 (UI lane; agent af7e2efa98ee6c9aa, fresh after e07e8653) | 2026-11-15 | done (ed5882ed) |
-| minion FL | Opus 5.5 | manager | milestone FL (agent a2a29874ff315ecb9; daemon + UI seam; opened while LOOK1's last gate waits, see event log) | 2026-11-15 | active |
-| minion BUG | Opus 5.5 | manager | milestone BUG (agent ad1189090980f241c; third builder, `report/`; opened while LOOK1's last gate waits) | 2026-11-15 | done (ed5882ed) |
-| minion MACH | Fable 5.2 (high) | manager | MACH early lane (agent a2d8d9980ac7c6f4e) | 2026-11-15 | closed 2026-11-16 |
-| minion FILES | Fable 5.2 (high) | manager | FILES early lane (agent a33ddd89c33e932bf) | 2026-11-15 | active |
-| minion REVIEW | Fable 5.2 (high) | manager | REVIEW early lane, daemon+model only (agent a4356464f541e9d35) | 2026-11-15 | ended (context), handed to REVIEW2 |
-| minion REVIEW2 | Fable 5.2 (high) | manager | REVIEW early lane from batch 3/T6 (agent a19a845373fb70c4f) | 2026-11-15 | ended (context), handed to REVIEW3 |
-| minion REVIEW3 | Opus 5.5 | manager | REVIEW early lane from T7 (batch 5) | 2026-11-15 | active |
-| minion FORK | Opus 5.5 | manager | FORK early lane (agent a1d74d5b465beec68; owns CH-8 RemoveMachine) | 2026-11-15 | active |
-| minion FIND | Opus 5.5 | manager | FIND early lane (agent afd163aa193fadac3) | 2026-11-15 | active |
-| minion ASK2 | Opus 5.5 | manager | ASK revived (agent a8c3b4290b01a956e) | 2026-11-15 | active |
-| minion LOOK2 | Fable 5.2 (high) | manager | milestone LOOK2 (agent ab57e5f1bec944dcf; UI; plans while LOOK1's last batch commits, edits LOOK1-claimed files only after) | 2026-11-15 | starting |
-| minion DESK | Fable 5.2 (high) | manager | DESK early lane (agent af25132ec5c37f4a8; new features/desk, desk fixtures; no existing view changes until LOOK2 says so) | 2026-11-15 | starting |
-| minion AWAY | Opus 5.5 | manager | AWAY batch 0–1 | 2026-11-16 | done (handed back) |
-| minion AWAY 2 | Opus 5.5 | manager | AWAY from T3 | 2026-11-16 | active |
-| minion LOOK2 | Opus 5.5 | manager | LOOK2 close pass | 2026-11-16 | handed back, waits on gate |
-| minion LOOK2 | Opus 5.5 | manager | LOOK2 (fresh) | 2026-11-16 | active |
-| POLISH coach | Opus 5.5 (low) + Haiku 5.5 worker | coach | POLISH | 2026-11-16 | active |
+| main (Claude Code) | Opus 5.5 | main agent | git, gates, releases | 2026-11-19 | active |
+| DIFFUI manager | Opus 5.5 | manager | release-plan steps 1–5, 8, 9 (GOLDENFIX, NATIVEFIX, REVIEWUI, PROGRESS/STACKVIEW frames, owner marks, UXSIMPLE, REVIEWER) | 2026-11-19 | running |
+| LIVEHOLDER manager | Opus 5.5 | manager | step 6 (LIVEHOLDER) | 2026-11-19 | running |
+| INBOX manager | Opus 5.5 | manager | steps 7, 11 (AGENTS2, INBOXHOOKS) | 2026-11-19 | running |
+| BOARDSIMPLE manager | Opus 5.5 | manager | step 10 (BOARDSIMPLE) | 2026-11-19 | running |
+| Gemini | Gemini | test optimization (outside dag-walk) | see Resume here, 2026-11-19 entry | 2026-11-19 | active |
 
 ## Claims
 
-Files a lane is editing. No two lanes claim the same file.
+Files a lane is editing. No two lanes claim the same file. Each lane keeps detail in its milestone file › Lane › Claims.
 
 | Lane | Paths |
 |---|---|
-| STACKVIEW | STACKVIEW manager (Opus 5.5) | see milestones/STACKVIEW.md › Lane › Claims (review_diff spec/checkout/diff/plan/chat/wire + new stack.rs; humatad review.rs, review/views.rs, mcp.rs review_* handlers, new tests/review_stack.rs; clients views/review_chat + live; features/review stack, pr_review follower, app views.rs; ui panel_changes + new panel_stack; design/native stack.rs; skills stacks/render); SEAMs (review.proto, tools.rs, model.rs, keys/overlay, design.rs) via scratchpad `stackview/*.py --check`; D800 | 2026-11-18 (open; panel_changes.rs waits for DIFFVIEW) |
-| DIFFVIEW | DIFFVIEW manager (Opus 5.5) | see milestones/DIFFVIEW.md › Lane (ui/src/panel_changes.rs sole owner until DV-19 lands; review/diff clients, features/review, desktop/tests diff*) | 2026-11-18 16:00 |
-| REVIEWUI | minion REVIEWUI (Opus 5.5) | see milestones/REVIEWUI.md › Lane (batch 1: ui/src/comment_cards.rs, ui/src/document_tab.rs (additive session_diff_view only), new ui/src/full_text.rs, new features/review/src/reopen.rs (compiled once seam_open adds `mod reopen;`), desktop/tests/native/pr_session.rs, new desktop/tests/native/review_ui.rs, new features/review/tests/open_again.rs; SEAMs for main: panel_changes.rs (DIFFVIEW) diff_view keys + footer label, features/review/src/lib.rs Open arm, pages.rs Submit review hide, native.rs + ui/src/lib.rs mod lines) | 2026-11-18 18:10 |
-| AGENTS2 | AGENTS2 manager (Opus 5.5) | see milestones/AGENTS2.md › Lane › Claims (agent_hooks parse_conversation/question + testdata, sessions agents.rs codex kind/follow, humatad session_service turns hooks_json/hooks, input_gate, screen_ask, new ready.rs, codex_trust, tests conversation_follows/screen_questions/new ready_gate, new daemon/codex, new cli commands/codex.rs + tests/codex.rs; batch 5 adds humatad agent_switches.rs (cli_to_find only), cli args.rs/commands/mod.rs/error.rs/BUILD.bazel registration lines, flows/cases/verify/20-* + README row); SEAMs: tokio-tungstenite dep, daemon/codex member, cli registration, optional inbox card action | 2026-11-18 |
-| LIVEHOLDER | LIVEHOLDER manager (Opus 5.5) | see milestones/LIVEHOLDER.md › Lane › Claims (daemon/holder/ src+tests+BUILD after client.rs WIP lands; revive reconcile/report + tests/lost_in_move; humatad upgrade/{holders,items}, holders.rs Link retry (overlaps AGENTKINDS: coordinate), tests upgrade_holders*; batch 2: rename_folder, follow_rename, move_to_channel, archive, channel delete, channel_desk_close, carry_service, move_session, remote_work + new *_live tests); SEAMs: rustix waitid NOWAIT (MODULE.bazel), archive/delete proto fields, SPEC PER-6 + PER-32; D801 | 2026-11-18 (open; panel_changes.rs waits for DIFFVIEW) |
-| PROGRESS | PROGRESS manager (Opus 5.5) | see milestones/PROGRESS.md › Lane › Claims (batch 1: ui/src/widgets.rs, ui/src/session_tabs.rs, ui/src/overlay_new_channel.rs, ui/src/{file_manager,conversation_tab,machine_page}.rs; daemon/sessions/src/{git,start,setup,add_repo,continue_in,recover,desk}.rs + new daemon/sessions/tests/clone_progress.rs; daemon/humatad/src/operations.rs, channel_service.rs, session_service.rs, session_service/{continue_in,add_repo}.rs (clone call sites only); new clients/src/progress.rs + `pub mod progress;` in clients/src/lib.rs; clients/live/src/{map,setup,daemon}.rs, clients/src/daemon.rs (Event::Operation), clients/src/daemon/fake/sessions.rs; batch 2: features/app/src/{events,new_session,session_add_repo}.rs + tests/op_progress.rs (new), features/session/src/{lib,continue_in}.rs (fork/continue progress only), features/session/tests/fork.rs (new fields in one literal), ui/src/{overlay_new_session,overlay_fork,overlay_session_add_repo,overlay_continue,overlay_add_machine,pages}.rs (pages: session header Working note only); new daemon/humatad/src/session_service/status_since.rs + one `status_since::open` line in daemon/humatad/src/serve.rs; batch 3 (T10): desktop/tests/design.rs (frame registry lines 122–125 only), desktop/tests/design/{session,new_channel,machine_page,upgrade,fork_move,overlays,pages}.rs (new frame fns only); T10 docs: api/GRPC.md §7 (one units paragraph), OVERVIEW.md + GAPS_REVIEW.md (PROGRESS entries only); T7: new ui/src/changes_loading.rs; SEAM for main: scratchpad/progress/seam_t7_changes_loading.py (ui/src/lib.rs mod line, panel_changes.rs header words + body sweep); seam for main: sessions.proto `status_since = 35`, model.rs `Session.status_since_ms`, fixture/sessions.rs). Not touching: model.rs (STACKVIEW seam), panel_changes.rs (DIFFVIEW), holders.rs/upgrade (LIVEHOLDER), session_service/{turns,hooks,archive,move_session}.rs | 2026-11-18 (open; T6 waits LIVEHOLDER T6, T7 waits DIFFVIEW) |
-| TESTSPEED | TESTSPEED manager (Opus 5.5) | daemon/humatad/tests/common/{power_cut,remote_rig}.rs (small speed edits), daemon/humatad/BUILD.bazel (test shard_count/size only), tools/tests/slow.txt (removals), test-env knobs in daemon src under faults/admin (claimed per file below when used): daemon/humatad/src/peer_client.rs (admin-only HUMATA2_PEER_RETRY_MS), daemon/humatad/tests/common/mod.rs (fake agent stty only), daemon/humatad/tests/power_cut_focus.rs (one machine-cut case), tools/tests/presubmit.sh (--case), fake-agent stty line in daemon/humatad/tests/{channel_folder_follows,channel_rename_live,context_fork,continue_in,desk_into_channel,holder_swap_identity,hooks,host_variables,host_variables_remote,move_cheap,restore_channel_cut,session_model,turns,upgrade_holders,upgrade_holders_move,upgrade_remote_holders}.rs (main-approved); see milestones/TESTSPEED.md › Lane | 2026-11-18 (open) |
+| DIFFUI | `ui/**` except board/to-do and inbox views; `features/review/**`; `features/app` as needed; `desktop/**` tests and goldens (own frames only) |
+| LIVEHOLDER | `daemon/holder/**`, upgrade/migrate-holders, revive/reconcile, session move/rename/delete-channel paths, its new tests |
+| INBOX | agent_hooks, agent-kind code in sessions, daemon inbox + MCP ask paths, Agent access settings, Agent inbox UI, its goldens |
+| BOARDSIMPLE | `api/proto/humata/v1/boards.proto`, new to-do domain crate, board clients/features, To-do UI + session To-do panel, board MCP tool shapes, its goldens; `svc_board` only after Gemini hands it over |
+| Gemini | `daemon/humatad/tests/common/**`, test timing/sharding, `clients/live_test_support/**`, `tools/tests/**`, uncommitted edits in `svc_board/src/lib.rs`, `svc_files/src/ops.rs`, `svc_stop_restart/src/restart.rs` |
 
 ## Lanes
 
-Each lane's plan, tasks and workers live in its milestone file
-(`workflow/milestones/<ID>.md` › Lane). Here, one line per active lane:
+Each lane's plan, tasks and workers live in its milestone file (`workflow/milestones/<ID>.md` › Lane).
 
-| Lane | Milestone file | Manager | Workers running | State |
-|---|---|---|---|---|
-| ASK | `milestones/ASK.md` | minion ASK | tokens, caller, matrix | batch 4: D128.2 done; SEC-14 script tokens (daemon) |
-| LOOK1 | `milestones/LOOK1.md` | minion LOOK1 | send-core, send-ui, audit | batch 1: direct/individual comment Send (D126), frame audit 01–17 |
-| REVIEW (early) | `milestones/REVIEW.md` | minion REVIEW3 | fake, reducer | batches 1–4 committed (781bcf58); batch 5 (T7a client fake, T7b comments reducer + flows on fakes) written and checked; waiting on main's seams and gate |
-| FRAMES2 | `milestones/FRAMES2.md` | minion FRAMES2 | none | done (43f7fff2) |
-| LOOK2 | `milestones/LOOK2.md` | minion LOOK2 | none | batches 1–2 committed (781bcf58); batch 3 and the frame wave (D158: twenty goldens redrawn in the design code, font size pop-up, dot rule wording, access row, toast seam) written and checked, waiting on their gate and two seams; then a last look and the fakes release close it; close pass also `ui/src/{overlay_palette,palette_hits,overlay_toasts,board,request_card}.rs` (handed over from FIND, BUG2, BOARD, POLISH for S4–S6, 2026-11-16) |
-| P0 | none (pre-manager step) | minion P0 | none | done, waiting on main build: LAYOUT.md rewritten, api "Always allow"; split features/app lib.rs, clients daemon.rs + fixture.rs (glob now src/**), ui overlays.rs (#[path] children); panels.rs, native.rs deferred (C1) |
-| BOARD | `milestones/BOARD.md` | minion BOARD | none | stages A and B committed and green, exit criterion met; stage C (D216): C1 daemon archived hiding + forks written and checked, waiting on gate; C2 app session boards planned, needs main's `seam_scope_session.py` |
-| BUG2 | `milestones/BUG2.md` | minion BUG2 | T1 report, T2 reducer, T3 live RPC layer | plan written; batch 1 (T1–T3) running, then T4 ui, T5 desktop tests, seams |
+| Lane | Milestone files | State |
+|---|---|---|
+| DIFFUI | GOLDENFIX/NATIVEFIX, REVIEWUI, PROGRESS, STACKVIEW, UXSIMPLE, REVIEWER | started 2026-11-19 |
+| LIVEHOLDER | LIVEHOLDER | started 2026-11-19 |
+| INBOX | AGENTS2, INBOXHOOKS | started 2026-11-19 |
+| BOARDSIMPLE | BOARDSIMPLE | started 2026-11-19 |
 
-Old template, kept for reference:
-
-```text
-### <lane>: <milestone> (manager: minion <lane>, Opus 5.5)
-- Goal / exit criterion:
-- Design notes:
-- Tasks:
-  - [ ] T1 <task> · worker <name> (Sonnet, medium) · files … · status
-- Waiting on: (main agent / owner / another lane)
-- Last build gate: <time> pass|fail (targets)
-- Ready to commit: no | yes: <summary for the reviewer>
-```
+Every UI lane copies Fable's signed-off frames fully: `milestones/mockups/{boardsimple,uxsimple,reviewer}/` (PNGs, FRAMES.md, src/ HTML). Fable 5.2 judges goldens against them.
 
 ## Build gates
 

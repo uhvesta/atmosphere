@@ -1,0 +1,23 @@
+<div class="title"><div class="lights"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></div>
+<div><div class="crumb"># payments-rewrite › Ledger schema migration</div><div style="display:flex;gap:10px;align-items:center;margin-top:2px"><span class="h">Diff</span><span style="color:#6e6e73">against</span><span class="chip">main ⌃⌄</span></div></div>
+<div style="flex:1"></div>__BTNS__</div>
+<div style="display:flex;height:829px">
+<div class="files">
+<div class="f"><span class="dim">⌄</span><b>ledger</b><span style="flex:1"></span><span class="g">+41</span><span class="r">−0</span></div>
+<div class="f" style="padding-left:30px"><span class="g">A</span>0042_accounts.sql<span class="dim">migrations/</span><span style="flex:1"></span><span class="g">+41</span><span class="r">−0</span></div>
+<div class="f"><span class="dim">⌄</span><b>api</b><span style="flex:1"></span><span class="g">+143</span><span class="r">−24</span></div>
+<div class="f sel" style="padding-left:50px">client.rs<span class="dim">src/</span><span style="flex:1"></span><span class="dim">💬2</span><span class="g">+62</span><span class="r">−21</span></div>
+<div class="f" style="padding-left:50px">entry.rs<span class="dim">src/</span><span style="flex:1"></span><span class="g">+81</span><span class="r">−3</span></div>
+</div>
+<div class="code" style="display:flex;flex-direction:column">
+<div style="height:38px;border-bottom:1px solid #e3e3e6;display:flex;align-items:center;padding:0 14px;gap:6px;color:#6e6e73">📄 api · src/ <span style="color:#1d1d1f">client.rs</span><span style="flex:1"></span>Open in editor</div>
+<div class="mono"><div class="hunk">@@ -40,7 +40,12 @@ impl Client {</div>
+<div class="ln"><span>40</span><span>    pub async fn post(&amp;self, entry: Entry) {</span></div>
+<div class="ln del"><span>41 −</span><span>        self.db.insert_legacy(&amp;entry).await?;</span></div>
+<div class="ln add"><span>41 +</span><span>        let tx = self.db.begin().await?;</span></div>
+<div class="ln add"><span>42 +</span><span>        tx.insert_entry(&amp;entry).await?;</span></div>
+<div class="ln add"><span>43 +</span><span>        tx.insert_legacy(&amp;entry).await?;</span></div>
+<div class="ln add"><span>44 +</span><span>        tx.commit().await?;</span></div></div>
+__BODY__
+</div>__SIDE__</div>
+<div class="foot">Push &amp; PR…<span>Add repo…</span><span style="flex:1"></span><span class="btn primary">Send 1 comment</span></div>
