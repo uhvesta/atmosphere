@@ -22,15 +22,13 @@ use tonic::Status;
 
 pub(crate) use humata2_svc_inbox::inbox::Replayed;
 pub(crate) use humata2_svc_inbox::{
-    BoardAsk, Deferred, Inbox, MoveSwitchError, Registered, Relays, Run, ScreenAsk, permission,
+    BoardAsk, Deferred, Inbox, MoveSwitchError, Registered, Relays, Run, permission,
 };
 
 use crate::events::{Feed, Scope};
 use crate::grant_target;
 use crate::guard::{self, Guard};
-use crate::holders::Holders;
 use crate::status;
-use crate::terminal::Writers;
 
 pub(crate) struct FeedAdapter(pub(crate) Arc<Feed>);
 
@@ -186,46 +184,14 @@ impl AgentGatePort for AgentGateAdapter {
     }
 }
 
-pub(crate) struct ScreenHoldersAdapter {
-    pub(crate) holders: Arc<Holders>,
-    pub(crate) writers: Arc<Writers>,
-    pub(crate) store: Arc<Store>,
-}
+pub(crate) struct ScreenHoldersAdapter;
 
 #[tonic::async_trait]
 impl ScreenHoldersPort for ScreenHoldersAdapter {
-    async fn screen_and_size_at(&self, socket: &Path) -> Result<(String, (u16, u16)), Status> {
-        crate::holders::screen_and_size_at(socket)
+    async fn screen_at(&self, socket: &Path) -> Result<String, Status> {
+        crate::holders::screen_at(socket)
             .await
             .map_err(|error| status::internal(error.to_string(), ""))
-    }
-
-    async fn grow_rows(&self, tab: &str, cols: u16, rows: u16) -> Result<(), Status> {
-        let store = Arc::clone(&self.store);
-        let id = tab.to_owned();
-        let record = tokio::task::spawn_blocking(move || store.tab(&id))
-            .await
-            .map_err(|error| status::internal(error.to_string(), ""))?
-            .map_err(|error| status::internal(error.to_string(), ""))?;
-        let Some(record) = record else {
-            return Ok(());
-        };
-        crate::attach::grow_rows(&record, &self.holders, cols, rows).await
-    }
-
-    async fn send_keys(&self, tab: &str, socket: &Path, keys: &[u8]) -> Result<(), Status> {
-        let link = self
-            .holders
-            .link(tab, socket)
-            .await
-            .map_err(|error| status::internal(error.to_string(), ""))?;
-        link.type_text(keys)
-            .await
-            .map_err(|error| status::internal(error.to_string(), ""))
-    }
-
-    fn writer_count(&self, tab: &str) -> u32 {
-        self.writers.count(tab)
     }
 }
 
@@ -256,25 +222,13 @@ pub(crate) fn wrap_migrator(
     Arc::new(MigrateApproverAdapter(approver))
 }
 
-/// Starts `humata2_svc_inbox::screen_ask` wired to `humatad2`'s `Holders`, `Writers`,
+/// Starts `humata2_svc_inbox::screen_ask` wired to `humatad2`'s holders,
 /// `Asking`, and `start_ready`.
-pub(crate) fn start_screen_ask(
-    holders: Arc<Holders>,
-    writers: Arc<Writers>,
-    inbox: Arc<Inbox>,
-    store: Arc<Store>,
-    machine: String,
-) {
+pub(crate) fn start_screen_ask(store: Arc<Store>) {
     humata2_svc_inbox::screen_ask::start(
-        Arc::new(ScreenHoldersAdapter {
-            holders,
-            writers,
-            store: store.clone(),
-        }),
+        Arc::new(ScreenHoldersAdapter),
         Arc::new(AskingAdapter),
-        inbox,
         store,
-        machine,
         Arc::new(crate::start_ready::is_heard),
         Arc::new(crate::start_ready::forget),
     );

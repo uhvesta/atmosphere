@@ -789,14 +789,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         tell: session_tell.clone(),
         started: last_start.clone(),
     });
-    // D767: a question an agent asks on its screen becomes an Inbox question.
-    crate::wire_inbox::start_screen_ask(
-        terminals.holder_links(),
-        terminals.writers(),
-        inbox.clone(),
-        store.clone(),
-        machine.clone(),
-    );
+    // D845: a dialog an agent asks on its screen holds its session at needs-you.
+    crate::wire_inbox::start_screen_ask(store.clone());
     let roots = Arc::new(Roots::new(
         store.clone(),
         machine.clone(),
@@ -1182,6 +1176,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 skills,
                 inbox.clone(),
             );
+            let machine_sessions = Arc::new(std::sync::OnceLock::new());
+            let _ = machine_sessions.set(session_svc.clone());
             Some((
                 crate::wire_machines::new_machine_svc(
                     guard,
@@ -1198,7 +1194,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                         )
                         .with_home(home.clone()),
                     ),
-                    Arc::new(std::sync::OnceLock::new()),
+                    machine_sessions,
                 ),
                 providers,
                 skills,

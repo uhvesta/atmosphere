@@ -623,6 +623,8 @@ impl Shared {
                         scope: Some(pb::inbox_scope::Scope::Global(pb::GlobalInbox {})),
                     }),
                     include_answered: false,
+                    // D846: flips to true with the To-do Needs attention UI.
+                    agent_inbox: false,
                     page: Some(pb::PageRequest {
                         page_size: PAGE_SIZE,
                         page_token: token,

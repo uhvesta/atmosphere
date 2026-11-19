@@ -9,7 +9,7 @@
 use std::sync::PoisonError;
 use std::time::{Duration, SystemTime};
 
-use humata2_access::{AccessRequest, AnswerError, Call, Capability, Decision, PolicyError};
+use humata2_access::{AccessRequest, AnswerError, Call, Capability, Decision};
 use humata2_daemon_ports::{AgentCaller, Caller};
 use humata2_grpc::humata::v1 as pb;
 use humata2_rpc_kit::helpers as status;

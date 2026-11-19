@@ -247,7 +247,6 @@ fn restored(
         // was withdrawn above, so it counts as an ordinary settled entry.
         permission: false,
         only_choices: false,
-        still_asked: None,
     };
     Some((entry, standing, changed, before))
 }

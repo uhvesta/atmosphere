@@ -666,12 +666,6 @@ pub(crate) enum ScreenUnread {
 /// from the output it kept. A screen of its own, not a link's, and only
 /// read: the queries in the output get no answer from it.
 pub(crate) async fn screen_at(socket: &Path) -> Result<String, ScreenUnread> {
-    screen_and_size_at(socket).await.map(|(text, _)| text)
-}
-
-/// D786: [`screen_at`] and the screen's size, `(cols, rows)`, as the holder
-/// last heard it.
-pub(crate) async fn screen_and_size_at(socket: &Path) -> Result<(String, (u16, u16)), ScreenUnread> {
     let Attachment {
         welcome, mut events, ..
     } = humata2_holder::attach(socket, 0).await.map_err(ScreenUnread::Attach)?;
@@ -694,8 +688,7 @@ pub(crate) async fn screen_and_size_at(socket: &Path) -> Result<(String, (u16, u
     };
     let (authority, _) =
         Authority::resume(&config, kept.from, &kept.bytes, &record).map_err(ScreenUnread::Engine)?;
-    let text = authority.screen_text().map_err(ScreenUnread::Engine)?;
-    Ok((text, (cols, rows)))
+    authority.screen_text().map_err(ScreenUnread::Engine)
 }
 
 /// Reads the output the holder keeps, which it sends first.

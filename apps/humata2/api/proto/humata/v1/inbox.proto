@@ -195,6 +195,46 @@ message InboxRequest {
   // D798: set on the card that says an agent waits in its own terminal. The
   // only thing the app offers on it is Dismiss: nothing is typed anywhere.
   bool dismiss_only = 23;
+  // INBOXHOOKS: what the card shows so the owner can decide without opening
+  // anything, worked out by Humata (not the agent). Empty on items from a
+  // daemon older than INBOXHOOKS; the app then shows the preview alone.
+  //
+  // The grey box: From / To / Size / Carries / Files, by name, never by id.
+  repeated CardFact facts = 24;
+  // WHAT ELSE IT AFFECTS: side effects, warnings first.
+  repeated CardEffect affects = 25;
+  // CAN IT BE UNDONE?: "Yes, for 7 days. Undo moves the folder back …".
+  string undo_text = 26;
+  // The to-do item the asking session works on: "PAY-3 Ledger schema v2".
+  string working_on = 27;
+  // The owner asked why (Ask why) and, once it came, the agent's answer.
+  AskedWhy asked_why = 28;
+  // The Agent access row whose Ask me sent this card: "Move files to
+  // another machine". The app links it to that row (Change this rule).
+  string rule_label = 29;
+}
+
+// INBOXHOOKS: one row of a card's grey box. `lead` is bold: "This Mac".
+message CardFact {
+  string label = 1;
+  string lead = 2;
+  string rest = 3;
+}
+
+// INBOXHOOKS: one side effect. `lead` is bold and may be empty.
+message CardEffect {
+  // A warning (!); otherwise fine as it is (✓).
+  bool warn = 1;
+  string lead = 2;
+  string rest = 3;
+}
+
+// INBOXHOOKS: Ask why. The card stays pending while the agent answers.
+message AskedWhy {
+  google.protobuf.Timestamp asked_at = 1;
+  // Empty until the agent answers.
+  string reply = 2;
+  google.protobuf.Timestamp replied_at = 3;
 }
 
 // D781: where the dialog an item was read off is.
@@ -487,6 +527,10 @@ message ListRequestsRequest {
   // IN-7: include answered and withdrawn.
   bool include_answered = 2;
   PageRequest page = 3;
+  // INBOXHOOKS: only what belongs in the Agent inbox. To-do asks (a board
+  // item's change or a new item) are left out of `requests` and
+  // `pending_count`; they show on their item in To-do (BoardItem.pending).
+  bool agent_inbox = 4;
 }
 
 message ListRequestsResponse {

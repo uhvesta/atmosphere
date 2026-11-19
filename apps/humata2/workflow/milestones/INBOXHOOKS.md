@@ -60,3 +60,71 @@ Hooks are the only path we invest in. Existing screen reads may stay while they 
 ## Exit
 - Live flows: a Claude Code and a Copilot permission ask each raise one card through hooks, and with the hook removed, nothing is raised and the session still works.
 - Removed decisions are marked Superseded in DECISIONS.md with this milestone named.
+
+## Lane (INBOX manager, Opus 5.5, 2026-11-19)
+
+**Goal (release-plan step 11):**
+- The Agent inbox is one column of full cards, for agents stopped until the owner answers.
+- To-do asks mark their item Needs attention in To-do instead.
+- Humata's own asks carry the reason, names, before → after, side effects, undo, and the rule with Change.
+- Agent access is grouped Allow / Ask / Never rows.
+- D785/D786 are cut.
+
+### Design notes
+- **Frames.** Wide candidates 200–210 in `desktop/tests/design/agent_inbox{,_more}.rs`, drawn at 1600x950 from boardsimple b2-1, b2-2, b2-3, b3-1, b3-2, b3-3, b4-1, b5-1, b6-1, b6-2 and b9-2.
+  - The WIDE registry in design.rs (main's go-ahead, 2026-11-19) draws them at the mockups' size.
+  - The sidebar is BOARDSIMPLE's `Side.todo` switch.
+  - The old inbox frames 25–27, 48 and 114–116 are retired once the real UI matches.
+- **To-do asks are not Agent-inbox cards.**
+  - Board/to-do write asks (`BoardChange` and `NewBoardItem` previews) already answer the agent `approval_pending` at once, so the agent carries on.
+  - The daemon leaves them out of the Agent inbox's list, its `pending_count` and its notifications.
+  - BOARDSIMPLE reads them from `BoardItem.pending` (boards.proto, theirs) and answers them through `InboxService.AnswerRequest`.
+- **Card detail (inbox.proto only, never common.proto).** `InboxRequest` gains:
+  - `facts` (label/value rows: From, To, Size, Carries, Files);
+  - `affects` (lines with a bold lead and a warn/ok mark, worked out by Humata);
+  - `undo_text`;
+  - `working_on` (the item the session is on);
+  - `asked_why` (the owner's Ask why and the agent's reply);
+  - `rule_label` (the Agent access row's name).
+- **Ask why:** `InboxService.AskWhy(id)` holds the card and tells the agent the owner asked why. The agent's reply arrives through MCP `inbox.explain` and is shown in the card's blue "You asked why" panel.
+- **Missing pieces to fix:**
+  - the cross-machine copy card drops its preview (`wire_transfers.rs` `TransferInboxAdapter::ask` ignores the board ask);
+  - `MovePreview` is never filled;
+  - `MoveSessionRequest` has no reason;
+  - the IN-8 counts ("2 answered · 31 actions followed your rules") have no source.
+- **Agent access rows → capabilities.** Each b6-1 row maps to one or more capability rules. A row's setting writes all of them, and the notes come from the setting.
+
+### Tasks
+| # | Task | Files | Tests | Worker | Status |
+|---|---|---|---|---|---|
+| I1 | Design frames 200–210 | `desktop/tests/design/agent_inbox{,_more}.rs` | design_test candidates, Fable judges | 2 Sonnet | running |
+| I2 | Card detail proto + daemon fill (file/session move, copy, fork) + transfer preview fix | `api/proto/humata/v1/inbox.proto`, `svc_inbox`, `svc_transfers` adapter, session move | svc_inbox unit, transfers profile | — | next |
+| I3 | To-do asks out of the Agent inbox list/count/notify | `svc_inbox` | svc_inbox unit | — | next |
+| I4 | Ask why (RPC + MCP explain) | inbox.proto, `svc_inbox`, `svc_mcp` | svc_inbox unit | — | after I2 |
+| I5 | Cut D785/D786 | `svc_inbox/src/screen_ask.rs`, `inbox/permission.rs`, screen_questions tests | screen_questions_test | — | next |
+| I6 | Model + features/inbox: one column, chips, History, Ask why, Always allow for this session | `features/inbox/**`, model.rs seam lines for main | TestStore tests | — | after I2 |
+| I7 | UI: inbox page, request card, session panel, Home stopped group, sidebar rename | `ui/workspace/src/{inbox_page,request_card,panel_inbox}.rs` | native frames | — | after I1, I6 |
+| I8 | Settings › Agent access grouped rows | `ui/settings`, features settings | TestStore + native | — | after I1 |
+
+### Claims
+- `daemon/agent_hooks/**`;
+- `daemon/svc_inbox/**`, and `daemon/svc_mcp/**` ask paths;
+- `api/proto/humata/v1/inbox.proto`;
+- `features/inbox/**`;
+- `ui/workspace/src/{inbox_page,request_card,panel_inbox,inbox_terminal}.rs`;
+- Agent access in `ui/settings`;
+- `desktop/tests/design/agent_inbox{,_more}.rs` and frames 200–210;
+- additive lines in `desktop/tests/design.rs`.
+
+### Log
+- 2026-11-19:
+  - Plan written.
+  - The WIDE registry was added to design.rs (main's go-ahead).
+  - Fable 5.2 ruled on the screen-read cut: D845 (screen dialogs are terminal-only, needs-you hold; D762 kept and frozen; 80x50 kept). D846 and D847 logged.
+  - AGENTS2 follow-up: `hooks` and `screen_questions` moved from the power_cut to the catalog test profile. The power_cut profile lacks AgentService.
+  - I3 done: `ListRequestsRequest.agent_inbox` leaves out to-do asks (`inbox/agent_inbox.rs`, unit-tested). Every literal sets it; live_daemon keeps `false` until To-do shows Needs attention.
+  - I5 done (D845):
+    - screen_ask now only holds NEEDS_INPUT with no card; the grow, the cut-off handling and the card typing are gone.
+    - `screen_questions`, `ready_gate`, `hooks` and `svc_inbox_unit` are green.
+  - I1, first pass: Fable approved 205, 208 and 210. 200–204 pass once they use the mockups' own sidebar (ruling A, a shared `mock_sidebar.rs`). 206, 207 and 209 were rejected over bold titles, a clipped line, and 209's own To-do list. A worker is fixing them.
+  - The codex wrapper follows the app-server socket's symlink, which real Codex makes.

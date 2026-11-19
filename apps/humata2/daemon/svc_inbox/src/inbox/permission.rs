@@ -8,11 +8,8 @@
 //! Inbox shows it and its answer comes back down the link; the machine's
 //! next start withdraws it, and the journal tells the host.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use humata2_access::Verdict;
 use humata2_daemon_ports::{AgentCaller, Caller};
 use humata2_daemon_runtime::agent_switches::{self, Change, SwitchesError};
 use humata2_grpc::humata::v1 as pb;
@@ -24,7 +21,7 @@ use thiserror::Error;
 use tokio::sync::watch;
 use tonic::Status;
 
-use super::{Decided, Entry, Held, Inbox, inbox_ask, new_id, withdraw, withdrawn};
+use super::{Decided, Entry, Held, Inbox, inbox_ask, new_id, withdraw};
 use crate::ports::{self, AgentGatePort};
 
 pub mod codex_trust;
@@ -171,20 +168,9 @@ pub struct Question {
     /// The same question gives the same key, so a rerun holds the same card.
     pub key: String,
     /// Only a reply naming one of `choices` (its words or its number) is
-    /// taken, and it is kept as that choice's words (D767).
+    /// taken, and it is kept as that choice's words.
     pub only_choices: bool,
 }
-
-/// Whether the agent still asks a question on its screen (D767 amendment):
-/// given a reply's choice, `Ok(false)` when the screen no longer asks it or
-/// no longer lists that choice; given `None` (a Dismiss, D781), `Ok(false)`
-/// only when the screen no longer asks it. An error when the screen can't
-/// be read.
-pub type StillAsked = Arc<
-    dyn Fn(Option<String>) -> Pin<Box<dyn Future<Output = Result<bool, Status>> + Send>>
-        + Send
-        + Sync,
->;
 
 /// How a card was settled, as the hook tells its agent.
 #[derive(Debug, PartialEq, Eq)]
@@ -405,55 +391,6 @@ impl Inbox {
         .await
     }
 
-    /// Raises a question the agent asks on its own screen (D767), as
-    /// [`Self::raise_question`] does; a reply is taken only while
-    /// `still_asked` says the screen still asks it with that choice, and
-    /// withdraws the card otherwise. The card names `tab`, the agent tab's
-    /// index among its session's tabs, so the app can show that screen
-    /// under it (D781); a Deny of it first looks whether the screen still
-    /// asks.
-    pub async fn raise_screen_question(
-        self: &Arc<Self>,
-        caller: &Caller,
-        agent: &AgentCaller,
-        asked: Question,
-        tab: u32,
-        still_asked: StillAsked,
-    ) -> Result<PermissionWait, Status> {
-        let Question {
-            question,
-            choices,
-            key,
-            only_choices,
-        } = asked;
-        self.raise_held_asked(
-            caller,
-            agent,
-            &key,
-            only_choices,
-            Some(still_asked),
-            |id| {
-                let mut card = super::question(id, agent, question, choices);
-                card.on_screen = Some(pb::ScreenAsk { tab });
-                card
-            },
-        )
-        .await
-    }
-
-    /// Withdraws screen question `id` as resolved, if it is still pending:
-    /// its screen no longer asks it, so it was answered in its terminal
-    /// (D781). Nothing is typed.
-    pub async fn withdraw_screen_resolved(&self, id: &str) {
-        let state = self.state.lock().await;
-        let Some(entry) = state.requests.iter().find(|entry| entry.id == id) else {
-            return;
-        };
-        if entry.request.borrow().request.state == pb::RequestState::Pending as i32 {
-            self.withdraw_resolved(entry).await;
-        }
-    }
-
     /// Raises the card `make` builds, or holds the pending one of the same
     /// `ask_key` in the agent's session.
     async fn raise_held(
@@ -462,21 +399,6 @@ impl Inbox {
         agent: &AgentCaller,
         ask_key: &str,
         only_choices: bool,
-        make: impl FnOnce(&str) -> pb::InboxRequest,
-    ) -> Result<PermissionWait, Status> {
-        self.raise_held_asked(caller, agent, ask_key, only_choices, None, make)
-            .await
-    }
-
-    /// [`Self::raise_held`], for a card whose reply is checked against
-    /// what the agent still asks.
-    async fn raise_held_asked(
-        self: &Arc<Self>,
-        caller: &Caller,
-        agent: &AgentCaller,
-        ask_key: &str,
-        only_choices: bool,
-        still_asked: Option<StillAsked>,
         make: impl FnOnce(&str) -> pb::InboxRequest,
     ) -> Result<PermissionWait, Status> {
         // An Ask verdict is fine: the card is the ask.
@@ -504,7 +426,6 @@ impl Inbox {
         let mut entry = Entry::new(id.clone(), session, None, None, Some(key), held.clone());
         entry.permission = true;
         entry.only_choices = only_choices;
-        entry.still_asked = still_asked;
         if !self.guard.host_link().on_host() {
             // The host's Inbox is where the person answers (D744).
             self.commit(&entry, held, None, "save the permission ask")
@@ -533,15 +454,8 @@ impl Inbox {
         self.withdraw_unheld(entry).await
     }
 
-    /// Withdraws pending `entry`, whose question its agent no longer asks,
-    /// and returns the refusal of the answer that found it so. Call it with
-    /// the state locked.
-    pub(super) async fn withdraw_unasked(&self, entry: &Entry) -> Status {
-        withdrawn(&self.withdraw_resolved(entry).await)
-    }
-
     /// Withdraws pending `entry` as resolved: the question it shows is no
-    /// longer on its agent's screen, so it was answered there (D781).
+    /// longer asked, so it was answered in its terminal.
     /// Returns the withdrawn request. Call it with the state locked.
     pub(super) async fn withdraw_resolved(&self, entry: &Entry) -> pb::InboxRequest {
         let mut next = entry.request.borrow().clone();
@@ -551,7 +465,7 @@ impl Inbox {
             .commit(entry, next.clone(), None, "save the withdrawal")
             .await;
         if saved.is_err() {
-            // Withdrawn even so: the question is gone from the screen.
+            // Withdrawn even so: the question is gone.
             entry.request.send_replace(next);
         }
         self.tell(pb::Change::Updated, &entry.session, &current);
@@ -601,18 +515,6 @@ pub(super) fn decide(
             }
             if only_choices {
                 let choices = choices_of(current);
-                if choices.is_empty() {
-                    // D785: the agent's screen showed only part of its
-                    // choices, so the card offers none to pick.
-                    return Err(status::invalid_field(
-                        "answer.reply.text",
-                        Problem::NotAllowedHere,
-                        format!(
-                            "request {id} offers no choice here: the agent's screen is too short to show them all, so none was taken and nothing was typed"
-                        ),
-                        "open the session's terminal, which shows every choice, and answer there; or dismiss the card",
-                    ));
-                }
                 let Some(choice) = choice_named(&choices, &reply.text) else {
                     return Err(status::invalid_field(
                         "answer.reply.text",

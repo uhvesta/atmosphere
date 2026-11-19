@@ -8,8 +8,8 @@
 //! message; "Send it now" sends it by the person's choice, and the signal
 //! withdraws the card and sends it. A kind with no signal keeps the screen
 //! check (D762). Once a session's structured channel is heard, a question
-//! on its agent's screen raises no screen card; before, it still does
-//! (D798).
+//! on its agent's screen holds nothing; before, it holds the session at
+//! needs-you, never with a card (D798, D845).
 
 use humatad_test_common as common;
 use humatad_test_common::trust_box;
@@ -219,6 +219,20 @@ impl Fixture {
             .collect()
     }
 
+    /// The pending question cards: what a screen question used to raise.
+    async fn screen_cards(&self) -> Vec<pb::InboxRequest> {
+        self.pending()
+            .await
+            .into_iter()
+            .filter(|card| {
+                matches!(
+                    card.preview.as_ref().and_then(|preview| preview.preview.as_ref()),
+                    Some(pb::request_preview::Preview::Question(_))
+                )
+            })
+            .collect()
+    }
+
     /// Waits past [`CARD_AFTER`] for the one "waiting in its terminal" card.
     async fn wait_card(&self) -> pb::InboxRequest {
         let deadline = Instant::now() + CARD_AFTER + WAIT;
@@ -256,9 +270,9 @@ impl Fixture {
         let deadline = Instant::now() + WAIT;
         while !self.sent() {
             assert!(Instant::now() < deadline, "the held first message was never sent");
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
         let runs = std::fs::read_to_string(&self.marker).expect("read the marker");
         assert_eq!(runs.lines().count(), 1, "the first message was sent more than once");
     }
@@ -344,7 +358,7 @@ async fn the_signal_after_the_card_withdraws_it_and_sends_the_message() {
     let deadline = Instant::now() + WAIT;
     while fix.request(&id).await.state == pb::RequestState::Pending as i32 {
         assert!(Instant::now() < deadline, "the waiting card was never withdrawn");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(fix.pending().await.is_empty());
 }
@@ -366,7 +380,7 @@ async fn an_agent_with_no_ready_signal_keeps_the_screen_check() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_question_on_the_screen_of_a_session_heard_from_raises_no_screen_card() {
+async fn a_question_on_the_screen_of_a_session_heard_from_does_not_need_you() {
     let fix = Fixture::start("claude-jsonl").await;
     let tab = agent_tab(&fix.daemon, &fix.session).await;
     let mut agent = Attach::start(&fix.daemon, open(&tab, 0)).await;
@@ -375,36 +389,23 @@ async fn a_question_on_the_screen_of_a_session_heard_from_raises_no_screen_card(
 
     fix.agent_draws_trust_box(&mut agent).await;
     agent.wait_for("Do you trust the files in this folder?").await;
-    // Long past the time a screen card comes for an agent not heard from.
+    // Long past the time a look at the screen would have held the session.
     tokio::time::sleep(SCREEN_WOULD_HAVE_SENT).await;
-    assert!(fix.pending().await.is_empty(), "the screen fallback raised a card over the structured channel");
+    assert!(fix.pending().await.is_empty(), "a card came over the structured channel");
+    let status = common::get_session(&fix.daemon, &fix.session).await.status();
+    assert_ne!(status, pb::SessionStatus::NeedsInput, "the screen held a heard session");
 }
 
+/// D845: a question on the screen of a session not heard from holds it at
+/// needs-you, with no card.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_question_on_the_screen_of_a_session_not_heard_from_still_raises_a_screen_card() {
+async fn a_question_on_the_screen_of_a_session_not_heard_from_needs_you_with_no_card() {
     let fix = Fixture::start("claude-jsonl").await;
     let tab = agent_tab(&fix.daemon, &fix.session).await;
     let mut agent = Attach::start(&fix.daemon, open(&tab, 0)).await;
     fix.agent_draws_trust_box(&mut agent).await;
-    let deadline = Instant::now() + WAIT * 3;
-    loop {
-        let questions = fix
-            .pending()
-            .await
-            .into_iter()
-            .filter(|card| {
-                matches!(
-                    card.preview.as_ref().and_then(|preview| preview.preview.as_ref()),
-                    Some(pb::request_preview::Preview::Question(_))
-                )
-            })
-            .count();
-        if questions == 1 {
-            break;
-        }
-        assert!(Instant::now() < deadline, "no screen card came for an agent not heard from");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::NeedsInput).await;
+    assert!(fix.screen_cards().await.is_empty(), "a card was raised for a screen question");
 }
 
 /// D797: a send of Humata's own (the composer, an Inbox reply and MCP's
@@ -442,9 +443,9 @@ async fn a_send_while_the_first_message_waits_goes_after_it_once_the_session_is_
 }
 
 /// D798: when the Codex link drops, the screen fallback is back for the
-/// session: a question drawn on its screen raises a screen card again.
+/// session: a question drawn on its screen holds it at needs-you again (D845).
 #[tokio::test(flavor = "multi_thread")]
-async fn a_dropped_link_brings_back_the_screen_card() {
+async fn a_dropped_link_brings_back_the_screen_hold() {
     let fix = Fixture::start("codex-rollout").await;
     let (token, mut shell) = shell_token(&fix.daemon, &fix.session).await;
     fix.codex_starts(&mut shell).await;
@@ -476,9 +477,5 @@ async fn a_dropped_link_brings_back_the_screen_card() {
     let tab = agent_tab(&fix.daemon, &fix.session).await;
     let mut agent = Attach::start(&fix.daemon, open(&tab, 0)).await;
     fix.agent_draws_trust_box(&mut agent).await;
-    let deadline = Instant::now() + WAIT * 3;
-    while fix.pending().await.is_empty() {
-        assert!(Instant::now() < deadline, "no screen card came once the link dropped");
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    common::wait_status(&fix.daemon, &fix.session, pb::SessionStatus::NeedsInput).await;
 }

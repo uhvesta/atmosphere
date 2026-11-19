@@ -7,7 +7,7 @@ pub mod screen_ask;
 
 pub use inbox::{
     BoardAsk, Deferred, Inbox, MoveSwitchError, Registered, Relays, Run,
-    permission::{self, Decision, Question, StillAsked, codex_trust},
+    permission::{self, Decision, Question, codex_trust},
 };
 pub use ports::{
     AgentGatePort, AskingGuardPort, EventScope, InboxFeedPort, InboxGuardPort,

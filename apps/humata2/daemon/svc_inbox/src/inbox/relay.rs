@@ -56,11 +56,6 @@ impl Relays {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn with_wait(wait: Duration) -> Self {
-        Self { wait, ..Self::new() }
-    }
-
     /// Says `machine`'s link is up, carrying `link`. The machine is offline
     /// again when the returned guard drops.
     pub fn register(self: &Arc<Self>, machine: &str, link: mpsc::Sender<pb::HostToMachine>) -> Registered {
@@ -223,7 +218,7 @@ impl Relayed {
             (now.state() != pb::RequestState::Pending).then_some(now)
         });
         match current {
-            Some(current) if answered_with(&current, &sent) || dismissed_resolved(&current, &sent) => {
+            Some(current) if answered_with(&current, &sent) => {
                 Ok(current)
             }
             Some(current) => Err(still_open(&current).err().unwrap_or_else(|| machine_offline(&request, true))),
@@ -250,16 +245,6 @@ fn answered_with(request: &pb::InboxRequest, sent: &pb::RequestAnswer) -> bool {
         request.state(),
         pb::RequestState::Approved | pb::RequestState::Denied | pb::RequestState::Answered
     ) && request.answer.as_ref() == Some(sent)
-}
-
-/// Whether `request`, a question on its agent's screen, was dismissed with
-/// `sent`, a Deny, and the machine found the screen no longer asks it: it
-/// was answered in its terminal, and Dismiss closed it (D781).
-fn dismissed_resolved(request: &pb::InboxRequest, sent: &pb::RequestAnswer) -> bool {
-    request.state() == pb::RequestState::Withdrawn
-        && request.withdraw_reason() == pb::WithdrawReason::Resolved
-        && request.on_screen.is_some()
-        && matches!(sent.answer, Some(pb::request_answer::Answer::Deny(_)))
 }
 
 #[cfg(test)]

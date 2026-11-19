@@ -6,6 +6,7 @@
 //! and the grants (D96). Each new request and each change to one goes on
 //! the event feed.
 
+mod agent_inbox;
 mod deferred;
 mod forwarded;
 mod host_asks;
@@ -119,12 +120,8 @@ struct Entry {
     /// An agent's permission hook holds it (D191): Approve or Deny only,
     /// left out of Answer all, and withdrawn once no hook holds it.
     permission: bool,
-    /// Its reply must be one of the card's choices (D767): a question the
-    /// agent asks on its screen takes only the answers the screen offers.
+    /// Its reply must be one of the card's choices.
     only_choices: bool,
-    /// For a question asked on the agent's screen (D767 amendment): whether
-    /// the screen still asks it, with the chosen reply, when a reply comes.
-    still_asked: Option<permission::StillAsked>,
 }
 
 impl Entry {
@@ -146,7 +143,6 @@ impl Entry {
             run: std::sync::Mutex::new(None),
             permission: false,
             only_choices: false,
-            still_asked: None,
         }
     }
 }
@@ -723,27 +719,6 @@ impl Inbox {
             return Err(refused);
         }
         let decided = self.decide(user, entry, &current, answer, at)?;
-        // D767 amendment: a question asked on the agent's screen that the
-        // screen no longer asks (answered in the terminal) takes no reply:
-        // it is withdrawn, and the reply says so, not that it was answered.
-        // D781: a Deny of one (the app's Dismiss) looks once too and types
-        // nothing either way: gone from the screen, it is withdrawn as
-        // resolved; still asked, or the screen unreadable, it is denied.
-        if let Some(still_asked) = &entry.still_asked {
-            match &decided.answer {
-                pb::request_answer::Answer::Reply(reply) => {
-                    if !still_asked(Some(reply.text.clone())).await? {
-                        return Err(self.withdraw_unasked(entry).await);
-                    }
-                }
-                pb::request_answer::Answer::Deny(_) => {
-                    if let Ok(false) = still_asked(None).await {
-                        return Ok(self.withdraw_resolved(entry).await);
-                    }
-                }
-                _ => {}
-            }
-        }
         let by = answered_by(caller, user);
         let mut next = entry.request.borrow().clone();
         settle(&mut next, decided, by, at);
@@ -921,6 +896,9 @@ impl pb::inbox_service_server::InboxService for Inbox {
         for entry in state.requests.iter().filter(|entry| sees(&caller, entry)) {
             let current = entry.request.borrow().request.clone();
             if !in_scope(scope.as_ref(), entry, &current) {
+                continue;
+            }
+            if request.agent_inbox && !agent_inbox::in_agent_inbox(&current) {
                 continue;
             }
             let pending = current.state == pb::RequestState::Pending as i32;
@@ -1975,4 +1953,204 @@ fn no_request(id: &str) -> Status {
 
 fn id_of(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use humata2_access::{
+        AnswerError, Context, Grant, GrantTarget, Policy, PresentUser, Principal, Refusal,
+    };
+    use humata2_daemon_ports::{Deferred, UserVia};
+    use humata2_grpc::humata::v1::inbox_service_server::InboxService;
+    use humata2_store::{SessionRecord, StoreError};
+    use humata2_svc_away::HostLink;
+
+    use super::*;
+
+    struct TestGuard {
+        host_link: Arc<HostLink>,
+    }
+
+    impl TestGuard {
+        fn new() -> Self {
+            Self {
+                host_link: Arc::new(HostLink::new(true)),
+            }
+        }
+    }
+
+    impl InboxGuardPort for TestGuard {
+        fn host_link(&self) -> Arc<HostLink> {
+            self.host_link.clone()
+        }
+        fn with_policy_mut(&self, f: &mut dyn FnMut(&mut Policy, &Context)) {
+            let mut policy = Policy::default();
+            let context = Context::on_host(humata2_access::MachineId::new("local"));
+            f(&mut policy, &context);
+        }
+        fn principal(&self, _caller: &Caller) -> Principal {
+            Principal::App
+        }
+        fn present_user(&self, _caller: &Caller) -> Result<PresentUser, Status> {
+            let context = Context::on_host(humata2_access::MachineId::new("local"));
+            Principal::App
+                .present_user(&context)
+                .ok_or_else(|| Status::permission_denied("not present"))
+        }
+        fn capability_pb(&self, _capability: Capability) -> pb::Capability {
+            pb::Capability::Unspecified
+        }
+        fn capability_of(&self, _capability: i32) -> Option<Capability> {
+            None
+        }
+        fn grant_number(&self, _grant: &pb::Grant) -> Option<u64> {
+            None
+        }
+        fn grant_pb(&self, _grant: &Grant, _suspended: bool) -> pb::Grant {
+            pb::Grant::default()
+        }
+        fn target_pb(&self, _target: &GrantTarget) -> pb::GrantTarget {
+            pb::GrantTarget::default()
+        }
+        fn ask_ahead_call(
+            &self,
+            _store: &Store,
+            _machine: &str,
+            _agent: &AgentCaller,
+            _capability: Capability,
+            _target: pb::GrantTarget,
+        ) -> Result<Call, Status> {
+            Err(Status::unimplemented("test"))
+        }
+        fn answer_failed(&self, error: &AnswerError) -> Status {
+            Status::invalid_argument(error.to_string())
+        }
+        fn refused_status(&self, refusal: &Refusal) -> Status {
+            Status::permission_denied(refusal.to_string())
+        }
+        fn require(&self, _caller: &Caller, _call: &Call) -> Result<(), Status> {
+            Ok(())
+        }
+        fn check_inbox_ask(&self, _caller: &Caller, _call: &Call) -> Result<(), Status> {
+            Ok(())
+        }
+        fn hold_bound(
+            &self,
+            _caller: &Caller,
+            _metadata: &tonic::metadata::MetadataMap,
+        ) -> std::time::Duration {
+            std::time::Duration::from_secs(30)
+        }
+        fn waits_for_host(&self) -> Status {
+            Status::unavailable("host unreachable")
+        }
+        fn agent_caller(
+            &self,
+            _record: &SessionRecord,
+            _machine: &str,
+            _store: &Store,
+        ) -> Result<AgentCaller, StoreError> {
+            Err(StoreError::Write {
+                path: std::path::PathBuf::new(),
+                source: std::io::Error::other("unused"),
+            })
+        }
+    }
+
+    struct NoopFeed;
+
+    impl InboxFeedPort for NoopFeed {
+        fn publish(
+            &self,
+            _change: pb::Change,
+            _payload: pb::event::Payload,
+            _actor: Option<pb::Actor>,
+            _scope: EventScope,
+        ) {
+        }
+    }
+
+    fn user_req<T>(msg: T) -> Request<T> {
+        let mut req = Request::new(msg);
+        req.extensions_mut().insert(Caller::User(UserVia::App));
+        req
+    }
+
+    fn test_inbox(dir: &tempfile::TempDir) -> Arc<Inbox> {
+        let store = Arc::new(Store::open(dir.path().join("state")).expect("open store"));
+        Arc::new(Inbox::new(
+            Arc::new(TestGuard::new()),
+            store,
+            "local".to_owned(),
+            Arc::new(NoopFeed),
+        ))
+    }
+
+    #[test]
+    fn asks_title_formats_normal_and_ahead_requests() {
+        let normal = asks_title("claude", Capability::FilesReadOtherSession, false);
+        let ahead = asks_title("claude", Capability::FilesReadOtherSession, true);
+        assert!(normal.starts_with("claude asks "));
+        assert!(ahead.starts_with("claude asks ahead "));
+        assert!(!normal.contains("asks to ask you"));
+    }
+
+    #[tokio::test]
+    async fn post_host_ask_lists_and_withdraw_host_ask_removes_card_over_temp_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+
+        let card = pb::InboxRequest {
+            action_title: "Script setup failed on box-1".to_owned(),
+            reason: "exit 1".to_owned(),
+            operation: "machine.script".to_owned(),
+            ..Default::default()
+        };
+        let run: Run = Box::new(|_| {
+            Box::pin(async {
+                Ok(Deferred {
+                    result: Vec::new(),
+                    result_type: String::new(),
+                })
+            })
+        });
+        inbox
+            .post_host_ask("machine-script/box-1/setup", card, run)
+            .await
+            .unwrap();
+
+        let listed = inbox
+            .list_requests(user_req(pb::ListRequestsRequest::default()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(listed.requests.len(), 1);
+        assert_eq!(
+            listed.requests[0].action_title,
+            "Script setup failed on box-1"
+        );
+        assert_eq!(listed.requests[0].state, pb::RequestState::Pending as i32);
+
+        inbox
+            .withdraw_host_ask("machine-script/box-1/setup", pb::WithdrawReason::Resolved)
+            .await;
+
+        let after = inbox
+            .list_requests(user_req(pb::ListRequestsRequest::default()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(after.requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn withdraw_pending_from_handles_empty_machine_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = test_inbox(&dir);
+        inbox
+            .withdraw_pending_from("box-gone", pb::WithdrawReason::MachineRemoved)
+            .await
+            .unwrap();
+        assert!(inbox.pending_ids_of(&["se_1".to_owned()]).await.is_empty());
+    }
 }

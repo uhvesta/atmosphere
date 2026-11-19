@@ -1,6 +1,6 @@
 //! Narrow port traits and helpers decoupling `svc_inbox` from `humatad`
 //! internals (`Guard`, `Feed`, `upgrade::items`, `session_service::Asking`,
-//! `agent_gate`, `holders`, `terminal::Writers`).
+//! `agent_gate`, `holders`).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -121,10 +121,8 @@ pub trait AgentGatePort: Send + Sync {
 /// Terminal/holder port used by `screen_ask`.
 #[tonic::async_trait]
 pub trait ScreenHoldersPort: Send + Sync {
-    async fn screen_and_size_at(&self, socket: &Path) -> Result<(String, (u16, u16)), Status>;
-    async fn grow_rows(&self, tab: &str, cols: u16, rows: u16) -> Result<(), Status>;
-    async fn send_keys(&self, tab: &str, socket: &Path, keys: &[u8]) -> Result<(), Status>;
-    fn writer_count(&self, tab: &str) -> u32;
+    /// The text the holder at `socket` shows on its screen now.
+    async fn screen_at(&self, socket: &Path) -> Result<String, Status>;
 }
 
 /// Converts a [`SystemTime`] to a [`humata2_grpc::Timestamp`].

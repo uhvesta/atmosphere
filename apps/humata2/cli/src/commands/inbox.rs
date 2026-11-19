@@ -52,6 +52,7 @@ pub(super) async fn inbox<D: Daemon, C: Console>(
                 pb::ListRequestsRequest {
                     scope: Some(scope.clone()),
                     include_answered: all,
+                    agent_inbox: false,
                     page,
                 }
             })
@@ -149,6 +150,7 @@ async fn answer_all<D: Daemon, C: Console>(
         pb::ListRequestsRequest {
             scope: Some(scope.clone()),
             include_answered: false,
+            agent_inbox: false,
             page,
         }
     })

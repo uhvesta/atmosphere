@@ -1003,6 +1003,7 @@ impl GrpcDaemon {
                 })),
             }),
             include_answered: !pending_only,
+            agent_inbox: false,
             page: None,
         })?;
         let listed = self

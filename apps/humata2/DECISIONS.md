@@ -3791,7 +3791,7 @@ Fable's notes on native 17's Diff panel, taken together:
 - **Upgrade:** none: no schema or proto change.
 - **Reverse:** put back the `not_built` arm in `get_grid` and drop `channel_service/grid.rs`.
 
-## D767: A question an agent asks on its own screen, such as Copilot's "Confirm folder trust", raises an Inbox question with its choices; the session needs you while it shows, and only the person's reply picks a choice (VERIFY copilot-remote, 2026-11-17). Decided
+## D767: A question an agent asks on its own screen, such as Copilot's "Confirm folder trust", raises an Inbox question with its choices; the session needs you while it shows, and only the person's reply picks a choice (VERIFY copilot-remote, 2026-11-17). Decided. Superseded by D845 (INBOXHOOKS)
 - **Problem:** Copilot 1.0.113 asks "Do you trust the files in this folder?" for every fresh remote session and after every move, before its input box shows. No hook fires for it, so no Inbox request came and the status said working. D762 only stops Type from typing into it.
 - **Signal:** the session's agent watch (`session_service/watch.rs`, SE-21) already times the agent's output. Each time the output goes quiet (`QUIET_AFTER`, 3 s), `screen_ask::quiet` reads the tab's screen from its holder (`holders::screen_at`) and asks D762's `screen_question::asked_on`. That is one matcher, and only agent tabs are read. Not taken: a timer of its own (the quiet spell is when a question sits on the screen), hooks (none fire).
 - **Pick:** the card is the existing QUESTION card held as D761's are (`Inbox::raise_question`): the question line, the folder shown just above it, every numbered choice the screen lists (`1. Yes`, `2. Yes, and remember this folder for future sessions`, `3. No (Esc)`), and a note that Yes lets the agent use the folder's files and Humata never answers for you. The card takes only one of its choices (its words, ignoring case, or its number), kept as the choice's words; anything else is refused with the list. Approve is refused (D761). While it is held, `Asking` keeps the session NEEDS_INPUT. A reply re-reads the screen and, only if it still asks the same question with the same choices, moves the highlight there with arrow keys and presses Enter. Deny types nothing, and the screen keeps the question for the person; the same screen isn't asked again. The screen no longer asking (answered in the terminal), the agent exiting or a new holder withdraws the card (CALL_ENDED). D199's Ask for permission in the Inbox off keeps it on the screen only. Humata never picks a choice by itself.
@@ -3973,7 +3973,7 @@ Fable's notes on native 17's Diff panel, taken together:
 - **Zoom (bug 4), deferred to 0.2.3:** GPUI has no user scale factor (`set_scale_factor` is test-only) and `rem_size` only reaches rem-based sizes. ui/src has about 400 `text_size(px(..))` calls and about 2,400 `px(..)` in all, so an app-wide zoom means moving them to rem units, or a scale helper, with the goldens kept equal at 100%. That's roughly a day or two for one lane. Also, ⌘0 already toggles the sidebar, so the zoom reset needs a decision: move ToggleSidebar, or reset zoom on another key.
 - **Reverse:** set `titlebar: None` again in `main_window_options`, and remove the action and its menu item.
 
-## D781: An Inbox item read off an agent's screen opens with that session's live terminal under it and a Dismiss button below; the terminal never takes focus by itself, never resizes the program, and Dismiss never presses a key (owner's request, Fable 5.2 ruling, 2026-11-17; amends D767, uses D271 point 3, D750, D762, IN-9). Decided (by Fable), being built now
+## D781: An Inbox item read off an agent's screen opens with that session's live terminal under it and a Dismiss button below; the terminal never takes focus by itself, never resizes the program, and Dismiss never presses a key (owner's request, Fable 5.2 ruling, 2026-11-17; amends D767, uses D271 point 3, D750, D762, IN-9). Decided (by Fable), being built now. Superseded by D845 (INBOXHOOKS)
 - **Problem:** a question an agent asks on its own screen (Copilot's "Confirm folder trust", D767) reaches the Inbox as a card with parsed choices. The owner wants to see the real dialog and answer it there, as in the agent's TUI, then close the item by hand: "can we just render the terminal for me to approve or deny and then I can press a 'dismiss' button below it once I have done that?"
 - **Scope:** only items raised from a dialog that is on the screen now (`screen_ask`, and any dialog `screen_question::asked_on` learns later). A permission ask held by a hook (D191) and Copilot's `ask_user` form held by its hook (D761) have no dialog on the screen while the card waits, since the agent is waiting in the hook, so they keep today's card and get no terminal. Main's shape listed them; this narrows it.
 - **Pick, the marker:** `InboxRequest` gets `ScreenAsk on_screen = 22` with `uint32 tab` (the agent tab's index, as `Daemon::link` numbers it). `screen_ask::raise` sets it; nothing else does. The client model's `Request` gets `on_screen: Option<usize>`. The app decides everything below from this field, never from the card's words.
@@ -4020,7 +4020,7 @@ Fable's notes on native 17's Diff panel, taken together:
 - **Reverse:** stop setting `on_screen` in `screen_ask::raise`. Every item is then today's card; `FitPolicy::Never` and the card-less hold can stay.
 - **Built (uncommitted, 2026-11-17):** as picked, with three changes. The Inbox terminal links through `Terminals::link_unsized` (the same attach RPC, at no size, which the daemon doesn't resize), because the live `link` attaches at 80x24 and would size the program. A Dismissed card's task and D782's `hold_without_card` both run `screen_ask::hold_card_less`, the one card-less hold. Frames 114–116 are `CANDIDATES` in `desktop/tests/design.rs`, drawn into the test's outputs and not checked, until Fable approves them and they move into `FRAMES`.
 
-## D782: Whether an agent's own approval dialogs come to the Inbox is a switch per agent, on by default; it replaces D199's one switch and never touches the approvals Humata itself asks for (owner's request, Fable 5.2 ruling, 2026-11-17; amends D199, uses D720, D725, D761, D763, D767, D781). Decided (by Fable), being built now
+## D782: Whether an agent's own approval dialogs come to the Inbox is a switch per agent, on by default; it replaces D199's one switch and never touches the approvals Humata itself asks for (owner's request, Fable 5.2 ruling, 2026-11-17; amends D199, uses D720, D725, D761, D763, D767, D781). Decided (by Fable), being built now. Amended by D845: screen dialogs are always terminal-only
 - **Problem:** the owner: "I want an option to be able to disable things from coming into my inbox if it's a request from copilot or claude code or codex for approval. Like what if I only want approvals for things that I control programmatically". D199 already has this as one switch for every agent (Settings › Agents › "Ask for permission in the Inbox"), made single only because the Settings frame of the day had no per-agent rows. D725 has since given Settings one row per agent.
 - **Pick:** `[agents.<kind>]` in `~/.humata2/config/agents.toml` (D720) gets `asks_in_inbox`, default true. Settings › Agents shows it as an indented row under each enabled agent, beside "Install when missing": "Ask in the Inbox", with "Off: it asks in its own terminal" (`settings-agent-asks-<id>`). Custom kinds get the row too; the plain shell has none. D199's single switch and its row are removed, so there is one control, not two.
 - **What off covers, for that agent's sessions:** everything the agent itself would have asked in its TUI:
@@ -4200,7 +4200,7 @@ Fable's rulings on the D784 candidates, 2026-11-18 (for 0.2.5):
 
 Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope for 0.2.4): PlanDeleteChannel offered a plan for a channel that a remote machine holds. The plan listed none of the remote live sessions, called the online machine offline, and DeleteChannel then refused it as not built. Now, while the relayed remote delete isn't built, a channel that another machine holds, or that has live sessions on another machine, gets no plan. PlanDeleteChannel and DeleteChannel both refuse it up front with FailedPrecondition (`refuse_held_elsewhere` in `channel_service/delete.rs`). The proto has no "not appliable" field, so a refusal is used. The refusal names each machine as online or offline from the host's links, and each live session there with its last-reported work (`remote_sessions_of`). Its fix: move each session to keep to the Desk, then remove each machine from the channel, reconnecting an offline one first, and plan again. A plan now always has `offline_machines` empty. The D784 semantics stay: deleting ends the channel's sessions behind a confirm, and moving a session to the Desk keeps it. The full relayed delete is still open (GAPS_REVIEW).
 
-## D785: A screen question whose choices the screen cuts off is raised with no choice, only its terminal (VERIFY 0.2.3 finding with Copilot, main's ruling, 2026-11-18; amends D767, uses D781). Decided, built
+## D785: A screen question whose choices the screen cuts off is raised with no choice, only its terminal (VERIFY 0.2.3 finding with Copilot, main's ruling, 2026-11-18; amends D767, uses D781). Decided, built. Superseded by D845 (INBOXHOOKS)
 
 - **Finding:** a headless Copilot session (no writer attached, pty 80x24) draws its folder trust box too short for its list: only `1. Yes` shows, above a footer saying `pgup/pgdn to scroll`. The card was raised with the one choice Yes, so the Inbox offered trust with no way to refuse; it got all three only once someone attached and resized.
 - **Decided:** the card never offers part of a list as the whole. When the list is cut off, the card names the question, offers no choice and says to open the terminal to answer. With no choices and only choices taken, every reply is refused and nothing is typed; Dismiss and the terminal under the card (D781) stay. The UI needs no change: an on-screen card with no choices already shows only Dismiss and the terminal.
@@ -4208,7 +4208,7 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - **Not chosen yet:** reading every choice anyway. A taller virtual read of the kept output can't help, because Copilot drew the box clipped. Typing pgdn is a key the person didn't send. Resizing the holder's pty while no writer is attached would work, but it changes the sizing contract (D14: only attaches that can type resize). It stays open for a follow-up. Chosen in D786 (Fable, 2026-11-18): the holder starts at 80x50, plus a one-time grow while no writer is attached. It goes in the release after 0.2.4; 0.2.4 ships this fallback.
 - **Code:** `screen_ask.rs` (`Asked.whole`, `asked_of`, `answers_complete`, `Asked::offered`, `card_text`), `inbox/permission.rs` (`decide` refuses a reply to a card with no choices, with its own message).
 
-## D786: A holder starts 80x50, and a question box cut off by a short screen grows the screen to 50 rows once, only while no one who can type is attached (Fable 5.2 ruling, 2026-11-18; closes D785's "Not chosen yet"; amends D14 and D271 point 3; uses D767, D781, D782, D393). Decided (by Fable), next release after 0.2.4
+## D786: A holder starts 80x50, and a question box cut off by a short screen grows the screen to 50 rows once, only while no one who can type is attached (Fable 5.2 ruling, 2026-11-18; closes D785's "Not chosen yet"; amends D14 and D271 point 3; uses D767, D781, D782, D393). Decided (by Fable), next release after 0.2.4. Pick 2 superseded by D845 (INBOXHOOKS); Pick 1 stands
 
 - **Problem:** D785 never offers part of a list. So a headless session's folder trust prompt reaches the Inbox with no choice (on an 80x24 pty, Copilot draws only `1. Yes`). The person must open the terminal for every such question. "Remember this folder" is never offered, so trust is asked again on every start and resume.
 - **Pick 1, the starting size:** every holder humatad starts is 80 columns by 50 rows, for agent and shell tabs alike. One shared constant replaces `COLS`/`ROWS` in `session_service.rs`, `desk_service/start.rs`, `desk_service/channel_desk.rs` and `running_holders/adopt.rs`; the holder binary's own default stays 80x24. This is not a resize: the program is born at that size and gets no SIGWINCH.
@@ -4724,3 +4724,86 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - **No notice** when the person keeps that agent's asks in its terminal.
 - **Idle sweep:** SessionStart's idle report also withdraws held asks.
 - **Reverse:** drop `behind_start` in `daemon/humatad/src/start_ready.rs` and the gate in `terminal.rs` `type_in`; drop `raise_notice` and its callers in `session_service/hooks.rs`.
+
+## D830: How the To-do list ranks (BOARDSIMPLE manager, 2026-11-19; follows the signed-off frames and the xhigh review). Provisional
+
+- **Order:** pinned items first, in pin order (dragging among pinned reorders them); then score = due urgency + value per effort (impact ÷ effort) + waiting time for review requests; ties by the migrated starting order (In progress, In review, To do, Backlog; then old position; global board before channel boards), then older first, then key.
+- **Due urgency:** overdue 100; today 90; 1–7 days 80 − 5/day; 8–30 days 30 − days; later or none 0. **Value:** 10 × impact (High 3, Medium 2, Low 1) ÷ effort (S 1, M 2, L 3; unset counts as M); no impact, no value. **Review request:** 60 + 10 per day waiting, at most 100.
+- **Age never adds score** (xhigh review: the list must not change each morning for no reason a person can name); it only breaks ties, so a bare list reads oldest first.
+- **Reasons** say only what the row doesn't: Pinned (· was VIP), High impact (for a small job), "<item> waits on it", "Waiting on you for N days", and for items with nothing set "Was 1st in To do" or "Added N days ago". Due is a chip, never a reason.
+- **Do next** is the first row of Next among the rows shown, whatever the filter.
+- **Rules live in one crate**, `apps/humata2/todo`, used by the app and the daemon.
+- **Reverse:** change the weights in `todo/src/rank.rs`.
+
+## D831: Groups, the overdue rule and the open count (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- Three states: Open, In progress, Closed. Waiting on another item and Hidden until a date are derived folds, not states.
+- Group precedence: Needs attention (an agent's ask, or a suggested item) → Closed (shown for 7 days with Reopen; older ones only in History) → In progress → Next. **An overdue open item is always in Next**, never folded into Waiting or Hidden until (owner rule).
+- A suggested item has no rank until the user says Yes.
+- The header's "N open across M channels" counts items not closed, not suggested and not hidden; channels are the distinct channels among them ("No channel" doesn't count).
+- **Reverse:** `todo/src/rank.rs` grouping.
+
+## D832: The To-do API is a new TodoService beside BoardService (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- New messages and a new `TodoService` in `boards.proto` (TodoItem = BoardItem + TodoFields; ListTodo, CreateTodo, UpdateTodo, NextTodo, Get/DismissTodoMigration). `common.proto` and `BoardColumn` are untouched; migration reads `BoardColumn` into `TodoStart`.
+- **Why:** adding fields to `BoardItem` or the board requests breaks every struct literal of them (about 60, across other lanes' tests and the daemon). A new service is additive: nothing builds differently until the daemon serves it.
+- BoardService is retired once the app and MCP move to TodoService (UPGRADE: one Migrate message, no mixed-version fallback).
+- **Reverse:** drop the TodoService block at the end of `boards.proto`.
+
+## D833: Moving the boards into the list (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- Backlog and To do → Open; In progress and In review → In progress; Done → Closed (closed at its done time). Items of archived sessions' boards migrate Closed, so D216's hiding holds.
+- Each item keeps its key, history, sessions and dependencies, and records where it stood (`TodoStart`: column, 1-based position, board, VIP). That order is the starting rank; nothing else is invented: no dates, effort or impact.
+- VIP becomes Pin, VIP items first; the row says "Pinned · was VIP".
+- One Migrate card (frame b6-3) with counts and how to restore; the day after, one banner ("Your boards became this list yesterday…", frame b9-1) until Got it.
+- **Reverse:** the boards stay readable through BoardService until it is retired.
+
+## D834: The sidebar rename lands in one re-record with lane INBOX (BOARDSIMPLE manager, 2026-11-19). Provisional
+
+- "Board" → "To-do" and "Inbox" → "Agent inbox" change the sidebar of nearly every design golden. The To-do frames show the new names through an opt-in sidebar flag; the global rename is one batched re-record with INBOX's frames, judged once by Fable.
+- **Reverse:** drop the flag.
+
+## D845: Screen dialogs never reach the Agent inbox; the session shows "needs you" instead (INBOX manager, picks by Fable 5.2, 2026-11-19; INBOXHOOKS). Decided
+- **Cut (superseded by INBOXHOOKS):**
+  - D767: a screen question raises an Inbox card;
+  - D781: the live terminal under the card;
+  - D785: cut-off choices;
+  - D786 Pick 2: the one-time grow to 50 rows;
+  - the screen-read "waiting" cards that offer only Dismiss.
+- **What remains of these features:**
+  - A dialog read off an agent's screen holds the session at NEEDS_INPUT (sidebar row and tab) until a look sees it gone, with no Inbox item. This is the path every agent took with D782's switch off, and it is now the only path.
+  - No bell mark: D424 means the program rang BEL, which these dialogs don't.
+- **Amended:**
+  - D782: the per-agent "Ask in the Inbox" switch stays for hook-raised permission asks and ask-user forms. Screen dialogs are always terminal-only.
+  - D786: holders keep starting at 80x50 (Pick 1). Resizes come only from attaches that can type (D14 as before D786).
+- **D762 stands, frozen.** The input gate keeps refusing typed text while a dialog shows or the screen can't be read. It gets no new patterns, so D762's Codex and Claude Code first-run follow-up is dropped.
+
+## D846: A to-do ask is not an Agent-inbox card (INBOX manager, 2026-11-19; INBOXHOOKS, BOARDSIMPLE). Decided
+- **What counts as a to-do ask:** an agent's board/to-do write that a rule sends to Ask me, i.e. a card whose preview is `BoardChange` or `NewBoardItem`. It answers the agent `approval_pending` at once, so the agent carries on.
+- **Where it shows:** `ListRequestsRequest.agent_inbox = true` leaves to-do asks out of `requests` and `pending_count`. The Agent inbox, its badge and its notifications use that list. To-do shows the asks on their item (`BoardItem.pending`, Needs attention) and answers them through `InboxService.AnswerRequest`.
+- **Reverse:** stop setting `agent_inbox`.
+
+## D847: Card wording and undo windows as drawn (INBOX manager, 2026-11-19; INBOXHOOKS mockups b2–b3). Provisional
+- "Always allow for this session" (moves) and "Always allow between these two sessions" (copies) keep IN-14's grant: tied to the asking session and the exact target, and ended with the session (IN-22).
+- Undo windows are 7 days for file moves and copies and 30 days for trash, as drawn. They stay provisional until the owner sees them in a release.
+
+## D848: Every Diff repo row says "against X" in words; full screen says Exit full screen and offers Close; stack rows name their repos; Back is a ghost everywhere (DIFFUI manager, 2026-11-19; owner's UI marks, UXSIMPLE 1-2 and 2-2, DS-58; reverses D739's chip pick A). Provisional
+- **Repo base:** the chevron-only chip (D739 pick A, D740) is gone. Each repo row reads "against main" or "against release/2.4" in secondary text with no chevron, as UXSIMPLE 1-2 draws it, and a click still opens the per-repo menu. The chip gives way before the repo name but keeps at least 52 pt, so "against" stays in view.
+- **Full screen:** "Show the terminal" now reads "Exit full screen" (UXSIMPLE 2-2). The header also keeps the X Close, as the owner's mark asks, although frame 2-2 draws no Close. Close leaves full screen and closes the panel.
+- **Stack layer rows:** a layer row names the repositories it touches ("ledger · infra"), and Whole stack reads "5 repos · 23 files", as UXSIMPLE 2-2, 3-1 and 3-4 draw them. The pull-request and file counts on layer rows are gone; the frames draw neither. `StackRow` gains `repos`.
+- **Back:** both the session header's and the top bar's Back are the 24 pt ghost button (DS-58). The top bar's was the filled `ghost_in`.
+- **Re-recorded:** the native frames that draw a session header, the Diff panel or full screen. Each has Fable's verdict in the DIFFUI log (NATIVEFIX.md).
+- **Reverse:** put back the chevron-only chip in `ui/changes/src/panel_changes/review_header.rs`, "Show the terminal" in `ui/core/src/chrome.rs`, and the pulls/files labels in `ui/changes/src/panel_stack.rs`.
+
+## D849: REVIEWER ships as "New agent tab ⌄" in the full-screen Diff header (DIFFUI manager, 2026-11-19; UXSIMPLE_REVIEW §3, frames 3-3 and 3-4). Provisional
+- **What it is:** the full-screen Diff header gains New agent tab ⌄ before Exit full screen. Beside the terminal the strip's `+` already does this, and 3-4 draws no such button there. Its menu reads:
+  - the frame's one-line explanation;
+  - Terminal;
+  - a rule;
+  - the agents Settings offers (AGENTSET, D725), each with a green dot and named by its command.
+- **A pick:** closes the menu, leaves full screen and opens a fresh tab in the session's focused tab row (`OpenTerminal`), so the Diff sits beside it as 3-4 draws. The pick is marked "last used" until the app restarts (not saved). Escape closes the menu before it leaves full screen. There is no dock, no second tab strip, no new session kind and no "Send as mine" draft.
+- **Not yet as drawn:**
+  - **"codex · not installed":** the daemon does not report whether an agent's CLI is installed. Until it does, the menu lists only the agents Settings offers. Follow-up for main (daemon: report CLI presence per agent).
+  - **⌘T:** no ⌘T shortcut exists, so the hint is left out rather than shown dead.
+  - **Opening prompt:** 3-4's "Look at layer 2 of the stack in the Diff panel…" is not sent for the person. The tab starts empty, as the strip's `+` does.
+- **Reverse:** drop `ui/changes/src/panel_changes/agent_tab.rs`, `diff_header`'s actions, `panel_header_actions`, and `ReviewState::{agent_tab_menu, last_agent_tab}`.

@@ -695,20 +695,6 @@ async fn resize_tab(
         .map_err(|error| holder_status(tab, &error))
 }
 
-/// D786: humatad's own grow of `tab` to `cols`x`rows`, in
-/// [`resize_tab`]'s order (the daemon's screen, then the holder), the
-/// repaint not counted as new output. Only a look at a question box the
-/// screen's height cuts off asks it, while no attach that can type is
-/// attached.
-pub(crate) async fn grow_rows(tab: &TabRecord, holders: &Holders, cols: u16, rows: u16) -> Result<(), Status> {
-    let screen = holders
-        .link(&tab.id, &tab.holder_socket)
-        .await
-        .map_err(|error| holder_status(tab, &error))?;
-    let (_, _, mut control) = connect(tab, u64::MAX).await?;
-    resize_tab(tab, &screen, &mut control, Size::new(u32::from(cols), u32::from(rows), 0, 0)).await
-}
-
 fn screen_status(tab: &TabRecord, error: &ScreenFailed) -> Status {
     status::internal(
         format!("tab {}'s screen failed: {}", tab.id, status::chain(error)),

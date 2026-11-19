@@ -349,18 +349,6 @@ impl Terminals {
         terminals
     }
 
-    /// The links to the tabs' holders, which type an Inbox answer to a
-    /// question on an agent's screen (D767).
-    pub(crate) fn holder_links(&self) -> Arc<Holders> {
-        self.core.holders.clone()
-    }
-
-    /// The count of each tab's attaches that can type, which a grow of a
-    /// clipped question box waits to be 0 (D786).
-    pub(crate) fn writers(&self) -> Arc<Writers> {
-        self.core.writers.clone()
-    }
-
     /// Drops the Type keys older than [`TYPED_KEYS_KEPT_MS`], in the
     /// background, so the table holds only the window's calls. A failure
     /// leaves them for the next start.
@@ -2098,12 +2086,6 @@ impl Writers {
 
     pub(crate) fn watch(&self, tab: &str) -> watch::Receiver<u32> {
         self.sender(tab).subscribe()
-    }
-
-    /// How many attaches that can type `tab` has now, relayed ones
-    /// included (D786).
-    pub(crate) fn count(&self, tab: &str) -> u32 {
-        lock(&self.tabs).get(tab).map_or(0, |sender| *sender.borrow())
     }
 
     /// Counts an attach that can type until the guard is dropped.
