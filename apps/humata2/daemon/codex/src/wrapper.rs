@@ -171,11 +171,12 @@ fn config_pairs(args: &[OsString]) -> Vec<&OsStr> {
 }
 
 /// Waits until `socket` exists as a socket; false if the app-server ends or
-/// the time is up first.
+/// the time is up first. Codex makes `socket` a link to a socket of its own
+/// elsewhere, so the link is followed.
 async fn socket_appears(serve: &mut Child, socket: &Path, wait: Duration) -> bool {
     let appears = async {
         loop {
-            if fs::symlink_metadata(socket).is_ok_and(|meta| meta.file_type().is_socket()) {
+            if fs::metadata(socket).is_ok_and(|meta| meta.file_type().is_socket()) {
                 return true;
             }
             if !matches!(serve.try_wait(), Ok(None)) {
@@ -264,5 +265,36 @@ async fn stop(child: &mut Child) {
     }
     if tokio::time::timeout(GRACE, child.wait()).await.is_err() {
         let _ = child.kill().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::net::UnixListener;
+
+    use super::*;
+
+    fn running() -> Child {
+        Command::new("sleep").arg("30").kill_on_drop(true).spawn().expect("sleep runs")
+    }
+
+    #[tokio::test]
+    async fn a_link_to_a_socket_counts_as_the_socket() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let real = dir.path().join("real.sock");
+        let _listener = UnixListener::bind(&real).expect("a socket");
+        let link = dir.path().join("s.sock");
+        std::os::unix::fs::symlink(&real, &link).expect("a link");
+        let mut serve = running();
+        assert!(socket_appears(&mut serve, &link, Duration::from_secs(5)).await);
+    }
+
+    #[tokio::test]
+    async fn a_link_to_nothing_is_not_a_socket() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let link = dir.path().join("s.sock");
+        std::os::unix::fs::symlink(dir.path().join("missing.sock"), &link).expect("a link");
+        let mut serve = running();
+        assert!(!socket_appears(&mut serve, &link, Duration::from_millis(50)).await);
     }
 }

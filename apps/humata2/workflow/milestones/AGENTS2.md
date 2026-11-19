@@ -133,6 +133,7 @@ Every check runs in an isolated scratch home. Never touch `~/.claude`, `~/.codex
 ```sh
 export S=$(mktemp -d)                         # scratch home, deleted at the end
 export HOME=$S CLAUDE_CONFIG_DIR=$S/.claude CODEX_HOME=$S/.codex
+mkdir -p "$CLAUDE_CONFIG_DIR" "$CODEX_HOME"   # Codex refuses a CODEX_HOME that does not exist
 mkdir -p $S/work && cd $S/work && git init -q
 ```
 

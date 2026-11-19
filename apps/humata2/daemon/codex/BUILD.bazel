@@ -25,6 +25,7 @@ rust_library(
 rust_test(
     name = "codex_unit_test",
     crate = ":codex",
+    deps = ["@crates//:tempfile"],
 )
 
 [
