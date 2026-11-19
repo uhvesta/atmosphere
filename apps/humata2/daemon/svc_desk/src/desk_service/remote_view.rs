@@ -19,7 +19,6 @@ use crate::ports::assigned;
 use humata2_daemon_ports::Caller;
 use crate::ports as identity;
 use crate::ports::call_failed;
-use crate::ports as status;
 
 /// A machine's repos, Markdown files and versions state (whether its folder
 /// has versions, and the newest version's id) for each Desk session it lists.

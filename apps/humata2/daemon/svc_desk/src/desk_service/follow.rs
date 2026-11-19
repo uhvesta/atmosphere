@@ -20,7 +20,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use super::DeskSvc;
 use crate::ports::blocking;
-use crate::ports::{DeskFeedPort, Feed, Scope};
+use crate::ports::{Feed, Scope};
 
 /// A Desk session read back from the store.
 struct Seen {

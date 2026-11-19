@@ -30,8 +30,7 @@ use tonic::Status;
 
 use super::{DeskSvc, now_ms};
 use crate::ports::blocking;
-use crate::ports::{DeskFeedPort, Feed};
-use crate::ports as status;
+use crate::ports::Feed;
 
 /// How long a burst of changes is let to finish before it is looked at.
 const DEBOUNCE: Duration = Duration::from_millis(100);

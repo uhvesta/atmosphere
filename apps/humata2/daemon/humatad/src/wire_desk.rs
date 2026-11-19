@@ -2,7 +2,6 @@
 //! services (`Guard`, `Operations`, `Identities`, `Tokens`, `Inbox`, `Tell`,
 //! `Bin`, `Core`, `RemoteWork`, `Migrations`, `ChannelSvc`, `Started`, `Feed`).
 
-use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,17 +15,18 @@ use humata2_store::TabRecord;
 use humata2_svc_desk::ports::{
     Awaited, Checked, DeskChannelPort, DeskFeedPort, DeskGuardPort, DeskIdentityPort,
     DeskInboxPort, DeskMigrationsPort, DeskOperationsPort, DeskRemotePort, DeskRestartPort,
-    DeskSessionPort, DeskTellPort, DeskTerminalPort, DeskTokensPort, DeskTrashPort,
-    FolderMigrator, HostOp, LinkState, LinkWatch, Loaded, Moving, OperationState, Origin,
-    Progress, ProgressPort, RelayError, RelayedClients, RemoteError, RestartOperationsPort, Scope,
-    Started, TrashOps,
+    DeskSessionPort, DeskTellPort, DeskTerminalPort, DeskTokensPort, DeskTrashPort, Events,
+    FolderMigrator, HostOp, LinkState, LinkWatch, LiveEvents, Loaded, Moving, OperationState,
+    Origin, Progress, ProgressPort, RelayError, RelayedClients, RemoteError,
+    RestartOperationsPort, Scope, Started, TrashOps,
 };
 use humata2_svc_desk::{DeskDeps, DeskSvc, server};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tokio::sync::{broadcast, mpsc, watch};
 use tonic::Status;
 
 use crate::channel_service::ChannelSvc;
-use crate::events::Feed;
+use crate::events::{Feed, Published};
 use crate::guard::Guard;
 use crate::identity::Identities;
 use crate::inbox::Inbox;
@@ -77,8 +77,8 @@ impl DeskGuardPort for DeskGuardAdapter {
 pub(crate) struct DeskIdentityAdapter(pub(crate) Arc<Identities>);
 
 impl DeskIdentityPort for DeskIdentityAdapter {
-    fn revoke(&self, tab_id: &str) {
-        self.0.revoke(tab_id);
+    fn revoke(&self, tab_id: &str) -> Result<(), humata2_store::StoreError> {
+        self.0.revoke(tab_id)
     }
 }
 
@@ -172,9 +172,28 @@ impl DeskFeedPort for DeskFeedAdapter {
         );
     }
 
-    fn subscribe(&self, _after: Option<u64>) -> (u64, broadcast::Receiver<pb::Event>) {
-        let (_tx, rx) = broadcast::channel(64);
-        (0, rx)
+    fn subscribe(&self, after: Option<u64>) -> (u64, Events) {
+        let (missed, live) = self.0.subscribe(after);
+        let from = missed
+            .last()
+            .and_then(|event| event.seq.as_ref())
+            .map_or(after.unwrap_or(0), |seq| seq.value);
+        let kept = missed.iter().map(|event| pb::Event::clone(event));
+        (from, Events::new(kept, Box::new(LiveFeed(live))))
+    }
+}
+
+/// One subscriber's receiver of the feed's live events.
+struct LiveFeed(broadcast::Receiver<Arc<Published>>);
+
+#[tonic::async_trait]
+impl LiveEvents for LiveFeed {
+    async fn recv(&mut self) -> Result<pb::Event, RecvError> {
+        self.0.recv().await.map(|event| pb::Event::clone(&event))
+    }
+
+    fn try_recv(&mut self) -> Result<pb::Event, TryRecvError> {
+        self.0.try_recv().map(|event| pb::Event::clone(&event))
     }
 }
 
@@ -185,8 +204,6 @@ impl DeskTellPort for DeskTellAdapter {
     async fn session(&self, session_id: &str, change: pb::Change, by: Option<pb::Actor>) {
         self.0.session(session_id, change, by).await;
     }
-
-    async fn channel(&self, _channel_id: &str, _change: pb::Change, _by: Option<pb::Actor>) {}
 }
 
 pub(crate) struct DeskChannelAdapter(pub(crate) ChannelSvc);
@@ -206,9 +223,8 @@ impl DeskChannelPort for DeskChannelAdapter {
         self.0.record_added(owner, name, place);
     }
 
-    fn watch_aliases(&self) -> watch::Receiver<HashMap<String, PathBuf>> {
-        let (_tx, rx) = watch::channel(HashMap::new());
-        rx
+    fn watch_aliases(&self) {
+        self.0.watch_aliases();
     }
 }
 
@@ -391,12 +407,6 @@ impl DeskRestartPort for DeskRestartAdapter {
     fn operations(&self) -> Arc<dyn RestartOperationsPort> {
         Arc::new(RestartOpsAdapter(self.0.operations().clone()))
     }
-
-    async fn operation_state(&self, _id: &str) -> Option<OperationState> {
-        None
-    }
-
-    async fn record_operation(&self, _id: String, _state: OperationState) {}
 }
 
 pub(crate) struct DeskMigrationsAdapter(pub(crate) Migrations);
@@ -421,13 +431,203 @@ impl DeskMigrationsPort for DeskMigrationsAdapter {
             .map_err(|e| crate::status::internal("migrations", &e.to_string()))
     }
 
-    fn set_desk_folders(&self, _migrator: Arc<dyn FolderMigrator>) {}
+    fn set_desk_folders(&self, migrator: Arc<dyn FolderMigrator>) {
+        self.0.set_desk_folders(Arc::new(DeskFolders(migrator)));
+    }
 
     async fn resolved(&self, thing: pb::MigrateThing, machine: &pb::MachineId) -> Result<(), Status> {
         self.0
             .resolved(thing, machine)
             .await
             .map_err(|e| crate::status::internal("migrations", &e.to_string()))
+    }
+}
+
+/// The Desk service, as what carries the Desk folders Migrate out (D458).
+struct DeskFolders(Arc<dyn FolderMigrator>);
+
+#[tonic::async_trait]
+impl crate::upgrade::items::FolderMigrator for DeskFolders {
+    async fn migrate_folders(&self, machine: &pb::MachineId) -> Result<(), pb::Error> {
+        self.0.migrate_folders(machine).await
+    }
+}
+
+/// The host's work on remote machines, for the Desk's sessions there.
+pub(crate) struct DeskRemoteAdapter(pub(crate) RemoteWork);
+
+/// The Desk's remote work port over `remote`, for `desk_server`.
+pub(crate) fn desk_remote(remote: RemoteWork) -> Arc<dyn DeskRemotePort> {
+    Arc::new(DeskRemoteAdapter(remote))
+}
+
+/// Keeps the status a relayed call failed with, which already says what to
+/// do, and whether it was the machine being offline.
+fn relay_error(error: crate::host_relay::RelayError) -> RelayError {
+    match &error {
+        crate::host_relay::RelayError::Offline { machine } => RelayError::Offline {
+            machine: machine.clone(),
+            answer: Status::from(error),
+        },
+        crate::host_relay::RelayError::BadAssignedId { .. } => RelayError::Refused {
+            answer: Status::from(error),
+        },
+    }
+}
+
+fn remote_error(error: crate::remote_work::RemoteError) -> RemoteError {
+    match error {
+        crate::remote_work::RemoteError::Relay(relay) => RemoteError::Relay(relay_error(relay)),
+        other => RemoteError::Failed {
+            answer: Status::from(other),
+        },
+    }
+}
+
+/// A relayed call failing for anything but its link is a refusal: its
+/// status says why.
+fn relay_of(error: crate::remote_work::RemoteError) -> RelayError {
+    match remote_error(error) {
+        RemoteError::Relay(relay) => relay,
+        RemoteError::Failed { answer } => RelayError::Refused { answer },
+    }
+}
+
+struct RelayedAdapter(crate::host_relay::Relayed);
+
+impl RelayedClients for RelayedAdapter {
+    fn desk(&self) -> pb::desk_service_client::DeskServiceClient<tonic::transport::Channel> {
+        self.0.desk()
+    }
+
+    fn sessions(&self) -> pb::session_service_client::SessionServiceClient<tonic::transport::Channel> {
+        self.0.session()
+    }
+
+    fn files(&self) -> pb::file_service_client::FileServiceClient<tonic::transport::Channel> {
+        self.0.file()
+    }
+
+    fn operation(&self) -> pb::operation_service_client::OperationServiceClient<tonic::transport::Channel> {
+        pb::operation_service_client::OperationServiceClient::new(self.0.channel.clone())
+    }
+}
+
+/// The Desk's operation, as the remote work mirrors a machine's into it.
+/// It reads and ends the progress the Desk's [`HostOp`] holds, so whichever
+/// side takes it first ends it, as with one handle.
+struct HostProgress(Arc<HostOp>);
+
+impl humata2_svc_peer::ports::ProgressPort for HostProgress {
+    fn id(&self) -> String {
+        self.0.with_progress(Progress::id).unwrap_or_default()
+    }
+
+    fn operation(&self) -> pb::Operation {
+        self.0.with_progress(Progress::operation).unwrap_or_default()
+    }
+
+    fn set_step(&self, key: &str, state: pb::StepState, output_tail: Option<String>) {
+        self.0.with_progress(|progress| progress.set_step(key, state, output_tail));
+    }
+
+    fn succeed(&self, result: Option<pb::operation::Result>) {
+        if let Some(progress) = self.0.take() {
+            progress.succeed(result);
+        }
+    }
+
+    fn fail(&self, error: pb::Error) {
+        if let Some(progress) = self.0.take() {
+            progress.fail(error);
+        }
+    }
+
+    fn end_cancelled(&self) {
+        if let Some(progress) = self.0.take() {
+            progress.end_cancelled();
+        }
+    }
+}
+
+/// The remote work's handle on the Desk's operation `host`.
+fn peer_op(host: Arc<HostOp>) -> Arc<crate::remote_work::HostOp> {
+    Arc::new(crate::remote_work::HostOp::new(humata2_svc_peer::ports::Progress::new(Arc::new(
+        HostProgress(host),
+    ))))
+}
+
+#[tonic::async_trait]
+impl DeskRemotePort for DeskRemoteAdapter {
+    fn knows(&self, machine: &str) -> bool {
+        self.0.knows(machine)
+    }
+
+    fn machines_up(&self) -> Vec<String> {
+        self.0.machines_up()
+    }
+
+    fn relayed(&self, machine: &str) -> Result<Arc<dyn RelayedClients>, RelayError> {
+        let relayed = self.0.relayed(machine).map_err(relay_of)?;
+        Ok(Arc::new(RelayedAdapter(relayed)))
+    }
+
+    fn require_link(&self, machine: &str) -> Result<Arc<dyn RelayedClients>, Status> {
+        self.relayed(machine).map_err(Status::from)
+    }
+
+    async fn start_desk_on(
+        &self,
+        machine: &str,
+        id: &str,
+        req: pb::StartDeskSessionRequest,
+        channel_folder: Option<&str>,
+        host: Arc<HostOp>,
+    ) -> Result<pb::StartDeskSessionResponse, RemoteError> {
+        self.0
+            .start_desk_on(machine, id, req, channel_folder, peer_op(host))
+            .await
+            .map_err(remote_error)
+    }
+
+    async fn resume_session_on(
+        &self,
+        machine: &str,
+        id: &str,
+        req: pb::ResumeSessionRequest,
+        host: Arc<HostOp>,
+    ) -> Result<pb::Operation, Status> {
+        self.0
+            .resume_session_on(machine, id, req, peer_op(host))
+            .await
+            .map(Option::unwrap_or_default)
+            .map_err(Status::from)
+    }
+
+    async fn wait_up(&self, machine: &str) -> Result<(), RelayError> {
+        self.0.wait_up(machine).await.map_err(|()| RelayError::Refused {
+            answer: Status::unavailable(format!(
+                "{machine} was removed or this daemon is stopping, so its link won't come up; add the machine again if it was removed by mistake"
+            )),
+        })
+    }
+
+    fn watch_links(&self) -> LinkWatch {
+        // Followed now, before the caller reads which machines are up.
+        let mut follow = self.0.watch_links();
+        let (changes, watch) = mpsc::channel(64);
+        tokio::spawn(async move {
+            while let Some((machine, state)) = follow.next().await {
+                let state = match state {
+                    crate::host_relay::LinkState::Up { .. } => LinkState::Up,
+                    crate::host_relay::LinkState::Down => LinkState::Down,
+                };
+                if changes.send((machine, state)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        LinkWatch::new(watch)
     }
 }
 
@@ -571,4 +771,61 @@ pub(crate) fn desk_server(
         last_start: Arc::new(DeskRestartAdapter(last_start)),
         sessions,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn machine(name: &str) -> pb::event::Payload {
+        pb::event::Payload::Machine(pb::Machine {
+            name: name.to_owned(),
+            ..Default::default()
+        })
+    }
+
+    fn named(event: &pb::Event) -> &str {
+        match &event.payload {
+            Some(pb::event::Payload::Machine(machine)) => &machine.name,
+            _ => "",
+        }
+    }
+
+    fn seq(event: &pb::Event) -> u64 {
+        event.seq.as_ref().map_or(0, |seq| seq.value)
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_resuming_gets_the_kept_events_after_its_place_then_live_ones() {
+        let feed = Arc::new(Feed::default());
+        let desk = DeskFeedAdapter(feed.clone());
+        let (_, mut first) = desk.subscribe(None);
+        for name in ["box-1", "box-2", "box-3"] {
+            feed.publish(pb::Change::Created, machine(name), None);
+        }
+        let first = first.recv().await.expect("the first event");
+
+        let (from, mut events) = desk.subscribe(Some(seq(&first)));
+        let second = events.recv().await.expect("the second event");
+        let third = events.try_recv().expect("the third event");
+        assert_eq!((named(&second), named(&third)), ("box-2", "box-3"));
+        assert_eq!(from, seq(&third));
+        assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
+
+        feed.publish(pb::Change::Created, machine("box-4"), None);
+        let fourth = events.recv().await.expect("the live event");
+        assert_eq!(named(&fourth), "box-4");
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_that_falls_behind_hears_it_missed_some() {
+        let feed = Arc::new(Feed::default());
+        let desk = DeskFeedAdapter(feed.clone());
+        let (_, mut events) = desk.subscribe(None);
+        // More than the feed holds for a subscriber.
+        for n in 0..4096 {
+            feed.publish(pb::Change::Created, machine(&format!("box-{n}")), None);
+        }
+        assert!(matches!(events.recv().await, Err(RecvError::Lagged(_))));
+    }
 }

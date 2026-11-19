@@ -1,9 +1,9 @@
 //! Narrow port traits and value types decoupling `humata2_svc_desk` from
 //! `humatad`-internal services so `svc_desk` compiles 100% standalone.
 
-use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,7 +17,8 @@ use humata2_revive::FollowStep;
 use humata2_sessions::Agents;
 use humata2_store::{SessionRecord, Store, StoreError, TabRecord};
 use prost::Message;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+use tokio::sync::watch;
 use tonic::{Code, Request, Response, Status};
 
 pub use humata2_daemon_ports::{Gated, Run, actor};
@@ -69,7 +70,9 @@ impl DeskGuardExt for Arc<dyn DeskGuardPort> {
 
 /// Identity lookup & revocation port implemented by `humatad::identity::Identities`.
 pub trait DeskIdentityPort: Send + Sync {
-    fn revoke(&self, tab_id: &str);
+    /// Ends `tab_id`'s token at once; Err only when saving that failed, which
+    /// the next start makes good, since the tab is gone by then.
+    fn revoke(&self, tab_id: &str) -> Result<(), StoreError>;
 }
 
 /// Session-tab token environment port implemented by `humatad::restart::Tokens`.
@@ -130,14 +133,56 @@ pub trait DeskFeedPort: Send + Sync {
         scope: Scope,
         by: Option<pb::Actor>,
     );
-    fn subscribe(&self, after: Option<u64>) -> (u64, broadcast::Receiver<pb::Event>);
+    /// The events after `after` the feed still keeps, then the live ones;
+    /// with the sequence number the stream picks up from.
+    fn subscribe(&self, after: Option<u64>) -> (u64, Events);
+}
+
+/// The feed's live events as one subscriber receives them
+/// (`humatad::events::Feed`'s receiver).
+#[tonic::async_trait]
+pub trait LiveEvents: Send {
+    /// The next event; `Lagged` when the subscriber fell behind and missed
+    /// some. Cancel-safe.
+    async fn recv(&mut self) -> Result<pb::Event, RecvError>;
+    fn try_recv(&mut self) -> Result<pb::Event, TryRecvError>;
+}
+
+/// A subscription to the feed: the kept events it resumed after, then the
+/// live ones.
+pub struct Events {
+    kept: VecDeque<pb::Event>,
+    live: Box<dyn LiveEvents>,
+}
+
+impl Events {
+    pub fn new(kept: impl IntoIterator<Item = pb::Event>, live: Box<dyn LiveEvents>) -> Self {
+        Self {
+            kept: kept.into_iter().collect(),
+            live,
+        }
+    }
+
+    /// The next event. Cancel-safe, so it can sit in a `select!`.
+    pub async fn recv(&mut self) -> Result<pb::Event, RecvError> {
+        match self.kept.pop_front() {
+            Some(event) => Ok(event),
+            None => self.live.recv().await,
+        }
+    }
+
+    pub fn try_recv(&mut self) -> Result<pb::Event, TryRecvError> {
+        match self.kept.pop_front() {
+            Some(event) => Ok(event),
+            None => self.live.try_recv(),
+        }
+    }
 }
 
 /// Session-event notifier port implemented by `humatad::session_service::Tell`.
 #[tonic::async_trait]
 pub trait DeskTellPort: Send + Sync {
     async fn session(&self, session_id: &str, change: pb::Change, by: Option<pb::Actor>);
-    async fn channel(&self, channel_id: &str, change: pb::Change, by: Option<pb::Actor>);
 }
 
 /// Channel service port implemented by `humatad::channel_service::ChannelSvc`.
@@ -150,7 +195,9 @@ pub trait DeskChannelPort: Send + Sync {
         approved: bool,
     ) -> Result<Gated<pb::Operation>, Status>;
     fn record_added(&self, owner: &str, name: &str, place: &humata2_repo_library::Place);
-    fn watch_aliases(&self) -> watch::Receiver<HashMap<String, PathBuf>>;
+    /// Removes the links to renamed folders once their holders have all
+    /// ended, watching while any remains (`ChannelSvc::watch_aliases`).
+    fn watch_aliases(&self);
 }
 
 /// Operation progress handle.
@@ -273,8 +320,6 @@ pub trait DeskRestartPort: Send + Sync {
     async fn wait(&self) -> pb::LastStart;
     fn get(&self) -> Option<pb::LastStart>;
     fn operations(&self) -> Arc<dyn RestartOperationsPort>;
-    async fn operation_state(&self, id: &str) -> Option<OperationState>;
-    async fn record_operation(&self, id: String, state: OperationState);
 }
 
 /// Link state of a remote machine.
@@ -284,40 +329,52 @@ pub enum LinkState {
     Down,
 }
 
-/// Error from relaying a call to a remote machine.
-#[derive(Debug, Clone)]
+/// Why a call can't be relayed to a remote machine. `answer` is the status
+/// the link gave, which already says what failed and how to fix it.
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum RelayError {
-    Offline { machine: String },
-    Other(String),
+    /// The machine's link is down.
+    #[error("{machine} is offline: {}", .answer.message())]
+    Offline {
+        machine: String,
+        #[source]
+        answer: Status,
+    },
+    /// The call couldn't be sent for another reason.
+    #[error("{}", .answer.message())]
+    Refused {
+        #[source]
+        answer: Status,
+    },
 }
 
-impl std::fmt::Display for RelayError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Offline { machine } => write!(f, "machine {machine} is offline"),
-            Self::Other(s) => f.write_str(s),
+impl From<RelayError> for Status {
+    fn from(error: RelayError) -> Self {
+        match error {
+            RelayError::Offline { answer, .. } | RelayError::Refused { answer } => answer,
         }
     }
 }
 
-impl From<RelayError> for Status {
-    fn from(err: RelayError) -> Self {
-        Status::unavailable(err.to_string())
-    }
-}
-
-/// Error from a remote host operation.
-#[derive(Debug, Clone)]
+/// Why work on a remote machine failed.
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum RemoteError {
-    Relay(RelayError),
-    Other(String),
+    #[error(transparent)]
+    Relay(#[from] RelayError),
+    /// The machine answered with an error, or broke a promise of its call.
+    /// `answer` is what the caller is told.
+    #[error("{}", .answer.message())]
+    Failed {
+        #[source]
+        answer: Status,
+    },
 }
 
 impl From<RemoteError> for Status {
-    fn from(err: RemoteError) -> Self {
-        match err {
-            RemoteError::Relay(r) => Status::from(r),
-            RemoteError::Other(s) => Status::unavailable(s),
+    fn from(error: RemoteError) -> Self {
+        match error {
+            RemoteError::Relay(relay) => Status::from(relay),
+            RemoteError::Failed { answer } => answer,
         }
     }
 }
@@ -339,6 +396,10 @@ impl HostOp {
             .unwrap_or_else(PoisonError::into_inner)
             .take()
     }
+    /// Reads the progress while nothing has taken it.
+    pub fn with_progress<T>(&self, read: impl FnOnce(&Progress) -> T) -> Option<T> {
+        self.progress.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(read)
+    }
 }
 
 /// Relayed gRPC clients for a remote machine.
@@ -353,6 +414,9 @@ pub trait RelayedClients: Send + Sync {
 pub struct LinkWatch(tokio::sync::mpsc::Receiver<(String, LinkState)>);
 
 impl LinkWatch {
+    pub fn new(changes: tokio::sync::mpsc::Receiver<(String, LinkState)>) -> Self {
+        Self(changes)
+    }
     pub async fn next(&mut self) -> Option<(String, LinkState)> {
         self.0.recv().await
     }
@@ -380,8 +444,10 @@ pub trait DeskRemotePort: Send + Sync {
         req: pb::ResumeSessionRequest,
         host: Arc<HostOp>,
     ) -> Result<pb::Operation, Status>;
+    /// Waits until `machine`'s link is up; Err once it never can be (the
+    /// machine was removed, or the daemon is stopping).
     async fn wait_up(&self, machine: &str) -> Result<(), RelayError>;
-    fn link_state(&self, machine: &str) -> LinkState;
+    /// The machines' link changes from now on.
     fn watch_links(&self) -> LinkWatch;
 }
 
@@ -773,10 +839,6 @@ impl DeskRestartPort for TestRestart {
     fn operations(&self) -> Arc<dyn RestartOperationsPort> {
         Arc::new(NoopRestartOps)
     }
-    async fn operation_state(&self, _id: &str) -> Option<OperationState> {
-        None
-    }
-    async fn record_operation(&self, _id: String, _state: OperationState) {}
 }
 
 /// Event feed type alias (`events::Feed`).

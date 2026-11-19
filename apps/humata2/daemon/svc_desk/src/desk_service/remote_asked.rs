@@ -23,7 +23,7 @@ use crate::ports::blocking;
 use crate::ports::RelayError;
 use crate::ports::{Origin, Progress};
 use crate::ports::{HostOp, RemoteError};
-use crate::ports::{OperationState, Started};
+use crate::ports::OperationState;
 use crate::ports as status;
 
 /// The folder in the state folder the starts wait in.

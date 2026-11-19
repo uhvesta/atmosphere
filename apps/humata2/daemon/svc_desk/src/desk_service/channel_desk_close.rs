@@ -25,7 +25,7 @@ use tonic::Status;
 
 use super::{DeskSvc, desk_status, failed_precondition, now_ms};
 use crate::ports::{blocking, carry_conversations};
-use crate::ports::{DeskFeedPort, Feed};
+use crate::ports::Feed;
 use humata2_daemon_ports::Caller;
 use crate::ports as identity;
 use crate::ports::Started;

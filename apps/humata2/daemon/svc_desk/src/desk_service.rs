@@ -27,14 +27,14 @@ use tokio::sync::{Notify, OwnedMutexGuard};
 use tonic::{Code, Request, Response, Status};
 
 use crate::ports::{blocking, error_of};
-use crate::ports::{DeskGuardExt as _, DeskGuardPort};
+use crate::ports::DeskGuardPort;
 use humata2_daemon_ports::Caller;
 use crate::ports::{self as identity, DeskIdentityPort};
 use crate::ports::DeskInboxPort;
 use crate::ports::DeskOperationsPort;
 use crate::ports::DeskRemotePort;
 use crate::ports::DeskTokensPort;
-use crate::ports::{Tell, start_error};
+use crate::ports::start_error;
 use crate::ports as status;
 use crate::ports::DeskTerminalPort;
 use crate::ports::DeskTrashPort as Bin;
