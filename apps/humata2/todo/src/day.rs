@@ -70,6 +70,11 @@ fn month_len(y: i64, m: i64) -> i64 {
 }
 
 impl Day {
+    /// The day that is `days` after 1970-01-01.
+    pub fn from_epoch_days(days: i32) -> Day {
+        Day(days)
+    }
+
     pub fn from_ymd(y: i32, m: u32, d: u32) -> Option<Day> {
         let (y, m, d) = (i64::from(y), i64::from(m), i64::from(d));
         if !(1..=12).contains(&m) || d < 1 || d > month_len(y, m) {

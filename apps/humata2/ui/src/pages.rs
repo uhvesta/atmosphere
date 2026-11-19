@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
 use gpui_kit::base::Disableable as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Sizable as _, input::InputState};
 use gpui_kit::{prelude::*, *};
 use humata2_app::{AppAction, AppState, Route};
@@ -26,6 +27,7 @@ pub fn title(state: &AppState) -> String {
         Route::Home => "Home".to_owned(),
         Route::Inbox => "Inbox".to_owned(),
         Route::Board(_) => "Board".to_owned(),
+        Route::Todo => "To-do".to_owned(),
         Route::Channel(id) => state
             .workspace
             .channels
@@ -59,6 +61,7 @@ pub fn page(
     state: &AppState,
     channel_filter: Entity<InputState>,
     board_inputs: &crate::board::Inputs,
+    todo_inputs: &crate::todo::Inputs,
     files_name: Entity<InputState>,
     terminals: &crate::terminals::Terminals,
     documents: &crate::document_tab::Documents,
@@ -88,6 +91,7 @@ pub fn page(
         Route::Board(_) => {
             crate::board::page(ui, state, board_inputs, Look::of(cx)).into_any_element()
         }
+        Route::Todo => todo_page(ui, state, todo_inputs, Look::of(cx)).into_any_element(),
         Route::Inbox => crate::lists::inbox(ui, state, Look::of(cx)).into_any_element(),
         Route::Channel(id) => state.workspace.channel(id).map_or_else(
             || {
@@ -276,13 +280,25 @@ pub(crate) fn session_header(
             x.child(chrome::lights()).child(div().w(px(4.)))
         })
         // DS-58: the same ‹ Back as every other page's top bar.
-        .child(
-            widgets::ghost_in(look, ui, "session-back", "", AppAction::Back)
-                .icon(IconName::ChevronLeft)
+        // A true ghost button: no fill, no border, only the ‹.
+        .child({
+            let back = ui.clone();
+            Button::new("session-back")
+                .ghost()
+                .small()
+                .w(px(24.))
+                .h(px(24.))
+                .p_0()
+                .flex_shrink_0()
+                .icon(chrome::icon(IconName::ChevronLeft, look.secondary, 14.))
                 .accessibility_label("Back")
                 .tooltip("Back  ⌘[")
-                .disabled(state.trail.is_empty()),
-        )
+                .disabled(state.trail.is_empty())
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    back.send(AppAction::Back, cx);
+                })
+        })
         .child(
             col()
                 .flex_1()
@@ -713,4 +729,27 @@ mod tests {
     fn a_working_session_with_no_known_start_shows_no_run_time() {
         assert_eq!(working_for(Status::Working, None, 130_000), None);
     }
+}
+
+/// The To-do page, sending the list's actions into the app.
+fn todo_page(ui: &Rc<Ui>, state: &AppState, inputs: &crate::todo::Inputs, look: Look) -> Div {
+    let ui = ui.clone();
+    let send: crate::todo::Send = Rc::new(move |action, cx| ui.send(AppAction::Todo(action), cx));
+    let sessions = |id: &str| {
+        state
+            .workspace
+            .sessions
+            .iter()
+            .find(|s| s.id.as_str() == id)
+            .map(|s| crate::todo::SessionChip {
+                name: s.title.clone(),
+                dot: match s.status {
+                    Status::Working => crate::theme::GREEN,
+                    Status::NeedsYou => crate::theme::ORANGE,
+                    Status::Exited { .. } => crate::theme::RED_STATUS,
+                    _ => crate::theme::GREY,
+                },
+            })
+    };
+    crate::todo::page(&send, &state.todo, inputs, &sessions, look)
 }

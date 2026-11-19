@@ -26,7 +26,7 @@ pub use humata2_ui_settings::{access, settings, settings_providers, settings_rep
 pub use humata2_ui_workspace::{
     board, channel, conversation_tab, file_manager, inbox_page, inbox_terminal, panel_board,
     panel_files, panel_inbox, panel_info, panel_journal, request_card, resume_failed,
-    session_tabs, sidebar, sidebar_pinned, terminals, view_tab,
+    session_tabs, sidebar, sidebar_pinned, terminals, todo, view_tab,
 };
 
 mod lists;

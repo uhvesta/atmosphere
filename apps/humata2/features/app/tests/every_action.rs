@@ -235,7 +235,8 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
         Some(Command::TogglePanel) => Command::Back,
         Some(Command::Back) => Command::ShowShortcuts,
         Some(Command::ShowShortcuts) => Command::Views,
-        Some(Command::Views) => Command::Machine(s.machine.clone()),
+        Some(Command::Views) => Command::Todo,
+        Some(Command::Todo) => Command::Machine(s.machine.clone()),
         Some(Command::Machine(_)) => Command::ChannelBoard(s.channel.clone()),
         Some(Command::ChannelBoard(_)) => Command::MoveSession,
         Some(Command::MoveSession) => Command::MoveTo {
@@ -359,6 +360,7 @@ fn reach(command: &Command) -> Reach {
         | Command::Back
         | Command::ShowShortcuts
         | Command::Views
+        | Command::Todo
         | Command::Machine(_)
         | Command::ChannelBoard(_)
         | Command::MoveSession
@@ -394,7 +396,8 @@ fn next_route(at: Option<&Route>, s: &Samples) -> Option<Route> {
         Some(Route::Session(_)) => Route::Hosts,
         Some(Route::Hosts) => Route::Files,
         Some(Route::Files) => Route::Views,
-        Some(Route::Views) => Route::Desk,
+        Some(Route::Views) => Route::Todo,
+        Some(Route::Todo) => Route::Desk,
         Some(Route::Desk) => Route::Settings,
         Some(Route::Settings) => Route::Machine(s.machine.clone()),
         Some(Route::Machine(_)) => return None,
@@ -415,6 +418,7 @@ fn route_command(route: &Route) -> Command {
         Route::Hosts => Command::Hosts,
         Route::Files => Command::Files,
         Route::Views => Command::Views,
+        Route::Todo => Command::Todo,
         Route::Desk => Command::Desk,
         Route::Settings => Command::Settings,
         Route::Machine(id) => Command::Machine(id.clone()),

@@ -156,6 +156,8 @@ pub enum Command {
     ShowShortcuts,
     /// Go to Views.
     Views,
+    /// Go to the To-do list.
+    Todo,
     /// Open a host's page.
     Machine(MachineId),
     /// Open a channel's board.
@@ -807,6 +809,7 @@ impl PaletteState {
             (Command::Back, "Go back", "⌘["),
             (Command::ShowShortcuts, "Keyboard shortcuts", "⌘/"),
             (Command::Views, "Go to Views", ""),
+            (Command::Todo, "Go to To-do", ""),
         ]
         .into_iter()
         .map(|(command, title, hint)| Entry {

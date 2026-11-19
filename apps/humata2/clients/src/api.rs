@@ -76,6 +76,8 @@ pub struct Clients {
     pub history: Arc<dyn history::History>,
     /// Pins and VIP marks, kept on the host.
     pub marks: Arc<dyn marks::MarksClient>,
+    /// The To-do list, kept on the host.
+    pub todo: Arc<dyn todo::TodoClient>,
     /// Time, for latency, debouncing and save intervals.
     pub clock: Arc<dyn Clock>,
     /// Where Copy puts text.

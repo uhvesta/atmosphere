@@ -7,6 +7,7 @@ use humata2_palette::PaletteAction;
 use humata2_review::ReviewAction;
 use humata2_review::comments::CommentsAction;
 use humata2_session::SessionAction;
+use humata2_todo_feature::TodoAction;
 use humata2_sidebar::{RowKey, SidebarAction};
 use humata2_views::ViewsAction;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,8 @@ pub enum Route {
     Inbox,
     /// A board.
     Board(Scope),
+    /// The To-do list.
+    Todo,
     /// A channel's page.
     Channel(ChannelId),
     /// A session's page.
@@ -177,6 +180,12 @@ impl App {
             }
             Route::Board(scope) => {
                 effects.push(self.child(state, AppAction::Board(BoardAction::SetScope(scope))));
+            }
+            Route::Todo => {
+                state.session.open = None;
+                effects.push(self.child(state, AppAction::Todo(TodoAction::Load)));
+                // Follows changes made elsewhere; a second entry replaces the watch.
+                effects.push(self.child(state, AppAction::Todo(TodoAction::Watch)));
             }
             Route::Hosts => {
                 state.session.open = None;

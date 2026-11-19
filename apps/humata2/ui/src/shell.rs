@@ -44,6 +44,7 @@ pub struct Shell {
     channel_filter_value: String,
     _channel_filter_subscription: Subscription,
     board_inputs: crate::board::Inputs,
+    todo_inputs: crate::todo::Inputs,
     applied_theme: Option<humata2_settings::Theme>,
     files_name: Entity<InputState>,
     machine_inputs: crate::machine_page::MachinePageInputs,
@@ -118,6 +119,12 @@ impl Shell {
             },
         );
         let board_inputs = crate::board::Inputs::new(&ui, window, cx);
+        let todo_inputs = {
+            let ui = ui.clone();
+            let send: crate::todo::Send =
+                Rc::new(move |action, cx| ui.send(AppAction::Todo(action), cx));
+            crate::todo::Inputs::new(&send, window, cx)
+        };
         let files_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let machine_inputs = crate::machine_page::MachinePageInputs::new(
             &ui,
@@ -169,6 +176,7 @@ impl Shell {
             channel_filter_value: String::new(),
             _channel_filter_subscription: channel_filter_subscription,
             board_inputs,
+            todo_inputs,
             applied_theme: None,
             files_name,
             machine_inputs,
@@ -207,13 +215,25 @@ fn top_bar(
                     .tooltip("Show sidebar  ⌘0"),
             )
         })
-        .child(
-            widgets::ghost_in(look, ui, "back", "", AppAction::Back)
-                .icon(IconName::ChevronLeft)
+        // A quiet ghost Back, as the session header draws it (DS-58).
+        .child({
+            let back = ui.clone();
+            Button::new("back")
+                .ghost()
+                .small()
+                .w(px(24.))
+                .h(px(24.))
+                .p_0()
+                .flex_shrink_0()
+                .icon(chrome::icon(IconName::ChevronLeft, look.secondary, 14.))
                 .accessibility_label("Back")
                 .tooltip("Back  ⌘[")
-                .disabled(!can_go_back),
-        )
+                .disabled(!can_go_back)
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    back.send(AppAction::Back, cx);
+                })
+        })
         .child(
             div()
                 .id("screen-title")
@@ -454,6 +474,8 @@ impl Render for Shell {
         }
         self.ui
             .read(|state| self.board_inputs.sync(state, window, cx));
+        self.ui
+            .read(|state| self.todo_inputs.sync(&state.todo, window, cx));
         let ui = self.ui.clone();
         let body = match load {
             Load::Loading => col()
@@ -488,6 +510,7 @@ impl Render for Shell {
                     state,
                     self.channel_filter.clone(),
                     &self.board_inputs,
+                    &self.todo_inputs,
                     self.files_name.clone(),
                     &self.terminals,
                     &self.documents,

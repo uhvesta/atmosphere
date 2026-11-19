@@ -142,6 +142,7 @@ impl App {
             Command::Back => self.go_back(state),
             Command::ShowShortcuts => self.show_shortcuts(state),
             Command::Views => self.navigate(state, Route::Views),
+            Command::Todo => self.navigate(state, Route::Todo),
             Command::Machine(id) => self.navigate(state, Route::Machine(id)),
             Command::ChannelBoard(id) => self.navigate(state, Route::Board(Scope::Channel(id))),
             // The palette asks for the machine itself and sends MoveTo, so

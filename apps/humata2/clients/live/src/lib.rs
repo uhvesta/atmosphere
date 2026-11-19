@@ -4,7 +4,7 @@
 pub use humata2_clients_live_core::{
     Call, ConnectError, DaemonFacts, LiveConnection, LiveOptions, Observer,
 };
-pub use humata2_clients_live_daemon::{LiveDaemon, history, marks};
+pub use humata2_clients_live_daemon::{LiveDaemon, history, marks, todo};
 pub use humata2_clients_live_desk::LiveDesk;
 pub use humata2_clients_live_files::LiveFileManager;
 pub use humata2_clients_live_machines::LiveMachines;

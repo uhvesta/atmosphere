@@ -432,6 +432,7 @@ pub enum TodoAction {
 type Today = Arc<dyn Fn() -> Day + Send + Sync>;
 
 /// The To-do reducer, over the host's client.
+#[derive(Clone)]
 pub struct Todo {
     client: Arc<dyn TodoClient>,
     today: Today,

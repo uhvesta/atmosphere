@@ -59,7 +59,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use humata2_board::{Board, BoardAction, BoardState};
-use humata2_clients::model::{ChannelId, ItemId, MachineId, Scope, SessionId, ViewId};
+use humata2_todo_feature::{Todo, TodoAction, TodoState};
+use humata2_clients::model::{ChannelId, ItemId, MachineId, RequestId, Scope, SessionId, ViewId};
 use humata2_clients::{Clients, DaemonError, Event, Workspace};
 use humata2_desk::{Desk, DeskAction, DeskState};
 use humata2_files::{Files, FilesAction, FilesState};
@@ -149,6 +150,8 @@ pub struct AppState {
     pub inbox: InboxState,
     /// Boards.
     pub board: BoardState,
+    /// The To-do list.
+    pub todo: TodoState,
     /// The Desk.
     pub desk: DeskState,
     /// Hosts.
@@ -261,6 +264,7 @@ impl AppState {
                 view: saved.board.clone(),
                 ..Default::default()
             },
+            todo: TodoState::new(humata2_todo_feature::View::default(), today()),
             hosts: HostsState {
                 selected: saved.selected_host.clone(),
                 ..Default::default()
@@ -480,6 +484,8 @@ pub enum AppAction {
     Inbox(InboxAction),
     /// A board.
     Board(BoardAction),
+    /// The To-do list.
+    Todo(TodoAction),
     /// Hosts.
     Hosts(HostsAction),
     /// Files.
@@ -523,6 +529,14 @@ pub enum AppAction {
     MachinePage(humata2_hosts::MachinePageAction),
 }
 
+/// Today in UTC, for ranking by due date.
+fn today() -> humata2_todo::Day {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    humata2_todo::Day::from_epoch_days(i32::try_from(secs / 86_400).unwrap_or(0))
+}
+
 /// The app's reducer.
 #[derive(Clone)]
 pub struct App {
@@ -533,6 +547,7 @@ pub struct App {
     comments: Comments,
     inbox: Inbox,
     board: Board,
+    todo: Todo,
     desk: Desk,
     hosts: Hosts,
     files: Files,
@@ -559,6 +574,7 @@ impl App {
             comments: Comments::new(clients.comments.clone(), clients.clock.clone()),
             inbox: Inbox::new(clients.clone()),
             board: Board::new(clients.clone()),
+            todo: Todo::new(clients.todo.clone(), today),
             desk: Desk::new(clients.desk.clone()),
             hosts: Hosts::new(clients.clone()),
             files: Files::new(clients.clone()),
@@ -614,6 +630,10 @@ impl App {
                 .board
                 .reduce(&mut state.board, action)
                 .map(AppAction::Board),
+            AppAction::Todo(action) => self
+                .todo
+                .reduce(&mut state.todo, action)
+                .map(AppAction::Todo),
             AppAction::Hosts(action) => self
                 .hosts
                 .reduce(&mut state.hosts, action)
@@ -1118,6 +1138,22 @@ impl App {
                     self.child(state, AppAction::Hosts(HostsAction::Select(id))),
                 ])
             }
+            // The list leaves these to the app.
+            AppAction::Todo(TodoAction::OpenSession(id)) => {
+                self.switch(state, Route::Session(SessionId::new(id)))
+            }
+            AppAction::Todo(TodoAction::AskWhy(ask_id)) => {
+                let go = self.switch(state, Route::Inbox);
+                Effect::merge([
+                    go,
+                    self.child(
+                        state,
+                        AppAction::Inbox(InboxAction::Select(RequestId::new(ask_id))),
+                    ),
+                ])
+            }
+            // The drawer already shows the item's history; nothing more to route.
+            AppAction::Todo(TodoAction::ShowHistory(_)) => Effect::none(),
             AppAction::Board(BoardAction::SetScope(scope)) => {
                 if matches!(state.route, Route::Board(_)) {
                     state.route = Route::Board(scope.clone());
@@ -1307,6 +1343,7 @@ impl App {
             | AppAction::Comments(_)
             | AppAction::Inbox(_)
             | AppAction::Board(_)
+            | AppAction::Todo(_)
             | AppAction::Hosts(_)
             | AppAction::Files(_)
             | AppAction::Find(_)

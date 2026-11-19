@@ -4796,6 +4796,20 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - Until main adds their own Capability values (seam: `TODO_SUGGEST`, Default Allow; `TODO_CLOSE`, Ask me; appended in capabilities.proto and access/capability.rs, named in mcp tools.rs, shown as Settings agent-access switches), `todo_add` rides `ChannelBoardAdd`/`OwnBoardWrite` and `todo_close` the board Edit rule, like `board_item_create`/`board_item_update`.
 - **Reverse:** remove the three tool rows from tools.rs and svc_mcp/src/mcp/todo.rs.
 
+## D840: The To-do access switches are their own capabilities (BOARDSIMPLE manager, 2026-11-19). Decided
+
+- `CAPABILITY_TODO_SUGGEST = 72` (Default Allow) and `CAPABILITY_TODO_CLOSE = 73` (Ask me), appended in capabilities.proto and daemon/access; supersedes D839's interim board rules. svc_board checks them for an agent's adds and closes on top of the board rules; the owner's own close is never gated. The fake rules fixture lists both rows.
+- **Reverse:** drop the two values and their arms; agents fall back to the board rules.
+
+## D841: To-do list view details (BOARDSIMPLE manager, picks by Fable 5.2, 2026-11-19). Decided
+
+- What changed shows inline under the row, not in a popover.
+- A group shows 10 rows, then "Show all".
+- The check circle closes an open item in one tap (the owner's own close; it is undoable from Show closed).
+- Pin maps to the 1-based `pin_order` of D835; pinned items rank above computed ones, in pin order.
+- An item's ask maps to `AskDetail` (evidence text and link, affects, change, asked minutes ago, session ended); Ask why opens the Inbox request, Open session switches to it, History opens the item's history. The app handles these three actions, not the feature.
+- **Reverse:** view-only; change the To-do UI and its goldens.
+
 ## D845: Screen dialogs never reach the Agent inbox; the session shows "needs you" instead (INBOX manager, picks by Fable 5.2, 2026-11-19; INBOXHOOKS). Decided
 - **Cut (superseded by INBOXHOOKS):**
   - D767: a screen question raises an Inbox card;

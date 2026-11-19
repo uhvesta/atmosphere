@@ -100,6 +100,8 @@ pub struct Fakes {
     pub history: history::FakeHistory,
     /// Pins and VIP marks.
     pub marks: marks::FakeMarks,
+    /// The To-do list.
+    pub todo: todo::FakeTodo,
     /// The clipboard.
     pub clipboard: FakeClipboard,
     /// Finder.
@@ -137,6 +139,7 @@ pub fn fake_clients(workspace: Workspace, clock: Arc<dyn Clock>) -> (Clients, Fa
         comments: FakeComments::new(),
         history: history::FakeHistory::new(),
         marks,
+        todo: todo::FakeTodo::frame_b1_1(),
         clipboard: FakeClipboard::default(),
         reveal: FakeReveal::default(),
         files: FakeFileSystem::default(),
@@ -162,6 +165,7 @@ pub fn clients_with_fakes(fakes: Fakes, clock: Arc<dyn Clock>) -> (Clients, Fake
         comments: Arc::new(fakes.comments.clone()),
         history: Arc::new(fakes.history.clone()),
         marks: Arc::new(fakes.marks.clone()),
+        todo: Arc::new(fakes.todo.clone()),
         clock,
         clipboard: Arc::new(fakes.clipboard.clone()),
         reveal: Arc::new(fakes.reveal.clone()),
@@ -198,6 +202,7 @@ pub fn demo_clients(clock: Arc<dyn Clock>, storage: Arc<dyn Storage>) -> (Client
         comments: Arc::new(FakeComments::new()),
         history: Arc::new(history::FakeHistory::new()),
         marks: Arc::new(marks),
+        todo: Arc::new(todo::FakeTodo::frame_b1_1()),
         clock,
         clipboard: Arc::new(FakeClipboard::default()),
         reveal: Arc::new(FakeReveal::default()),

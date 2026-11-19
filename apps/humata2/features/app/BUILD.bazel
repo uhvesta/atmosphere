@@ -17,6 +17,7 @@ FEATURES = [
     "session",
     "settings",
     "sidebar",
+    "todo",
     "views",
 ]
 
@@ -31,6 +32,7 @@ rust_library(
     ],
     deps = [
         "//apps/humata2/clients:api",
+        "//apps/humata2/todo",
         "//libs/tca-rust:tca",
         "@crates//:serde",
         "@crates//:serde_json",

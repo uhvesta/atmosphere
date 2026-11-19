@@ -313,6 +313,7 @@ async fn start_with<R: Send + 'static>(
         comments: Arc::new(LiveComments::new(&daemon)),
         history: Arc::new(humata2_clients_live::history::LiveHistory::new(&daemon)),
         marks: Arc::new(humata2_clients_live::marks::LiveMarks::new(&daemon)),
+        todo: Arc::new(humata2_clients_live::todo::LiveTodo::new(&daemon)),
         views: Arc::new(humata2_clients_live::LiveViews::new(&daemon)),
         pull_requests: Arc::new(humata2_clients_live::LivePullRequests::new(&daemon)),
         review_chat: Arc::new(humata2_clients_live::LiveReviewChat::new(&daemon)),
