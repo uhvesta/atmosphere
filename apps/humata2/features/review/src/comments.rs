@@ -283,6 +283,13 @@ pub enum CommentsAction {
     /// Turn a note into a draft for a pull request, in place (PR-23). `pr`
     /// names the pull request when the note's repository doesn't say.
     MakeDraft(SessionId, CommentId, Option<(String, u32)>),
+    /// Turn an agent's note into the person's own comment and send it to the
+    /// session's agent: a comment is made from the note's lines and text,
+    /// typed, and the note is dropped.
+    SendNote(SessionId, CommentId),
+    /// A note was sent: the comments that changed, and whether the note
+    /// itself was dropped.
+    NoteSent(SessionId, CommentId, Result<Vec<Comment>, DaemonError>, Result<(), DaemonError>),
 
     /// Send every draft held (Send N).
     SendAll(SessionId),
@@ -446,6 +453,10 @@ impl Comments {
         match then {
             Then::Close | Then::Cancel | Then::GitHub { .. } => stop,
             Then::Comment => match comment {
+                // An agent's note, edited, goes as the person's own comment.
+                Some(id) if s.comments.iter().any(|c| c.id == id && is_agent_note(c)) => {
+                    stop.and(self.send_note(session, s, id))
+                }
                 Some(id) => stop.and(self.send(session, vec![id])),
                 None => stop,
             },
@@ -535,6 +546,32 @@ impl Comments {
         let session = session.clone();
         Effect::future(async move {
             CommentsAction::ManyChanged(session, call.await.map(|sent: Sent| sent.comments))
+        })
+    }
+
+    /// Makes an agent's note the person's own comment and types it: a
+    /// comment is made from the note's lines and text, sent, and the note
+    /// dropped once its text is typed, so nothing is lost half way.
+    fn send_note(&self, session: &SessionId, s: &SessionComments, id: CommentId) -> Effect<CommentsAction> {
+        let Some(note) = s.comments.iter().find(|c| c.id == id && is_agent_note(c)) else {
+            return Effect::none();
+        };
+        let (anchor, text) = (note.anchor.clone(), note.text.clone());
+        let client = self.client.clone();
+        let session = session.clone();
+        let key = format!("{id}/sent");
+        Effect::future(async move {
+            let sent = async {
+                let made = client.create(&session, anchor, &text, &key).await?;
+                let sent = client.send(&session, std::slice::from_ref(&made.id)).await?;
+                Ok(sent.comments)
+            }
+            .await;
+            let dropped = match &sent {
+                Ok(_) => client.drop_comment(&id).await,
+                Err(_) => Ok(()),
+            };
+            CommentsAction::NoteSent(session, id, sent, dropped)
         })
     }
 
@@ -708,7 +745,7 @@ impl Reducer for Comments {
                 let Some(comment) = s
                     .comments
                     .iter()
-                    .find(|c| c.id == id && (c.counts_as_draft() || is_github_draft(c)))
+                    .find(|c| c.id == id && (c.counts_as_draft() || is_github_draft(c) || is_agent_note(c)))
                 else {
                     return Effect::none();
                 };
@@ -891,6 +928,28 @@ impl Reducer for Comments {
                     .make_note_a_draft(&id, pr.as_ref().map(|(repo, number)| (repo.as_str(), *number)));
                 self.changed(&session, call)
             }
+            A::SendNote(session, id) => {
+                let s = state.sessions.entry(session.clone()).or_default();
+                self.send_note(&session, s, id)
+            }
+            A::NoteSent(session, id, sent, dropped) => {
+                let s = state.sessions.entry(session).or_default();
+                match (sent, dropped) {
+                    (Ok(comments), dropped) => {
+                        for comment in comments {
+                            upsert(s, comment);
+                        }
+                        match dropped {
+                            Ok(()) => {
+                                remove(s, &id);
+                                Effect::none()
+                            }
+                            Err(error) => Self::fail(s, &error),
+                        }
+                    }
+                    (Err(error), _) => Self::fail(s, &error),
+                }
+            }
             A::Close(session) => {
                 let s = state.sessions.entry(session.clone()).or_default();
                 let Some(b) = s.editing.as_mut() else {
@@ -1040,6 +1099,15 @@ fn is_github_draft(comment: &Comment) -> bool {
     comment.status == Status::Draft
         && !comment.archived
         && matches!(comment.destination, Destination::PullRequest { .. })
+}
+
+/// Whether `comment` is a note an agent left that the person hasn't dealt
+/// with yet.
+pub fn is_agent_note(comment: &Comment) -> bool {
+    comment.status == Status::Draft
+        && !comment.archived
+        && comment.destination == Destination::Note
+        && matches!(comment.author, humata2_clients::comments::Author::Agent(_))
 }
 
 fn is_blank(text: &str) -> bool {

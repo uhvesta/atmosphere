@@ -338,6 +338,7 @@ fn comments_under(
                         look,
                         comment,
                         agent,
+                        session.pull_request_review,
                         reattaching.as_ref() == Some(&comment.id),
                         &start,
                     )

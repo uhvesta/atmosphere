@@ -874,6 +874,22 @@ impl Daemon for LiveDaemon {
         Box::pin(async move { humata2_clients_live_diff::mark_reviewed(&conn, &session).await })
     }
 
+    fn looks(&self, session: &SessionId) -> Reply<Vec<humata2_clients::model::LookedFile>> {
+        let conn = self.shared.conn.clone();
+        let session = session.clone();
+        Box::pin(async move { humata2_clients_live_diff::looks(&conn, &session).await })
+    }
+
+    fn save_looks(
+        &self,
+        session: &SessionId,
+        looks: Vec<humata2_clients::model::LookedFile>,
+    ) -> Reply<()> {
+        let conn = self.shared.conn.clone();
+        let session = session.clone();
+        Box::pin(async move { humata2_clients_live_diff::save_looks(&conn, &session, looks).await })
+    }
+
     fn plan_push(&self, session: &SessionId) -> Reply<PushPlan> {
         let conn = self.shared.conn.clone();
         let session = session.clone();

@@ -4880,7 +4880,12 @@ Comments show three states, and an addressed comment can be reopened (DIFFUI2 ma
 
 ## D852
 Looks good replaces Mark reviewed, per file and per layer (DIFFUI2 manager, 2026-11-19; UXSIMPLE step 8 (c), frames 2-2, 3-1, 3-2, 4-1, 4-2, 4-3). Provisional
-- **A look:** the review state keeps, per session, which files the person looked at, each with a fingerprint of the diff it showed (a hash of the file's diff lines). A file stays ticked only while its fingerprint matches, so ticks clear when the content changes. Looks are not saved yet; follow-up for main: the host keeps them, like the D183 bookmark.
+- **A look:** the review state keeps, per session, which files the person looked at, each with a fingerprint of the diff it showed (a hash of the file's diff lines). A file stays ticked only while its fingerprint matches, so ticks clear when the content changes. The host keeps them like the D183 bookmark:
+- **RPCs:** `DiffService.GetLooks` and `SaveLooks` (user-only, `UserReviewState`). A save replaces the session's whole set.
+- **Storage:** each repo of the session keeps one JSON blob at `refs/humata/looks/<session>`, written by `hash-object` plus `update-ref`. An empty save deletes the ref.
+- **Reducer:** the reducer reads looks once when it opens a session, and saves after Looks good, a tick or a clear. A failed save keeps the tick and shows the review error.
+- **Fingerprint:** FNV-1a, so it is stable across processes.
+- **Layer rows:** a layer row reads Looks good once every one of its files has a matching look, including ticks made by hand.
 - **Looks good (footer):** marks every file of the view shown (a layer, the whole stack, or the plain diff) as looked. It also moves D183's bookmark (`MarkReviewed` with the shown trees), so "Since I last looked" counts from that press. Once every file shown is looked, the button reads "✓ Looks good" with a green tint, and pressing it again clears those looks. A file row's tick circle marks or clears that one file.
 - **What shows:**
   - the file bar reads "✓ You looked at this";
@@ -4898,3 +4903,19 @@ Looks good replaces Mark reviewed, per file and per layer (DIFFUI2 manager, 2026
   - A layer row's repo label shows only if its first word fits in full; otherwise it is hidden, with no lone "…". The noun agrees with the count: "1 file", "1 comment done".
 - **Not yet as drawn:** the Send summary's "layers 1 and 3 look good" (no Send summary popover exists), and 4-3's "N pull requests are up to date / Open the pull requests" (no data source).
 - **Reverse:** drop `ReviewState::looked` and the switch, and restore D183's menu entries.
+
+## D853
+An agent's note on a line is one card (DIFFUI2 manager, 2026-11-19; UXSIMPLE step 8 (d), frame 3-4). Provisional
+- **What it is:** the card reads "<agent> [Note] line N", then the body, then these actions:
+  - **Send to <session agent>:** makes it the person's own comment, on the note's anchor, and sends it. The note goes only once the send succeeds.
+  - **Edit:** opens the box. Commenting from there sends the edited text the same way.
+  - **Drop:** removes the note.
+  - **Draft for GitHub:** only in a pull request review.
+
+  "Make it a draft" is gone from the Diff panel's cards.
+- **Counts:**
+  - The footer status adds "· N notes".
+  - A file row shows an orange note chip after its grey comment count.
+  - A layer row shows "N drafts · M notes" in accent, right-aligned in its status slot, before any look status. It shows only for a layer whose files are known: the one shown, or one marked Looks good. Whole stack shows the total.
+- **Not yet as drawn:** an agent-authored GitHub draft still reads "Draft for GitHub · by <agent>" outside the Submit sheet. Changing it moves frame 68 and the GitHub-draft tests, so it waits for the PR review pass.
+- **Reverse:** restore `plain_card` for agent notes in `ui/changes/src/comment_cards.rs`, and drop `CommentsAction::SendNote` and `NoteSent`.

@@ -2,10 +2,7 @@
 //! each with a fingerprint of the diff it showed. A file stays looked only
 //! while its fingerprint matches the diff now read.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
-use humata2_clients::model::{FileDiff, RepoDiff, SessionId};
+use humata2_clients::model::{FileChange, FileDiff, LineKind, RepoDiff, SessionId};
 
 use crate::ReviewState;
 
@@ -22,22 +19,69 @@ pub enum LayerLook {
     ChangedSinceLooked,
 }
 
-/// A stable fingerprint of one file's diff: its lines (kind and text), the
-/// kind of change and its paths. Two reads of the same diff give the same
-/// number; any edit to a line, or a rename, gives another.
+/// A fingerprint of one file's diff: its lines (kind and text), the kind of
+/// change and its paths. Two reads of the same diff give the same number
+/// in any process, on any run (the hash is FNV-1a over fixed bytes, since
+/// looks are saved by the host); any edit to a line, or a rename, gives
+/// another.
 #[must_use]
 pub fn fingerprint(file: &FileDiff) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    file.path.hash(&mut hasher);
-    file.old_path.hash(&mut hasher);
-    std::mem::discriminant(&file.change).hash(&mut hasher);
-    file.binary.hash(&mut hasher);
-    file.lines.len().hash(&mut hasher);
-    for line in &file.lines {
-        std::mem::discriminant(&line.kind).hash(&mut hasher);
-        line.text.hash(&mut hasher);
+    let mut hash = Fnv::new();
+    hash.text(&file.path);
+    match &file.old_path {
+        Some(old) => {
+            hash.byte(1);
+            hash.text(old);
+        }
+        None => hash.byte(0),
     }
-    hasher.finish()
+    hash.byte(match file.change {
+        FileChange::Added => 1,
+        FileChange::Modified => 2,
+        FileChange::Deleted => 3,
+        FileChange::Renamed => 4,
+    });
+    hash.byte(u8::from(file.binary));
+    hash.number(file.lines.len() as u64);
+    for line in &file.lines {
+        hash.byte(match line.kind {
+            LineKind::Context => 1,
+            LineKind::Added => 2,
+            LineKind::Removed => 3,
+            LineKind::Hunk => 4,
+            LineKind::Note => 5,
+        });
+        hash.text(&line.text);
+    }
+    hash.0
+}
+
+/// 64-bit FNV-1a.
+struct Fnv(u64);
+
+impl Fnv {
+    fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn byte(&mut self, byte: u8) {
+        self.0 ^= u64::from(byte);
+        self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    fn number(&mut self, number: u64) {
+        for byte in number.to_le_bytes() {
+            self.byte(byte);
+        }
+    }
+
+    /// Length first, so "ab" + "c" differs from "a" + "bc".
+    fn text(&mut self, text: &str) {
+        self.number(text.len() as u64);
+        for byte in text.bytes() {
+            self.byte(byte);
+        }
+    }
 }
 
 /// Whether `file` of `repo` is looked at: it was marked, and its diff is the
@@ -147,4 +191,43 @@ pub fn layer_look(state: &ReviewState, session: &SessionId, title: &str) -> Laye
     } else {
         LayerLook::LooksGood
     }
+}
+
+/// The `(repo, path)` of the files a stack row covers, when they are known:
+/// the shown row's from the diff last read, another layer's from what it
+/// covered when Looks good was pressed on it. `None` for Whole stack unless
+/// it is shown, and for a layer whose files were not read yet. `title` is
+/// `None` for Whole stack.
+#[must_use]
+pub fn layer_files(state: &ReviewState, session: &SessionId, title: Option<&str>) -> Option<Vec<(String, String)>> {
+    if state.layer_of(session) == title {
+        let diffs = state.fetch.get(session)?.diffs.as_deref()?;
+        return Some(
+            diffs
+                .iter()
+                .flat_map(|diff| diff.files.iter().map(|file| (diff.repo.clone(), file.path.clone())))
+                .collect(),
+        );
+    }
+    let covered = state.layer_looks.get(&(session.clone(), title?.to_owned()))?;
+    Some(covered.iter().map(|(repo, path, _)| (repo.clone(), path.clone())).collect())
+}
+
+/// Rebuilds what a layer covered from the files its diff shows: every one
+/// of them must have a look. `None` when any has none.
+#[must_use]
+pub fn covered_by_looks(
+    state: &ReviewState,
+    session: &SessionId,
+    diffs: &[RepoDiff],
+) -> Option<Vec<(String, String, u64)>> {
+    let looked = state.looked.get(session)?;
+    let mut covered = Vec::new();
+    for diff in diffs {
+        for file in &diff.files {
+            let seen = looked.get(&(diff.repo.clone(), file.path.clone()))?;
+            covered.push((diff.repo.clone(), file.path.clone(), *seen));
+        }
+    }
+    (!covered.is_empty()).then_some(covered)
 }

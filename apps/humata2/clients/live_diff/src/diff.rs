@@ -4,7 +4,7 @@
 use humata2_clients::DaemonError;
 use humata2_clients::model::{
     DiffBase, DiffLine, FileChange, FileDiff, FileTier, LineKind, PushChoice, PushPlan, PushRepo,
-    RepoBase, RepoBases, RepoDiff, RepoDiffSpec, SessionFile, SessionId,
+    LookedFile, RepoBase, RepoBases, RepoDiff, RepoDiffSpec, SessionFile, SessionId,
 };
 use humata2_clients_live_core::{
     LiveConnection, MESSAGE_MAX_BYTES, Wire, fresh_key, map,
@@ -401,6 +401,71 @@ pub async fn mark_reviewed(
         })
         .await
         .map_err(|status| conn.error(&status, "Marking the changes reviewed"))?;
+    Ok(())
+}
+
+/// The files the person marked Looks good in the session, as the daemon
+/// kept them (D852).
+pub async fn looks(
+    conn: &LiveConnection,
+    session: &SessionId,
+) -> Result<Vec<LookedFile>, DaemonError> {
+    let kept = diffs(conn)
+        .get_looks(pb::GetLooksRequest {
+            session: Some(pb::SessionId {
+                value: session.as_str().to_owned(),
+            }),
+        })
+        .await
+        .map_err(|status| conn.error(&status, "Reading what you looked at"))?
+        .into_inner();
+    Ok(kept
+        .looks
+        .into_iter()
+        .map(|look| LookedFile {
+            repo: look
+                .repo
+                .map(|repo| {
+                    if repo.owner.is_empty() {
+                        repo.name
+                    } else {
+                        format!("{}/{}", repo.owner, repo.name)
+                    }
+                })
+                .unwrap_or_default(),
+            path: look.path,
+            fingerprint: look.fingerprint,
+        })
+        .collect())
+}
+
+/// Replaces the session's looks on the daemon with `looks` (D852).
+pub async fn save_looks(
+    conn: &LiveConnection,
+    session: &SessionId,
+    looks: Vec<LookedFile>,
+) -> Result<(), DaemonError> {
+    let looks = looks
+        .into_iter()
+        .map(|look| pb::LookedFile {
+            repo: Some(map::parse_repo(&look.repo).unwrap_or_else(|| pb::RepoRef {
+                owner: String::new(),
+                name: look.repo.clone(),
+            })),
+            path: look.path,
+            fingerprint: look.fingerprint,
+        })
+        .collect();
+    diffs(conn)
+        .save_looks(pb::SaveLooksRequest {
+            idempotency_key: fresh_key(),
+            session: Some(pb::SessionId {
+                value: session.as_str().to_owned(),
+            }),
+            looks,
+        })
+        .await
+        .map_err(|status| conn.error(&status, "Saving what you looked at"))?;
     Ok(())
 }
 

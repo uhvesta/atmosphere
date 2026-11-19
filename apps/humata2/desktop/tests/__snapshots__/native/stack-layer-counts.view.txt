@@ -1,0 +1,146 @@
+Navigation "Sidebar"
+  Button "Hide sidebar"
+  Button "New session"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  Button "Search"
+  Link "Home"
+  Link "Inbox"
+  Link "Board"
+  Link "Desk"
+  Button "New channel"
+  TreeItem "payments-rewrite" expanded
+    Button "Fold"
+  TreeItem "Ledger schema migration" selected expanded
+  TreeItem "Try BRIN index" expanded
+  TreeItem "Partial BRIN on posted_at"
+  TreeItem "Review the schema"
+  TreeItem "Refund retries"
+  TreeItem "API rate limiter"
+  TreeItem "infra" expanded
+    Button "Fold"
+  TreeItem "Benchmark BRIN"
+  TreeItem "Upgrade Postgres 17"
+  TreeItem "pr-reviews" expanded
+    Button "Fold"
+  TreeItem "acme/api #482"
+  TreeItem "web"
+    Button "Fold"
+  Link "This Mac"
+  Link "devbox-1"
+  Link "gpu-box"
+  Link "Settings"
+Splitter "Resize the sidebar"
+Splitter "Resize the side panel"
+Complementary "Changes"
+  #panel-header
+    text "Diff"
+    #stack-header
+      text "Whole stack · 3 layers"
+    Button "Full screen" description="Full screen  ⌃⌘↩"
+    Button "Close panel" description="Close panel"
+  #stack-top
+    ListBox "Layers"
+      ListBoxOption "Whole stack" selected
+        #stack-row-picked
+          text "Whole stack"
+          text ""
+          Label "2 repos · 3 files"
+          #stack-row-counts-0
+            text "1 draft · 1 note"
+      ListBoxOption "Layer 3: Not committed yet"
+        #stack-row-head-1
+          text "Not committed yet"
+          text "3"
+          Label "api"
+      ListBoxOption "Layer 2: journal"
+        #stack-row-head-2
+          text "journal"
+          text "2"
+          Label "api"
+      ListBoxOption "Layer 1: codec"
+        #stack-row-head-3
+          text "codec"
+          text "1"
+          Label "api · web"
+  #changes-files
+    text "ledger"
+    Button "ledger: against main" collapsed
+      text "against"
+      text "main"
+    text "acme/ledger"
+    Button "acme/ledger: against main" collapsed
+      text "against"
+      text "main"
+    text "acme/api"
+    Button "acme/api: against main" collapsed
+      text "against"
+      text "main"
+    ListBoxOption "acme/ledger/migrations/0042_accounts.sql" selected
+      #change-file-name acme/ledger/migrations/0042_accounts.sql
+        text "0042_accounts.sql"
+      text "migrations/"
+      text "1"
+      #change-file-notes acme/ledger/migrations/0042_accounts.sql
+        text "1"
+      text "+41"
+      text "−0"
+      CheckBox "Not looked at"
+    ListBoxOption "acme/api/src/client.rs"
+      #change-file-name acme/api/src/client.rs
+        text "client.rs"
+      text "src/"
+      text "1"
+      text "+62"
+      text "−21"
+      CheckBox "Not looked at"
+    ListBoxOption "acme/api/src/entry.rs"
+      #change-file-name acme/api/src/entry.rs
+        text "entry.rs"
+      text "src/"
+      text "+81"
+      text "−3"
+      CheckBox "Not looked at"
+  text "0042_accounts.sql"
+  Button "Open in editor" description="Open in editor"
+  text "acme/ledger"
+  text "·"
+  text "migrations/"
+  #change-file-empty
+    text "The changed lines aren't available"
+  #diff-looks-bar
+    Button "Looks good"
+    Label "0 of 3 files looked at · 1 draft · 1 note"
+  Button "Send to claude"
+  Button "Push & PR…"
+  Button "Add repo…"
+Toolbar "Session panels"
+  Button "Inbox"
+    Status "Inbox: 1"
+  Button "Diff"
+    Status "Diff: 2"
+  Button "Files"
+  Button "Board"
+  Button "Journal"
+  Button "Info"
+Link "Open channel"
+Button "Back" description="Back  ⌘["
+Button "Fork"
+Button "Expand terminal"
+Button "Toggle side panel"
+Button "Session actions"
+Button "Revert"
+Button "Keep"
+Tab "claude" selected
+  Button "Close claude"
+Tab "zsh"
+  Button "Close zsh"
+Button "New terminal"
+#terminal-peers-0
+  text "1 other can type here"
+Log "Terminal output" description="~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● Bash(psql -f backfill.sql)\n  ⎿ INSERT 0 48210 … (running)\n\n✻ Backfilling entries… (2m 14s · ↓ 3.1k tokens · esc to interrupt)\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  text "~/src/ledger (ledger-schema) $ claude\n> Design the ledger schema from PAY-3 and move the reads over.\n\n● Read(ledger/docs/model.md)\n  ⎿ Read 212 lines\n● Write(ledger/migrations/0042_accounts.sql)\n  ⎿ Wrote 41 lines\n● Update(api/src/client.rs)\n  ⎿ Updated with 62 additions and 21 removals\n● Bash(cargo test -p api ledger)\n  ⎿ test result: ok. 14 passed; 0 failed\n\n● Updated plan\n  ✓ Add accounts and entries tables\n  ✓ Dual-write from client.rs\n  ◐ Backfill entries from ledger_entries\n    Switch reads, drop the old index\n\n● Bash(psql -f backfill.sql)\n  ⎿ INSERT 0 48210 … (running)\n\n✻ Backfilling entries… (2m 14s · ↓ 3.1k tokens · esc to interrupt)\n\n\n\n\n\n\n\n\n╭─────────────────────────────────────────────────────────────────────────────────────╮\n│ > │\n╰─────────────────────────────────────────────────────────────────────────────────────╯\n  ⏵⏵ accept edits on (shift+tab to cycle)"
+  #terminal-replica
+    #terminal-pane
+      #terminal focused

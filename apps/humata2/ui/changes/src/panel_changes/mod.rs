@@ -803,7 +803,7 @@ pub fn changes(
             },
         )
         // D800, DS-60 to DS-65: the layer list sits above the files.
-        .children(crate::panel_stack::stack_top(&state.review, look, &stack_send, width).map(|top| {
+        .children(crate::panel_stack::stack_top(&state.review, &state.comments, look, &stack_send, width).map(|top| {
             // D804: the layer keys work in the Diff panel, so a click in
             // the layer list gives it the focus.
             let handle = documents.diff_stack.clone();

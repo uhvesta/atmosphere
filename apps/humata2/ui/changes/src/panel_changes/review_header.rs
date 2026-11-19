@@ -792,7 +792,21 @@ pub(super) fn looks_status(
         humata2_review::stack::StackHeader::Whole { .. } => None,
     });
     let count = format!("{looked} of {} looked at", files_of(total));
-    let draft = format!("{drafts} draft{}", if drafts == 1 { "" } else { "s" });
+    let notes = held.map_or(0, |held| {
+        held.comments
+            .iter()
+            .filter(|comment| humata2_review::comments::is_agent_note(comment))
+            .count()
+    });
+    let mut draft_parts = Vec::new();
+    if drafts > 0 {
+        draft_parts.push(format!("{drafts} draft{}", if drafts == 1 { "" } else { "s" }));
+    }
+    if notes > 0 {
+        draft_parts.push(format!("{notes} note{}", if notes == 1 { "" } else { "s" }));
+    }
+    let draft = draft_parts.join(" \u{b7} ");
+    let drafts = drafts + notes;
     let mut candidates: Vec<String> = Vec::new();
     let prefix = at.map(|number| format!("Layer {number} · ")).unwrap_or_default();
     if total > 0 {

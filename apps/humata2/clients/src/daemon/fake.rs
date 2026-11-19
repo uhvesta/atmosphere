@@ -93,6 +93,7 @@ struct Inner {
     /// Repositories whose read fails, with the message (DS-35).
     failing_repos: HashMap<(SessionId, String), String>,
     reviewed: HashMap<SessionId, Vec<RepoDiff>>,
+    looks: HashMap<SessionId, Vec<crate::model::LookedFile>>,
     pushes: Vec<(SessionId, PushChoice)>,
     pull_requests: HashMap<(SessionId, String), u32>,
     next_pull_request: u32,
@@ -153,6 +154,7 @@ impl FakeDaemon {
                 diffs: HashMap::new(),
                 failing_repos: HashMap::new(),
                 reviewed: HashMap::new(),
+                looks: HashMap::new(),
                 pushes: Vec::new(),
                 pull_requests: HashMap::new(),
                 next_pull_request: 1,
@@ -882,6 +884,14 @@ impl Daemon for FakeDaemon {
 
     fn mark_reviewed(&self, session: &SessionId) -> Reply<()> {
         review::mark_reviewed(self, session)
+    }
+
+    fn looks(&self, session: &SessionId) -> Reply<Vec<crate::model::LookedFile>> {
+        review::looks(self, session)
+    }
+
+    fn save_looks(&self, session: &SessionId, looks: Vec<crate::model::LookedFile>) -> Reply<()> {
+        review::save_looks(self, session, looks)
     }
 
     fn plan_push(&self, session: &SessionId) -> Reply<crate::model::PushPlan> {

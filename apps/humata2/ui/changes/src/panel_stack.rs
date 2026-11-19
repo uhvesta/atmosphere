@@ -108,6 +108,7 @@ fn files_label(files: u32) -> String {
 pub fn stack_list(
     look: Look,
     review: &ReviewState,
+    comments: &humata2_review::comments::CommentsState,
     rows: &StackRows,
     scroll: &ScrollHandle,
     send: &Sender,
@@ -127,13 +128,14 @@ pub fn stack_list(
         .track_scroll(scroll)
         .overflow_y_scroll()
         .children(rows.rows.iter().enumerate().map(|(index, entry)| {
-            stack_row(look, review, rows, index, entry, index == rows.picked, send, width)
+            stack_row(look, review, comments, rows, index, entry, index == rows.picked, send, width)
         }))
 }
 
 fn stack_row(
     look: Look,
     review: &ReviewState,
+    comments: &humata2_review::comments::CommentsState,
     rows: &StackRows,
     index: usize,
     entry: &StackRow,
@@ -162,7 +164,10 @@ fn stack_row(
     // (5.7), with the gaps between them.
     let inside = width - 34. - 18.;
     let title_w = title.chars().count() as f32 * 6.7;
-    let status_w = look_note.map_or(0., |(words, _)| words.chars().count() as f32 * 5.7 + 6.);
+    let counts = layer_counts(review, comments, entry);
+    let has_counts = counts.is_some();
+    let status_w = look_note.map_or(0., |(words, _)| words.chars().count() as f32 * 5.7 + 6.)
+        + counts.as_ref().map_or(0., |words| words.chars().count() as f32 * 5.7 + 6.);
     let first_word = note.split(' ').next().map_or(0., |word| word.chars().count() as f32 * 5.9);
     let note_fits = inside - title_w - status_w - 6. >= first_word;
     let head = row()
@@ -203,7 +208,16 @@ fn stack_row(
                 note.clone(),
             )
         }))
-        .children(look_note.map(|(words, color)| look_note_el(index, words, color)));
+        .children(counts.map(|words| {
+            text(words)
+                .id(SharedString::from(format!("stack-row-counts-{index}")))
+                .test_support()
+                .flex_shrink_0()
+                .ml_auto()
+                .text_size(px(11.))
+                .text_color(rgb(look.accent))
+        }))
+        .children(look_note.map(|(words, color)| look_note_el(index, words, color, has_counts)));
     let mut body = col().w_full().child(head);
     // Without a purpose the picked row stays one line, like the others.
     if on && !entry.purpose.is_empty() {
@@ -268,12 +282,47 @@ fn layer_look_note(
     }
 }
 
-fn look_note_el(index: usize, words: &'static str, color: u32) -> AnyElement {
+/// "3 drafts · 1 note": the drafts and the agent's notes on the files of a
+/// row, in accent (UXSIMPLE 3-4). `None` when both are none, or when the
+/// row's files were not read yet.
+fn layer_counts(
+    review: &ReviewState,
+    comments: &humata2_review::comments::CommentsState,
+    entry: &StackRow,
+) -> Option<String> {
+    let session = review.session.as_ref()?;
+    let title = entry.number.map(|_| entry.title.as_str());
+    let files = humata2_review::looks::layer_files(review, session, title)?;
+    let held = comments.sessions.get(session)?;
+    let (mut drafts, mut notes) = (0, 0);
+    for comment in &held.comments {
+        let here = files
+            .iter()
+            .any(|(repo, path)| *repo == comment.anchor.repo && *path == comment.anchor.path);
+        if !here {
+            continue;
+        }
+        if comment.counts_as_draft() {
+            drafts += 1;
+        } else if humata2_review::comments::is_agent_note(comment) {
+            notes += 1;
+        }
+    }
+    let noun = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    match (drafts, notes) {
+        (0, 0) => None,
+        (d, 0) => Some(noun(d, "draft")),
+        (0, n) => Some(noun(n, "note")),
+        (d, n) => Some(format!("{} \u{b7} {}", noun(d, "draft"), noun(n, "note"))),
+    }
+}
+
+fn look_note_el(index: usize, words: &'static str, color: u32, after_counts: bool) -> AnyElement {
     text(words)
+        .when(!after_counts, |status| status.ml_auto())
         .id(SharedString::from(format!("stack-row-look-{index}")))
         .test_support()
         .flex_shrink_0()
-        .ml_auto()
         .text_size(px(11.))
         .text_color(rgb(color))
         .into_any_element()
@@ -327,7 +376,13 @@ pub fn untouched_line(look: Look, repo: &str) -> impl IntoElement {
 /// a line for each repository the picked layer doesn't touch, and why the
 /// last ask to send the stack again failed. `None` when the open session
 /// shows no stack.
-pub fn stack_top(review: &ReviewState, look: Look, send: &Sender, width: f32) -> Option<AnyElement> {
+pub fn stack_top(
+    review: &ReviewState,
+    comments: &humata2_review::comments::CommentsState,
+    look: Look,
+    send: &Sender,
+    width: f32,
+) -> Option<AnyElement> {
     let rows = review.stack_rows()?;
     let failed = review
         .session
@@ -342,7 +397,7 @@ pub fn stack_top(review: &ReviewState, look: Look, send: &Sender, width: f32) ->
             .px(px(8.))
             .pt(px(8.))
             .gap(px(2.))
-            .child(stack_list(look, review, &rows, &list_scroll(), send, width))
+            .child(stack_list(look, review, comments, &rows, &list_scroll(), send, width))
             .children(rows.untouched_repos.iter().map(|repo| untouched_line(look, repo)))
             .when_some(failed, |top, error| {
                 top.child(
@@ -540,7 +595,7 @@ mod tests {
                     .on_action(move |_: &crate::keys::PrevLayer, _, _| previous.borrow_mut().push("previous")),
                 &self.review,
             )
-            .children(stack_top(&self.review, look, &self.send, 340.))
+            .children(stack_top(&self.review, &humata2_review::comments::CommentsState::default(), look, &self.send, 340.))
             .children(skim_row(look, "acme/api", &self.skims, skim_open(&self.review, "acme/api"), &self.send))
             .child(key_dot(look, "acme/api", "src/lib.rs"))
         }

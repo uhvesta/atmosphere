@@ -42,10 +42,25 @@ pub(super) fn file_comments(state: &AppState, diff: &RepoDiff, path: &str) -> us
             .comments
             .on_file(session, &diff.repo, path)
             .values()
-            .map(Vec::len)
-            .sum()
+            .flatten()
+            .filter(|comment| !humata2_review::comments::is_agent_note(comment))
+            .count()
     });
     sent + held
+}
+
+/// How many notes an agent left on `path` of `repo`, which a file row counts
+/// apart from the drafts (UXSIMPLE 3-4).
+pub(super) fn file_notes(state: &AppState, diff: &RepoDiff, path: &str) -> usize {
+    state.session.open.as_ref().map_or(0, |session| {
+        state
+            .comments
+            .on_file(session, &diff.repo, path)
+            .values()
+            .flatten()
+            .filter(|comment| humata2_review::comments::is_agent_note(comment))
+            .count()
+    })
 }
 
 /// How many comments are on `path` of `repo` when every one of them is done
@@ -132,6 +147,7 @@ pub(super) fn file_row(
     let repo = diff.repo.clone();
     let path = file.path.clone();
     let comments = file_comments(state, diff, &file.path);
+    let notes = file_notes(state, diff, &file.path);
     let done = file_done(state, diff, &file.path);
     let group = SharedString::from(format!("change-file-group {repo}/{path}"));
     // "bin" or "mode" stands where +a −r would be (DS-8).
@@ -244,7 +260,8 @@ pub(super) fn file_row(
                         // Shrinks only once the folder (basis 0) has none left,
                         // so a long name ends in "…" before the counts.
                         .min_w_0()
-                        .flex_shrink(1.)
+                        .flex_shrink_0()
+                        .max_w_full()
                         .overflow_hidden()
                         .whitespace_nowrap()
                         .text_ellipsis(),
@@ -252,7 +269,8 @@ pub(super) fn file_row(
                 .child(
                     text(dir.to_owned())
                         .text_color(rgb(look.tertiary))
-                        .flex_1()
+                        // Gives way first: far more eager to shrink than the name.
+                        .flex_shrink(1000.)
                         .min_w_0()
                         .overflow_hidden()
                         .whitespace_nowrap()
@@ -282,6 +300,17 @@ pub(super) fn file_row(
                             .text_size(px(11.))
                             .text_color(rgb(look.secondary)),
                     ),
+            )
+        })
+        .when(notes > 0 && !short && done.is_none(), |row| {
+            row.child(
+                widgets::row()
+                    .id(SharedString::from(format!("change-file-notes {repo}/{path}")))
+                    .test_support()
+                    .gap(px(3.))
+                    .flex_shrink_0()
+                    .child(icon(IconName::MessageSquare, LOOK_ORANGE, 11.))
+                    .child(text(notes.to_string()).text_size(px(11.)).text_color(rgb(LOOK_ORANGE))),
             )
         })
         .when_some(stat_word, |row, word| {

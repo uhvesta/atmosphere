@@ -1441,6 +1441,15 @@ pub struct PushRepo {
     pub open_pull_request: Option<u32>,
 }
 
+/// A file the person looked at (D852): the repository (`owner/name`), the
+/// file's path, and the fingerprint of the diff that was shown then.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LookedFile {
+    pub repo: String,
+    pub path: String,
+    pub fingerprint: u64,
+}
+
 /// A pull request a push opened or found for one repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PushedPullRequest {

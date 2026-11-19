@@ -332,6 +332,39 @@ pub(super) fn mark_reviewed(daemon: &FakeDaemon, session: &SessionId) -> Reply<(
     )
 }
 
+pub(super) fn looks(daemon: &FakeDaemon, session: &SessionId) -> Reply<Vec<crate::model::LookedFile>> {
+    let session = session.clone();
+    daemon.reply(
+        Some(Operation::Looks),
+        format!("looks {session}"),
+        move |inner| {
+            inner.session_mut(&session)?;
+            Ok(inner.looks.get(&session).cloned().unwrap_or_default())
+        },
+    )
+}
+
+pub(super) fn save_looks(
+    daemon: &FakeDaemon,
+    session: &SessionId,
+    looks: Vec<crate::model::LookedFile>,
+) -> Reply<()> {
+    let session = session.clone();
+    daemon.reply(
+        Some(Operation::SaveLooks),
+        format!("save looks {session}"),
+        move |inner| {
+            inner.session_mut(&session)?;
+            if looks.is_empty() {
+                inner.looks.remove(&session);
+            } else {
+                inner.looks.insert(session, looks);
+            }
+            Ok(())
+        },
+    )
+}
+
 /// What pushing each repository of the session's changes would do: one
 /// dirty file, on `humata/<session>`, with the file totals of its changes.
 pub(super) fn plan_push(daemon: &FakeDaemon, session: &SessionId) -> Reply<PushPlan> {

@@ -222,3 +222,55 @@ fn looks_good_frames_for_a_layer_a_changed_layer_and_the_whole_stack() {
     app.send(AppAction::Review(humata2_review::ReviewAction::LooksGood));
     app.snapshot("looks-good-all");
 }
+
+/// An agent's note on the first file the diff shows, and one draft of the
+/// person's on it.
+fn note_and_draft_on_first_file(app: &mut App) {
+    use humata2_clients::comments::{Anchor, Author, Side};
+    let (repo, path) = app.ui.read(|state| {
+        let diff = state.workspace.diffs.iter().find(|diff| diff.session == ledger() && !diff.files.is_empty()).expect("a diff");
+        (diff.repo.clone(), diff.files[0].path.clone())
+    });
+    let anchor = Anchor {
+        repo,
+        path,
+        side: Side::New,
+        first: 42,
+        last: 42,
+        quoted: Vec::new(),
+        base: None,
+        detached: false,
+        outdated: false,
+    };
+    app.fakes.comments.seed_note(&ledger(), anchor.clone(), "Read it through tx.", Author::Agent("claude".into()));
+    use humata2_review::comments::CommentsAction as C;
+    app.send(AppAction::Comments(C::OpenBox(ledger(), anchor)));
+    app.send(AppAction::Comments(C::Typed(ledger(), "Wrap it in one transaction.".into())));
+    app.send(AppAction::Comments(C::Close(ledger())));
+    app.send(AppAction::Comments(humata2_review::comments::CommentsAction::Open(ledger())));
+}
+
+/// UXSIMPLE 3-4: a row counts the drafts and notes on the files it covers,
+/// and says nothing when there are none.
+#[test]
+fn a_layer_row_counts_the_drafts_and_notes_on_its_files() {
+    let mut app = stack_app();
+    assert!(!app.contains("stack-row-counts-0"), "nothing to count yet");
+    note_and_draft_on_first_file(&mut app);
+    assert!(app.contains("stack-row-counts-0"), "Whole stack covers the file");
+    app.snapshot("stack-layer-counts");
+}
+
+/// The file list of the full-screen stack marks a file with a note.
+#[test]
+fn the_full_screen_file_list_counts_a_files_note_in_orange() {
+    let mut app = stack_app();
+    note_and_draft_on_first_file(&mut app);
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    let path = app.ui.read(|state| {
+        let diff = state.workspace.diffs.iter().find(|diff| diff.session == ledger() && !diff.files.is_empty()).expect("a diff");
+        format!("{}/{}", diff.repo, diff.files[0].path)
+    });
+    assert!(app.contains(&format!("change-file-notes {path}")));
+    app.snapshot("stack-layer-counts-full");
+}

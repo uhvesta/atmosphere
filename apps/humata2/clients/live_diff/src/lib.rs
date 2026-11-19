@@ -17,6 +17,6 @@ pub(crate) mod humata2_grpc {
 mod diff;
 
 pub use diff::{
-    file_tier, find_default_branch, find_session_files, mark_reviewed, plan_push, push,
+    file_tier, find_default_branch, find_session_files, looks, save_looks, mark_reviewed, plan_push, push,
     read_session_file, repo_bases, repo_diff, session_diffs, spec_to_wire,
 };

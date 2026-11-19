@@ -43,6 +43,7 @@ mod error;
 mod from_stack;
 mod importance;
 mod git;
+mod looks;
 mod model;
 mod passage;
 mod plan;
@@ -66,6 +67,7 @@ pub use comments::{
     UserComment,
 };
 pub use diff::Matching;
+pub use looks::Look;
 pub use error::{DiffError, PlanError};
 pub use model::{
     Budget, Cursor, DiffLine, FileChunk, FileStatus, FileSummary, Hunk, LineKind, RepoDiff, Side,

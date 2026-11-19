@@ -30,7 +30,8 @@ The loop from "the agent did work" to "I've reviewed it and it's shipped" takes 
   - (a) the footer "Send to <agent>";
   - (b) the three comment states, with done comments folded, and Reopen on Addressed;
   - (c) Looks good per file and per layer, with the "Since I last looked" switch.
-  New native frames: review-done-by-agent(-full, -dark), review-done-folded, looks-good-layer, looks-good-changed and looks-good-all. Next are (d), one agent note card, and (f), fold order-humata-review. (e), the Fork dialog, is deferred.
+  New native frames: review-done-by-agent(-full, -dark), review-done-folded, looks-good-layer, looks-good-changed and looks-good-all. (e), the Fork dialog, is deferred.
+- 2026-11-19 (DIFFUI2): (d) is built and Fable-approved (D853): one agent note card, and per-layer "N drafts · M notes" counts. D852's looks are now kept by the host (GetLooks/SaveLooks, `refs/humata/looks/<session>`). Next are (f), fold order-humata-review into "show with notes", and REVIEWER's leftovers ("not installed", ⌘T, the opening prompt).
 
 ## Already marked by the owner (2026-11-19)
 - The bare ⌃⌄ per-repo base chevron isn't understandable (revisits D739).

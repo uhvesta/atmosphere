@@ -23,7 +23,7 @@ use humata2_clients::model::FileTier;
 use humata2_clients::views::{PlanView, StackView};
 use humata2_clients::{Daemon, DaemonError, Workspace};
 use humata2_clients::model::{
-    Agent, Comment, DiffBase, DiffLine, DiffTargets, FileDiff, LineKind, PushChoice, RepoBase, RepoBases,
+    Agent, Comment, DiffBase, DiffLine, DiffTargets, FileDiff, LineKind, LookedFile, PushChoice, RepoBase, RepoBases,
     RepoDiff, SessionId, Status,
 };
 use serde::{Deserialize, Serialize};
@@ -305,16 +305,19 @@ pub struct ReviewState {
     /// The agent last picked there, marked "last used" in the menu. Not saved.
     pub last_agent_tab: Option<Agent>,
     /// The files each session's person looked at, as `(repo, path)`, each
-    /// with the fingerprint of the diff it showed (D852, [`looks`]). Not
-    /// saved yet.
+    /// with the fingerprint of the diff it showed (D852, [`looks`]). The host
+    /// keeps them: read when a session opens, saved after each change.
     pub looked: HashMap<SessionId, HashMap<(String, String), u64>>,
     /// The files each layer covered when Looks good was pressed on it, as
     /// `(repo, path, fingerprint)`, by session and layer title, so a layer
-    /// row reads its status without its diff. Not saved.
+    /// row reads its status without its diff. Not saved: rebuilt when a
+    /// layer's diff is read and every file of it has a look.
     pub layer_looks: HashMap<(SessionId, String), Vec<(String, String, u64)>>,
     /// The base each session had before "Since I last looked" was switched
     /// on, restored when it is switched off. Not saved.
     pub base_before_looked: HashMap<SessionId, DiffBase>,
+    /// The sessions whose saved looks were read from the host. Not saved.
+    pub looks_read: HashSet<SessionId>,
 }
 
 /// The changes (hunks) of a file: its hunk headers, or one when it has none.
@@ -894,6 +897,16 @@ pub enum ReviewAction {
         /// The repositories that failed, each with why, as the panel says it.
         errors: Vec<(String, String)>,
     },
+    /// The host's saved looks of a session were read.
+    LooksRead {
+        session: SessionId,
+        result: Result<Vec<LookedFile>, String>,
+    },
+    /// Saving a session's looks ended.
+    LooksSaved {
+        session: SessionId,
+        result: Result<(), String>,
+    },
     /// Marking a session reviewed ended.
     Reviewed {
         session: SessionId,
@@ -926,6 +939,42 @@ impl Review {
         let reply = self.daemon.mark_reviewed(&session);
         Effect::future(async move {
             ReviewAction::Reviewed {
+                session,
+                result: reply.await.map_err(|error| error.to_string()),
+            }
+        })
+    }
+
+    /// Has the host keep `session`'s looks as they are now (D852).
+    fn save_looks(&self, state: &ReviewState, session: &SessionId) -> Effect<ReviewAction> {
+        let mut looks: Vec<LookedFile> = state
+            .looked
+            .get(session)
+            .into_iter()
+            .flatten()
+            .map(|((repo, path), fingerprint)| LookedFile {
+                repo: repo.clone(),
+                path: path.clone(),
+                fingerprint: *fingerprint,
+            })
+            .collect();
+        looks.sort_by(|a, b| (&a.repo, &a.path).cmp(&(&b.repo, &b.path)));
+        let reply = self.daemon.save_looks(session, looks);
+        let session = session.clone();
+        Effect::future(async move {
+            ReviewAction::LooksSaved {
+                session,
+                result: reply.await.map_err(|error| error.to_string()),
+            }
+        })
+    }
+
+    /// Reads what the host kept of `session`'s looks (D852).
+    fn read_looks(&self, session: &SessionId) -> Effect<ReviewAction> {
+        let reply = self.daemon.looks(session);
+        let session = session.clone();
+        Effect::future(async move {
+            ReviewAction::LooksRead {
                 session,
                 result: reply.await.map_err(|error| error.to_string()),
             }
@@ -1009,6 +1058,7 @@ impl Review {
                     fetch.read_at = Some(self.clock.now());
                     fetch.diffs = Some(diffs.clone());
                     replace_diffs(&mut state.workspace, &session, &diffs);
+                    rebuild_layer_looks(state, &session);
                     effects.push(prepare(state));
                     effects.push(Effect::send(ReviewAction::Delegate(Delegate::Fetched(
                         session.clone(),
@@ -1200,6 +1250,26 @@ fn shown_files(state: &ReviewState, session: &SessionId) -> Vec<(String, String,
                 .map(move |file| (diff.repo.clone(), file.path.clone(), looks::fingerprint(file)))
         })
         .collect()
+}
+
+/// The layer shown covered what was looked at, once its diff is read and
+/// every file of it has a look: a layer's row reads Looks good (or Changed)
+/// again after a restart, which kept only the files' looks.
+fn rebuild_layer_looks(state: &mut ReviewState, session: &SessionId) {
+    let Some(title) = state.layer_of(session).map(str::to_owned) else {
+        return;
+    };
+    if state.layer_looks.contains_key(&(session.clone(), title.clone())) {
+        return;
+    }
+    let diffs = state
+        .fetch
+        .get(session)
+        .and_then(|fetch| fetch.diffs.as_deref())
+        .unwrap_or_default();
+    if let Some(covered) = looks::covered_by_looks(state, session, diffs) {
+        state.layer_looks.insert((session.clone(), title), covered);
+    }
 }
 
 fn sync_saved(state: &mut ReviewState) {
@@ -1464,8 +1534,12 @@ impl Reducer for Review {
                         looked.insert((repo.clone(), path.clone()), *seen);
                     }
                     if let Some(title) = layer {
-                        state.layer_looks.insert((session, title), shown);
+                        state.layer_looks.insert((session.clone(), title), shown);
                     }
+                    return Effect::merge(vec![
+                        self.save_looks(state, &session),
+                        self.mark_reviewed(state),
+                    ]);
                 }
                 return self.mark_reviewed(state);
             }
@@ -1477,6 +1551,7 @@ impl Reducer for Review {
                             looked.remove(&(repo, path));
                         }
                     }
+                    return self.save_looks(state, &session);
                 }
             }
             ReviewAction::ToggleLooked { repo, path } => {
@@ -1485,13 +1560,14 @@ impl Reducer for Review {
                         .into_iter()
                         .find(|(r, p, _)| *r == repo && *p == path)
                         .map(|(_, _, seen)| seen);
-                    let looked = state.looked.entry(session).or_default();
+                    let looked = state.looked.entry(session.clone()).or_default();
                     let key = (repo, path);
                     if looked.contains_key(&key) && looked.get(&key) == seen.as_ref() {
                         looked.remove(&key);
                     } else if let Some(seen) = seen {
                         looked.insert(key, seen);
                     }
+                    return self.save_looks(state, &session);
                 }
             }
             ReviewAction::SinceLooked(on) => {
@@ -1519,6 +1595,27 @@ impl Reducer for Review {
                         .pick_all(base);
                     sync_saved(state);
                     return self.fetch(state, &session);
+                }
+            }
+            ReviewAction::LooksRead { session, result } => match result {
+                Ok(saved) => {
+                    state.looks_read.insert(session.clone());
+                    // What was looked at since the read began wins.
+                    let looked = state.looked.entry(session.clone()).or_default();
+                    for look in saved {
+                        looked
+                            .entry((look.repo, look.path))
+                            .or_insert(look.fingerprint);
+                    }
+                    rebuild_layer_looks(state, &session);
+                }
+                Err(error) => state.fetch.entry(session).or_default().error = Some(error),
+            },
+            ReviewAction::LooksSaved { session, result } => {
+                // The tick stays in memory; the person sees why it may not
+                // be there next time.
+                if let Err(error) = result {
+                    state.fetch.entry(session).or_default().error = Some(error);
                 }
             }
             ReviewAction::Reviewed { session, result } => match result {
@@ -1582,17 +1679,23 @@ impl Reducer for Review {
                     state.push_menu = false;
                     state.repo_picker = None;
                 }
+                // D852: the host keeps the looks; read them once per session.
+                let read_looks = if state.looks_read.contains(&session) {
+                    Effect::none()
+                } else {
+                    self.read_looks(&session)
+                };
                 // Opening again while its read is in flight asks for
                 // nothing new: the files may not have changed since it
                 // started, unlike a turn end or Mark reviewed.
                 if state.fetch.get(&session).is_some_and(|fetch| fetch.loading) {
-                    return prepare(state);
+                    return Effect::merge(vec![prepare(state), read_looks]);
                 }
                 // DS-76: opening the panel again keeps the diff it holds.
                 if !reopen::reads_again(same, state.fetch.get(&session), self.clock.now()) {
-                    return prepare(state);
+                    return Effect::merge(vec![prepare(state), read_looks]);
                 }
-                return Effect::merge(vec![prepare(state), self.fetch(state, &session)]);
+                return Effect::merge(vec![prepare(state), self.fetch(state, &session), read_looks]);
             }
             ReviewAction::Prepared(generation, rows) => {
                 if generation == state.generation {

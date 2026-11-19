@@ -95,6 +95,16 @@ pub enum DiffError {
         stderr: String,
     },
 
+    #[error(
+        "the saved looks of session {session} in {} can't be read ({what}); the file ticks are lost, press Looks good again to mark them. The repository is untouched",
+        repo.display()
+    )]
+    BadLooks {
+        repo: PathBuf,
+        session: String,
+        what: String,
+    },
+
     #[error("the diff spec has no repo named {repo:?}; the session's repos are {known:?}")]
     UnknownRepo { repo: String, known: Vec<String> },
 

@@ -208,6 +208,10 @@ pub enum Operation {
     FindDefaultBranch,
     /// [`Daemon::mark_reviewed`].
     MarkReviewed,
+    /// [`Daemon::looks`].
+    Looks,
+    /// [`Daemon::save_looks`].
+    SaveLooks,
     /// [`Daemon::plan_push`].
     PlanPush,
     /// [`Daemon::push`].
@@ -445,6 +449,18 @@ pub trait Daemon: Send + Sync + 'static {
     /// reviewed" starts from here (RV-6).
     fn mark_reviewed(&self, session: &SessionId) -> Reply<()> {
         let what = format!("Mark reviewed for {session}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// The files the person marked Looks good in the session (D852), as
+    /// the host kept them across restarts of the app and the daemon.
+    fn looks(&self, session: &SessionId) -> Reply<Vec<crate::model::LookedFile>> {
+        let what = format!("Looks of {session}");
+        Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
+    }
+    /// Replaces the session's looks with `looks`; empty forgets them all.
+    fn save_looks(&self, session: &SessionId, looks: Vec<crate::model::LookedFile>) -> Reply<()> {
+        let _ = looks;
+        let what = format!("Saving the looks of {session}");
         Box::pin(async move { Err(DaemonError::NotServedYet { what }) })
     }
     /// Everything there is, merged across hosts.

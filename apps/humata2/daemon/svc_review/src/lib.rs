@@ -840,6 +840,68 @@ impl pb::diff_service_server::DiffService for Review {
         Ok(Response::new(pb::ListReviewedSnapshotsResponse { snapshots }))
     }
 
+    async fn get_looks(
+        &self,
+        request: Request<pb::GetLooksRequest>,
+    ) -> Result<Response<pb::GetLooksResponse>, Status> {
+        let caller = caller_of(&request)?;
+        let request = request.into_inner();
+        let (record, session) = self.session(request.session.as_ref())?;
+        let keys = repo_keys(&self.inner, &record, &[]).await?;
+        self.require_read(&caller, &session, &keys)?;
+        let clones = clones(&record, &keys).await?;
+        let mut looks = Vec::new();
+        for key in &keys {
+            let checkout = clones.get(key).map_err(|error| diff_failed(&error))?;
+            let kept = checkout.looks(record.id.clone()).await.map_err(|error| diff_failed(&error))?;
+            looks.extend(kept.into_iter().map(|look| pb::LookedFile {
+                repo: Some(wire::repo_ref(key)),
+                path: look.path,
+                fingerprint: look.fingerprint,
+            }));
+        }
+        Ok(Response::new(pb::GetLooksResponse { looks }))
+    }
+
+    async fn save_looks(
+        &self,
+        request: Request<pb::SaveLooksRequest>,
+    ) -> Result<Response<pb::SaveLooksResponse>, Status> {
+        let caller = caller_of(&request)?;
+        let request = request.into_inner();
+        let (record, session) = self.session(request.session.as_ref())?;
+        self.require_use(&caller, Capability::UserReviewState, &session)?;
+        let keys = repo_keys(&self.inner, &record, &[]).await?;
+        let mut by_repo: BTreeMap<String, Vec<humata2_review_diff::Look>> = BTreeMap::new();
+        for look in request.looks {
+            let repo = look.repo.as_ref().ok_or_else(|| ports::missing("looks.repo"))?;
+            let asked = wire::repo_key(repo);
+            let Some(key) = keys.iter().find(|known| folder_name(known) == folder_name(&asked)).cloned() else {
+                return Err(ports::invalid_field(
+                    "looks.repo",
+                    pb::invalid_field::Problem::BadFormat,
+                    format!("{asked} isn't a repository of this session"),
+                    "send looks only for the session's own repositories, as owner/name",
+                ));
+            };
+            by_repo.entry(key).or_default().push(humata2_review_diff::Look {
+                path: look.path,
+                fingerprint: look.fingerprint,
+            });
+        }
+        let clones = clones(&record, &keys).await?;
+        // A repo with no looks in the request has its saved ones forgotten.
+        for key in &keys {
+            let checkout = clones.get(key).map_err(|error| diff_failed(&error))?;
+            let looks = by_repo.remove(key).unwrap_or_default();
+            checkout
+                .save_looks(record.id.clone(), looks)
+                .await
+                .map_err(|error| diff_failed(&error))?;
+        }
+        Ok(Response::new(pb::SaveLooksResponse {}))
+    }
+
     async fn list_bases(&self, request: Request<pb::ListBasesRequest>) -> Result<Response<pb::ListBasesResponse>, Status> {
         let caller = caller_of(&request)?;
         let request = request.into_inner();

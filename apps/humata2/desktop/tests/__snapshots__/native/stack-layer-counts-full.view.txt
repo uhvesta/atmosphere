@@ -1,0 +1,84 @@
+Complementary "Changes"
+  text "# payments-rewrite › Ledger schema migration"
+  Button "New agent tab"
+  Button "Exit full screen"
+  Button "Close panel" description="Close panel"
+  Button "Close window"
+  Button "Minimize window"
+  Button "Zoom window"
+  text "Diff"
+  #stack-header
+    text "Whole stack · 3 layers"
+  #stack-top
+    ListBox "Layers"
+      ListBoxOption "Whole stack" selected
+        #stack-row-picked
+          text "Whole stack"
+          text ""
+          Label "2 repos · 3 files"
+          #stack-row-counts-0
+            text "1 draft · 1 note"
+      ListBoxOption "Layer 3: Not committed yet"
+        #stack-row-head-1
+          text "Not committed yet"
+          text "3"
+          Label "api"
+      ListBoxOption "Layer 2: journal"
+        #stack-row-head-2
+          text "journal"
+          text "2"
+          Label "api"
+      ListBoxOption "Layer 1: codec"
+        #stack-row-head-3
+          text "codec"
+          text "1"
+          Label "api · web"
+  #changes-files
+    text "ledger"
+    Button "ledger: against main" collapsed
+      text "against"
+      text "main"
+    text "acme/ledger"
+    Button "acme/ledger: against main" collapsed
+      text "against"
+      text "main"
+    text "acme/api"
+    Button "acme/api: against main" collapsed
+      text "against"
+      text "main"
+    ListBoxOption "acme/ledger/migrations/0042_accounts.sql" selected
+      #change-file-name acme/ledger/migrations/0042_accounts.sql
+        text "0042_accounts.sql"
+      text "1"
+      #change-file-notes acme/ledger/migrations/0042_accounts.sql
+        text "1"
+      text "+41"
+      text "−0"
+      CheckBox "Not looked at"
+    ListBoxOption "acme/api/src/client.rs"
+      #change-file-name acme/api/src/client.rs
+        text "client.rs"
+      text "src/"
+      text "1"
+      text "+62"
+      text "−21"
+      CheckBox "Not looked at"
+    ListBoxOption "acme/api/src/entry.rs"
+      #change-file-name acme/api/src/entry.rs
+        text "entry.rs"
+      text "src/"
+      text "+81"
+      text "−3"
+      CheckBox "Not looked at"
+  text "0042_accounts.sql"
+  Button "Open in editor" description="Open in editor"
+  text "acme/ledger"
+  text "·"
+  text "migrations/"
+  #change-file-empty
+    text "The changed lines aren't available"
+  Button "Looks good"
+  Button "Send to claude"
+  Label "0 of 3 files looked at · 1 draft · 1 note"
+  Button "Push & PR…"
+  Button "Add repo…"

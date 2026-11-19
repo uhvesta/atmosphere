@@ -1,6 +1,6 @@
 //! The comment box and cards of a pull request review in the real window, on
 //! fakes (PR-11, PR-19, PR-23): the box offers Ask and Draft for GitHub, a
-//! note offers Make it a draft, and a question that can't reach the review
+//! note offers Send, Edit, Drop and Draft for GitHub, and a question that can't reach the review
 //! chat says so under it until dismissed.
 use super::*;
 use humata2_clients::comments::{Anchor, Author, Destination, Side};
@@ -155,31 +155,122 @@ fn draft_for_github_saves_a_pull_request_draft_and_types_nothing() {
     assert!(app.contains(&format!("doc-drop-comment-{}", held[0].id)));
 }
 
-/// PR-23: a note from the review chat offers Make it a draft, which makes it
-/// a draft for the pull request; a draft has no such button.
-#[test]
-fn make_it_a_draft_turns_a_note_into_a_pull_request_draft() {
-    let app_id = SessionId::new("ledger");
-    let mut app = reviewing();
-    let note = app.fakes.comments.seed_note(
-        &app_id,
-        Anchor {
-            repo: "api".to_owned(),
-            path: "src/client.rs".to_owned(),
-            side: Side::New,
-            first: 42,
-            last: 42,
-            quoted: Vec::new(),
-            base: None,
-            detached: false,
-            outdated: false,
-        },
+fn note_anchor() -> Anchor {
+    Anchor {
+        repo: "api".to_owned(),
+        path: "src/client.rs".to_owned(),
+        side: Side::New,
+        first: 42,
+        last: 42,
+        quoted: Vec::new(),
+        base: None,
+        detached: false,
+        outdated: false,
+    }
+}
+
+fn seeded(app: &App) -> humata2_clients::comments::Comment {
+    app.fakes.comments.seed_note(
+        &SessionId::new("ledger"),
+        note_anchor(),
         "This error loses the request id.",
         Author::Agent("claude".to_owned()),
-    );
+    )
+}
+
+/// UXSIMPLE 3-4: an agent's note is one card that offers Send, Edit and Drop.
+#[test]
+fn an_agent_note_offers_send_edit_and_drop() {
+    let mut app = App::new(fixture::design());
+    let note = seeded(&app);
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(humata2_review::ReviewAction::SelectFile {
+        repo: "api".into(),
+        path: "src/client.rs".into(),
+    }));
+    assert!(app.contains(&format!("doc-send-note-{}", note.id)));
+    assert!(app.contains(&format!("doc-edit-comment-{}", note.id)));
+    assert!(app.contains(&format!("doc-drop-comment-{}", note.id)));
+    // Outside a pull request review it cannot be drafted for GitHub.
+    assert!(!app.contains(&format!("doc-make-draft-{}", note.id)));
+}
+
+/// Send makes the note the person's own comment, sent to the session's
+/// agent, and the note is gone.
+#[test]
+fn send_turns_a_note_into_a_sent_comment() {
+    let mut app = App::new(fixture::design());
+    let note = seeded(&app);
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(humata2_review::ReviewAction::SelectFile {
+        repo: "api".into(),
+        path: "src/client.rs".into(),
+    }));
+    app.click(&format!("doc-send-note-{}", note.id));
+    let held = app.fakes.comments.comments(&SessionId::new("ledger"));
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].destination, Destination::Terminal);
+    assert_eq!(held[0].author, Author::User);
+    assert_eq!(held[0].text, note.text);
+    assert_eq!(held[0].status, humata2_clients::comments::Status::Sent);
+    assert_eq!(app.fakes.comments.typed(&SessionId::new("ledger")).len(), 1);
+    assert!(!app.contains(&format!("doc-send-note-{}", note.id)));
+}
+
+/// Edit, then Comment, on an agent note makes the edited text the person's
+/// own comment on the note's lines, sent, and leaves no note behind.
+#[test]
+fn editing_a_note_then_commenting_sends_it_as_the_persons_comment() {
+    let mut app = App::new(fixture::design());
+    let note = seeded(&app);
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(humata2_review::ReviewAction::SelectFile {
+        repo: "api".into(),
+        path: "src/client.rs".into(),
+    }));
+    app.click(&format!("doc-edit-comment-{}", note.id));
+    app.send(AppAction::Comments(CommentsAction::Typed(
+        SessionId::new("ledger"),
+        "Keep the request id in the error.".to_owned(),
+    )));
+    app.click("doc-comment-send");
+    let held = app.fakes.comments.comments(&SessionId::new("ledger"));
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].destination, Destination::Terminal);
+    assert_eq!(held[0].author, Author::User);
+    assert_eq!(held[0].text, "Keep the request id in the error.");
+    assert_eq!(held[0].anchor, note.anchor);
+    assert_eq!(held[0].status, humata2_clients::comments::Status::Sent);
+    assert!(!app.contains(&format!("doc-send-note-{}", note.id)));
+    assert!(!app.contains("doc-comment-box"));
+}
+
+/// Drop removes the note.
+#[test]
+fn drop_removes_an_agent_note() {
+    let mut app = App::new(fixture::design());
+    let note = seeded(&app);
+    app.open("ledger", Panel::Changes);
+    app.send(AppAction::Review(humata2_review::ReviewAction::SelectFile {
+        repo: "api".into(),
+        path: "src/client.rs".into(),
+    }));
+    app.click(&format!("doc-drop-comment-{}", note.id));
+    assert!(app.fakes.comments.comments(&SessionId::new("ledger")).is_empty());
+    assert!(!app.contains(&format!("doc-send-note-{}", note.id)));
+}
+
+/// PR-23: in a pull request review the note also offers Draft for GitHub,
+/// which makes it a draft for the pull request.
+#[test]
+fn draft_for_github_turns_a_note_into_a_pull_request_draft() {
+    let app_id = SessionId::new("ledger");
+    let mut app = reviewing();
+    let note = seeded(&app);
     shown(&mut app);
     let button = format!("doc-make-draft-{}", note.id);
     assert!(app.contains(&button));
+    assert!(app.contains(&format!("doc-send-note-{}", note.id)));
     app.click(&button);
     let held = app.fakes.comments.comments(&app_id);
     assert!(matches!(held[0].destination, Destination::PullRequest { .. }));

@@ -731,6 +731,7 @@ impl CodeRows {
                     look,
                     comment,
                     &self.agent,
+                    self.reviewing,
                     self.reattaching.as_ref() == Some(&comment.id),
                     &self.start,
                 )

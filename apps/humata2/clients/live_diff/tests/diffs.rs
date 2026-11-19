@@ -9,7 +9,7 @@ use std::process::{Child, Command};
 use std::time::Duration;
 
 use humata2_clients::model::{
-    Agent, DiffBase, DiffLine, DiffTargets, FileChange, LineKind, RepoBase, RepoDiff, SessionId,
+    Agent, DiffBase, DiffLine, DiffTargets, FileChange, LineKind, LookedFile, RepoBase, RepoDiff, SessionId,
     SessionOptions,
 };
 use humata2_clients::Daemon;
@@ -576,6 +576,53 @@ async fn since_i_last_reviewed_holds_only_what_changed_after_mark_reviewed() {
     assert_eq!(
         paths_against(&daemon, &session, "owner/ledger", &DiffBase::OriginMain).await,
         ["first.md", "second.md"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn looks_survive_a_restart_of_the_daemon() {
+    let mut host = Host::start().await;
+    let daemon = host.connect().await;
+    let session = host.session(&daemon, "Fix the ledger").await;
+    clone_of(&host, "ledger").await;
+    let looks = vec![
+        LookedFile {
+            repo: "owner/ledger".to_owned(),
+            path: "src/a.rs".to_owned(),
+            fingerprint: u64::MAX,
+        },
+        LookedFile {
+            repo: "owner/ledger".to_owned(),
+            path: "b.md".to_owned(),
+            fingerprint: 42,
+        },
+    ];
+    within("save looks", daemon.save_looks(&session, looks.clone()))
+        .await
+        .expect("save the looks");
+    drop(daemon);
+    if let Some(mut child) = host.child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    host.launch().await;
+    let daemon = host.connect().await;
+    let mut kept = within("read looks", daemon.looks(&session))
+        .await
+        .expect("read the looks");
+    kept.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut expected = looks;
+    expected.sort_by(|a, b| a.path.cmp(&b.path));
+    assert_eq!(kept, expected);
+
+    within("clear looks", daemon.save_looks(&session, Vec::new()))
+        .await
+        .expect("forget the looks");
+    assert!(
+        within("read looks", daemon.looks(&session))
+            .await
+            .expect("read the looks")
+            .is_empty()
     );
 }
 

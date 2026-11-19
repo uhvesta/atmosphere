@@ -22,6 +22,13 @@ service DiffService {
   // RV-30: the reviews kept per repo, for "Since review 3, Tuesday 14:02".
   rpc ListReviewedSnapshots(ListReviewedSnapshotsRequest)
       returns (ListReviewedSnapshotsResponse);
+  // D852: the files the user marked "Looks good", kept per repo in the
+  // session's clones next to the reviewed bookmark, so they survive a
+  // restart of the app and of the daemon.
+  rpc GetLooks(GetLooksRequest) returns (GetLooksResponse);
+  // User-only. Replaces every look of the session with the ones sent; an
+  // empty list forgets them all.
+  rpc SaveLooks(SaveLooksRequest) returns (SaveLooksResponse);
   // The branches one repository's changes can be compared with, read from
   // refs/remotes/origin/* as of the last fetch (nothing is fetched), with
   // the default branch first.
@@ -297,6 +304,31 @@ message MarkReviewedRequest {
   // the repos they name. Empty (the CLI): the last GetDiff's trees.
   repeated ShownTree shown_tree = 4;
 }
+
+// A file the user looked at, with the fingerprint of the diff shown then.
+// The daemon keeps the fingerprint as the client computed it.
+message LookedFile {
+  RepoRef repo = 1;
+  string path = 2;
+  fixed64 fingerprint = 3;
+}
+
+message GetLooksRequest {
+  SessionId session = 1;
+}
+
+message GetLooksResponse {
+  repeated LookedFile looks = 1;
+}
+
+message SaveLooksRequest {
+  IdempotencyKey idempotency_key = 1;
+  SessionId session = 2;
+  // Every look of the session, across its repos.
+  repeated LookedFile looks = 3;
+}
+
+message SaveLooksResponse {}
 
 message ShownTree {
   RepoRef repo = 1;

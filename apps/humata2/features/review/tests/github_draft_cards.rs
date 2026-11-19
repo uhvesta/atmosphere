@@ -160,3 +160,22 @@ fn the_drafts_for_github_are_counted_by_who_wrote_them() {
     assert_eq!(drafts.len(), 3);
     assert_eq!(drafts.iter().filter(|c| matches!(c.author, Author::Agent(_))).count(), 2);
 }
+
+#[test]
+fn sending_a_note_makes_a_sent_comment_of_the_person_and_removes_the_note() {
+    let mut rig = rig();
+    let note = rig
+        .fake
+        .seed_note(&session(), anchor(), "Read it through tx.", Author::Agent("copilot".to_owned()));
+    let comments = rig.fake.comments(&session());
+    rig.act(A::Listed(session(), Which::Open, Ok(Listing { comments, draft_count: 0 })));
+    rig.act(A::SendNote(session(), note.id.clone()));
+
+    let held = rig.fake.comments(&session());
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].author, Author::User);
+    assert_eq!(held[0].destination, Destination::Terminal);
+    assert_eq!(held[0].text, "Read it through tx.");
+    assert_eq!(held[0].status, Status::Sent);
+    assert!(rig.held().comments.iter().all(|c| c.id != note.id));
+}

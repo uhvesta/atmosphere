@@ -267,7 +267,144 @@ fn chip(look: Look, label: impl Into<SharedString>) -> Div {
 /// One comment under its line. `agent` is the command it was sent to, such
 /// as `claude`. A detached comment offers Re-attach and Drop; while it is
 /// being re-attached (`reattaching`) it says to click the line.
+///
+/// An agent's note is the one agent card (UXSIMPLE 3-4): Send to the
+/// session's agent, Edit and Drop, and in a pull request `review` also Draft
+/// for GitHub.
 pub fn card(
+    ui: &Rc<Ui>,
+    look: Look,
+    comment: &Comment,
+    agent: &str,
+    review: bool,
+    reattaching: bool,
+    start_reattach: &StartReattach,
+) -> AnyElement {
+    if is_agent_note(comment) && !comment.anchor.detached {
+        return agent_note(ui, look, comment, agent, review).into_any_element();
+    }
+    plain_card(ui, look, comment, agent, reattaching, start_reattach).into_any_element()
+}
+
+/// Whether the card is an agent's note, which has its own card.
+fn is_agent_note(comment: &Comment) -> bool {
+    humata2_review::comments::is_agent_note(comment)
+}
+
+/// The orange of a note (UXSIMPLE 3-4).
+const NOTE_ORANGE: u32 = 0xd98200;
+
+/// A small blue-text action of the note card.
+fn note_action(
+    ui: &Rc<Ui>,
+    id: String,
+    label: String,
+    action: AppAction,
+    color: u32,
+    strong: bool,
+    faded: bool,
+) -> impl IntoElement {
+    let ui = ui.clone();
+    text(label.clone())
+        .when(strong, |t| t.font_weight(FontWeight::SEMIBOLD))
+        .when(faded, |t| t.opacity(0.7))
+        .id(SharedString::from(id))
+        .role(Role::Button)
+        .aria_label(label)
+        .test_support()
+        .text_color(rgb(color))
+        .cursor_pointer()
+        .on_click(move |_, _, cx| {
+            cx.stop_propagation();
+            ui.send(action.clone(), cx);
+        })
+}
+
+/// What an agent wrote on a line, as one card (UXSIMPLE 3-4): "copilot
+/// [Note] line 88", the text, then Send to claude, Edit and Drop.
+fn agent_note(ui: &Rc<Ui>, look: Look, comment: &Comment, agent: &str, review: bool) -> impl IntoElement {
+    let id = comment.id.clone();
+    let session = comment.session.clone();
+    let dark = look.panel < 0x80_80_80;
+    let (fill, edge) = if dark { (look.fill, look.line) } else { (0xff_f6_e3, 0xf0_d4_9a) };
+    let who = match &comment.author {
+        Author::Agent(name) => name.clone(),
+        Author::User => "You".to_owned(),
+    };
+    let github = review.then(|| {
+        note_action(
+            ui,
+            format!("doc-make-draft-{id}"),
+            "Draft for GitHub".to_owned(),
+            AppAction::Comments(CommentsAction::MakeDraft(session.clone(), id.clone(), None)),
+            look.accent,
+            false,
+            false,
+        )
+    });
+    shell(look, false)
+        .id(SharedString::from(format!("doc-comment-{id}")))
+        .test_support()
+        .gap(px(0.))
+        .line_height(relative(1.4))
+        .child(
+            row()
+                .gap(px(8.))
+                .mb(px(5.))
+                .whitespace_nowrap()
+                .child(text(who).font_weight(FontWeight::SEMIBOLD).flex_shrink_0())
+                .child(
+                    text("Note")
+                        .flex_shrink_0()
+                        .px(px(5.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(rgb(edge))
+                        .bg(rgb(fill))
+                        .text_size(px(10.5))
+                        .line_height(px(12.))
+                        .text_color(rgb(if dark { 0xff_9f_0a } else { NOTE_ORANGE })),
+                )
+                .child(text(lines_label(&comment.anchor)).text_color(rgb(look.term_dim)).flex_shrink_0()),
+        )
+        .child(text(comment.text.clone()))
+        .child(
+            row()
+                .gap(px(16.))
+                .mt(px(8.))
+                .child(note_action(
+                    ui,
+                    format!("doc-send-note-{id}"),
+                    format!("Send to {agent}"),
+                    AppAction::Comments(CommentsAction::SendNote(session.clone(), id.clone())),
+                    look.accent,
+                    true,
+                    false,
+                ))
+                .child(note_action(
+                    ui,
+                    format!("doc-edit-comment-{id}"),
+                    "Edit".to_owned(),
+                    AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
+                    look.accent,
+                    false,
+                    false,
+                ))
+                .children(github)
+                .child(note_action(
+                    ui,
+                    format!("doc-drop-comment-{id}"),
+                    "Drop".to_owned(),
+                    AppAction::Comments(CommentsAction::Drop(session.clone(), id.clone())),
+                    look.accent,
+                    false,
+                    true,
+                )),
+        )
+}
+
+fn plain_card(
     ui: &Rc<Ui>,
     look: Look,
     comment: &Comment,

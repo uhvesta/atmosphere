@@ -354,6 +354,47 @@ fn review_done_by_agent_dark() {
     app.snapshot("review-done-by-agent-dark");
 }
 
+/// An agent's note on a line of client.rs, as UXSIMPLE 3-4 draws it.
+fn with_agent_note(app: &mut App) -> humata2_clients::comments::Comment {
+    use humata2_clients::comments::{Anchor, Author, Side};
+    let note = app.fakes.comments.seed_note(
+        &SessionId::new("ledger"),
+        Anchor {
+            repo: "api".to_owned(),
+            path: "src/client.rs".to_owned(),
+            side: Side::New,
+            first: 42,
+            last: 42,
+            quoted: Vec::new(),
+            base: None,
+            detached: false,
+            outdated: false,
+        },
+        "The balance is read on db, not tx, so two posts can both pass the overdraft check. Read it through tx.",
+        Author::Agent("copilot".to_owned()),
+    );
+    app.send(AppAction::Comments(humata2_review::comments::CommentsAction::Open(SessionId::new("ledger"))));
+    note
+}
+
+/// UXSIMPLE 3-4: what an agent writes on a line is one card, with Send,
+/// Edit and Drop, and the file row counts it as a note.
+#[test]
+fn review_agent_note() {
+    let mut app = changes_app();
+    let note = with_agent_note(&mut app);
+    assert!(app.contains(&format!("doc-send-note-{}", note.id)));
+    app.snapshot("review-agent-note");
+}
+
+#[test]
+fn review_agent_note_dark() {
+    let mut app = changes_app();
+    with_agent_note(&mut app);
+    app.cx.update(|cx| Theme::change(ThemeMode::Dark, None, cx));
+    app.snapshot("review-agent-note-dark");
+}
+
 /// UXSIMPLE 4-3: a file whose comments are all done folds them into one
 /// line with a green check and Show.
 #[test]
