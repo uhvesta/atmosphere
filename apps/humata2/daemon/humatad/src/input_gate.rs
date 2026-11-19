@@ -53,6 +53,13 @@ pub(crate) fn refusal(session: &str, refused: &InputRefused) -> Status {
                 "answer the folder-trust question in the Inbox, or on the session's screen, then type again. Humata never answers it for you, because answering grants the agent access to the folder. To accept it for this session only (the highlighted answer), press Enter alone with `humata session type {session} \"\"`"
             ),
         ),
+        InputRefused::Question(ScreenQuestion::Offer) => (
+            tonic::Code::FailedPrecondition,
+            format!(
+                "the agent in session {session} shows an offer of its own on its screen (such as Claude Code's \"Teach auto mode about your environment?\"), so nothing was typed: the text would have gone into that offer, and its Enter would have picked the highlighted choice"
+            ),
+            "answer or dismiss the offer in the session's terminal (Esc dismisses it), then type again. Humata never answers it for you, because its choices change the agent's settings".to_owned(),
+        ),
         InputRefused::Unreadable(source) => (
             tonic::Code::Unavailable,
             format!(

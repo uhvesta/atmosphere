@@ -200,7 +200,9 @@ impl Asks {
         let Ok(screen) = self.holders.screen_at(&tab.holder_socket).await else {
             return;
         };
-        let seen = screen_question::asked_on(&screen);
+        // D864: an offer (Claude's auto-mode tip) only stops the input
+        // gate; it holds no Needs you.
+        let seen = screen_question::asked_on(&screen).filter(|question| question.needs_you());
         let mut open = self.open.lock().await;
         let Some(question) = seen.filter(|_| !heard) else {
             // Gone from the screen: the hold ends with its entry.

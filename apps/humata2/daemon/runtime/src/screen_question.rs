@@ -12,15 +12,39 @@
 pub enum ScreenQuestion {
     /// Whether to trust the files in the session's folder.
     FolderTrust,
+    /// An offer the CLI shows on its own after a turn, such as Claude
+    /// Code's "Teach auto mode about your environment?". It takes the keys
+    /// like a question: a typed message's Enter would pick its highlighted
+    /// choice.
+    Offer,
+}
+
+impl ScreenQuestion {
+    /// Whether the question holds its session at Needs you while it shows.
+    /// An offer doesn't (D864): the agent isn't waiting on the person, so
+    /// only the input gate refuses text while it is up.
+    pub fn needs_you(self) -> bool {
+        match self {
+            Self::FolderTrust => true,
+            Self::Offer => false,
+        }
+    }
 }
 
 /// What each question says on the screen, as `plain` leaves it: Copilot CLI
-/// 1.0.113's "Confirm folder trust", as recorded in VERIFY. Codex's and
-/// Claude Code's first-run questions wait for a recorded screen (D762).
-const ASKED: &[(&str, ScreenQuestion)] = &[(
-    "Do you trust the files in this folder?",
-    ScreenQuestion::FolderTrust,
-)];
+/// 1.0.113's "Confirm folder trust", as recorded in VERIFY, and Claude Code
+/// 2.1.328's auto-mode offer, as recorded in AGENTS2's live check O1.
+/// Codex's first-run questions wait for a recorded screen (D762).
+const ASKED: &[(&str, ScreenQuestion)] = &[
+    (
+        "Do you trust the files in this folder?",
+        ScreenQuestion::FolderTrust,
+    ),
+    (
+        "Teach auto mode about your environment?",
+        ScreenQuestion::Offer,
+    ),
+];
 
 /// The question `screen` (the text the tab shows now) is asking, if any.
 pub fn asked_on(screen: &str) -> Option<ScreenQuestion> {
@@ -78,6 +102,44 @@ mod tests {
 ❯
 ──────────────────────────────────────────────────────────
  ← open sidebar · Interactive · Manual Approval · / commands";
+
+    /// Claude Code 2.1.328 after a turn, auto mode on (AGENTS2 O1), and
+    /// the same session's input once the offer is gone.
+    const CLAUDE_OFFER: &str = "\
+⏺ You picked blue, and I wrote blue to colour.txt.
+
+✻ Sautéed for 28s · done 2:12 AM
+
+────────────────────────────────────────────────────────────────
+  Teach auto mode about your environment?
+
+  Auto mode works better when it knows your environment. Takes about a minute.
+
+  ❯ 1. Yes
+    2. Not now
+    3. Don't show again
+
+  Enter to confirm · Esc to cancel
+────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)";
+
+    const CLAUDE_READY: &str = "\
+❯ /clear
+
+────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)";
+
+    #[test]
+    fn claudes_auto_mode_offer_takes_the_keys_and_its_input_box_does_not() {
+        assert_eq!(asked_on(CLAUDE_OFFER), Some(ScreenQuestion::Offer));
+        assert_eq!(asked_on(CLAUDE_READY), None);
+        assert!(!ScreenQuestion::Offer.needs_you());
+        assert!(ScreenQuestion::FolderTrust.needs_you());
+    }
 
     #[test]
     fn copilots_folder_trust_is_a_question_and_its_input_box_is_not() {

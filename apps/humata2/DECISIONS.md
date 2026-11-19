@@ -5021,3 +5021,11 @@ Golden 68 loses the inline Undo and gains the D283 strip, which is built for 0.4
 - It ships in 0.4.0 and does not hold 0.3.7. Until then native/68 differs from the golden by the strip alone.
 - Golden 68 and 69 draw the `pr-reviews` rollup green, as native does, and goldens 190 and 191 gain the session header's Back (D848).
 - **Reverse:** drop the strip view from the chat tab and re-record 68 and 69 without it.
+
+## D864
+Claude Code's auto-mode offer stops the input gate and nothing else (AGENTS2 minion, pick by Fable 5.2, 2026-11-19; amends D845, D762).
+- Live check O1 recorded Claude Code 2.1.328 drawing "Teach auto mode about your environment?" (1. Yes, 2. Not now, 3. Don't show again) after a turn, with no hook. A send typed then would go into it and its Enter would pick Yes.
+- `ScreenQuestion::Offer` holds those exact words in `runtime/src/screen_question.rs`. The input gate refuses Humata's text while it shows (FailedPrecondition: dismiss it in the terminal, then type again), and a held first message waits. Humata never answers it.
+- It holds no Needs you: `screen_ask` ignores an offer (`ScreenQuestion::needs_you`), because the agent isn't waiting on the person.
+- D845's freeze is narrowed, not lifted: a new gate pattern needs a recorded live screen and no hook, and only refuses.
+- **Reverse:** drop the `Offer` row if Claude Code fires a hook for the offer, removes it, or rewords it.

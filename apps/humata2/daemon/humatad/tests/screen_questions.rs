@@ -30,6 +30,8 @@ enum Draw {
     /// All of it at once; once it is answered, the logo goes on animating
     /// above the agent's prompt, so its output doesn't go quiet.
     WholeThenAnimating,
+    /// Claude Code 2.1.328's auto-mode offer instead of the trust box.
+    Offer,
 }
 
 /// The rows of Copilot 1.0.113's folder trust box, as VERIFY captured it,
@@ -48,6 +50,18 @@ const BOX_REST: &str = r"  '│   3. No (Esc)                                   
   '│ ↑/↓ to navigate · enter to select · esc to cancel        │' \
   '╰──────────────────────────────────────────────────────────╯'";
 
+/// The rows of Claude Code 2.1.328's auto-mode offer, as AGENTS2's live
+/// check O1 recorded it after a turn.
+const OFFER: &str = r"  '  Teach auto mode about your environment?' \
+  '' \
+  '  Auto mode works better when it knows your environment. Takes about a minute.' \
+  '' \
+  '  ❯ 1. Yes' \
+  '    2. Not now' \
+  '    3. Don'\''t show again' \
+  '' \
+  '  Enter to confirm · Esc to cancel'";
+
 /// The test agent asks Copilot 1.0.113's folder trust on its screen, drawn
 /// as `draw` says, then keeps the bytes of the line it is answered with,
 /// as hex, in `trust-answer`, and answers each line after as the other
@@ -65,6 +79,7 @@ fn agent_script(world: &World, draw: Draw) -> String {
             format!("printf '%s\\n' \\\n{BOX_TOP} \\\n{BOX_REST}\n"),
             "",
         ),
+        Draw::Offer => (String::new(), format!("printf '%s\\n' \\\n{OFFER}\n"), ""),
     };
     // Drawn on row 3 with the cursor saved and put back, so it leaves the
     // lines the agent prints alone.
@@ -331,4 +346,47 @@ async fn asks_in_its_terminal_holding_the_first_message(draw: Draw, switch_off: 
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(std::fs::read_to_string(&marker).expect("read the marker"), "sent\n", "sent more than once");
+}
+
+/// D864 (amends D845): Claude Code's auto-mode offer, drawn on its own
+/// after a turn with no hook, keeps Humata's text out: a Type is refused
+/// and the first message waits rather than its Enter picking "Yes". Once
+/// the offer is dismissed in the terminal, the message is sent once.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_offer_on_the_screen_keeps_typed_text_out_until_it_is_dismissed() {
+    let dir = folder();
+    let marker = dir.path().join("first-message-ran");
+    let fix = Fixture::starting(
+        Draw::Offer,
+        Start {
+            asks_in_terminal: false,
+            first_message: format!("run:echo sent >> '{}'", marker.display()),
+        },
+    )
+    .await;
+    let mut attach = fix.attach().await;
+    attach.wait_for("Teach auto mode").await;
+
+    let refused = fix
+        .daemon
+        .terminals()
+        .await
+        .r#type(pb::TypeRequest {
+            session: Some(fix.session.clone()),
+            text: "hello\n".to_owned(),
+            ..Default::default()
+        })
+        .await
+        .expect_err("text typed over the offer");
+    assert_eq!(refused.code(), tonic::Code::FailedPrecondition, "{refused:?}");
+    assert!(!fix.answer.exists(), "something answered the offer");
+    assert!(!marker.exists(), "the first message was sent over the offer");
+
+    attach.type_text("\r").await;
+    assert_eq!(wait_answer(&fix.answer).await, "", "the offer got more than its Enter");
+    let deadline = Instant::now() + WAIT;
+    while !marker.exists() {
+        assert!(Instant::now() < deadline, "the held first message was never sent");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
 }
