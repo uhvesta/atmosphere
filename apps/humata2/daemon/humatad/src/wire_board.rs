@@ -1,13 +1,11 @@
-//! Wiring adapter connecting `humata2_svc_board::BoardSvc` to `humatad`'s
+//! Wiring adapter connecting `humata2_svc_board::BoardSvc` to `humatad_core`'s
 //! concrete services (`Guard`, `Feed`, `Inbox`, `Forwarder`, `Tell`, `RepoSvc`,
 //! `MachineSvc`, `Files`, `TransferSvc`).
-
-#![cfg(feature = "svc_board")]
 
 use std::sync::Arc;
 
 use humata2_access::{AccessRequest, Call};
-use humata2_daemon_ports::{BoardAsk, Caller, Run, UserVia};
+use humata2_daemon_ports::{BoardAsk, Caller, Run};
 use humata2_grpc::humata::v1 as pb;
 use humata2_grpc::humata::v1::file_service_server::FileService;
 use humata2_grpc::humata::v1::machine_service_server::MachineService;
@@ -18,18 +16,20 @@ use humata2_svc_board::ports::{
     AwayCall, BoardFeed, BoardForwarder, BoardGuard, BoardInbox, Checked, HostCalls, HostFiles,
     HostMachines, HostRepos, HostTransfers, Method, OwnedItem, Row, Scope, SessionTell,
 };
+use humata2_svc_peer::ports::{PeerBoardPort, Replayed as PeerReplayed};
+use humatad_core::away::{self, Forwarder, HostLink};
+use humatad_core::events::Feed;
+use humatad_core::files::Files;
+use humatad_core::guard::{self, Guard};
+use humatad_core::inbox::Inbox;
+use humatad_core::machine_service::MachineSvc;
+use humatad_core::plugins::{BoardContext, BoardInstance, BoardPlugin as BoardPluginTrait};
+use humatad_core::repo_service::RepoSvc;
+use humatad_core::session_service::Tell;
+use humatad_core::status;
+use humatad_core::transfer_service::TransferSvc;
+use tonic::service::RoutesBuilder;
 use tonic::{Request, Response, Status};
-
-use crate::away::{self, Forwarder, HostLink};
-use crate::events::Feed;
-use crate::files::Files;
-use crate::guard::{self, Guard};
-use crate::inbox::Inbox;
-use crate::machine_service::MachineSvc;
-use crate::repo_service::RepoSvc;
-use crate::session_service::Tell;
-use crate::status;
-use crate::transfer_service::TransferSvc;
 
 // ---------------------------------------------------------------------------
 // Caller conversion (`humata2_daemon_ports::Caller` -> `crate::identity::Caller`)
@@ -98,7 +98,7 @@ impl BoardFeed for FeedAdapter {
         self.0.publish_in(
             change,
             payload,
-            crate::events::Scope {
+            humatad_core::events::Scope {
                 channel: scope.channel,
                 session: scope.session,
             },
@@ -363,7 +363,7 @@ pub(crate) fn build(
 }
 
 /// Wraps `humatad`'s host machine, file, and transfer services as [`HostCalls`].
-pub(crate) fn host_calls(
+fn host_calls(
     machines: MachineSvc,
     files: Arc<Files>,
     transfers: Arc<TransferSvc>,
@@ -372,5 +372,70 @@ pub(crate) fn host_calls(
         machines: Arc::new(MachinesAdapter(machines)),
         files: Arc::new(FilesAdapter(files)),
         transfers: Arc::new(TransfersAdapter(transfers)),
+    }
+}
+
+fn map_board_replayed(outcome: humata2_svc_board::Replayed) -> PeerReplayed {
+    match outcome {
+        humata2_svc_board::Replayed::Held => PeerReplayed::Held,
+        humata2_svc_board::Replayed::Applied => PeerReplayed::Applied,
+        humata2_svc_board::Replayed::Rejected => PeerReplayed::Rejected,
+    }
+}
+
+struct PeerBoardAdapter(Arc<humata2_svc_board::BoardSvc>);
+
+#[tonic::async_trait]
+impl PeerBoardPort for PeerBoardAdapter {
+    async fn replay_at(
+        &self,
+        machine: &str,
+        entry: &pb::JournalEntry,
+        link_up: i64,
+    ) -> PeerReplayed {
+        map_board_replayed(self.0.replay_at(machine, entry, link_up).await)
+    }
+
+    async fn forwarded(&self, machine: &str, call: pb::ForwardedCall) -> pb::ForwardedResult {
+        self.0.forwarded(machine, call).await
+    }
+}
+
+struct LiveBoard(humata2_svc_board::BoardSvc);
+
+impl BoardInstance for LiveBoard {
+    fn peer_board(&self) -> Arc<dyn PeerBoardPort> {
+        Arc::new(PeerBoardAdapter(Arc::new(self.0.clone())))
+    }
+
+    fn answer_host_calls(
+        &self,
+        machines: MachineSvc,
+        files: Arc<Files>,
+        transfers: Arc<TransferSvc>,
+    ) {
+        self.0
+            .answer_host_calls(host_calls(machines, files, transfers));
+    }
+
+    fn register(self: Box<Self>, routes: &mut RoutesBuilder) {
+        routes.add_service(pb::board_service_server::BoardServiceServer::new(self.0));
+    }
+}
+
+pub struct BoardPlugin;
+
+impl BoardPluginTrait for BoardPlugin {
+    fn build(&self, ctx: BoardContext) -> Box<dyn BoardInstance> {
+        Box::new(LiveBoard(build(
+            ctx.guard,
+            ctx.store,
+            ctx.feed,
+            ctx.inbox,
+            ctx.machine,
+            ctx.tell,
+            ctx.repos,
+            ctx.forwarder,
+        )))
     }
 }

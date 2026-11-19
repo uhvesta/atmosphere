@@ -1,8 +1,6 @@
-//! Wiring adapter connecting `humata2_svc_review` to `humatad`'s concrete
+//! Wiring adapter connecting `humata2_svc_review` to `humatad_core`'s concrete
 //! `Guard`, `Feed`, `Operations`, `SessionSvc`, `Tell`, `Starter`, and
 //! `terminal::Core` (Wiring Wave 1).
-
-#![cfg(feature = "svc_review")]
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -13,25 +11,25 @@ use humata2_daemon_ports::{Caller, UserVia};
 use humata2_grpc::humata::v1 as pb;
 use humata2_sessions::Starter;
 use humata2_store::{ChannelRecord, Store};
+use humata2_svc_peer::ports::{PeerReviewPort, Replayed as PeerReplayed};
 use humata2_svc_review::ports::{
     Checked, CommentsArrived, CommentsTarget, CommentsTyped, ReviewFeed, ReviewGuard,
     ReviewOperation, ReviewOperations, ReviewSessions, ReviewStarter, ReviewTell,
     ReviewTerminalCore, Scope,
 };
 use humata2_svc_review::{PullRequests, RecoveryState, Review, TerminalSink, UserWriteGuard};
-use tonic::Status;
-
-use crate::events::{Feed, Scope as EventScope};
-use crate::files::{UserWrite, UserWrites};
-use crate::guard::{Checked as GuardChecked, Guard};
-use crate::identity::{
-    AgentCaller as LocalAgentCaller, Caller as LocalCaller, UserVia as LocalUserVia,
+use humatad_core::events::{Feed, Scope as EventScope};
+use humatad_core::files::{UserWrite, UserWrites};
+use humatad_core::guard::{Checked as GuardChecked, Guard};
+use humatad_core::operations::{Operations, Progress, Started};
+use humatad_core::plugins::{
+    ReviewContext, ReviewDraftsPort, ReviewInstance, ReviewPlugin as ReviewPluginTrait,
 };
-use crate::operations::{Operations, Progress, Started};
-use crate::restart::OperationState;
-use crate::script_tokens::ScriptCaller as LocalScriptCaller;
-use crate::session_service::{SessionSvc, Tell};
-use crate::terminal::Core as TerminalCore;
+use humatad_core::restart::OperationState;
+use humatad_core::session_service::{SessionSvc, Tell};
+use humatad_core::terminal::Core as TerminalCore;
+use tonic::Status;
+use tonic::service::RoutesBuilder;
 
 fn to_local_caller(caller: &Caller) -> Caller {
     caller.clone()
@@ -204,7 +202,7 @@ impl ReviewStarter for StarterAdapter {
         self.0
             .store
             .put_channel(&record)
-            .map_err(|e| crate::status::store(e, machine, "create the PR reviews channel"))?;
+            .map_err(|e| humatad_core::status::store(e, machine, "create the PR reviews channel"))?;
         Ok(record)
     }
 
@@ -278,7 +276,7 @@ impl ReviewOperations for OperationsAdapter {
         _steps: Vec<String>,
         _actor: Option<pb::Actor>,
     ) -> Box<dyn ReviewOperation> {
-        let caller = LocalCaller::User(LocalUserVia::App);
+        let caller = Caller::User(UserVia::App);
         let handle = match self
             .0
             .start(&caller, kind, pb::EntityRef::default(), &[], false, None)
@@ -312,7 +310,7 @@ impl ReviewTerminalCore for TerminalCoreAdapter {
         shown_wait: Duration,
         return_pause: Duration,
     ) -> CommentsTyped {
-        let local_target = crate::terminal::CommentsTarget {
+        let local_target = humatad_core::terminal::CommentsTarget {
             tab: target.tab.clone(),
             holder: target.holder,
         };
@@ -322,7 +320,7 @@ impl ReviewTerminalCore for TerminalCoreAdapter {
         };
         let typed = self.0.type_comments(&local_target, key, paste).await;
         match typed {
-            crate::terminal::CommentsTyped::Yes => {
+            humatad_core::terminal::CommentsTyped::Yes => {
                 // The return that sends the batch goes in whether or not the
                 // paste can be watched: a session on another machine has no
                 // local screen to watch, and its paste is still only a draft
@@ -337,20 +335,20 @@ impl ReviewTerminalCore for TerminalCoreAdapter {
                 let _ = self.0.type_comments(&local_target, &ret_key, b"\r").await;
                 CommentsTyped::Typed
             }
-            crate::terminal::CommentsTyped::No(status) => CommentsTyped::NotTyped(status),
-            crate::terminal::CommentsTyped::Unknown(status) => CommentsTyped::Unknown(status),
+            humatad_core::terminal::CommentsTyped::No(status) => CommentsTyped::NotTyped(status),
+            humatad_core::terminal::CommentsTyped::Unknown(status) => CommentsTyped::Unknown(status),
         }
     }
 
     async fn comments_arrived(&self, target: &CommentsTarget, key: &str) -> CommentsArrived {
-        let local_target = crate::terminal::CommentsTarget {
+        let local_target = humatad_core::terminal::CommentsTarget {
             tab: target.tab.clone(),
             holder: target.holder,
         };
         match self.0.comments_arrived(&local_target, key).await {
-            crate::terminal::CommentsArrived::Yes => CommentsArrived::Yes,
-            crate::terminal::CommentsArrived::No => CommentsArrived::No,
-            crate::terminal::CommentsArrived::Unknown => CommentsArrived::Unknown,
+            humatad_core::terminal::CommentsArrived::Yes => CommentsArrived::Yes,
+            humatad_core::terminal::CommentsArrived::No => CommentsArrived::No,
+            humatad_core::terminal::CommentsArrived::Unknown => CommentsArrived::Unknown,
         }
     }
 }
@@ -405,10 +403,10 @@ pub(crate) fn build_pull_requests(
 
 /// The host's link to its machines, for reviews whose clones and terminal
 /// live on one of them (PR-4, PR-21).
-pub(crate) struct ReviewRemoteAdapter(pub(crate) crate::remote_work::RemoteWork);
+struct ReviewRemoteAdapter(humatad_core::remote_work::RemoteWork);
 
 impl ReviewRemoteAdapter {
-    fn relayed(&self, machine: &str) -> Result<crate::host_relay::Relayed, Status> {
+    fn relayed(&self, machine: &str) -> Result<humatad_core::host_relay::Relayed, Status> {
         self.0.relayed(machine).map_err(Status::from)
     }
 }
@@ -475,5 +473,141 @@ impl humata2_svc_review::ports::ViewJournal for ViewJournalAdapter {
                 },
             )),
         }
+    }
+}
+
+fn map_review_replayed(outcome: humata2_svc_review::Replayed) -> PeerReplayed {
+    match outcome {
+        humata2_svc_review::Replayed::Held => PeerReplayed::Held,
+        humata2_svc_review::Replayed::Applied => PeerReplayed::Applied,
+        humata2_svc_review::Replayed::Rejected => PeerReplayed::Rejected,
+    }
+}
+
+struct PeerReviewAdapter(Arc<Review>);
+
+#[tonic::async_trait]
+impl PeerReviewPort for PeerReviewAdapter {
+    async fn replay_offered(&self, machine: &str, entry: &pb::JournalEntry) -> PeerReplayed {
+        map_review_replayed(self.0.replay_offered(machine, entry).await)
+    }
+}
+
+struct DraftsAdapter(Review);
+
+impl ReviewDraftsPort for DraftsAdapter {
+    fn unsubmitted_pr_drafts(&self, session: &str) -> Result<u32, Status> {
+        self.0.unsubmitted_pr_drafts(session)
+    }
+}
+
+struct LiveReview {
+    review: Review,
+    pull_requests: PullRequests,
+}
+
+impl ReviewInstance for LiveReview {
+    fn drafts_port(&self) -> Arc<dyn ReviewDraftsPort> {
+        Arc::new(DraftsAdapter(self.review.clone()))
+    }
+
+    fn use_sessions(&self, sessions: Arc<SessionSvc>) {
+        self.pull_requests
+            .use_sessions(Arc::new(SessionsAdapter(sessions)));
+    }
+
+    fn spawn_reconcile_submits(&self) {
+        let pull_requests = self.pull_requests.clone();
+        tokio::spawn(async move { pull_requests.reconcile_submits().await });
+    }
+
+    fn peer_review(&self) -> Arc<dyn PeerReviewPort> {
+        Arc::new(PeerReviewAdapter(Arc::new(self.review.clone())))
+    }
+
+    fn register(self: Box<Self>, routes: &mut RoutesBuilder) {
+        routes
+            .add_service(pb::diff_service_server::DiffServiceServer::new(
+                self.review.clone(),
+            ))
+            .add_service(
+                pb::review_chat_service_server::ReviewChatServiceServer::new(self.review.clone()),
+            )
+            .add_service(
+                pb::pull_request_review_service_server::PullRequestReviewServiceServer::new(
+                    self.pull_requests,
+                ),
+            )
+            .add_service(pb::comment_service_server::CommentServiceServer::new(
+                self.review.clone(),
+            ))
+            .add_service(pb::view_service_server::ViewServiceServer::new(self.review));
+    }
+}
+
+pub struct ReviewPlugin;
+
+impl ReviewPluginTrait for ReviewPlugin {
+    fn build(&self, ctx: ReviewContext) -> Box<dyn ReviewInstance> {
+        let review = build_review(
+            ctx.store.clone(),
+            ctx.guard.clone(),
+            ctx.machine.clone(),
+            ctx.feed.clone(),
+            ctx.terminal_core,
+        );
+        // VW-12: a view offered on a machine reaches the host through the journal.
+        review.use_view_journal(Arc::new(ViewJournalAdapter {
+            store: ctx.store.clone(),
+            link: ctx.guard.host_link(),
+        }));
+        // BUG 42: the user's own write of a file is not the agent's change.
+        ctx.files
+            .use_user_writes(Arc::new(UserWritesAdapter(review.clone())));
+        // D138: a batch of comments the last run was still typing is settled
+        // before anyone asks.
+        // A stopped machine types nothing, so it settles them at its Start.
+        if !ctx.stopped_now {
+            let review = review.clone();
+            let operations = ctx.last_start.operations().clone();
+            // D241: each batch in doubt is named pending before the report is written.
+            let doubtful = review.note_comments(|id, kind, step, state| {
+                operations.record(id, kind, step, recovery_state(state));
+            });
+            tokio::spawn(async move {
+                review
+                    .recover_comments(
+                        |id, kind, step, state| {
+                            operations.record(id, kind, step, recovery_state(state));
+                        },
+                        doubtful,
+                    )
+                    .await;
+            });
+        }
+        let pull_requests = build_pull_requests(
+            ctx.store,
+            ctx.guard,
+            ctx.machine,
+            ctx.starter,
+            ctx.session_tell,
+            ctx.feed,
+            ctx.default_agent,
+            review.clone(),
+            ctx.operations,
+        );
+        // D286: a stopped machine asks GitHub nothing on its own; its Start
+        // (the daemon starting itself again, running) follows the reviews again.
+        // PR-4, PR-21: a review on a box runs git and types there, through the link.
+        if let Some(remote) = ctx.remote_work {
+            pull_requests.install_remote(Arc::new(ReviewRemoteAdapter(remote)));
+        }
+        if !ctx.stopped_now {
+            pull_requests.spawn_poll();
+        }
+        Box::new(LiveReview {
+            review,
+            pull_requests,
+        })
     }
 }

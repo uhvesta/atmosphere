@@ -9,47 +9,25 @@ use std::sync::{Arc, Mutex, PoisonError};
 use humata2_daemon_ports::{Caller, UserVia};
 use humata2_grpc::humata::v1 as pb;
 use humata2_svc_peer::ports::{
-    MachineWorkPort, PeerBoardPort, PeerFeedPort, PeerInboxPort, PeerOperationsPort,
-    PeerRelaysPort, PeerReviewPort, PeerUpgradeWatchPort, PolicySourcePort, Progress,
+    MachineWorkPort, PeerFeedPort, PeerInboxPort, PeerOperationsPort,
+    PeerRelaysPort, PeerUpgradeWatchPort, PolicySourcePort, Progress,
     ProgressPort, Replayed, Started,
 };
 use tokio::sync::{broadcast, mpsc, watch};
 use tonic::Status;
 
 use crate::away::PolicySource;
-#[cfg(feature = "svc_board")]
-use crate::board_service::{BoardSvc, Replayed as LocalReplayed};
 use crate::events::Feed;
 use crate::inbox::{Inbox, Relays};
 use crate::machine_service::Work;
 use crate::operations::{Operations, Progress as LocalProgress, Started as LocalStarted};
-#[cfg(feature = "svc_review")]
-use crate::review::Review;
 use crate::upgrade::items::Watch;
-
-#[cfg(feature = "svc_board")]
-fn map_board_replayed(outcome: LocalReplayed) -> Replayed {
-    match outcome {
-        LocalReplayed::Held => Replayed::Held,
-        LocalReplayed::Applied => Replayed::Applied,
-        LocalReplayed::Rejected => Replayed::Rejected,
-    }
-}
 
 fn map_inbox_replayed(outcome: humata2_svc_inbox::inbox::Replayed) -> Replayed {
     match outcome {
         humata2_svc_inbox::inbox::Replayed::Held => Replayed::Held,
         humata2_svc_inbox::inbox::Replayed::Applied => Replayed::Applied,
         humata2_svc_inbox::inbox::Replayed::Rejected => Replayed::Rejected,
-    }
-}
-
-#[cfg(feature = "svc_review")]
-fn map_review_replayed(outcome: humata2_svc_review::Replayed) -> Replayed {
-    match outcome {
-        humata2_svc_review::Replayed::Held => Replayed::Held,
-        humata2_svc_review::Replayed::Applied => Replayed::Applied,
-        humata2_svc_review::Replayed::Rejected => Replayed::Rejected,
     }
 }
 
@@ -73,22 +51,6 @@ impl PolicySourcePort for PolicySourceAdapter {
 
     fn acked(&self, machine: &str, rev: u64) {
         self.0.acked(machine, rev);
-    }
-}
-
-/// Adapts `crate::board_service::BoardSvc` to [`PeerBoardPort`].
-#[cfg(feature = "svc_board")]
-pub(crate) struct PeerBoardAdapter(pub(crate) Arc<BoardSvc>);
-
-#[cfg(feature = "svc_board")]
-#[tonic::async_trait]
-impl PeerBoardPort for PeerBoardAdapter {
-    async fn replay_at(&self, machine: &str, entry: &pb::JournalEntry, link_up: i64) -> Replayed {
-        map_board_replayed(self.0.replay_at(machine, entry, link_up).await)
-    }
-
-    async fn forwarded(&self, machine: &str, call: pb::ForwardedCall) -> pb::ForwardedResult {
-        self.0.forwarded(machine, call).await
     }
 }
 
@@ -124,18 +86,6 @@ impl PeerInboxPort for PeerInboxAdapter {
 
     fn relays(&self) -> Arc<dyn PeerRelaysPort> {
         Arc::new(PeerRelaysAdapter(self.0.relays().clone()))
-    }
-}
-
-/// Adapts `crate::review::Review` to [`PeerReviewPort`].
-#[cfg(feature = "svc_review")]
-pub(crate) struct PeerReviewAdapter(pub(crate) Arc<Review>);
-
-#[cfg(feature = "svc_review")]
-#[tonic::async_trait]
-impl PeerReviewPort for PeerReviewAdapter {
-    async fn replay_offered(&self, machine: &str, entry: &pb::JournalEntry) -> Replayed {
-        map_review_replayed(self.0.replay_offered(machine, entry).await)
     }
 }
 
@@ -301,18 +251,8 @@ pub(crate) fn policy_source(source: Arc<PolicySource>) -> Arc<dyn PolicySourcePo
     Arc::new(PolicySourceAdapter(source))
 }
 
-#[cfg(feature = "svc_board")]
-pub(crate) fn peer_board(board: Arc<BoardSvc>) -> Arc<dyn PeerBoardPort> {
-    Arc::new(PeerBoardAdapter(board))
-}
-
 pub(crate) fn peer_inbox(inbox: Arc<Inbox>) -> Arc<dyn PeerInboxPort> {
     Arc::new(PeerInboxAdapter(inbox))
-}
-
-#[cfg(feature = "svc_review")]
-pub(crate) fn peer_review(review: Arc<Review>) -> Arc<dyn PeerReviewPort> {
-    Arc::new(PeerReviewAdapter(review))
 }
 
 pub(crate) fn peer_upgrade_watch(watch: Watch) -> Arc<dyn PeerUpgradeWatchPort> {

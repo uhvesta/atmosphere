@@ -31,7 +31,7 @@ const AGENT_HOLD: Duration = Duration::from_secs(40);
 /// The policy, with the channel rules every channel starts with, and where
 /// it is checked. The Mac's reachability comes from the host link: a
 /// machine's daemon starts away until the peer link opens PeerUplink (D213).
-pub(crate) struct Guard {
+pub struct Guard {
     policy: Mutex<Policy>,
     here: MachineId,
     /// What a refusal calls machines: the host's own is "This Mac" (D755).
@@ -49,7 +49,7 @@ pub(crate) struct Guard {
 }
 
 /// What a check allows.
-pub(crate) enum Checked {
+pub enum Checked {
     Allowed,
     /// The channel's rule asks the user first.
     Ask(AccessRequest),
@@ -70,7 +70,7 @@ enum Judged {
 
 /// What an agent's board call comes to while the Mac is away (AW-7 rows 2
 /// and 3, D227): which of them the handler may carry out.
-pub(crate) enum AwayCall {
+pub enum AwayCall {
     /// A write the rules allow: it may be kept in the journal.
     Journal,
     /// A read the rules allow: it may be answered from the last copy.
@@ -102,12 +102,12 @@ impl Guard {
     }
 
     /// The machine this daemon runs on.
-    pub(crate) fn machine(&self) -> &str {
+    pub fn machine(&self) -> &str {
         self.here.as_str()
     }
 
     /// The host link this daemon's checks read, for the uplinks to open.
-    pub(crate) fn host_link(&self) -> Arc<HostLink> {
+    pub fn host_link(&self) -> Arc<HostLink> {
         Arc::clone(&self.link)
     }
 
@@ -115,7 +115,7 @@ impl Guard {
     /// that needs the Mac while it is away is refused with the mark
     /// [`Guard::held`] waits on; a handler that isn't held returns it as
     /// `host_unreachable`.
-    pub(crate) fn check(&self, caller: &Caller, call: &Call) -> Result<Checked, Status> {
+    pub fn check(&self, caller: &Caller, call: &Call) -> Result<Checked, Status> {
         match self.judge(caller, call)? {
             Judged::Done(checked) => Ok(checked),
             Judged::WaitForHost => Err(waits_for_host()),
@@ -129,7 +129,7 @@ impl Guard {
     /// the handler may carry it out. A refusal, and a call that needs the
     /// Mac itself (the Global board), is an error; unlike [`Guard::check`],
     /// a write the rules allow and a read the rules allow are not.
-    pub(crate) fn check_away(&self, caller: &Caller, call: &Call) -> Result<AwayCall, Status> {
+    pub fn check_away(&self, caller: &Caller, call: &Call) -> Result<AwayCall, Status> {
         match self.judge(caller, call)? {
             Judged::Journal => Ok(AwayCall::Journal),
             Judged::LastCopy => Ok(AwayCall::LastCopy),
@@ -271,7 +271,7 @@ impl Guard {
     /// kind `asked` is about as low-risk: a journaled write the rules now
     /// ask about is still applied then, since the user chose to let that
     /// kind through while the Mac was away (AW-9, D268).
-    pub(crate) fn lists_low_risk(&self, asked: &AccessRequest) -> bool {
+    pub fn lists_low_risk(&self, asked: &AccessRequest) -> bool {
         if asked.ahead || !asked.capability.may_be_low_risk() {
             return false;
         }
@@ -285,7 +285,7 @@ impl Guard {
     /// Checks `call`, refusing one that would need the user's approval.
     /// For calls that can't wait in the Inbox; a call that can uses
     /// [`Guard::check`] and, on `Checked::Ask`, `Inbox::defer` (D38.6).
-    pub(crate) fn require(&self, caller: &Caller, call: &Call) -> Result<(), Status> {
+    pub fn require(&self, caller: &Caller, call: &Call) -> Result<(), Status> {
         match self.check(caller, call)? {
             Checked::Allowed => Ok(()),
             Checked::Ask(request) => Err(status::needs_approval(request.capability)),
@@ -339,7 +339,7 @@ impl Guard {
 
     /// Says something else a policy copy carries changed: the approval
     /// passphrase or Contain agents.
-    pub(crate) fn policy_changed(&self) {
+    pub fn policy_changed(&self) {
         self.revision.send_modify(|revision| *revision = next_revision(*revision));
     }
 

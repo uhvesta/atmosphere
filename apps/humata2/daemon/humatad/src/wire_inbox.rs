@@ -21,8 +21,9 @@ use humata2_svc_inbox::{
 use tonic::Status;
 
 pub(crate) use humata2_svc_inbox::inbox::Replayed;
+pub use humata2_svc_inbox::Inbox;
 pub(crate) use humata2_svc_inbox::{
-    BoardAsk, Deferred, Inbox, MoveSwitchError, Registered, Relays, Run, permission,
+    BoardAsk, Deferred, MoveSwitchError, Registered, Relays, Run, permission,
 };
 
 use crate::events::{Feed, Scope};

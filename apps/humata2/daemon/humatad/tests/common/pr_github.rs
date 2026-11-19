@@ -989,7 +989,7 @@ impl Fixture {
                 Instant::now() < deadline,
                 "the agent was never told all of {fragments:?}; it was told {said:?}"
             );
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 
@@ -1036,7 +1036,7 @@ impl Fixture {
                 return comments;
             }
             assert!(Instant::now() < deadline, "the comments never got there: {comments:#?}");
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 

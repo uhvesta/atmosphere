@@ -1,105 +1,77 @@
-//! `humatad2`: Humata 2's daemon. `serve` answers the gRPC API (GRPC.md) on
-//! a Unix socket, or with `--stdio` the peer link the Mac starts over SSH;
-//! `bridge` pipes stdin and stdout to that socket, so SSH or a provider's
-//! connect command can carry a client's calls; `mcp` is the MCP server an
-//! agent starts (MCP.md), a client of that socket.
+//! Thin binary entry point for `humatad2` and all its scoped test profiles.
+//! The daemon core lives in `humatad_core` (compiled once + `_faults`); this
+//! file only parses the profile's CLI flags (keeping `--admin*` and
+//! `set_admin_mode(true)` strictly out of release binaries per D41) and injects
+//! whichever optional service plugins this profile links.
 
-mod access_service;
-#[cfg(feature = "svc_catalog")]
-pub(crate) use humata2_svc_catalog::{agent_gate, agent_service};
-#[cfg(not(feature = "svc_catalog"))]
-mod agent_gate;
-pub(crate) use humata2_daemon_runtime::agent_switches;
-mod attach;
-mod wire_away;
-pub(crate) use humata2_svc_away as away;
-#[cfg(feature = "svc_board")]
-mod wire_board;
-#[cfg(feature = "svc_board")]
-pub(crate) use humata2_svc_board as board_service;
-mod bridge;
-mod wire_transfers;
-pub(crate) use humata2_svc_transfers::{carry, carry_service, transfer_end_service, transfer_service};
-mod channel_service;
-mod cli_login;
-pub(crate) use humata2_rpc_kit::compression;
-mod contained;
-mod wire_stop_restart;
-pub(crate) use humata2_svc_stop_restart::{daemon, doctor, restart, stop};
-mod wire_desk;
-pub(crate) use humata2_svc_desk::desk_service;
-mod error;
-mod fault;
-mod events;
-mod wire_files;
-pub(crate) use humata2_svc_files as files;
-mod grant_target;
-mod guard;
-mod history_service;
-mod holder_end;
-mod holders;
-mod wire_peer;
-pub(crate) use humata2_svc_peer::{
-    host_relay, peer, peer_client, peer_link, peer_reports, peer_skills, relay, relay_auth,
-    remote_end, remote_work,
-};
-mod host_vars;
-mod identity;
-mod wire_inbox;
-pub(crate) use wire_inbox as inbox;
-pub(crate) use humata2_svc_inbox::screen_ask;
-mod wire_channels;
-mod wire_terminal;
-pub(crate) use humata2_svc_terminal::{remote_terminal, running_holders, terminal_session};
-mod input_gate;
-mod last_good;
-pub(crate) use humata2_rpc_kit::link_proof;
-pub(crate) use humata2_rpc_kit::log;
-mod login_service;
-mod wire_machines;
-pub(crate) use humata2_svc_machines::{machine_scripts, machine_service};
-mod mark_service;
 #[cfg(feature = "svc_mcp")]
 #[path = "wire_mcp.rs"]
 mod mcp;
-mod not_built;
-mod operations;
-pub(crate) use humata2_daemon_runtime::paste;
-mod provider_service;
-mod read_marks;
-pub(crate) use humata2_daemon_runtime::ready;
-mod settings_service;
-// REPOS (RL-5): the repo library and the one repo search.
-mod repo_service;
-#[cfg(feature = "svc_review")]
-mod wire_review;
-#[cfg(feature = "svc_review")]
-pub(crate) use humata2_svc_review as review;
-mod rules_kept;
-pub(crate) use humata2_daemon_runtime::screen_question;
-mod script_tokens;
-mod serve;
-mod start_message;
-mod start_ready;
-mod session_service;
-mod skills_service;
-mod status;
-mod storage;
-pub(crate) use humata2_rpc_kit::sync;
-mod terminal;
-#[cfg(test)]
-mod test_support;
-pub(crate) use humata2_daemon_runtime::terminal_uuid;
-pub(crate) use humata2_daemon_runtime::tool_path;
-mod trash_service;
-mod wire_upgrade;
-pub(crate) use humata2_svc_upgrade as upgrade;
 
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use humatad_core::error::DaemonError;
+use humatad_core::plugins::Plugins;
+use humatad_core::serve::{AdminPolicy, ServeArgs};
+use humatad_core::{bridge, fault, log, serve, status, stop, tool_path};
 
-use crate::error::DaemonError;
+#[cfg(feature = "admin")]
+#[derive(clap::Args)]
+struct ProfileServeArgs {
+    #[command(flatten)]
+    base: ServeArgs,
+    /// Test daemons only: a call with no credential acts as the user.
+    /// Builds without the `admin` feature, as releases are, lack this flag.
+    /// Never with --stdio: the peer link is the Mac's, not the user's.
+    #[arg(long, conflicts_with = "stdio")]
+    admin: bool,
+    /// Test daemons only: as --admin, but only for calls from this
+    /// process, so a test can play the app while every other process is
+    /// judged as a release daemon judges it.
+    #[arg(long, conflicts_with_all = ["stdio", "admin"])]
+    admin_pid: Option<i32>,
+    /// Test daemons only: every CLI login lasts this many seconds, not the
+    /// hours it asked for, so tests can see one expire.
+    #[arg(long, conflicts_with = "stdio")]
+    cli_login_seconds: Option<u64>,
+    /// How long every script token lasts instead of the days it asked for, so tests can see one expire.
+    #[arg(long, conflicts_with = "stdio")]
+    script_token_seconds: Option<u64>,
+}
+
+#[cfg(feature = "admin")]
+impl ProfileServeArgs {
+    fn into_parts(self) -> (ServeArgs, AdminPolicy) {
+        let admin = match (self.admin, self.admin_pid) {
+            (true, _) => Some(humatad_core::identity::Admin::Anyone),
+            (false, Some(pid)) => Some(humatad_core::identity::Admin::Process(pid)),
+            (false, None) => None,
+        };
+        (
+            self.base,
+            AdminPolicy {
+                admin,
+                cli_login_seconds: self.cli_login_seconds,
+                script_token_seconds: self.script_token_seconds,
+            },
+        )
+    }
+}
+
+#[cfg(not(feature = "admin"))]
+#[derive(clap::Args)]
+struct ProfileServeArgs {
+    #[command(flatten)]
+    base: ServeArgs,
+}
+
+#[cfg(not(feature = "admin"))]
+impl ProfileServeArgs {
+    fn into_parts(self) -> (ServeArgs, AdminPolicy) {
+        (self.base, AdminPolicy::disabled())
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "humatad2", about = "Humata 2's daemon.")]
@@ -112,7 +84,7 @@ struct Cli {
 enum Command {
     /// Serves Humata's gRPC API on a Unix socket until stopped, or with
     /// --stdio the peer link on stdin and stdout until it closes.
-    Serve(serve::ServeArgs),
+    Serve(ProfileServeArgs),
     /// Pipes stdin and stdout to the daemon's socket, starting the daemon
     /// if none answers.
     Bridge(bridge::BridgeArgs),
@@ -125,10 +97,26 @@ enum Command {
     Stop(stop::cli::StopArgs),
 }
 
-fn main() -> ExitCode {
-    if cfg!(feature = "admin") {
-        humata2_rpc_kit::admin::set_admin_mode(true);
+fn build_plugins() -> Plugins {
+    Plugins {
+        #[cfg(feature = "svc_catalog")]
+        catalog: Some(Box::new(humatad_plugin_catalog::CatalogPlugin)),
+        #[cfg(not(feature = "svc_catalog"))]
+        catalog: None,
+        #[cfg(feature = "svc_board")]
+        board: Some(Box::new(humatad_plugin_board::BoardPlugin)),
+        #[cfg(not(feature = "svc_board"))]
+        board: None,
+        #[cfg(feature = "svc_review")]
+        review: Some(Box::new(humatad_plugin_review::ReviewPlugin)),
+        #[cfg(not(feature = "svc_review"))]
+        review: None,
     }
+}
+
+fn main() -> ExitCode {
+    #[cfg(feature = "admin")]
+    humata2_rpc_kit::admin::set_admin_mode(true);
     let cli = Cli::parse();
     // Before the runtime starts any thread: this sets PATH.
     if matches!(cli.command, Command::Serve(_)) && tool_path::asked() {
@@ -143,7 +131,10 @@ fn main() -> ExitCode {
                 // Test builds with `faults`: SIGUSR2 is a power cut.
                 fault::power_cut_on_sigusr2();
                 match cli.command {
-                    Command::Serve(args) => serve::run(args).await,
+                    Command::Serve(args) => {
+                        let (base, admin_policy) = args.into_parts();
+                        serve::run(base, admin_policy, build_plugins()).await
+                    }
                     Command::Bridge(args) => bridge::run(args).await,
                     #[cfg(feature = "svc_mcp")]
                     Command::Mcp(args) => mcp::run(args).await,
@@ -160,7 +151,7 @@ fn main() -> ExitCode {
     let code = match result {
         Ok(()) => 0,
         Err(error) => {
-            crate::log::say!("humatad2: {}", status::chain(&error));
+            log::say!("humatad2: {}", status::chain(&error));
             1
         }
     };

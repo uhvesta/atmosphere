@@ -416,8 +416,7 @@ fn store_failure(status: &Status, session: &str) -> pb::Error {
 
 impl SessionSvc {
     /// Gives archive the review service, to count a review's drafts. Once.
-    #[cfg(feature = "svc_review")]
-    pub(crate) fn use_review(&self, review: crate::review::Review) {
+    pub(crate) fn use_review(&self, review: Arc<dyn crate::plugins::ReviewDraftsPort>) {
         let _ = self.review.set(review);
     }
 
@@ -456,13 +455,10 @@ impl SessionSvc {
                 None,
             )
         })?;
-        #[cfg(feature = "svc_review")]
         let unsubmitted_drafts = match (&loaded.review, self.review.get()) {
             (Some(_), Some(review)) => review.unsubmitted_pr_drafts(&id)?,
             _ => 0,
         };
-        #[cfg(not(feature = "svc_review"))]
-        let unsubmitted_drafts = 0;
         let unpushed: Vec<pb::UnpushedRepo> = works.iter().filter_map(Work::unpushed).collect();
         let choices = if unpushed.is_empty() {
             vec![pb::ArchiveChoice::Archive]

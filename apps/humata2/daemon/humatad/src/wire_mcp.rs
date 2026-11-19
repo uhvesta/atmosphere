@@ -1,8 +1,8 @@
 //! Adapter wiring `humata2_svc_mcp` into `humatad2` (`Command::Mcp`).
 #![cfg(feature = "svc_mcp")]
 
-use crate::error::DaemonError;
-use crate::serve;
+use humatad_core::error::DaemonError;
+use humatad_core::serve;
 
 pub(crate) use humata2_svc_mcp::McpArgs;
 

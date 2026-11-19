@@ -112,3 +112,37 @@ Touch-and-restore comment-only probe in `apps/humata2/daemon/humatad/src/status.
 2. **Step 2 (Option A2 prep — zero conflict with `serve.rs`/`wire_*.rs`):** Move `agent_gate` to `daemon/runtime` (drop duplicate `humatad/src/agent_gate.rs` and `EXTRACTED_NO_CATALOG_SRCS`), and introduce `ReviewDraftsPort` (1 method) in `session_service` to remove `#[cfg(feature = "svc_review")]` from `session_service`.
 3. **Step 3 (Option A2 core — after Phase 2 GO):** Split `humatad_core` + `humatad_core_faults` (`rust_library`), move `--admin*` + `set_admin_mode(true)` into thin `testonly` mains (preserving D41 on release `humatad2` and `*_release` twins), inject `BoardPlugin`/`ReviewPlugin`/`CatalogPlugin`/`Command::Mcp` from thin mains, and point `humatad2_unit_test` at `crate = ":humatad_core"`.
 4. **Step 4 (Option D — optional follow-up):** Benchmark `--@rules_rust//rust/settings:pipelined_compilation=True` on top of Step 3 and record before/after timings here.
+
+---
+
+## 6. Phase 2 Results: Before vs. After (2026-11-19)
+
+### What Landed
+1. **Option B (`BUILD.bazel` cleanup):** Deleted unused `:humatad2_test_transfers_faults`, aliased `:humatad2_test_catalog_remote` and `:humatad2_test_transfers` to `:humatad2_test_machines`, and removed dead `svc_away`/`svc_files` `crate_features`. (`fork_remote_test` remains Tier C because `an_agent_forks_itself_onto_another_machine_once_the_user_approves` invokes `humatad2 mcp`.)
+2. **Option A2 (`humatad_core` + thin plugins + thin `main.rs`):**
+   - Extracted `humatad_core` + `humatad_core_faults` (`rust_library`, `src/lib.rs`, package-private visibility) with **zero** `admin` feature and **zero** dependency on `svc_catalog`, `svc_board`, `svc_review`, or `svc_mcp`.
+   - Added narrow plugin seams (`src/plugins.rs`: `ReviewDraftsPort`, `CatalogPlugin`, `BoardPlugin`, `ReviewPlugin`) and 3 thin plugin libraries (`humatad_plugin_catalog`, `humatad_plugin_board`, `humatad_plugin_review` + `_faults` twins).
+   - Replaced all 12 daemon binaries with a thin ~120-line `src/main.rs` (`+ src/wire_mcp.rs` on the 3 MCP binaries). Release `:humatad2` and `*_release` binaries never parse `--admin*` and never call `set_admin_mode(true)` (passing `AdminPolicy::disabled()`), preserving D41.
+   - Pointed `humatad2_unit_test` at `crate = ":humatad_core"`.
+3. **Option D (`pipelined_compilation=True` — skipped globally):** Tested `--@rules_rust//rust/settings:pipelined_compilation=True` under default `--config=lint`. `//apps/humata2/daemon/humatad:all` built cleanly with it, but `gpui_kit`-dependent binaries/tests (`//apps/humata2/desktop:humata2`, `desktop:live_flows_cases`, `ui/changes:changes_unit_test`, `ui/core:core_unit_test`, etc.) fail with `error[E0463]: can't find crate for gpui_kit` under `rules_rust` pipelined compilation. Reverted `.bazelrc` and left pipelined compilation off.
+
+### Measured Before vs. After (`--jobs=6`, comment-only touch in `humatad/src/status.rs` + `svc_inbox/src/lib.rs`, `//apps/humata2/daemon/humatad:all`)
+
+| Metric | Before (`--config=fast`) | After (`--config=fast`) | Before (default lint) | After (default lint) |
+|---|---:|---:|---:|---:|
+| Total wall time | 409.0 s | **210.6 s** (-48%) | 504.5 s | **148.7 s** (-71%) |
+| Execution span | 336.0 s | **208.9 s** (-38%) | 293.4 s | **147.3 s** (-50%) |
+| Critical path | 125.9 s | 157.9 s | 128.0 s | **109.3 s** |
+| Host 113/114-file compiles | 15 | **2** (`humatad_core` + `_faults`) | 15 | **2** (`humatad_core` + `_faults`) |
+| Total 113/114-file compiles (incl. 4× cross `:tools` + 1× unit test) | 20 | **7** | 20 | **7** |
+| Full-crate compile CPU-sum | 1,613.5 s | **891.0 s** (-45%) | 1,534.3 s | **613.0 s** (-60%) |
+| Thin `humatad2*` binary links (16 bins) | *(full compiles)* | **2.6–6.6 s** each (63.8 s sum) | *(full compiles)* | **2.4–6.3 s** each (57.1 s sum) |
+| Thin plugin lib compiles (18 libs) | — | **0.5–3.8 s** each (39.2 s sum) | — | **0.4–3.6 s** each (35.8 s sum) |
+| `svc_inbox` compiles (6 variants) | 15.2 s | 20.1 s | 10.7 s | 17.9 s |
+
+### Verification (default `--config=lint` via `tools/bq/bq`)
+- `//apps/humata2/daemon/humatad:all` — **BUILT**
+- `//apps/humata2/app` (`-c opt`) — **BUILT**
+- `//apps/humata2/daemon/humatad:{humatad2_unit_test,auth_test,two_machines_test,move_cheap_test,fork_remote_test,hooks_remote_test,screen_questions_remote_test,inbox_copy_test,pr_review_remote_test}` — **9/9 PASSED**
+- `//apps/humata2/clients/live_daemon:all` — **8/8 PASSED**
+- `//apps/humata2/desktop:live_flows_test` — **PASSED**

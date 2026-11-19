@@ -642,7 +642,7 @@ pub(crate) struct Authenticate {
     admin: Option<Admin>,
 }
 
-pub(crate) use humata2_daemon_ports::Admin;
+pub use humata2_daemon_ports::Admin;
 
 impl Authenticate {
     pub(crate) fn new(

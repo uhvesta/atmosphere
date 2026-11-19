@@ -32,9 +32,9 @@ struct Kept {
 
 /// The channel and session an event belongs to, for subscriptions
 /// narrowed to some.
-pub(crate) struct Scope {
-    pub(crate) channel: String,
-    pub(crate) session: String,
+pub struct Scope {
+    pub channel: String,
+    pub session: String,
 }
 
 /// An event and where it belongs; machines belong nowhere.
@@ -52,7 +52,7 @@ impl std::ops::Deref for Published {
 }
 
 /// The change feed every service publishes to.
-pub(crate) struct Feed {
+pub struct Feed {
     kept: Mutex<Kept>,
     live: broadcast::Sender<Arc<Published>>,
     /// Turned to `true` once the daemon stops, which ends every subscription.
@@ -90,7 +90,7 @@ impl Feed {
 
     /// Adds one change to the feed, numbered after the last. `by` is who
     /// made it; unset, the daemon did (D95).
-    pub(crate) fn publish(
+    pub fn publish(
         &self,
         change: pb::Change,
         payload: pb::event::Payload,
@@ -100,7 +100,7 @@ impl Feed {
     }
 
     /// Adds one change of something in `scope`'s channel and session.
-    pub(crate) fn publish_in(
+    pub fn publish_in(
         &self,
         change: pb::Change,
         payload: pb::event::Payload,

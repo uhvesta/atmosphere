@@ -115,7 +115,7 @@ const COLS: u16 = crate::holders::START_COLS;
 const ROWS: u16 = crate::holders::START_ROWS;
 
 #[derive(Clone)]
-pub(crate) struct SessionSvc {
+pub struct SessionSvc {
     guard: Arc<Guard>,
     operations: Arc<Operations>,
     starter: Starter,
@@ -140,8 +140,7 @@ pub(crate) struct SessionSvc {
     /// REPOS (CH-21): the channel service, for the channel add of a repo it lacks; set once.
     channels: add_repo::Channels,
     /// PR-17: the review service, which knows a review's drafts; set once.
-    #[cfg(feature = "svc_review")]
-    review: Arc<std::sync::OnceLock<crate::review::Review>>,
+    review: Arc<std::sync::OnceLock<Arc<dyn crate::plugins::ReviewDraftsPort>>>,
     /// MACHINESCRIPTS (D681): the engine a move fires session triggers on; set once.
     scripts: Arc<std::sync::OnceLock<Arc<crate::machine_scripts::MachineScripts>>>,
 }
@@ -167,7 +166,7 @@ fn pr_binding(record: &humata2_store::ReviewSessionRecord) -> pb::PullRequestBin
 
 /// Puts a session as the store holds it now on the event feed.
 #[derive(Clone)]
-pub(crate) struct Tell {
+pub struct Tell {
     feed: Arc<Feed>,
     store: Arc<humata2_store::Store>,
     machine: String,
@@ -239,7 +238,7 @@ impl Tell {
     /// Reads `session` back and publishes it as GetSession would show it.
     /// A session that can't be read is not told; publishing never fails
     /// the call that changed it.
-    pub(crate) async fn session(&self, session: &str, change: pb::Change, by: Option<pb::Actor>) {
+    pub async fn session(&self, session: &str, change: pb::Change, by: Option<pb::Actor>) {
         self.session_when(session, change, by, |_| true).await;
     }
 
@@ -386,7 +385,6 @@ impl SessionSvc {
             restart: Arc::default(),
             raw_lines: rebuild::Lines::default(),
             channels: Arc::default(),
-            #[cfg(feature = "svc_review")]
             review: Arc::default(),
             scripts: Arc::default(),
             migrations,
@@ -463,7 +461,7 @@ impl SessionSvc {
 
     /// PR-6: starts a pull request review's session; its pinned clones are
     /// `Starter::start_review`'s. The caller was vetted by the review service.
-    pub(crate) async fn begin_review(
+    pub async fn begin_review(
         &self,
         caller: &Caller,
         channel: ChannelRecord,

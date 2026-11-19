@@ -865,10 +865,8 @@ pub(crate) fn new_box_machine_svc(
 
 /// Boards for a daemon built without them: nothing a machine journals as
 /// `board.` is its own, and a forwarded call has no board to run on.
-#[cfg(not(feature = "svc_board"))]
 pub(crate) struct NoBoards;
 
-#[cfg(not(feature = "svc_board"))]
 #[tonic::async_trait]
 impl humata2_svc_peer::ports::PeerBoardPort for NoBoards {
     async fn replay_at(
@@ -892,10 +890,8 @@ impl humata2_svc_peer::ports::PeerBoardPort for NoBoards {
 }
 
 /// Views for a daemon built without them.
-#[cfg(not(feature = "svc_review"))]
 pub(crate) struct NoViews;
 
-#[cfg(not(feature = "svc_review"))]
 #[tonic::async_trait]
 impl humata2_svc_peer::ports::PeerReviewPort for NoViews {
     async fn replay_offered(

@@ -23,7 +23,7 @@ set -eu
 cd "$(dirname "$0")/../../../.."
 export PATH="$PWD/.tools/bin:$PATH"
 slow="apps/humata2/tools/tests/slow.txt"
-flags="--keep_going --test_output=errors"
+flags="--keep_going --test_output=errors --skip_incompatible_explicit_targets"
 
 if [ "${1:-}" = "--full" ]; then
     bazel build --keep_going //apps/humata2/...
@@ -99,7 +99,7 @@ if [ ! -s "$tmp/run" ]; then
 fi
 echo "presubmit: $(wc -l < "$tmp/run" | tr -d ' ') target(s)" >&2
 # shellcheck disable=SC2046
-bazel build --keep_going $(cat "$tmp/run")
+bazel build --keep_going --skip_incompatible_explicit_targets $(cat "$tmp/run")
 if [ -z "$case_name" ]; then
     # shellcheck disable=SC2046
     exec bazel test $flags $(cat "$tmp/run")

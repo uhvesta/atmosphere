@@ -21,8 +21,6 @@ use tonic::transport::Server;
 use tower::util::MapRequestLayer;
 
 use crate::access_service::Access;
-#[cfg(feature = "svc_board")]
-use crate::board_service::BoardSvc;
 use crate::channel_service::ChannelSvc;
 use crate::cli_login::{CliAuth, CliLogins};
 use crate::carry::Carry;
@@ -74,15 +72,31 @@ const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 const DECODE_MAX_BYTES: usize = PASTE_MAX_BYTES + (1 << 20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub(crate) enum Role {
+pub enum Role {
     /// The Mac: the source of truth.
     Host,
     /// Any other machine.
     Machine,
 }
 
+/// Admin-only overrides passed by testonly daemon binaries (`humatad2_admin`,
+/// `humatad2_faults`, `humatad2_test_*`). Release binaries always pass
+/// [`AdminPolicy::disabled`], preserving D41.
+#[derive(Clone, Debug, Default)]
+pub struct AdminPolicy {
+    pub admin: Option<identity::Admin>,
+    pub cli_login_seconds: Option<u64>,
+    pub script_token_seconds: Option<u64>,
+}
+
+impl AdminPolicy {
+    pub fn disabled() -> Self {
+        Self::default()
+    }
+}
+
 #[derive(clap::Args)]
-pub(crate) struct ServeArgs {
+pub struct ServeArgs {
     /// The socket to serve on, made 0600 in a folder only you can open.
     /// Default: ~/.humata2/humatad.sock. With --stdio, the machine's daemon
     /// socket the link relays the host's calls to (D139, D146).
@@ -146,27 +160,6 @@ pub(crate) struct ServeArgs {
     /// they started is ready. Not for people.
     #[arg(long, hide = true, conflicts_with = "stdio", value_parser = clap::value_parser!(i32).range(3..))]
     ready_fd: Option<i32>,
-    /// Test daemons only: a call with no credential acts as the user.
-    /// Builds without the `admin` feature, as releases are, lack this flag.
-    /// Never with --stdio: the peer link is the Mac's, not the user's.
-    #[cfg(feature = "admin")]
-    #[arg(long, conflicts_with = "stdio")]
-    admin: bool,
-    /// Test daemons only: as --admin, but only for calls from this
-    /// process, so a test can play the app while every other process is
-    /// judged as a release daemon judges it.
-    #[cfg(feature = "admin")]
-    #[arg(long, conflicts_with_all = ["stdio", "admin"])]
-    admin_pid: Option<i32>,
-    /// Test daemons only: every CLI login lasts this many seconds, not the
-    /// hours it asked for, so tests can see one expire.
-    #[cfg(feature = "admin")]
-    #[arg(long, conflicts_with = "stdio")]
-    cli_login_seconds: Option<u64>,
-    /// How long every script token lasts instead of the days it asked for, so tests can see one expire.
-    #[cfg(feature = "admin")]
-    #[arg(long, conflicts_with = "stdio")]
-    script_token_seconds: Option<u64>,
     /// The folder every channel's folder is made in (FC-1). Default:
     /// Humata inside --root.
     #[arg(long)]
@@ -191,11 +184,15 @@ fn home_folder() -> Result<PathBuf, DaemonError> {
         .ok_or(DaemonError::NoHome)
 }
 
-pub(crate) fn default_socket() -> Result<PathBuf, DaemonError> {
+pub fn default_socket() -> Result<PathBuf, DaemonError> {
     Ok(home_folder()?.join("humatad.sock"))
 }
 
-pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
+pub async fn run(
+    args: ServeArgs,
+    admin_policy: AdminPolicy,
+    plugins: crate::plugins::Plugins,
+) -> Result<(), DaemonError> {
     // Owning the pipe from the start closes it on any way out, which tells
     // the starter this one won't listen (D398).
     let ready = args
@@ -372,37 +369,32 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         &store,
         &machine,
     )?);
-    #[cfg(feature = "admin")]
-    let login_lifetime = args.cli_login_seconds.map(std::time::Duration::from_secs);
-    #[cfg(not(feature = "admin"))]
-    let login_lifetime = None;
+    let login_lifetime = admin_policy
+        .cli_login_seconds
+        .map(std::time::Duration::from_secs);
     let logins = Arc::new(CliLogins::new(Box::new(Kernel), login_lifetime));
-    #[cfg(feature = "admin")]
-    let script_lifetime = args.script_token_seconds.map(std::time::Duration::from_secs);
-    #[cfg(not(feature = "admin"))]
-    let script_lifetime = None;
+    let script_lifetime = admin_policy
+        .script_token_seconds
+        .map(std::time::Duration::from_secs);
     let scripts = Arc::new(
         crate::script_tokens::ScriptTokens::load(store.clone(), script_lifetime)
             .map_err(|source| DaemonError::ScriptTokens { source })?,
     );
-    #[cfg(feature = "admin")]
-    let admin = match (args.admin, args.admin_pid) {
-        (true, _) => {
+    let admin = match admin_policy.admin {
+        Some(identity::Admin::Anyone) => {
             crate::log::say!(
                 "humatad2: warning: admin mode: a call with no credential acts as the user. This is a test daemon; don't use it as your real one"
             );
             Some(identity::Admin::Anyone)
         }
-        (false, Some(pid)) => {
+        Some(identity::Admin::Process(pid)) => {
             crate::log::say!(
                 "humatad2: warning: admin mode: a call with no credential from process {pid} acts as the user. This is a test daemon; don't use it as your real one"
             );
             Some(identity::Admin::Process(pid))
         }
-        (false, None) => None,
+        None => None,
     };
-    #[cfg(not(feature = "admin"))]
-    let admin = None;
     let authenticate = Authenticate::new(
         identities.clone(),
         logins.clone(),
@@ -534,14 +526,15 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         None => agents,
     };
     // ST-1: AgentService lists these kinds; the built-in list when no agents file was given.
-    #[cfg(feature = "svc_catalog")]
-    let agent_service = crate::agent_service::AgentSvc::new(agents.clone(), args.agents.is_none());
     // D782: a write to agents.toml reaches every linked machine, once the
     // machines are served (below).
-    #[cfg(feature = "svc_catalog")]
-    let agents_changed = agent_service.on_change();
-    #[cfg(not(feature = "svc_catalog"))]
-    let agents_changed = crate::agent_switches::OnChange::default();
+    let (agents_changed, register_catalog) = match plugins.catalog {
+        Some(plugin) => {
+            let (changed, register) = plugin.build(agents.clone(), args.agents.is_none());
+            (changed, Some(register))
+        }
+        None => (crate::agent_switches::OnChange::default(), None),
+    };
     // D782's upgrade: D199's one "ask in the agent" switch becomes every
     // kind's own `asks_in_inbox`, once.
     if let Err(error) = crate::inbox::permission::move_global_switch(&store, &agents) {
@@ -853,46 +846,25 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             transfers.recover();
         }
     });
-    #[cfg(feature = "svc_review")]
-    let review = crate::wire_review::build_review(
-        store.clone(),
-        guard.clone(),
-        machine.clone(),
-        feed.clone(),
-        terminals.core(),
-    );
-    // VW-12: a view offered on a machine reaches the host through the journal.
-    #[cfg(feature = "svc_review")]
-    review.use_view_journal(Arc::new(crate::wire_review::ViewJournalAdapter {
-        store: store.clone(),
-        link: guard.host_link(),
-    }));
-    // BUG 42: the user's own write of a file is not the agent's change.
-    #[cfg(feature = "svc_review")]
-    files.use_user_writes(Arc::new(crate::wire_review::UserWritesAdapter(review.clone())));
+    let operations = Arc::new(Operations::new(feed.clone()));
+    let review_plugin = plugins.review.map(|plugin| {
+        plugin.build(crate::plugins::ReviewContext {
+            store: store.clone(),
+            guard: guard.clone(),
+            machine: machine.clone(),
+            feed: feed.clone(),
+            terminal_core: terminals.core(),
+            files: files.clone(),
+            stopped_now,
+            last_start: last_start.clone(),
+            starter: starter.clone(),
+            session_tell: session_tell.clone(),
+            default_agent: args.default_agent.clone(),
+            operations: operations.clone(),
+            remote_work: remote_work.clone(),
+        })
+    });
     files.use_changes(file_changes);
-    // D138: a batch of comments the last run was still typing is settled
-    // before anyone asks.
-    // A stopped machine types nothing, so it settles them at its Start.
-    #[cfg(feature = "svc_review")]
-    if !stopped_now {
-        let review = review.clone();
-        let operations = last_start.operations().clone();
-        // D241: each batch in doubt is named pending before the report is written.
-        let doubtful = review.note_comments(|id, kind, step, state| {
-            operations.record(id, kind, step, crate::wire_review::recovery_state(state));
-        });
-        tokio::spawn(async move {
-            review
-                .recover_comments(
-                    |id, kind, step, state| {
-                        operations.record(id, kind, step, crate::wire_review::recovery_state(state));
-                    },
-                    doubtful,
-                )
-                .await;
-        });
-    }
     let access = Access::new(
         guard.clone(),
         feed.clone(),
@@ -926,30 +898,6 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         history_agents,
         agent_home(std::env::var_os("HOME"), &home),
     ));
-    let operations = Arc::new(Operations::new(feed.clone()));
-    #[cfg(feature = "svc_review")]
-    let pull_requests = crate::wire_review::build_pull_requests(
-        store.clone(),
-        guard.clone(),
-        machine.clone(),
-        starter.clone(),
-        session_tell.clone(),
-        feed.clone(),
-        args.default_agent.clone(),
-        review.clone(),
-        operations.clone(),
-    );
-    // D286: a stopped machine asks GitHub nothing on its own; its Start
-    // (the daemon starting itself again, running) follows the reviews again.
-    // PR-4, PR-21: a review on a box runs git and types there, through the link.
-    #[cfg(feature = "svc_review")]
-    if let Some(remote) = &remote_work {
-        pull_requests.install_remote(Arc::new(crate::wire_review::ReviewRemoteAdapter(remote.clone())));
-    }
-    #[cfg(feature = "svc_review")]
-    if !stopped_now {
-        pull_requests.spawn_poll();
-    }
     let channel_svc = ChannelSvc::new(
         guard.clone(),
         operations.clone(),
@@ -973,18 +921,19 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // D194: a delete a restart cut short is finished once the start is done.
     channel_svc.recover_deletes_after(channel_bin, last_start.clone());
     // D227: on a machine, the agents' board calls go to the host while its Uplink is open.
-    #[cfg(feature = "svc_board")]
-    let board_svc = crate::wire_board::build(
-        guard.clone(),
-        store.clone(),
-        feed.clone(),
-        inbox.clone(),
-        machine.clone(),
-        Some(session_tell.clone()),
-        // REPOS (RL-12, D568): a machine's agents search the host's library.
-        Some(repos.clone()),
-        Some(uplinks.forwarder()),
-    );
+    let board_plugin = plugins.board.map(|plugin| {
+        plugin.build(crate::plugins::BoardContext {
+            guard: guard.clone(),
+            store: store.clone(),
+            feed: feed.clone(),
+            inbox: inbox.clone(),
+            machine: machine.clone(),
+            tell: Some(session_tell.clone()),
+            // REPOS (RL-12, D568): a machine's agents search the host's library.
+            repos: Some(repos.clone()),
+            forwarder: Some(uplinks.forwarder()),
+        })
+    });
     // REPOS (RL-12, D568): on a machine, its RepoService sends up the Uplink.
     let repo_forwarder = uplinks.forwarder();
     // DK-14, D182: the Desk's sessions, beside the session service.
@@ -1045,19 +994,15 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     session_svc.use_channels(channel_svc.clone());
     let _ = remote_terminal_sessions.set(session_svc.clone());
     // PR-17: Archive names a review's unsubmitted drafts.
-    #[cfg(feature = "svc_review")]
-    session_svc.use_review(review.clone());
-    #[cfg(feature = "svc_review")]
-    pull_requests.use_sessions(Arc::new(crate::wire_review::SessionsAdapter(Arc::new(
-        session_svc.clone(),
-    ))));
     // D287: a submit cut short is settled against GitHub before anyone
     // posts again. A stopped machine asks GitHub nothing; its records stay
     // until the next start.
-    #[cfg(feature = "svc_review")]
-    if !stopped_now {
-        let pull_requests = pull_requests.clone();
-        tokio::spawn(async move { pull_requests.reconcile_submits().await });
+    if let Some(review) = &review_plugin {
+        session_svc.use_review(review.drafts_port());
+        review.use_sessions(Arc::new(session_svc.clone()));
+        if !stopped_now {
+            review.spawn_reconcile_submits();
+        }
     }
     // SL-4: a rebuilt session's conversation comes from the host's mirror.
     {
@@ -1116,16 +1061,14 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             )));
             // Each link replays its machine's journal and hears the host's policy;
             // set before any link starts, so the first dial has all of it.
-            #[cfg(feature = "svc_board")]
-            let boards = crate::wire_peer::peer_board(Arc::new(board_svc.clone()));
-            #[cfg(not(feature = "svc_board"))]
-            let boards: Arc<dyn humata2_svc_peer::ports::PeerBoardPort> =
-                Arc::new(crate::wire_machines::NoBoards);
-            #[cfg(feature = "svc_review")]
-            let views = crate::wire_peer::peer_review(Arc::new(review.clone()));
-            #[cfg(not(feature = "svc_review"))]
-            let views: Arc<dyn humata2_svc_peer::ports::PeerReviewPort> =
-                Arc::new(crate::wire_machines::NoViews);
+            let boards: Arc<dyn humata2_svc_peer::ports::PeerBoardPort> = match &board_plugin {
+                Some(board) => board.peer_board(),
+                None => Arc::new(crate::wire_machines::NoBoards),
+            };
+            let views: Arc<dyn humata2_svc_peer::ports::PeerReviewPort> = match &review_plugin {
+                Some(review) => review.peer_review(),
+                None => Arc::new(crate::wire_machines::NoViews),
+            };
             let _ = work.peer_dial.set(Arc::new(crate::wire_machines::PeerDialAdapter::new(
                 &work,
                 host_reports.clone(),
@@ -1257,14 +1200,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         // Sessions already wired via new_machine_svc OnceLock.
     }
     match &machines {
-        #[cfg(feature = "svc_board")]
-        Some((machine_svc, _, _)) => board_svc.answer_host_calls(crate::wire_board::host_calls(
-            machine_svc.clone(),
-            files.clone(),
-            transfers.clone(),
-        )),
-        #[cfg(not(feature = "svc_board"))]
-        Some(_) => {}
+        Some((machine_svc, _, _)) => {
+            if let Some(board) = &board_plugin {
+                board.answer_host_calls(machine_svc.clone(), files.clone(), transfers.clone());
+            }
+        }
         None if role == pb::DaemonRole::Machine => {
             let host = Arc::new(crate::wire_away::HostAsk(uplinks.forwarder()));
             files.ask_host_for_agents(host.clone());
@@ -1291,12 +1231,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // now, so the restart report that follows names each one.
     last_start.recoveries_noted();
     let (leaving, cut_streams) = crate::stop::streams::Leaving::signal();
-    let router = Server::builder()
-        .layer(MapRequestLayer::new(identity::mark_open))
-        .layer(InterceptorLayer::new(authenticate))
-        // UP-1, D281, D290 m: a CLI at another release than this daemon's is refused.
-        .layer(crate::upgrade::gate::CliRelease::new(release.clone(), &machine).named(&names.of(&machine)))
-        .layer(cut_streams)
+    let mut routes = tonic::service::Routes::builder();
+    routes
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(
             crate::wire_stop_restart::new_daemon(machine.clone(), role)
                 .offering(compression)
@@ -1337,35 +1273,49 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         ))
         .add_service(pb::session_carry_service_server::SessionCarryServiceServer::from_arc(carry_svc))
         .add_service(desk);
-    #[cfg(feature = "svc_review")]
-    let router = router
-        .add_service(pb::diff_service_server::DiffServiceServer::new(
-            review.clone(),
-        ))
-        .add_service(pb::review_chat_service_server::ReviewChatServiceServer::new(review.clone()))
-        .add_service(pb::pull_request_review_service_server::PullRequestReviewServiceServer::new(pull_requests))
-        .add_service(pb::comment_service_server::CommentServiceServer::new(
-            review.clone(),
-        ))
-        .add_service(pb::view_service_server::ViewServiceServer::new(review));
-    #[cfg(feature = "svc_board")]
-    let router = router.add_service(pb::board_service_server::BoardServiceServer::new(board_svc));
-    let router = router
+    if let Some(review) = review_plugin {
+        review.register(&mut routes);
+    }
+    if let Some(board) = board_plugin {
+        board.register(&mut routes);
+    }
+    routes
         .add_service(pb::cli_auth_service_server::CliAuthServiceServer::new(
             CliAuth {
                 logins,
                 scripts: scripts.clone(),
                 store,
-                machine,
+                machine: machine.clone(),
                 role,
                 host: login_host_link,
             },
-        ));
-    let router = router
+        ))
         .add_service(pb::operation_service_server::OperationServiceServer::new(
             OperationSvc::new(operations),
         ))
-        .add_service(pb::event_service_server::EventServiceServer::new(events));
+        .add_service(pb::event_service_server::EventServiceServer::new(events))
+        .add_service(pb::settings_service_server::SettingsServiceServer::new(settings))
+        .add_service(pb::mark_service_server::MarkServiceServer::new(marks));
+    // REPOS (RL-5): the library is the host's. A machine's agents search it
+    // there through the Uplink, and the rest is the host's alone (RL-12, D568).
+    if role == pb::DaemonRole::Host {
+        routes.add_service(pb::repo_service_server::RepoServiceServer::new(repos));
+    } else {
+        routes.add_service(pb::repo_service_server::RepoServiceServer::new(
+            crate::repo_service::OnMachine::new(repo_forwarder),
+        ));
+    }
+    routes.add_service(pb::history_service_server::HistoryServiceServer::from_arc(history));
+    if let Some(register) = register_catalog {
+        register(&mut routes);
+    }
+    let router = Server::builder()
+        .layer(MapRequestLayer::new(identity::mark_open))
+        .layer(InterceptorLayer::new(authenticate))
+        // UP-1, D281, D290 m: a CLI at another release than this daemon's is refused.
+        .layer(crate::upgrade::gate::CliRelease::new(release.clone(), &machine).named(&names.of(&machine)))
+        .layer(cut_streams)
+        .add_routes(routes.routes());
     // Only the host keeps machines; a machine's daemon forwards these to
     // it once the link does (GRPC.md §4).
     let router = match machines {
@@ -1383,20 +1333,6 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             pb::machine_service_server::MachineServiceServer::new(box_machines),
         )),
     };
-    let router = router.add_service(pb::settings_service_server::SettingsServiceServer::new(settings));
-    let router = router.add_service(pb::mark_service_server::MarkServiceServer::new(marks));
-    // REPOS (RL-5): the library is the host's. A machine's agents search it
-    // there through the Uplink, and the rest is the host's alone (RL-12, D568).
-    let router = if role == pb::DaemonRole::Host {
-        router.add_service(pb::repo_service_server::RepoServiceServer::new(repos))
-    } else {
-        router.add_service(pb::repo_service_server::RepoServiceServer::new(
-            crate::repo_service::OnMachine::new(repo_forwarder),
-        ))
-    };
-    let router = router.add_service(pb::history_service_server::HistoryServiceServer::from_arc(history));
-    #[cfg(feature = "svc_catalog")]
-    let router = router.add_service(pb::agent_service_server::AgentServiceServer::new(agent_service));
     let router = not_built::register(router);
 
     let stop = {
@@ -2232,7 +2168,11 @@ mod tests {
             ] as [std::ffi::OsString; 11])
             .unwrap()
             .serve;
-            let served = tokio::spawn(run(args));
+            let served = tokio::spawn(run(
+                args,
+                crate::serve::AdminPolicy::disabled(),
+                crate::plugins::Plugins::default(),
+            ));
             let mut ready = pipe::Receiver::from_owned_fd(OwnedFd::from(ready)).unwrap();
             assert_eq!(
                 ready.read(&mut [0; 1]).await.unwrap(),

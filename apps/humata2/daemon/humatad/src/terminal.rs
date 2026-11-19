@@ -289,7 +289,7 @@ pub(crate) struct Terminals {
     core: Arc<Core>,
 }
 
-pub(crate) struct Core {
+pub struct Core {
     config: TerminalsConfig,
     remembered: Mutex<Remembered>,
     writers: Arc<Writers>,
@@ -388,7 +388,7 @@ fn split_submit(text: &[u8]) -> (&[u8], bool) {
 }
 
 /// What became of typing a batch of review comments (D138).
-pub(crate) enum CommentsTyped {
+pub enum CommentsTyped {
     /// All of it reached the tab's shell.
     Yes,
     /// None of it was typed.
@@ -399,16 +399,16 @@ pub(crate) enum CommentsTyped {
 
 /// Where a session's comment batches are typed: the tab, and the holder
 /// process that held its terminal when the batch was begun.
-pub(crate) struct CommentsTarget {
-    pub(crate) tab: String,
+pub struct CommentsTarget {
+    pub tab: String,
     /// The holder's instance (`humata2_holder::KeyState`), or 0 when it
     /// can't confirm what it typed: an older holder, or one that didn't
     /// answer.
-    pub(crate) holder: u64,
+    pub holder: u64,
 }
 
 /// Whether a batch reached its tab, after a restart.
-pub(crate) enum CommentsArrived {
+pub enum CommentsArrived {
     Yes,
     No,
     Unknown,
@@ -418,7 +418,7 @@ impl Core {
     /// The tab a session's typing goes to (its agent's, else its first
     /// shell) and its holder's instance, for the review's comment batches
     /// (SM-9). A holder that can't answer in time gives `holder: 0`.
-    pub(crate) async fn comments_target(&self, session: &str) -> Result<CommentsTarget, Status> {
+    pub async fn comments_target(&self, session: &str) -> Result<CommentsTarget, Status> {
         // MV-4: a session that moved to another machine has its tabs there;
         // its batches go to its agent's tab through the relay.
         if let Some(record) = self.find_session(session).await?
@@ -452,7 +452,7 @@ impl Core {
     /// BUG-T1: once the agent in the comments' tab on this machine reads
     /// keys itself, watches its output for the comments about to be typed.
     /// `None` for a tab elsewhere or one that can't be watched.
-    pub(crate) async fn watch_for_comments(
+    pub async fn watch_for_comments(
         &self,
         target: &CommentsTarget,
     ) -> Result<Option<humata2_holder::OutputWatch>, Status> {
@@ -462,7 +462,7 @@ impl Core {
         }
     }
 
-    pub(crate) async fn type_comments(
+    pub async fn type_comments(
         &self,
         target: &CommentsTarget,
         key: &str,
@@ -532,7 +532,7 @@ impl Core {
     /// begun can say it never arrived: a holder started again for the same
     /// tab has an empty memory, so its "no" proves nothing and reads as
     /// `Unknown`.
-    pub(crate) async fn comments_arrived(&self, target: &CommentsTarget, key: &str) -> CommentsArrived {
+    pub async fn comments_arrived(&self, target: &CommentsTarget, key: &str) -> CommentsArrived {
         if target.holder == 0 {
             return CommentsArrived::Unknown;
         }

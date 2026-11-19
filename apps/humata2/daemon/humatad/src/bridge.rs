@@ -29,7 +29,7 @@ const GRACE: Duration = Duration::from_millis(500);
 const START_WAIT: Duration = Duration::from_secs(10);
 
 #[derive(clap::Args)]
-pub(crate) struct BridgeArgs {
+pub struct BridgeArgs {
     /// The daemon's socket. Default: ~/.humata2/humatad.sock.
     #[arg(long)]
     socket: Option<PathBuf>,
@@ -40,7 +40,7 @@ pub(crate) struct BridgeArgs {
     sync: Option<String>,
 }
 
-pub(crate) async fn run(args: BridgeArgs) -> Result<(), DaemonError> {
+pub async fn run(args: BridgeArgs) -> Result<(), DaemonError> {
     let socket = match args.socket {
         Some(socket) => socket,
         None => serve::default_socket()?,

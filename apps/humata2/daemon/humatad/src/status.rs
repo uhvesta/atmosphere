@@ -110,7 +110,7 @@ pub(crate) fn missing(field: &str) -> Status {
 
 /// A bug, or a failure the person can't fix from the request. The cause
 /// goes to the daemon's log under an incident id the message names.
-pub(crate) fn internal(message: impl Into<String>, log_path: &str) -> Status {
+pub fn internal(message: impl Into<String>, log_path: &str) -> Status {
     let incident = format!("in_{}", uuid::Uuid::new_v4().simple());
     let message = message.into();
     crate::log::say!("humatad2: incident {incident}: {message}");
@@ -144,7 +144,7 @@ pub(crate) fn not_built(method: &str) -> Status {
 
 /// A store failure, said in the API's terms: a full disk is `disk_full`,
 /// a session that's gone is `not_found`, the rest are `internal`.
-pub(crate) fn store(error: StoreError, machine: &str, doing: &str) -> Status {
+pub fn store(error: StoreError, machine: &str, doing: &str) -> Status {
     if error.is_disk_full() {
         let path = match &error {
             StoreError::Write { path, .. } => path.display().to_string(),
@@ -179,7 +179,7 @@ pub(crate) fn store(error: StoreError, machine: &str, doing: &str) -> Status {
 }
 
 /// An error and its causes, on one line.
-pub(crate) fn chain(error: &dyn std::error::Error) -> String {
+pub fn chain(error: &dyn std::error::Error) -> String {
     let mut text = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {

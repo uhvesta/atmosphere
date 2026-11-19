@@ -1,0 +1,84 @@
+//! Core library for `humatad2`: compiled once (plus `_faults`) and shared by
+//! every daemon binary profile, which is a thin `main` that injects only its
+//! profile's optional plugins (`svc_catalog`, `svc_board`, `svc_review`,
+//! `svc_mcp`) and admin policy.
+
+mod access_service;
+mod agent_gate;
+pub(crate) use humata2_daemon_runtime::agent_switches;
+mod attach;
+mod wire_away;
+pub use humata2_svc_away as away;
+pub mod bridge;
+mod wire_transfers;
+pub(crate) use humata2_svc_transfers::{carry, carry_service, transfer_end_service};
+pub use humata2_svc_transfers::transfer_service;
+mod channel_service;
+mod cli_login;
+pub(crate) use humata2_rpc_kit::compression;
+mod contained;
+mod wire_stop_restart;
+pub(crate) use humata2_svc_stop_restart::{daemon, doctor};
+pub use humata2_svc_stop_restart::{restart, stop};
+mod wire_desk;
+pub(crate) use humata2_svc_desk::desk_service;
+pub mod error;
+pub mod events;
+pub mod fault;
+mod wire_files;
+pub use humata2_svc_files as files;
+mod grant_target;
+pub mod guard;
+mod history_service;
+mod holder_end;
+mod holders;
+mod wire_peer;
+pub use humata2_svc_peer::{host_relay, remote_work};
+pub(crate) use humata2_svc_peer::{
+    peer, peer_client, peer_link, peer_reports, peer_skills, relay, relay_auth, remote_end,
+};
+mod host_vars;
+pub mod identity;
+pub mod wire_inbox;
+pub use wire_inbox as inbox;
+pub(crate) use humata2_svc_inbox::screen_ask;
+mod wire_channels;
+mod wire_terminal;
+pub(crate) use humata2_svc_terminal::{remote_terminal, running_holders, terminal_session};
+mod input_gate;
+mod last_good;
+pub(crate) use humata2_rpc_kit::link_proof;
+pub use humata2_rpc_kit::log;
+mod login_service;
+mod wire_machines;
+pub(crate) use humata2_svc_machines::machine_scripts;
+pub use humata2_svc_machines::machine_service;
+mod mark_service;
+mod not_built;
+pub mod operations;
+pub(crate) use humata2_daemon_runtime::paste;
+pub mod plugins;
+mod provider_service;
+mod read_marks;
+pub(crate) use humata2_daemon_runtime::ready;
+pub mod repo_service;
+mod rules_kept;
+pub(crate) use humata2_daemon_runtime::screen_question;
+mod script_tokens;
+pub mod serve;
+pub mod session_service;
+mod settings_service;
+mod skills_service;
+mod start_message;
+mod start_ready;
+pub mod status;
+mod storage;
+pub(crate) use humata2_rpc_kit::sync;
+pub mod terminal;
+#[cfg(test)]
+mod test_support;
+pub(crate) use humata2_daemon_runtime::terminal_uuid;
+pub use humata2_daemon_runtime::tool_path;
+mod trash_service;
+mod wire_upgrade;
+pub(crate) use humata2_svc_upgrade as upgrade;

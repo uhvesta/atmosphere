@@ -125,13 +125,13 @@ struct Table {
 }
 
 /// Every operation since this daemon started.
-pub(crate) struct Operations {
+pub struct Operations {
     table: Mutex<Table>,
     feed: Arc<Feed>,
 }
 
 /// What [`Operations::start`] found.
-pub(crate) enum Started {
+pub enum Started {
     New(Progress),
     /// A call with this idempotency key already started one.
     Existing(pb::Operation),
@@ -155,7 +155,7 @@ impl Operations {
     /// for `caller`. A key already used returns that operation instead.
     /// `cancellable` says whether the work stops when asked to; work that
     /// is cancellable checks [`Progress::cancelled`] between its steps.
-    pub(crate) fn start(
+    pub fn start(
         &self,
         caller: &Caller,
         kind: pb::OperationKind,
@@ -349,7 +349,7 @@ impl Operations {
 }
 
 /// The handle the work updates its operation through.
-pub(crate) struct Progress {
+pub struct Progress {
     tracked: Arc<Tracked>,
 }
 
@@ -369,7 +369,7 @@ impl Units {
 }
 
 impl Progress {
-    pub(crate) fn operation(&self) -> pb::Operation {
+    pub fn operation(&self) -> pb::Operation {
         self.tracked.operation.borrow().clone()
     }
 
@@ -541,7 +541,7 @@ impl Progress {
         Units(self.tracked.clone())
     }
 
-    pub(crate) fn succeed(self, result: Option<pb::operation::Result>) {
+    pub fn succeed(self, result: Option<pb::operation::Result>) {
         self.change(|operation| {
             operation.state = pb::OperationState::Succeeded as i32;
             operation.cancellable = false;
@@ -561,7 +561,7 @@ impl Progress {
         });
     }
 
-    pub(crate) fn fail(self, error: pb::Error) {
+    pub fn fail(self, error: pb::Error) {
         self.change(|operation| {
             operation.state = pb::OperationState::Failed as i32;
             operation.cancellable = false;

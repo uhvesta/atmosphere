@@ -264,7 +264,7 @@ struct Shared {
 
 /// The repo library, the default scope and the one repo search.
 #[derive(Clone)]
-pub(crate) struct RepoSvc {
+pub struct RepoSvc {
     shared: Arc<Shared>,
 }
 

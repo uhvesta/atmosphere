@@ -131,10 +131,6 @@ FAULTS_DEPS = SHARED_DEPS + [
     "//apps/humata2/daemon/transfers:transfers_faults",
 ]
 
-FULL_DAEMON_DEPS = DAEMON_DEPS + ["//apps/humata2/daemon/svc_catalog"]
-
-FULL_FAULTS_DEPS = FAULTS_DEPS + ["//apps/humata2/daemon/svc_catalog:svc_catalog_faults"]
-
 EXTRACTED_SRCS = [
     "src/agent_gate.rs",
     "src/agent_service.rs",
@@ -151,13 +147,17 @@ EXTRACTED_SRCS = [
     "src/tool_path.rs",
 ]
 
-EXTRACTED_NO_CATALOG_SRCS = [s for s in EXTRACTED_SRCS if s != "src/agent_gate.rs"]
+CORE_EXCLUDED_SRCS = [s for s in EXTRACTED_SRCS if s != "src/agent_gate.rs"] + [
+    "src/main.rs",
+    "src/plugin_catalog.rs",
+    "src/wire_board.rs",
+    "src/wire_mcp.rs",
+    "src/wire_review.rs",
+]
 
 ALL_SVC_FEATURES = [
-    "svc_away",
     "svc_board",
     "svc_catalog",
-    "svc_files",
     "svc_mcp",
     "svc_review",
 ]
@@ -169,20 +169,190 @@ APP_IDENTITY = {
     "HUMATA2_TEAM_ID": TEAM_ID,
 }
 
+# Shared daemon core: compiled once (plus `_faults`) and linked by every thin
+# daemon binary profile. Depends on neither `admin` nor optional `svc_*`
+# crates, preserving D41 release security and scoped Bazel test caching.
+rust_library(
+    name = "humatad_core",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = CORE_EXCLUDED_SRCS,
+    ),
+    crate_name = "humatad_core",
+    crate_root = "src/lib.rs",
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = DAEMON_DEPS,
+)
+
+rust_library(
+    name = "humatad_core_faults",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = CORE_EXCLUDED_SRCS,
+    ),
+    crate_features = ["faults"],
+    crate_name = "humatad_core",
+    crate_root = "src/lib.rs",
+    rustc_env = APP_IDENTITY,
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = FAULTS_DEPS,
+)
+
+# Optional service plugin libraries wired above `humatad_core`.
+rust_library(
+    name = "humatad_plugin_catalog",
+    srcs = ["src/plugin_catalog.rs"],
+    crate_name = "humatad_plugin_catalog",
+    crate_root = "src/plugin_catalog.rs",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        ":grpc",
+        ":humatad_core",
+        "//apps/humata2/daemon/runtime",
+        "//apps/humata2/daemon/sessions",
+        "//apps/humata2/daemon/svc_catalog",
+    ],
+)
+
+rust_library(
+    name = "humatad_plugin_catalog_faults",
+    testonly = True,
+    srcs = ["src/plugin_catalog.rs"],
+    crate_name = "humatad_plugin_catalog",
+    crate_root = "src/plugin_catalog.rs",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        ":grpc",
+        ":humatad_core_faults",
+        "//apps/humata2/daemon/runtime:runtime_faults",
+        "//apps/humata2/daemon/sessions:sessions_faults",
+        "//apps/humata2/daemon/svc_catalog:svc_catalog_faults",
+    ],
+)
+
+rust_library(
+    name = "humatad_plugin_board",
+    srcs = ["src/wire_board.rs"],
+    crate_name = "humatad_plugin_board",
+    crate_root = "src/wire_board.rs",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        ":grpc",
+        ":humatad_core",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/store",
+        "//apps/humata2/daemon/svc_away",
+        "//apps/humata2/daemon/svc_board",
+        "//apps/humata2/daemon/svc_files",
+        "//apps/humata2/daemon/svc_machines",
+        "//apps/humata2/daemon/svc_peer",
+        "//apps/humata2/daemon/svc_transfers",
+        "@crates//:tonic",
+    ],
+)
+
+rust_library(
+    name = "humatad_plugin_board_faults",
+    testonly = True,
+    srcs = ["src/wire_board.rs"],
+    crate_name = "humatad_plugin_board",
+    crate_root = "src/wire_board.rs",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        ":grpc",
+        ":humatad_core_faults",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/store:store_faults",
+        "//apps/humata2/daemon/svc_away:svc_away_faults",
+        "//apps/humata2/daemon/svc_board:svc_board_faults",
+        "//apps/humata2/daemon/svc_files:svc_files_faults",
+        "//apps/humata2/daemon/svc_machines:svc_machines_faults",
+        "//apps/humata2/daemon/svc_peer:svc_peer_faults",
+        "//apps/humata2/daemon/svc_transfers:svc_transfers_faults",
+        "@crates//:tonic",
+    ],
+)
+
+rust_library(
+    name = "humatad_plugin_review",
+    srcs = ["src/wire_review.rs"],
+    crate_name = "humatad_plugin_review",
+    crate_root = "src/wire_review.rs",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        ":grpc",
+        ":humatad_core",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
+        "//apps/humata2/daemon/sessions",
+        "//apps/humata2/daemon/store",
+        "//apps/humata2/daemon/svc_away",
+        "//apps/humata2/daemon/svc_peer",
+        "//apps/humata2/daemon/svc_review",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:uuid",
+    ],
+)
+
+rust_library(
+    name = "humatad_plugin_review_faults",
+    testonly = True,
+    srcs = ["src/wire_review.rs"],
+    crate_name = "humatad_plugin_review",
+    crate_root = "src/wire_review.rs",
+    visibility = ["//apps/humata2/daemon/humatad:__pkg__"],
+    deps = [
+        ":grpc",
+        ":humatad_core_faults",
+        "//apps/humata2/daemon/access",
+        "//apps/humata2/daemon/ports",
+        "//apps/humata2/daemon/rpc_kit",
+        "//apps/humata2/daemon/sessions:sessions_faults",
+        "//apps/humata2/daemon/store:store_faults",
+        "//apps/humata2/daemon/svc_away:svc_away_faults",
+        "//apps/humata2/daemon/svc_peer:svc_peer_faults",
+        "//apps/humata2/daemon/svc_review:svc_review_faults",
+        "@crates//:tokio",
+        "@crates//:tonic",
+        "@crates//:uuid",
+    ],
+)
+
+THIN_MAIN_DEPS = [
+    ":humatad_core",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:clap",
+    "@crates//:tokio",
+]
+
+THIN_MAIN_FAULTS_DEPS = [
+    ":humatad_core_faults",
+    "//apps/humata2/daemon/rpc_kit",
+    "@crates//:clap",
+    "@crates//:tokio",
+]
+
 # The release daemon: a call with no credential is refused (SEC-9).
 rust_binary(
     name = "humatad2",
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
+    srcs = [
+        "src/main.rs",
+        "src/wire_mcp.rs",
+    ],
     crate_features = ALL_SVC_FEATURES,
-    rustc_env = APP_IDENTITY,
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS + [
-        "//apps/humata2/daemon/svc_board",
+    deps = THIN_MAIN_DEPS + [
+        ":humatad_plugin_board",
+        ":humatad_plugin_catalog",
+        ":humatad_plugin_review",
         "//apps/humata2/daemon/svc_mcp",
-        "//apps/humata2/daemon/svc_review",
     ],
 )
 
@@ -241,22 +411,23 @@ tools_bundle(
 rust_binary(
     name = "humatad2_admin",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
+    srcs = [
+        "src/main.rs",
+        "src/wire_mcp.rs",
+    ],
     crate_features = ["admin"] + ALL_SVC_FEATURES,
-    rustc_env = APP_IDENTITY,
+    crate_root = "src/main.rs",
     # The app client's parity suite and the app's live flows run against it too.
     visibility = [
         "//apps/humata2/cli:__pkg__",
         "//apps/humata2/clients/live:__pkg__",
         "//apps/humata2/desktop:__pkg__",
     ],
-    deps = FULL_DAEMON_DEPS + [
-        "//apps/humata2/daemon/svc_board",
+    deps = THIN_MAIN_DEPS + [
+        ":humatad_plugin_board",
+        ":humatad_plugin_catalog",
+        ":humatad_plugin_review",
         "//apps/humata2/daemon/svc_mcp",
-        "//apps/humata2/daemon/svc_review",
     ],
 )
 
@@ -267,20 +438,18 @@ rust_binary(
 rust_binary(
     name = "humatad2_faults",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
-    crate_features = [
-        "admin",
-        "faults",
-    ] + ALL_SVC_FEATURES,
-    rustc_env = APP_IDENTITY,
+    srcs = [
+        "src/main.rs",
+        "src/wire_mcp.rs",
+    ],
+    crate_features = ["admin"] + ALL_SVC_FEATURES,
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_FAULTS_DEPS + [
-        "//apps/humata2/daemon/svc_board:svc_board_faults",
+    deps = THIN_MAIN_FAULTS_DEPS + [
+        ":humatad_plugin_board_faults",
+        ":humatad_plugin_catalog_faults",
+        ":humatad_plugin_review_faults",
         "//apps/humata2/daemon/svc_mcp",
-        "//apps/humata2/daemon/svc_review:svc_review_faults",
     ],
 )
 
@@ -292,205 +461,134 @@ rust_binary(
 rust_binary(
     name = "humatad2_test_power_cut",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS,
-    ),
+    srcs = ["src/main.rs"],
     crate_features = ["admin"],
-    rustc_env = APP_IDENTITY,
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = DAEMON_DEPS,
+    deps = THIN_MAIN_DEPS,
 )
 
 rust_binary(
     name = "humatad2_test_power_cut_release",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS,
-    ),
-    rustc_env = APP_IDENTITY,
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = DAEMON_DEPS,
+    deps = THIN_MAIN_DEPS,
 )
 
 rust_binary(
     name = "humatad2_test_power_cut_faults",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS,
-    ),
-    crate_features = [
-        "admin",
-        "faults",
-    ],
-    rustc_env = APP_IDENTITY,
+    srcs = ["src/main.rs"],
+    crate_features = ["admin"],
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FAULTS_DEPS,
+    deps = THIN_MAIN_FAULTS_DEPS,
 )
 
 rust_binary(
     name = "humatad2_test_machines",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
+    srcs = ["src/main.rs"],
     crate_features = [
         "admin",
-        "svc_away",
         "svc_catalog",
     ],
-    rustc_env = APP_IDENTITY,
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS,
+    deps = THIN_MAIN_DEPS + [":humatad_plugin_catalog"],
 )
 
 rust_binary(
     name = "humatad2_test_machines_release",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
-    crate_features = [
-        "svc_away",
-        "svc_catalog",
-    ],
-    rustc_env = APP_IDENTITY,
+    srcs = ["src/main.rs"],
+    crate_features = ["svc_catalog"],
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS,
+    deps = THIN_MAIN_DEPS + [":humatad_plugin_catalog"],
 )
 
 rust_binary(
     name = "humatad2_test_review_remote",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS,
-    ),
+    srcs = ["src/main.rs"],
     crate_features = [
         "admin",
         "svc_board",
-        "svc_files",
         "svc_review",
     ],
-    rustc_env = APP_IDENTITY,
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = DAEMON_DEPS + [
-        "//apps/humata2/daemon/svc_board",
-        "//apps/humata2/daemon/svc_review",
+    deps = THIN_MAIN_DEPS + [
+        ":humatad_plugin_board",
+        ":humatad_plugin_review",
     ],
 )
 
 rust_binary(
     name = "humatad2_test_review_remote_faults",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS,
-    ),
+    srcs = ["src/main.rs"],
     crate_features = [
         "admin",
-        "faults",
         "svc_board",
-        "svc_files",
         "svc_review",
     ],
-    rustc_env = APP_IDENTITY,
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FAULTS_DEPS + [
-        "//apps/humata2/daemon/svc_board:svc_board_faults",
-        "//apps/humata2/daemon/svc_review:svc_review_faults",
+    deps = THIN_MAIN_FAULTS_DEPS + [
+        ":humatad_plugin_board_faults",
+        ":humatad_plugin_review_faults",
     ],
 )
 
-rust_binary(
+# Identical build to :humatad2_test_machines (admin + svc_catalog).
+alias(
     name = "humatad2_test_catalog_remote",
-    testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
-    crate_features = [
-        "admin",
-        "svc_away",
-        "svc_catalog",
-    ],
-    rustc_env = APP_IDENTITY,
+    actual = ":humatad2_test_machines",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS,
 )
 
 rust_binary(
     name = "humatad2_test_away_board",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
+    srcs = ["src/main.rs"],
     crate_features = [
         "admin",
-        "svc_away",
         "svc_board",
         "svc_catalog",
     ],
-    rustc_env = APP_IDENTITY,
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS + ["//apps/humata2/daemon/svc_board"],
+    deps = THIN_MAIN_DEPS + [
+        ":humatad_plugin_board",
+        ":humatad_plugin_catalog",
+    ],
 )
 
 rust_binary(
     name = "humatad2_test_away_board_release",
     testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
+    srcs = ["src/main.rs"],
     crate_features = [
-        "svc_away",
         "svc_board",
         "svc_catalog",
     ],
-    rustc_env = APP_IDENTITY,
+    crate_root = "src/main.rs",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS + ["//apps/humata2/daemon/svc_board"],
+    deps = THIN_MAIN_DEPS + [
+        ":humatad_plugin_board",
+        ":humatad_plugin_catalog",
+    ],
 )
 
-rust_binary(
+# Identical build to :humatad2_test_machines (admin + svc_catalog).
+alias(
     name = "humatad2_test_transfers",
-    testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
-    crate_features = [
-        "admin",
-        "svc_catalog",
-        "svc_files",
-    ],
-    rustc_env = APP_IDENTITY,
+    actual = ":humatad2_test_machines",
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS,
-)
-
-rust_binary(
-    name = "humatad2_test_transfers_faults",
-    testonly = True,
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS,
-    ),
-    crate_features = [
-        "admin",
-        "faults",
-        "svc_catalog",
-        "svc_files",
-    ],
-    rustc_env = APP_IDENTITY,
-    visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_FAULTS_DEPS,
 )
 
 # The holder, for the app client's parity suite: the daemon there needs one
@@ -506,12 +604,11 @@ filegroup(
     ],
 )
 
-# The release daemon's own unit tests: the link proof, the machine id,
+# The daemon core's own unit tests: the link proof, the machine id,
 # terminal sessions and CLI logins.
 rust_test(
     name = "humatad2_unit_test",
-    crate = ":humatad2",
-    crate_features = ALL_SVC_FEATURES,
+    crate = ":humatad_core",
     rustc_env = APP_IDENTITY,
     deps = [
         "//apps/humata2/daemon/conversation",
@@ -1538,10 +1635,7 @@ SCOPED_PROFILES = [
     (
         "TR_",
         TRANSFERS_SCOPED_TESTS,
-        [
-            "BASE",
-            "FAULTS",
-        ],
+        ["BASE"],
     ),
     (
         "AB_",
@@ -1638,10 +1732,6 @@ NEED_DATA = {
         ":humatad2_test_transfers",
         "//apps/humata2/daemon/holder:humata2_holder",
     ],
-    "TR_FAULTS": [
-        ":humatad2_test_transfers_faults",
-        "//apps/humata2/daemon/holder:humata2_holder_faults",
-    ],
 }
 
 NEED_ENV = {
@@ -1691,10 +1781,6 @@ NEED_ENV = {
     "TR_BASE": {
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/daemon/holder:humata2_holder)",
         "HUMATAD2": "$(rootpath :humatad2_test_transfers)",
-    },
-    "TR_FAULTS": {
-        "HUMATA2_HOLDER_FAULTS": "$(rootpath //apps/humata2/daemon/holder:humata2_holder_faults)",
-        "HUMATAD2_FAULTS": "$(rootpath :humatad2_test_transfers_faults)",
     },
 }
 

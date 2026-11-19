@@ -45,7 +45,7 @@ pub(crate) fn hold_blocking(name: &str) {
 /// what it wrote and didn't sync undone (see humata2_durable). Needs a
 /// running tokio runtime.
 #[cfg(feature = "faults")]
-pub(crate) fn power_cut_on_sigusr2() {
+pub fn power_cut_on_sigusr2() {
     let signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined2());
     if let Ok(mut signal) = signal {
         tokio::spawn(async move {
@@ -57,7 +57,7 @@ pub(crate) fn power_cut_on_sigusr2() {
 }
 
 #[cfg(not(feature = "faults"))]
-pub(crate) fn power_cut_on_sigusr2() {}
+pub fn power_cut_on_sigusr2() {}
 
 #[cfg(test)]
 mod tests {

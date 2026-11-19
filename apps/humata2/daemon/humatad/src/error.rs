@@ -4,7 +4,7 @@ use std::time::Duration;
 
 /// What starting the daemon, or bridging to it, can fail at.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum DaemonError {
+pub enum DaemonError {
     #[error("HOME isn't set, so humatad2 can't find its folder; set HOME, or pass --socket and --state")]
     NoHome,
 
