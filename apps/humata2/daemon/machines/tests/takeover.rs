@@ -47,9 +47,10 @@ impl Builds for Released {
 /// Bazel).
 const SHORT: Duration = Duration::from_secs(3);
 
-/// How long the never-syncing bridge is given: long enough for its first
-/// line to arrive when the computer is busy with other tests (3 s was not).
-const SYNC_WAIT: Duration = Duration::from_secs(10);
+/// How long the never-syncing bridge is given. The test passes its
+/// deadline itself once the bridge's first line is in, so this only bounds
+/// a bridge that never prints, however busy the computer is.
+const SYNC_WAIT: Duration = GUARD;
 
 /// A humatad2 whose bridge says it is in sync, then echoes the stream.
 fn fake_files() -> Vec<Payload> {
@@ -172,13 +173,26 @@ fn run(
 }
 
 fn run_takeover(
-    mut takeover: Takeover,
+    takeover: Takeover,
     shell: &mut Shell,
     builds: &dyn Builds,
     mangle: impl Fn(&[u8]) -> Vec<u8>,
 ) -> (End, Vec<InstalledFile>) {
+    run_takeover_until(takeover, shell, builds, mangle, None)
+}
+
+/// [`run_takeover`], but once the terminal has printed `then_time_out`
+/// the takeover is told its deadline passed, without waiting for it.
+fn run_takeover_until(
+    mut takeover: Takeover,
+    shell: &mut Shell,
+    builds: &dyn Builds,
+    mangle: impl Fn(&[u8]) -> Vec<u8>,
+    then_time_out: Option<&[u8]>,
+) -> (End, Vec<InstalledFile>) {
     let mut actions = takeover.logged_in();
     let mut sent = Vec::new();
+    let mut printed = Vec::new();
     loop {
         for action in std::mem::take(&mut actions) {
             match action {
@@ -199,7 +213,16 @@ fn run_takeover(
             }
         }
         actions = match shell.next(takeover.deadline()) {
-            Ok(Some(chunk)) => takeover.output(&chunk, builds),
+            Ok(Some(chunk)) => {
+                printed.extend_from_slice(&chunk);
+                let mut actions = takeover.output(&chunk, builds);
+                let printed_it = then_time_out
+                    .is_some_and(|needle| printed.windows(needle.len()).any(|window| window == needle));
+                if let (true, Some(deadline)) = (printed_it, takeover.deadline()) {
+                    actions.extend(takeover.time_passed(deadline));
+                }
+                actions
+            }
             Ok(None) => takeover.time_passed(Instant::now()),
             Err(exit) => takeover.ended(Some(exit)),
         };
@@ -327,7 +350,13 @@ fn a_bridge_that_never_syncs_times_out_with_the_end_of_its_output() {
     let files = files_with_bridge("echo 'waiting for the socket'\nexec cat");
     let takeover = Takeover::new(machine()).with_sync_timeout(SYNC_WAIT);
 
-    let (end, _) = run_takeover(takeover, &mut shell, &AnyPlatform(files), <[u8]>::to_vec);
+    let (end, _) = run_takeover_until(
+        takeover,
+        &mut shell,
+        &AnyPlatform(files),
+        <[u8]>::to_vec,
+        Some(b"waiting for the socket\n"),
+    );
 
     let End::Failed(TakeoverError::SyncTimedOut {
         machine: timed_out,

@@ -456,9 +456,11 @@ impl pb::mark_service_server::MarkService for MarkSvc {
         .map_err(|error| failed(&error))?;
         if let Thing::Session(id) = &mark.thing {
             // D387: the session shows its pin and VIP mark; clients hear it.
+            // A flag an earlier change left for its Session event, not yet
+            // seen, stays: only a flag this call set is taken back.
             let flagged = &self.shared.flagged;
-            flagged.lock().unwrap_or_else(PoisonError::into_inner).insert(id.clone());
-            if !crate::read_marks::flags_changed(id, mark.pinned, mark.vip) {
+            let fresh = flagged.lock().unwrap_or_else(PoisonError::into_inner).insert(id.clone());
+            if !crate::read_marks::flags_changed(id, mark.pinned, mark.vip) && fresh {
                 flagged.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
             }
         }

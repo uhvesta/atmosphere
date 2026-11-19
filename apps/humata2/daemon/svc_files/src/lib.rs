@@ -52,7 +52,7 @@ use ops::Ops;
 pub use ports::{FileLayout, ReadFileStream};
 use ports::{
     Checked, FileGuardPort, FileInboxPort, FileRelayPort, FileTrashPort, blocking, caller, chain,
-    error, failure, invalid_field, missing, now_ms, timestamp,
+    error, failure, internal, invalid_field, missing, now_ms, timestamp,
 };
 pub use roots::{Placed, Roots, Target};
 use roots::io_failure;
@@ -162,6 +162,8 @@ pub struct Files {
     /// Calls that name another machine (FM-9, FM-12).
     forward: Forward,
     reads: Reads,
+    /// On a machine: where its agents' calls naming another machine go (D768).
+    host: std::sync::OnceLock<Arc<dyn ports::HostAskPort>>,
 }
 
 /// Uploads by idempotency key: running, or finished with this result.
@@ -238,6 +240,7 @@ impl Files {
         Self {
             ops: Ops::new(roots.clone(), guard.clone(), bin, reads.clone()),
             forward: Forward::new(roots.clone(), guard.clone(), reads.clone()),
+            host: std::sync::OnceLock::new(),
             find: Find::new(roots.clone(), reads.clone(), roots.store().clone()),
             reads,
             roots,
@@ -319,7 +322,40 @@ impl Files {
 
     pub fn use_migrations(&self, _relay: Arc<dyn FileRelayPort>) {}
 
-    pub fn ask_host_for_agents(&self) {}
+    /// On a machine: its agents' looks at another machine's files go to
+    /// the host, which holds the links (TP-8, D768). The first call wins.
+    pub fn ask_host_for_agents(&self, host: Arc<dyn ports::HostAskPort>) {
+        let _ = self.host.set(host);
+    }
+
+    /// The host's answer to an agent's `request` naming another `machine`,
+    /// or `None` when the call isn't one for the host: not an agent's, on
+    /// this machine, or this daemon is the host.
+    async fn ask_host<Req: prost::Message, Res: prost::Message + Default>(
+        &self,
+        request: &Request<Req>,
+        machine: Option<&pb::MachineId>,
+        method: &'static str,
+    ) -> Option<Result<Response<Res>, Status>> {
+        let host = self.host.get()?;
+        machine.filter(|machine| !machine.value.is_empty() && machine.value != self.roots.machine())?;
+        let Ok(Caller::Agent(agent)) = caller(request) else {
+            return None;
+        };
+        let asked = host
+            .ask(agent.session.id.as_str(), method, request.get_ref().encode_to_vec())
+            .await;
+        Some(asked.and_then(|bytes| {
+            Res::decode(bytes.as_slice()).map(Response::new).map_err(|source| {
+                internal(
+                    format!(
+                        "the host's answer to {method} couldn't be read ({source}): this machine and the host run different releases of Humata; migrate this machine from the host's Inbox"
+                    ),
+                    "",
+                )
+            })
+        }))
+    }
 
     /// The review service, told when the user writes a file in a session's
     /// clone, so the comments on it answer only to the agent's changes.
@@ -396,6 +432,10 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::ListDirectoryRequest>,
     ) -> Result<Response<pb::ListDirectoryResponse>, Status> {
+        let elsewhere = request.get_ref().location.as_ref().and_then(|at| at.machine.as_ref());
+        if let Some(answer) = self.ask_host(&request, elsewhere, "/humata.v1.FileService/ListDirectory").await {
+            return answer;
+        }
         if self
             .forward
             .elsewhere(request.get_ref().location.as_ref())
@@ -410,6 +450,10 @@ impl pb::file_service_server::FileService for Files {
         &self,
         request: Request<pb::StatRequest>,
     ) -> Result<Response<pb::FileEntry>, Status> {
+        let elsewhere = request.get_ref().location.as_ref().and_then(|at| at.machine.as_ref());
+        if let Some(answer) = self.ask_host(&request, elsewhere, "/humata.v1.FileService/Stat").await {
+            return answer;
+        }
         if self
             .forward
             .elsewhere(request.get_ref().location.as_ref())

@@ -350,6 +350,13 @@ impl Ui {
         &self.clients
     }
 
+    /// The app's clock, for words that count time ([`crate::clock`]).
+    #[must_use]
+    pub fn now(&self) -> crate::clock::Now {
+        let daemon = self.clients.daemon.clone();
+        Rc::new(move || daemon.now_ms())
+    }
+
     /// The Inbox's terminal for its open item, if it shows one (D781).
     pub fn inbox_terminal(&self) -> Option<AnyView> {
         self.inbox_terminal.borrow().clone()

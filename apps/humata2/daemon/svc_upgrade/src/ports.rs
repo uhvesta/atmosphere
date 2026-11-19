@@ -57,14 +57,17 @@ pub fn outside_every_session<T>(request: &Request<T>) -> bool {
 
 /// Converts a policy [`Refusal`] into a gRPC [`Status`].
 pub fn refused(refusal: &Refusal) -> Status {
-    failure(
-        Code::PermissionDenied,
-        error(
-            refusal.to_string(),
-            "",
+    let (fix, kind) = match refusal {
+        Refusal::UserOnly { .. } => (
+            "ask the user to upgrade from the Humata app",
+            pb::error::Kind::UserOnly(pb::UserOnly { capability: 0 }),
+        ),
+        _ => (
+            "check your permissions and try again",
             pb::error::Kind::Denied(pb::Denied::default()),
         ),
-    )
+    };
+    failure(Code::PermissionDenied, error(refusal.to_string(), fix, kind))
 }
 
 /// Current wall-clock time as a protobuf [`Timestamp`].

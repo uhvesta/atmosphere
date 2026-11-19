@@ -39,13 +39,13 @@ rust_test(
     crate_root = "tests/machines.rs",
     data = [
         "//apps/humata2/clients/live:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_test_machines",
-        "//apps/humata2/daemon/humatad:humatad2_test_machines_release",
+        "//apps/humata2/daemon/humatad:humatad2_test_away_board",
+        "//apps/humata2/daemon/humatad:humatad2_test_away_board_release",
     ],
     env = {
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_machines)",
-        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_machines_release)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
+        "HUMATAD2_RELEASE": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board_release)",
     },
     visibility = ["//apps/humata2/clients:__subpackages__"],
     deps = [

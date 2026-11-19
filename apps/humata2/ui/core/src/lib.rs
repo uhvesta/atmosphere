@@ -4,6 +4,7 @@
 pub mod action_menu;
 pub mod bridge;
 pub mod chrome;
+pub mod clock;
 pub mod code_wrap;
 pub mod full_text;
 pub mod keys;

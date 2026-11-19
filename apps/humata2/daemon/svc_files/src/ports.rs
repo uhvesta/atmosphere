@@ -175,6 +175,16 @@ impl From<PathBuf> for FileLayout {
     }
 }
 
+/// The machine's end of the Uplink (D768): a call of this machine's agent
+/// that names another machine's files goes to the host, which holds the
+/// links and runs it as that agent.
+#[tonic::async_trait]
+pub trait HostAskPort: Send + Sync {
+    /// Sends the encoded `request` to the host's `method` (`/service/Method`)
+    /// as the agent of `session`, and returns the host's encoded answer.
+    async fn ask(&self, session: &str, method: &'static str, request: Vec<u8>) -> Result<Vec<u8>, Status>;
+}
+
 /// Extracts the authenticated [`Caller`] from a tonic request's extensions.
 pub fn caller<T>(request: &Request<T>) -> Result<Caller, Status> {
     request.extensions().get::<Caller>().cloned().ok_or_else(|| {

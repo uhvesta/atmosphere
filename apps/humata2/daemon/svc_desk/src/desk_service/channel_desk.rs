@@ -116,7 +116,7 @@ impl DeskSvc {
                 (Some(channel), folder)
             }
         };
-        let title = clean_title(&request.title)?;
+        let title = clean_title(&request.title);
         let title = if title.is_empty() {
             "Session".to_owned()
         } else {

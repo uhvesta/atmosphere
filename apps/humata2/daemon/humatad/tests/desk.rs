@@ -920,8 +920,10 @@ async fn kept_and_open_folders_stay_past_the_days() {
     let (kept, kept_path) = fixture.start("Kept").await;
     let (_open, open_path) = fixture.start("Open").await;
     let (gone, gone_path) = fixture.start("Gone").await;
-    fixture.close(&kept).await;
+    // Kept before it closes: a keep after the close could lose a race with
+    // the sweep's short expiry under load.
     fixture.keep(&kept).await;
+    fixture.close(&kept).await;
     fixture.close(&gone).await;
     // The unkept one going shows the sweep ran past the other two.
     wait_until("the unkept folder's delete", || async { !exists(&gone_path) }).await;

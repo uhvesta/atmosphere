@@ -210,14 +210,9 @@ pub trait BoardInbox: Send + Sync {
 // Away / forwarding port
 // ---------------------------------------------------------------------------
 
-/// Metadata header carrying the timestamp of a stale cached read.
-pub mod stale {
-    pub const HEADER: &str = "x-humata-stale-at";
-
-    pub fn format(answered_unix_ms: i64) -> String {
-        answered_unix_ms.to_string()
-    }
-}
+/// How a read answered from the last copy says how old it is (D227): the
+/// one header the MCP bridge and clients read.
+pub use humata2_svc_away::stale;
 
 /// Methods that may be forwarded between a machine and the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

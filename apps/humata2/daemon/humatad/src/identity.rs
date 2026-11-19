@@ -899,8 +899,15 @@ impl Authenticate {
             }
             None if open => {
                 request.extensions_mut().insert(Unauthenticated);
+                // The stop and upgrade services read the same facts through
+                // the markers of their own crates.
+                request.extensions_mut().insert(humata2_svc_upgrade::ports::Unauthenticated);
                 if outside {
                     request.extensions_mut().insert(OutsideSessions);
+                    request.extensions_mut().insert(humata2_svc_upgrade::ports::OutsideSessions);
+                    request
+                        .extensions_mut()
+                        .insert(humata2_svc_stop_restart::ports::OutsideEverySession(true));
                 }
             }
             None => return Err(status::unauthenticated()),

@@ -169,7 +169,8 @@ async fn an_agent_that_exits_is_told_as_exited() {
     let tab = agent_tab(&daemon, &session).await;
     let mut events = subscribe(&daemon, Request::new(topics())).await;
 
-    // End of input: the test agent's read loop ends and it exits.
+    // An interrupt: the test agent reads keys itself (`stty -icanon`), so an
+    // end-of-input key is only a byte to it, but Ctrl-C still stops it.
     daemon
         .terminals()
         .await
@@ -179,7 +180,7 @@ async fn an_agent_that_exits_is_told_as_exited() {
             }),
             session: Some(session.clone()),
             tab: Some(tab),
-            text: "\u{4}".to_owned(),
+            text: "\u{3}".to_owned(),
             ..Default::default()
         })
         .await

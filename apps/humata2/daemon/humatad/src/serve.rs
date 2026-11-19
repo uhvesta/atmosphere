@@ -240,9 +240,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                         "no daemon socket configured".to_owned(),
                     ));
                 };
-                tokio::net::UnixStream::connect(&path)
+                // Connects, or starts the machine's daemon when none
+                // listens, as after an upgrade or a reboot.
+                crate::bridge::connect_or_start(&path)
                     .await
-                    .map_err(|e| humata2_svc_peer::ports::PeerError(e.to_string()))
+                    .map_err(|e| humata2_svc_peer::ports::PeerError(crate::status::chain(&e)))
             })
         });
         let stop_signal: humata2_svc_peer::ports::StopSignalFn =
@@ -859,6 +861,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         feed.clone(),
         terminals.core(),
     );
+    // VW-12: a view offered on a machine reaches the host through the journal.
+    #[cfg(feature = "svc_review")]
+    review.use_view_journal(Arc::new(crate::wire_review::ViewJournalAdapter {
+        store: store.clone(),
+        link: guard.host_link(),
+    }));
     // BUG 42: the user's own write of a file is not the agent's change.
     #[cfg(feature = "svc_review")]
     files.use_user_writes(Arc::new(crate::wire_review::UserWritesAdapter(review.clone())));
@@ -933,6 +941,11 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     );
     // D286: a stopped machine asks GitHub nothing on its own; its Start
     // (the daemon starting itself again, running) follows the reviews again.
+    // PR-4, PR-21: a review on a box runs git and types there, through the link.
+    #[cfg(feature = "svc_review")]
+    if let Some(remote) = &remote_work {
+        pull_requests.install_remote(Arc::new(crate::wire_review::ReviewRemoteAdapter(remote.clone())));
+    }
     #[cfg(feature = "svc_review")]
     if !stopped_now {
         pull_requests.spawn_poll();
@@ -1127,6 +1140,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                     ))),
                 },
             )));
+            // D773: a session call a machine refuses as off its list posts
+            // that machine's Migrate item.
+            crate::session_service::use_peer_upgrade(crate::wire_upgrade::watch(
+                migrations.clone(),
+                release.clone(),
+            ));
             if let Some(remote) = remote_slot.get() {
                 remote.use_upgrade(crate::wire_peer::peer_upgrade_watch(
                     crate::wire_upgrade::watch(migrations.clone(), release.clone()),
@@ -1247,8 +1266,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         #[cfg(not(feature = "svc_board"))]
         Some(_) => {}
         None if role == pb::DaemonRole::Machine => {
-            files.ask_host_for_agents();
-            transfers.ask_host_for_agents();
+            let host = Arc::new(crate::wire_away::HostAsk(uplinks.forwarder()));
+            files.ask_host_for_agents(host.clone());
+            transfers.ask_host_for_agents(host);
         }
         None => {}
     }

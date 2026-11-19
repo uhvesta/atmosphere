@@ -30,6 +30,7 @@ rust_library(
     visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = SVC_BOARD_SHARED_DEPS + [
         "//apps/humata2/daemon/store",
+        "//apps/humata2/daemon/svc_away",
     ],
 )
 
@@ -43,6 +44,7 @@ rust_library(
     visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = SVC_BOARD_SHARED_DEPS + [
         "//apps/humata2/daemon/store:store_faults",
+        "//apps/humata2/daemon/svc_away:svc_away_faults",
     ],
 )
 

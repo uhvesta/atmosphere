@@ -908,17 +908,44 @@ pub fn changes(
                 .child(match (review, session_id.as_ref()) {
                     (Some(_), Some(id)) => {
                         let (agent, you) = github_draft_counts(state, id);
-                        // The id carries the counts the line shows.
-                        // The line gives way with an ellipsis so Submit
-                        // review… keeps its room inside the padding.
-                        let line = drafts_line(state, id, agent, you);
+                        // The id carries the counts the line shows. The
+                        // line never gives way mid-phrase: when it can't sit
+                        // beside the buttons it reads the bare "4 drafts".
+                        let shaped = |value: &str, size: f32| {
+                            let run = TextRun {
+                                len: value.len(),
+                                font: Font {
+                                    family: ".SystemUIFont".into(),
+                                    ..Default::default()
+                                },
+                                color: rgb(look.secondary).into(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+                            f32::from(
+                                window
+                                    .text_system()
+                                    .shape_line(value.to_owned().into(), px(size), &[run], None)
+                                    .width,
+                            )
+                        };
+                        // The footer's padding and gaps, Submit review…,
+                        // and Send when a draft waits (buttons pad 12 a side).
+                        let send = state
+                            .workspace
+                            .session(id)
+                            .map_or("agent", |found| found.agent.command());
+                        let buttons = shaped("Submit review…", 13.) + 24.
+                            + if sendable > 0 { shaped(&format!("Send to {send}"), 13.) + 24. + 8. } else { 0. };
+                        let room = width - 20. - 16. - buttons;
+                        let line = drafts_line(state, id, agent, you, |line| shaped(line, 11.5) <= room);
                         full_text(
                             secondary(look, line.clone())
                                 .id(SharedString::from(format!("review-drafts-{agent}-{you}")))
                                 .min_w_0()
                                 .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis(),
+                                .whitespace_nowrap(),
                             line,
                         )
                         .test_support()

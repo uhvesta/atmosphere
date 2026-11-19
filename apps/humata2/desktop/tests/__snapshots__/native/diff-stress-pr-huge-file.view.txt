@@ -58,6 +58,7 @@ Complementary "Changes"
       text "refund.rs"
       text "+39200"
       text "−0"
+      #change-file-glyph acme/api/src/refund.rs
     Code "acme/api/src/refund.rs"
       #change-hunk-0
       #change-line-1

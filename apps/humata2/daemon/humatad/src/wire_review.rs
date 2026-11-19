@@ -141,6 +141,8 @@ impl ReviewSessions for SessionsAdapter {
         request: &pb::StartReviewRequest,
         prs: Vec<humata2_store::ReviewPr>,
         push_allowed: bool,
+        title: String,
+        first_message: String,
     ) -> Result<pb::StartSessionResponse, Status> {
         let local = to_local_caller(caller);
         let review = humata2_sessions::ReviewStart { prs, push_allowed };
@@ -151,8 +153,8 @@ impl ReviewSessions for SessionsAdapter {
                 channel,
                 request,
                 review,
-                String::new(),
-                String::new(),
+                title,
+                first_message,
                 None,
             )
             .await?;
@@ -193,7 +195,9 @@ impl ReviewStarter for StarterAdapter {
             branch_prefix: None,
             default_agent: default_agent.to_owned(),
             repos: Vec::new(),
-            machines: Vec::new(),
+            // A channel's machines start with the host's own, as any new
+            // channel's do; a review started on a box adds the box (PR-21).
+            machines: vec![machine.to_owned()],
             revision: 1,
             created_unix_ms: humata2_rpc_kit::now_ms(),
         };
@@ -319,14 +323,18 @@ impl ReviewTerminalCore for TerminalCoreAdapter {
         let typed = self.0.type_comments(&local_target, key, paste).await;
         match typed {
             crate::terminal::CommentsTyped::Yes => {
+                // The return that sends the batch goes in whether or not the
+                // paste can be watched: a session on another machine has no
+                // local screen to watch, and its paste is still only a draft
+                // until the return.
                 if let Some(watch) = watch.as_mut() {
                     let _ = watch.shown(paste, shown_wait).await;
-                    if !return_pause.is_zero() {
-                        tokio::time::sleep(return_pause).await;
-                    }
-                    let ret_key = format!("{key}:return");
-                    let _ = self.0.type_comments(&local_target, &ret_key, b"\r").await;
                 }
+                if !return_pause.is_zero() {
+                    tokio::time::sleep(return_pause).await;
+                }
+                let ret_key = format!("{key}:return");
+                let _ = self.0.type_comments(&local_target, &ret_key, b"\r").await;
                 CommentsTyped::Typed
             }
             crate::terminal::CommentsTyped::No(status) => CommentsTyped::NotTyped(status),
@@ -393,4 +401,79 @@ pub(crate) fn build_pull_requests(
         review,
         Arc::new(OperationsAdapter(operations)),
     )
+}
+
+/// The host's link to its machines, for reviews whose clones and terminal
+/// live on one of them (PR-4, PR-21).
+pub(crate) struct ReviewRemoteAdapter(pub(crate) crate::remote_work::RemoteWork);
+
+impl ReviewRemoteAdapter {
+    fn relayed(&self, machine: &str) -> Result<crate::host_relay::Relayed, Status> {
+        self.0.relayed(machine).map_err(Status::from)
+    }
+}
+
+#[tonic::async_trait]
+impl humata2_svc_review::ReviewRemote for ReviewRemoteAdapter {
+    async fn run_review_git(
+        &self,
+        machine: &str,
+        request: pb::RunReviewGitRequest,
+    ) -> Result<pb::RunReviewGitResponse, Status> {
+        match self.relayed(machine)?.carry().run_review_git(request).await {
+            Ok(answer) => Ok(answer.into_inner()),
+            Err(refused) => Err(self.0.peer_refused(machine, refused).await),
+        }
+    }
+
+    async fn type_terminal(&self, machine: &str, request: pb::TypeRequest) -> Result<(), Status> {
+        match self.relayed(machine)?.terminal().r#type(request).await {
+            Ok(_) => Ok(()),
+            Err(refused) => Err(self.0.peer_refused(machine, refused).await),
+        }
+    }
+
+    async fn get_diff(&self, machine: &str, request: pb::GetDiffRequest) -> Result<pb::GetDiffResponse, Status> {
+        match self.relayed(machine)?.diff().get_diff(request).await {
+            Ok(answer) => Ok(answer.into_inner()),
+            Err(refused) => Err(self.0.peer_refused(machine, refused).await),
+        }
+    }
+
+    async fn get_file_diff(&self, machine: &str, request: pb::GetFileDiffRequest) -> Result<pb::FileDiff, Status> {
+        match self.relayed(machine)?.diff().get_file_diff(request).await {
+            Ok(answer) => Ok(answer.into_inner()),
+            Err(refused) => Err(self.0.peer_refused(machine, refused).await),
+        }
+    }
+}
+
+/// VW-12, D225: a machine's daemon journals each view its agents offer, so
+/// the host applies it from the journal; the host's own daemon keeps none.
+pub(crate) struct ViewJournalAdapter {
+    pub(crate) store: Arc<Store>,
+    pub(crate) link: Arc<humata2_svc_away::HostLink>,
+}
+
+#[tonic::async_trait]
+impl humata2_svc_review::ports::ViewJournal for ViewJournalAdapter {
+    async fn offered(&self, session: &str, view: &pb::PreparedView) -> Result<(), Status> {
+        if self.link.on_host() {
+            return Ok(());
+        }
+        match humata2_svc_away::record_view_journal(&self.store, &self.link, session, view).await {
+            Ok(_) => Ok(()),
+            Err(error) => Err(humata2_rpc_kit::failure(
+                tonic::Code::Unavailable,
+                pb::Error {
+                    message: format!(
+                        "the view wasn't offered: it couldn't be kept for the host, which is the only way it reaches the app: {}",
+                        humata2_rpc_kit::chain(&error)
+                    ),
+                    fix: "fix what the message names on this machine, then mark the draft ready again; the draft is kept".to_owned(),
+                    ..pb::Error::default()
+                },
+            )),
+        }
+    }
 }

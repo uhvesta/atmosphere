@@ -15,7 +15,7 @@ use humata2_clients::Clients;
 use humata2_clients::model::{Agent, MachineId, SessionId, SessionOptions};
 use humata2_session::SessionAction;
 
-use super::typing::{UPPER, answered, key, shells_of, shows, wait_for, wait_gone};
+use super::typing::{UPPER, answered, key, ready, shells_of, shows, wait_for, wait_gone};
 use super::world::{DEVBOX, LONG, World};
 use super::{App, runtime};
 
@@ -98,6 +98,9 @@ fn a_dropped_link_refuses_typing_and_the_same_shell_takes_it_again_once_back() {
     app.wait_within("a shell tab on devbox-1", LONG, |app| {
         shells_of(app, &id) == Some(before + 1)
     });
+    // The tab is listed before its screen arrives from devbox-1, and keys
+    // typed before then are refused, never queued: wait for the prompt.
+    ready(&mut app, "$");
     answered(&mut app, "xqup");
 
     // A job that prints while the link is down, and a half-typed line.

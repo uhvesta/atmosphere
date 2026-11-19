@@ -75,7 +75,9 @@ pub trait TerminalSessions: Send + Sync {
     fn moving_changes(&self) -> watch::Receiver<u64>;
     fn paused_for_move(&self, socket: &std::path::Path, pid: u32) -> bool;
     fn refuse_input_while_moving(&self, session: &str) -> Result<(), Status>;
-    async fn resume_session(&self, caller: &Caller, session: &str) -> Result<(), Status>;
+    /// Starts a stopped shell tab again through the restart doctor's
+    /// repair (D784), which also takes its stopped mark away.
+    async fn resume_shell(&self, caller: &Caller, tab: &str) -> Result<(), Status>;
 }
 
 /// Lifecycle/read-mark/holder-end hooks needed by `svc_terminal`.

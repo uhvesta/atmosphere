@@ -36,7 +36,7 @@ use super::lineage::publish_family;
 use super::{Gated, Loaded, SessionSvc, now_ms, run_resume, start_error, watch};
 use crate::channel_service::{blocking, error_of, failed, timestamp_ms};
 use crate::carry::{Carry, Place};
-use crate::host_relay::{LinkState, Links, RelayError, Relayed, assigned};
+use crate::host_relay::{LinkState, Links, Relayed, assigned};
 use crate::identity::{self, Caller};
 use crate::operations::{Progress, Started};
 use crate::status;
@@ -187,24 +187,21 @@ fn pointers_of<'a>(theirs: &'a [pb::Pointer], reported: &'a [pb::Pointer]) -> &'
 }
 
 /// A call to `machine` that failed: its own answer stays as it is, a link
-/// that broke under the call is "offline".
+/// that broke under the call is "offline", and an off-list refusal (D773)
+/// is `peer_version_unsupported` and posts the machine's Migrate item.
 pub(crate) fn machine_failed(machine: &str, source: Status) -> Status {
-    if let Some(refused) = peer_off_list(machine, &source) {
+    let failed = humata2_svc_peer::ports::session_hooks::peer_failed(machine, source);
+    if matches!(
+        status::error_of(&failed).and_then(|error| error.kind),
+        Some(pb::error::Kind::PeerVersionUnsupported(_))
+    ) {
         // D773: the machine needs its Migrate item, whichever call found out.
         if let (Some(watch), Ok(runtime)) = (UPGRADE.get(), tokio::runtime::Handle::try_current()) {
             let (watch, machine) = (watch.clone(), machine.to_owned());
             runtime.spawn(async move { watch.unsupported(&machine).await });
         }
-        return refused;
     }
-    if status::error_of(&source).is_none()
-        && matches!(source.code(), Code::Unavailable | Code::Unknown | Code::Cancelled)
-    {
-        return Status::from(RelayError::Offline {
-            machine: machine.to_owned(),
-        });
-    }
-    source
+    failed
 }
 
 /// Where a machine's off-list refusal posts its Migrate item; set once by `serve`.
@@ -212,33 +209,6 @@ static UPGRADE: std::sync::OnceLock<crate::upgrade::items::Watch> = std::sync::O
 
 pub(crate) fn use_upgrade(watch: crate::upgrade::items::Watch) {
     let _ = UPGRADE.set(watch);
-}
-
-/// `source` is a machine's off-list refusal of a relayed call (the machine's
-/// humatad2 predates the method, D773): it answers PermissionDenied with no
-/// error kind, as only the peer link's relay does.
-fn peer_off_list(machine: &str, source: &Status) -> Option<Status> {
-    let off_list = source.code() == Code::PermissionDenied
-        && status::error_of(source)
-            .is_some_and(|error| {
-            error.kind.is_none()
-                && error.message.starts_with("humatad2 refused")
-                && (error.message.contains("isn't a call the peer link relays") || error.message.contains("on the peer link"))
-        });
-    if !off_list {
-        return None;
-    }
-    Some(status::failure(
-        Code::FailedPrecondition,
-        status::error(
-            format!("{machine} runs an older humatad2 that doesn't take this call from the host, so nothing was done"),
-            format!("Migrate {machine} from the Inbox, then try again"),
-            pb::error::Kind::PeerVersionUnsupported(pb::PeerVersionUnsupported {
-                peer_version: String::new(),
-                ..Default::default()
-            }),
-        ),
-    ))
 }
 
 pub(super) fn finished(operation: &pb::Operation) -> bool {

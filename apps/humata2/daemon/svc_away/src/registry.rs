@@ -313,13 +313,21 @@ enum ForwardError {
 impl From<ForwardError> for Status {
     fn from(error: ForwardError) -> Self {
         match error {
+            // The host may have done it before the link dropped: a retry
+            // keeps the key so it isn't done twice.
             ForwardError::NotLinked | ForwardError::LinkLost { .. } => status::failure(
                 Code::Unavailable,
-                status::error(
-                    status::chain(&error),
-                    "wait until the host Mac is awake and linked to this machine, then try again",
-                    pb::error::Kind::HostUnreachable(pb::HostUnreachable { since: None }),
-                ),
+                pb::Error {
+                    retry: Some(pb::RetryAdvice {
+                        after: None,
+                        same_key: true,
+                    }),
+                    ..status::error(
+                        status::chain(&error),
+                        "wait until the host Mac is awake and linked to this machine, then try again with the same idempotency key",
+                        pb::error::Kind::HostUnreachable(pb::HostUnreachable { since: None }),
+                    )
+                },
             ),
             ForwardError::HostSaid { error, .. } => {
                 let code = code_of(&error);

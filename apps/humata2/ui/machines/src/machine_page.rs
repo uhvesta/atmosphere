@@ -54,8 +54,6 @@ pub struct PageContext {
     pub stopped_by: Option<String>,
     /// The clock time the app's link to it was lost.
     pub lost_at: Option<String>,
-    /// Now, in Unix milliseconds, to work the running holders' uptime out.
-    pub now_ms: i64,
 }
 
 /// The page's two inputs: the variable's name and its masked value.
@@ -278,7 +276,6 @@ pub fn route(
             .stop()
             .map(|stop| stop.by.phrase(&state.workspace)),
         lost_at: found.and_then(|found| found.lost_at.clone()),
-        now_ms: ui.clients().daemon.now_ms(),
     };
     machine_page(
         ui,
@@ -766,7 +763,6 @@ fn left(
             state,
             &context.sessions,
             &channel_name,
-            context.now_ms,
             look,
         );
         (Some(count), Some(listed), orphans)

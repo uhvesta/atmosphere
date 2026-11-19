@@ -202,6 +202,22 @@ pub fn against_refresh(
     pixels: bool,
     comparison: Comparison,
 ) -> Result<Report, FrameError> {
+    against_refresh_with_pictures(window, cx, pixels, comparison).map(|(report, _)| report)
+}
+
+/// [`against_refresh`], also returning the natural and refreshed pictures
+/// (empty unless `pixels` is set), so a caller can save them when the frames
+/// differ.
+///
+/// # Errors
+///
+/// As [`against_refresh`].
+pub fn against_refresh_with_pictures(
+    window: &mut Window,
+    cx: &mut App,
+    pixels: bool,
+    comparison: Comparison,
+) -> Result<(Report, [Picture; 2]), FrameError> {
     let picture = |window: &Window| {
         if pixels {
             frame::pixels(window)
@@ -218,13 +234,14 @@ pub fn against_refresh(
     frame::full_refresh(window, cx);
     let refreshed = frame::observe(window);
     let refreshed_picture = picture(window)?;
-    Ok(compare(
+    let report = compare(
         &natural,
         &refreshed,
         &natural_picture,
         &refreshed_picture,
         comparison,
-    ))
+    );
+    Ok((report, [natural_picture, refreshed_picture]))
 }
 
 /// One way the subject's frame differs from the reference's.

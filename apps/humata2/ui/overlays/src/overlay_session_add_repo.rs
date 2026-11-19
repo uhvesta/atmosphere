@@ -168,7 +168,7 @@ impl Overlays {
                     .progress
                     .as_ref()
                     .filter(|_| adding)
-                    .map(|p| widgets::progress_line(look, p, Some(ui.clients().daemon.now_ms()))),
+                    .map(|p| widgets::progress_line(look, p, Some(ui.now()))),
             )
             .focus_trap("session-add-repo-trap", &self.session_repo.focus_handle(cx))
             .into_any_element()

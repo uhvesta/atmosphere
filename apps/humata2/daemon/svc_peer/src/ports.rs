@@ -138,7 +138,10 @@ pub fn not_built(method: &str) -> Status {
 pub trait PolicySourcePort: Send + Sync {
     fn snapshot(&self, machine: &str) -> Result<pb::PolicySnapshot, std::io::Error>;
     fn changes(&self) -> watch::Receiver<u64>;
-    fn linked(&self, machine: &str);
+    /// Says `machine`'s link is up until the returned guard is dropped,
+    /// which the link does when it ends: a policy change waits for the
+    /// linked machines' acks only while the guard is held (AW-8).
+    fn linked(&self, machine: &str) -> Box<dyn std::any::Any + Send>;
     fn acked(&self, machine: &str, rev: u64);
 }
 
@@ -346,12 +349,103 @@ pub mod stop {
 
 /// Session service peer hooks (decoupled from `humatad::session_service`).
 pub mod session_hooks {
-    use tonic::Status;
+    use humata2_grpc::humata::v1 as pb;
+    use humata2_rpc_kit::helpers::{error, failure, status_error_of};
+    use tonic::{Code, Status};
+
+    use crate::host_relay::RelayError;
 
     pub fn use_peer_upgrade<T>(_watch: T) {}
 
-    pub fn peer_failed(machine: &str, status: Status) -> Status {
-        Status::new(status.code(), format!("{machine}: {}", status.message()))
+    /// A relayed call to `machine` that failed: the machine's off-list
+    /// refusal (an older humatad2, D773) becomes `peer_version_unsupported`
+    /// naming the Migrate fix, a link that broke under the call is
+    /// "offline", and any other answer of the machine's stays as it is.
+    pub fn peer_failed(machine: &str, source: Status) -> Status {
+        if let Some(refused) = peer_off_list(machine, &source) {
+            return refused;
+        }
+        if status_error_of(&source).is_none()
+            && matches!(source.code(), Code::Unavailable | Code::Unknown | Code::Cancelled)
+        {
+            return Status::from(RelayError::Offline {
+                machine: machine.to_owned(),
+            });
+        }
+        source
+    }
+
+    /// `source` is a machine's off-list refusal of a relayed call (the
+    /// machine's humatad2 predates the method, D773): it answers
+    /// PermissionDenied with no error kind, as only the peer link's relay
+    /// does.
+    fn peer_off_list(machine: &str, source: &Status) -> Option<Status> {
+        let off_list = source.code() == Code::PermissionDenied
+            && status_error_of(source).is_some_and(|error| {
+                error.kind.is_none()
+                    && error.message.starts_with("humatad2 refused")
+                    && (error.message.contains("isn't a call the peer link relays")
+                        || error.message.contains("on the peer link"))
+            });
+        if !off_list {
+            return None;
+        }
+        Some(failure(
+            Code::FailedPrecondition,
+            error(
+                format!(
+                    "{machine} runs an older humatad2 that doesn't take this call from the host, so nothing was done"
+                ),
+                format!("Migrate {machine} from the Inbox, then try again"),
+                pb::error::Kind::PeerVersionUnsupported(pb::PeerVersionUnsupported {
+                    peer_version: String::new(),
+                    ..Default::default()
+                }),
+            ),
+        ))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn kind_of(status: &Status) -> Option<pb::error::Kind> {
+            status_error_of(status).and_then(|error| error.kind)
+        }
+
+        /// D773: a machine's relay refusing a call as off its list is an
+        /// older humatad2, told as peer_version_unsupported.
+        #[test]
+        fn an_off_list_refusal_is_peer_version_unsupported() {
+            let refused = failure(
+                Code::PermissionDenied,
+                pb::Error {
+                    message: "humatad2 refused the call: /humata.v1.SessionService/GiveOwnCopy isn't a call the peer link relays from the host".to_owned(),
+                    ..pb::Error::default()
+                },
+            );
+
+            let failed = peer_failed("gpu", refused);
+
+            assert_eq!(failed.code(), Code::FailedPrecondition);
+            assert!(matches!(kind_of(&failed), Some(pb::error::Kind::PeerVersionUnsupported(_))));
+        }
+
+        #[test]
+        fn a_link_that_broke_under_the_call_is_offline() {
+            let failed = peer_failed("gpu", Status::unavailable("connection reset"));
+
+            assert_eq!(failed.code(), Code::Unavailable);
+            assert!(matches!(kind_of(&failed), Some(pb::error::Kind::MachineOffline(_))));
+        }
+
+        #[test]
+        fn the_machines_own_answer_stays_as_it_is() {
+            let failed = peer_failed("gpu", Status::not_found("no session se_1"));
+
+            assert_eq!(failed.code(), Code::NotFound);
+            assert_eq!(failed.message(), "no session se_1");
+        }
     }
 }
 

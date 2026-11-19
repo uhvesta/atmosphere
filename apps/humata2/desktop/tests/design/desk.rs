@@ -328,6 +328,11 @@ fn versions_bar(look: Look) -> Div {
 }
 
 fn desk_header(look: Look, state: St, title: &'static str, runs: &'static str, panel: bool) -> Div {
+    desk_header_back(look, false, state, title, runs, panel)
+}
+
+/// [`desk_header`], led by the Back ghost when `back` (D848).
+fn desk_header_back(look: Look, back: bool, state: St, title: &'static str, runs: &'static str, panel: bool) -> Div {
     div()
         .flex()
         .items_center()
@@ -338,6 +343,7 @@ fn desk_header(look: Look, state: St, title: &'static str, runs: &'static str, p
         .border_b_1()
         .border_color(c(look.line))
         .bg(c(look.content))
+        .when(back, |bar| bar.child(back_ghost(look)))
         .child(
             div()
                 .flex()
@@ -890,7 +896,7 @@ fn source_pane(look: Look) -> Div {
         let lit = n == "13" || n == "14";
         source = source.child(src(look, n, text, lit, n == "13" || n == "7"));
         if n == "7" {
-            source = source.child(session::comment(look, "You · line 7 · sent to claude", "Where are the sizes from?", false));
+            source = source.child(session::sent_comment(look, "You · line 7", "Where are the sizes from?"));
         }
         if n == "14" {
             source = source
@@ -953,7 +959,7 @@ pub fn source_review(look: Look) -> Div {
         .h_full()
         .flex()
         .flex_col()
-        .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
+        .child(desk_header_back(look, true, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
         .child(folder_bar(look, "Kept", "devbox-1", &["acme/ledger", "acme/api"]))
         .child(group_row(
             look,
@@ -1025,7 +1031,7 @@ pub fn terminal_source_page(look: Look) -> Div {
         .h_full()
         .flex()
         .flex_col()
-        .child(desk_header(look, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
+        .child(desk_header_back(look, true, St::Idle, "BRIN rollout RFC", "Claude Code · devbox-1", false))
         .child(folder_bar(look, "Kept", "devbox-1", &["acme/ledger", "acme/api"]))
         .child(div().flex_1().min_h_0().flex().child(left).child(handle(look, true)).child(right));
     div()

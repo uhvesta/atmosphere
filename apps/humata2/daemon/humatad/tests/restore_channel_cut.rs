@@ -34,13 +34,26 @@ echo "agent up $mode"
 while IFS= read -r line; do printf '%s\n' "$line" >> "$f"; done
 "#;
 
-/// How an agent that keys its conversations by folder names that folder.
+/// How an agent that keys its conversations by folder names that folder:
+/// by its real path, as its cwd gives it (`/tmp` is `/private/tmp` on
+/// macOS). A folder that is gone resolves through its nearest folder that
+/// is still there, as the daemon keys it.
 fn dashed(path: &Path) -> String {
-    path.display()
-        .to_string()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+    let mut rest = Vec::new();
+    let mut at = path;
+    let real = loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            break rest.iter().rev().fold(real, |real: PathBuf, name| real.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                at = parent;
+            }
+            _ => break path.to_owned(),
+        }
+    };
+    real.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
 /// Makes the world's agent the one above.
@@ -66,7 +79,7 @@ where
     let deadline = Instant::now() + WAIT;
     while !done().await {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -143,7 +156,7 @@ async fn cut_a_restore_at(dir: tempfile::TempDir, stop_at: &str) -> Cut {
     let deadline = Instant::now() + WAIT;
     while std::os::unix::net::UnixStream::connect(&daemon.socket).is_ok() {
         assert!(Instant::now() < deadline, "the daemon never died at the restore's cut");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     Cut { daemon, world, channel, id, session, before, old }
 }

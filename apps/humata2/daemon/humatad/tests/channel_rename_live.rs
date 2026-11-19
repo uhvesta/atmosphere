@@ -21,7 +21,7 @@ use common::{
     start_session, stored_tabs, wait_running,
 };
 use humata2_grpc::humata::v1 as pb;
-use humata2_store::{AgentState, Store, TabRecord};
+use humata2_store::{AgentState, Store, TabKind, TabRecord};
 
 /// The test agent: it starts or resumes the conversation kept by folder,
 /// writes the folder it was given as the conversation's first line, as
@@ -43,9 +43,26 @@ echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#;
 
-/// How an agent that keys its conversations by folder names that folder.
+/// How an agent that keys its conversations by folder names that folder:
+/// by its real path, as its cwd gives it (`/tmp` is `/private/tmp` on
+/// macOS). A folder that is gone resolves through its nearest folder that
+/// is still there, as the daemon keys it.
 fn dashed(path: &Path) -> String {
-    path.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+    let mut rest = Vec::new();
+    let mut at = path;
+    let real = loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            break rest.iter().rev().fold(real, |real: PathBuf, name| real.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                at = parent;
+            }
+            _ => break path.to_owned(),
+        }
+    };
+    real.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
 /// The variables that keep every agent's own files inside `home`.
@@ -91,12 +108,15 @@ struct Fixture {
     channel: pb::Channel,
 }
 
-/// A session of the test: its id, its conversation and its folder when it
-/// started.
+/// A session of the test: its id, its conversation, and its folder and that
+/// folder's conversation key when it started. The key is kept from then: once
+/// renamed, the old name links to the new folder for a while, so it would
+/// resolve to the new key.
 struct Started {
     id: pb::SessionId,
     conversation: String,
     folder: PathBuf,
+    key: String,
 }
 
 impl Fixture {
@@ -138,7 +158,8 @@ impl Fixture {
         assert_eq!(operation.state, pb::OperationState::Succeeded as i32, "{:?}", operation.error);
         let session = wait_running(&self.daemon, &id).await;
         let folder = self.store().session(&id.value).unwrap().expect("the store has the session").folder;
-        Started { id, conversation: session.conversation_id, folder }
+        let key = dashed(&folder);
+        Started { id, conversation: session.conversation_id, folder, key }
     }
 
     /// Renames the channel to Billing, with no confirming.
@@ -186,7 +207,7 @@ impl Fixture {
         let deadline = Instant::now() + Duration::from_secs(60);
         while self.starts(conversation).len() < times {
             assert!(Instant::now() < deadline, "the agent started {} times, not {times}", self.starts(conversation).len());
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 
@@ -205,11 +226,11 @@ impl Fixture {
         assert_eq!(key, dashed(folder), "its conversation is keyed by its new folder");
         assert_eq!(place, folder);
         wait_running(&self.daemon, &session.id).await;
-        let at = |folder: &Path| self.world.conv.join(dashed(folder)).join(format!("{}.jsonl", session.conversation));
-        let kept = std::fs::read_to_string(at(folder)).expect("the conversation is at the new folder's key");
+        let at = |key: &str| self.world.conv.join(key).join(format!("{}.jsonl", session.conversation));
+        let kept = std::fs::read_to_string(at(&dashed(folder))).expect("the conversation is at the new folder's key");
         assert!(kept.lines().any(|line| line == said), "it holds what was said before: {kept:?}");
         assert!(kept.contains(&folder.display().to_string()), "it names its new folder: {kept:?}");
-        assert!(!at(&session.folder).exists(), "nothing is left at the old key");
+        assert!(!at(&session.key).exists(), "nothing is left at the old key");
     }
 }
 
@@ -217,7 +238,7 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(60);
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
@@ -267,12 +288,20 @@ async fn the_old_name_goes_when_the_last_holder_started_under_it_ends() {
     fixture.rename().await;
     assert!(is_link(&old));
     let tabs = fixture.tabs_of(&session.id);
+    // The agent's holder ends first, and the shell's still runs.
+    let (agent, rest): (Vec<_>, Vec<_>) = tabs.into_iter().partition(|tab| tab.kind == TabKind::Agent);
+    assert!(!agent.is_empty() && !rest.is_empty(), "the session has an agent and a shell");
 
-    kill_holders(&tabs[..1]).await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    kill_holders(&agent).await;
+    // A holder gone for good shows its agent as ended (D784).
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while common::is_running(&get_session(&fixture.daemon, &session.id).await) {
+        assert!(Instant::now() < deadline, "the daemon never saw the agent's holder end");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
     assert!(is_link(&old), "a holder that started under it still runs");
 
-    kill_holders(&tabs[1..]).await;
+    kill_holders(&rest).await;
     until("the old name to go", || std::fs::symlink_metadata(&old).is_err()).await;
     assert!(fixture.world.channels.join("billing/main/api").is_dir(), "the folder itself stays");
 }

@@ -350,10 +350,7 @@ const WIDE: &[(&str, Look, Draw)] = &[
     ("uxs-4-1-agent-applies-comments", LIGHT, uxsimple::agent_applies_comments),
     ("uxs-4-2-manual-diff-since-last-look", LIGHT, uxsimple::manual_diff_since_last_look),
     ("uxs-4-3-everything-looks-good", LIGHT, uxsimple::everything_looks_good),
-];
-
-/// Wide frames not yet approved, drawn like [`CANDIDATES`] at 1600 by 950.
-const WIDE_CANDIDATES: &[(&str, Look, Draw)] = &[
+    // To-do frames, approved by Fable 5.2 2026-11-19.
     ("21-todo-list", LIGHT, todo::list),
     ("22-todo-item-open", LIGHT, todo::item_open),
     ("23-todo-channel-due-soon", LIGHT, todo::channel_due_soon),
@@ -370,6 +367,10 @@ const WIDE_CANDIDATES: &[(&str, Look, Draw)] = &[
     ("189-todo-migrate-message", LIGHT, todo_more::migrate_message),
     ("190-todo-pr-review-session", LIGHT, todo_more::pr_review_session),
     ("191-todo-session-ask", LIGHT, todo_more::session_todo_ask),
+];
+
+/// Wide frames not yet approved, drawn like [`CANDIDATES`] at 1600 by 950.
+const WIDE_CANDIDATES: &[(&str, Look, Draw)] = &[
     // INBOXHOOKS: the Agent inbox (boardsimple mockups b2, b3, b4-1, b5-1, b6, b9-2).
     ("205-session-agent-inbox-panel", LIGHT, agent_inbox_more::session_panel),
     ("206-session-after-yes", LIGHT, agent_inbox_more::after_yes),

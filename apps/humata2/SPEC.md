@@ -1704,9 +1704,9 @@ each repo's branch.
 │ ● review_focus refund.rs:140        │  refund.rs  +62 −21                  │
 │   It rounds half away from zero …   │  140 │+ let cents = amount.round();  │
 │ > note that on the line for me      │      ┆ note by Claude Code:          │
-│ ● review_note refund.rs:140  [Undo] │      ┆ "round() is half-away-from-…" │
+│ ● review_note refund.rs:140         │      ┆ "round() is half-away-from-…" │
 │ > █                                 │      ┆ [Edit] [Drop]                 │
-│                                     │ ledger #91  uhvesta/refund-ledger    │
+│ Noted refund.rs:140 · Undo  Opened …│ ledger #91  uhvesta/refund-ledger    │
 │ ⚠ 2 new commits · [Update the clone]│ Drafts: 4 (3 by agent, 1 by you)    │
 └─────────────────────────────────────┴──────────────────────────────────────┘
 ```

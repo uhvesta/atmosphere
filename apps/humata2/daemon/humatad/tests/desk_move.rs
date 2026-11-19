@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{
-    Build, Daemon, World, create_channel, error_of, finished, folder, get_session, git, repo_ref, shell_token,
-    wait_status,
+    Build, Daemon, World, create_channel, error_of, finished, folder, get_session, git, is_running, repo_ref,
+    shell_token, wait_running, wait_status,
 };
 use humata2_grpc::humata::v1 as pb;
 use humata2_store::Store;
@@ -92,12 +92,13 @@ impl Fixture {
             .unwrap()
             .into_inner();
         let id = started.session.unwrap();
-        let up = if agent == Some(PLAIN) {
-            Status::RunningUnknownTurn
+        // An agent with turns is up once Working, or Probably idle when its
+        // output has been quiet 3 s (D169); one without turns stays unknown.
+        if agent == Some(PLAIN) {
+            wait_status(&self.daemon, &id, Status::RunningUnknownTurn).await;
         } else {
-            Status::Working
-        };
-        wait_status(&self.daemon, &id, up).await;
+            wait_running(&self.daemon, &id).await;
+        }
         (id, PathBuf::from(started.desk.unwrap().folder.unwrap().path))
     }
 
@@ -294,11 +295,11 @@ impl Fixture {
         let deadline = std::time::Instant::now() + Duration::from_secs(90);
         loop {
             let session = get_session(&self.daemon, id).await;
-            if session.channel == self.payments.id && session.status == Status::Working as i32 {
+            if session.channel == self.payments.id && is_running(&session) {
                 return session;
             }
             assert!(std::time::Instant::now() < deadline, "the session never came up moved: {session:?}");
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 }
@@ -609,7 +610,7 @@ async fn a_move_that_fails_leaves_a_running_desk_session_and_nothing_half_moved(
     let ended = fixture.move_by(&id, &plan).await;
 
     assert!(!ended.as_ref().is_ok_and(succeeded), "{ended:?}");
-    wait_status(&fixture.daemon, &id, Status::Working).await;
+    wait_running(&fixture.daemon, &id).await;
     let session = get_session(&fixture.daemon, &id).await;
     assert_ne!(session.channel, fixture.payments.id);
     assert!(fixture.on_desk(&id).await);

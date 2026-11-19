@@ -57,6 +57,7 @@ Complementary "Changes"
       text "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
       text "+1"
       text "−0"
+      #change-file-glyph acme/api/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs
     Code "acme/api/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/a_directory_name/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn.rs"
       #change-hunk-0
       #change-line-1

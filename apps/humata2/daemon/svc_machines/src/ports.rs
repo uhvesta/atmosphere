@@ -294,7 +294,9 @@ pub trait MachineStoragePort: Send + Sync {
     fn holders(&self) -> PathBuf;
     fn root(&self) -> PathBuf;
     fn data_dir(&self) -> PathBuf;
-    fn set_root(&self, new_root: PathBuf) -> Result<(), Status>;
+    /// Where channels are: the one layout every service of this daemon
+    /// shares, so a root change reaches them while the daemon runs.
+    fn layout(&self) -> humata2_sessions::Layout;
     fn storage_summary(&self) -> Result<pb::StorageReport, Status>;
     fn report(&self, extra: Vec<pb::RetentionSkip>) -> Result<pb::StorageReport, Status>;
     fn machine_of_session(&self, session: &str) -> Result<Option<String>, Status>;
@@ -339,6 +341,8 @@ pub struct HostVarsError {
     pub message: String,
     pub fix: String,
     pub code: Code,
+    /// What clients branch on, such as the field a refused name or value is in.
+    pub kind: Option<pb::error::Kind>,
 }
 
 impl HostVarsError {
@@ -349,7 +353,7 @@ impl HostVarsError {
                 message: self.message.clone(),
                 fix: self.fix.clone(),
                 retry: None,
-                kind: None,
+                kind: self.kind.clone(),
             },
         )
     }

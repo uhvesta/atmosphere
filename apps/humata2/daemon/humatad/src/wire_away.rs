@@ -240,3 +240,39 @@ pub(crate) fn build_uplinks(
         Arc::new(InboxAdapter(inbox)),
     ))
 }
+
+// ---------------------------------------------------------------------------
+// The machine's agents' file looks and copies, sent up to the host (D768)
+// ---------------------------------------------------------------------------
+
+/// A machine's end of the Uplink for its agents' calls naming another
+/// machine's files: the host holds the links and answers as that agent.
+pub(crate) struct HostAsk(pub(crate) Arc<humata2_svc_away::Forwarder>);
+
+impl HostAsk {
+    async fn send(&self, session: &str, method: &'static str, request: Vec<u8>) -> Result<Vec<u8>, Status> {
+        let row = humata2_svc_away::by_name(method).ok_or_else(|| {
+            crate::status::internal(
+                format!("{method} has no row in the forwarded-call table, so it can't go to the host; this is a bug in Humata"),
+                "",
+            )
+        })?;
+        // While the host is away the forwarder answers host_unreachable,
+        // retryable with the same key.
+        self.0.call(session, row, request, None).await
+    }
+}
+
+#[tonic::async_trait]
+impl humata2_svc_files::ports::HostAskPort for HostAsk {
+    async fn ask(&self, session: &str, method: &'static str, request: Vec<u8>) -> Result<Vec<u8>, Status> {
+        self.send(session, method, request).await
+    }
+}
+
+#[tonic::async_trait]
+impl humata2_svc_transfers::ports::HostAskPort for HostAsk {
+    async fn ask(&self, session: &str, method: &'static str, request: Vec<u8>) -> Result<Vec<u8>, Status> {
+        self.send(session, method, request).await
+    }
+}

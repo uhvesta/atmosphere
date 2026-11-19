@@ -58,6 +58,7 @@ Updated 2026-11-19 00:05 on `main` (`atmosphere-khodr`; the old `../atmosphere-s
 | 13 | Antigravity `agy` (AGY) | 0.4.1 | patch |
 | 14 | Walk every flow, audit, fix (NORMALREL; flow fixes ship as 0.4.x patches first) | **0.5.0** | full suite + launch check |
 | 15 | Fast mode benchmarked and tuned (FASTREL) | **0.6.0** | full suite with fast mode on + launch check |
+| 16 | Optional desktop notifications (NOTIFY; owner 2026-11-19: "literally at the very very end") | 0.6.1 | patch + launch check |
 
 ## 1. Finish the open feature lanes
 

@@ -822,10 +822,10 @@ mod tests {
             Ok(())
         }
 
-        async fn resume_session(
+        async fn resume_shell(
             &self,
             _caller: &humata2_daemon_ports::Caller,
-            _session: &str,
+            _tab: &str,
         ) -> Result<(), Status> {
             Ok(())
         }

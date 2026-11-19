@@ -51,7 +51,7 @@ impl DeskSvc {
         // MV-17: another machine takes the start, the host's relay carrying it.
         let remote = self.remote_machine(request.machine.as_ref())?;
         let original = request.clone();
-        let title = clean_title(&request.title)?;
+        let title = clean_title(&request.title);
         let title = if title.is_empty() {
             "Session".to_owned()
         } else {

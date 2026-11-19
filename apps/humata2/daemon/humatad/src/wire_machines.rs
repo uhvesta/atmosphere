@@ -23,7 +23,7 @@ use humata2_svc_machines::ports::{
 };
 use humata2_svc_machines::{Clock, MachineScripts, MachineSvc, Parts, Work};
 use tokio::sync::{broadcast, watch};
-use tonic::{Code, Status};
+use tonic::Status;
 
 use crate::channel_service;
 use crate::events::Feed;
@@ -362,8 +362,8 @@ impl MachineStoragePort for StorageAdapter {
         self.0.home().to_path_buf()
     }
 
-    fn set_root(&self, _new_root: PathBuf) -> Result<(), Status> {
-        Ok(())
+    fn layout(&self) -> humata2_sessions::Layout {
+        self.0.layout().clone()
     }
 
     fn storage_summary(&self) -> Result<pb::StorageReport, Status> {
@@ -422,43 +422,40 @@ impl MachineChannelsPort for ChannelsAdapter {
 
 pub(crate) struct HostVarsAdapter;
 
+/// The port's error for `error`, with the kind clients branch on (the
+/// field a refused name or value is in) kept.
+fn host_vars_error(error: &crate::host_vars::HostVarsError) -> HostVarsError {
+    let status = error.status();
+    let said = crate::status::error_of(&status);
+    HostVarsError {
+        message: status.message().to_owned(),
+        fix: said.as_ref().map(|said| said.fix.clone()).unwrap_or_default(),
+        code: status.code(),
+        kind: said.and_then(|said| said.kind),
+    }
+}
+
 impl MachineHostVarsPort for HostVarsAdapter {
     fn names(&self) -> Result<Vec<String>, HostVarsError> {
         HostVars::installed()
             .and_then(|vars| vars.names())
-            .map_err(|err| HostVarsError {
-                message: err.to_string(),
-                fix: String::new(),
-                code: Code::Internal,
-            })
+            .map_err(|err| host_vars_error(&err))
     }
 
     fn check(&self, name: &str, value: &str) -> Result<(), HostVarsError> {
-        HostVars::check(name, value).map_err(|err| HostVarsError {
-            message: err.to_string(),
-            fix: String::new(),
-            code: Code::InvalidArgument,
-        })
+        HostVars::check(name, value).map_err(|err| host_vars_error(&err))
     }
 
     fn set(&self, name: &str, value: &str) -> Result<(), HostVarsError> {
         HostVars::installed()
             .and_then(|vars| vars.set(name, value))
-            .map_err(|err| HostVarsError {
-                message: err.to_string(),
-                fix: String::new(),
-                code: Code::Internal,
-            })
+            .map_err(|err| host_vars_error(&err))
     }
 
     fn remove(&self, name: &str) -> Result<(), HostVarsError> {
         HostVars::installed()
             .and_then(|vars| vars.remove(name).map(|_| ()))
-            .map_err(|err| HostVarsError {
-                message: err.to_string(),
-                fix: String::new(),
-                code: Code::Internal,
-            })
+            .map_err(|err| host_vars_error(&err))
     }
 }
 
@@ -830,10 +827,12 @@ impl humata2_svc_machines::ports::MachineAwayPort for AwayAdapter {
             _ => return Err(Status::permission_denied("only agents can forward away calls")),
         };
         let row = match method {
-            "list_machines" | "humata.v1.MachineService/ListMachines" => {
-                crate::away::Method::ListMachines.row()
-            }
-            "get_machine" | "humata.v1.MachineService/GetMachine" => {
+            "list_machines"
+            | "humata.v1.MachineService/ListMachines"
+            | "humata.v1.MachineService.ListMachines" => crate::away::Method::ListMachines.row(),
+            "get_machine"
+            | "humata.v1.MachineService/GetMachine"
+            | "humata.v1.MachineService.GetMachine" => {
                 crate::away::Method::GetMachine.row()
             }
             other => return Err(Status::unimplemented(format!("unknown forwarded method {other}"))),
@@ -973,15 +972,20 @@ impl humata2_svc_machines::ports::MachinePeerDialPort for PeerDialAdapter {
         let Some(work) = self.work.upgrade() else {
             return self.runtime.spawn(async {}).abort_handle();
         };
-        let invocation = match work.machines.peer_link(&name) {
-            Ok(invocation) => invocation,
-            Err(error) => {
-                crate::log::say!(
-                    "humatad2: couldn't make the peer link command for {name}: {}",
-                    crate::status::chain(&error)
-                );
-                return self.runtime.spawn(async {}).abort_handle();
-            }
+        // A login that just finished hands over its terminal; otherwise the
+        // link dials its command.
+        let dial: Box<dyn crate::peer_client::Dial> = match crate::login_service::one_shot(&name) {
+            Some(dial) => dial,
+            None => match work.machines.peer_link(&name) {
+                Ok(invocation) => Box::new(CommandDial::new(name.clone(), invocation)),
+                Err(error) => {
+                    crate::log::say!(
+                        "humatad2: couldn't make the peer link command for {name}: {}",
+                        crate::status::chain(&error)
+                    );
+                    return self.runtime.spawn(async {}).abort_handle();
+                }
+            },
         };
         let key_file = work.machines.peer_key(&name);
         let sink: crate::peer_client::Sink = {
@@ -1014,7 +1018,7 @@ impl humata2_svc_machines::ports::MachinePeerDialPort for PeerDialAdapter {
         });
         self.runtime
             .spawn(crate::peer_client::supervise(
-                Box::new(CommandDial::new(name.clone(), invocation)),
+                dial,
                 key_file,
                 name,
                 report,

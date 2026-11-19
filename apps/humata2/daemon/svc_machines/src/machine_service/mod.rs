@@ -1527,16 +1527,20 @@ pub fn error_of(error: &ManageError, operation: Option<&str>) -> pb::Error {
         ManageError::ProviderLoginNeeded {
             machine, reason, ..
         } => {
-            let (prompt_line, hung) = match reason {
-                humata2_machines::LoginReason::Prompted(prompt) => (prompt.line.clone(), false),
-                humata2_machines::LoginReason::Hung => (String::new(), true),
+            let (prompt_kind, prompt_line, hung) = match reason {
+                humata2_machines::LoginReason::Prompted(prompt) => {
+                    (login_prompt_kind(prompt.kind), prompt.line.clone(), false)
+                }
+                humata2_machines::LoginReason::Hung => {
+                    (pb::LoginPromptKind::Unspecified, String::new(), true)
+                }
             };
             (
                 "log in to the machine interactively (Open interactively), or make the provider's connect command log in without a prompt",
                 Some(Kind::LoginNeedsUser(pb::LoginNeedsUser {
                     provider: None,
                     machine: Some(machine_id(machine)),
-                    prompt_kind: pb::LoginPromptKind::Unspecified as i32,
+                    prompt_kind: prompt_kind as i32,
                     prompt_line,
                     hung,
                 })),
@@ -2417,4 +2421,17 @@ pub(crate) fn running_tab(tab: Option<&pb::TabId>) -> Result<String, Status> {
     tab.map(|tab| tab.value.clone())
         .filter(|tab| !tab.is_empty())
         .ok_or_else(|| missing("tab"))
+}
+
+/// The API's kind of a prompt the connect printed (D167), so the app can
+/// say which one opened the login.
+fn login_prompt_kind(kind: humata2_machines::PromptKind) -> pb::LoginPromptKind {
+    use humata2_machines::PromptKind;
+    match kind {
+        PromptKind::Password => pb::LoginPromptKind::Password,
+        PromptKind::Passphrase => pb::LoginPromptKind::Passphrase,
+        PromptKind::Code => pb::LoginPromptKind::Code,
+        PromptKind::Confirm => pb::LoginPromptKind::Confirm,
+        PromptKind::Device => pb::LoginPromptKind::Device,
+    }
 }

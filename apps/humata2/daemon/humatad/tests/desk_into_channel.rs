@@ -91,13 +91,26 @@ struct Start {
     cwd: PathBuf,
 }
 
-/// How an agent that keys its conversations by folder names that folder.
+/// How an agent that keys its conversations by folder names that folder:
+/// by its real path, as its cwd gives it (`/tmp` is `/private/tmp` on
+/// macOS). A folder that is gone resolves through its nearest folder that
+/// is still there, as the daemon keys it.
 fn dashed(path: &Path) -> String {
-    path.display()
-        .to_string()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+    let mut rest = Vec::new();
+    let mut at = path;
+    let real = loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            break rest.iter().rev().fold(real, |real: PathBuf, name| real.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                at = parent;
+            }
+            _ => break path.to_owned(),
+        }
+    };
+    real.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
 /// Makes the world's agent the one above, and Copilot the same script
@@ -462,7 +475,7 @@ impl Fixture {
                 return session;
             }
             assert!(Instant::now() < deadline, "the session is still moving");
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 }
@@ -518,7 +531,7 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 

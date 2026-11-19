@@ -123,6 +123,18 @@ pub fn small_icon(name: IconName, hex: u32) -> Icon {
     Icon::new(name).size(px(12.)).text_color(c(hex))
 }
 
+/// The session header's Back: a 24 pt ghost with a 14 pt chevron (DS-58,
+/// D848).
+pub fn back_ghost(look: Look) -> Div {
+    div()
+        .size(px(24.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .child(Icon::new(IconName::ChevronLeft).size(px(14.)).text_color(c(look.secondary)))
+}
+
 pub fn traffic_lights() -> Div {
     div()
         .flex()

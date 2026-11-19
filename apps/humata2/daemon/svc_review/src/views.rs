@@ -200,7 +200,11 @@ impl Review {
         if offered {
             held.view.state = pb::ViewState::Waiting as i32;
             held.bump();
-            // TODO(svc_review): VW-12 away view-journal hook when ReviewGuard/AwayPort exposes host_link.
+            // VW-12: on a machine the offer reaches the host through the
+            // journal, kept before the offer is taken (D225).
+            if let Some(journal) = self.inner.view_journal.get() {
+                journal.offered(&held.record.session, &held.view).await?;
+            }
         } else if key.is_none() {
             return Ok(held.view);
         }

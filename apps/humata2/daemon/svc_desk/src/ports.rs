@@ -32,8 +32,9 @@ pub use humata2_svc_channels::rename_alias as alias;
 pub const START_COLS: u16 = 120;
 /// Default terminal rows for newly started Desk sessions.
 pub const START_ROWS: u16 = 36;
-/// Channel folder name on remote machines.
-pub const CHANNEL_FOLDER: &str = "channels";
+/// Metadata key naming a channel's folder on a Desk start the host relays
+/// to another machine; it must match `humata2_svc_peer::host_relay::CHANNEL_FOLDER`.
+pub const CHANNEL_FOLDER: &str = "humata-channel-folder";
 
 /// Result of a guard check: allowed or must ask the user.
 #[derive(Debug)]
@@ -589,19 +590,10 @@ pub fn start_error(err: impl std::fmt::Display) -> (Code, pb::Error) {
     )
 }
 
-/// Clean a session title string.
-pub fn clean_title(raw: &str) -> Result<String, Status> {
-    let cleaned = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if cleaned.is_empty() {
-        Err(invalid_field(
-            "title",
-            pb::invalid_field::Problem::Missing,
-            "provide a title",
-            "must not be empty",
-        ))
-    } else {
-        Ok(cleaned)
-    }
+/// Clean a Desk session title: runs of whitespace become one space. An
+/// empty title is allowed; the caller gives it the fallback name.
+pub fn clean_title(raw: &str) -> String {
+    raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Wrap a message in a `tonic::Request`, tagging `humata-host-assigned-id` when present.
@@ -621,12 +613,14 @@ pub fn assigned<T>(msg: T, id: Option<&str>) -> Result<tonic::Request<T>, Status
     Ok(req)
 }
 
-/// Qualify a machine and id as `machine/id`.
+/// A trash item's id as the host's Bin view lists an item on `machine`:
+/// `machine:id`. It must match `humata2_svc_files::forward::qualified`, or a
+/// restore from that view can't find the Desk session the item holds.
 pub fn qualified(machine: &str, id: &str) -> String {
     if machine.is_empty() {
         id.to_owned()
     } else {
-        format!("{machine}/{id}")
+        format!("{machine}:{id}")
     }
 }
 

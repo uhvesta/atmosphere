@@ -30,7 +30,7 @@ use tonic::{Code, Request, Response, Status, Streaming};
 
 use crate::ports::{
     Answers, BoardAsk, Caller, Checked, Compression, Deferred, LinkProvider, Placed, Roots, Run,
-    Target, TransferGuardPort, TransferInboxPort, TrashBinPort, actor, answer_key, blocking,
+    HostAskPort, Target, TransferGuardPort, TransferInboxPort, TrashBinPort, actor, answer_key, blocking,
     caller, chain, compression, error, failure, internal, invalid_field, lock, missing, not_found,
     now_ms, timestamp,
 };
@@ -131,6 +131,8 @@ struct Core {
     keys: Mutex<HashMap<String, String>>,
     changes: broadcast::Sender<tr::Snapshot>,
     controlled: Answers<pb::Transfer>,
+    /// On a machine: where its agents' copies naming another machine go (D768).
+    host: std::sync::OnceLock<Arc<dyn HostAskPort>>,
 }
 
 impl TransferSvc {
@@ -161,6 +163,7 @@ impl TransferSvc {
                 keys: Mutex::new(HashMap::new()),
                 changes,
                 controlled: Answers::new(),
+                host: std::sync::OnceLock::new(),
             }),
         })
     }
@@ -173,11 +176,54 @@ impl TransferSvc {
         }
     }
 
+    /// On a machine: its agents' copies that name another machine go to the
+    /// host, which holds the links (D768). The first call wins.
+    pub fn ask_host_for_agents(self: &Arc<Self>, host: Arc<dyn HostAskPort>) {
+        let _ = self.core.host.set(host);
+    }
+
+    /// The host's answer to an agent's copy naming another machine, or
+    /// `None` when the copy isn't one for the host: not an agent's, all on
+    /// this machine, or this daemon is the host. The places on this machine
+    /// go up unnamed: the host knows it by its link's id, not this one's.
+    async fn ask_host(
+        &self,
+        who: &Caller,
+        request: &pb::StartTransferRequest,
+    ) -> Option<Result<Response<pb::Transfer>, Status>> {
+        const METHOD: &str = "/humata.v1.TransferService/StartTransfer";
+        let host = self.core.host.get()?;
+        let Caller::Agent(agent) = who else {
+            return None;
+        };
+        let here = self.core.machine.as_str();
+        let elsewhere = |place: &pb::FileLocation| {
+            place.machine.as_ref().is_some_and(|machine| !machine.value.is_empty() && machine.value != here)
+        };
+        if !request.sources.iter().chain(request.destination.as_ref()).any(elsewhere) {
+            return None;
+        }
+        let mut sent = request.clone();
+        for place in sent.sources.iter_mut().chain(sent.destination.as_mut()) {
+            if !elsewhere(place) {
+                place.machine = None;
+            }
+        }
+        let asked = host.ask(agent.session.id.as_str(), METHOD, sent.encode_to_vec()).await;
+        Some(asked.and_then(|bytes| {
+            pb::Transfer::decode(bytes.as_slice()).map(Response::new).map_err(|source| {
+                internal(
+                    format!(
+                        "the host's answer to {METHOD} couldn't be read ({source}): this machine and the host run different releases of Humata; migrate this machine from the host's Inbox"
+                    ),
+                    "",
+                )
+            })
+        }))
+    }
+
     /// Gives the transfers the machines' links (the host only; without them
     /// every machine is offline) and resumes the transfers waiting for a
-    /// Machine-side hook when agent requests forward to host.
-    pub fn ask_host_for_agents(self: &Arc<Self>) {}
-
     /// machine whenever its link comes up (FM-8, FM-13). Inside the runtime,
     /// once.
     pub fn use_links(self: &Arc<Self>, links: Arc<dyn LinkProvider>) {
@@ -1139,6 +1185,9 @@ impl pb::transfer_service_server::TransferService for TransferSvc {
     ) -> Result<Response<pb::Transfer>, Status> {
         let who = caller(&request)?;
         let request = request.into_inner();
+        if let Some(answer) = self.ask_host(&who, &request).await {
+            return answer;
+        }
         let mode = mode_of(request.mode)?;
         let on_existing = on_existing(request.on_existing, "on_existing")?;
         let begin = Begin {

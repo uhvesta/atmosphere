@@ -5,16 +5,14 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use humata2_daemon_ports::Caller;
-use humata2_grpc::humata::v1 as pb;
-use humata2_grpc::humata::v1::session_service_server::SessionService;
+use humata2_daemon_ports::{Caller, Gated};
 use humata2_svc_terminal::ports::{
     LinkState, RelayError, RelayLinks, TerminalLifecycle, TerminalSessions,
 };
 use humata2_svc_terminal::RemoteTerminal;
 use tokio::sync::watch;
 use tonic::transport::Channel;
-use tonic::{Request, Status};
+use tonic::Status;
 
 use crate::host_relay::{LinkState as HostLinkState, Links};
 use crate::session_service::SessionSvc;
@@ -60,15 +58,16 @@ impl RelayLinks for LinksAdapter {
     }
 }
 
-async fn resume_via(svc: &SessionSvc, caller: &Caller, session: &str) -> Result<(), Status> {
-    let mut request = Request::new(pb::ResumeSessionRequest {
-        id: Some(pb::SessionId {
-            value: session.to_owned(),
-        }),
-        ..Default::default()
-    });
-    request.extensions_mut().insert(caller.clone());
-    SessionService::resume_session(svc, request).await.map(|_| ())
+/// D784: a stopped shell starts again through the restart doctor's repair,
+/// not a session resume: its id is a tab's, and a session's resume brings
+/// back an agent.
+async fn resume_shell_via(svc: &SessionSvc, caller: &Caller, tab: &str) -> Result<(), Status> {
+    match svc.repair_tab(caller, tab.to_owned(), true).await? {
+        Gated::Done(()) => Ok(()),
+        Gated::Ask(_) => Err(Status::permission_denied(
+            "starting this shell again needs the user's approval; resume it from the app",
+        )),
+    }
 }
 
 /// Adapts `crate::session_service::SessionSvc` to [`TerminalSessions`].
@@ -92,8 +91,8 @@ impl TerminalSessions for SessionsAdapter {
         crate::session_service::refuse_input_while_moving(session)
     }
 
-    async fn resume_session(&self, caller: &Caller, session: &str) -> Result<(), Status> {
-        resume_via(&self.0, caller, session).await
+    async fn resume_shell(&self, caller: &Caller, tab: &str) -> Result<(), Status> {
+        resume_shell_via(&self.0, caller, tab).await
     }
 }
 
@@ -143,9 +142,9 @@ impl TerminalSessions for LateSessionsAdapter {
         crate::session_service::refuse_input_while_moving(session)
     }
 
-    async fn resume_session(&self, caller: &Caller, session: &str) -> Result<(), Status> {
+    async fn resume_shell(&self, caller: &Caller, tab: &str) -> Result<(), Status> {
         match self.0.get() {
-            Some(s) => resume_via(s, caller, session).await,
+            Some(s) => resume_shell_via(s, caller, tab).await,
             None => Err(Status::unavailable("session service not yet initialized")),
         }
     }

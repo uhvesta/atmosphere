@@ -415,7 +415,10 @@ fn run(
         // Enrolled afresh: its journal starts over (D226).
         work.forget_journal_now(&name);
     }
-    let _ = (pipe, runtime);
+    // The peer dialer takes this link, the terminal's only one, when the
+    // machine's link starts.
+    lock(&ONE_SHOTS).insert(name.clone(), pipe);
+    work.link_up(&name, runtime);
     work.publish_machines();
     if let Some(progress) = progress {
         for step in [OpStep::Connect, OpStep::Check, OpStep::Install, OpStep::Start] {
@@ -430,6 +433,21 @@ fn run(
         machine: Some(machine_id(&name)),
         can_make_unattended: true,
     }));
+}
+
+/// Finished logins' links, each kept until its machine's peer link takes it.
+static ONE_SHOTS: std::sync::LazyLock<Mutex<BTreeMap<String, Pipe>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+/// The dial for `machine`'s link when a login just finished over its
+/// terminal: that terminal carries the link, handed out once. None when no
+/// login is waiting for it, so the link dials its command.
+pub(crate) fn one_shot(machine: &str) -> Option<Box<dyn Dial>> {
+    let pipe = lock(&ONE_SHOTS).remove(machine)?;
+    Some(Box::new(OneShot {
+        machine: machine.to_owned(),
+        pipe: Mutex::new(Some(pipe)),
+    }))
 }
 
 /// The peer link's one stream, handed out once: the terminal that carries

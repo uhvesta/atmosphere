@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use humata2_daemon_ports::{Deferred, Run};
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::{Exit, ManageError, Runner, ScriptBody, SystemRunner, Trigger};
-use humata2_rpc_kit::{error_of, failure, internal};
+use humata2_rpc_kit::{failure, internal};
 use tokio::sync::broadcast;
 use tonic::Code;
 

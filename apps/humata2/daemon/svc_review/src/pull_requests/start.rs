@@ -151,6 +151,51 @@ fn prepare_channel(
     Ok(channel)
 }
 
+/// The review session's title: the pull request's own title for one, else
+/// how many it reviews.
+fn title_of(asked: &[pb::PullRequestRef], infos: &[pb::PullRequestInfo]) -> String {
+    match infos {
+        [one] if !one.title.is_empty() => one.title.clone(),
+        _ => format!("Review of {} pull requests", asked.len()),
+    }
+}
+
+/// PR-5, D751: what the review chat is told first. Each pull request's URL,
+/// title, author and size, the user's context and the PR-23 tools; never a
+/// branch or where the clones are (D743). It is not asked to review (D59).
+fn first_message_of(
+    asked: &[pb::PullRequestRef],
+    infos: &[pb::PullRequestInfo],
+    context: &str,
+) -> String {
+    // One line: the agent's input reads a newline as a send.
+    let prs: Vec<String> = asked
+        .iter()
+        .zip(infos)
+        .map(|(pr, info)| {
+            let repo = pr.repo.clone().unwrap_or_default();
+            format!(
+                "https://github.com/{}/{}/pull/{} \"{}\" by {} ({} files, +{} -{})",
+                repo.owner, repo.name, pr.number, info.title, info.author, info.files, info.added,
+                info.removed,
+            )
+        })
+        .collect();
+    let mut message = format!("This is a review chat for {}.", prs.join("; "));
+    let context = context.trim();
+    if !context.is_empty() {
+        message.push_str(" From the user: ");
+        message.push_str(context);
+    }
+    message.push_str(
+        " Use review_context to see what the user is looking at, review_focus to show them lines, \
+         review_note to leave them a note, review_prepare to order and group files, and review_draft \
+         only when they ask for a GitHub draft. session_info names the repositories. \
+         Don't review on your own: wait for the user's question.",
+    );
+    message
+}
+
 impl PullRequests {
     /// A2: starts the review `request` describes and answers with the
     /// operation that starts its session. This does not check who asks:
@@ -222,8 +267,18 @@ impl PullRequests {
                 "",
             )
         })?;
+        let title = title_of(&request.prs, &infos);
+        let first_message = first_message_of(&request.prs, &infos, &request.first_message);
         let started = sessions
-            .begin_review(caller, channel, &request, prs, request.push_allowed)
+            .begin_review(
+                caller,
+                channel,
+                &request,
+                prs,
+                request.push_allowed,
+                title,
+                first_message,
+            )
             .await?;
         Ok(started.operation.unwrap_or_default())
     }

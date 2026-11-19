@@ -1,7 +1,6 @@
 //! The screens in the middle of the window, one per route.
 
 use std::rc::Rc;
-use std::time::Duration;
 
 use crate::{chrome, theme::Look};
 use gpui_kit::assets::IconName;
@@ -18,6 +17,7 @@ use humata2_clients::model::{Agent, ForkKind, Session, Status};
 use humata2_session::{MenuItem, SessionAction};
 
 use crate::bridge::Ui;
+use humata2_ui_core::clock::{ticked_now, until_next};
 use crate::widgets::{self, col, row};
 
 /// The screen's title, for the top bar.
@@ -159,14 +159,10 @@ pub(crate) fn session_header(
         .find(|x| x.id == session.machine);
     let terminal_full = state.full_screen() == Some(FullScreen::Terminal);
     let compact = width < 560.;
-    // P8: a Working session's run time counts up from its start. The clock is
-    // read only when there is a start to measure from.
-    let working_now = session
+    // P8: a Working session's run time counts up from its start.
+    let working_since = session
         .status_since_ms
-        .filter(|_| session.status == Status::Working)
-        .map(|_| ui.clients().daemon.now_ms());
-    let working = working_now
-        .and_then(|now| working_for(session.status, session.status_since_ms, now));
+        .filter(|_| session.status == Status::Working);
     let mut crumbs = row()
         .min_w_0()
         .overflow_hidden()
@@ -265,8 +261,13 @@ pub(crate) fn session_header(
                 .child(words),
         );
     }
-    if !compact && working_now.is_some() {
-        heading = heading.child(working_note(session, look, working));
+    if let Some(since_ms) = working_since.filter(|_| !compact) {
+        heading = heading.child(WorkingNote {
+            ui: ui.clone(),
+            session: session.id.to_string(),
+            since_ms,
+            look,
+        });
     }
     row()
         .h(px(52.))
@@ -445,23 +446,44 @@ fn working_for(status: Status, since_ms: Option<i64>, now_ms: i64) -> Option<Str
 }
 
 /// The Working run time in the header (P8): its words once the run is long
-/// enough, else an empty box. Either way it re-draws once a second, so the
-/// words appear on time and then count up.
-fn working_note(session: &Session, look: Look, words: Option<String>) -> AnyElement {
-    // Before there is anything to say it only ticks: out of the row's flow,
-    // so the heading keeps its spacing.
-    let note = if words.is_none() { div().absolute() } else { div() };
-    note.text_size(px(11.5))
-        .text_color(rgb(look.secondary))
-        .children(words)
-        .with_animation(
-            SharedString::from(format!("session-working-{}", session.id)),
-            Animation::new(Duration::from_secs(1))
-                .repeat()
-                .with_max_fps(1.),
-            |note, _| note,
-        )
-        .into_any_element()
+/// enough, else an empty box. It reads the app's clock when it ticks (at 10 s,
+/// then each second of the run), never when the header is drawn
+/// ([`humata2_ui_core::clock`]).
+#[derive(IntoElement)]
+struct WorkingNote {
+    ui: Rc<Ui>,
+    session: String,
+    since_ms: i64,
+    look: Look,
+}
+
+impl RenderOnce for WorkingNote {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let since_ms = self.since_ms;
+        let key = SharedString::from(format!("session-working-{}-{since_ms}", self.session));
+        let now_ms = ticked_now(window, cx, key.clone(), &self.ui.now(), |at| {
+            Some(working_next_change(since_ms, at))
+        });
+        let words = working_for(Status::Working, Some(since_ms), now_ms);
+        // Before there is anything to say it is an empty box out of the
+        // row's flow, so the heading keeps its spacing.
+        let note = if words.is_none() { div().absolute() } else { div() };
+        note.id(key)
+            .text_size(px(11.5))
+            .text_color(rgb(self.look.secondary))
+            .children(words)
+    }
+}
+
+/// How many ms after `at` the Working note of a run since `since_ms` next
+/// reads differently: when its words appear, then each second.
+fn working_next_change(since_ms: i64, at: i64) -> i64 {
+    let run = at.saturating_sub(since_ms);
+    if run < widgets::ELAPSED_AFTER_MS {
+        widgets::ELAPSED_AFTER_MS - run
+    } else {
+        until_next(run, 1_000)
+    }
 }
 
 fn session_menu(ui: &Rc<Ui>, state: &AppState, session: &Session, desk: bool, look: Look) -> Div {
@@ -705,7 +727,7 @@ mod tests {
     // `test` attribute, which would shadow the built-in one.
     use ::core::prelude::v1::test;
 
-    use super::working_for;
+    use super::{working_for, working_next_change};
     use crate::widgets::elapsed_text;
     use humata2_clients::model::Status;
 
@@ -728,6 +750,13 @@ mod tests {
     #[test]
     fn a_working_session_with_no_known_start_shows_no_run_time() {
         assert_eq!(working_for(Status::Working, None, 130_000), None);
+    }
+
+    #[test]
+    fn the_run_time_ticks_when_it_first_shows_then_each_second() {
+        assert_eq!(working_next_change(500, 4_500), 6_000);
+        assert_eq!(working_next_change(500, 10_700), 800);
+        assert_eq!(working_next_change(500, 10_500), 1_000);
     }
 }
 

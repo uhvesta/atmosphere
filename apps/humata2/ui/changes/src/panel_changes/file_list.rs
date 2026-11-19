@@ -188,6 +188,16 @@ pub(super) fn file_row(
         let seen = humata2_review::looks::file_look(&state.review, &diff.session, &repo, &path, file);
         look_tick(&ui, look, &repo, &path, seen)
     });
+    // The inline pull request review (`short`) has no Looks good (D852), so
+    // its file row leads with the file glyph where the tick would stand, and
+    // the letter, if any, follows the name (frame 68).
+    let glyph = short.then(|| {
+        div()
+            .id(SharedString::from(format!("change-file-glyph {repo}/{path}")))
+            .test_support()
+            .flex_shrink_0()
+            .child(icon(IconName::FileCode, look.secondary, 12.))
+    });
     // DS-8, DS-82: a letter, never colour alone; a modified file's column
     // stays empty. It stands after the name so the circle sits 8 pt from it.
     let mark = {
@@ -210,7 +220,6 @@ pub(super) fn file_row(
                         .text_color(rgb(color))
                 }))
         }.into_any_element();
-    let (mark_before, mark_after) = if short { (Some(mark), None) } else { (None, Some(mark)) };
     row()
         .id(SharedString::from(format!("change-file {repo}/{path}")))
         .group(group.clone())
@@ -232,7 +241,7 @@ pub(super) fn file_row(
         .cursor_pointer()
         .when(on, |row| row.bg(rgb(look.fill)))
         .children(tick)
-        .children(mark_before)
+        .children(glyph)
         .child(if short {
             text(path.rsplit('/').next().unwrap_or(path.as_str()).to_owned())
                 .flex_1()
@@ -278,7 +287,7 @@ pub(super) fn file_row(
                 )
                 .into_any_element()
         })
-        .children(mark_after)
+        .child(mark)
         .when_some(done.filter(|_| !short), |row, done| {
             row.child(
                 text(format!("✓ {done} done"))

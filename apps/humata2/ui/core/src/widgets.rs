@@ -13,6 +13,7 @@ use humata2_app::AppAction;
 use humata2_clients::progress::OpProgress;
 
 use crate::bridge::Ui;
+use crate::clock::{Now, ticked_now, until_next};
 use crate::theme::{self, Look, color};
 
 /// A horizontal flex row, items centered.
@@ -370,74 +371,100 @@ pub fn progress_bar(
 }
 
 /// The progress line: the step's title, its label and the elapsed time on
-/// one row, the bar under it. For the first 300 ms it is an empty element
-/// that wakes the view a few times a second, so the line appears on time
-/// even when nothing else changes. `now_ms` is the caller's clock (unix ms);
-/// `None` draws at once, without a clock.
-pub fn progress_line(
-    look: Look,
-    progress: &OpProgress,
-    now_ms: Option<i64>,
-) -> AnyElement {
-    // Keyed by the operation, so each line on screen keeps its own animations.
-    let key = format!("{}@{}", progress.title, progress.started_ms);
-    let Some(draw) = progress_draw(progress, now_ms) else {
-        return div()
-            .with_animation(
-                SharedString::from(format!("progress-wait-{key}")),
-                Animation::new(Duration::from_millis(SHOW_AFTER_MS.unsigned_abs()))
-                    .repeat()
-                    .with_max_fps(10.),
-                |wait, _| wait,
-            )
-            .into_any_element();
-    };
-    let bar = progress_bar(
+/// one row, the bar under it. Nothing draws for the first 300 ms. `now` is
+/// the caller's clock (`Ui::now`); the line reads it when it ticks, at 300 ms,
+/// at 10 s and then each second of the run (see [`crate::clock`]). `None`
+/// draws at once, without the elapsed time.
+pub fn progress_line(look: Look, progress: &OpProgress, now: Option<Now>) -> AnyElement {
+    ProgressLine {
         look,
-        draw.fraction,
-        BarMetrics::line(look),
-        SharedString::from(format!("progress-sweep-{key}")),
-    );
-    let heading = row()
-        .w_full()
-        .gap(px(6.))
-        .text_size(px(11.))
-        .whitespace_nowrap()
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .text_color(rgb(look.secondary))
-                .child(progress.title.clone()),
-        )
-        .children((!draw.label.is_empty()).then(|| {
-            div()
-                .flex_shrink_0()
-                .text_color(rgb(look.secondary))
-                .child(draw.label)
-        }))
-        .children(draw.elapsed.map(|elapsed| {
-            div()
-                .flex_shrink_0()
-                .text_color(rgb(look.tertiary))
-                .child(format!(" · {elapsed}"))
-        }));
-    let line = col().w_full().gap(px(3.)).child(heading).child(bar);
-    match now_ms {
-        // The elapsed time only moves when the caller's clock does, and the
-        // caller re-renders only when something on screen changes. So with a
-        // clock, this element re-renders once a second while it is drawn.
-        Some(_) => line
-            .with_animation(
-                SharedString::from(format!("progress-tick-{key}")),
-                Animation::new(Duration::from_secs(1))
-                    .repeat()
-                    .with_max_fps(1.),
-                |line, _| line,
+        progress: progress.clone(),
+        now,
+    }
+    .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct ProgressLine {
+    look: Look,
+    progress: OpProgress,
+    now: Option<Now>,
+}
+
+impl RenderOnce for ProgressLine {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self {
+            look,
+            progress,
+            now,
+        } = self;
+        // Keyed by the operation, so each line on screen keeps its own clock
+        // and sweep.
+        let key = format!("{}@{}", progress.title, progress.started_ms);
+        let started_ms = progress.started_ms;
+        let now_ms = now.map(|now| {
+            ticked_now(
+                window,
+                cx,
+                SharedString::from(format!("progress-clock-{key}")),
+                &now,
+                |at| Some(progress_next_change(started_ms, at)),
             )
-            .into_any_element(),
-        None => line.into_any_element(),
+        });
+        let Some(draw) = progress_draw(&progress, now_ms) else {
+            return div().into_any_element();
+        };
+        let bar = progress_bar(
+            look,
+            draw.fraction,
+            BarMetrics::line(look),
+            SharedString::from(format!("progress-sweep-{key}")),
+        );
+        let heading = row()
+            .w_full()
+            .gap(px(6.))
+            .text_size(px(11.))
+            .whitespace_nowrap()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(rgb(look.secondary))
+                    .child(progress.title.clone()),
+            )
+            .children((!draw.label.is_empty()).then(|| {
+                div()
+                    .flex_shrink_0()
+                    .text_color(rgb(look.secondary))
+                    .child(draw.label)
+            }))
+            .children(draw.elapsed.map(|elapsed| {
+                div()
+                    .flex_shrink_0()
+                    .text_color(rgb(look.tertiary))
+                    .child(format!(" · {elapsed}"))
+            }));
+        col()
+            .w_full()
+            .gap(px(3.))
+            .child(heading)
+            .child(bar)
+            .into_any_element()
+    }
+}
+
+/// How many ms after `at` the progress line of an operation started at
+/// `started_ms` next draws differently: when it appears, when its elapsed
+/// time appears, then each second.
+fn progress_next_change(started_ms: i64, at: i64) -> i64 {
+    let run = at.saturating_sub(started_ms);
+    if run < SHOW_AFTER_MS {
+        SHOW_AFTER_MS - run
+    } else if run < ELAPSED_AFTER_MS {
+        ELAPSED_AFTER_MS - run
+    } else {
+        until_next(run, 1_000)
     }
 }
 
@@ -447,7 +474,7 @@ mod tests {
     // `test` attribute, which would shadow the built-in one.
     use ::core::prelude::v1::test;
 
-    use super::{ELAPSED_AFTER_MS, SHOW_AFTER_MS, elapsed_text, progress_draw};
+    use super::{ELAPSED_AFTER_MS, SHOW_AFTER_MS, elapsed_text, progress_draw, progress_next_change};
     use humata2_clients::progress::OpProgress;
 
     fn op(fraction: Option<f32>, label: &str, started_ms: i64) -> OpProgress {
@@ -513,5 +540,12 @@ mod tests {
         assert!(draw.is_some(), "no clock, no wait");
         assert_eq!(draw.and_then(|d| d.elapsed), None);
         assert!(progress_draw(&op(None, "", i64::MAX), None).is_some());
+    }
+
+    #[test]
+    fn the_line_ticks_when_it_appears_when_its_time_shows_and_each_second() {
+        assert_eq!(progress_next_change(1_000, 1_100), SHOW_AFTER_MS - 100);
+        assert_eq!(progress_next_change(1_000, 1_000 + SHOW_AFTER_MS), ELAPSED_AFTER_MS - SHOW_AFTER_MS);
+        assert_eq!(progress_next_change(1_000, 1_000 + ELAPSED_AFTER_MS + 250), 750);
     }
 }

@@ -6,21 +6,33 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// The footer's count of drafts for GitHub (DS-55): "4 drafts · 3 by
-/// Copilot, 1 by you", naming the session's agent.
-pub(super) fn drafts_line(state: &AppState, session: &SessionId, agent: usize, you: usize) -> String {
-    let total = agent + you;
-    if total == 0 {
-        return "No drafts".to_owned();
-    }
+/// claude, 1 by you", naming the session's agent by its command (D850,
+/// D856). `fits` says whether a line fits beside the footer's buttons; when
+/// the full line doesn't, it falls back to the bare "4 drafts", never cut
+/// mid-phrase.
+pub(super) fn drafts_line(
+    state: &AppState,
+    session: &SessionId,
+    agent: usize,
+    you: usize,
+    fits: impl Fn(&str) -> bool,
+) -> String {
     let name = state
         .workspace
         .sessions
         .iter()
         .find(|each| &each.id == session)
-        .map_or("the agent", |each| match each.agent {
-            humata2_clients::model::Agent::Claude => "Claude Code",
-            other => other.name(),
-        });
+        .map_or("the agent", |each| each.agent.command());
+    drafts_count(name, agent, you, fits)
+}
+
+/// [`drafts_line`] for an agent already named.
+fn drafts_count(name: &str, agent: usize, you: usize, fits: impl Fn(&str) -> bool) -> String {
+    let total = agent + you;
+    if total == 0 {
+        return "No drafts".to_owned();
+    }
+    let bare = format!("{total} draft{}", if total == 1 { "" } else { "s" });
     let mut by = Vec::new();
     if agent > 0 {
         by.push(format!("{agent} by {name}"));
@@ -28,7 +40,8 @@ pub(super) fn drafts_line(state: &AppState, session: &SessionId, agent: usize, y
     if you > 0 {
         by.push(format!("{you} by you"));
     }
-    format!("{total} draft{} · {}", if total == 1 { "" } else { "s" }, by.join(", "))
+    let full = format!("{bare} · {}", by.join(", "));
+    if fits(&full) { full } else { bare }
 }
 
 /// The drafts for GitHub of `session`, by the agent and by the person.
@@ -1406,4 +1419,26 @@ fn push_control(ui: &Rc<Ui>, state: &AppState, look: Look, repo: &str) -> Div {
         .flex_shrink_0()
         .child(Quiet { button, color: look.accent, fill: look.fill })
         .when_some(status, |control, status| control.child(status))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drafts_count;
+
+    #[test]
+    fn the_count_names_who_wrote_the_drafts_when_it_fits() {
+        assert_eq!(drafts_count("claude", 3, 1, |_| true), "4 drafts · 3 by claude, 1 by you");
+        assert_eq!(drafts_count("claude", 0, 1, |_| true), "1 draft · 1 by you");
+    }
+
+    #[test]
+    fn a_count_that_does_not_fit_falls_back_to_the_bare_total() {
+        assert_eq!(drafts_count("claude", 3, 1, |line| line.len() <= 10), "4 drafts");
+        assert_eq!(drafts_count("codex", 1, 0, |_| false), "1 draft");
+    }
+
+    #[test]
+    fn no_drafts_reads_no_drafts() {
+        assert_eq!(drafts_count("claude", 0, 0, |_| false), "No drafts");
+    }
 }

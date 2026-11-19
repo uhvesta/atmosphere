@@ -267,15 +267,15 @@ fn drive(app: &mut App, world: &World, session: &SessionId, repo: &str, folder: 
         comment_with(app, session, ARROWS).is_some_and(|c| c.anchor.detached)
     });
 
-    // 8. Resolve the addressed one; Re-attach the other to the new
-    // paragraph and send it again.
-    app.wait_until("Resolve on the addressed comment", |app| {
-        app.view().contains("Resolve")
+    // 8. The addressed one already reads done, with Reopen and no Resolve
+    // (D851); Re-attach the other to the new paragraph and send it again.
+    app.wait_until("the addressed comment to read done", |app| {
+        app.view().contains("Done by ")
     });
-    app.click(Role::Button, "Resolve");
-    app.wait_until("the addressed comment to be resolved", |app| {
-        comment_with(app, session, SIZES).is_none_or(|c| c.status == Status::Resolved)
-    });
+    assert!(
+        comment_with(app, session, SIZES).is_some_and(|c| c.status == Status::Addressed),
+        "a done comment stays listed as addressed until someone reopens it"
+    );
     app.wait_until("Re-attach on the detached comment", |app| {
         app.view().contains("Re-attach")
     });

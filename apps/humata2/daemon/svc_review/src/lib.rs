@@ -46,7 +46,7 @@ mod stack;
 mod views;
 
 pub use comments::{Doubtful, RecoveryState, UserWriteGuard};
-pub use pull_requests::{PR_REVIEWS_FOLDER, PullRequests, binding};
+pub use pull_requests::{PR_REVIEWS_FOLDER, PullRequests, ReviewRemote, binding};
 pub use replay::Replayed;
 pub use sink::{CommentSink, TerminalSink};
 
@@ -87,6 +87,9 @@ struct Inner {
     sink: Arc<dyn CommentSink>,
     /// Reads a repo's stack metadata for `from_stack` reviews (D803).
     stack_status: Arc<dyn StackStatus>,
+    /// Where an offered view is journaled for the host (VW-12); unset on
+    /// the host and in tests, which journal nothing.
+    view_journal: std::sync::OnceLock<Arc<dyn ports::ViewJournal>>,
 }
 
 /// What a call with an idempotency key answered, so a repeat answers the
@@ -203,8 +206,15 @@ impl Review {
                 views: tokio::sync::Mutex::default(),
                 sink,
                 stack_status,
+                view_journal: std::sync::OnceLock::new(),
             }),
         }
+    }
+
+    /// VW-12: journal each view this machine's agents offer for the host.
+    /// A second call is ignored.
+    pub fn use_view_journal(&self, journal: Arc<dyn ports::ViewJournal>) {
+        let _ = self.inner.view_journal.set(journal);
     }
 
     /// PR-10: the ref each of `keys` is compared with when `base` is each

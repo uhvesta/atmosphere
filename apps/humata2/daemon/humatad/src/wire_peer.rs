@@ -67,8 +67,8 @@ impl PolicySourcePort for PolicySourceAdapter {
         self.0.changes()
     }
 
-    fn linked(&self, machine: &str) {
-        self.0.linked(machine);
+    fn linked(&self, machine: &str) -> Box<dyn std::any::Any + Send> {
+        Box::new(self.0.linked(machine))
     }
 
     fn acked(&self, machine: &str, rev: u64) {

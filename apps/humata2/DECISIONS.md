@@ -4989,3 +4989,35 @@ New agent tab opens a fresh agent, done comments fold only on a ticked file, and
   - Send `OpenTerminal{agent}` from agent_tab.rs again.
   - Drop `OpenAgentTab`, `AgentTabOpened`, `PersonTyped`, `OpeningPromptDone`, `opening_prompt.rs` in features/session and features/review, `agent_tabs` with its events.rs line, and `Daemon::send_to_tab`.
   - Drop the `.filter(|_| ticked)` in diff_body.rs and re-record the four frames.
+
+## D859
+Goldens 42 and 43 are redrawn for Back and the Sent chip (Fable 5.2; D848, D851, D855).
+- Both frames' headers lead with the 24 pt Back ghost, as the app draws it.
+- The sent card on line 7 reads "You · line 7 [Sent]", with the same chip and header row as the Draft card.
+- **Reverse:** drop the `back` flag from `desk_header_back` and `session::sent_comment`, then re-record 42 and 43.
+
+## D860
+Golden 12 draws one title bar in full screen (Fable 5.2; DS-14, DV-18, D848).
+- One 52 pt bar holds "Board · payments-rewrite", with Exit full screen and the 16 pt Close where the app puts them. The panel's 36 pt header row is gone.
+- The full-screen Close is the app's 16 pt ghost in every full-screen frame, so 11 and the other full-screen frames move a little too.
+- **Reverse:** draw `panel_header` in `board_panel` again when `full`, drop the Board title extra in `session::panel`, and re-record.
+
+## D861
+Golden 68 is redrawn for the review footer, the file bar and Back (Fable 5.2; D848, D850, D856, DS-2, DS-53, DS-55, RV-1).
+- The header leads with Back, and there is no session-bar Submit while the Diff shows.
+- The file bar reads "acme/api · refund.rs src/ · 1 of 2 ‹ › ↗".
+- The footer reads "4 drafts · 3 by claude, 1 by you", with "Submit review…" as its one primary.
+- The footer count names the agent by its command (`Agent::command`) and is never cut. If it can't fit beside the buttons, it falls back to the bare "4 drafts" (`review_header::drafts_count`).
+- The agent's draft card keeps D856's plain grey line. The accent outline branch in `comment_cards.rs` is gone, so only the open box is outlined.
+- Review file rows lead with the file glyph, with the letter mark after the name.
+- **Reverse:** take the fit check out of `drafts_line`, hard-code the agent name again, and re-record 68.
+
+## D862
+Golden 68 loses the inline Undo and gains the D283 strip, which is built for 0.4.0 (Fable 5.2; D59, D283, PR-22).
+- Humata draws nothing inside the agent's terminal output, so the "Undo" after `review_note refund.rs:140` is gone from golden 68 and from SPEC's sketch of the review session.
+- The strip is one 32 pt row at the foot of the chat tab, above the "2 new commits" banner. It lists the agent's view changes newest first, 3 shown plus "+N", each with a ghost Undo. Frame 68 draws "Noted refund.rs:140 · Undo" and "Opened refund.rs:140 · Undo".
+- A change caused by the code moving shows without Undo. The strip is absent when there are no changes.
+- Undo sends the existing `FollowerAction::Undo(undo_id)`. Only the view is new.
+- It ships in 0.4.0 and does not hold 0.3.7. Until then native/68 differs from the golden by the strip alone.
+- Golden 68 and 69 draw the `pr-reviews` rollup green, as native does, and goldens 190 and 191 gain the session header's Back (D848).
+- **Reverse:** drop the strip view from the chat tab and re-record 68 and 69 without it.

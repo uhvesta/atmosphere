@@ -240,6 +240,9 @@ async fn a_rebuilt_conversation_is_mirrored_once() {
     let ended = rebuild(&rig, &id, &two, "rebuild-once").await;
     assert_eq!(ended.state, pb::OperationState::Succeeded as i32, "{:?}", ended.error);
     rig.wait_session(&id, "live on box-2", |s| s.machine.as_ref() == Some(&two) && is_live(s)).await;
+    // The rebuild's note is typed once the agent is up (D762), after the
+    // rebuild ends; what the person says next goes after it, not into it.
+    attach(&rig, &id).await.wait_for("got: Humata rebuilt").await;
     say(&rig, &id, r#"{"type":"user","message":{"content":"after the rebuild"}}"#).await;
     mirrored(&rig, &id, "after the rebuild").await;
 

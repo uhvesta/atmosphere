@@ -624,7 +624,7 @@ pub async fn resume(
     )
     .await?;
     sessions
-        .resume_session(caller, &record.id)
+        .resume_shell(caller, &record.id)
         .await
         .map_err(|source| RunningError::Resume {
             tab: record.id,

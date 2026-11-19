@@ -49,6 +49,16 @@ pub trait ReviewFeed: Send + Sync {
     );
 }
 
+/// VW-12, D225: where a machine's daemon journals a view its agent just
+/// offered, so the host applies it and owns its state from then on.
+/// Implemented by `humatad` over the away journal; the host keeps none.
+#[tonic::async_trait]
+pub trait ViewJournal: Send + Sync {
+    /// Keeps `view`, `session`'s, for the host. An error means the view
+    /// can't reach the host, so the offer must not be taken.
+    async fn offered(&self, session: &str, view: &pb::PreparedView) -> Result<(), Status>;
+}
+
 /// Session-update notification port implemented by `humatad::session_service::Tell`.
 #[tonic::async_trait]
 pub trait ReviewTell: Send + Sync {
@@ -65,6 +75,9 @@ pub trait ReviewSessions: Send + Sync {
         request: &pb::StartReviewRequest,
         prs: Vec<humata2_store::ReviewPr>,
         push_allowed: bool,
+        // The session's title and the review chat's first message (PR-5).
+        title: String,
+        first_message: String,
     ) -> Result<pb::StartSessionResponse, Status>;
 }
 

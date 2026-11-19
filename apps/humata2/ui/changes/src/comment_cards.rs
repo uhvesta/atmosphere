@@ -514,13 +514,9 @@ fn plain_card(
         format!("{who} · {lines}")
     };
     let open = matches!(comment.status, Status::Draft | Status::Waiting);
-    // The agent's draft for GitHub takes the accent outline; the person's
-    // keeps the grey line.
-    let outlined = if github_draft {
-        matches!(comment.author, Author::Agent(_))
-    } else {
-        open
-    };
+    // A draft for GitHub keeps the grey line, whoever wrote it (D856): the
+    // accent outline is for the open box only.
+    let outlined = !github_draft && open;
     // A done card is quiet: "You [Done by claude] line 43 … Reopen".
     let quiet = state.done && !github_draft;
     let tones = done_tones(look);

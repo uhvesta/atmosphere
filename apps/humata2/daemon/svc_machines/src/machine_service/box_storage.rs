@@ -21,7 +21,7 @@ use std::sync::Arc;
 use humata2_access::Refusal;
 use humata2_daemon_ports::{Caller, UserVia};
 use humata2_grpc::humata::v1 as pb;
-use humata2_rpc_kit::{failed, internal, missing, not_built_status};
+use humata2_rpc_kit::{internal, missing, not_built_status};
 use tonic::{Request, Response, Status};
 
 use super::change_root::{self, RootPlans};
@@ -36,7 +36,7 @@ fn refused(refusal: &Refusal) -> Status {
 }
 
 fn host_vars_status(err: HostVarsError) -> Status {
-    failed(err.code, &err, &err.fix, None)
+    err.status()
 }
 
 pub struct BoxMachineSvc {
@@ -144,8 +144,8 @@ impl pb::machine_service_server::MachineService for BoxMachineSvc {
     ) -> Result<Response<pb::StorageReport>, Status> {
         let caller = extract_caller(&request)?;
         Self::host_only(&caller, "humata.v1.MachineService.GetStorage")?;
-        // TODO(ports): MachineStoragePort needs `report(&self, ...) -> Result<pb::StorageReport, Status>`.
-        Err(not_built_status("humata.v1.MachineService.GetStorage"))
+        let report = self.blocking(|storage| storage.report(Vec::new())).await?;
+        Ok(Response::new(report))
     }
 
     async fn clear_build_cache(
@@ -154,8 +154,11 @@ impl pb::machine_service_server::MachineService for BoxMachineSvc {
     ) -> Result<Response<pb::ClearBuildCacheResponse>, Status> {
         let caller = extract_caller(&request)?;
         Self::host_only(&caller, "humata.v1.MachineService.ClearBuildCache")?;
-        // TODO(ports): MachineStoragePort needs `clear_build_cache(&self, req: &pb::ClearBuildCacheRequest)`.
-        Err(not_built_status("humata.v1.MachineService.ClearBuildCache"))
+        let request = request.into_inner();
+        let freed = self
+            .blocking(move |storage| storage.clear_build_cache(&request))
+            .await?;
+        Ok(Response::new(freed))
     }
 
     async fn list_running_holders(
@@ -243,8 +246,9 @@ impl pb::machine_service_server::MachineService for BoxMachineSvc {
     ) -> Result<Response<pb::TrimLogsResponse>, Status> {
         let caller = extract_caller(&request)?;
         Self::host_only(&caller, "humata.v1.MachineService.TrimLogs")?;
-        // TODO(ports): MachineStoragePort needs `trim_logs(&self, req: &pb::TrimLogsRequest)`.
-        Err(not_built_status("humata.v1.MachineService.TrimLogs"))
+        let request = request.into_inner();
+        let trimmed = self.blocking(move |storage| storage.trim_logs(&request)).await?;
+        Ok(Response::new(trimmed))
     }
 
     async fn list_machines(
@@ -420,9 +424,9 @@ impl pb::machine_service_server::MachineService for BoxMachineSvc {
         let request = request.into_inner();
         self.on_variables(move |variables| variables.set(&request.name, &request.value).map(|_| ()))
             .await?;
-        // TODO(ports): MachineStoragePort needs `running_agents(&self) -> Result<u32, Status>`.
+        let running = self.blocking(|storage| storage.running_agents()).await?;
         Ok(Response::new(pb::SetHostVariableResponse {
-            running_sessions_keep_old_value: 0,
+            running_sessions_keep_old_value: running,
         }))
     }
 
@@ -435,9 +439,9 @@ impl pb::machine_service_server::MachineService for BoxMachineSvc {
         let request = request.into_inner();
         self.on_variables(move |variables| variables.remove(&request.name))
             .await?;
-        // TODO(ports): MachineStoragePort needs `running_agents(&self) -> Result<u32, Status>`.
+        let running = self.blocking(|storage| storage.running_agents()).await?;
         Ok(Response::new(pb::SetHostVariableResponse {
-            running_sessions_keep_old_value: 0,
+            running_sessions_keep_old_value: running,
         }))
     }
 

@@ -362,6 +362,8 @@ fn session_header(look: Look, channel: &'static str, name: &'static str) -> Div 
         .flex_shrink_0()
         .border_b_1()
         .border_color(crate::todo::rule(look))
+        // Back leads the header, as in 68 (D848).
+        .child(crate::kit::back_ghost(look))
         .child(
             div()
                 .flex()

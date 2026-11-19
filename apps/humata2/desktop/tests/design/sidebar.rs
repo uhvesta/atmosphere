@@ -54,11 +54,14 @@ pub struct Side {
     /// devbox-1 can't be reached: its row shows the offline dot and note,
     /// as gpu-box's does (STOP, draft).
     pub unreachable: bool,
+    /// pr-reviews' one session is working, so its folded rollup is the
+    /// green dot, as the review session's frames show it (68, 69).
+    pub pr_working: bool,
 }
 
 impl Side {
     pub const fn at(selected: &'static str) -> Self {
-        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None, asking: true, exited: false, channel_desk: false, gpu_box: Link::Offline, stopped: false, unreachable: false }
+        Self { selected, pinned: false, folded: false, desk: false, empty: false, fresh: None, asking: true, exited: false, channel_desk: false, gpu_box: Link::Offline, stopped: false, unreachable: false, pr_working: false }
     }
 }
 
@@ -237,7 +240,8 @@ fn channels(look: Look, side: Side) -> Div {
     if open {
         list = list.children(INFRA.iter().map(|n| node(look, side, n)));
     }
-    list.child(channel(look, side, "pr-reviews", false, Some((St::Idle, "1")), false))
+    let pr = if side.pr_working { St::Working } else { St::Idle };
+    list.child(channel(look, side, "pr-reviews", false, Some((pr, "1")), false))
         .child(channel(look, side, "web", false, None, false))
 }
 

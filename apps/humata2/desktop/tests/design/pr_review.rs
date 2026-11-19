@@ -165,12 +165,17 @@ pub fn review_dialog(look: Look) -> Div {
     )
 }
 
-/// One diff line: number, tint, text.
+/// The review gutter's number column: 36 pt less one 11.5 pt mono cell.
+const REVIEW_NUMBERS: f32 = 29.;
+
+/// One diff line: number, tint, text. As the app's review gutter draws it:
+/// the number in 36 pt less a cell with a 6 pt pad, then the sign's two
+/// cells and the code, so each text leads with the sign cell's spaces.
 fn diff_line(look: Look, n: &'static str, bg: Option<u32>, text: &'static str) -> Div {
     div()
         .flex()
         .when_some(bg, |line, bg| line.bg(c(bg)))
-        .child(div().w(px(36.)).pr(px(8.)).flex().justify_end().flex_shrink_0().text_color(c(look.term_dim)).child(n))
+        .child(div().w(px(REVIEW_NUMBERS)).pr(px(6.)).flex().justify_end().flex_shrink_0().text_color(c(look.term_dim)).child(n))
         .child(div().whitespace_nowrap().text_color(c(look.term_text)).child(text))
 }
 
@@ -214,16 +219,16 @@ fn review_diff(look: Look) -> Div {
         .text_size(px(11.5))
         .line_height(px(17.))
         .bg(c(look.term))
-        .child(diff_line(look, "138", None, "    let amount = capture.remaining();"))
-        .child(diff_line(look, "139", Some(look.del_bg), "-   let cents = amount.floor();"))
+        .child(diff_line(look, "138", None, "      let amount = capture.remaining();"))
+        .child(diff_line(look, "139", Some(look.del_bg), "-     let cents = amount.floor();"))
         .child(
             div()
                 .flex()
                 .bg(c(look.add_bg))
                 .child(
                     div()
-                        .w(px(36.))
-                        .pr(px(8.))
+                        .w(px(REVIEW_NUMBERS))
+                        .pr(px(6.))
                         .flex()
                         .justify_end()
                         .flex_shrink_0()
@@ -233,7 +238,7 @@ fn review_diff(look: Look) -> Div {
                         .font_weight(FontWeight::BOLD)
                         .child("140"),
                 )
-                .child(div().whitespace_nowrap().text_color(c(look.term_text)).child("+   let cents = amount.round();")),
+                .child(div().whitespace_nowrap().text_color(c(look.term_text)).child("+     let cents = amount.round();")),
         );
     let draft = agent_draft(
         look,
@@ -250,7 +255,7 @@ fn review_diff(look: Look) -> Div {
         .text_size(px(11.5))
         .line_height(px(17.))
         .bg(c(look.term))
-        .child(diff_line(look, "141", None, "    refund.issue(cents)?;"));
+        .child(diff_line(look, "141", None, "      refund.issue(cents)?;"));
     // The panel's own header: the PR line ellipsizes before ⤢ and ✕ give
     // way (DS truncation rule, Fable 2026-11-18).
     let pr_line = div()
@@ -260,11 +265,47 @@ fn review_diff(look: Look) -> Div {
         .min_w_0()
         .child(small_icon(IconName::GitPullRequest, look.secondary))
         .child(secondary(look, "PR #482 against main · 2 repos"));
+    // The file bar: "acme/api · refund.rs src/", then "1 of 2", the step
+    // buttons and Open in editor, as the app draws it (DS-2, DS-53).
+    let step = |glyph: IconName| {
+        div().size(px(20.)).flex().items_center().justify_center().flex_shrink_0().child(small_icon(glyph, look.secondary))
+    };
+    let file_bar = div()
+        .flex()
+        .items_center()
+        .h(px(30.))
+        .px(px(8.))
+        .gap(px(6.))
+        .flex_shrink_0()
+        .border_b_1()
+        .border_color(c(look.line))
+        .text_size(px(12.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .flex_1()
+                .min_w_0()
+                .h(px(18.))
+                .flex_wrap()
+                .overflow_hidden()
+                .gap(px(4.))
+                .whitespace_nowrap()
+                .child(secondary(look, "acme/api"))
+                .child(secondary(look, "·"))
+                .child(div().font_weight(FontWeight::MEDIUM).child("refund.rs"))
+                .child(secondary(look, "src/")),
+        )
+        .child(secondary(look, "1 of 2").whitespace_nowrap())
+        .child(step(IconName::ChevronLeft))
+        .child(step(IconName::ChevronRight))
+        .child(step(IconName::ArrowUpRight));
     div()
         .flex()
         .flex_col()
         .size_full()
         .child(session::panel_header(look, "Diff", false, Some(pr_line)))
+        .child(file_bar)
         .child(
             div()
                 .flex()
@@ -281,29 +322,37 @@ fn review_diff(look: Look) -> Div {
                 .child(after)
                 .child(repo_group(look, false, "ledger", "#91", "uhvesta/refund-ledger")),
         )
+        // The footer: the drafts' count, naming the agent by its command,
+        // and Submit review… as its one primary (D850, DS-55).
         .child(
             div()
                 .flex()
                 .items_center()
+                .gap(px(8.))
                 .h(px(38.))
                 .px(px(10.))
                 .flex_shrink_0()
                 .border_t_1()
                 .border_color(c(look.line))
-                .child(secondary(look, "Drafts: 4 (3 by agent, 1 by you)")),
+                .child(secondary(look, "4 drafts · 3 by claude, 1 by you").whitespace_nowrap())
+                .child(div().flex_1())
+                .child(button(look, Kind::Primary, "Submit review…")),
         )
 }
 
 /// Frame 68: the review session, its chat on the left and the PR's diff
 /// with the agent's drafts on the right (PR-6 to PR-11, PR-15).
 pub fn review_session(look: Look) -> Div {
-    let header = session::header_with(
+    // Back leads the header (D848); Submit review… lives in the Diff's
+    // footer while the Diff shows, so the bar has none.
+    let header = session::header_parts(
         look,
+        true,
         "# pr-reviews",
         St::Working,
         "acme/api #482",
         None,
-        vec![secondary(look, "Claude Code · This Mac"), button(look, Kind::Primary, "Submit review")],
+        vec![secondary(look, "Claude Code · This Mac")],
     );
     let tabs = div()
         .flex()
@@ -316,12 +365,6 @@ pub fn review_session(look: Look) -> Div {
         .child(session::tab(look, Some(status(St::Working).into_any_element()), "claude", true))
         .child(session::tab(look, Some(small_icon(IconName::SquareTerminal, look.secondary).into_any_element()), "zsh", false))
         .child(div().px(px(10.)).child(small_icon(IconName::Plus, look.secondary)));
-    let note_line = div()
-        .flex()
-        .items_center()
-        .gap(px(10.))
-        .child(tl(look.term_text, "● review_note refund.rs:140"))
-        .child(button(look, Kind::Secondary, "Undo"));
     let terminal = div()
         .flex_1()
         .min_h_0()
@@ -341,17 +384,41 @@ pub fn review_session(look: Look) -> Div {
         .child(tl(look.term_dim, "  It rounds half away from zero …"))
         .child(tl(look.term_text, ""))
         .child(tl(look.term_text, "> note that on the line for me"))
-        .child(note_line)
+        .child(tl(look.term_text, "● review_note refund.rs:140"))
         .child(tl(look.term_text, ""))
         .child(session::input_box(look, true));
+    // The view-change strip (D283, D862): Humata draws nothing inside the
+    // agent's output, so the agent's view changes and their Undo sit in one
+    // 32 pt row at the foot of the chat tab, newest first.
+    let strip = div()
+        .flex()
+        .items_center()
+        .gap(px(16.))
+        .h(px(32.))
+        .px(px(10.))
+        .flex_shrink_0()
+        .bg(c(look.term))
+        .border_t_1()
+        .border_color(c(look.line))
+        .text_size(px(12.))
+        .children(["Noted refund.rs:140", "Opened refund.rs:140"].map(|change| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .whitespace_nowrap()
+                .child(secondary(look, change))
+                .child(secondary(look, "·"))
+                .child(div().text_color(c(look.accent)).child("Undo"))
+        }));
     let bar = div()
         .px(px(10.))
         .pb(px(10.))
         .flex_shrink_0()
         .bg(c(look.term))
         .child(session::notice(look, IconName::Info, ORANGE, "2 new commits on the PR branch", Some("Update the clone")));
-    let middle = div().child(header).child(tabs).child(terminal).child(bar);
-    session::shell(look, Side::at(""), middle, Some((Panel::Diff, "Diff", review_diff(look))))
+    let middle = div().child(header).child(tabs).child(terminal).child(strip).child(bar);
+    session::shell(look, Side { pr_working: true, ..Side::at("") }, middle, Some((Panel::Diff, "Diff", review_diff(look))))
 }
 
 /// An agent's draft for GitHub as the one agent card (D853, UXSIMPLE 3-4):

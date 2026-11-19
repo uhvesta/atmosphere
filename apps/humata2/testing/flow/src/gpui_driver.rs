@@ -339,14 +339,17 @@ impl<H: Host> GpuiDriver<'_, H> {
                     channel_tolerance: 2,
                     painted: true,
                 };
-                let report = self
-                    .window(|window, cx| parity::against_refresh(window, cx, pixels, comparison))?
+                let (report, pictures) = self
+                    .window(|window, cx| {
+                        parity::against_refresh_with_pictures(window, cx, pixels, comparison)
+                    })?
                     .map_err(|source| GpuiDriverError::Render {
                         source: Box::new(source),
                     })?;
                 if !report.matches() {
+                    let saved = save_stale_pictures(&pictures);
                     return Err(GpuiDriverError::Stale {
-                        report: report.to_string(),
+                        report: format!("{report}{saved}"),
                     });
                 }
                 self.checked = true;
@@ -501,4 +504,40 @@ fn pick_among(
             count: many.len(),
         }),
     }
+}
+
+/// Writes a stale step's natural and refreshed pictures to the test's
+/// undeclared outputs, so the difference can be looked at. Returns a note
+/// for the error saying where they went, or why they weren't saved.
+/// Files are named after the test's thread, which the test harness names
+/// after the test.
+fn save_stale_pictures(pictures: &[frame::Picture; 2]) -> String {
+    let Some(directory) = std::env::var_os("TEST_UNDECLARED_OUTPUTS_DIR") else {
+        return String::new();
+    };
+    let directory = std::path::PathBuf::from(directory);
+    let thread = std::thread::current();
+    let stem: String = thread
+        .name()
+        .unwrap_or("flow")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .collect();
+    let mut note = String::new();
+    for (picture, kind) in pictures.iter().zip(["natural", "refreshed"]) {
+        if picture.rgba.is_empty() {
+            continue;
+        }
+        let path = directory.join(format!("stale-{stem}-{kind}.png"));
+        let saved = RgbaImage::from_raw(picture.width, picture.height, picture.rgba.clone())
+            .map(|image| image.save(&path));
+        match saved {
+            Some(Ok(())) => note.push_str(&format!("\nThe {kind} frame is at {}", path.display())),
+            Some(Err(error)) => {
+                note.push_str(&format!("\nCouldn't save the {kind} frame to {}: {error}", path.display()));
+            }
+            None => note.push_str(&format!("\nThe {kind} frame's pixels don't fill its size")),
+        }
+    }
+    note
 }

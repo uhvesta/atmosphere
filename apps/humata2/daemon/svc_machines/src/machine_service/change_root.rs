@@ -15,7 +15,7 @@ use std::time::Instant;
 use humata2_daemon_ports::Caller;
 use humata2_grpc::humata::v1 as pb;
 use humata2_rpc_kit::log::say;
-use humata2_rpc_kit::{chain, error, error_of, failed, failure, internal, lock, now_ms};
+use humata2_rpc_kit::{chain, error, failed, failure, internal, lock, now_ms};
 use humata2_sessions::{DESK_CHANNEL, Layout};
 use humata2_store::{AgentState, ChannelRecord, Placement, Store, StoreError};
 use tonic::{Code, Status};
@@ -822,7 +822,9 @@ pub(super) async fn apply_here(
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
         let path = expand(&raw, &home);
-        let layout = Layout::new(storage.root());
+        // The shared layout: switching it is what makes every service of
+        // this daemon use the new root.
+        let layout = storage.layout();
         if move_channels {
             let bin = storage.trash_bin();
             switch_and_move(
@@ -832,24 +834,10 @@ pub(super) async fn apply_here(
                 bin.as_deref(),
                 &here,
                 &raw,
-                path.clone(),
-            )?;
-            storage.set_root(path.clone()).map_err(|err| RootError::Store {
-                doing: "update the runtime Humata folder",
-                source: StoreError::Write {
-                    path,
-                    source: std::io::Error::other(err.message().to_owned()),
-                },
-            })
+                path,
+            )
         } else {
-            switch_for_new_channels(storage.store(), &layout, &raw, path.clone())?;
-            storage.set_root(path.clone()).map_err(|err| RootError::Store {
-                doing: "update the runtime Humata folder",
-                source: StoreError::Write {
-                    path,
-                    source: std::io::Error::other(err.message().to_owned()),
-                },
-            })
+            switch_for_new_channels(storage.store(), &layout, &raw, path)
         }
     })
     .await

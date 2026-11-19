@@ -58,13 +58,26 @@ struct Start {
     cwd: PathBuf,
 }
 
-/// How an agent that keys its conversations by folder names that folder.
+/// How an agent that keys its conversations by folder names that folder:
+/// by its real path, as its cwd gives it (`/tmp` is `/private/tmp` on
+/// macOS). A folder that is gone resolves through its nearest folder that
+/// is still there, as the daemon keys it.
 fn dashed(path: &Path) -> String {
-    path.display()
-        .to_string()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
+    let mut rest = Vec::new();
+    let mut at = path;
+    let real = loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            break rest.iter().rev().fold(real, |real: PathBuf, name| real.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                at = parent;
+            }
+            _ => break path.to_owned(),
+        }
+    };
+    real.display().to_string().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
 /// Makes the world's agent the one above; `turn_end` as Settings › Agents
@@ -407,7 +420,7 @@ impl Fixture {
         let deadline = Instant::now() + Duration::from_secs(30);
         while before.exists() {
             assert!(Instant::now() < deadline, "the conversation stayed at its old key: {}", before.display());
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 
@@ -432,7 +445,7 @@ impl Fixture {
         while self.starts(conversation).len() < times {
             let started = self.starts(conversation).len();
             assert!(Instant::now() < deadline, "the agent started {started} times, not {times}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 
@@ -535,7 +548,7 @@ where
     let deadline = Instant::now() + Duration::from_secs(30);
     while !done().await {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 

@@ -482,7 +482,7 @@ impl Overlays {
             fork.progress
                 .as_ref()
                 .filter(|_| forking)
-                .map(|p| widgets::progress_line(look, p, Some(ui.clients().daemon.now_ms()))),
+                .map(|p| widgets::progress_line(look, p, Some(ui.now()))),
         );
         body.test_support()
             .focus_trap("fork-trap", &self.sheet)

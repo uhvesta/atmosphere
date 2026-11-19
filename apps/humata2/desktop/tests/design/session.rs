@@ -559,15 +559,21 @@ fn diff_lines(look: Look) -> Div {
 }
 
 pub fn comment(look: Look, who: &'static str, text: &'static str, draft: bool) -> Div {
-    comment_card(look, who, text, draft, false)
+    comment_card(look, who, text, draft, false, draft.then_some("Draft"))
+}
+
+/// A sent comment: the grey line, and the Draft card's header row with a
+/// "Sent" chip (D851).
+pub fn sent_comment(look: Look, who: &'static str, text: &'static str) -> Div {
+    comment_card(look, who, text, false, false, Some("Sent"))
 }
 
 /// D126: a saved draft in the Diff panel can be sent on its own.
 fn draft_with_send(look: Look, who: &'static str, text: &'static str) -> Div {
-    comment_card(look, who, text, true, true)
+    comment_card(look, who, text, true, true, Some("Draft"))
 }
 
-fn comment_card(look: Look, who: &'static str, text: &'static str, draft: bool, send: bool) -> Div {
+fn comment_card(look: Look, who: &'static str, text: &'static str, draft: bool, send: bool, label: Option<&'static str>) -> Div {
     div()
         .max_w(px(720.))
         .mx(px(10.))
@@ -588,7 +594,7 @@ fn comment_card(look: Look, who: &'static str, text: &'static str, draft: bool, 
                 .items_center()
                 .gap(px(6.))
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(who))
-                .when(draft, |row| row.child(chip(look, "Draft", look.accent)))
+                .children(label.map(|label| chip(look, label, look.accent)))
                 .when(send, |row| {
                     row.child(div().flex_1())
                         .child(div().px(px(6.)).text_size(px(11.)).text_color(c(look.accent)).child("Send"))
@@ -859,7 +865,8 @@ fn board_panel(look: Look, full: bool) -> Div {
         .flex_1()
         .flex()
         .flex_col()
-        .child(panel_header(look, "Board", full, Some(secondary(look, "payments-rewrite"))))
+        // Full screen has one title bar (the shell's), carrying the channel.
+        .when(!full, |panel| panel.child(panel_header(look, "Board", false, Some(secondary(look, "payments-rewrite")))))
         // Expanded, the panel shows the channel's lanes side by side.
         .when(full, |panel| panel.child(crate::board::lanes(look, Some("payments-rewrite"), None)))
         .when(!full, |panel| panel.child(
@@ -952,7 +959,12 @@ pub fn panel(look: Look, screen: Screen, which: Panel) -> Div {
         Panel::Journal => journal_panel(look, full),
     };
     // Full screen, the Diff's base chip sits beside its title in the one bar.
-    let extra = (full && which == Panel::Diff).then(|| base_chip(look));
+    // The Board's channel sits there the same way (DS-14, DV-18).
+    let extra = match which {
+        Panel::Diff if full => Some(base_chip(look)),
+        Panel::Board if full => Some(secondary(look, "payments-rewrite")),
+        _ => None,
+    };
     panel_shell(look, full, title(which), extra, body)
 }
 
@@ -1007,7 +1019,8 @@ fn panel_shell(look: Look, full: bool, title: &'static str, extra: Option<Div>, 
                         )
                     })
                     .child(button(look, Kind::Secondary, "Exit full screen"))
-                    .child(small_icon(IconName::X, look.secondary)),
+                    // The app's Close is a 16 pt button round its 12 pt glyph.
+                    .child(div().size(px(16.)).flex().items_center().justify_center().flex_shrink_0().child(small_icon(IconName::X, look.secondary))),
             )
         })
         .child(body)
@@ -1119,6 +1132,11 @@ pub fn shell(look: Look, side: Side, middle: Div, panel: Option<(Panel, &'static
 /// over the title, the status dot, `words` beside the title, then `right`
 /// before the Fork, full screen, panel and menu icons.
 pub fn header_with(look: Look, crumb: &'static str, dot: St, title: &'static str, words: Option<(&'static str, u32)>, right: Vec<Div>) -> Div {
+    header_parts(look, false, crumb, dot, title, words, right)
+}
+
+/// [`header_with`], led by the Back ghost when `back` (D848).
+pub fn header_parts(look: Look, back: bool, crumb: &'static str, dot: St, title: &'static str, words: Option<(&'static str, u32)>, right: Vec<Div>) -> Div {
     div()
         .flex()
         .items_center()
@@ -1129,6 +1147,7 @@ pub fn header_with(look: Look, crumb: &'static str, dot: St, title: &'static str
         .border_b_1()
         .border_color(c(look.line))
         .bg(c(look.content))
+        .when(back, |bar| bar.child(back_ghost(look)))
         .child(
             div()
                 .flex()
@@ -1244,7 +1263,7 @@ pub fn split(look: Look) -> Div {
 }
 
 /// Frame 124: a Working session's header with its run time after the
-/// title, "Working · 2m 14s, as the terminal shows" (PROGRESS; `pages::working_note`).
+/// title, "Working · 2m 14s, as the terminal shows" (PROGRESS; `pages::WorkingNote`).
 pub fn working_elapsed(look: Look) -> Div {
     let screen = Screen::new(None, Term::Working);
     let middle = div()

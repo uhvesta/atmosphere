@@ -913,27 +913,74 @@ impl World {
         world
     }
 
-    /// A bare repository `owner/name` on branch `main` with one commit.
+    /// A bare repository `owner/name` on branch `main` with one commit whose
+    /// `README.md` is `"{owner}/{name}\n"`. Cached per `(owner, name)` so
+    /// repeated calls copy the bare repo directly instead of spawning `git`.
     pub fn remote(&self, owner: &str, name: &str) -> PathBuf {
-        static TEMPLATE_BARE: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
-        let template = TEMPLATE_BARE.get_or_init(|| {
+        use std::collections::HashMap;
+        use std::io::Write;
+        use std::process::Stdio;
+        use std::sync::{Mutex, OnceLock};
+
+        static TEMPLATE_EMPTY: OnceLock<TempDir> = OnceLock::new();
+        static CACHE: OnceLock<Mutex<HashMap<(String, String), TempDir>>> = OnceLock::new();
+
+        let empty = TEMPLATE_EMPTY.get_or_init(|| {
             let dir = TempDir::new().unwrap();
-            let bare = dir.path().join("template.git");
+            let bare = dir.path().join("empty.git");
             std::fs::create_dir_all(&bare).unwrap();
             let bare_text = bare.display().to_string();
             git(&["init", "--bare", "--initial-branch=main", &bare_text]);
-            let work = dir.path().join("scratch");
-            std::fs::create_dir_all(&work).unwrap();
-            let work_text = work.display().to_string();
-            git(&["init", "--initial-branch=main", &work_text]);
-            std::fs::write(work.join("README.md"), "template/repo\n").unwrap();
-            git(&["-C", &work_text, "add", "."]);
-            git(&["-C", &work_text, "commit", "-m", "first"]);
-            git(&["-C", &work_text, "push", &bare_text, "main"]);
             dir
         });
+
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let key = (owner.to_owned(), name.to_owned());
         let bare = self.remotes.join(owner).join(format!("{name}.git"));
-        copy_dir_all(&template.path().join("template.git"), &bare);
+        let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+        let cached = guard.entry(key).or_insert_with(|| {
+            let dir = TempDir::new().unwrap();
+            let repo = dir.path().join("repo.git");
+            copy_dir_all(&empty.path().join("empty.git"), &repo);
+            let repo_text = repo.display().to_string();
+            let run_stdin = |args: &[&str], input: &str| -> String {
+                let mut child = Command::new("git")
+                    .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@t")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@t")
+                    .args(args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+                let output = child.wait_with_output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            };
+            let blob = run_stdin(
+                &["--git-dir", &repo_text, "hash-object", "-w", "--stdin"],
+                &format!("{owner}/{name}\n"),
+            );
+            let tree = run_stdin(
+                &["--git-dir", &repo_text, "mktree"],
+                &format!("100644 blob {blob}\tREADME.md\n"),
+            );
+            let commit = run_stdin(
+                &["--git-dir", &repo_text, "commit-tree", &tree, "-m", "first"],
+                "",
+            );
+            git(&["--git-dir", &repo_text, "update-ref", "refs/heads/main", &commit]);
+            dir
+        });
+        copy_dir_all(&cached.path().join("repo.git"), &bare);
         bare
     }
 }

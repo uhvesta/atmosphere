@@ -7,6 +7,7 @@ use crate::bridge::Ui;
 use crate::chrome;
 use crate::theme::{Look, RED_STATUS};
 use crate::widgets::{col, row};
+use humata2_ui_core::clock::{Now, ticked_now, until_next};
 use gpui_kit::assets::IconName;
 use gpui_kit::{prelude::*, *};
 use humata2_clients::RunningHolder;
@@ -167,6 +168,27 @@ fn cell(look: Look, width: f32, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
+/// A running holder's uptime cell. It reads the app's clock when it ticks,
+/// on each whole minute of the run, never when the page is drawn
+/// ([`humata2_ui_core::clock`]).
+#[derive(IntoElement)]
+struct Uptime {
+    key: SharedString,
+    now: Now,
+    started_ms: i64,
+    look: Look,
+}
+
+impl RenderOnce for Uptime {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let started_ms = self.started_ms;
+        let now_ms = ticked_now(window, cx, self.key, &self.now, |at| {
+            Some(until_next(at.saturating_sub(started_ms), 60_000))
+        });
+        cell(self.look, 56., uptime(now_ms, started_ms))
+    }
+}
+
 /// What a row draws, apart from the menu.
 struct Draw<'a> {
     ui: &'a Rc<Ui>,
@@ -174,7 +196,6 @@ struct Draw<'a> {
     state: &'a MachinePageState,
     sessions: &'a [Session],
     channel_name: &'a dyn Fn(&ChannelId) -> String,
-    now_ms: i64,
     look: Look,
 }
 
@@ -207,10 +228,16 @@ fn holder_row(draw: &Draw<'_>, index: usize, group: &'static str, holder: &Runni
         holder.channel.as_ref().map_or_else(String::new, |channel| (draw.channel_name)(channel))
     };
     let when = match (holder.stopped, holder.started_unix_ms) {
-        (true, _) => "Stopped".to_owned(),
-        (false, _) if holder.paused_for_move => "Paused for move".to_owned(),
-        (false, Some(started)) => uptime(draw.now_ms, started),
-        (false, None) => String::new(),
+        (true, _) => cell(look, 56., "Stopped").into_any_element(),
+        (false, _) if holder.paused_for_move => cell(look, 56., "Paused for move").into_any_element(),
+        (false, Some(started)) => Uptime {
+            key: SharedString::from(format!("{group}-uptime-{index}-{started}")),
+            now: draw.ui.now(),
+            started_ms: started,
+            look,
+        }
+        .into_any_element(),
+        (false, None) => cell(look, 56., "").into_any_element(),
     };
     let actions = draw.state.running.row_actions(holder);
     let busy = draw.state.running.busy.as_ref() == Some(holder);
@@ -257,7 +284,7 @@ fn holder_row(draw: &Draw<'_>, index: usize, group: &'static str, holder: &Runni
     } else {
         line = line.child(cell(look, 114., place)).child(cell(look, 74., agent_label(holder.agent)));
     }
-    line = line.child(cell(look, 56., when));
+    line = line.child(when);
     // Only an orphan's row has room for its pid.
     if orphan {
         line = line.child(
@@ -314,10 +341,9 @@ pub fn listing(
     state: &MachinePageState,
     sessions: &[Session],
     channel_name: &dyn Fn(&ChannelId) -> String,
-    now_ms: i64,
     look: Look,
 ) -> (usize, Div, Option<Div>) {
-    let draw = Draw { ui, wrap, state, sessions, channel_name, now_ms, look };
+    let draw = Draw { ui, wrap, state, sessions, channel_name, look };
     let card = || {
         col()
             .rounded(px(9.))

@@ -44,9 +44,24 @@ struct Fixture {
 }
 
 /// How an agent that keys its conversations by folder names that folder.
+/// The conversation key of `folder`: its real path (the nearest part that
+/// exists resolved, the rest as given), dashed, as the daemon keys it.
 fn dashed(folder: &std::path::Path) -> String {
-    folder
-        .display()
+    let mut rest = Vec::new();
+    let mut at = folder;
+    let real = loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            break rest.iter().rev().fold(real, |real: PathBuf, name| real.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                at = parent;
+            }
+            _ => break folder.to_owned(),
+        }
+    };
+    real.display()
         .to_string()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -422,7 +437,7 @@ async fn wait_dead(daemon: &Daemon) {
             std::time::Instant::now() < deadline,
             "the daemon never stopped at its stop point"
         );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 }
 

@@ -15,7 +15,7 @@ use humata2_daemon_ports::Caller;
 use humata2_daemon_runtime::fault;
 use humata2_grpc::humata::v1 as pb;
 use humata2_machines::ManageError;
-use humata2_rpc_kit::{chain, error, error_of, failure, internal, log::say, missing};
+use humata2_rpc_kit::{chain, error, failure, internal, log::say, missing};
 use tonic::{Code, Request, Response, Status};
 
 use super::{MachineSvc, Work, lock, machine_id, machine_of, status_of};

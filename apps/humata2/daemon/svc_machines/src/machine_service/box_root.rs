@@ -17,7 +17,7 @@ use std::sync::Arc;
 use humata2_daemon_ports::Caller;
 use humata2_grpc::humata::v1 as pb;
 use humata2_rpc_kit::log::say;
-use humata2_rpc_kit::{chain, error_of, failed, failure, internal, now_ms};
+use humata2_rpc_kit::{chain, failed, failure, internal, now_ms};
 use humata2_sessions::DESK_CHANNEL;
 use humata2_store::{Placement, Store, StoreError};
 use prost::Message;
@@ -361,12 +361,33 @@ impl MachineSvc {
         Ok(started)
     }
 
+    /// [`Self::drive`] as a boxed future, for a Retry to spawn: naming its
+    /// type breaks the cycle of `drive` spawning itself.
+    fn drive_again(
+        self,
+        progress: Arc<dyn OperationProgress>,
+        change: Change,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            let _ = self.drive(progress, change).await;
+        })
+    }
+
     /// Runs one ask of the box to its end, and ends the operation with it.
+    /// A Retry of the operation runs it again as the next ask, with a plan
+    /// the box makes then.
     async fn drive(
         &self,
         progress: Arc<dyn OperationProgress>,
         change: Change,
     ) -> Result<(), Status> {
+        let (svc, again) = (self.clone(), change.clone());
+        progress.rerun_with(Arc::new(move |progress| {
+            let (svc, mut change) = (svc.clone(), again.clone());
+            change.attempt += 1;
+            change.fresh = true;
+            tokio::spawn(svc.drive_again(progress, change));
+        }));
         let outcome = self.go(progress.as_ref(), &change).await;
         let result = match outcome {
             Ok(()) => {

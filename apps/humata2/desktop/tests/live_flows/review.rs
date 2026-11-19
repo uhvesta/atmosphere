@@ -236,8 +236,8 @@ fn a_three_repo_diff_is_reviewed_commented_on_and_marked_reviewed() {
         "↓ steps to the first change"
     );
 
-    // 6. Send 4 comments: one message, one tagged line per comment.
-    app.click(Role::Button, "Send 4 comments");
+    // 6. Send to claude (D850): one message, one tagged line per comment.
+    app.click(Role::Button, "Send to claude");
     app.wait_until("the agent to get the four comments", |_| {
         let text = world.conversation_text();
         [
@@ -801,11 +801,12 @@ fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
         !world.conversation_text().contains("Name this error."),
         "drafts wait; the agent has not got them"
     );
-    // The panel offers them together; Send types both into the agent.
-    app.wait_until("Send 2 comments in the panel", |app| {
-        app.view().contains("Send 2 comments")
+    // The panel offers them together as Send to claude (D850); it types
+    // both into the agent.
+    app.wait_until("Send to claude in the panel", |app| {
+        app.view().contains("Send to claude")
     });
-    app.click(Role::Button, "Send 2 comments");
+    app.click(Role::Button, "Send to claude");
     app.wait_until("the agent to get both comments", |_| {
         let text = world.conversation_text();
         // One repo: the paste names files without it (several_clones).
@@ -829,8 +830,11 @@ fn the_diff_panel_base_menu_line_comments_and_push_work_by_clicking() {
             .iter()
             .all(|text| held.iter().any(|c| &c.text == text && c.status == Status::Sent))
     });
+    // Send to claude stays, disabled, once nothing waits (D850).
     assert!(
-        !app.view().contains("Send 2 comments"),
+        comments_of(&app, &session)
+            .iter()
+            .all(|c| !matches!(c.status, Status::Draft | Status::Waiting)),
         "nothing is left to send"
     );
 

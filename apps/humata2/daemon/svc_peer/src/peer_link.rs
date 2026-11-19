@@ -45,6 +45,8 @@ use crate::peer::{self, Gate, Handshake, Peer};
 use crate::relay::{self, Relay};
 use humata2_rpc_kit::sync;
 use humata2_daemon_ports::release::Release;
+use humata2_svc_stop_restart::daemon::Daemon;
+use humata2_svc_stop_restart::ports::DaemonLinkPort;
 
 /// The link's log, in the state folder's `logs`.
 const LOG_FILE: &str = "peer-link.log";
@@ -197,12 +199,29 @@ where
         .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
         .layer(MapRequestLayer::new(peer::mark))
         .layer(InterceptorLayer::new(Gate::new(handshake.clone())))
-        .add_service(pb::peer_service_server::PeerServiceServer::new(Peer::new(handshake.clone())));
+        .add_service(pb::peer_service_server::PeerServiceServer::new(Peer::new(handshake.clone())))
+        // The link answers DaemonService itself: WhoAmI and ServerInfo as
+        // this machine, and the host's stop, start and upgrade handed on to
+        // the machine's own daemon (D262, D281 f).
+        .add_service(pb::daemon_service_server::DaemonServiceServer::new(
+            Daemon::new(machine, pb::DaemonRole::Machine)
+                .with_link(Arc::new(LinkToDaemon(handshake.relay().clone()))),
+        ));
     let router = relay::register(router, handshake.relay());
     router
         .serve_with_incoming_shutdown(incoming, done)
         .await
         .map_err(|source| DaemonError(format!("serve peer link: {source}")))
+}
+
+/// The link's connection to the machine's own daemon, which the link's
+/// DaemonService hands the host's stop, start and upgrade to.
+struct LinkToDaemon(Relay);
+
+impl DaemonLinkPort for LinkToDaemon {
+    fn proven_channel(&self) -> Option<tonic::transport::Channel> {
+        self.0.proven_channel()
+    }
 }
 
 /// The link's log, appended to and 0600.

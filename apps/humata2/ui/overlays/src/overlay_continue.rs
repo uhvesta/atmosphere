@@ -174,7 +174,7 @@ impl Overlays {
                     .progress
                     .as_ref()
                     .filter(|_| draft.sending)
-                    .map(|p| widgets::progress_line(look, p, Some(ui.clients().daemon.now_ms()))),
+                    .map(|p| widgets::progress_line(look, p, Some(ui.now()))),
             )
             .test_support()
             .focus_trap("continue-trap", &self.sheet);

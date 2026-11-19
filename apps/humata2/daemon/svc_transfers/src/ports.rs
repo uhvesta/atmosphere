@@ -79,6 +79,16 @@ pub trait TrashBinPort: Send + Sync + 'static {
     fn get(&self) -> Result<Arc<humata2_transfers::Trash>, Status>;
 }
 
+/// The machine's end of the Uplink (D768): a copy of this machine's agent
+/// that names another machine goes to the host, which holds the links and
+/// runs it as that agent.
+#[tonic::async_trait]
+pub trait HostAskPort: Send + Sync + 'static {
+    /// Sends the encoded `request` to the host's `method` (`/service/Method`)
+    /// as the agent of `session`, and returns the host's encoded answer.
+    async fn ask(&self, session: &str, method: &'static str, request: Vec<u8>) -> Result<Vec<u8>, Status>;
+}
+
 /// Peer-link provider port implemented by `humatad::host_relay::Links`.
 pub trait LinkProvider: Send + Sync + 'static {
     /// Returns the live gRPC channel for `machine`, or `RelayError::Offline`.

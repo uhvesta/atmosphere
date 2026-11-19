@@ -379,8 +379,7 @@ impl AgentKind {
         let folder_text = folder.to_string_lossy();
         // Claude names its project folder from the folder's real path (its
         // cwd), so a symlink above the folder (`/tmp`) is resolved first.
-        let real = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
-        let dashed = humata2_conversation::claude_project_name(&real);
+        let dashed = humata2_conversation::claude_project_name(&real_path(folder));
         let fill = |t: &str| {
             t.replace("{conversation}", conversation)
                 .replace("{folder_dashed}", &dashed)
@@ -1312,6 +1311,27 @@ fn rollout_meta(file: &Path) -> Option<(String, PathBuf)> {
     Some((id, cwd))
 }
 
+/// `folder` with every symlink resolved, as the CLI's cwd names it. A folder
+/// that is gone (a move's old one) or not made yet resolves through its
+/// nearest folder that exists, so its key is the one the CLI used or will
+/// use; a path with no such folder stays as it is.
+fn real_path(folder: &Path) -> PathBuf {
+    let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut at = folder;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |path, name| path.join(name));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                at = parent;
+            }
+            _ => return folder.to_owned(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1334,15 +1354,32 @@ mod tests {
     }
 
     #[test]
+    fn a_gone_folder_under_a_symlink_is_keyed_by_its_real_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let link = real.join("link");
+        std::fs::create_dir(real.join("target")).unwrap();
+        std::os::unix::fs::symlink(real.join("target"), &link).unwrap();
+        let agents = Agents::builtin();
+        let claude = agents.get("claude").unwrap();
+        let home = Path::new("/home/me");
+        let gone = claude.launch(home, &link.join("gone/s"), "abc").conversation_file;
+        let made = claude.launch(home, &real.join("target/gone/s"), "abc").conversation_file;
+        assert_eq!(gone, made);
+    }
+
+    #[test]
     fn a_claude_config_dir_set_for_the_daemon_is_where_claudes_conversations_are_kept() {
         let dir = Path::new("/state/claude-config");
-        let (home, folder) = (Path::new("/home/me"), Path::new("/home/me/Humata/ch/sessions/s.1"));
+        // A folder under no symlink: on macOS `/home` itself is one, and the
+        // key follows the folder's real path.
+        let (home, folder) = (Path::new("/home/me"), Path::new("/u/me/Humata/ch/sessions/s.1"));
         let agents = Agents::builtin().with_cli_home(ConversationFormat::ClaudeJsonl, dir);
         let claude = agents.get("claude").unwrap();
 
         assert_eq!(
             claude.launch(home, folder, "abc").conversation_file,
-            dir.join("projects/-home-me-Humata-ch-sessions-s-1/abc.jsonl")
+            dir.join("projects/-u-me-Humata-ch-sessions-s-1/abc.jsonl")
         );
         let placement = claude.placement(home, folder).unwrap();
         assert_eq!(placement.home, home);
@@ -1358,7 +1395,7 @@ mod tests {
         let agents = Agents::builtin().with_hooks(Path::new("/state/claude-hooks.json"));
         let plan = agents.get("claude").unwrap().launch(
             Path::new("/home/me"),
-            Path::new("/home/me/Humata/ch/sessions/s.1"),
+            Path::new("/u/me/Humata/ch/sessions/s.1"),
             "abc",
         );
         assert_eq!(
@@ -1384,7 +1421,7 @@ mod tests {
         assert_eq!(agents.get("claude").unwrap().turn_end, TurnEnd::Hooks);
         assert_eq!(
             plan.conversation_file,
-            Path::new("/home/me/.claude/projects/-home-me-Humata-ch-sessions-s-1/abc.jsonl")
+            Path::new("/home/me/.claude/projects/-u-me-Humata-ch-sessions-s-1/abc.jsonl")
         );
     }
 

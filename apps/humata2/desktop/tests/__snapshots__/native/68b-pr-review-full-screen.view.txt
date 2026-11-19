@@ -27,6 +27,7 @@ Complementary "Changes"
       text "refund.rs"
       text "+62"
       text "−21"
+      #change-file-glyph acme/api/src/refund.rs
     Code "acme/api/src/refund.rs"
       #change-line-0
         Button "Comment on line 138"
@@ -64,4 +65,4 @@ Complementary "Changes"
       text "ledger"
       text "#91"
   Button "Submit review…"
-  Label "4 drafts · 3 by Claude Code, 1 by you"
+  Label "4 drafts · 3 by claude, 1 by you"
