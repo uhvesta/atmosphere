@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use humata2_agent_hooks::{Agent, PayloadError, copilot_plugin, parse_conversation};
+use humata2_agent_hooks::{Agent, PayloadError, copilot_plugin, parse_conversation, parse_transcript};
 use serde_json::Value;
 
 const SESSION_START: &[u8] = include_bytes!("../testdata/copilot/session_start_new.json");
@@ -132,4 +132,21 @@ fn the_plugin_reports_the_conversation_when_it_starts_at_each_prompt_and_turn_en
             .count();
         assert_eq!(reports, 1, "{event}");
     }
+}
+
+/// Claude names its project folder from the session folder's real path, so
+/// the file its hook names is the one to follow, not one built from the
+/// folder as Humata was given it.
+#[test]
+fn a_claude_hook_names_its_transcript_file_and_a_subagents_names_none() {
+    assert_eq!(
+        parse_transcript(Agent::Claude, CLAUDE_CLEARED).as_deref(),
+        Some(Path::new(
+            "/home/u/.claude/projects/-work-api/7c1e2a90-5b3d-4f6e-9a21-0d8c4b7e3f15.jsonl"
+        ))
+    );
+    assert_eq!(parse_transcript(Agent::Claude, CLAUDE_SUBAGENT), None);
+    assert_eq!(parse_transcript(Agent::Codex, CODEX_THREAD), None);
+    assert_eq!(parse_transcript(Agent::Claude, br#"{"session_id":"a","transcript_path":"rel/a.jsonl"}"#), None);
+    assert_eq!(parse_transcript(Agent::Claude, b"not json"), None);
 }

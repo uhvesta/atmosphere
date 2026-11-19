@@ -377,9 +377,13 @@ impl AgentKind {
             None => Vec::new(),
         };
         let folder_text = folder.to_string_lossy();
+        // Claude names its project folder from the folder's real path (its
+        // cwd), so a symlink above the folder (`/tmp`) is resolved first.
+        let real = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_owned());
+        let dashed = humata2_conversation::claude_project_name(&real);
         let fill = |t: &str| {
             t.replace("{conversation}", conversation)
-                .replace("{folder_dashed}", &humata2_conversation::claude_project_name(folder))
+                .replace("{folder_dashed}", &dashed)
                 .replace("{folder}", &folder_text)
                 .replace("{home}", &home.to_string_lossy())
         };
@@ -1087,12 +1091,16 @@ impl Agents {
     /// resume needs it, and the CLI writes it by the end of the first turn,
     /// whose hook says it again); when another session's agent holds `id`;
     /// or when the launch's file doesn't name its id, so `id`'s file can't
-    /// be told. Blocking: it reads the store and checks the file.
+    /// be told. `transcript` is the file the hook itself names (Claude's
+    /// `transcript_path`), taken over the launch's file with `id` in it when
+    /// it is `id`'s, so a folder under a symlink is followed too. Blocking:
+    /// it reads the store and checks the file.
     pub fn follow_conversation(
         &self,
         store: &humata2_store::Store,
         session: &str,
         id: &str,
+        transcript: Option<&Path>,
     ) -> Result<bool, humata2_store::StoreError> {
         let Some(agent) = store.agent(session)? else {
             return Ok(false);
@@ -1108,6 +1116,12 @@ impl Agents {
             // Codex names a rollout by its start time and keeps it in that
             // day's folder, so the old file's name can't be edited.
             codex_rollout(&agent.launch.conversation_file, id)
+        } else if let Some(named) = transcript.filter(|file| {
+            file.is_absolute()
+                && file.file_name().and_then(|name| name.to_str()) == Some(&format!("{id}.jsonl"))
+                && file.is_file()
+        }) {
+            Some(named.to_owned())
         } else {
             agent
                 .launch
@@ -1931,15 +1945,15 @@ mod tests {
         assert!(!shell.with_tools_in(&mut launch), "the shell has none to take");
     }
 
-    /// Saves a running Codex session whose launch is `launch`.
-    fn save_codex(store: &humata2_store::Store, id: &str, launch: humata2_store::AgentLaunch) {
+    /// Saves a running session whose launch is `launch`.
+    fn save_running(store: &humata2_store::Store, id: &str, launch: humata2_store::AgentLaunch) {
         store
             .put_session(&humata2_store::SessionRecord {
                 id: id.to_owned(),
                 channel: "desk".to_owned(),
                 machine: String::new(),
                 title: id.to_owned(),
-                agent: "codex".to_owned(),
+                agent: launch.agent.clone(),
                 folder: launch.folder.clone(),
                 created_unix_ms: 1,
             })
@@ -1987,12 +2001,12 @@ mod tests {
         let mut launch = launch_of(&agents, "codex", &home, &folder);
         rollout_on(&codex, "2026/11/16", "1111-first", &folder);
         assert!(agents.bind_found(&home, &mut launch, &HashSet::new()));
-        save_codex(&store, "se_codex", launch);
+        save_running(&store, "se_codex", launch);
 
         // Named before its rollout is written: nothing changes yet.
-        assert!(!agents.follow_conversation(&store, "se_codex", "2222-after-new").unwrap());
+        assert!(!agents.follow_conversation(&store, "se_codex", "2222-after-new", None).unwrap());
         let file = rollout_on(&codex, "2026/11/18", "2222-after-new", &folder);
-        assert!(agents.follow_conversation(&store, "se_codex", "2222-after-new").unwrap());
+        assert!(agents.follow_conversation(&store, "se_codex", "2222-after-new", None).unwrap());
 
         let saved = store.agent("se_codex").unwrap().unwrap();
         assert_eq!(saved.launch.conversation_id, "2222-after-new");
@@ -2011,10 +2025,10 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let store = humata2_store::Store::open(dir.path().join("state")).unwrap();
         let agents = Agents::builtin();
-        save_codex(&store, "se_codex", launch_of(&agents, "codex", &home, &folder));
+        save_running(&store, "se_codex", launch_of(&agents, "codex", &home, &folder));
         let file = rollout_on(&home.join(".codex"), "2026/11/18", "3333-thread", &folder);
 
-        assert!(agents.follow_conversation(&store, "se_codex", "3333-thread").unwrap());
+        assert!(agents.follow_conversation(&store, "se_codex", "3333-thread", None).unwrap());
         let saved = store.agent("se_codex").unwrap().unwrap();
         assert_eq!(saved.launch.conversation_id, "3333-thread");
         assert_eq!(saved.launch.conversation_file, file);
@@ -2031,12 +2045,78 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let store = humata2_store::Store::open(dir.path().join("state")).unwrap();
         let agents = Agents::builtin();
-        save_codex(&store, "se_codex", launch_of(&agents, "codex", &home, &folder));
+        save_running(&store, "se_codex", launch_of(&agents, "codex", &home, &folder));
         rollout_on(&home.join(".codex"), "2026/11/18", "4444-real", &folder);
         for id in ["../4444-real", "*", "4444-*", "2026/11/18/rollout"] {
-            assert!(!agents.follow_conversation(&store, "se_codex", id).unwrap(), "{id:?}");
+            assert!(!agents.follow_conversation(&store, "se_codex", id, None).unwrap(), "{id:?}");
         }
         let saved = store.agent("se_codex").unwrap().unwrap();
         assert_eq!(saved.launch.conversation_id, "placeholder-id");
+    }
+
+    /// A session folder reached through a symlink, as `/tmp` is on macOS:
+    /// the folder as given, and Claude's transcript of `id` there, which
+    /// Claude names from the folder's real path.
+    fn claude_under_symlink(dir: &Path, id: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::fs::canonicalize(dir).unwrap();
+        let home = root.join("home");
+        std::fs::create_dir_all(root.join("private/tmp/s.1")).unwrap();
+        std::os::unix::fs::symlink(root.join("private/tmp"), root.join("tmp")).unwrap();
+        let folder = root.join("tmp/s.1");
+        let project = humata2_conversation::claude_project_name(&root.join("private/tmp/s.1"));
+        let file = home.join(".claude/projects").join(project).join(format!("{id}.jsonl"));
+        (home, folder, file)
+    }
+
+    fn write_transcript(file: &Path) {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "{}\n").unwrap();
+    }
+
+    /// Claude's `/clear` in a session whose folder is under a symlink is
+    /// followed: Claude keeps the new conversation under the real path's
+    /// project folder, which is where the launch looks.
+    #[test]
+    fn a_claude_clear_under_a_symlinked_folder_is_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, folder, file) = claude_under_symlink(dir.path(), "5555-after-clear");
+        let store = humata2_store::Store::open(dir.path().join("state")).unwrap();
+        let agents = Agents::builtin();
+        save_running(&store, "se_claude", launch_of(&agents, "claude", &home, &folder));
+        write_transcript(&file);
+
+        assert!(agents.follow_conversation(&store, "se_claude", "5555-after-clear", None).unwrap());
+        let saved = store.agent("se_claude").unwrap().unwrap();
+        assert_eq!(saved.launch.conversation_id, "5555-after-clear");
+        assert_eq!(saved.launch.conversation_file, file);
+        assert!(saved.launch.resume_argv.iter().any(|arg| arg == "5555-after-clear"));
+    }
+
+    /// A launch saved with its file under the folder as given (before the
+    /// real path was used) still follows a `/clear` by the transcript the
+    /// hook names; a transcript that isn't the new conversation's isn't
+    /// taken.
+    #[test]
+    fn a_claude_clear_is_followed_to_the_transcript_its_hook_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, folder, file) = claude_under_symlink(dir.path(), "6666-after-clear");
+        let store = humata2_store::Store::open(dir.path().join("state")).unwrap();
+        let agents = Agents::builtin();
+        let mut launch = launch_of(&agents, "claude", &home, &folder);
+        launch.conversation_file = home
+            .join(".claude/projects")
+            .join(humata2_conversation::claude_project_name(&folder))
+            .join("placeholder-id.jsonl");
+        save_running(&store, "se_claude", launch);
+        write_transcript(&file);
+        let other = file.with_file_name("7777-other.jsonl");
+        write_transcript(&other);
+
+        assert!(!agents.follow_conversation(&store, "se_claude", "6666-after-clear", None).unwrap());
+        assert!(!agents.follow_conversation(&store, "se_claude", "6666-after-clear", Some(&other)).unwrap());
+        assert!(agents.follow_conversation(&store, "se_claude", "6666-after-clear", Some(&file)).unwrap());
+        let saved = store.agent("se_claude").unwrap().unwrap();
+        assert_eq!(saved.launch.conversation_id, "6666-after-clear");
+        assert_eq!(saved.launch.conversation_file, file);
     }
 }

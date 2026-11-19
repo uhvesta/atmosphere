@@ -76,7 +76,10 @@ impl SessionSvc {
                 agent_hooks::parse_conversation(kind, &request.payload).ok()
             });
             if let Some(id) = named {
-                self.follow_conversation(&agent.session.id.to_string(), id)
+                let transcript = kind.and_then(|kind| {
+                    agent_hooks::parse_transcript(kind, &request.payload)
+                });
+                self.follow_conversation(&agent.session.id.to_string(), id, transcript)
                     .await?;
             }
             let _ = sender.try_send(Ok(final_reply(Vec::new())));
@@ -218,14 +221,19 @@ impl SessionSvc {
     /// Session `session`'s agent says its CLI is in conversation `id`: the
     /// session's agent record follows it there when it moved, and the feed
     /// is told, so a resume takes up the conversation the person was in.
-    async fn follow_conversation(&self, session: &str, id: String) -> Result<(), Status> {
+    async fn follow_conversation(
+        &self,
+        session: &str,
+        id: String,
+        transcript: Option<PathBuf>,
+    ) -> Result<(), Status> {
         let (store, agents, key) = (
             self.starter.store.clone(),
             self.starter.agents.clone(),
             session.to_owned(),
         );
         let followed = crate::channel_service::blocking(move || {
-            agents.follow_conversation(&store, &key, &id)
+            agents.follow_conversation(&store, &key, &id, transcript.as_deref())
         })
         .await?
         .map_err(|error| {

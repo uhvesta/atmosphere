@@ -13,7 +13,8 @@
 //!   own ask-user form, which becomes an Inbox question (D761).
 //! - [`parse_conversation`] reads the conversation a Copilot hook says its
 //!   CLI is in, so a `/clear` or `/restart` that starts another one in the
-//!   same running agent is followed, and a resume takes that one up.
+//!   same running agent is followed, and a resume takes that one up;
+//!   [`parse_transcript`] reads the file Claude's hook says it is kept in.
 //! - OpenCode has no hooks: the `humata opencode` wrapper hands each
 //!   `permission.asked` event's `data` over as the payload, and posts what
 //!   [`render_permission`] writes as the body of OpenCode's reply (D201a).
@@ -373,6 +374,25 @@ pub fn parse_conversation(agent: Agent, payload: &[u8]) -> Result<String, Payloa
         return Err(none("the session id isn't a plain id"));
     }
     Ok(id.to_owned())
+}
+
+/// The file Claude Code's hook says its conversation is kept in, its
+/// `transcript_path`: Claude names its project folder from the session
+/// folder's real path, which a symlink above it (`/tmp`) makes differ from
+/// the path Humata was given. None for any other agent, a subagent's hook
+/// (whose file is the parent's), and a path that isn't absolute; the file
+/// itself is checked by whoever uses it.
+#[must_use]
+pub fn parse_transcript(agent: Agent, payload: &[u8]) -> Option<std::path::PathBuf> {
+    if agent != Agent::Claude || payload.len() > PAYLOAD_MAX {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(payload).ok()?;
+    if value.get("agent_id").is_some_and(|id| !id.is_null()) {
+        return None;
+    }
+    let path = Path::new(str_field(&value, "transcript_path")?);
+    path.is_absolute().then(|| path.to_owned())
 }
 
 /// What the permission hook prints for `decision`.

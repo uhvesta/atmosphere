@@ -277,8 +277,14 @@ impl<H: Humata> Conn<H> {
                 self.send_request("thread/resume", resume(&thread));
             }
             Event::TurnStarted { .. } => self.humata.turn(Turn::Working).await,
-            Event::TurnCompleted { interrupted, .. } => {
+            Event::TurnCompleted { thread, interrupted } => {
                 self.humata.turn(if interrupted { Turn::Stopped } else { Turn::Idle }).await;
+                // Codex writes a thread's rollout only at its first prompt, so
+                // a thread `/new` started can't be followed when it is named:
+                // it is named again after each of its turns, by when it is.
+                if named.as_deref() == Some(thread.as_str()) {
+                    self.humata.conversation(thread).await;
+                }
             }
             Event::Ask { request, thread, kind, params, .. } => {
                 self.asks.retain(|_, task| !task.is_finished());

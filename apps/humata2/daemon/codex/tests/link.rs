@@ -233,10 +233,36 @@ async fn turns_are_reported_and_an_interrupted_one_is_stopped() {
     assert_eq!(rig.told().await, Told::Turn(Turn::Working));
     peer.send(turn("turn/completed", "completed")).await;
     assert_eq!(rig.told().await, Told::Turn(Turn::Idle));
+    assert_eq!(rig.told().await, Told::Conversation(THREAD.to_owned()));
     peer.send(turn("turn/started", "inProgress")).await;
     assert_eq!(rig.told().await, Told::Turn(Turn::Working));
     peer.send(turn("turn/completed", "interrupted")).await;
     assert_eq!(rig.told().await, Told::Turn(Turn::Stopped));
+}
+
+/// Codex writes the rollout of a thread `/new` started only at its first
+/// prompt, after `thread/started` named it: the thread is named again when
+/// its turn ends, so Humata can follow it once its rollout is written.
+#[tokio::test]
+async fn a_new_thread_is_named_again_after_its_first_turn() {
+    let mut rig = Rig::start();
+    let mut peer = Peer::accept(&rig.listener).await;
+    peer.handshake(&[THREAD]).await;
+    assert_eq!(rig.told().await, Told::Conversation(THREAD.to_owned()));
+    peer.send(json!({"jsonrpc":"2.0","method":"thread/started","params":{"thread":{
+        "id":NEW_THREAD,"path":null,"parentThreadId":null,"turns":[]}}}))
+        .await;
+    assert_eq!(rig.told().await, Told::Conversation(NEW_THREAD.to_owned()));
+
+    let turn = |method: &str, status: &str| {
+        json!({"jsonrpc":"2.0","method":method,"params":{"threadId":NEW_THREAD,
+            "turn":{"id":"1","status":status,"items":[]}}})
+    };
+    peer.send(turn("turn/started", "inProgress")).await;
+    assert_eq!(rig.told().await, Told::Turn(Turn::Working));
+    peer.send(turn("turn/completed", "completed")).await;
+    assert_eq!(rig.told().await, Told::Turn(Turn::Idle));
+    assert_eq!(rig.told().await, Told::Conversation(NEW_THREAD.to_owned()));
 }
 
 #[tokio::test]
