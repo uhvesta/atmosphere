@@ -278,3 +278,43 @@ fn a_changed_file_opens_without_the_files_tree() {
         |_| {},
     );
 }
+
+/// ⌘T (UXSIMPLE 3-3): a new Terminal tab in the open session's tab strip,
+/// the panel kept.
+#[test]
+fn new_terminal_tab_opens_a_terminal_in_the_session_and_keeps_the_panel() {
+    let (base, clients) = store();
+    let mut state = base.state().clone();
+    base.finish();
+    let id = SessionId::new("ledger");
+    let v = state.views.get_mut(&id).unwrap();
+    v.panel = Some(humata2_session::Panel::Changes);
+    let mut store = TestStore::new(state, Sessions::new(clients)).non_exhaustive();
+    store.send(A::NewTerminalTab, |_| {});
+    store.receive_matching(
+        "TerminalOpened",
+        |a| matches!(a, A::TerminalOpened { result: Ok(_), .. }),
+        |_| {},
+    );
+    let view = store.state().view().unwrap();
+    assert_eq!(view.panel, Some(humata2_session::Panel::Changes));
+    assert_eq!(view.groups[0].tabs.len(), 3);
+    let opened = view.groups[0].tabs[2].clone();
+    let Tab::Terminal(n) = opened else {
+        panic!("expected a terminal tab, got {opened:?}");
+    };
+    // A terminal with no agent recorded is a plain shell.
+    let agent = store.state().workspace.session(&id).unwrap().terminal_agents.get(&n).copied();
+    assert!(matches!(agent, None | Some(Agent::Shell)), "opened {agent:?}");
+}
+
+#[test]
+fn new_terminal_tab_does_nothing_without_an_open_session() {
+    let (base, clients) = store();
+    let mut state = base.state().clone();
+    base.finish();
+    state.open = None;
+    let mut store = TestStore::new(state, Sessions::new(clients));
+    store.send(A::NewTerminalTab, |_| {});
+    store.finish();
+}

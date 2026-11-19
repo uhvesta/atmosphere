@@ -283,12 +283,94 @@ pub fn card(
     if is_agent_note(comment) && !comment.anchor.detached {
         return agent_note(ui, look, comment, agent, review).into_any_element();
     }
+    if is_agent_github_draft(comment) {
+        return agent_github_draft(ui, look, comment).into_any_element();
+    }
     plain_card(ui, look, comment, agent, reattaching, start_reattach).into_any_element()
 }
 
 /// Whether the card is an agent's note, which has its own card.
 fn is_agent_note(comment: &Comment) -> bool {
     humata2_review::comments::is_agent_note(comment)
+}
+
+/// Whether the card is a pull request draft an agent wrote, still a draft
+/// and on its lines: it reads as the one agent card (D853).
+fn is_agent_github_draft(comment: &Comment) -> bool {
+    matches!(comment.destination, Destination::PullRequest { .. })
+        && matches!(comment.author, Author::Agent(_))
+        && comment.status == Status::Draft
+        && !comment.archived
+        && !comment.anchor.detached
+}
+
+/// An agent's draft for GitHub, as the one agent card (D853, Fable): "claude
+/// [Draft] line 140", the text, then Edit and a faded Drop. The footer's
+/// Submit review… is where it goes, so the card names no destination.
+fn agent_github_draft(ui: &Rc<Ui>, look: Look, comment: &Comment) -> impl IntoElement {
+    let id = comment.id.clone();
+    let session = comment.session.clone();
+    let dark = look.panel < 0x80_80_80;
+    // The draft badge of UXSIMPLE 3-1; in dark, the draft chip's own tones.
+    let (fill, edge, ink) = if dark {
+        (look.card, look.line, look.accent)
+    } else {
+        (0xee_f4_ff, 0xc9_d8_f5, 0x0a_6c_f0)
+    };
+    let who = match &comment.author {
+        Author::Agent(name) => name.clone(),
+        Author::User => "You".to_owned(),
+    };
+    shell(look, false)
+        .id(SharedString::from(format!("doc-comment-{id}")))
+        .test_support()
+        .gap(px(0.))
+        .line_height(relative(1.4))
+        .child(
+            row()
+                .gap(px(8.))
+                .mb(px(5.))
+                .whitespace_nowrap()
+                .child(text(who).font_weight(FontWeight::SEMIBOLD).flex_shrink_0())
+                .child(
+                    text("Draft")
+                        .flex_shrink_0()
+                        .px(px(5.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(rgb(edge))
+                        .bg(rgb(fill))
+                        .text_size(px(10.5))
+                        .line_height(px(12.))
+                        .text_color(rgb(ink)),
+                )
+                .child(text(lines_label(&comment.anchor)).text_color(rgb(look.term_dim)).flex_shrink_0()),
+        )
+        .child(text(comment.text.clone()))
+        .child(
+            row()
+                .gap(px(16.))
+                .mt(px(8.))
+                .child(note_action(
+                    ui,
+                    format!("doc-edit-comment-{id}"),
+                    "Edit".to_owned(),
+                    AppAction::Comments(CommentsAction::EditDraft(session.clone(), id.clone())),
+                    look.accent,
+                    false,
+                    false,
+                ))
+                .child(note_action(
+                    ui,
+                    format!("doc-drop-comment-{id}"),
+                    "Drop".to_owned(),
+                    AppAction::Comments(CommentsAction::Drop(session, id.clone())),
+                    look.accent,
+                    false,
+                    true,
+                )),
+        )
 }
 
 /// The orange of a note (UXSIMPLE 3-4).

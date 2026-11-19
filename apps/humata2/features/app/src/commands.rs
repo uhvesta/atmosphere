@@ -87,6 +87,9 @@ impl App {
                 state.layout.toggle(PaneId::Panel);
                 Effect::none()
             }
+            Command::NewTerminalTab => {
+                self.reduce(state, AppAction::Session(SessionAction::NewTerminalTab))
+            }
             Command::TerminalFullScreen => {
                 self.reduce(state, AppAction::ToggleFullScreen(FullScreen::Terminal))
             }

@@ -419,6 +419,10 @@ pub enum SessionAction {
     TerminalMenu(Option<usize>),
     /// Start/attach a program in the focused group or in the second group.
     OpenTerminal { agent: Agent, split: bool },
+    /// ⌘T: a new Terminal tab in the open session's focused group, as the
+    /// strip's `+` with Terminal. The app leaves a full-screen panel first
+    /// (UXSIMPLE 3-3).
+    NewTerminalTab,
     /// The new terminal is ready, even if the person changed sessions meanwhile.
     TerminalOpened {
         session: SessionId,
@@ -1058,6 +1062,18 @@ impl Reducer for Sessions {
                 }
             }
             SessionAction::TerminalMenu(group) => state.terminal_menu = group,
+            SessionAction::NewTerminalTab => {
+                if state.open.is_none() {
+                    return Effect::none();
+                }
+                return self.reduce(
+                    state,
+                    SessionAction::OpenTerminal {
+                        agent: Agent::Shell,
+                        split: false,
+                    },
+                );
+            }
             SessionAction::OpenTerminal { agent, split } => {
                 if state.opening_terminal {
                     return Effect::none();

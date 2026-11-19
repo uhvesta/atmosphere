@@ -93,6 +93,7 @@ fn entry(ui: &Rc<Ui>, agent: Agent, last: Option<Agent>, look: Look) -> impl Int
         })
         .child(text(name.clone()))
         .child(div().flex_1())
+        .when(shell, |r| r.child(text("⌘T").text_color(rgb(look.secondary))))
         .when(!shell && last == Some(agent), |r| {
             r.child(
                 text("last used")

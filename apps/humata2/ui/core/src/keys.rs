@@ -67,6 +67,8 @@ gpui_kit::actions!(
         PanelFullScreen,
         /// ⇧⌘F: fork the open session.
         ForkSession,
+        /// ⌘T: a new Terminal tab in the open session (UXSIMPLE 3-3).
+        NewTerminalTab,
         /// Tab in the Inbox's list: its open item's terminal (D781).
         FocusInboxTerminal,
         /// ⌥⌘]: the next layer of a stack review (DS-60).
@@ -119,9 +121,10 @@ pub const DIFF_LIST: &str = "HumataDiffList";
 
 /// Every shortcut as people see it, for the Shortcuts sheet: keys, then
 /// what they do.
-pub const SHORTCUTS: [(&str, &str); 26] = [
+pub const SHORTCUTS: [(&str, &str); 27] = [
     ("⌘K", "Command palette"),
     ("⌘N", "New session"),
+    ("⌘T", "New terminal tab"),
     ("⇧⌘N", "New channel"),
     ("⌘[", "Back"),
     ("Esc", "Close or cancel"),
@@ -269,6 +272,7 @@ fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-cmd-enter", TerminalFullScreen, None),
         KeyBinding::new("ctrl-cmd-enter", PanelFullScreen, None),
         KeyBinding::new("shift-cmd-f", ForkSession, None),
+        KeyBinding::new("cmd-t", NewTerminalTab, None),
         KeyBinding::new("shift-cmd-r", ToggleRecording, None),
         KeyBinding::new("shift-cmd-s", TakeSnapshot, None),
         KeyBinding::new("up", Up, sidebar),

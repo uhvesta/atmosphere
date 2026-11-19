@@ -30,10 +30,12 @@ use tca::{Clock, Effect, Reducer};
 /// How long typing pauses before a draft is saved.
 const SAVE_AFTER: Duration = Duration::from_millis(400);
 
-/// What survives a restart: which sessions show resolved comments (SM-12).
+/// What older builds kept across restarts: which sessions showed resolved
+/// comments (SM-12). Resolved comments now always show, folded as done
+/// (D855), so nothing is saved; the type stays so saved files still parse.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommentsSaved {
-    /// The sessions with Show resolved on.
+    /// The sessions that had Show resolved on. Ignored.
     #[serde(default)]
     pub show_resolved: BTreeSet<SessionId>,
 }
@@ -96,13 +98,11 @@ pub struct CommentBox {
 /// One session's comments.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionComments {
-    /// Its comments in the order they were made: not archived, resolved
-    /// ones only when Show resolved is on.
+    /// Its comments in the order they were made, resolved ones included,
+    /// archived ones not.
     pub comments: Vec<Comment>,
     /// The daemon's count of drafts that aren't archived (SM-15).
     pub draft_count: u32,
-    /// Resolved comments show and are fetched (SM-12).
-    pub show_resolved: bool,
     /// The archived ones, once asked for (SM-21).
     pub archived: Option<Vec<Comment>>,
     /// The comment being written.
@@ -124,18 +124,11 @@ impl CommentsState {
     /// What the parent should keep across restarts.
     #[must_use]
     pub fn saved(&self) -> CommentsSaved {
-        CommentsSaved {
-            show_resolved: self
-                .sessions
-                .iter()
-                .filter(|(_, session)| session.show_resolved)
-                .map(|(id, _)| id.clone())
-                .collect(),
-        }
+        CommentsSaved::default()
     }
 
     /// The comments to draw on one file, under the line each ends on: none
-    /// archived, resolved ones only with Show resolved (SM-8, SM-12).
+    /// archived; resolved ones show as done (SM-8, D855).
     #[must_use]
     pub fn on_file(
         &self,
@@ -149,7 +142,6 @@ impl CommentsState {
         };
         for comment in &held.comments {
             let shown = !comment.archived
-                && (held.show_resolved || comment.status != Status::Resolved)
                 && comment.anchor.repo == repo
                 && comment.anchor.path == path;
             if shown {
@@ -319,8 +311,6 @@ pub enum CommentsAction {
     Dropped(SessionId, CommentId, Result<(), DaemonError>),
     /// Point a detached draft at a new passage.
     Reattach(SessionId, CommentId, Anchor),
-    /// Turn Show resolved on or off for the session.
-    ShowResolved(SessionId, bool),
     /// List the archived comments.
     ShowArchived(SessionId),
 
@@ -350,9 +340,9 @@ impl Comments {
         self.client.list(session, which)
     }
 
-    fn which(s: &SessionComments) -> Which {
-        if s.show_resolved { Which::WithResolved } else { Which::Open }
-    }
+    /// Every listing but the archived one takes resolved comments too: they
+    /// fold as done on their file (D855).
+    const SHOWN: Which = Which::WithResolved;
 
     fn save_key(session: &SessionId) -> String {
         format!("comments-save/{session}")
@@ -664,16 +654,11 @@ impl Reducer for Comments {
     fn reduce(&self, state: &mut CommentsState, action: CommentsAction) -> Effect<CommentsAction> {
         use CommentsAction as A;
         match action {
-            A::Restore(saved) => {
-                for id in saved.show_resolved {
-                    state.sessions.entry(id).or_default().show_resolved = true;
-                }
-                Effect::none()
-            }
+            A::Restore(_) => Effect::none(),
             A::Open(session) => {
                 let s = state.sessions.entry(session.clone()).or_default();
                 s.error = None;
-                let which = Self::which(s);
+                let which = Self::SHOWN;
                 let watch = self.watch(&session);
                 let call = self.list(&session, which);
                 watch.and(Effect::future(async move { A::Listed(session, which, call.await) }))
@@ -705,8 +690,7 @@ impl Reducer for Comments {
                     Effect::none()
                 }
                 CommentEvent::Resync => {
-                    let s = state.sessions.entry(session.clone()).or_default();
-                    let which = Self::which(s);
+                    let which = Self::SHOWN;
                     let call = self.list(&session, which);
                     Effect::future(async move { A::Listed(session, which, call.await) })
                 }
@@ -809,7 +793,7 @@ impl Reducer for Comments {
                         if stale {
                             b.retried = true;
                             b.refusal = Some(error);
-                            let which = Self::which(s);
+                            let which = Self::SHOWN;
                             let call = self.list(&session, which);
                             return Effect::future(async move { A::Reloaded(session, call.await) });
                         }
@@ -1064,15 +1048,6 @@ impl Reducer for Comments {
                     Err(error) => Self::fail(s, &error),
                 }
             }
-            A::ShowResolved(session, on) => {
-                let s = state.sessions.entry(session.clone()).or_default();
-                s.show_resolved = on;
-                let which = Self::which(s);
-                let call = self.list(&session, which);
-                let saved = state.saved();
-                Effect::future(async move { A::Listed(session, which, call.await) })
-                    .and(Effect::send(A::Delegate(CommentsDelegate::Saved(saved))))
-            }
             A::ShowArchived(session) => {
                 let call = self.list(&session, Which::Archived);
                 Effect::future(async move { A::Listed(session, Which::Archived, call.await) })
@@ -1172,11 +1147,7 @@ fn upsert(s: &mut SessionComments, comment: Comment) {
         if let Some(list) = s.archived.as_mut() {
             list.retain(|held| held.id != comment.id);
         }
-        if comment.status == Status::Resolved && !s.show_resolved {
-            s.comments.retain(|held| held.id != comment.id);
-        } else {
-            upsert_in(&mut s.comments, comment);
-        }
+        upsert_in(&mut s.comments, comment);
     }
     recount(s);
 }

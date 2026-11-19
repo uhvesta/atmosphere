@@ -235,13 +235,12 @@ fn review_diff(look: Look) -> Div {
                 )
                 .child(div().whitespace_nowrap().text_color(c(look.term_text)).child("+   let cents = amount.round();")),
         );
-    let draft = session::comment(
+    let draft = agent_draft(
         look,
-        "Draft for GitHub · by Claude Code",
+        "claude",
+        "line 140",
         "round() is half-away-from-zero, so a split capture can refund a cent more than was taken. Use floor() on each part.",
-        true,
-    )
-    .child(div().flex().gap(px(6.)).child(button(look, Kind::Secondary, "Edit")).child(button(look, Kind::Secondary, "Drop")));
+    );
     let after = div()
         .flex()
         .flex_col()
@@ -353,6 +352,58 @@ pub fn review_session(look: Look) -> Div {
         .child(session::notice(look, IconName::Info, ORANGE, "2 new commits on the PR branch", Some("Update the clone")));
     let middle = div().child(header).child(tabs).child(terminal).child(bar);
     session::shell(look, Side::at(""), middle, Some((Panel::Diff, "Diff", review_diff(look))))
+}
+
+/// An agent's draft for GitHub as the one agent card (D853, UXSIMPLE 3-4):
+/// "claude [Draft] line 140", the text, then Edit and a faded Drop.
+fn agent_draft(look: Look, who: &'static str, lines: &'static str, text: &'static str) -> Div {
+    let (fill, edge, ink) = if look.dark { (look.card, look.line, look.accent) } else { (0xee_f4_ff, 0xc9_d8_f5, 0x0a_6c_f0) };
+    div()
+        .max_w(px(720.))
+        .mx(px(10.))
+        .my(px(6.))
+        .p(px(9.))
+        .rounded(px(8.))
+        .bg(c(look.card))
+        .border_1()
+        .border_color(c(look.line))
+        .flex()
+        .flex_col()
+        .font_family(SYSTEM_FONT)
+        .text_size(px(12.))
+        .line_height(relative(1.4))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .mb(px(5.))
+                .whitespace_nowrap()
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(who))
+                .child(
+                    div()
+                        .px(px(5.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(c(edge))
+                        .bg(c(fill))
+                        .text_size(px(10.5))
+                        .line_height(px(12.))
+                        .text_color(c(ink))
+                        .child("Draft"),
+                )
+                .child(div().text_color(c(look.term_dim)).child(lines)),
+        )
+        .child(text)
+        .child(
+            div()
+                .flex()
+                .gap(px(16.))
+                .mt(px(8.))
+                .child(div().text_color(c(look.accent)).child("Edit"))
+                .child(div().text_color(c(look.accent)).opacity(0.7).child("Drop")),
+        )
 }
 
 /// One draft in the Submit review dialog.

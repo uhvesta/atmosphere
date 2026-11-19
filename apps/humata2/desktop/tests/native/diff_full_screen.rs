@@ -172,3 +172,19 @@ fn escape_closes_the_new_agent_tab_menu_first() {
     assert!(!app.contains("new-agent-tab-menu"));
     assert!(full(&mut app));
 }
+
+/// ⌘T (UXSIMPLE 3-3) opens a Terminal tab from full screen, the Diff
+/// beside it, and doesn't touch the agents' last used mark.
+#[test]
+fn cmd_t_opens_a_terminal_tab_and_leaves_full_screen() {
+    let mut app = app();
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    let before = first_row_tabs(&mut app);
+    press(&mut app, "cmd-t");
+    assert!(!full(&mut app));
+    assert!(app.contains("side-panel"));
+    assert_eq!(first_row_tabs(&mut app), before + 1);
+    app.send(AppAction::Session(SessionAction::ToggleWiden));
+    app.click("new-agent-tab");
+    assert!(!app.contains("new-agent-tab-last-used-zsh"));
+}

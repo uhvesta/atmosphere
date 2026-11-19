@@ -76,10 +76,10 @@ impl Rig {
             .fake
             .comments(&session())
             .into_iter()
-            .filter(|c| !c.archived && c.status != Status::Resolved)
+            .filter(|c| !c.archived)
             .collect();
         let draft_count = u32::try_from(comments.iter().filter(|c| c.counts_as_draft()).count()).unwrap_or(0);
-        self.act(A::Listed(session(), Which::Open, Ok(Listing { comments, draft_count })));
+        self.act(A::Listed(session(), Which::WithResolved, Ok(Listing { comments, draft_count })));
     }
 
     fn held(&self) -> SessionComments {
@@ -121,7 +121,7 @@ fn opening_a_session_lists_and_follows_its_comments() {
     let first = rig.seed("a.md", 3, "one");
     rig.act(A::Open(session()));
     assert!(rig.fake.calls().contains(&Call::Watch(session())));
-    assert!(rig.fake.calls().contains(&Call::List(session(), Which::Open)));
+    assert!(rig.fake.calls().contains(&Call::List(session(), Which::WithResolved)));
     let held = rig.held();
     assert_eq!(held.comments.len(), 1);
     assert_eq!(held.draft_count, 1);
@@ -401,19 +401,14 @@ fn an_unconfirmed_comment_can_be_sent_again_or_taken_back_with_its_batch() {
 }
 
 #[test]
-fn resolve_hides_and_reopen_brings_back_a_draft() {
+fn a_comment_the_person_resolves_stays_listed_as_done_and_reopen_brings_back_a_draft() {
     let mut rig = rig();
     let id = rig.seed("a.md", 3, "one");
     rig.load();
     rig.act(A::SendAll(session()));
     rig.act(A::Resolve(session(), id.clone()));
-    assert!(rig.held().comments.is_empty());
-    assert_eq!(rig.fake.comments(&session())[0].status, Status::Resolved);
-
-    rig.act(A::ShowResolved(session(), true));
-    assert!(rig.fake.calls().contains(&Call::List(session(), Which::WithResolved)));
     assert_eq!(rig.held().comments.len(), 1);
-    assert!(rig.store.state().saved().show_resolved.contains(&session()));
+    assert_eq!(rig.held().comments[0].status, Status::Resolved);
 
     rig.act(A::Reopen(session(), id));
     assert_eq!(rig.held().comments[0].status, Status::Draft);
@@ -440,7 +435,7 @@ fn resolve_addressed_works_per_file_and_per_session() {
     rig.act(A::ResolveAddressed(session(), None));
     assert_eq!(status(&rig, &b), Some(Status::Resolved));
     assert_eq!(status(&rig, &c), Some(Status::Resolved));
-    assert!(rig.held().comments.is_empty());
+    assert!(rig.held().comments.iter().all(|x| x.status == Status::Resolved));
 }
 
 #[test]
@@ -519,7 +514,7 @@ fn a_failed_call_keeps_the_comment_and_toasts() {
 }
 
 #[test]
-fn comments_for_a_file_sit_under_their_last_line_without_archived_or_hidden_resolved() {
+fn comments_for_a_file_sit_under_their_last_line_with_resolved_and_without_archived() {
     let mut rig = rig();
     let a = rig.seed("a.md", 3, "one");
     let b = rig.seed("a.md", 3, "two");
@@ -537,8 +532,6 @@ fn comments_for_a_file_sit_under_their_last_line_without_archived_or_hidden_reso
             .map(|(line, rows)| (line, rows.len()))
             .collect::<Vec<_>>()
     };
-    assert_eq!(lines(&rig), vec![(3, 1)]);
-    rig.act(A::ShowResolved(session(), true));
     assert_eq!(lines(&rig), vec![(3, 1), (9, 1)]);
 }
 

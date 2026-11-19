@@ -4851,8 +4851,8 @@ Channel delete on other machines, 2026-11-18 (VERIFY 0.2.3 finding; main's scope
 - **A pick:** closes the menu, leaves full screen and opens a fresh tab in the session's focused tab row (`OpenTerminal`), so the Diff sits beside it as 3-4 draws. The pick is marked "last used" until the app restarts (not saved). Escape closes the menu before it leaves full screen. There is no dock, no second tab strip, no new session kind and no "Send as mine" draft.
 - **Not yet as drawn:**
   - **"codex · not installed":** the daemon does not report whether an agent's CLI is installed. Until it does, the menu lists only the agents Settings offers. Follow-up for main (daemon: report CLI presence per agent).
-  - **⌘T:** no ⌘T shortcut exists, so the hint is left out rather than shown dead.
-  - **Opening prompt:** 3-4's "Look at layer 2 of the stack in the Diff panel…" is not sent for the person. The tab starts empty, as the strip's `+` does.
+  - **⌘T:** built by D857.
+  - **Opening prompt** and **"not installed":** ruled by D857, not yet built.
 - **Reverse:** drop `ui/changes/src/panel_changes/agent_tab.rs`, `diff_header`'s actions, `panel_header_actions`, and `ReviewState::{agent_tab_menu, last_agent_tab}`.
 
 ## D850
@@ -4872,10 +4872,7 @@ Comments show three states, and an addressed comment can be reopened (DIFFUI2 ma
   - A file whose shown comments are all done folds them into "✓ N comments done on this file" with Show. The fold is view-local, not saved.
   - The file row reads "✓ N done".
 - **Reopen:** the review ledger (`review_diff`) and the fake now reopen an Addressed comment as well as a Resolved one, because 4-2 offers Reopen on "Done by claude". The Addressed card's Resolve button goes; the comment is already shown as done.
-- **Not yet as drawn:**
-  - "Sent · the agent changed these lines": no state tells a sent comment whose lines changed apart from Addressed, so Sent stays plain.
-  - Archive → Hide: the cards have no Archive button to rename.
-  - "Show done": `CommentsAction::ShowResolved` exists, but no control sends it yet. That control goes into the Diff header with step (c).
+- **Not yet as drawn:** settled by D855: "Sent · the agent changed these lines" and Archive → Hide are dropped, and there is no "Show done" control; resolved comments always load and fold as done.
 - **Reverse:** restore the old status chips in `ui/changes/src/comment_cards.rs` and drop `Addressed` from `reopen`'s accepted states in `daemon/review_diff/src/comments.rs` and `clients/src/comments/fake.rs`.
 
 ## D852
@@ -4917,7 +4914,7 @@ An agent's note on a line is one card (DIFFUI2 manager, 2026-11-19; UXSIMPLE ste
   - The footer status adds "· N notes".
   - A file row shows an orange note chip after its grey comment count.
   - A layer row shows "N drafts · M notes" in accent, right-aligned in its status slot, before any look status. It shows only for a layer whose files are known: the one shown, or one marked Looks good. Whole stack shows the total.
-- **Not yet as drawn:** an agent-authored GitHub draft still reads "Draft for GitHub · by <agent>" outside the Submit sheet. Changing it moves frame 68 and the GitHub-draft tests, so it waits for the PR review pass.
+- **Not yet as drawn:** settled by D856: an agent's GitHub draft is the same line card, "<agent> [Draft] line N".
 - **Reverse:** restore `plain_card` for agent notes in `ui/changes/src/comment_cards.rs`, and drop `CommentsAction::SendNote` and `NoteSent`.
 
 ## D854
@@ -4926,3 +4923,33 @@ Showing a change "with notes" is part of the show skill; there are two review sk
 - **Installed copies:** `daemon/machines` `own_skills` removes a skill Humata once installed and no longer ships, so agents' folders lose `order-humata-review` at the next start. No code change.
 - **Docs:** RV-33 lists two skills; `skills/README.md` lists order under "Merged or dropped".
 - **Reverse:** restore `skills/order-humata-review/` (SKILL.md, guide.md) from before this decision, drop `with-notes.md`, and restore the descriptions of render, review and humata-pull-requests.
+
+## D855
+Done comments always show, folded; no "Show done" control, no Hide, no extra Sent look (DIFFUI3 manager, 2026-11-19; settles D851's gaps; frames 4-2 and 4-3; Fable 5.2). Provisional
+- **"Sent · the agent changed these lines": dropped.** FRAMES.md says of 4-2 that addressed and resolved collapse into Done, and 4-2 draws Addressed as "Done by claude" with Reopen. Sent stays plain. "Changed since you looked" on the layer (4-1) and the "Since I last looked" switch already tell that lines moved.
+- **Archive → Hide: dropped.** No frame draws a menu on a card. `CommentsAction::Archive` stays in the reducer with no card control.
+- **Show done: no control.** 4-2 and 4-3 count and fold done comments ("✓ 3 comments done on this file · Show", "4 comments done"), so a comment the person resolved must stay listed. The reducer now always lists with resolved comments (`Which::WithResolved`) and keeps a resolved comment when it changes; the per-session Show resolved flag and `CommentsAction::ShowResolved` are gone. The file fold's Show / Hide is the only show-done control. `CommentsSaved` still parses old saved files and is ignored.
+- **Tests:** `features/review:comments_test` (`a_comment_the_person_resolves_stays_listed_as_done_and_reopen_brings_back_a_draft`, `comments_for_a_file_sit_under_their_last_line_with_resolved_and_without_archived`, the opening listing takes resolved ones). `ui/changes` `a_file_folds_only_when_every_comment_is_done` already covers Addressed plus Resolved.
+- **Reverse:** restore `SessionComments::show_resolved`, `ShowResolved`, `which()` and the resolved filters in `features/review/src/comments.rs`.
+
+## D856
+An agent's GitHub draft is the one agent card (DIFFUI3 manager, 2026-11-19; settles D853's gap; UXSIMPLE 3-1, 3-4; Fable 5.2, under its golden authority). Provisional
+- **What it is:** outside the Submit sheet, a pull request draft an agent wrote reads "<agent> [Draft] line N" (the agent's command, as 3-4 and 4-2 write it), then the body, then Edit and a faded Drop as accent text links with a 16 pt gap, as 3-4 lays out its actions. The chip is 3-1's blue draft badge (#0a6cf0 on #eef4ff, border #c9d8f5; the draft chip's own tones in dark). The card has the plain grey line; the accent outline is for the open box only. No Send, no Draft for GitHub, no bold primary: the footer's Submit review… names where it goes.
+- **Unchanged:** the person's own GitHub drafts and detached drafts keep their cards.
+- **Goldens:** native 68, 68b, 68c and 69 re-recorded; design 68 changes for this card only, and design 69 with it, since its backdrop is 68. No uxsimple frame draws a pull request session, so this extrapolates from 3-4's "one agent-authored card everywhere"; design 68 goes to the owner in the next small render batch.
+- **Tests:** `desktop:native_test` `pr_session` (Edit and Drop on the agent's draft work by id).
+- **Reverse:** drop `agent_github_draft` and `is_agent_github_draft` in `ui/changes/src/comment_cards.rs` and `agent_draft` in `desktop/tests/design/pr_review.rs`, then re-record 68 and 69.
+
+## D857
+⌘T, and New agent tab's opening prompt and "not installed" (DIFFUI3 manager, 2026-11-19; settles D849's gaps; UXSIMPLE 3-3, 3-4; Fable 5.2, under its design authority). Provisional
+- **⌘T (built):** whenever a session is open, ⌘T opens a Terminal tab in its focused tab group, as the strip's `+` with Terminal does. A full-screen panel gives way first, as a menu pick does. With no session open it does nothing. It never sets "last used", which is for agents only. The hint shows dimmed and right-aligned on New agent tab's Terminal row, as 3-3 draws it. The ⌘/ sheet lists "New terminal tab ⌘T" after New session, and the palette offers it in a session.
+- **Opening prompt (ruled, not built):** an agent picked from New agent tab, and never Terminal, ⌘T or the strip's `+`, gets one prompt pasted and submitted. The wording is fixed at pick time:
+  - a stack layer: "Look at layer N of the stack in the Diff panel. Don't edit files. Leave what you find on the lines."
+  - the whole stack: "Look at the whole stack in the Diff panel. …"
+  - a plain diff: "Look at the changes in the Diff panel. …"
+  - a pull request: "Look at pull request #N in the Diff panel. …"
+  It is sent once the agent has painted its first screen and gone quiet, waiting on events with a 15 s deadline. If the person types first, or the deadline passes, nothing is sent and nothing is left half-typed.
+- **"not installed" (ruled, not built):** the menu lists only the agents Settings has switched on, in Settings order, installed ones first. A missing agent shows a grey dot, dimmed, as "codex · not installed". It isn't clickable, has no hover and never gets "last used". While presence is unknown, a row draws as installed. The daemon pushes CLI presence per machine with the machine's state; the menu never polls for it. This needs daemon, proto, live client and fake wiring.
+- **Goldens:** native shortcuts-sheet-dark and shortcuts-sheet-light re-recorded.
+- **Tests:** `features/session:tabs_test` (a new Terminal tab, and nothing without a session), `features/app:every_action_test` (⌘T is in the palette with its shortcut), `desktop:native_test` `diff_full_screen::cmd_t_opens_a_terminal_tab_and_leaves_full_screen`.
+- **Reverse:** drop `SessionAction::NewTerminalTab` with its app arm, `Command::NewTerminalTab`, `keys::NewTerminalTab` with its binding, SHORTCUTS row and shell handler, and the Terminal row's hint, then re-record the shortcuts sheets.

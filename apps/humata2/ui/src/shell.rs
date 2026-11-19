@@ -684,6 +684,11 @@ impl Render for Shell {
                     this.send(AppAction::Palette(run), cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &keys::NewTerminalTab, _, cx| {
+                if this.ui.read(|state| matches!(state.route, Route::Session(_))) {
+                    this.send(AppAction::Session(SessionAction::NewTerminalTab), cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &keys::TogglePanel, _, cx| {
                 this.send(AppAction::Pane(PaneAction::Toggle(PaneId::Panel)), cx);
             }))

@@ -255,6 +255,10 @@ The owner dislikes how the UI looks and how it's styled. Redo the UI and UX so i
 - [x] Humata's own skills (D790): six thin pointer skills for plain asks (board, sessions, remote, inbox, pull requests, files) beside the three older ones, listed in `skills/README.md`; `humatad2` installs and updates them in each set-up agent's skills folder at every start, on the host and on machines, and the skills sync leaves them out.
 - [x] Showing and reviewing are separate skills (D791): `render-humata-review` prepares a change as a stack of layers across repos and never judges, `order-humata-review` walks through it, and the new `review-humata-change` reviews when asked (inline notes, PR comment drafts, a verdict).
 - [x] Two review skills, not three (D854, UXSIMPLE (f)): `order-humata-review` is folded into `render-humata-review` as "show with notes" (`with-notes.md`); the installer removes the old skill from agents' folders.
+- [x] Done comments always load and fold as done; there is no Show done control (D855).
+- [x] An agent's GitHub draft is the one agent card: name, Draft chip, line, then Edit and Drop (D856).
+- [x] ⌘T opens a Terminal tab in the open session and shows on New agent tab's Terminal row (D857).
+- [ ] New agent tab's opening prompt and "not installed" rows (D857: ruled, not built; "not installed" needs daemon CLI presence).
 - [ ] The stepped stack view (RV-36, milestone STACKVIEW): `review_prepare` takes a stack of layers, the view lists them and shows the whole stack or one layer, and `review_focus` steps layers. Until then render sends one group per layer.
 - [ ] Write the TP-17 delegation rule into Humata's skills and MCP tool descriptions: mechanical calls go to a cheap subagent (Haiku / Luna) with the smallest context window and medium reasoning effort where the CLI allows.
 - [ ] Follow platform behaviour: standard shortcuts, ⌘, for Settings, the native menu bar, traffic-light spacing, scroll and selection behaviour.

@@ -149,10 +149,10 @@ fn flow_26_20_one_comment_is_typed_at_once_then_a_batch_then_addressing() {
     let gone = held.comments.iter().find(|c| c.id == CommentId::new("s1/c-4"));
     assert_eq!(gone.map(|c| c.anchor.detached), Some(true));
 
-    // Resolve the addressed one; it leaves the view.
+    // Resolve the addressed one; it stays listed, as done (D855).
     rig.act(A::Resolve(session(), CommentId::new("s1/c-2")));
     assert_eq!(rig.status("s1/c-2"), Some(Status::Resolved));
-    assert_eq!(rig.held_status("s1/c-2"), None);
+    assert_eq!(rig.held_status("s1/c-2"), Some(Status::Resolved));
 
     // Re-attach the detached one and send it again.
     rig.act(A::Reattach(session(), CommentId::new("s1/c-4"), anchor("notes", "rfc-brin.md", 35)));

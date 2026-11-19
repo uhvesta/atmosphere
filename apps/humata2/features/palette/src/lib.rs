@@ -121,6 +121,8 @@ pub enum Command {
     },
     /// Expand the terminal in the current session.
     TerminalFullScreen,
+    /// A new Terminal tab in the open session, ⌘T (UXSIMPLE 3-3).
+    NewTerminalTab,
     /// Put the open session's side panel full screen, or bring it back.
     PanelFullScreen,
     /// Join the open session's two tab groups into one.
@@ -821,6 +823,11 @@ impl PaletteState {
         entries.extend(self.report_entries());
         entries.extend(self.mark_entries());
         if self.in_session {
+            entries.push(Entry {
+                command: Command::NewTerminalTab,
+                title: "New terminal tab".into(),
+                hint: "⌘T".into(),
+            });
             entries.push(Entry {
                 command: Command::TerminalFullScreen,
                 title: "Terminal full screen".into(),

@@ -217,7 +217,8 @@ fn next_command(at: Option<&Command>, s: &Samples) -> Option<Command> {
             repo: s.file.0.clone(),
             path: s.file.1.clone(),
         },
-        Some(Command::File { .. }) => Command::TerminalFullScreen,
+        Some(Command::File { .. }) => Command::NewTerminalTab,
+        Some(Command::NewTerminalTab) => Command::TerminalFullScreen,
         Some(Command::TerminalFullScreen) => Command::PanelFullScreen,
         Some(Command::PanelFullScreen) => Command::JoinTabGroups,
         Some(Command::JoinTabGroups) => Command::NextLayer,
@@ -342,6 +343,7 @@ fn reach(command: &Command) -> Reach {
         | Command::Session(_)
         | Command::Terminal { .. }
         | Command::File { .. }
+        | Command::NewTerminalTab
         | Command::TerminalFullScreen
         | Command::PanelFullScreen
         | Command::JoinTabGroups
@@ -535,6 +537,7 @@ fn key(name: &str) -> Option<Key> {
         "MoveSession" => Key::Runs(Command::MoveSession),
         "GoHosts" => Key::Runs(Command::Hosts),
         "GoFiles" => Key::Runs(Command::Files),
+        "NewTerminalTab" => Key::Runs(Command::NewTerminalTab),
         "TerminalFullScreen" => Key::Runs(Command::TerminalFullScreen),
         "PanelFullScreen" => Key::Runs(Command::PanelFullScreen),
         "NextLayer" => Key::Runs(Command::NextLayer),

@@ -1213,6 +1213,15 @@ impl App {
             AppAction::Session(SessionAction::ToggleWiden) => {
                 self.handle(state, AppAction::ToggleFullScreen(FullScreen::Panel))
             }
+            AppAction::Session(SessionAction::NewTerminalTab) => {
+                // ⌘T: a full-screen panel gives way so the new tab shows.
+                if state.full_screen() == Some(FullScreen::Panel)
+                    && let Some(id) = &state.session.open
+                {
+                    state.full_screens.remove(id);
+                }
+                self.child(state, AppAction::Session(SessionAction::NewTerminalTab))
+            }
             AppAction::Pane(change) => {
                 if change == PaneAction::Toggle(PaneId::Panel)
                     && state.panel().is_none()
