@@ -10,7 +10,7 @@ use std::sync::PoisonError;
 use std::time::{Duration, SystemTime};
 
 use humata2_access::{AccessRequest, AnswerError, Call, Capability, Decision};
-use humata2_daemon_ports::{AgentCaller, Caller};
+use humata2_daemon_ports::{AgentCaller, Caller, Names};
 use humata2_grpc::humata::v1 as pb;
 use humata2_rpc_kit::helpers as status;
 use tonic::{Code, Status};
@@ -161,12 +161,18 @@ fn card(
     asked: &AccessRequest,
     decision: Option<Decision>,
     board: Option<BoardAsk>,
+    names: &Names,
+    working_on: String,
 ) -> pb::InboxRequest {
     let capability = guard.capability_pb(asked.capability) as i32;
     let offered = asked.always_let.as_ref();
     let target = offered.map(|target| guard.target_pb(target));
     let target_label =
         offered.map_or_else(|| asked.capability.label().to_owned(), super::describe);
+    let details = board
+        .as_ref()
+        .map(|board| super::facts::details(&board.preview, names))
+        .unwrap_or_default();
     pb::InboxRequest {
         id: Some(pb::RequestId {
             value: id.to_owned(),
@@ -201,11 +207,25 @@ fn card(
         }),
         created_at: Some(ports::now_timestamp()),
         revision: Some(pb::Revision { value: 1 }),
+        facts: details.facts,
+        affects: details.affects,
+        undo_text: details.undo_text,
+        working_on,
+        rule_label: super::facts::rule_label(asked.capability),
         ..Default::default()
     }
 }
 
 impl Inbox {
+    /// "Working on <item key> <title>" when the asking session is on a board
+    /// item of its channel; empty when it is on none or the store can't say.
+    pub(super) fn working_on(&self, agent: &AgentCaller) -> String {
+        self.store
+            .board_items_in_channel(&agent.session.channel.to_string())
+            .map(|items| super::facts::working_on(&items, &agent.session.id.to_string()))
+            .unwrap_or_default()
+    }
+
     /// Puts the agent's call in the Inbox, to run once the user approves it
     /// (D38.6). Returns the status the handler returns: the call is waiting
     /// on that request (`approval_pending`), or why it can't be (a store
@@ -256,6 +276,19 @@ impl Inbox {
         operation: &str,
         run: Option<Run>,
     ) -> Result<(), Status> {
+        self.ask_read_with(caller, asked, operation, run, None).await
+    }
+
+    /// [`Inbox::ask_read`] whose card shows `board`'s preview and reason
+    /// in place of the capability, as a copy's card shows what it copies.
+    pub async fn ask_read_with(
+        &self,
+        caller: &Caller,
+        asked: AccessRequest,
+        operation: &str,
+        run: Option<Run>,
+        board: Option<BoardAsk>,
+    ) -> Result<(), Status> {
         let Caller::Agent(agent) = caller else {
             return Err(crate::ports::needs_approval(&*self.guard, asked.capability));
         };
@@ -299,7 +332,7 @@ impl Inbox {
             })
         });
         let id = self
-            .deferred_in(&mut state, caller, asked, Some(key), None, run)
+            .deferred_in(&mut state, caller, asked, Some(key), board, run)
             .await?;
         if runs {
             if let Some(entry) = state.requests.iter().find(|entry| entry.id == id.value) {
@@ -408,6 +441,8 @@ impl Inbox {
         }
         let id = new_id();
         let decision = self.rule_now(&asked);
+        let working_on = self.working_on(agent);
+        let names = Names::of_host(&self.machine);
         let mut held = Held::new(card(
             self.guard.as_ref(),
             &id,
@@ -415,6 +450,8 @@ impl Inbox {
             &asked,
             decision,
             board,
+            &names,
+            working_on,
         ));
         held.deferred = true;
         let entry = Entry::new(id.clone(), session, Some(asked), None, key, held.clone());

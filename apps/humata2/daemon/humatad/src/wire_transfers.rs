@@ -48,9 +48,9 @@ impl TransferInboxPort for TransferInboxAdapter {
         asked: AccessRequest,
         operation: &str,
         run: Option<Run>,
-        _board: Option<BoardAsk>,
+        board: Option<BoardAsk>,
     ) -> Result<(), Status> {
-        self.0.ask_read(caller, asked, operation, run).await
+        self.0.ask_read_with(caller, asked, operation, run, board).await
     }
 }
 
