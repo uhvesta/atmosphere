@@ -39,3 +39,4 @@ The loop from "the agent did work" to "I've reviewed it and it's shipped" takes 
 
 ## Out of scope
 Building anything before the owner picks.
+- 2026-11-19 (DIFFUI3): (f) is done (D854): `order-humata-review` is folded into `render-humata-review` as "show with notes" (`with-notes.md`). Two review skills: show, review. The installer drops the old skill from agents' folders.

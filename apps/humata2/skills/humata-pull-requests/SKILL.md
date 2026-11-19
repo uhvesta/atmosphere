@@ -18,4 +18,5 @@ You are in a Humata session and `humata` is on your `PATH`.
 
 All paths are relative to this skill's folder. Run only commands those
 files list. To arrange a change for the owner to read, use
-`render-humata-review` and `order-humata-review` instead.
+`render-humata-review` instead (it shows the change, with notes when
+asked).

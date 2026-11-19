@@ -5,10 +5,11 @@ find their way through it: you work out its layers, across every repo it
 touches, and send them to the review view. They step through the stack;
 you stay out of the way.
 
-You don't judge the change, explain how it works, or comment on lines. If
-they want problems found, that is the `review-humata-change` skill; if
-they want to be walked through it with explanations, that is
-`order-humata-review`. Don't drift into either.
+You don't judge the change. If they want problems found, that is the
+`review-humata-change` skill; don't drift into it. Explain how it works
+or put notes on lines only when they asked to be walked through it or for
+notes: then `with-notes.md` adds a reading order and neutral notes to what
+you send in step 3 or 4.
 
 ## 1. Find out what they want to see
 
@@ -54,7 +55,8 @@ Follow `shared/stacks.md`, section 4: one `review_prepare` call with
 `from_stack: {repo}` when the repo has a `tools/stack` stack (send `tip`
 if it forks), otherwise `stack.layers` with a range per repo, or a worktree
 layer for uncommitted work on top. Add `importance` only for the key and
-skim files you know of (paths and a tier). No `groups`, no `notes`.
+skim files you know of (paths and a tier). No `groups`, no `notes`, unless
+the user asked for notes (`with-notes.md`).
 
 The owner gets the layers as a list at the top of the file list: Whole
 stack first, then each layer. Stepping through each layer's own diff is
@@ -64,7 +66,8 @@ being built (STACKVIEW); `shared/stacks.md` says what the view shows.
 
 `shared/diff-spec.md` has every field and worked examples. Call
 `review_prepare` with a short `title` and the `spec`, and nothing else: no
-`order`, no `groups`, no `notes`.
+`order`, no `groups`, no `notes`, unless the user asked for notes
+(`with-notes.md`).
 
 ## 5. When the tool answers
 
@@ -99,7 +102,7 @@ and don't offer opinions, unless the user asks.
 
 ## Don't
 
-- Don't add notes on files or lines.
+- Don't add notes on files or lines unless the user asked for them.
 - Don't say whether the change is good, safe or ready, in a purpose line
   or anywhere else.
 - Don't check out, rebase, restack or commit anything to make a layer.

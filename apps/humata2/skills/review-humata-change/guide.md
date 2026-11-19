@@ -2,8 +2,8 @@
 
 Use this only when the user asked for a review, for problems, or for
 comments. If they asked to see the change, use `render-humata-review` and
-say nothing about quality. If they asked to be walked through it, use
-`order-humata-review`. In a review chat you still don't review on your own
+say nothing about quality; that skill also walks them through it with
+neutral notes when they ask. In a review chat you still don't review on your own
 initiative: this skill is the user asking.
 
 What you produce:

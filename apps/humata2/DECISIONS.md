@@ -4919,3 +4919,10 @@ An agent's note on a line is one card (DIFFUI2 manager, 2026-11-19; UXSIMPLE ste
   - A layer row shows "N drafts · M notes" in accent, right-aligned in its status slot, before any look status. It shows only for a layer whose files are known: the one shown, or one marked Looks good. Whole stack shows the total.
 - **Not yet as drawn:** an agent-authored GitHub draft still reads "Draft for GitHub · by <agent>" outside the Submit sheet. Changing it moves frame 68 and the GitHub-draft tests, so it waits for the PR review pass.
 - **Reverse:** restore `plain_card` for agent notes in `ui/changes/src/comment_cards.rs`, and drop `CommentsAction::SendNote` and `NoteSent`.
+
+## D854
+Showing a change "with notes" is part of the show skill; there are two review skills, not three (DIFFUI3 manager, 2026-11-19; UXSIMPLE step 8 (f), UXSIMPLE_REVIEW §2.7; narrows D791). Provisional
+- **What it is:** `order-humata-review` is gone. Its steps are `render-humata-review/with-notes.md`: a reading order (top-down or bottom-up), 2–6 groups and neutral notes that explain, sent in the same `review_prepare` as the layers or the narrow spec. render's description now carries "walk me through this", "explain this change", "show it with notes" and "what order should I read this in"; `review-humata-change` stays the only skill that judges.
+- **Installed copies:** `daemon/machines` `own_skills` removes a skill Humata once installed and no longer ships, so agents' folders lose `order-humata-review` at the next start. No code change.
+- **Docs:** RV-33 lists two skills; `skills/README.md` lists order under "Merged or dropped".
+- **Reverse:** restore `skills/order-humata-review/` (SKILL.md, guide.md) from before this decision, drop `with-notes.md`, and restore the descriptions of render, review and humata-pull-requests.

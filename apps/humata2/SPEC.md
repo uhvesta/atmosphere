@@ -1644,19 +1644,17 @@ each repo's branch.
   the files, groups with titles, and notes on files, hunks and lines. It
   arrives as a review view offer (VW-2) and opens as the Diff panel or a
   review tab showing exactly that; **Revert** goes back (VW-9).
-- **RV-33** Humata ships three skills for it, installed for every agent
-  on every machine (D790), one per kind of ask (D791):
+- **RV-33** Humata ships two skills for it, installed for every agent
+  on every machine (D790), one per kind of ask (D791, D854):
   - **/render-humata-review** only shows. It prepares the change as a
     stack of layers across every repo it touches (RV-36), or turns the
     user's words ("against what GitHub will show", "just my unstaged
     changes", "since commit abc, plus the new files in migrations/") into
-    one diff spec. It leaves no notes and gives no opinion.
-  - **/order-humata-review** walks the user through a change: it orders
-    the files top-down (entry points first) or bottom-up (leaf changes
-    first), groups them and writes notes that explain without judging. It
-    asks the agent to hand the work to a small, fast model where the agent
-    supports subagents (e.g. Claude Code's Haiku), and runs inline
-    otherwise.
+    one diff spec. It gives no opinion. When the user asks to be walked
+    through it ("show with notes"), it also orders the files top-down or
+    bottom-up, groups them and writes notes that explain without judging,
+    handing that to a small, fast model where the agent supports
+    subagents and running inline otherwise.
   - **/review-humata-change** reviews, only when asked: findings on their
     lines as notes, draft comments when the change is a pull request the
     user is reviewing (never posted, PR-12), and a short verdict.

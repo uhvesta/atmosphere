@@ -17,17 +17,20 @@ plain ask ("put that on the board", "run it on the GPU box") with the
 | 5 | `humata-pull-requests` | Push and open pull requests, stack commits into chained pull requests with `stack`, start a PR review and draft comments. | "push this", "open a PR", "stack these commits", "restack", "review PR 123", "draft review comments" |
 | 6 | `humata-files` | Files outside the agent's own clone: `shared/`, the channel folder, main clones, other sessions' files, the trash. | "put this in shared", "read the file from the other session", "grab that from main", "restore the file I deleted" |
 | 7 | `restart-doctor` | Find out why a restart didn't bring everything back, repair what can't lose anything, write a diagnosis. | "my session didn't come back after the reboot", "run the restart doctor" |
-| 8 | `render-humata-review` | Show only: prepare a change as a stack of layers across every repo it touches and send it to the review view, or show one narrow diff. No notes, no opinion. | "show me", "what changed", "show the stack", "let me look", "I just want to see the code" |
+| 8 | `render-humata-review` | Show only: prepare a change as a stack of layers across every repo it touches and send it to the review view, or show one narrow diff. With notes when asked: a reading order and neutral notes that explain. No opinion. | "show me", "what changed", "show the stack", "let me look", "I just want to see the code", "walk me through this", "explain this change" |
 | 9 | `review-humata-change` | Review when asked: findings on their lines as notes, PR comment drafts for a pull request under review (never posted), a short verdict. | "review this", "review my PR", "find problems", "leave comments", "is this ready" |
-| 10 | `order-humata-review` | Walk the person through a change: a reading order, groups and neutral notes that explain. No verdict. | "walk me through this", "explain this change", "what order should I read this in" |
 
-The three review skills are split by what the person asked for (D791):
-look, understand, or judge. Each description names the other two as "not
-for". Keep it that way when editing one: "show me" must never start a
-review, and "review this" must never only render.
+The two review skills are split by what the person asked for (D791,
+D854): look (with notes when asked), or judge. Each description names the
+other as "not for". Keep it that way when editing one: "show me" and
+"walk me through this" must never start a review, and "review this" must
+never only render.
 
 Merged or dropped:
 
+- **Order** (`order-humata-review`) is "show with notes" in
+  `render-humata-review` (`with-notes.md`, D854). Humata removes the old
+  skill from agents' folders on its next install.
 - **Channels** are part of `humata-sessions`: an agent's channel commands
   are few, and they come up together with sessions.
 - **Transfers** are part of `humata-remote`; `humata-files` covers one

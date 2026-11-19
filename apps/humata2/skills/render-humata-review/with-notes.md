@@ -1,27 +1,29 @@
-# Help the user read a change in a sensible order
+# Show with notes: a reading order and notes that explain
 
-The user is reviewing a change in Humata and wants help following it. You
-**arrange and explain**; you don't review. Never say whether the change is
-right, safe, good or ready, never give a verdict or a score, and don't list
-"issues". Notes explain what the code does, how the pieces connect and where
-to look; if something looks surprising, describe what it does and let the
-user decide what to make of it.
+The user asked to be walked through the change ("walk me through this",
+"explain this change", "show it with notes", "what order should I read
+this in"). You still only **show**: you arrange the files and explain
+what the code does. Never say whether the change is right, safe, good or
+ready, never give a verdict or a score, and don't list "issues". If
+something looks surprising, describe what it does and let the user decide
+what to make of it. A review is `review-humata-change`.
 
 ## 1. Hand it to a small, fast model when you can
 
 Ordering files and writing short notes doesn't need a large model. If your
 agent can start a subagent on a smaller, faster model (for example a Haiku
-subagent in Claude Code), give it this skill's steps 2 to 4, the diff spec
-and the repository paths, and ask it to return the `order`, `groups` and
-`notes` as JSON. Check what comes back against the diff (step 5) and apply
-it yourself. If your agent can't do that, do the steps inline.
+subagent in Claude Code), give it steps 2 to 4, the diff spec and the
+repository paths, and ask it to return the `order`, `groups` and `notes`
+as JSON. Check what comes back against the diff (step 5) and apply it
+yourself. If your agent can't do that, do the steps inline.
 
 ## 2. Get the diff
 
 - In a review chat, call `review_context` for the diff spec showing now and
   what the user is looking at.
-- Otherwise use the spec the user asked for (see /render-humata-review;
-  `shared/diff-spec.md` has the fields).
+- Otherwise work out what to show as `guide.md` steps 1 and 2 say: a stack
+  of layers, or the one narrow diff the user named (`shared/diff-spec.md`
+  has the fields).
 - List the files with git (`git diff --stat <base>` and friends for that
   spec) and read the hunks of the files you order. Only files the diff
   shows can be ordered or noted.
@@ -39,8 +41,9 @@ say which you picked:
   and data-model changes, where the callers only make sense once the new
   shape is known.
 
-Put generated files, lockfiles and snapshots last, in their own group.
-Put each test next to, or right after, the code it tests.
+For a stack, keep the layers bottom to top and order the files inside each
+layer. Put generated files, lockfiles and snapshots last, in their own
+group. Put each test next to, or right after, the code it tests.
 
 ## 4. Group and note
 
@@ -63,7 +66,8 @@ is in the diff; no file is listed twice; each group's `first` is in
 `order`; line numbers are on the side you name. Files you didn't order
 follow at the end on their own.
 
-Then call `review_prepare`:
+Then call `review_prepare` once, with the `spec` (or the `stack`, as
+`guide.md` step 3 sends it) plus `order`, `groups` and `notes`:
 
 ```json
 {
@@ -96,7 +100,9 @@ Then call `review_prepare`:
 In a review chat it applies at once and shows in the chat with Undo. If
 the user later edits the code, notes on lines that changed are kept and
 marked outdated. If a tool says the user turned a switch off ("Order" or
-"Notes"), tell them and stop; don't work around it.
+"Notes"), tell them which one and stop; don't work around it.
 
-Afterwards, tell the user in a sentence what order you chose and why, and
-offer to walk them through it with `review_focus` one step at a time.
+## 6. Say what you did, and stop
+
+Tell the user in a sentence what order you chose and why, and offer to
+step them through it with `review_focus`. Don't add a verdict.
