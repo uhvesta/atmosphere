@@ -104,7 +104,7 @@ impl Holder {
                 return pid;
             }
             assert!(std::time::Instant::now() < deadline, "the program never started");
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(2));
         }
     }
 
@@ -171,15 +171,20 @@ async fn exit_code(events: &mut Events) -> Option<i32> {
     .flatten()
 }
 
-/// Everything the holder serves from offset 0, read until it goes quiet.
+/// Everything the holder kept from offset 0 up to the end it reported on attach.
 async fn everything(socket: &Path) -> (humata2_holder::Welcome, Vec<u8>) {
     let attached = attach(socket, 0).await.unwrap();
     let mut events = attached.events;
     let mut seen = Vec::new();
-    let _ = tokio::time::timeout(Duration::from_millis(700), async {
+    let end = attached.welcome.end;
+    let _ = tokio::time::timeout(WAIT, async {
         while let Ok(Some(event)) = events.next().await {
-            if let Event::Output { data, .. } = event {
+            if let Event::Output { offset, data } = event {
+                let reached = offset + data.len() as u64;
                 seen.extend(data);
+                if reached >= end {
+                    break;
+                }
             }
         }
     })
@@ -213,7 +218,8 @@ async fn a_shell_moved_onto_a_newer_build_keeps_its_pid_and_never_sees_a_hangup(
         exe.contains("/next/") || exe.ends_with(&next.display().to_string()),
         "still the old build: {exe}"
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // A hangup's trap runs before the shell reads its next line.
+    assert!(run(&holder.socket, "echo synced-$((2+3))\n", "synced-5").await);
     assert!(!holder.hung_up(), "the program saw a hangup");
 }
 
@@ -316,7 +322,8 @@ async fn a_keyed_input_across_a_move_is_typed_once() {
     let after = key_arrived(&holder.socket, "s/d-1").await.unwrap();
     assert!(matches!(after, KeyState::Arrived { .. }), "{after:?}");
     assert_eq!(after, before, "the holder's instance changed with the move");
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Input is read in order: once this answers, a second copy would show.
+    assert!(run(&holder.socket, "echo synced-$((2+3))\n", "synced-5").await);
     assert_eq!(std::fs::read_to_string(&count).unwrap().lines().count(), 1);
 }
 

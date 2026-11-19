@@ -67,7 +67,7 @@ async fn wait_stopped(holder: u32, stopped: bool) {
             if stopped { "stopped" } else { "runnable" },
             program_states(holder)
         );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 }
 

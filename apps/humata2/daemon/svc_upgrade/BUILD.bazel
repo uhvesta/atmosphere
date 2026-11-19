@@ -4,15 +4,10 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 # upgrade execution, rollback, and holder migration (SPLIT_PHASE3_DAEMON §2.1).
 SVC_UPGRADE_COMMON_DEPS = [
     "//apps/humata2/daemon/access",
-    "//apps/humata2/daemon/durable",
-    "//apps/humata2/daemon/holder",
     "//apps/humata2/daemon/humatad:grpc",
     "//apps/humata2/daemon/machines",
     "//apps/humata2/daemon/ports",
-    "//apps/humata2/daemon/revive",
     "//apps/humata2/daemon/rpc_kit",
-    "//apps/humata2/daemon/sessions",
-    "//apps/humata2/daemon/store",
     "@crates//:notify",
     "@crates//:prost-types",
     "@crates//:serde",
@@ -31,7 +26,12 @@ rust_library(
     crate_name = "humata2_svc_upgrade",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = SVC_UPGRADE_COMMON_DEPS + [
+        "//apps/humata2/daemon/durable",
+        "//apps/humata2/daemon/holder",
+        "//apps/humata2/daemon/revive",
         "//apps/humata2/daemon/runtime",
+        "//apps/humata2/daemon/sessions",
+        "//apps/humata2/daemon/store",
     ],
 )
 
@@ -44,7 +44,12 @@ rust_library(
     crate_name = "humata2_svc_upgrade",
     visibility = ["//apps/humata2/daemon:__subpackages__"],
     deps = SVC_UPGRADE_COMMON_DEPS + [
+        "//apps/humata2/daemon/durable:durable_faults",
+        "//apps/humata2/daemon/holder:holder_faults",
+        "//apps/humata2/daemon/revive:revive_faults",
         "//apps/humata2/daemon/runtime:runtime_faults",
+        "//apps/humata2/daemon/sessions:sessions_faults",
+        "//apps/humata2/daemon/store:store_faults",
     ],
 )
 

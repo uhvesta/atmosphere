@@ -127,9 +127,29 @@ rust_test(
             "tests/power_cut.rs",
             "tests/return_after_text.rs",
             "tests/take_over_faults.rs",
+            "tests/take_over_ssh.rs",
         ],
     )
 ]
+
+# A live SSH session on the Lima VM h2-terminal-c1 survives a holder bump
+# there (LIVEHOLDER). Needs the VM and a Linux holder build; see the test's
+# header for the environment it reads.
+rust_test(
+    name = "take_over_ssh_test",
+    srcs = ["tests/take_over_ssh.rs"],
+    tags = [
+        "external",
+        "local",
+        "manual",
+        "no-sandbox",
+    ],
+    deps = [
+        ":holder",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
 
 # A holder's memory and CPU, idle and after a full scrollback (FAST).
 # `bazel test -c opt :cost_bench --test_output=streamed --test_arg=--nocapture`.
