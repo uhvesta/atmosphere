@@ -47,6 +47,7 @@ mod views;
 
 pub use comments::{Doubtful, RecoveryState, UserWriteGuard};
 pub use pull_requests::{PR_REVIEWS_FOLDER, PullRequests, binding};
+pub use replay::Replayed;
 pub use sink::{CommentSink, TerminalSink};
 
 use crate::ports::{

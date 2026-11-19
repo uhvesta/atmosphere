@@ -397,7 +397,7 @@ impl ChannelSvc {
         for machine in named.iter().filter(|machine| **machine != self.machine) {
             links
                 .watch(machine)
-                .wait_for(|now| matches!(now, LinkState::Up { .. }))
+                .wait_for(|now| matches!(now, humata2_svc_machines::ports::LinkState::Up { .. }))
                 .await
                 .map(drop)
                 .map_err(|_| (*machine).to_owned())?;

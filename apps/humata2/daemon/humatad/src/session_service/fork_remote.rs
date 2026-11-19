@@ -696,7 +696,7 @@ impl Forker {
                     );
                     for machine in [&self.from, &self.to] {
                         if !self.carry.is_host(machine) {
-                            let mut state = self.carry.links().watch(machine);
+                            let mut state = super::move_recover::watch_provider(self.carry.links(), machine);
                             let _ = state.wait_for(|now| !matches!(now, crate::host_relay::LinkState::Up { .. })).await;
                         }
                     }

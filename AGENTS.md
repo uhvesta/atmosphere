@@ -31,6 +31,10 @@ Keep Bazel build and test cache isolation intact when adding code or tests under
   - Narrow daemon and client crates must depend on `//apps/humata2/api/grpc:<domain>` (or `//apps/humata2/api/proto:<domain>_rust`), never the monolithic `//apps/humata2/daemon/humatad:grpc` umbrella unless they genuinely span all services.
   - Keep `apps/humata2/daemon/ports` limited to stable IDs, value types, and narrow traits; do not pull service implementations or the full gRPC umbrella into `ports`, `rpc_kit`, or `runtime`.
 - **Multi-binary builds:** When building several large daemon binaries at once locally, pass `--jobs=4` or `--jobs=6` to avoid `rustc` + `clippy` CPU thrashing.
+- **Keep test runtimes fast (no hidden waits):**
+  - Never add fixed `sleep` waits or slow poll loops (`>= 20ms`) in tests or harnesses; wait on events/channels or use tight polls (`2ms`) with generous deadlines.
+  - Fake agent scripts in test harnesses must set `stty -icanon 2>/dev/null` so holders do not wait out the 5 s canonical-mode keys limit when typing.
+  - Guard teardown `pkill -f` behind checking whether the test's `holders/` directory actually has entries, and pass short admin-only retry knobs (`HUMATA2_PEER_RETRY_MS=20`) in multi-machine test rigs.
 
 ## Terminal experiment
 

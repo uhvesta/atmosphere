@@ -271,8 +271,8 @@ impl Follow {
 /// A client made here belongs to `generation`: when the machine's state shows
 /// a newer one, open it again (TR-4).
 pub struct Relayed {
-    channel: Channel,
-    generation: u64,
+    pub channel: Channel,
+    pub generation: u64,
 }
 
 impl Relayed {

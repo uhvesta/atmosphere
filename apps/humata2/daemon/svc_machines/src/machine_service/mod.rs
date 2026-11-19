@@ -30,8 +30,9 @@ use humata2_machines::{
     Action, AddSsh, Builds, ConfigError, Drive, EntryState, HostEntry, IdentityError, Machines,
     ManageError, OpStep, Provider, SetupError, StepEvent, SystemRunner,
 };
+pub use humata2_rpc_kit::lock;
 use humata2_rpc_kit::{
-    chain, error, failed, failure, internal, invalid_field, lock, missing, not_built_status,
+    chain, error, failed, failure, internal, invalid_field, missing, not_built_status,
 };
 use tokio::runtime::Handle;
 use tokio::task::AbortHandle;
@@ -134,7 +135,7 @@ pub struct Work {
     /// only until the machine is removed; nothing polls (LD-14).
     probes: Mutex<HashMap<String, (pb::MachineHealth, Vec<pb::MachineFolder>)>>,
     /// Forget machine's plans and its part of the sessions (LD-11).
-    pub(crate) forgetting: forget::Forgetful,
+    pub forgetting: forget::Forgetful,
     /// The stops kept for other machines (D262); set once by `serve` before
     /// any link starts.
     pub stops: OnceLock<Arc<dyn MachineStopsPort>>,
@@ -542,6 +543,14 @@ impl Work {
                 seen.next_retry_at = None;
             }
         });
+    }
+
+    /// Starts keeping `machine`'s link up via `abort` (e.g. from an interactive
+    /// login one-shot pipe), replacing any existing link supervisor.
+    pub fn start_link_handle(&self, machine: &str, abort: AbortHandle) {
+        if let Some(before) = lock(&self.links).insert(machine.to_owned(), abort) {
+            before.abort();
+        }
     }
 
     /// Keeps `machine`'s link up through its link command, if the host

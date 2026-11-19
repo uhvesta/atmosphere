@@ -147,7 +147,7 @@ impl SettingsSvc {
             blocking(move || -> Result<_, humata2_store::StoreError> {
                 Ok((
                     store.setting(BRANCH_PREFIX_KEY)?,
-                    permission::every_kind_in_agent(&agents),
+                    permission::every_kind_in_agent(&agents, &crate::wire_inbox::AgentGateAdapter),
                     permission::codex_trust::needs_trust(&store)?,
                     crate::contained::global(&store)?,
                     store.setting(sections::REVISION_KEY)?.map_or(0, |saved| saved.revision),

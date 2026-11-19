@@ -59,9 +59,19 @@ pub(super) struct Asked {
 
 impl Asked {
     pub(super) fn new(progress: &Progress, session: &str, machine: &str, request: &pb::StartSessionRequest) -> Self {
+        Self::from_parts(progress.operation(), progress.origin(), session, machine, request)
+    }
+
+    pub(super) fn from_parts(
+        operation: pb::Operation,
+        origin: Origin,
+        session: &str,
+        machine: &str,
+        request: &pb::StartSessionRequest,
+    ) -> Self {
         Self {
-            operation: progress.operation(),
-            origin: progress.origin(),
+            operation,
+            origin,
             session: session.to_owned(),
             machine: machine.to_owned(),
             request: pb::StartSessionRequest {
@@ -318,7 +328,9 @@ impl SessionSvc {
             branch,
             ..asked.request.clone()
         };
-        let mut progress = progress;
+        let mut progress = humata2_svc_peer::ports::Progress::new(Arc::new(
+            crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress))),
+        ));
         loop {
             if super::move_recover::wait_up(carry.links(), &asked.machine).await.is_err() {
                 progress.end_cancelled();

@@ -69,7 +69,7 @@ pub trait Forgetting: Send + Sync + 'static {
 /// The forget plans handed out, the answers already given and the sessions'
 /// side, set by `serve` once the SessionService exists.
 #[derive(Default)]
-pub(crate) struct Forgetful {
+pub struct Forgetful {
     hook: OnceLock<Arc<dyn Forgetting>>,
     plans: Mutex<HashMap<String, (String, Instant)>>,
     /// Held while the answers file is read or written.
@@ -153,7 +153,7 @@ fn write_answers(path: &Path, answers: &[Answer]) -> Result<(), humata2_store::S
 }
 
 impl Forgetful {
-    pub(crate) fn set(&self, hook: Arc<dyn Forgetting>) {
+    pub fn set(&self, hook: Arc<dyn Forgetting>) {
         let _ = self.hook.set(hook);
     }
 

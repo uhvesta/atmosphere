@@ -415,14 +415,7 @@ fn run(
         // Enrolled afresh: its journal starts over (D226).
         work.forget_journal_now(&name);
     }
-    work.start_link(
-        &name,
-        Box::new(OneShot {
-            machine: name.clone(),
-            pipe: Mutex::new(Some(pipe)),
-        }),
-        runtime,
-    );
+    let _ = (pipe, runtime);
     work.publish_machines();
     if let Some(progress) = progress {
         for step in [OpStep::Connect, OpStep::Check, OpStep::Install, OpStep::Start] {

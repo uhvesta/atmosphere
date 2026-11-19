@@ -11,67 +11,71 @@ pub(crate) use humata2_svc_catalog::{agent_gate, agent_service};
 mod agent_gate;
 pub(crate) use humata2_daemon_runtime::agent_switches;
 mod attach;
-mod away;
+mod wire_away;
+pub(crate) use humata2_svc_away as away;
 #[cfg(feature = "svc_board")]
-mod board_service;
+mod wire_board;
+#[cfg(feature = "svc_board")]
+pub(crate) use humata2_svc_board as board_service;
 mod bridge;
-mod carry;
-mod carry_service;
+mod wire_transfers;
+pub(crate) use humata2_svc_transfers::{carry, carry_service, transfer_end_service, transfer_service};
 mod channel_service;
 mod cli_login;
 pub(crate) use humata2_rpc_kit::compression;
 mod contained;
-mod daemon;
-mod desk_service;
-mod doctor;
+mod wire_stop_restart;
+pub(crate) use humata2_svc_stop_restart::{daemon, doctor, restart, stop};
+mod wire_desk;
+pub(crate) use humata2_svc_desk::desk_service;
 mod error;
 mod fault;
 mod events;
-mod files;
+mod wire_files;
+pub(crate) use humata2_svc_files as files;
 mod grant_target;
 mod guard;
 mod history_service;
 mod holder_end;
 mod holders;
-mod host_relay;
+mod wire_peer;
+pub(crate) use humata2_svc_peer::{
+    host_relay, peer, peer_client, peer_link, peer_reports, peer_skills, relay, relay_auth,
+    remote_end, remote_work,
+};
 mod host_vars;
 mod identity;
-mod inbox;
+mod wire_inbox;
+pub(crate) use wire_inbox as inbox;
+pub(crate) use humata2_svc_inbox::screen_ask;
+mod wire_channels;
+mod wire_terminal;
+pub(crate) use humata2_svc_terminal::{remote_terminal, running_holders, terminal_session};
 mod input_gate;
 mod last_good;
 pub(crate) use humata2_rpc_kit::link_proof;
 pub(crate) use humata2_rpc_kit::log;
 mod login_service;
-mod machine_scripts;
-mod machine_service;
+mod wire_machines;
+pub(crate) use humata2_svc_machines::{machine_scripts, machine_service};
 mod mark_service;
 #[cfg(feature = "svc_mcp")]
+#[path = "wire_mcp.rs"]
 mod mcp;
 mod not_built;
 mod operations;
 pub(crate) use humata2_daemon_runtime::paste;
-mod peer;
-mod peer_client;
-mod peer_link;
-mod peer_reports;
-mod peer_skills;
 mod provider_service;
 mod read_marks;
-mod running_holders;
 pub(crate) use humata2_daemon_runtime::ready;
 mod settings_service;
-mod relay;
-mod relay_auth;
-mod remote_end;
-mod remote_terminal;
-mod remote_work;
 // REPOS (RL-5): the repo library and the one repo search.
 mod repo_service;
-mod restart;
 #[cfg(feature = "svc_review")]
-mod review;
+mod wire_review;
+#[cfg(feature = "svc_review")]
+pub(crate) use humata2_svc_review as review;
 mod rules_kept;
-mod screen_ask;
 pub(crate) use humata2_daemon_runtime::screen_question;
 mod script_tokens;
 mod serve;
@@ -80,17 +84,14 @@ mod start_ready;
 mod session_service;
 mod skills_service;
 mod status;
-mod stop;
 mod storage;
 pub(crate) use humata2_rpc_kit::sync;
 mod terminal;
-mod terminal_session;
 pub(crate) use humata2_daemon_runtime::terminal_uuid;
 pub(crate) use humata2_daemon_runtime::tool_path;
-mod transfer_end_service;
-mod transfer_service;
 mod trash_service;
-mod upgrade;
+mod wire_upgrade;
+pub(crate) use humata2_svc_upgrade as upgrade;
 
 use std::process::ExitCode;
 
@@ -144,7 +145,9 @@ fn main() -> ExitCode {
                     Command::Bridge(args) => bridge::run(args).await,
                     #[cfg(feature = "svc_mcp")]
                     Command::Mcp(args) => mcp::run(args).await,
-                    Command::Stop(args) => stop::cli::run(args).await,
+                    Command::Stop(args) => stop::cli::run(args)
+                        .await
+                        .map_err(|source| DaemonError::StopCli { source }),
                 }
             });
             // Dropping the runtime would wait for a blocking read of stdin

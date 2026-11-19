@@ -636,6 +636,12 @@ pub struct TrashForward {
 }
 
 impl TrashForward {
+    pub fn use_links(&self, relay: Arc<dyn FileRelayPort>) {
+        self.reach.set(relay);
+    }
+}
+
+impl TrashForward {
     pub fn new(guard: Arc<dyn FileGuardPort>, machine: String) -> Self {
         Self {
             guard,

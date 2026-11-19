@@ -153,7 +153,10 @@ impl SessionSvc {
             Started::New(progress) => progress,
             Started::Existing(operation) => return Ok(operation),
         };
-        let host = Arc::new(HostOp::new(progress));
+        let origin = progress.origin();
+        let host = Arc::new(HostOp::new(humata2_svc_peer::ports::Progress::new(
+            Arc::new(crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+        )));
 
         // The machine gets the PR reviews channel, with the same id, and the
         // main clones its sessions' clones are made from.
@@ -224,7 +227,9 @@ impl SessionSvc {
         // D432: the start's journal goes first, so a power cut anywhere from
         // the host's record to the machine's answer leaves a start to ask
         // again, never a record on the host that nothing runs.
-        let Some(journal) = host.with_progress(|progress| Asked::new(progress, &id, &machine, &asked)) else {
+        let Some(journal) = host.with_progress(|progress| {
+            Asked::from_parts(progress.operation(), origin.clone(), &id, &machine, &asked)
+        }) else {
             let status = RemoteReviewError::Ended.status();
             return Err(status);
         };

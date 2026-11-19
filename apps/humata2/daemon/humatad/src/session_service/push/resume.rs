@@ -297,12 +297,12 @@ impl SessionSvc {
 /// Follows the machine's operation `asked` on the link as it is now. A link
 /// that breaks first answers `Unavailable`.
 async fn follow_once(
-    links: &Links,
+    links: &Arc<dyn humata2_svc_transfers::ports::LinkProvider>,
     machine: &str,
     asked: &str,
     progress: &Progress,
 ) -> Result<pb::Operation, Status> {
-    let relayed = links.relayed(machine).map_err(Status::from)?;
+    let relayed = super::super::move_recover::relayed_provider(links, machine).map_err(Status::from)?;
     // Only its id and that it runs: the machine's watch tells the rest.
     let running = pb::Operation {
         id: Some(pb::OperationId {

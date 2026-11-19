@@ -789,7 +789,9 @@ impl Mover {
         else {
             return Err(status::internal("a channel setup without a key was taken for a repeat", ""));
         };
-        let host = Arc::new(HostOp::new(progress));
+        let host = Arc::new(HostOp::new(humata2_svc_peer::ports::Progress::new(
+            Arc::new(crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+        )));
         let create = pb::CreateChannelRequest {
             idempotency_key: None,
             name: self.channel.name.clone(),
@@ -1091,7 +1093,9 @@ impl Mover {
                 mode: pb::resume_session_request::Mode::AfterMove as i32,
                 ..pb::ResumeSessionRequest::default()
             };
-            let host = Arc::new(HostOp::new(progress));
+            let host = Arc::new(HostOp::new(humata2_svc_peer::ports::Progress::new(
+            Arc::new(crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+        )));
             if let Err(error) = self
                 .remote
                 .resume_session_on(machine, &self.session, request, host.clone())

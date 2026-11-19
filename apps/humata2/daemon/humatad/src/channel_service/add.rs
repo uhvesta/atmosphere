@@ -336,7 +336,9 @@ impl ChannelSvc {
             progress.set_step(&format!("clone_main:{shown}"), pb::StepState::Done, None);
         }
         let answer = progress.operation();
-        let host = Arc::new(HostOp::new(progress));
+        let host = Arc::new(HostOp::new(humata2_svc_peer::ports::Progress::new(
+            Arc::new(crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+        )));
 
         let (feed, store, id, by) = (
             self.operations.feed(),

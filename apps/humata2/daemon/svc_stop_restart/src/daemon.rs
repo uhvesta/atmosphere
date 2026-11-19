@@ -5,7 +5,7 @@ use std::sync::Arc;
 use humata2_chunk::Link;
 use humata2_daemon_ports::{Caller, Release, UserVia, actor, user_via};
 use humata2_rpc_kit::compression::Compression;
-use humata2_rpc_kit::{API_MAJOR, API_MINOR};
+pub use humata2_rpc_kit::{API_MAJOR, API_MINOR};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::pb;

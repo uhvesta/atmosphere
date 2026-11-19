@@ -178,7 +178,7 @@ async fn links_up(carry: &Carry, journal: &Journaled) -> Result<Seen, String> {
             continue;
         }
         wait_up(carry.links(), machine).await.map_err(|()| machine.clone())?;
-        let state = carry.links().watch(machine);
+        let state = watch_provider(carry.links(), machine);
         let now = *state.borrow();
         let generation = match now {
             LinkState::Up { generation } => Some(generation),
@@ -224,9 +224,63 @@ async fn reported(mut reports: broadcast::Receiver<Arc<ReportUpdate>>, journal: 
     }
 }
 
+pub(super) fn watch_provider(
+    links: &Arc<dyn humata2_svc_transfers::ports::LinkProvider>,
+    machine: &str,
+) -> tokio::sync::watch::Receiver<LinkState> {
+    let initial = if links.channel(machine).is_ok() {
+        LinkState::Up { generation: 1 }
+    } else {
+        LinkState::Down
+    };
+    let (tx, rx) = tokio::sync::watch::channel(initial);
+    let mut all = links.watch_all();
+    let target = machine.to_owned();
+    tokio::spawn(async move {
+        loop {
+            match all.recv().await {
+                Ok((name, state)) if name == target => {
+                    let mapped = match state {
+                        humata2_svc_transfers::ports::LinkState::Up { generation } => {
+                            LinkState::Up { generation }
+                        }
+                        humata2_svc_transfers::ports::LinkState::Down => LinkState::Down,
+                    };
+                    if tx.send(mapped).is_err() {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    rx
+}
+
+pub(super) fn relayed_provider(
+    links: &Arc<dyn humata2_svc_transfers::ports::LinkProvider>,
+    machine: &str,
+) -> Result<crate::host_relay::Relayed, crate::host_relay::RelayError> {
+    links
+        .channel(machine)
+        .map(|channel| crate::host_relay::Relayed {
+            channel,
+            generation: 0,
+        })
+        .map_err(|_| crate::host_relay::RelayError::Offline {
+            machine: machine.to_owned(),
+        })
+}
+
 /// Waits until `machine`'s link is up with a generation other than `seen`.
-async fn came_back(links: &Links, machine: &str, seen: Option<u64>) -> Result<(), ()> {
-    let mut state = links.watch(machine);
+async fn came_back(
+    links: &Arc<dyn humata2_svc_transfers::ports::LinkProvider>,
+    machine: &str,
+    seen: Option<u64>,
+) -> Result<(), ()> {
+    let mut state = watch_provider(links, machine);
     state
         .wait_for(|now| matches!(now, LinkState::Up { generation } if Some(*generation) != seen))
         .await
@@ -234,8 +288,11 @@ async fn came_back(links: &Links, machine: &str, seen: Option<u64>) -> Result<()
         .map_err(drop)
 }
 
-pub(super) async fn wait_up(links: &Links, machine: &str) -> Result<(), ()> {
-    let mut state = links.watch(machine);
+pub(super) async fn wait_up(
+    links: &Arc<dyn humata2_svc_transfers::ports::LinkProvider>,
+    machine: &str,
+) -> Result<(), ()> {
+    let mut state = watch_provider(links, machine);
     state
         .wait_for(|now| matches!(now, LinkState::Up { .. }))
         .await

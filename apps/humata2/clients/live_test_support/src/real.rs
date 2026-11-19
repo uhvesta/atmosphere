@@ -45,6 +45,9 @@ case "$mode" in
   --resume) f="$CONV_DIR/$id.jsonl" ;;
   --fresh) f="$CONV_DIR/other.jsonl"; : > "$f" ;;
 esac
+# Reads keys itself, as an agent's CLI does: a holder types into a program
+# still editing lines only after waiting out its keys limit (5 s).
+stty -icanon 2>/dev/null
 echo "agent up $mode"
 while IFS= read -r line; do echo "got: $line"; printf '%s\n' "$line" >> "$f"; done
 "#,
@@ -95,11 +98,15 @@ impl Drop for RealWorld {
         let _ = self.child.wait();
         // Holders outlive the daemon on purpose, and so do the agents they
         // run. Everything this test started has its folder in its command
-        // line, so stop those by it.
-        let _ = Command::new("pkill")
-            .arg("-f")
-            .arg(self.dir.path())
-            .status();
+        // line, so stop those by it — skip the expensive process-table scan
+        // when no holder was ever spawned.
+        let holders = self.dir.path().join("state").join("holders");
+        if std::fs::read_dir(&holders).is_ok_and(|mut entries| entries.next().is_some()) {
+            let _ = Command::new("pkill")
+                .arg("-f")
+                .arg(self.dir.path())
+                .status();
+        }
     }
 }
 
@@ -161,7 +168,7 @@ async fn start_live() -> (RealWorld, LiveDaemon) {
     let deadline = Instant::now() + Duration::from_secs(15);
     while tokio::net::UnixStream::connect(&socket).await.is_err() {
         assert!(Instant::now() < deadline, "humatad2 never started listening");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
     let live = LiveDaemon::connect(LiveOptions::new(socket).with_agent(Agent::Claude, AGENT_NAME))
         .await

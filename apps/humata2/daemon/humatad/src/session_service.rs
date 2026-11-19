@@ -184,7 +184,9 @@ pub(crate) struct Tell {
 
 impl Tell {
     pub(crate) fn new(feed: Arc<Feed>, store: Arc<humata2_store::Store>, machine: String) -> Self {
-        let file_changes = Arc::new(crate::files::FileChanges::new(feed.clone(), store.clone()));
+        let file_changes = Arc::new(crate::files::FileChanges::new(Arc::new(
+            crate::wire_files::FeedAdapter(feed.clone()),
+        )));
         Self {
             feed,
             store,

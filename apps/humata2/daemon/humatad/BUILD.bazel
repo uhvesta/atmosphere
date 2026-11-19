@@ -53,6 +53,14 @@ FAULT_SWAPPED = [
     "//apps/humata2/daemon/runtime",
     "//apps/humata2/daemon/sessions",
     "//apps/humata2/daemon/store",
+    "//apps/humata2/daemon/svc_channels",
+    "//apps/humata2/daemon/svc_desk",
+    "//apps/humata2/daemon/svc_machines",
+    "//apps/humata2/daemon/svc_peer",
+    "//apps/humata2/daemon/svc_stop_restart",
+    "//apps/humata2/daemon/svc_terminal",
+    "//apps/humata2/daemon/svc_transfers",
+    "//apps/humata2/daemon/svc_upgrade",
     "//apps/humata2/daemon/transfers",
 ]
 
@@ -74,6 +82,9 @@ SHARED_DEPS = [
     "//apps/humata2/daemon/passphrase",
     "//apps/humata2/daemon/review_diff",
     "//apps/humata2/daemon/rpc_kit",
+    "//apps/humata2/daemon/svc_away",
+    "//apps/humata2/daemon/svc_files",
+    "//apps/humata2/daemon/svc_inbox",
     "//apps/humata2/daemon/vt_authority",
     "//apps/humata2/terminal/vt:ghostty_vt",
     "@crates//:clap",
@@ -106,6 +117,14 @@ FAULTS_DEPS = SHARED_DEPS + [
     "//apps/humata2/daemon/runtime:runtime_faults",
     "//apps/humata2/daemon/sessions:sessions_faults",
     "//apps/humata2/daemon/store:store_faults",
+    "//apps/humata2/daemon/svc_channels:svc_channels_faults",
+    "//apps/humata2/daemon/svc_desk:svc_desk_faults",
+    "//apps/humata2/daemon/svc_machines:svc_machines_faults",
+    "//apps/humata2/daemon/svc_peer:svc_peer_faults",
+    "//apps/humata2/daemon/svc_stop_restart:svc_stop_restart_faults",
+    "//apps/humata2/daemon/svc_terminal:svc_terminal_faults",
+    "//apps/humata2/daemon/svc_transfers:svc_transfers_faults",
+    "//apps/humata2/daemon/svc_upgrade:svc_upgrade_faults",
     "//apps/humata2/daemon/transfers:transfers_faults",
 ]
 
@@ -130,12 +149,6 @@ EXTRACTED_SRCS = [
 ]
 
 EXTRACTED_NO_CATALOG_SRCS = [s for s in EXTRACTED_SRCS if s != "src/agent_gate.rs"]
-
-BOARD_SRCS = ["src/board_service.rs"] + glob(["src/board_service/**/*.rs"])
-
-MCP_SRCS = ["src/mcp.rs"] + glob(["src/mcp/**/*.rs"])
-
-REVIEW_SRCS = ["src/review.rs"] + glob(["src/review/**/*.rs"])
 
 ALL_SVC_FEATURES = [
     "svc_away",
@@ -163,7 +176,11 @@ rust_binary(
     crate_features = ALL_SVC_FEATURES,
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS,
+    deps = FULL_DAEMON_DEPS + [
+        "//apps/humata2/daemon/svc_board",
+        "//apps/humata2/daemon/svc_mcp",
+        "//apps/humata2/daemon/svc_review",
+    ],
 )
 
 # TS-2: humatad2, the holder, the humata CLI and the stack CLI for every
@@ -233,7 +250,11 @@ rust_binary(
         "//apps/humata2/clients/live:__pkg__",
         "//apps/humata2/desktop:__pkg__",
     ],
-    deps = FULL_DAEMON_DEPS,
+    deps = FULL_DAEMON_DEPS + [
+        "//apps/humata2/daemon/svc_board",
+        "//apps/humata2/daemon/svc_mcp",
+        "//apps/humata2/daemon/svc_review",
+    ],
 )
 
 # The admin test daemon with every fault point live, its own and its
@@ -253,7 +274,11 @@ rust_binary(
     ] + ALL_SVC_FEATURES,
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_FAULTS_DEPS,
+    deps = FULL_FAULTS_DEPS + [
+        "//apps/humata2/daemon/svc_board",
+        "//apps/humata2/daemon/svc_mcp",
+        "//apps/humata2/daemon/svc_review",
+    ],
 )
 
 # ---------------------------------------------------------------------------
@@ -266,7 +291,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_NO_CATALOG_SRCS,
     ),
     crate_features = ["admin"],
     rustc_env = APP_IDENTITY,
@@ -279,7 +304,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_NO_CATALOG_SRCS,
     ),
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
@@ -291,7 +316,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_NO_CATALOG_SRCS,
     ),
     crate_features = [
         "admin",
@@ -307,7 +332,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_SRCS,
     ),
     crate_features = [
         "admin",
@@ -324,7 +349,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_SRCS,
     ),
     crate_features = [
         "svc_away",
@@ -340,7 +365,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS,
+        exclude = EXTRACTED_NO_CATALOG_SRCS,
     ),
     crate_features = [
         "admin",
@@ -349,7 +374,7 @@ rust_binary(
     ],
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = DAEMON_DEPS,
+    deps = DAEMON_DEPS + ["//apps/humata2/daemon/svc_review"],
 )
 
 rust_binary(
@@ -357,7 +382,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_NO_CATALOG_SRCS + BOARD_SRCS + MCP_SRCS,
+        exclude = EXTRACTED_NO_CATALOG_SRCS,
     ),
     crate_features = [
         "admin",
@@ -367,7 +392,7 @@ rust_binary(
     ],
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FAULTS_DEPS,
+    deps = FAULTS_DEPS + ["//apps/humata2/daemon/svc_review"],
 )
 
 rust_binary(
@@ -375,7 +400,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_SRCS,
     ),
     crate_features = [
         "admin",
@@ -392,7 +417,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_SRCS,
     ),
     crate_features = [
         "admin",
@@ -402,7 +427,7 @@ rust_binary(
     ],
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS,
+    deps = FULL_DAEMON_DEPS + ["//apps/humata2/daemon/svc_board"],
 )
 
 rust_binary(
@@ -410,7 +435,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_SRCS,
     ),
     crate_features = [
         "svc_away",
@@ -419,7 +444,7 @@ rust_binary(
     ],
     rustc_env = APP_IDENTITY,
     visibility = ["//apps/humata2:__subpackages__"],
-    deps = FULL_DAEMON_DEPS,
+    deps = FULL_DAEMON_DEPS + ["//apps/humata2/daemon/svc_board"],
 )
 
 rust_binary(
@@ -427,7 +452,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_SRCS,
     ),
     crate_features = [
         "admin",
@@ -444,7 +469,7 @@ rust_binary(
     testonly = True,
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = EXTRACTED_SRCS + BOARD_SRCS + MCP_SRCS + REVIEW_SRCS,
+        exclude = EXTRACTED_SRCS,
     ),
     crate_features = [
         "admin",

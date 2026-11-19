@@ -236,7 +236,7 @@ impl SessionSvc {
             model: request.model.clone(),
             asked: String::new(),
         };
-        let relayed = match there.carry.links().relayed(&there.machine) {
+        let relayed = match super::super::move_recover::relayed_provider(there.carry.links(), &there.machine) {
             Ok(relayed) => relayed,
             Err(error) => {
                 let status = Status::from(error);
@@ -414,7 +414,7 @@ impl SessionSvc {
             machine: journal.to.clone(),
             title: ask.title.clone(),
         };
-        let mut state = carry.links().watch(&there.machine);
+        let mut state = super::super::move_recover::watch_provider(carry.links(), &there.machine);
         loop {
             let Ok(up) = state.wait_for(|now| matches!(now, LinkState::Up { .. })).await.map(|now| *now) else {
                 crate::log::say!(
@@ -423,7 +423,7 @@ impl SessionSvc {
                 );
                 return Ok(());
             };
-            let asked = match carry.links().relayed(&there.machine) {
+            let asked = match super::super::move_recover::relayed_provider(carry.links(), &there.machine) {
                 Ok(relayed) => {
                     let first = if ask.asked.is_empty() {
                         ask_machine(

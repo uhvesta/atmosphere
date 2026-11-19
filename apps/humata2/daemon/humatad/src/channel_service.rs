@@ -33,12 +33,12 @@ use crate::status;
 mod add;
 mod delete;
 // REPOS (RL-5): the repo search reuses CH-3's listing.
-pub(crate) mod gh_repos;
+pub(crate) use humata2_svc_channels::gh_repos;
 pub(crate) use delete::{finish_restore, pick_place};
 pub(crate) use move_folder::{MoveError, carry_conversations, rewrite_folders};
 mod known;
 mod library_adds;
-mod move_folder;
+use humata2_svc_channels::move_folder;
 mod remove_machine;
 mod remove_machine_apply;
 mod follow_rename;
@@ -453,7 +453,9 @@ impl ChannelSvc {
             progress.set_step(&format!("clone_main:{shown}"), pb::StepState::Done, None);
         }
         let setup = progress.operation();
-        let host = Arc::new(HostOp::new(progress));
+        let host = Arc::new(HostOp::new(humata2_svc_peer::ports::Progress::new(
+            Arc::new(crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+        )));
         let answer = pb::CreateChannelResponse {
             channel: Some(self.show(channel.clone()).await?),
             setup: Some(setup),

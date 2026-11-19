@@ -227,7 +227,9 @@ impl SessionSvc {
                 return Err(status);
             }
         };
-        let host = Arc::new(HostOp::new(progress));
+        let host = Arc::new(HostOp::new(humata2_svc_peer::ports::Progress::new(
+            Arc::new(crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+        )));
         let asked = pb::StartSessionRequest {
             idempotency_key: None,
             branch: branch.unwrap_or(request.branch.clone()),
@@ -411,7 +413,9 @@ impl SessionSvc {
             Started::Existing(operation) => return Ok(Gated::Done(operation)),
         };
         let started = progress.operation();
-        let host = Arc::new(HostOp::new(progress));
+        let host = Arc::new(HostOp::new(humata2_svc_peer::ports::Progress::new(
+            Arc::new(crate::wire_peer::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+        )));
         match remote
             .resume_session_on(&machine, &id, request, host.clone())
             .await

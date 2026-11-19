@@ -69,7 +69,7 @@ impl HeldMessages for StartMessages {
             // A question of the session's own: on a machine it is kept in
             // the journal, so the host's Inbox shows it and its answer
             // comes back here (D744).
-            let agent = AgentCaller::of(&record, &machine);
+            let agent = crate::identity::agent_caller_of(&record, &machine);
             let caller = Caller::Agent(agent.clone());
             let card = Question {
                 question: unsent_question(&session, &text),

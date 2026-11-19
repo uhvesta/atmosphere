@@ -461,7 +461,7 @@ impl pb::access_service_server::AccessService for Access {
                         "check the session id; sessions on other machines can't be named here yet",
                     )
                 })?;
-                AgentCaller::of(&record, &here)
+                crate::identity::agent_caller_of(&record, &here)
             }
             Caller::Script(_) => {
                 return Err(status::refused(&Refusal::ScriptTokenHasNoSession));

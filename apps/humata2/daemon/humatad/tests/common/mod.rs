@@ -269,7 +269,7 @@ impl Daemon {
                 };
                 panic!("humatad2 never started listening within {WAIT:?}: {process}");
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 
@@ -441,8 +441,15 @@ impl Drop for Daemon {
         }
         // A holder no tab names (a power cut before its tab was committed,
         // or a tab already gone) still carries this daemon's folder, a
-        // fresh one under /tmp, in its command line: stop those by it.
-        let _ = Command::new("pkill").arg("-f").arg(format!("{}/", self.dir.path().display())).status();
+        // fresh one under /tmp, in its command line: stop those by it,
+        // skipping the process-table scan when no holder was ever spawned.
+        let holders = self.state.join("holders");
+        if std::fs::read_dir(&holders).is_ok_and(|mut entries| entries.next().is_some()) {
+            let _ = Command::new("pkill")
+                .arg("-f")
+                .arg(format!("{}/", self.dir.path().display()))
+                .status();
+        }
     }
 }
 
@@ -1217,7 +1224,7 @@ pub async fn kill_holders(tabs: &[humata2_store::TabRecord]) {
                 "holder {} never stopped answering",
                 tab.holder_pid
             );
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
         }
     }
 }

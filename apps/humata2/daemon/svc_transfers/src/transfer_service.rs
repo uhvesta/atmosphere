@@ -108,6 +108,7 @@ fn finished(snapshot: &tr::Snapshot) -> bool {
 }
 
 /// This machine's transfers.
+#[derive(Clone)]
 pub struct TransferSvc {
     core: Arc<Core>,
     /// Where an agent's copy that the rules send to Ask me waits for the
@@ -174,6 +175,9 @@ impl TransferSvc {
 
     /// Gives the transfers the machines' links (the host only; without them
     /// every machine is offline) and resumes the transfers waiting for a
+    /// Machine-side hook when agent requests forward to host.
+    pub fn ask_host_for_agents(self: &Arc<Self>) {}
+
     /// machine whenever its link comes up (FM-8, FM-13). Inside the runtime,
     /// once.
     pub fn use_links(self: &Arc<Self>, links: Arc<dyn LinkProvider>) {

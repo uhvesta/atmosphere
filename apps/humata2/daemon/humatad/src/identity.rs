@@ -50,144 +50,37 @@ pub(crate) const SCRIPT_HEADER: &str = "humata-script-token";
 /// A token's random bytes: 32 hex characters.
 const TOKEN_BYTES: usize = 16;
 
-/// Who made a call, as its credential established it.
-#[derive(Clone, Debug)]
-pub(crate) enum Caller {
-    User(UserVia),
-    Agent(AgentCaller),
-    /// A script with a token (SEC-14). Never the user, and it has no
-    /// session.
-    Script(ScriptCaller),
-    /// The Mac, over the peer link it started (`serve --stdio`). Bound to
-    /// the link, never to anything a request carries (GRPC.md §3).
-    Peer,
+pub(crate) use humata2_daemon_ports::{AgentCaller, Caller, UserVia};
+
+pub(crate) fn agent_caller_of(record: &SessionRecord, here: &str) -> AgentCaller {
+    AgentCaller {
+        session: session_ref(record, here),
+        agent: record.agent.clone(),
+        title: record.title.clone(),
+        method: String::new(),
+        context_only_parent: None,
+        desk: None,
+        review_push: None,
+        channel_desk: None,
+    }
 }
 
-/// How the user reached the daemon.
-#[derive(Clone, Debug)]
-pub(crate) enum UserVia {
-    /// The app. Only an admin test daemon finds it today: it takes a call
-    /// with no credential for the user.
-    App,
-    /// A process in the terminal session that this `humata login` bound.
-    /// `on_host` says the daemon taking the call is the host's, not a
-    /// machine's: whoami and the records name the machine it's on.
-    CliLogin {
-        login: String,
-        on_host: bool,
-        /// How the user showed they were there when they logged in.
-        method: humata2_access::PresenceMethod,
-    },
-    /// The host, through the peer link's relay (D139, D144): a call on a
-    /// socket connection that proved itself once with the host's own
-    /// proof, for a method the relay allows.
-    Host,
-}
-
-/// A session's agent, or anything else running in one of its tabs.
-#[derive(Clone, Debug)]
-pub(crate) struct AgentCaller {
-    pub(crate) session: SessionRef,
-    pub(crate) agent: String,
-    pub(crate) title: String,
-    /// The gRPC method of the call being made, as the server routed it
-    /// (never what the request says); empty outside a call. The Inbox card
-    /// names the operation from it (TP-16).
-    pub(crate) method: String,
-    /// The parent this context-only fork works in its parent's folder for
-    /// (D185, D187); `None` for any other session, and for a fork that has
-    /// its own copy. Set by [`AgentCaller::resolve_fork`] once the caller is
-    /// identified.
-    pub(crate) context_only_parent: Option<SessionId>,
-    /// The two switches of the Desk session this agent runs in (DK-4, D182.3);
-    /// `None` for a session on a channel. Set by [`AgentCaller::resolve_fork`]
-    /// on every call, so a switch changed by the user applies from the next call.
-    pub(crate) desk: Option<DeskAccess>,
-    /// `Some(push_allowed)` for a pull request review session (PR-7, PR-8).
-    /// Set by [`AgentCaller::resolve_fork`] on every call, so the user's
-    /// change applies from the next call.
-    pub(crate) review_push: Option<bool>,
-    /// What the channel Desk session this agent runs in may do on top of
-    /// its channel's rules (CD-3, D306); `None` for any other session. Set
-    /// by [`AgentCaller::resolve_fork`] on every call, which also files the
-    /// agent under that channel, so a switch the user changes applies from
-    /// the next call.
-    pub(crate) channel_desk: Option<ChannelDeskAccess>,
-}
-
-impl AgentCaller {
-    pub(crate) fn of(record: &SessionRecord, here: &str) -> Self {
-        Self {
-            session: session_ref(record, here),
-            agent: record.agent.clone(),
-            title: record.title.clone(),
-            method: String::new(),
-            context_only_parent: None,
-            desk: None,
-            review_push: None,
-            channel_desk: None,
-        }
+/// Works out from the store whether this session is a context-only fork
+/// still in its parent's folder, so the policy judges its calls on the
+/// parent's clones as its own (D185, D187).
+pub(crate) fn resolve_fork(mut agent: AgentCaller, store: &Store) -> Result<AgentCaller, StoreError> {
+    agent.context_only_parent = context_only_parent(store, agent.session.id.as_str())?;
+    agent.desk = desk_access(store, agent.session.id.as_str())?;
+    if let Some((channel, access)) =
+        crate::desk_service::channel_desk::access_of(store, agent.session.id.as_str())?
+    {
+        agent.session.channel = channel;
+        agent.channel_desk = Some(access);
     }
-
-    /// Works out from the store whether this session is a context-only fork
-    /// still in its parent's folder, so the policy judges its calls on the
-    /// parent's clones as its own (D185, D187).
-    pub(crate) fn resolve_fork(mut self, store: &Store) -> Result<Self, StoreError> {
-        self.context_only_parent = context_only_parent(store, self.session.id.as_str())?;
-        self.desk = desk_access(store, self.session.id.as_str())?;
-        if let Some((channel, access)) =
-            crate::desk_service::channel_desk::access_of(store, self.session.id.as_str())?
-        {
-            self.session.channel = channel;
-            self.channel_desk = Some(access);
-        }
-        self.review_push = store
-            .review_session(self.session.id.as_str())?
-            .map(|review| review.push_allowed);
-        Ok(self)
-    }
-
-    /// The kind of session the policy judges this agent's calls by.
-    pub(crate) fn session_kind(&self) -> SessionKind {
-        if let Some(push_allowed) = self.review_push {
-            return SessionKind::Review { push_allowed };
-        }
-        if let Some(access) = &self.channel_desk {
-            return SessionKind::ChannelDesk(access.clone());
-        }
-        if let Some(access) = self.desk {
-            return SessionKind::Desk(access);
-        }
-        match &self.context_only_parent {
-            Some(parent) => SessionKind::ContextOnlyFork {
-                parent: parent.clone(),
-            },
-            None => SessionKind::Ordinary,
-        }
-    }
-
-    /// The dotted operation id of the call being made (TP-16), such as
-    /// `channel.list` for `ChannelService/ListChannels`: the service's area,
-    /// then the method in snake case without the area's own word. Empty
-    /// outside a call.
-    pub(crate) fn operation(&self) -> String {
-        operation_of(&self.method)
-    }
-
-    pub(crate) fn actor(&self) -> pb::AgentActor {
-        pb::AgentActor {
-            session: Some(pb::SessionId {
-                value: self.session.id.to_string(),
-            }),
-            machine: Some(pb::MachineId {
-                value: self.session.machine.to_string(),
-            }),
-            agent: Some(pb::AgentId {
-                value: self.agent.clone(),
-            }),
-            session_title: self.title.clone(),
-        }
-    }
+    agent.review_push = store
+        .review_session(agent.session.id.as_str())?
+        .map(|review| review.push_allowed);
+    Ok(agent)
 }
 
 /// The switches of `session`'s Desk row, if it has one (DK-4).
@@ -627,7 +520,7 @@ impl Identities {
                         hash.to_owned(),
                         Holder {
                             tab: tab.to_owned(),
-                            caller: AgentCaller::of(&record, machine),
+                            caller: agent_caller_of(&record, machine),
                             identity,
                         },
                     );
@@ -668,7 +561,7 @@ impl Identities {
             hash.clone(),
             Holder {
                 tab: tab.to_owned(),
-                caller: AgentCaller::of(session, &self.machine),
+                caller: agent_caller_of(session, &self.machine),
                 identity,
             },
         );
@@ -815,7 +708,7 @@ impl Authenticate {
     /// Ordinary could let a fork write its parent's code under the wrong rule.
     fn resolve_fork(&self, agent: AgentCaller) -> Result<AgentCaller, Status> {
         let session = agent.session.id.to_string();
-        agent.resolve_fork(&self.store).map_err(|error| {
+        resolve_fork(agent, &self.store).map_err(|error| {
             status::internal(
                 format!(
                     "couldn't read where session {session} came from, so its access can't be checked: {}; try the call again, and if it keeps failing, restart humatad2",

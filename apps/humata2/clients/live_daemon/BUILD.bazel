@@ -111,12 +111,12 @@ rust_test(
     data = [
         "//apps/humata2/cli:humata",
         "//apps/humata2/clients/live:holder_for_clients",
-        "//apps/humata2/daemon/humatad:humatad2_test_power_cut",
+        "//apps/humata2/daemon/humatad:humatad2_test_away_board",
     ],
     env = {
         "HUMATA": "$(rootpath //apps/humata2/cli:humata)",
         "HUMATA2_HOLDER": "$(rootpath //apps/humata2/clients/live:holder_for_clients)",
-        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_power_cut)",
+        "HUMATAD2": "$(rootpath //apps/humata2/daemon/humatad:humatad2_test_away_board)",
     },
     visibility = ["//apps/humata2/clients:__subpackages__"],
     deps = [

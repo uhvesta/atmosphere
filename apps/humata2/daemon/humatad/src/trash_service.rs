@@ -159,7 +159,10 @@ pub(crate) struct TrashSvc {
 impl TrashSvc {
     pub(crate) fn new(bin: Arc<Bin>, guard: Arc<Guard>, machine: String) -> Self {
         Self {
-            forward: TrashForward::new(guard.clone(), machine.clone()),
+            forward: TrashForward::new(
+                Arc::new(crate::wire_files::GuardAdapter(guard.clone())),
+                machine.clone(),
+            ),
             bin,
             guard,
             machine,
@@ -184,7 +187,10 @@ impl TrashSvc {
     /// The machines' links (the host only; without them every other
     /// machine's trash is offline).
     pub(crate) fn use_links(&self, links: Links) {
-        self.forward.use_links(links);
+        self.forward.use_links(Arc::new(crate::wire_files::RelayAdapter {
+            links,
+            migrations: None,
+        }));
     }
 
     /// The trash of this machine; another machine's is forwarded before

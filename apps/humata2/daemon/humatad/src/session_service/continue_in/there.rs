@@ -352,7 +352,7 @@ impl SessionSvc {
         };
         let operation = progress.operation();
         let host_operation = operation.id.as_ref().map(|id| id.value.clone()).unwrap_or_default();
-        let relayed = match carry.links().relayed(&machine) {
+        let relayed = match super::super::move_recover::relayed_provider(carry.links(), &machine) {
             Ok(relayed) => relayed,
             Err(error) => {
                 let status = Status::from(error);
@@ -704,13 +704,13 @@ impl SessionSvc {
     }
 
     async fn recover_there(&self, there: There) -> Result<Recovered, Status> {
-        let mut state = there.carry.links().watch(&there.machine);
+        let mut state = super::super::move_recover::watch_provider(there.carry.links(), &there.machine);
         loop {
             let Ok(up) = state.wait_for(|now| matches!(now, LinkState::Up { .. })).await.map(|now| *now) else {
                 self.settle(&there).await;
                 return Ok(Recovered::Forgotten);
             };
-            let asked = match there.carry.links().relayed(&there.machine) {
+            let asked = match super::super::move_recover::relayed_provider(there.carry.links(), &there.machine) {
                 Ok(relayed) => match ask_machine(&relayed, &there.machine, there.request.clone()).await {
                     Ok(pb::StartSessionResponse {
                         operation: Some(first), ..

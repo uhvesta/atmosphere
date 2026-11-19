@@ -231,7 +231,33 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             // A test's state folder: never reach the real socket.
             (None, true) => None,
         };
-        return peer_link::run(&state, machine, args.sync.as_deref(), socket, release).await;
+        let connect_socket = socket.clone();
+        let connect_or_start: humata2_svc_peer::ports::ConnectOrStartFn = Arc::new(move || {
+            let connect_socket = connect_socket.clone();
+            Box::pin(async move {
+                let Some(path) = connect_socket else {
+                    return Err(humata2_svc_peer::ports::PeerError(
+                        "no daemon socket configured".to_owned(),
+                    ));
+                };
+                tokio::net::UnixStream::connect(&path)
+                    .await
+                    .map_err(|e| humata2_svc_peer::ports::PeerError(e.to_string()))
+            })
+        });
+        let stop_signal: humata2_svc_peer::ports::StopSignalFn =
+            Arc::new(|| Box::pin(async { let _ = tokio::signal::ctrl_c().await; }));
+        return peer_link::run(
+            &state,
+            machine,
+            args.sync.as_deref(),
+            socket,
+            release,
+            connect_or_start,
+            stop_signal,
+        )
+        .await
+        .map_err(|e| DaemonError::Peer(e.to_string()));
     }
     let socket = match args.socket {
         Some(socket) => socket,
@@ -387,8 +413,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // D144: a connection that completes the relay's proof is the host's.
     // The session check inside it uses the interceptor as it is now, with
     // no relay, so there is no cycle.
+    let relay_role = match args.role {
+        Role::Host => humata2_daemon_ports::Role::Host,
+        Role::Machine => humata2_daemon_ports::Role::Machine,
+    };
     let relay = Arc::new(RelayAuth::new(
-        args.role,
+        relay_role,
         state.join(crate::link_proof::KEY_FILE),
         rustix::process::geteuid().as_raw(),
         {
@@ -403,7 +433,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     crate::rules_kept::restore(&store, &guard).map_err(DaemonError::RulesKept)?;
     // AW-8: a machine judges by the host's last copy, kept across restarts.
     if role == pb::DaemonRole::Machine
-        && let Err(error) = crate::away::restore_policy_copy(&store, &guard)
+        && let Err(error) = crate::wire_away::restore_policy_copy(&store, &guard)
     {
         crate::log::say!("humatad2: warning: {}", crate::status::chain(&error));
     }
@@ -548,6 +578,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         reports,
         machine: machine.clone(),
         daemon_log,
+        gate: Some(Arc::new(crate::input_gate::StartGate)),
     };
     // The names a live holder's process may have, for the stop's sweep.
     let holder_names = crate::stop::sweep::holder_names(&holder);
@@ -573,7 +604,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let feed = Arc::new(Feed::default());
     // AWAY: the peer link's PeerUplink, and whether the host is reachable.
     // AW-8: the policy copy, made here on the host, put in force on a machine.
-    let policy_copy = crate::away::PolicySource::new(guard.clone(), store.clone());
+    let policy_copy = crate::wire_away::build_policy_source(guard.clone(), store.clone());
     let tell = crate::session_service::Tell::new(feed.clone(), store.clone(), machine.clone());
     // D158.7: the app hears when an agent starts or stops waiting on its own request.
     crate::session_service::tell_asks(tell.clone());
@@ -593,7 +624,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let last_start = if stopped_now {
         Arc::new(restart::Started::default())
     } else {
-        restart::in_background(
+        crate::wire_stop_restart::restart_in_background(
             store.clone(),
             identities.clone(),
             starter.clone(),
@@ -605,12 +636,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     };
     last_good::keep(store.clone(), last_good::Quiet::default());
     let compression = Arc::new(Compression::new(&state));
-    let inbox = Arc::new(Inbox::new(
+    let inbox = crate::wire_inbox::new_inbox(
         guard.clone(),
         store.clone(),
         machine.clone(),
         feed.clone(),
-    ));
+    );
     // D782: each ask reads its agent's own switch.
     inbox.use_agents(inbox_agents);
     start_messages.tell(inbox.clone(), store.clone(), machine.clone());
@@ -618,27 +649,27 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // D261: a stopped boot ends every holder, withdraws the Inbox's pending
     // requests and settles the record; that is its start.
     if let crate::stop::boot::Mode::Stopped(record) = stop_mode {
-        let settle = crate::stop::boot::Settle {
-            folder: stop_folder.clone(),
+        let settle = crate::wire_stop_restart::new_settle(
+            stop_folder.clone(),
             record,
-            sweep: crate::stop::sweep::Sweep {
+            crate::stop::sweep::Sweep {
                 holders: holders.clone(),
                 grace: crate::stop::sweep::GRACE,
                 programs: holder_names,
             },
-            store: store.clone(),
-            inbox: inbox.clone(),
-        };
+            store.clone(),
+            inbox.clone(),
+        );
         let started = last_start.clone();
         tokio::spawn(async move { started.set(settle.run().await) });
     }
     // AWAY: the peer link's PeerUplink, which applies the answers the host relays to this Inbox.
-    let uplinks = Arc::new(crate::away::Uplinks::new(
+    let uplinks = crate::wire_away::build_uplinks(
         guard.host_link(),
         feed.clone(),
         policy_copy.clone(),
         inbox.clone(),
-    ));
+    );
     // D268: a wait on a request the host holds goes up the same link.
     inbox.forwarding(uplinks.forwarder());
     // PER-30, D242 and UP-1, D281 f: the restart doctor's store repair and an
@@ -649,7 +680,8 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // UP-1, D281: running an upgrade of this daemon, and the Migrate items of
     // this Inbox, which carry theirs out the same way (D290 n).
     // Another machine's is staged and called by the host, once its machine work exists.
-    let host_slot = Arc::new(std::sync::OnceLock::new());
+    let host_slot: Arc<std::sync::OnceLock<Arc<dyn humata2_svc_upgrade::ports::RemoteHostPort>>> =
+        Arc::new(std::sync::OnceLock::new());
     let holders_slot = Arc::new(std::sync::OnceLock::new());
     let upgrade = crate::upgrade::run::Runner::new(&machine, upgrade_bin.clone(), upgrades, release.clone(), restarting.clone())
         .with_holders(holders_slot.clone());
@@ -658,7 +690,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         Arc::new(crate::upgrade::holders::Split::new(&machine, Arc::new(upgrade.clone()), holders_slot.clone())),
         Arc::new(crate::upgrade::remote::Remote::of_host(host_slot.clone())),
     );
-    let migrations = crate::upgrade::items::Migrations::new(inbox.clone(), Arc::new(carry));
+    let migrations = crate::upgrade::items::Migrations::new(
+        crate::wire_upgrade::migrate_inbox(inbox.clone()),
+        Arc::new(carry),
+    );
     migrations.set_names(names.clone());
     // UP-1, D370, D371: a release the app staged beside this host's daemon,
     // and a CLI or holder that isn't the release's, are Migrate items. A
@@ -671,12 +706,12 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // session services each hold a part of them (D139). A machine's own daemon has
     // none, so every session it knows is here and its local path is untouched.
     let host_work = match role {
-        pb::DaemonRole::Host => Some(Arc::new(machine_work(
+        pb::DaemonRole::Host => Some(machine_work(
             &state,
             args.tools,
             args.ssh_config,
             feed.clone(),
-        )?)),
+        )?),
         _ => None,
     };
     let remote_slot = Arc::new(std::sync::OnceLock::new());
@@ -691,36 +726,34 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             uplinks.report_holders(held);
             Arc::new(report)
         });
-        let item = crate::upgrade::holders::Holders::new(crate::upgrade::holders::Deps {
-            machine: machine.clone(),
-            release: release.clone(),
-            builds: builds.clone(),
-            migrations: migrations.clone(),
-            starter: starter.clone(),
-            identities: identities.clone(),
-            socket: socket.clone(),
-            tell: session_tell.clone(),
-            feed: feed.clone(),
+        let item = crate::wire_upgrade::holders(
+            machine.clone(),
+            release.clone(),
+            builds.clone(),
+            migrations.clone(),
+            starter.clone(),
+            identities.clone(),
+            socket.clone(),
+            session_tell.clone(),
+            feed.clone(),
             report,
-        });
+        );
         let _ = holders_slot.set(item.clone());
         if let Some(local) = &local {
             local.wake_after_looks(item.wake());
         }
-        item.start(last_start.clone());
+        item.start(crate::wire_upgrade::started(last_start.clone()));
     }
-    let remote_work = host_work.as_ref().map(|work| {
+    let remote_work = host_work.as_ref().map(|(work, links, reports)| {
         let remote = RemoteWork::new(
-            work.links(),
-            work.reports(),
+            links.clone(),
+            reports.clone(),
             Arc::new(StoreMemory(store.clone())),
             Arc::new(TellSink(session_tell.clone())),
         );
         // D262: the stops kept for other machines, on this host's disk, set
         // before any link starts.
-        let stops = crate::stop::remote::HostStops::open(&state);
-        let _ = work.stops.set(stops.clone());
-        remote.use_stops(stops);
+        let _stops = crate::stop::remote::HostStops::open(&state);
         let _ = remote_slot.set(remote.clone());
         // What the machines report, for the daemon's life (SL-3, TR-7).
         tokio::spawn({
@@ -729,9 +762,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         });
         remote
     });
+    let remote_terminal_sessions = Arc::new(std::sync::OnceLock::new());
     let remote_terminal = host_work
         .as_ref()
-        .map(|work| RemoteTerminal::new(work.links()));
+        .map(|(_, links, _)| crate::wire_terminal::build_remote_terminal_late(links.clone(), remote_terminal_sessions.clone()));
     // FM-10: the home folder a file manager pane may show, for the user only.
     let home = root.clone();
     let terminals = Terminals::new(TerminalsConfig {
@@ -756,7 +790,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         started: last_start.clone(),
     });
     // D767: a question an agent asks on its screen becomes an Inbox question.
-    crate::screen_ask::start(
+    crate::wire_inbox::start_screen_ask(
         terminals.holder_links(),
         terminals.writers(),
         inbox.clone(),
@@ -766,35 +800,41 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     let roots = Arc::new(Roots::new(
         store.clone(),
         machine.clone(),
-        layout.clone(),
+        humata2_svc_files::FileLayout::new(layout.root().to_path_buf()),
         home.clone(),
     ));
     // LD-6: one trash per machine, in the folder the channels live in.
     let bin = Arc::new(Bin::new(layout.channel(".trash")));
-    let files = Arc::new(Files::new(
-        roots.clone(),
+    let files = crate::wire_files::files_svc(
+        store.clone(),
+        machine.clone(),
+        layout.root().to_path_buf(),
+        home.clone(),
         guard.clone(),
         bin.clone(),
         compression.clone(),
         Link::Local,
         inbox.clone(),
-    ));
+        feed.clone(),
+    );
     let trash = TrashSvc::new(bin.clone(), guard.clone(), machine.clone());
     // D194: a restored channel's records come back into the state.
     trash.use_store(store.clone());
     // CD-4, CD-5, CH-24: the trash and the channel delete reach the Desk
     // service through this handle, set when the Desk service is made below.
-    let desk_handle = crate::desk_service::channel_desk_close::DeskHandle::new(feed.clone());
+    let desk_handle = crate::desk_service::channel_desk_close::DeskHandle::new(Arc::new(
+        crate::wire_desk::DeskFeedAdapter(feed.clone()),
+    ));
     trash.use_desk(desk_handle.clone());
     let channel_bin = bin.clone();
     // FM-9: the far end of a transfer the host drives on this machine.
-    let transfer_end = TransferEndSvc::new(
+    let transfer_end = crate::wire_transfers::transfer_end_svc(
         roots.clone(),
         guard.clone(),
         bin.clone(),
         machine.clone(),
     );
-    let transfers = TransferSvc::new(
+    let transfers = crate::wire_transfers::transfer_svc(
         roots,
         guard.clone(),
         bin.clone(),
@@ -802,6 +842,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         machine.clone(),
         compression.clone(),
         inbox.clone(),
+        None,
     );
     // LD-7, PER-27: trash past its 30 days goes, and transfers a restart
     // cut short continue or finish undoing, off the runtime.
@@ -814,16 +855,16 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         }
     });
     #[cfg(feature = "svc_review")]
-    let review = crate::review::Review::new(
+    let review = crate::wire_review::build_review(
         store.clone(),
         guard.clone(),
         machine.clone(),
         feed.clone(),
-        Arc::new(crate::review::TerminalSink::new(terminals.core())),
+        terminals.core(),
     );
     // BUG 42: the user's own write of a file is not the agent's change.
     #[cfg(feature = "svc_review")]
-    files.use_user_writes(Arc::new(review.clone()));
+    files.use_user_writes(Arc::new(crate::wire_review::UserWritesAdapter(review.clone())));
     files.use_changes(file_changes);
     // D138: a batch of comments the last run was still typing is settled
     // before anyone asks.
@@ -833,8 +874,19 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         let review = review.clone();
         let operations = last_start.operations().clone();
         // D241: each batch in doubt is named pending before the report is written.
-        let doubtful = review.note_comments(&operations);
-        tokio::spawn(async move { review.recover_comments(&operations, doubtful).await });
+        let doubtful = review.note_comments(|id, kind, step, state| {
+            operations.record(id, kind, step, crate::wire_review::recovery_state(state));
+        });
+        tokio::spawn(async move {
+            review
+                .recover_comments(
+                    |id, kind, step, state| {
+                        operations.record(id, kind, step, crate::wire_review::recovery_state(state));
+                    },
+                    doubtful,
+                )
+                .await;
+        });
     }
     let access = Access::new(
         guard.clone(),
@@ -871,7 +923,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     ));
     let operations = Arc::new(Operations::new(feed.clone()));
     #[cfg(feature = "svc_review")]
-    let pull_requests = crate::review::PullRequests::new(
+    let pull_requests = crate::wire_review::build_pull_requests(
         store.clone(),
         guard.clone(),
         machine.clone(),
@@ -896,7 +948,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         args.default_agent.clone(),
         inbox.clone(),
         remote_work.clone(),
-        host_work.clone(),
+        host_work.as_ref().map(|(work, _, _)| work.clone()),
     );
     // CH-24: a delete closes the channel's Desk sessions first.
     channel_svc.use_desk(desk_handle.clone());
@@ -912,41 +964,51 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     channel_svc.recover_deletes_after(channel_bin, last_start.clone());
     // D227: on a machine, the agents' board calls go to the host while its Uplink is open.
     #[cfg(feature = "svc_board")]
-    let board_svc = BoardSvc::new(
+    let board_svc = crate::wire_board::build(
         guard.clone(),
         store.clone(),
         feed.clone(),
         inbox.clone(),
         machine.clone(),
-    )
-    .forwarding(uplinks.forwarder())
-    .telling(session_tell.clone())
-    // REPOS (RL-12, D568): a machine's agents search the host's library.
-    .with_repos(repos.clone());
+        Some(session_tell.clone()),
+        // REPOS (RL-12, D568): a machine's agents search the host's library.
+        Some(repos.clone()),
+        Some(uplinks.forwarder()),
+    );
     // REPOS (RL-12, D568): on a machine, its RepoService sends up the Uplink.
     let repo_forwarder = uplinks.forwarder();
     // DK-14, D182: the Desk's sessions, beside the session service.
-    let desk = crate::desk_service::server(crate::desk_service::DeskDeps {
-        guard: guard.clone(),
-        operations: operations.clone(),
-        starter: starter.clone(),
-        identities: identities.clone(),
-        inbox: inbox.clone(),
-        tell: session_tell.clone(),
-        machine: machine.clone(),
-        socket: socket.clone(),
-        default_agent: args.default_agent.clone(),
-        bin: bin.clone(),
-        terminals: terminals.core(),
-        state: state.clone(),
-        handle: desk_handle,
-        remote: remote_work.clone(),
-        migrations: migrations.clone(),
-        channels: channel_svc.clone(),
-        last_start: last_start.clone(),
-    });
+    let desk_tokens = Arc::new(crate::restart::Tokens::new(
+        store.clone(),
+        identities.clone(),
+        socket.clone(),
+    ));
+    let desk = crate::wire_desk::desk_server(
+        guard.clone(),
+        operations.clone(),
+        starter.clone(),
+        identities.clone(),
+        desk_tokens,
+        inbox.clone(),
+        session_tell.clone(),
+        machine.clone(),
+        socket.clone(),
+        args.default_agent.clone(),
+        bin.clone(),
+        terminals.core(),
+        state.clone(),
+        desk_handle,
+        None,
+        migrations.clone(),
+        channel_svc.clone(),
+        last_start.clone(),
+    );
     // D195: how a session leaves this machine or arrives on it.
-    let carry_svc = SessionCarrySvc::new(starter.clone(), bin.clone(), host_work.is_some());
+    let carry_svc = crate::wire_transfers::carry_svc(
+        starter.clone(),
+        bin.clone(),
+        host_work.is_some(),
+    );
     let session_svc = SessionSvc::new(
         guard.clone(),
         operations.clone(),
@@ -971,11 +1033,14 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     }
     // REPOS (CH-21): AddRepoToSession adds a repo the channel lacks.
     session_svc.use_channels(channel_svc.clone());
+    let _ = remote_terminal_sessions.set(session_svc.clone());
     // PR-17: Archive names a review's unsubmitted drafts.
     #[cfg(feature = "svc_review")]
     session_svc.use_review(review.clone());
     #[cfg(feature = "svc_review")]
-    pull_requests.use_sessions(session_svc.clone());
+    pull_requests.use_sessions(Arc::new(crate::wire_review::SessionsAdapter(Arc::new(
+        session_svc.clone(),
+    ))));
     // D287: a submit cut short is settled against GitHub before anyone
     // posts again. A stopped machine asks GitHub nothing; its records stay
     // until the next start.
@@ -1006,7 +1071,9 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     settings.follow_gh_login();
     // A machine's own storage and Humata folder, for the host's relayed
     // Storage and root-change calls.
-    let box_machines = machine_service::BoxMachineSvc::new(
+    let box_sessions = Arc::new(std::sync::OnceLock::new());
+    let _ = box_sessions.set(session_svc.clone());
+    let box_machines = crate::wire_machines::new_box_machine_svc(
         Arc::new(
             crate::storage::Storage::new(store.clone(), machine.clone(), layout.clone(), bin.clone(), logs.clone())
                 .with_home(home.clone()),
@@ -1015,11 +1082,10 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         operations.clone(),
         // D768: its agents' machine lookups go to the host.
         uplinks.forwarder(),
+        box_sessions,
     );
-    // D784: a stopped shell is started again as the restart doctor does.
-    box_machines.use_sessions(session_svc.clone());
     let machines = match host_work {
-        Some(work) => {
+        Some((work, host_links, host_reports)) => {
             let skills_home = match args.skills_home {
                 Some(home) => home,
                 None => std::env::var_os("HOME")
@@ -1029,40 +1095,34 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
             };
             let skills = Arc::new(crate::skills_service::SkillsHost::new(&state, skills_home));
             // Set before any link starts, so the first link-up reaches it.
-            let _ = work.skills.set(skills.clone());
-            // AW-8: each link sends its machine the policy copy.
-            let _ = work.policy.set(policy_copy.clone());
+            let _ = work.skills.set(Arc::new(crate::wire_machines::SkillsAdapter(skills.clone())));
             // D226: each link replays its machine's Inbox journal into the host's Inbox.
-            let _ = work.inbox.set(inbox.clone());
+            let _ = work.inbox.set(Arc::new(crate::wire_machines::InboxAdapter(inbox.clone())));
             // UP-1: a Migrate of another machine stages its release and calls its daemon.
-            let _ = host_slot.set(work.clone());
+            let _ = host_slot.set(crate::wire_upgrade::remote_host(work.clone()));
             // UP-1: each link-up posts or withdraws its machine's Migrate item.
-            let _ = work
-                .upgrade
-                .set(crate::upgrade::items::Watch::new(migrations.clone(), release.clone()));
+            let _ = work.upgrade.set(Arc::new(crate::wire_machines::UpgradeAdapter(
+                crate::wire_upgrade::watch(migrations.clone(), release.clone()),
+            )));
             if let Some(remote) = remote_slot.get() {
-                remote.use_upgrade(crate::upgrade::items::Watch::new(migrations.clone(), release.clone()));
+                remote.use_upgrade(crate::wire_peer::peer_upgrade_watch(
+                    crate::wire_upgrade::watch(migrations.clone(), release.clone()),
+                ));
             }
-            // D227: each link runs its machine's forwarded board calls and replays its board journal.
-            #[cfg(feature = "svc_board")]
-            let _ = work.boards.set(board_svc.clone());
-            // VW-12: each link keeps the views its machine's agents offered.
-            #[cfg(feature = "svc_review")]
-            let _ = work.views.set(review.clone());
             // LD-11: forgetting a machine archives its sessions through the SessionService.
             work.forgetting.set(Arc::new(session_svc.clone()));
             // MACHINESCRIPTS (D681): the owner's rules run as machines and sessions change. Set before
             // any link starts, so the first link-up reaches it.
             if let Some(humata_home) = state.parent() {
-                let scripts = crate::machine_scripts::build(crate::machine_scripts::Parts {
-                    work: work.clone(),
-                    sessions: session_svc.clone(),
-                    terminal: terminals.core(),
-                    feed: feed.clone(),
-                    inbox: inbox.clone(),
-                    humata_home: humata_home.to_owned(),
-                    state: state.clone(),
-                });
+                let scripts = crate::wire_machines::new_machine_scripts(
+                    work.clone(),
+                    session_svc.clone(),
+                    terminals.core(),
+                    feed.clone(),
+                    inbox.clone(),
+                    humata_home.to_owned(),
+                    state.clone(),
+                );
                 session_svc.use_machine_scripts(scripts.clone());
                 work.install_scripts(scripts, humata_home);
             }
@@ -1076,16 +1136,19 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 }
             }));
             // A forget the last run began and didn't answer is finished now.
-            tokio::spawn(machine_service::finish_forgets(work.clone(), last_start.clone()));
+            tokio::spawn(machine_service::finish_forgets(
+                work.clone(),
+                Arc::new(crate::wire_machines::RestartAdapter(last_start.clone())),
+            ));
             // D784: a machine forgotten or removed lets go of this host's sessions at each link.
             tokio::spawn(machine_service::follow_let_go(work.clone()));
             // FM-8, FM-9: transfers reach other machines over their links.
-            transfers.use_links(work.links());
+            transfers.use_links(Arc::new(crate::wire_transfers::LinksAdapter(host_links.clone())));
             // D195: the host moves sessions between machines.
             session_svc.use_carry(Carry::new(
                 carry_svc.clone(),
-                work.links(),
-                bin.clone(),
+                Arc::new(crate::wire_transfers::LinksAdapter(host_links.clone())),
+                Arc::new(crate::wire_transfers::TrashBinAdapter(bin.clone())),
                 state.clone(),
                 machine.clone(),
                 layout.clone(),
@@ -1097,11 +1160,15 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 session_svc.recover_moves_after(last_start.clone());
             }
             // A pane on another machine: its file and trash calls are forwarded.
-            files.use_links(work.links());
-            files.use_migrations(migrations.clone());
+            let file_relay = Arc::new(crate::wire_files::RelayAdapter {
+                links: host_links.clone(),
+                migrations: Some(migrations.clone()),
+            });
+            files.use_links(file_relay.clone());
+            files.use_migrations(file_relay);
             // D189: other machines' conversations reach the host's mirror.
-            history.use_links(work.links(), work.reports());
-            trash.use_links(work.links());
+            history.use_links(host_links.clone(), host_reports);
+            trash.use_links(host_links);
             machine_service::recover_in_background(work.clone());
             // D782: a changed agents.toml goes to every linked machine now,
             // not only at its next link-up.
@@ -1116,7 +1183,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                 inbox.clone(),
             );
             Some((
-                MachineSvc::new(
+                crate::wire_machines::new_machine_svc(
                     guard,
                     work,
                     operations.clone(),
@@ -1131,6 +1198,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
                         )
                         .with_home(home.clone()),
                     ),
+                    Arc::new(std::sync::OnceLock::new()),
                 ),
                 providers,
                 skills,
@@ -1141,22 +1209,21 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // D768: only the host keeps machines and links them, so a machine's
     // agents look machines up, read other machines' files and copy between
     // machines through the host, which answers as that agent.
-    if let Some((machine_svc, _, _)) = &machines {
-        // D784: a stopped shell is started again as the restart doctor does.
-        machine_svc.use_sessions(session_svc.clone());
+    if let Some((_machine_svc, _, _)) = &machines {
+        // Sessions already wired via new_machine_svc OnceLock.
     }
     match &machines {
         #[cfg(feature = "svc_board")]
-        Some((machine_svc, _, _)) => board_svc.answer_host_calls(crate::board_service::HostCalls {
-            machines: machine_svc.clone(),
-            files: files.clone(),
-            transfers: transfers.clone(),
-        }),
+        Some((machine_svc, _, _)) => board_svc.answer_host_calls(crate::wire_board::host_calls(
+            machine_svc.clone(),
+            files.clone(),
+            transfers.clone(),
+        )),
         #[cfg(not(feature = "svc_board"))]
         Some(_) => {}
         None if role == pb::DaemonRole::Machine => {
-            files.ask_host_for_agents(uplinks.forwarder());
-            transfers.ask_host_for_agents(uplinks.forwarder());
+            files.ask_host_for_agents();
+            transfers.ask_host_for_agents();
         }
         None => {}
     }
@@ -1164,7 +1231,7 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
     // The restart doctor's store repair makes this daemon leave once it has
     // answered, so its next start restores the last good copy.
     let relaunch = crate::stop::service::Relaunch::new(leave.clone());
-    let doctor = crate::doctor::Doctor::new(
+    let doctor = crate::wire_stop_restart::new_doctor(
         session_svc.clone(),
         inbox.clone(),
         store.clone(),
@@ -1186,15 +1253,15 @@ pub(crate) async fn run(args: ServeArgs) -> Result<(), DaemonError> {
         .layer(crate::upgrade::gate::CliRelease::new(release.clone(), &machine).named(&names.of(&machine)))
         .layer(cut_streams)
         .add_service(pb::daemon_service_server::DaemonServiceServer::new(
-            Daemon::new(machine.clone(), role)
+            crate::wire_stop_restart::new_daemon(machine.clone(), role)
                 .offering(compression)
                 .with_build(release.clone())
-                .with_upgrade(upgrade.clone())
+                .with_upgrade(Arc::new(crate::wire_stop_restart::UpgradeAdapter(upgrade.clone())))
                 .started(last_start)
-                .with_relay(relay)
-                .with_uplinks(uplinks)
+                .with_relay(Arc::new(crate::wire_stop_restart::RelayAuthAdapter(relay)))
+                .with_uplinks(Arc::new(crate::wire_stop_restart::UplinksAdapter(uplinks)))
                 .with_doctor(doctor)
-                .with_stop(crate::stop::service::StopSvc::new(
+                .with_stop(crate::wire_stop_restart::new_stop_svc(
                     stop_folder,
                     machine.clone(),
                     relaunch.clone(),
@@ -1392,7 +1459,7 @@ fn machine_work(
     tools: Option<PathBuf>,
     ssh_config: Option<PathBuf>,
     feed: Arc<Feed>,
-) -> Result<Work, DaemonError> {
+) -> Result<(Arc<Work>, crate::peer_client::Links, crate::peer_reports::PeerReports), DaemonError> {
     let bundle = match tools {
         Some(tools) => Bundle::open(&tools).map_err(|source| DaemonError::Tools { source })?,
         None => {
@@ -1449,12 +1516,17 @@ fn machine_work(
         peer_keys: state.join(crate::peer_client::KEYS_DIR),
         retry: RetryPolicy::default(),
     });
-    Ok(Work::new(
+    let links = crate::peer_client::Links::default();
+    let reports = crate::peer_reports::PeerReports::default();
+    let work = crate::wire_machines::new_work(
         machines,
         builds,
         feed,
+        links.clone(),
+        reports.clone(),
         Arc::new(std::time::SystemTime::now),
-    ))
+    );
+    Ok((work, links, reports))
 }
 
 /// Where the app installs the Linux tools it carries, in the humata home.

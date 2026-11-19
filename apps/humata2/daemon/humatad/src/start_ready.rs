@@ -220,7 +220,7 @@ impl StartSignal for Ready {
             };
             // The session needs you while the card waits.
             let _asking = Asking::hold(&session);
-            let agent = AgentCaller::of(&record, &machine);
+            let agent = crate::identity::agent_caller_of(&record, &machine);
             let caller = Caller::Agent(agent.clone());
             let name = agents.person_name(&record.agent);
             let mut wait = match inbox.raise_waiting(&caller, &agent, &name, text).await {

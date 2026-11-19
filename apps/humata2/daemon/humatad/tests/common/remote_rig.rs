@@ -47,7 +47,7 @@ pub const LONG: Duration = Duration::from_secs(120);
 /// (`HUMATA2_PEER_RETRY_MS`, test daemons only): at once, where a shipped
 /// host waits 5 s and more (HO-5), so a test that restarts a box waits for
 /// the box and not for the host's backoff.
-const PEER_RETRY: (&str, &str) = ("HUMATA2_PEER_RETRY_MS", "100");
+const PEER_RETRY: (&str, &str) = ("HUMATA2_PEER_RETRY_MS", "20");
 
 const FILES: [&str; 4] = ["humatad2", "humata2_holder", "humata", "stack"];
 

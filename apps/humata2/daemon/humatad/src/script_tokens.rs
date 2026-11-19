@@ -20,14 +20,7 @@ const SAVE_EVERY_MS: i64 = 60_000;
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// A token's holder: who the policy treats the call as.
-#[derive(Clone, Debug)]
-pub(crate) struct ScriptCaller {
-    /// The token's id, `st_<hex>`.
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) token: ScriptToken,
-}
+pub(crate) use humata2_daemon_ports::ScriptCaller;
 
 /// Why a script token doesn't make a call a script's.
 #[derive(Debug, thiserror::Error)]

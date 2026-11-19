@@ -42,6 +42,8 @@ use crate::ports as status;
 /// The folder of the host's copies of machines' keys, in its state folder.
 pub const KEYS_DIR: &str = "peer-keys";
 
+pub use crate::host_relay::Links;
+
 /// A PING after the link has read nothing for this long (TR-9, D54).
 const KEEPALIVE: Duration = Duration::from_secs(30);
 /// A PING unanswered this long ends the link.

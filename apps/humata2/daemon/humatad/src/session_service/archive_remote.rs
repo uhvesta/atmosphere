@@ -19,6 +19,8 @@
 //! the host has compared it with what it restored and found nothing more
 //! there (`compare`, D224).
 
+use std::sync::Arc;
+
 mod bring;
 mod compare;
 mod pending;
@@ -73,8 +75,12 @@ enum RemoteError {
 
 /// Waits until `links` show `machine` up on a link other than `stale`, and
 /// returns that link's generation; `None` once the machine is forgotten.
-pub(super) async fn next_link_up(links: &Links, machine: &str, stale: Option<u64>) -> Option<u64> {
-    next_up(&mut links.watch(machine), stale).await
+pub(super) async fn next_link_up(
+    links: &Arc<dyn humata2_svc_transfers::ports::LinkProvider>,
+    machine: &str,
+    stale: Option<u64>,
+) -> Option<u64> {
+    next_up(&mut super::move_recover::watch_provider(links, machine), stale).await
 }
 
 /// As [`next_link_up`], on one watch of the machine kept across the waits
@@ -333,7 +339,11 @@ fn operation_error(machine: &str, doing: &'static str, ended: &pb::Operation) ->
 
 impl SessionSvc {
     /// The host's links to other machines, when this daemon has them.
-    fn links_to(&self, session: &str, machine: &str) -> Result<Links, Status> {
+    fn links_to(
+        &self,
+        session: &str,
+        machine: &str,
+    ) -> Result<Arc<dyn humata2_svc_transfers::ports::LinkProvider>, Status> {
         self.carry.get().map(|carry| carry.links().clone()).ok_or_else(|| {
             failed(
                 Code::FailedPrecondition,
@@ -348,9 +358,8 @@ impl SessionSvc {
     }
 
     fn relayed_to(&self, session: &str, machine: &str) -> Result<Relayed, Status> {
-        self.links_to(session, machine)?
-            .relayed(machine)
-            .map_err(Status::from)
+        let links = self.links_to(session, machine)?;
+        super::move_recover::relayed_provider(&links, machine).map_err(Status::from)
     }
 
     /// PlanArchive for a session on `machine`: the machine reads its own
@@ -564,7 +573,7 @@ impl SessionSvc {
         let Ok(links) = self.links_to(session, machine) else {
             return;
         };
-        let mut state = links.watch(machine);
+        let mut state = super::move_recover::watch_provider(&links, machine);
         let mut stale = None;
         while let Some(generation) = next_up(&mut state, stale).await {
             match self.reconcile_archive(session, machine, reported, by, asked.as_deref()).await {
@@ -1422,7 +1431,7 @@ impl SessionSvc {
         let Some(carry) = self.carry.get().cloned() else {
             return;
         };
-        let mut state = carry.links().watch(&machine);
+        let mut state = super::move_recover::watch_provider(carry.links(), &machine);
         let mut stale = None;
         while let Some(generation) = next_up(&mut state, stale).await {
             match self.load(&session).await {

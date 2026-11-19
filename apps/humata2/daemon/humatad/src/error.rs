@@ -5,10 +5,11 @@ use std::time::Duration;
 /// What starting the daemon, or bridging to it, can fail at.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DaemonError {
-    #[error(
-        "HOME isn't set, so humatad2 can't find its folder; set HOME, or pass --socket and --state"
-    )]
+    #[error("HOME isn't set, so humatad2 can't find its folder; set HOME, or pass --socket and --state")]
     NoHome,
+
+    #[error("{0}")]
+    Peer(String),
 
     #[error("couldn't start humatad2's runtime; the system may be out of threads or memory")]
     Runtime {

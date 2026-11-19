@@ -246,7 +246,12 @@ impl ProviderSvc {
             }
             created.map(|entry| Some(pb::operation::Result::Machine(machine_id(&entry.name))))
         });
-        launch_observed(self.work.clone(), progress, job, Some(observer));
+        launch_observed(
+            self.work.clone(),
+            Arc::new(crate::wire_machines::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+            job,
+            Some(observer),
+        );
         Ok(Gated::Done(operation))
     }
 
@@ -337,7 +342,12 @@ impl ProviderSvc {
             }
             Ok(None)
         });
-        launch_observed(self.work.clone(), progress, job, None);
+        launch_observed(
+            self.work.clone(),
+            Arc::new(crate::wire_machines::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+            job,
+            None,
+        );
         Ok(Gated::Done(operation))
     }
 
@@ -1092,7 +1102,12 @@ impl pb::provider_service_server::ProviderService for ProviderSvc {
             lock(&left).remove(&id);
             Ok(None)
         });
-        launch_observed(self.work.clone(), progress, job, None);
+        launch_observed(
+            self.work.clone(),
+            Arc::new(crate::wire_machines::ProgressAdapter(std::sync::Mutex::new(Some(progress)))),
+            job,
+            None,
+        );
         Ok(Response::new(operation))
     }
 

@@ -515,7 +515,7 @@ pub trait HostMachines: Send + Sync {
     async fn get_machine(
         &self,
         request: Request<pb::GetMachineRequest>,
-    ) -> Result<Response<pb::Machine>, Status>;
+    ) -> Result<Response<pb::MachineDetail>, Status>;
 }
 
 /// Host file service port for forwarded directory listings and stats.
@@ -537,7 +537,7 @@ pub trait HostTransfers: Send + Sync {
     async fn start_transfer(
         &self,
         request: Request<pb::StartTransferRequest>,
-    ) -> Result<Response<pb::Operation>, Status>;
+    ) -> Result<Response<pb::Transfer>, Status>;
 }
 
 /// The host's services that answer a machine's agents' lookups, file reads

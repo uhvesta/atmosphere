@@ -47,8 +47,7 @@ use crate::identity::{self, Caller, UserVia};
 use crate::status;
 use crate::trash_service::now_ms;
 
-#[path = "rename_alias.rs"]
-pub(crate) mod rename_alias;
+pub(crate) use humata2_svc_channels::rename_alias;
 
 /// Where moves in progress are written, in the channels folder.
 const NOTES: &str = ".renaming";

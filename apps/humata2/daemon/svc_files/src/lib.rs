@@ -49,7 +49,7 @@ use find::Find;
 use forward::Forward;
 pub use forward::{TrashForward, qualified};
 use ops::Ops;
-pub use ports::ReadFileStream;
+pub use ports::{FileLayout, ReadFileStream};
 use ports::{
     Checked, FileGuardPort, FileInboxPort, FileRelayPort, FileTrashPort, blocking, caller, chain,
     error, failure, invalid_field, missing, now_ms, timestamp,
@@ -312,6 +312,14 @@ impl Files {
     pub fn use_relay(&self, relay: Arc<dyn FileRelayPort>) {
         self.forward.use_relay(relay);
     }
+
+    pub fn use_links(&self, relay: Arc<dyn FileRelayPort>) {
+        self.use_relay(relay);
+    }
+
+    pub fn use_migrations(&self, _relay: Arc<dyn FileRelayPort>) {}
+
+    pub fn ask_host_for_agents(&self) {}
 
     /// The review service, told when the user writes a file in a session's
     /// clone, so the comments on it answer only to the agent's changes.

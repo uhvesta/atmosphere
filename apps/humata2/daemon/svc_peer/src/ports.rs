@@ -241,9 +241,22 @@ pub trait ProgressPort: Send + Sync {
     fn id(&self) -> String;
     fn operation(&self) -> pb::Operation;
     fn set_step(&self, key: &str, state: pb::StepState, output_tail: Option<String>);
+    fn set_units(&self, _key: &str, _done: u64, _total: u64) {}
     fn succeed(&self, result: Option<pb::operation::Result>);
     fn fail(&self, error: pb::Error);
     fn end_cancelled(&self);
+}
+
+/// Reports a step's progress in units (decoupled from `humatad::operations::Units`).
+#[derive(Clone)]
+pub struct Units {
+    inner: Arc<dyn ProgressPort>,
+}
+
+impl Units {
+    pub fn set(&self, key: &str, done: u64, total: u64) {
+        self.inner.set_units(key, done, total);
+    }
 }
 
 impl Progress {
@@ -258,6 +271,11 @@ impl Progress {
     }
     pub fn set_step(&self, key: &str, state: pb::StepState, output_tail: Option<String>) {
         self.inner.set_step(key, state, output_tail);
+    }
+    pub fn units(&self) -> Units {
+        Units {
+            inner: self.inner.clone(),
+        }
     }
     pub fn succeed(&self, result: Option<pb::operation::Result>) {
         self.inner.succeed(result);
